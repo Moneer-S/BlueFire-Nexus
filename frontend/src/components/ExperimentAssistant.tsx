@@ -13,8 +13,13 @@ import "./ExperimentAssistant.css";
 
 const labels: Record<AssistanceStatus, string> = {
   planning: "Planning the work", off: "AI is off", working: "Work in progress", awaiting_review: "Your review is needed",
-  awaiting_execute_approval: "Execute approval is needed", ready_to_continue: "Ready to recover", completed: "Work completed",
+  awaiting_execute_approval: "Execute approval is needed", ready_to_continue: "Next step needs attention", completed: "Work completed",
   blocked: "Work needs attention", cancelling: "Stopping · waiting for cleanup", cancelled: "Work stopped",
+};
+const triggerLabels: Record<AssistanceStatus, string> = {
+  planning: "Planning", off: "Off", working: "Working", awaiting_review: "Review needed",
+  awaiting_execute_approval: "Approval needed", ready_to_continue: "Recovery needed", completed: "Completed",
+  blocked: "Needs attention", cancelling: "Stopping", cancelled: "Stopped",
 };
 const draftKey = "bluefire.assistance.draft.v1";
 function readDraft() {
@@ -60,6 +65,9 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
   const cancel = useMutation({ mutationFn: () => api.controlJob(jobId, "cancel"), onSuccess: () => { void operation.refetch(); } });
   const turn = operation.data?.turn;
   const continuation = turn?.continuation;
+  const triggerStatus = receipt ? operation.isError ? "Status unavailable" : turn ? triggerLabels[turn.status] : "Checking status" : undefined;
+  const guidance = turn?.status === "ready_to_continue" ? turn.recovery : undefined;
+  const guidancePath = assistancePath(guidance?.action.native_path);
   useEffect(() => {
     if (recovery && recovery.job_id === jobId && continuation?.submission_id === recovery.submission_id && continuation.context_digest === recovery.context_digest
       && ["completed", "failed", "cancelled", "interrupted"].includes(continuation.state) && clearAssistanceRecovery(recovery)) setRecovery(undefined);
@@ -98,7 +106,7 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
     setReceipt(undefined); setLocalError(undefined); submit.reset(); recover.reset(); cancel.reset();
   };
   return <Dialog.Root open={open} onOpenChange={setOpen}>
-    <Dialog.Trigger asChild><button className="assistant-trigger"><MessageSquareText aria-hidden="true" /><span>Assistant</span>{turn ? <span className="assistant-trigger-status">{turn.status === "awaiting_review" || turn.status === "awaiting_execute_approval" ? "Review needed" : active ? "Working" : "Saved work"}</span> : null}</button></Dialog.Trigger>
+    <Dialog.Trigger asChild><button className="assistant-trigger" aria-label={triggerStatus ? `Assistant: ${triggerStatus}` : "Assistant"}><MessageSquareText aria-hidden="true" /><span>Assistant</span>{triggerStatus ? <span className="assistant-trigger-status">{triggerStatus}</span> : null}</button></Dialog.Trigger>
     <Dialog.Portal><Dialog.Overlay className="assistant-overlay" /><Dialog.Content className="experiment-assistant" aria-describedby="assistant-description">
       <header className="assistant-header"><div><Dialog.Title>Experiment assistant</Dialog.Title><Dialog.Description id="assistant-description">Work from your selected evidence. Inspect changes where you use them.</Dialog.Description></div><Dialog.Close asChild><button className="assistant-close" aria-label="Close assistant"><X /></button></Dialog.Close></header>
       <div className="assistant-body">
@@ -116,11 +124,17 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
             })}</ol> : null}
             {actionPath ? <Link className="button button-primary button-medium" onClick={navigate} to={actionPath}>{action!.label}<ArrowRight aria-hidden="true" /></Link> : null}
             {!actionPath && childPath ? <Link className="button button-secondary button-medium" onClick={navigate} to={childPath}>Open current work<ArrowRight aria-hidden="true" /></Link> : null}
-            {action?.kind === "continue" ? <Button variant="primary" disabled={recover.isPending || cancel.isPending} onClick={() => {
+            {guidance && guidancePath ? <section className="assistant-recovery" aria-label="Next step requirements">
+              {turn.results.some((result) => result.kind === "detection_revision") ? <p><strong>Your rule revision and evaluation are saved.</strong></p> : null}
+              {guidance.profile_id ? <p>Recorded runner: <strong>{guidance.profile_id}</strong></p> : null}
+              <Link className="button button-secondary button-medium" onClick={navigate} to={guidancePath}>{guidance.action.label}<ArrowRight aria-hidden="true" /></Link>
+              <p>{guidance.code === "runner_readiness_required" ? "Return to Assistant and resume this saved turn after checking setup. The original source and authority will be checked again; Execute still requires a separate approval." : "Review the selected objects before resuming. If the saved rule or evidence changed, stop this operation and start a new request; existing saved results remain available."}</p>
+            </section> : null}
+            {action?.kind === "continue" ? <Button variant="primary" disabled={recover.isPending || cancel.isPending || operation.isError} onClick={() => {
               const saved = recovery ?? { job_id: jobId, submission_id: crypto.randomUUID(), context_digest: turn.context_digest };
               if (saved.job_id !== jobId || saved.context_digest !== turn.context_digest || !storeAssistanceRecovery(saved)) { setLocalError(new Error("The recovery request could not be retained. Check the saved operation before retrying.")); return; }
               setRecovery(saved); recover.mutate({ submission_id: saved.submission_id, context_digest: saved.context_digest });
-            }}>{recover.isPending ? "Recovering saved work…" : action.label}</Button> : null}
+            }}>{recover.isPending ? "Recovering saved work…" : guidance ? "Resume saved turn" : action.label}</Button> : null}
             {turn.results.length ? <section className="assistant-results" aria-label="Saved results"><h4>Saved results</h4>{turn.results.map((result) => {
               const path = assistancePath(result.native_path);
               return <div key={`${result.step_id}:${result.kind}`}><strong>{result.kind === "detection_revision" ? "Rule revision and evaluation" : "Method comparison"}</strong><p>{result.evaluation_ids.length} evaluation{result.evaluation_ids.length === 1 ? "" : "s"} · {result.run_ids.length} run{result.run_ids.length === 1 ? "" : "s"}</p>{path ? <Link onClick={navigate} to={path}>Inspect saved result<ArrowRight aria-hidden="true" /></Link> : null}</div>;
@@ -136,7 +150,7 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
             {context.isError ? <ErrorState title="Context is unavailable" error={context.error} retry={() => { void context.refetch(); }} /> : null}
             {selected && !current ? <p role="alert">This rule changed since it was selected. Reopen its saved revision before starting.</p> : null}
             {selection.manualEdits ? <p role="alert">Save or restore your manual rule edits before starting assistant work.</p> : null}
-            {context.data ? <details className="assistant-details"><summary>Available actions and evidence scope</summary><ul>{context.data.capabilities.map((item) => <li key={item.id}><strong>{item.title}</strong><p>{item.available ? "Available" : "Unavailable"}{item.reason ? ` · ${item.reason}` : ""}</p></li>)}</ul>{context.data.limitations.map((item, index) => <p key={index}>{item}</p>)}</details> : null}
+            {context.data ? <details className="assistant-details"><summary>Available actions and evidence scope</summary><ul>{context.data.capabilities.map((item) => <li key={item.id}><strong>{item.title}</strong><p>{item.available ? item.id === "method.compare_same_detector" ? "Eligible · readiness checked before preparation" : "Available" : "Unavailable"}{item.reason ? ` · ${item.reason}` : ""}</p></li>)}</ul>{context.data.limitations.map((item, index) => <p key={index}>{item}</p>)}</details> : null}
           </>}
         </>}
         {!receipt ? <section className="assistant-composer" aria-label="Assistant controls">

@@ -30,6 +30,11 @@ export interface AssistanceEnvelope {
     next_action: null | { kind: "review_detection" | "review_method" | "review_execute" | "continue" | "new_turn"; label: string; native_path: string | null };
     results: Array<{ kind: "detection_revision" | "method_comparison"; step_id: string; candidate_id: string; evaluation_ids: string[]; run_ids: string[]; comparison_id: string | null; native_path: string }>;
     continuation: null | { job_id: string; submission_id: string; state: string; context_digest: string };
+    recovery?: null | {
+      code: "runner_readiness_required" | "native_review_required" | "detection_review_required" | "source_review_required";
+      message: string; profile_id: string | null;
+      action: { label: string; native_path: string };
+    };
     limitations: string[];
   };
 }
@@ -37,7 +42,7 @@ export const assistanceJobId = (submission: string) => `job-${submission.replace
 export const assistanceActive = (status: AssistanceStatus) => !["off", "completed", "blocked", "cancelled"].includes(status);
 export function assistancePath(value: unknown): string | undefined {
   if (typeof value !== "string" || [...value].some((character) => character === "\\" || character.charCodeAt(0) <= 32)) return;
-  if (!/^\/(?:detection-lab|compare|runs)(?:\?|\/|$)/.test(value)) return;
+  if (!/^\/(?:detection-lab|compare|runs|runners)(?:\?|\/|$)/.test(value)) return;
   const parsed = new URL(value, "https://bluefire.invalid");
   return parsed.origin === "https://bluefire.invalid" ? `${parsed.pathname}${parsed.search}${parsed.hash}` : undefined;
 }

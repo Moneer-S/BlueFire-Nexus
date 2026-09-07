@@ -52,3 +52,7 @@
   .assistant-options { grid-template-columns: 1fr; }
   .assistant-trigger-status { display: none; }
 }
+
+.assistant-recovery { margin: 18px 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; }
+.assistant-recovery p { margin: 0 0 12px; font-size: .76rem; line-height: 1.5; overflow-wrap: anywhere; }
+.assistant-recovery p:last-child { margin: 12px 0 0; color: var(--muted-strong); }

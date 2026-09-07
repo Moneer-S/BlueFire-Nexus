@@ -291,6 +291,7 @@ def test_preparation_refuses_unavailable_runner_without_a_successful_review(
     with pytest.raises(APIError) as error:
         service.prepare_replay(source["run_id"], {"target_scope": SCOPE})
     assert error.value.code == "replay_preparation_refused"
+    assert error.value.details == {"reason_code": "runner_readiness_required"}
 
 
 def test_exact_preparation_keeps_existing_collector_refusal(service: BlueFireService) -> None:

@@ -6,8 +6,9 @@ import re
 import uuid
 from http import HTTPStatus
 from typing import Any, Mapping
+from urllib.parse import urlencode
 
-from .ai_assistance import REVISE, suggest_plan
+from .ai_assistance import COMPARE, REVISE, suggest_plan
 from .ai_wire import AIProviderCancelled, AIProviderError
 from .application_errors import APIError
 from .assistance_context import LIMITATIONS, AssistanceContext
@@ -183,6 +184,10 @@ class ExperimentAssistance:
         except (APIError, AIProviderError, ProductStoreError, ConfigError, JobRuntimeError) as exc:
             if ctx.cancellation_event.is_set():
                 raise JobCancelled("Assistance turn cancelled.") from exc
+            if self._job(ctx.job_id)["progress"].get("plan"):
+                problem = self._handoff_problem(ctx.job_id, exc)
+                ctx.checkpoint({"handoff_error": problem["message"], "handoff_problem": problem})
+                raise
             ctx.checkpoint(
                 {
                     "operation_error": (
@@ -270,8 +275,91 @@ class ExperimentAssistance:
                 self.service.method_comparison.submit(
                     object_id, child_request, _assistance_turn=binding
                 )
-            update(self.store, parent_id, {"handoff_error": None})
+            update(self.store, parent_id, {"handoff_error": None, "handoff_problem": None})
             return
+
+    def _handoff_problem(self, parent_id: str, error: Exception) -> Mapping[str, Any]:
+        """Expose fixed remediation, never exception text, paths or arbitrary details."""
+        parent = self._job(parent_id)
+        run_id = parent["request"]["submitted_request"]["run_id"]
+        candidate_id = parent["request"]["submitted_request"]["candidate_id"]
+        source_path = "/detection-lab?" + urlencode(
+            {"run": run_id, "candidate": candidate_id, "candidate_scope": "registry"}
+        )
+        problem: dict[str, Any] = {
+            "code": "source_review_required",
+            "message": "The next step could not be prepared. Review the selected source and saved objects before continuing.",
+            "profile_id": None,
+            "action": {"label": "Review selected source", "native_path": source_path},
+        }
+        capability = None
+        try:
+            for step in parent["progress"].get("plan", []):
+                child = child_job(self.service, parent, step)
+                if child is not None and result(self.service, child, step) is not None:
+                    continue
+                capability = step["capability_id"]
+                detection = capability == REVISE
+                problem.update(
+                    code="detection_review_required" if detection else "native_review_required",
+                    message=(
+                        "The rule revision could not be prepared. Review the selected rule and evidence; changed context requires a new turn."
+                        if detection
+                        else "The next step could not be prepared. Review the source and native method requirements before resuming this saved turn."
+                    ),
+                    action={
+                        "label": (
+                            "Review rule and evidence"
+                            if detection
+                            else "Review method requirements"
+                        ),
+                        "native_path": (
+                            child_path(child)
+                            if child is not None
+                            else (
+                                source_path
+                                if detection
+                                else "/compare?" + urlencode({"source": run_id})
+                            )
+                        ),
+                    },
+                )
+                break
+        except (APIError, ProductStoreError, KeyError, TypeError, ValueError):
+            pass
+        if not (
+            capability == COMPARE
+            and isinstance(error, APIError)
+            and error.code == "replay_preparation_refused"
+            and isinstance(error.details, Mapping)
+            and error.details.get("reason_code") == "runner_readiness_required"
+        ):
+            return problem
+        try:
+            source, binding, _ = self.service.method_comparison._source(run_id)
+            if binding != parent["request"]["context"]["selected"]["source_binding"]:
+                return problem
+            profile = source.get("profile")
+            profile_id = profile.get("id") if isinstance(profile, Mapping) else None
+            if (
+                source.get("mode") != "execute"
+                or not isinstance(profile_id, str)
+                or not re.fullmatch(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\.v[1-9][0-9]*", profile_id)
+            ):
+                return problem
+            return {
+                "code": "runner_readiness_required",
+                "message": "Check the recorded runner before preparing the other method. Your saved results remain available; resuming rechecks the original source and authority.",
+                "profile_id": profile_id,
+                "action": {
+                    "label": "Check runner setup",
+                    "native_path": (
+                        "/runs?setup=execute" if profile_id == "sandbox-execute.v1" else "/runners"
+                    ),
+                },
+            }
+        except (APIError, ProductStoreError, KeyError, TypeError, ValueError):
+            return problem
 
     def application_committed(self, child: Mapping[str, Any]) -> None:
         """Existing native commit hook: no timer, polling, scheduler or review bypass."""
@@ -282,18 +370,13 @@ class ExperimentAssistance:
             # The native application is already committed. A handoff failure must
             # never turn it into an apparent failed application or repeat it.
             try:
+                problem = self._handoff_problem(parent_id, exc)
                 update(
                     self.store,
                     parent_id,
-                    {
-                        "handoff_error": (
-                            exc.message
-                            if isinstance(exc, APIError)
-                            else "The next capability could not be admitted. Recover this turn after reviewing readiness."
-                        )
-                    },
+                    {"handoff_error": problem["message"], "handoff_problem": problem},
                 )
-            except ProductStoreError:
+            except (APIError, ProductStoreError):
                 # The immutable application receipt remains authoritative. A later
                 # read infers the missing child and offers explicit recovery.
                 pass
@@ -356,16 +439,11 @@ class ExperimentAssistance:
                 raise JobCancelled(
                     "Assistance continuation cancelled; parent turn is stopped."
                 ) from exc
+            problem = self._handoff_problem(request["parent_job_id"], exc)
             update(
                 self.store,
                 request["parent_job_id"],
-                {
-                    "handoff_error": (
-                        exc.message
-                        if isinstance(exc, APIError)
-                        else "The next capability could not be admitted. Review native readiness before recovery."
-                    )
-                },
+                {"handoff_error": problem["message"], "handoff_problem": problem},
             )
             raise
         ctx.checkpoint()
@@ -470,6 +548,7 @@ class ExperimentAssistance:
             "active_child": None,
             "next_action": None,
             "results": [],
+            "recovery": None,
             "limitations": list(LIMITATIONS),
         }
         try:
@@ -531,6 +610,8 @@ class ExperimentAssistance:
                             and self.store.get_job(continuation_id)["state"] not in TERMINAL
                         ):
                             view.update(status="working", next_action=None)
+                        if progress.get("handoff_problem"):
+                            view["recovery"] = progress["handoff_problem"]
                         if progress.get("handoff_error") or progress.get("operation_error"):
                             view["message"] = (
                                 progress.get("handoff_error") or progress["operation_error"]
@@ -605,6 +686,8 @@ class ExperimentAssistance:
                 ),
                 next_action=None,
             )
+        if view["status"] != "ready_to_continue":
+            view["recovery"] = None
         view["can_start_new_turn"] = view["status"] in {"off", "completed", "cancelled"} or (
             view["status"] == "blocked" and not progress.get("plan") and self._settled(parent)
         )

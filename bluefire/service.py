@@ -4060,6 +4060,13 @@ class BlueFireService(RunnerManagementServiceMixin):
                 return self._prepare_replay_locked(run_id, payload)
             except APIError:
                 raise
+            except RunnerReadinessError as exc:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "replay_preparation_refused",
+                    "Replay could not be prepared for review.",
+                    {"reason_code": "runner_readiness_required"},
+                ) from exc
             except (
                 ActionCatalogError,
                 ProductStoreError,

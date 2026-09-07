@@ -220,3 +220,69 @@ it("does not infer settlement from an integrity-blocked view with no visible chi
   expect(screen.getByRole("button", { name: "Stop this operation" })).toBeEnabled();
   expect(readAssistanceReceipt()).toEqual(request());
 });
+
+
+it.each([
+  ["ready_to_continue", "Recovery needed"], ["blocked", "Needs attention"],
+  ["cancelling", "Stopping"], ["awaiting_review", "Review needed"],
+  ["awaiting_execute_approval", "Approval needed"], ["cancelled", "Stopped"],
+] as const)("shows truthful %s status while the drawer is closed", async (status, label) => {
+  storeAssistanceReceipt(request());
+  vi.spyOn(api, "assistanceTurn").mockResolvedValue(envelope(request(), status));
+  const contextRead = vi.spyOn(api, "assistanceContext");
+  const continueWork = vi.spyOn(api, "continueAssistance");
+  mount();
+  expect(await screen.findByRole("button", { name: `Assistant: ${label}` })).toBeInTheDocument();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(contextRead).not.toHaveBeenCalled();
+  expect(continueWork).not.toHaveBeenCalled();
+});
+
+it("labels cached work as status unavailable after refresh fails", async () => {
+  storeAssistanceReceipt(request());
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["assistance-turn", assistanceJobId(request().submission_id)], envelope(request(), "working"));
+  vi.spyOn(api, "assistanceTurn").mockRejectedValue(new Error("Unit connection unavailable"));
+  mount(selection, client);
+  expect(await screen.findByRole("button", { name: "Assistant: Status unavailable" })).toBeInTheDocument();
+  expect(readAssistanceReceipt()).toEqual(request());
+});
+
+it("keeps saved results and the exact turn when visiting runner setup and explicitly resuming", async () => {
+  storeAssistanceReceipt(request());
+  const value = envelope(request(), "ready_to_continue");
+  value.turn.active_child = null;
+  value.turn.next_action = { kind: "continue", label: "Recover next step", native_path: null };
+  value.turn.recovery = { code: "runner_readiness_required", message: "Check the recorded runner.", profile_id: "sandbox-execute.v1", action: { label: "Check runner setup", native_path: "/runs?setup=execute" } };
+  value.turn.results = [{ kind: "detection_revision", step_id: "revise", candidate_id: "saved-revision", evaluation_ids: ["evaluation-one"], run_ids: [selection.runId], comparison_id: null, native_path: "/detection-lab?candidate=saved-revision" }];
+  vi.spyOn(api, "assistanceTurn").mockResolvedValue(value);
+  const recover = vi.spyOn(api, "continueAssistance").mockResolvedValue(value);
+  const submit = vi.spyOn(api, "submitAssistance");
+  mount(); await open();
+  await screen.findByText("Your rule revision and evaluation are saved.");
+  const link = screen.getByRole("link", { name: "Check runner setup" });
+  expect(link).toHaveAttribute("href", "/runs?setup=execute");
+  await userEvent.setup().click(link);
+  expect(screen.getByTestId("location")).toHaveTextContent("/runs?setup=execute");
+  expect(readAssistanceReceipt()).toEqual(request());
+  expect(recover).not.toHaveBeenCalled(); expect(submit).not.toHaveBeenCalled();
+  await open();
+  await userEvent.setup().click(await screen.findByRole("button", { name: "Resume saved turn" }));
+  await waitFor(() => expect(recover).toHaveBeenCalledTimes(1));
+  expect(recover).toHaveBeenCalledWith(assistanceJobId(request().submission_id), expect.objectContaining({ context_digest: request().context_digest }));
+  expect(submit).not.toHaveBeenCalled();
+  expect(readAssistanceReceipt()).toEqual(request());
+});
+
+
+it("updates a closed badge from running to recovery through read-only polling", async () => {
+  storeAssistanceReceipt(request());
+  const get = vi.spyOn(api, "assistanceTurn").mockResolvedValueOnce(envelope(request(), "working")).mockResolvedValue(envelope(request(), "ready_to_continue"));
+  const recover = vi.spyOn(api, "continueAssistance");
+  mount();
+  await screen.findByRole("button", { name: "Assistant: Working" });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Assistant: Recovery needed" })).toBeInTheDocument(), { timeout: 3500 });
+  expect(get.mock.calls.length).toBeGreaterThanOrEqual(2);
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(recover).not.toHaveBeenCalled();
+});

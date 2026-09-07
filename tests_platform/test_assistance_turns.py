@@ -303,7 +303,9 @@ def test_post_commit_handoff_recovers_without_repeating_revision(setup, monkeypa
     monkeypatch.setattr(service.method_comparison, "context", unavailable)
     application = apply(service, proposal)
     view = service.assistance_turn(parent["job_id"])["turn"]
-    assert view["status"] == "ready_to_continue" and "Start the native runner" in view["message"]
+    assert view["status"] == "ready_to_continue"
+    assert view["recovery"]["code"] == "native_review_required"
+    assert "Start the native runner" not in view["message"]
     assert len(view["results"]) == 1
     monkeypatch.setattr(service.method_comparison, "context", original)
     retry = {"submission_id": str(uuid.uuid4()), "context_digest": body["context_digest"]}
@@ -673,4 +675,75 @@ def test_validated_empty_plan_retains_explanation_without_claiming_work_complete
     assert view["next_action"]["kind"] == "new_turn"
     assert view["message"] == "This request is outside the selected capabilities."
     assert view["plan"] == [] and view["results"] == [] and view["active_child"] is None
+    assert access.calls == [PURPOSE]
+
+
+def test_runner_guidance_uses_safe_typed_refusal_and_keeps_context_immutable(
+    setup, tmp_path, monkeypatch
+):
+    service, access, body = setup
+    execution_fixture = tmp_path / "execution-fixture"
+    execution_fixture.mkdir()
+    # Portable observed fixture only; no Execute job or target process is started.
+    source_id = source_run(service, execution_fixture, execute=True)
+    context = service.assistance_context(source_id, body["candidate_id"])
+    request = {**body, "run_id": source_id, "context_digest": context["context_digest"]}
+    parent, proposal = planned((service, access, request))
+    calls = []
+
+    def unavailable(profile):
+        calls.append(profile.id)
+        raise OSError("private-path-must-not-be-retained")
+
+    monkeypatch.setattr(service, "runner_factory", unavailable)
+    application = apply(service, proposal)
+    view = service.assistance_turn(parent["job_id"])["turn"]
+    assert application["state"] == "completed"
+    assert view["status"] == "ready_to_continue"
+    assert view["recovery"]["code"] == "runner_readiness_required"
+    assert view["recovery"]["profile_id"] == "sandbox-execute.v1"
+    assert view["recovery"]["action"]["native_path"] == "/runs?setup=execute"
+    assert len(view["results"]) == 1
+    assert "private-path-must-not-be-retained" not in json.dumps(
+        service.product_store.get_job(parent["job_id"])
+    )
+    assert service.assistance_context(source_id, body["candidate_id"]) == context
+    count = len(calls)
+    assert count > 0
+    for _ in range(3):
+        assert service.assistance_turn(parent["job_id"])["turn"]["recovery"] == view["recovery"]
+    assert len(calls) == count
+    assert access.calls == [PURPOSE, "bluefire_detection_source_revision"]
+
+
+def test_arbitrary_error_details_cannot_create_runner_setup_guidance(setup):
+    service, _, _ = setup
+    parent, _ = planned(setup)
+    problem = service.assistance._handoff_problem(
+        parent["job_id"],
+        APIError(
+            409, "replay_preparation_refused", "private-message", ["runner stopped", "private-path"]
+        ),
+    )
+    assert problem["code"] == "detection_review_required"
+    assert problem["action"]["native_path"].startswith("/detection-lab?")
+    assert "private" not in json.dumps(problem)
+
+
+def test_detector_only_plan_stale_during_planning_links_its_native_review(setup):
+    service, access, body = setup
+    access.release = threading.Event()
+    access.transform = lambda value: {**value, "steps": value["steps"][:1]}
+    parent = service.submit_assistance_turn(body)["job"]
+    assert access.entered.wait(10)
+    service.reject_detection_candidate(
+        body["candidate_id"], {"reason": "Unit saved rule changed during planning"}
+    )
+    access.release.set()
+    service.job_controller.wait(parent["job_id"], timeout=15)
+    view = service.assistance_turn(parent["job_id"])["turn"]
+    assert view["status"] == "ready_to_continue"
+    assert view["recovery"]["code"] == "detection_review_required"
+    assert view["recovery"]["action"]["native_path"].startswith("/detection-lab?")
+    assert "compare" not in view["recovery"]["action"]["native_path"]
     assert access.calls == [PURPOSE]
