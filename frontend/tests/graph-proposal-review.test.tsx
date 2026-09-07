@@ -53,7 +53,11 @@ function Workspace() {
     {reviewing ? <GraphProposalReview jobId={jobId} behaviors={[]} renderEditor={(draft) => <Editor draft={draft}/>}/> : <p>Current editor</p>}</>;
 }
 function mount() {
-  if (!localStorage.getItem("bluefire.local.scenario.v1")) localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify({ ...scenario(), id: "scenario.manual.v1", title: "Current manual experiment" }));
+  if (!localStorage.getItem("bluefire.local.scenario.v1")) {
+    const saved = JSON.stringify({ ...scenario(), id: "scenario.manual.v1", title: "Current manual experiment" });
+    localStorage.setItem("bluefire.local.scenario.v1", saved);
+    localStorage.setItem("bluefire.local.scenario-saved.v1", saved);
+  }
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } });
   return { client, ...render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/builder/proposal"]}><ProductProvider><Workspace/></ProductProvider></MemoryRouter></QueryClientProvider>) };
 }
@@ -173,6 +177,29 @@ it("refetches the immutable version on Open and checks manual edits made during 
   expect(mocks.immutable).toHaveBeenCalledTimes(3);
   expect(mocks.immutable).toHaveBeenLastCalledWith(saved.envelope.application!.scenario_id, 3);
   expect(mocks.review).not.toHaveBeenCalled();
+});
+
+it.each(["edited", "legacy"])("protects a reloaded %s active draft before opening a saved proposal", async (kind) => {
+  mockReady(accepted().envelope);
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  const first = mount();
+  await screen.findByRole("button", { name: "Open saved experiment" });
+  if (kind === "edited") await userEvent.click(screen.getByRole("button", { name: "Edit active graph" }));
+  else localStorage.removeItem("bluefire.local.scenario-saved.v1");
+  const original = localStorage.getItem("bluefire.local.scenario.v1");
+  first.unmount();
+  mount();
+  expect(screen.getByLabelText("Active dirty")).toHaveTextContent("true");
+  await userEvent.click(await screen.findByRole("button", { name: "Open saved experiment" }));
+  await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+  expect(localStorage.getItem("bluefire.local.scenario.v1")).toBe(original);
+  expect(screen.getByLabelText("Current route")).toHaveTextContent("/builder/proposal");
+  confirm.mockReturnValue(true);
+  await userEvent.click(screen.getByRole("button", { name: "Open saved experiment" }));
+  await waitFor(() => expect(screen.getByLabelText("Current route")).toHaveTextContent(/^\/builder$/));
+  expect(screen.getByLabelText("Active name")).toHaveTextContent("Proposed experiment");
+  expect(screen.getByLabelText("Active dirty")).toHaveTextContent("false");
+  expect(localStorage.getItem("bluefire.local.scenario-saved.v1")).toBe(localStorage.getItem("bluefire.local.scenario.v1"));
 });
 
 it("does not open a mismatched response even after the first saved-version fetch was valid", async () => {

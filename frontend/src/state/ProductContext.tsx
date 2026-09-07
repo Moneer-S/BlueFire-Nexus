@@ -1,9 +1,11 @@
 import { createContext, type PropsWithChildren, useContext, useEffect, useRef, useState } from "react";
 import { demoScenario } from "../lib/demo";
 import { parseScenarioDocument } from "../lib/scenario";
+import { sameJson } from "../lib/replay-review";
 import type { RunConfiguration, RunRecord, Scenario } from "../types";
 
 const scenarioKey = "bluefire.local.scenario.v1";
+const savedScenarioKey = "bluefire.local.scenario-saved.v1";
 const settingsKey = "bluefire.local.run-config.v1";
 
 export const UI_PREFERENCE_SCHEMA_VERSION = "bluefire.ui-preferences.v1" as const;
@@ -111,16 +113,21 @@ function normalizeRunConfig(value: Partial<RunConfiguration>): RunConfiguration 
 interface ScenarioHydration {
   scenario: Scenario;
   scenarioIsSeededFallback: boolean;
+  dirty: boolean;
 }
 
 function readCachedScenario(): ScenarioHydration {
   try {
     const value = window.localStorage.getItem(scenarioKey);
-    return value
-      ? { scenario: parseScenarioDocument(JSON.parse(value) as unknown), scenarioIsSeededFallback: false }
-      : { scenario: structuredClone(demoScenario), scenarioIsSeededFallback: true };
+    if (!value) return { scenario: structuredClone(demoScenario), scenarioIsSeededFallback: true, dirty: false };
+    const scenario = parseScenarioDocument(JSON.parse(value) as unknown);
+    // Retain the existing raw draft format. A separate saved marker must match
+    // the full document, including layout; missing or partial writes stay dirty.
+    let saved: unknown;
+    try { saved = JSON.parse(window.localStorage.getItem(savedScenarioKey) ?? "null"); } catch { /* Unknown saved status is protected. */ }
+    return { scenario, scenarioIsSeededFallback: false, dirty: !sameJson(scenario, saved) };
   } catch {
-    return { scenario: structuredClone(demoScenario), scenarioIsSeededFallback: true };
+    return { scenario: structuredClone(demoScenario), scenarioIsSeededFallback: true, dirty: false };
   }
 }
 
@@ -151,15 +158,16 @@ export function ProductProvider({ children }: PropsWithChildren) {
     return { ...normalizeRunConfig({ mode: preferences?.effect_mode, autonomy: preferences?.autonomy }), approved: false, approvedBy: "" };
   });
   const [activeRun, setActiveRun] = useState<RunRecord | null>(null);
-  const [dirty, setDirty] = useState(false);
+  const [dirty, setDirty] = useState(scenarioState.dirty);
 
   const clearApproval = () => setRunConfigState((current) => ({ ...current, approved: false, approvedBy: "" }));
   const setScenario = (next: Scenario, markDirty = true) => {
     const previousBehaviors = new Map(currentScenario.current.steps.map((step) => [step.id, step.behavior_id]));
     const nextBehaviors = new Map(next.steps.map((step) => [step.id, step.behavior_id]));
     currentScenario.current = next;
-    setScenarioState({ scenario: next, scenarioIsSeededFallback: false });
+    setScenarioState({ scenario: next, scenarioIsSeededFallback: false, dirty: markDirty });
     setDirty(markDirty);
+    if (!markDirty) writeBrowserStorage(savedScenarioKey, JSON.stringify(next));
     setRunConfigState((current) => {
       const selected = Object.entries(current.actionImplementations);
       const retained = selected.filter(([stepId]) => previousBehaviors.get(stepId) === nextBehaviors.get(stepId));
@@ -170,6 +178,7 @@ export function ProductProvider({ children }: PropsWithChildren) {
   };
   const markSaved = (savedScenario: Scenario) => {
     if (JSON.stringify(currentScenario.current) !== JSON.stringify(savedScenario)) return false;
+    writeBrowserStorage(savedScenarioKey, JSON.stringify(savedScenario));
     setDirty(false);
     return true;
   };
