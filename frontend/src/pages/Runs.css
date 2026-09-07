@@ -124,3 +124,8 @@
 .assisted-run-decision { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .assisted-run-decision > p { flex-basis: 100%; margin-bottom: 0; }
 @media (max-width: 600px) { .assisted-review-context { grid-template-columns: 1fr; gap: 14px; } }
+
+.job-approval-expiry { margin: 12px 14px; color: var(--muted); font-size: 0.8rem; line-height: 1.5; }
+.job-approval-identities { margin: 0 14px 16px; }
+.job-approval-identities > summary { padding: 8px 0; cursor: pointer; font-size: 0.8rem; }
+.job-approval-identities .data-list code { display: block; max-width: 100%; overflow-wrap: anywhere; }
