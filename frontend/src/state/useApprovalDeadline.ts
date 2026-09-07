@@ -35,4 +35,3 @@ export function useApprovalDeadline(expiresAt: unknown) {
   }, [deadline, recheck]);
   return { valid: Number.isFinite(deadline), current: Number.isFinite(deadline) && deadline > Math.max(observedAt, Date.now()), recheck };
 }
-
