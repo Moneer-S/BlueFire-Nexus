@@ -158,6 +158,21 @@ class PlatformService(Protocol):
     def review_assistance_run(self, job_id: str, request: JsonObject) -> JsonResult:
         """Accept or reject the exact retained native preparation."""
 
+    def detection_creation_source(self, request: JsonObject) -> JsonResult:
+        """Discover verified run behavior and parser choices without calling a model."""
+
+    def detection_creation_context(self, request: JsonObject) -> JsonResult:
+        """Bind the explicit initial source selection."""
+
+    def detection_create_job(self, job_id: str) -> JsonResult:
+        """Read initial source proposal and exact application/evaluation receipts."""
+
+    def validate_detection_create(self, job_id: str, request: JsonObject) -> JsonResult:
+        """Parse the exact reviewed initial source without persistence."""
+
+    def review_detection_create(self, job_id: str, request: JsonObject) -> JsonResult:
+        """Retain a native decision and queue its atomic application."""
+
     def graph_ai_job(self, job_id: str) -> JsonResult:
         """Read a retained graph proposal and exact native save receipt."""
 

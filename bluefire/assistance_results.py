@@ -19,6 +19,13 @@ TERMINAL = {"completed", "cancelled", "failed", "interrupted"}
 def child_path(child: Mapping[str, Any]) -> str:
     if child["kind"] == "run.assistance.prepare":
         return "/runs?" + urlencode({"assistance_job": child["job_id"]})
+    if child["kind"] == "detection.ai.create":
+        return "/detection-lab?" + urlencode(
+            {
+                "run": child["request"]["context"]["selected"]["run_id"],
+                "create_job": child["job_id"],
+            }
+        )
     if child["kind"] == "graph.ai.propose":
         return "/builder?" + urlencode({"graph_job": child["job_id"]})
     if child["kind"] == "detection.ai.propose":
@@ -76,6 +83,22 @@ def result(
     if child["kind"] == "run.assistance.prepare":
         receipt = service.assistance_runs.read(child["job_id"])["result"]
         return {**receipt, "step_id": step["step_id"]} if receipt is not None else None
+    if child["kind"] == "detection.ai.create":
+        envelope = service.detection_create.read(child["job_id"])
+        receipt, report = envelope["application"], envelope["evaluation"]
+        if receipt is None:
+            return None
+        return {
+            **receipt,
+            "kind": "detection_created",
+            "step_id": step["step_id"],
+            "native_path": detection_path(receipt["run_id"], receipt["candidate_id"]),
+            "observed_count": report["source"]["observed_count"],
+            "evidence_count": report["source"]["evidence_count"],
+            "match_count": report["result"]["match_count"],
+            "state": report["result"]["state"],
+            "backend_executed": report["backend"]["executed"],
+        }
     if step["capability_id"] == GRAPH:
         receipt = service.graph_ai.read(child["job_id"])["application"]
         if receipt is None:
@@ -176,6 +199,8 @@ def active(
     service: AssistanceContext, child: Mapping[str, Any], step: Mapping[str, Any]
 ) -> Mapping[str, Any]:
     actual = child
+    if child["kind"] == "detection.ai.create":
+        actual = service.detection_create.read(child["job_id"])["application_job"] or child
     if child["kind"] == "run.assistance.prepare":
         for key, kind in (
             ("run_job_id", "scenario.run"),

@@ -56,7 +56,8 @@ def _original_child(
         if (
             previous["state"] != "interrupted"
             or child["kind"] != previous["kind"]
-            or child["kind"] not in {"detection.ai.propose", "detection.ai.apply"}
+            or child["kind"]
+            not in {"detection.ai.propose", "detection.ai.apply", "detection.ai.create.apply"}
             or {key: value for key, value in child["request"].items() if key != "_submission"}
             != expected
             or child["request"]["_submission"]["submission_id"] != identifier
@@ -157,11 +158,46 @@ def publication_guard(
         or not isinstance(reserved, dict)
     ):
         raise ProductStoreError("The assistance child is stopped or was not reserved.")
-    if kind == "detection.ai.apply":
+    if kind in {"detection.ai.apply", "detection.ai.create.apply"}:
         proposal = job_at(store, connection, document["proposal_job_id"])
         require_active(store, connection, proposal)
         if proposal["request"].get("assistance_turn") != binding:
             raise ProductStoreError("Assistance application has a different proposal lineage.")
+        if kind == "detection.ai.create.apply":
+            expected = {
+                "proposal_job_id": proposal["job_id"],
+                "decision": proposal["progress"].get("decision"),
+                "assistance_turn": binding,
+            }
+            identifier = str(
+                uuid.uuid5(
+                    uuid.UUID(proposal["request"]["submitted_request"]["submission_id"]),
+                    "initial-source-application",
+                )
+            )
+            original = _original_child(
+                store,
+                connection,
+                {
+                    "job_id": "job-" + uuid.UUID(document["_submission"]["submission_id"]).hex,
+                    "kind": kind,
+                    "request": document,
+                },
+            )
+            if (
+                proposal["kind"] != "detection.ai.create"
+                or proposal["progress"].get("stopped")
+                or (expected["decision"] or {}).get("decision") != "accept"
+                or {
+                    key: value for key, value in original["request"].items() if key != "_submission"
+                }
+                != expected
+                or original["request"]["_submission"]["submission_id"] != identifier
+                or original["request"]["_submission"]["intent_digest"] != content_hash(expected)
+            ):
+                raise ProductStoreError(
+                    "Initial source application differs from its active reviewed decision."
+                )
         return
     if kind == "detection.ai.propose" and document.get("retry_of_job_id"):
         original = _original_child(
@@ -184,7 +220,7 @@ def publication_guard(
         raise ProductStoreError("Assistance child differs from its reserved intent.")
     identity = (
         document.get("context_digest")
-        if kind in {"graph.ai.propose", "run.assistance.prepare"}
+        if kind in {"graph.ai.propose", "run.assistance.prepare", "detection.ai.create"}
         else (
             document.get("candidate_id")
             if kind == "detection.ai.propose"

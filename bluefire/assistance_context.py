@@ -11,6 +11,7 @@ from .assistance_runs import AssistanceRunJobs
 from .config import AIConfig
 from .contracts import ScenarioDefinition
 from .detection_ai_jobs import DetectionAIJobs
+from .detection_create_jobs import DetectionCreateJobs
 from .detection_evaluations import _source, _source_binding
 from .detection_lab import DetectionLabService
 from .graph_ai_jobs import GraphAIJobs
@@ -26,6 +27,7 @@ class AssistanceContext(Protocol):
 
     detection_lab: DetectionLabService
     detection_ai: DetectionAIJobs
+    detection_create: DetectionCreateJobs
     graph_ai: GraphAIJobs
     assistance_runs: AssistanceRunJobs
     method_comparison: MethodComparisonJobs

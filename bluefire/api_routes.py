@@ -579,6 +579,26 @@ class APIRoutes:
             )
             return False, None
 
+    def _detection_create_request(self, path: str) -> tuple[str, str | None] | None:
+        prefix = f"{API_PREFIX}/ai/detection-create-jobs/"
+        if not path.startswith(prefix):
+            return None
+        if not self._management_query_free():
+            return "", None
+        parts = path[len(prefix) :].split("/")
+        if (
+            len(parts) not in {1, 2}
+            or not _JOB_ID.fullmatch(parts[0])
+            or (len(parts) == 2 and parts[1] not in {"validate", "review"})
+        ):
+            self._error(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_job_id",
+                "Initial source job identifier is invalid.",
+            )
+            return "", None
+        return parts[0], parts[1] if len(parts) == 2 else None
+
     def _graph_job_request(self, path: str) -> tuple[str, str | None] | None:
         prefix = f"{API_PREFIX}/ai/graph-jobs/"
         if not path.startswith(prefix):

@@ -98,6 +98,12 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/source_intake_publication.py",
         "bluefire/ai.py",
         "bluefire/ai_drafts.py",
+        "bluefire/ai_detection_create.py",
+        "bluefire/detection_create_candidate.py",
+        "bluefire/detection_create_context.py",
+        "bluefire/detection_create_jobs.py",
+        "bluefire/detection_create_view.py",
+        "bluefire/product_store_detection_create.py",
         "bluefire/ai_run_inspection.py",
         "bluefire/assistance_runs.py",
         "bluefire/assistance_run_context.py",
@@ -466,6 +472,12 @@ def test_live_source_audit_round_trips_locked_structural_validator() -> None:
 @pytest.mark.parametrize(
     "relative",
     [
+        "bluefire/ai_detection_create.py",
+        "bluefire/detection_create_candidate.py",
+        "bluefire/detection_create_context.py",
+        "bluefire/detection_create_jobs.py",
+        "bluefire/detection_create_view.py",
+        "bluefire/product_store_detection_create.py",
         "bluefire/ai_run_inspection.py",
         "bluefire/assistance_runs.py",
         "bluefire/assistance_run_context.py",
@@ -519,6 +531,12 @@ def test_containment_owner_remains_pinned_without_new_process_launches(
 @pytest.mark.parametrize(
     "relative",
     [
+        "bluefire/ai_detection_create.py",
+        "bluefire/detection_create_candidate.py",
+        "bluefire/detection_create_context.py",
+        "bluefire/detection_create_jobs.py",
+        "bluefire/detection_create_view.py",
+        "bluefire/product_store_detection_create.py",
         "bluefire/api_context.py",
         "bluefire/api_routes.py",
         "bluefire/runner_durable_result.py",

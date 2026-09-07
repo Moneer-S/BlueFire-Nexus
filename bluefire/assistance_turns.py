@@ -8,7 +8,7 @@ from http import HTTPStatus
 from typing import Any, Mapping
 from urllib.parse import urlencode
 
-from .ai_assistance import COMPARE, REVISE, message_text, suggest_plan
+from .ai_assistance import COMPARE, CREATE, REVISE, message_text, suggest_plan
 from .ai_wire import AIProviderCancelled, AIProviderError
 from .application_errors import APIError
 from .assistance_context import LIMITATIONS, AssistanceContext
@@ -18,6 +18,7 @@ from .assistance_run_context import CAPABILITY as RUN
 from .assistance_run_context import selection as run_selection
 from .config import AIProviderConfig, AIProviderKind, ConfigError
 from .detection_ai_jobs import _text
+from .detection_create_context import selection as create_selection
 from .graph_ai_context import GRAPH
 from .graph_ai_context import selection as graph_selection
 from .job_runtime import JobCancelled, JobContext, JobResult, JobRuntimeError
@@ -34,7 +35,7 @@ def fail(message: str) -> APIError:
 def submitted(request: Mapping[str, Any]) -> Mapping[str, Any]:
     """Normalize additive selection syntax without changing the durable wire request."""
     chosen = request.get("selection")
-    if chosen is None or chosen.get("kind") in {"graph", "saved_graph"}:
+    if chosen is None or chosen.get("kind") in {"graph", "saved_graph", "run_detection"}:
         return request
     return {
         **{key: value for key, value in request.items() if key != "selection"},
@@ -43,7 +44,13 @@ def submitted(request: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def is_graph(request: Mapping[str, Any]) -> bool:
-    return bool(request.get("selection", {}).get("kind") in {"graph", "saved_graph"})
+    return bool(
+        request.get("selection", {}).get("kind") in {"graph", "saved_graph", "run_detection"}
+    )
+
+
+def is_creation(request: Mapping[str, Any]) -> bool:
+    return bool(request.get("selection", {}).get("kind") == "run_detection")
 
 
 def is_saved_run(request: Mapping[str, Any]) -> bool:
@@ -77,7 +84,11 @@ class ExperimentAssistance:
             (
                 self.service.assistance_runs.context(request["selection"])
                 if is_saved_run(request)
-                else self.service.graph_ai.context(request["selection"])
+                else (
+                    self.service.detection_create.context(request["selection"])
+                    if is_creation(request)
+                    else self.service.graph_ai.context(request["selection"])
+                )
             )
             if is_graph(request)
             else self.context(request["run_id"], request["candidate_id"])
@@ -110,9 +121,15 @@ class ExperimentAssistance:
             chosen = request["selection"]
             if not isinstance(chosen, Mapping):
                 raise fail("Select a typed graph or detector context.")
-            if chosen.get("kind") in {"graph", "saved_graph"}:
+            if chosen.get("kind") in {"graph", "saved_graph", "run_detection"}:
                 try:
-                    (graph_selection if chosen["kind"] == "graph" else run_selection)(chosen)
+                    (
+                        graph_selection
+                        if chosen["kind"] == "graph"
+                        else (
+                            create_selection if chosen["kind"] == "run_detection" else run_selection
+                        )
+                    )(chosen)
                 except ProductStoreError as exc:
                     raise fail(str(exc)) from exc
             elif chosen.get("kind") == "detection":
@@ -198,7 +215,11 @@ class ExperimentAssistance:
                     (
                         self.service.assistance_runs.context(request["selection"])
                         if is_saved_run(request)
-                        else self.service.graph_ai.context(request["selection"])
+                        else (
+                            self.service.detection_create.context(request["selection"])
+                            if is_creation(request)
+                            else self.service.graph_ai.context(request["selection"])
+                        )
                     )
                     if is_graph(request)
                     else self.context(request["run_id"], request["candidate_id"])
@@ -210,6 +231,8 @@ class ExperimentAssistance:
                 ):
                     raise fail("The selected objects changed after the message was prepared.")
                 document["context"] = context
+                if is_creation(request) and not context["capabilities"][0]["available"]:
+                    raise fail(context["capabilities"][0]["reason"])
                 if request["autonomy"] == "assist" or (
                     is_graph(request) and request["autonomy"] == "auto"
                 ):
@@ -375,9 +398,14 @@ class ExperimentAssistance:
         self, parent: Mapping[str, Any], request: Mapping[str, Any], *, recovery: bool = False
     ) -> None:
         saved_run = is_saved_run(request)
-        kind = "run.assistance.prepare" if saved_run else "graph.ai.propose"
+        creation = is_creation(request)
+        kind = (
+            "detection.ai.create"
+            if creation
+            else "run.assistance.prepare" if saved_run else "graph.ai.propose"
+        )
         for step in parent["progress"].get("plan", []):
-            if step["capability_id"] != (RUN if saved_run else GRAPH):
+            if step["capability_id"] != (CREATE if creation else RUN if saved_run else GRAPH):
                 raise fail("The graph context cannot dispatch detector operations.")
             child = child_job(self.service, parent, step)
             if child is not None:
@@ -404,7 +432,11 @@ class ExperimentAssistance:
                     "request": child_request,
                 },
             )
-            (self.service.assistance_runs if saved_run else self.service.graph_ai).submit(
+            (
+                self.service.detection_create
+                if creation
+                else self.service.assistance_runs if saved_run else self.service.graph_ai
+            ).submit(
                 child_request,
                 _assistance_turn={"parent_job_id": parent["job_id"], "step_id": step["step_id"]},
             )
@@ -415,6 +447,17 @@ class ExperimentAssistance:
         """Expose fixed remediation, never exception text, paths or arbitrary details."""
         parent = self._job(parent_id)
         chosen = submitted(parent["request"]["submitted_request"])
+        if is_creation(chosen):
+            return {
+                "code": "source_review_required",
+                "message": "Review the verified source and native initial rule proposal; a changed source requires a new turn.",
+                "profile_id": None,
+                "action": {
+                    "label": "Review initial rule source",
+                    "native_path": "/detection-lab?"
+                    + urlencode({"run": chosen["selection"]["run_id"], "create": "1"}),
+                },
+            }
         if is_saved_run(chosen):
             return {
                 "code": "native_review_required",
@@ -667,6 +710,8 @@ class ExperimentAssistance:
                 continue
             if child["kind"] == "run.assistance.prepare":
                 self.service.assistance_runs.cancel(child["job_id"])
+            elif child["kind"] == "detection.ai.create":
+                self.service.detection_create.cancel(child["job_id"])
             elif child["kind"] == "graph.ai.propose":
                 self.service.graph_ai.cancel(child["job_id"])
             elif child["kind"] == "replay.ai.propose":
@@ -783,6 +828,13 @@ class ExperimentAssistance:
                         continue
                     current = active(self.service, child, step)
                     view["active_child"] = current
+                    if child["kind"] == "detection.ai.create":
+                        from .detection_create_view import apply_view
+
+                        apply_view(
+                            self.service.detection_create.read(child["job_id"]), view, current
+                        )
+                        break
                     if child["kind"] == "run.assistance.prepare":
                         from .assistance_run_view import apply_view
 

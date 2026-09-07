@@ -85,6 +85,7 @@ from .contracts import (
     load_scenario,
 )
 from .detection_ai_jobs import DetectionAIJobs
+from .detection_create_jobs import DetectionCreateJobs
 from .detection_lab import DetectionLabService
 from .graph_ai_jobs import GraphAIJobs
 from .job_runtime import (
@@ -270,6 +271,14 @@ class BlueFireService(RunnerManagementServiceMixin):
             access=self._provider_access,
         )
         self.method_comparison = MethodComparisonJobs(self)
+        self.detection_create = DetectionCreateJobs(
+            lab=self.detection_lab,
+            controller=self.job_controller,
+            ai_config=self._runtime_ai,
+            access=self._provider_access,
+            configuration_lock=self._runtime_configuration_lock,
+            catalog=self._action_catalog_boundary,
+        )
         self.graph_ai = GraphAIJobs(
             store=self.product_store,
             catalog=self._action_catalog_boundary,
@@ -282,6 +291,7 @@ class BlueFireService(RunnerManagementServiceMixin):
         self.assistance = ExperimentAssistance(self)
         self.detection_ai.on_application = self.assistance.application_committed
         self.graph_ai.on_application = self.assistance.application_committed
+        self.detection_create.on_application = self.assistance.application_committed
         self.cleanup_recovery = self._recover_interrupted_cleanup()
         self.seed_counts = seed_product_metadata(
             self.product_store,
@@ -814,6 +824,38 @@ class BlueFireService(RunnerManagementServiceMixin):
                 "assistance_run_review_refused",
                 "The exact native preparation is no longer reviewable. Review its retained decision, parent status and current configuration.",
             ) from exc
+
+    def detection_creation_source(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        self.detection_lab._fields(
+            request, required={"run_id"}, optional=set(), context="initial detector source"
+        )
+        return self.detection_create.source(request["run_id"])
+
+    def detection_creation_context(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        self.detection_lab._fields(
+            request,
+            required={
+                "run_id",
+                "source_binding_digest",
+                "behavior_id",
+                "target_language",
+                "case_role",
+            },
+            optional=set(),
+            context="initial detector context",
+        )
+        return self.detection_create.context({"kind": "run_detection", **request})
+
+    def detection_create_job(self, job_id: str) -> Mapping[str, Any]:
+        return self.detection_create.read(job_id)
+
+    def validate_detection_create(
+        self, job_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        return self.detection_create.validate(job_id, request)
+
+    def review_detection_create(self, job_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self.detection_create.review(job_id, request)
 
     def graph_ai_job(self, job_id: str) -> Mapping[str, Any]:
         return self.graph_ai.read(job_id)
@@ -1801,6 +1843,8 @@ class BlueFireService(RunnerManagementServiceMixin):
                     "replay.ai.propose",
                     "replay.comparison.recover",
                     "graph.ai.propose",
+                    "detection.ai.create",
+                    "detection.ai.create.apply",
                     "run.assistance.prepare",
                     "run.evidence.inspect",
                     "assistance.turn",
@@ -1846,6 +1890,13 @@ class BlueFireService(RunnerManagementServiceMixin):
                 HTTPStatus.CONFLICT,
                 "assistance_run_retry_refused",
                 "This run belongs to a retained Assistant operation. Reopen that turn to recover inspection only; starting another experiment requires a new native request and fresh Execute approval.",
+            )
+
+        if source.get("kind") in {"detection.ai.create", "detection.ai.create.apply"}:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "detection_creation_retry_native_review",
+                "Reopen the retained initial source review. Retry its exact accepted decision to recover application; no model request is repeated.",
             )
 
         if source.get("kind") in {"detection.ai.propose", "detection.ai.apply"}:
@@ -2414,6 +2465,14 @@ class BlueFireService(RunnerManagementServiceMixin):
             return self._signal_job(job_id, "cancel")
         if job.get("kind") == "replay.ai.propose":
             return self.method_comparison.cancel(job_id)
+        if job.get("kind") in {"detection.ai.create", "detection.ai.create.apply"}:
+            proposal_id = (
+                job_id
+                if job["kind"] == "detection.ai.create"
+                else job["request"]["proposal_job_id"]
+            )
+            self.detection_create.cancel(proposal_id)
+            return self.product_store.get_job(job_id)
         if job.get("kind") == "graph.ai.propose":
             return dict(self.graph_ai.cancel(job_id)["job"])
         if job.get("kind") == "run.assistance.prepare" or job["request"].get("assistance_run"):

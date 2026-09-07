@@ -440,6 +440,23 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                         lambda: self.platform_server.service.assistance_run_job(run_preparation[0])
                     )
             return
+        if path in {
+            f"{API_PREFIX}/assistance/detection-source",
+            f"{API_PREFIX}/assistance/detection-context",
+        }:
+            if self._routes._management_query_free():
+                self._method_not_allowed("POST")
+            return
+        creation = self._routes._detection_create_request(path)
+        if creation is not None:
+            if creation[0]:
+                if creation[1]:
+                    self._method_not_allowed("POST")
+                else:
+                    self._dispatch(
+                        lambda: self.platform_server.service.detection_create_job(creation[0])
+                    )
+            return
         graph_job = self._routes._graph_job_request(path)
         if graph_job is not None:
             if graph_job[0]:
@@ -901,6 +918,37 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     self._dispatch(
                         lambda: self.platform_server.service.review_assistance_run(
                             run_preparation[0], body
+                        )
+                    )
+                else:
+                    self._method_not_allowed("GET")
+            return
+        if path in {
+            f"{API_PREFIX}/assistance/detection-source",
+            f"{API_PREFIX}/assistance/detection-context",
+        }:
+            if self._routes._management_query_free():
+                self._dispatch(
+                    lambda: (
+                        self.platform_server.service.detection_creation_source(body)
+                        if path.endswith("/detection-source")
+                        else self.platform_server.service.detection_creation_context(body)
+                    )
+                )
+            return
+        creation = self._routes._detection_create_request(path)
+        if creation is not None:
+            if creation[0]:
+                if creation[1]:
+                    self._dispatch(
+                        lambda: (
+                            self.platform_server.service.validate_detection_create(
+                                creation[0], body
+                            )
+                            if creation[1] == "validate"
+                            else self.platform_server.service.review_detection_create(
+                                creation[0], body
+                            )
                         )
                     )
                 else:

@@ -73,6 +73,26 @@ class StubService:
         self.calls.append(("review_assistance_run", job_id, request))
         return {"job": {"job_id": job_id}}
 
+    def detection_creation_source(self, request):
+        self.calls.append(("detection_creation_source", request))
+        return {"run_id": request.get("run_id")}
+
+    def detection_creation_context(self, request):
+        self.calls.append(("detection_creation_context", request))
+        return {"selected": {"kind": "run_detection", **request}}
+
+    def detection_create_job(self, job_id):
+        self.calls.append(("detection_create_job", job_id))
+        return {"job": {"job_id": job_id, "kind": "detection.ai.create"}}
+
+    def validate_detection_create(self, job_id, request):
+        self.calls.append(("validate_detection_create", job_id, request))
+        return {"validation": {"valid": True}}
+
+    def review_detection_create(self, job_id, request):
+        self.calls.append(("review_detection_create", job_id, request))
+        return {"decision": request}
+
     def graph_ai_job(self, job_id: str):
         self.calls.append(("graph_ai_job", job_id))
         return {"job": {"job_id": job_id, "kind": "graph.ai.propose"}}
