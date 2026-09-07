@@ -18,7 +18,7 @@ export interface GraphEnvelope { job: RunJob; proposal: GraphProposal | null; ap
 export type GraphDecision = { decision: "reject"; proposal_digest: string }
   | { decision: "accept"; proposal_digest: string; reviewed_digest: string; scenario: Scenario };
 export interface GraphValidation { proposal_digest: string; reviewed_digest: string; scenario: Scenario; validation: { valid: true } }
-export interface GraphEditorDraft { scenario: Scenario; setScenario: (value: Scenario) => void; dirty: boolean; controls: ReactNode; details: ReactNode; readOnly: boolean; statusLabel?: string; validated?: boolean }
+export interface GraphEditorDraft { scenario: Scenario; setScenario: (value: Scenario) => void; dirty: boolean; controls: ReactNode; details: ReactNode; readOnly: boolean; statusLabel?: string; validated?: boolean; description?: string }
 export const validGraphJob = (value: string) => /^job-[0-9a-f]{32}$/.test(value);
 const digest = (value: unknown) => typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
 export function graphDocument(value: Scenario): Scenario {

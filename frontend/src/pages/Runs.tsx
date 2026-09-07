@@ -7,6 +7,7 @@ import { Link, useLocation, useNavigate, useParams, useSearchParams } from "reac
 import { api, ApiError, DEMO_MODE } from "../lib/api";
 import { comparisonLink, detectionLink } from "../lib/run-handoffs";
 import { methodComparisonLink } from "../lib/method-comparison";
+import { receiverControlLink } from "../lib/receiver-navigation";
 import { configurationForMode, hasLocalExecuteReview } from "../lib/run-configuration";
 import { RunConfigurationPanel, LocalExecuteReview } from "../components/RunConfiguration";
 import { ExecuteOnboarding, GUIDED_EXECUTE_PROFILE_ID, GUIDED_EXECUTE_SCENARIO_ID, guidedExecuteConfiguration, isExecuteRunnerReady } from "../components/ExecuteOnboarding";
@@ -32,7 +33,7 @@ const activeJobInventoryUnavailableNotice = "Active-job inventory is unavailable
 const durableJobId = /^job-[0-9a-f]{32}$/;
 
 function isRetryableInterruptedJob(job: RunJob | null | undefined): boolean {
-  return job?.schema_version === "bluefire.job.v1" && ["scenario.run", "scenario.replay"].includes(job.kind) && job.state === "interrupted" && !job.request?.method_comparison && !job.request?.assistance_run;
+  return job?.schema_version === "bluefire.job.v1" && ["scenario.run", "scenario.replay"].includes(job.kind) && job.state === "interrupted" && !job.request?.method_comparison && !job.request?.assistance_run && !job.request?.receiver_defense;
 }
 
 function readStoredActiveJobId(): string | null {
@@ -350,6 +351,7 @@ function NativeRunsPage() {
   return <div className="page runs-page">
     <PageHeader eyebrow="Run control" title={linkedJobId ? "Follow this run" : "Review and run"} description={linkedJobId ? "Review its saved plan, follow progress, and inspect the result." : "Choose your environment, run preflight, and review what will happen."} actions={<div className="view-toggle" role="tablist" aria-label="Run workspace views"><button role="tab" aria-selected="true">Configure & live</button><button role="tab" aria-selected="false" onClick={() => activeRun && navigate(runReviewPath(activeRun.run_id))} disabled={!activeRun}>Review latest</button></div>} />
     {notice ? <Callout tone={runMutation.isError || approvalMutation.isError || runnerLifecycleMutation.isError || controlMutation.isError || activeJobsQuery.isError || jobQuery.isError || eventsQuery.isError || resultQuery.isError ? "danger" : preflight && !preflight.ready ? "warning" : "info"} title="Control-plane status">{notice}</Callout> : null}
+    {receiverControlLink(activeJob) ? <Callout title="Part of your receiver control test"><p>Return to the test to inspect the receiver policy, measured outcome and cleanup before the next phase.</p><Link className="button button-secondary button-medium" to={receiverControlLink(activeJob)!}>Return to receiver control test</Link></Callout> : null}
     {assistanceRunLink(activeJob) ? <Callout title="Part of your Assistant experiment"><p>This run belongs to the reviewed saved graph. Its evidence inspection and recovery stay with that operation.</p><Link className="button button-secondary button-medium" to={assistanceRunLink(activeJob)!}>Return to Assistant run and evidence</Link>{activeJob && terminalJobStates.has(activeJob.state) && activeJob.state !== "completed" ? <p>Review this run and its cleanup before starting new work. Evidence recovery does not repeat execution.</p> : null}</Callout> : null}
     {methodComparisonLink(activeJob) ? <Callout title="Part of your method test"><p>This replay belongs to the reviewed comparison workflow. Its saved rule will be evaluated against both runs.</p><Link className="button button-secondary button-medium" to={methodComparisonLink(activeJob)!}>Return to method test and results</Link>{activeJob && terminalJobStates.has(activeJob.state) && activeJob.state !== "completed" ? <p>Inspect the retained result and recover comparison work there. This run will not be replayed by a comparison retry.</p> : null}</Callout> : null}
     <>

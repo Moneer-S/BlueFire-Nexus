@@ -1,4 +1,5 @@
 import type { AssistanceRunEnvelope, RunPreparationDecision, SavedGraphSelection } from "./run-assistance";
+import type { ReceiverContext, ReceiverContextRequest, ReceiverDecision, ReceiverDefenseEnvelope, ReceiverPhase, ReceiverTestList } from "./receiver-defense-types";
 import type { RunDetectionSelection, DetectionCreationSource, DetectionCreationEnvelope, DetectionCreationDecision, DetectionCreationValidation } from "./detection-creation";
 import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionRunEvaluation, DetectionCaseRole, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
 import { sameJson } from "./replay-review";
@@ -289,6 +290,30 @@ export function buildReplayPayload(options: ReplayPayloadOptions): Record<string
 }
 
 export const api = {
+  async receiverTests(cursor?: string): Promise<ReceiverTestList> {
+    if (DEMO_MODE) return { schema_version: "bluefire.receiver-defense-list.v1", jobs: [], truncated: false, next_cursor: null };
+    return request(`/receiver-defense/jobs${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`);
+  },
+  async receiverContext(body: ReceiverContextRequest): Promise<ReceiverContext> {
+    if (DEMO_MODE) throw new Error("Receiver control tests require the installed product and an owned Linux lab.");
+    return request("/receiver-defense/context", { method: "POST", body: JSON.stringify(body) });
+  },
+  async createReceiverTest(body: ReceiverContextRequest & { submission_id: string; context_digest: string }): Promise<ReceiverDefenseEnvelope> {
+    if (DEMO_MODE) throw new Error("Receiver control tests require the installed product.");
+    return request("/receiver-defense/jobs", { method: "POST", body: JSON.stringify(body) });
+  },
+  async receiverTest(id: string): Promise<ReceiverDefenseEnvelope> {
+    if (DEMO_MODE) throw new Error("Receiver control tests require the installed product.");
+    return request(`/receiver-defense/jobs/${encodeURIComponent(id)}`);
+  },
+  async prepareReceiver(id: string, body: { submission_id: string; phase: ReceiverPhase; reviewed_by: string }): Promise<ReceiverDefenseEnvelope> {
+    if (DEMO_MODE) throw new Error("Demo mode cannot prepare a receiver.");
+    return request(`/receiver-defense/jobs/${encodeURIComponent(id)}/prepare`, { method: "POST", body: JSON.stringify(body) });
+  },
+  async reviewReceiver(id: string, body: ReceiverDecision): Promise<ReceiverDefenseEnvelope> {
+    if (DEMO_MODE) throw new Error("Demo mode cannot accept a receiver run review.");
+    return request(`/receiver-defense/jobs/${encodeURIComponent(id)}/review`, { method: "POST", body: JSON.stringify(body) });
+  },
   async detectionCreationSource(runId: string): Promise<DetectionCreationSource> {
     if (DEMO_MODE) throw new ApiError("Detection creation requires a saved run in the connected local service.", "demo_assistance_refused", undefined, 409);
     return request("/assistance/detection-source", { method: "POST", body: JSON.stringify({ run_id: runId }) });

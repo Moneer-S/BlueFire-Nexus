@@ -13,6 +13,7 @@ import { ReplayParameterEditor } from "../components/ReplayParameterEditor";
 import { CanonicalPlanReview } from "../components/CanonicalPlanReview";
 import { DetectorEvaluationComparison } from "../components/DetectorEvaluationComparison";
 import { MethodComparison } from "../components/MethodComparison";
+import { ReceiverDefensePage } from "./ReceiverDefense";
 import type { AutonomyLevel, ComparisonResponse, PreflightReport, RunConfiguration, RunRecord, Scenario } from "../types";
 import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, LoadingState, PageHeader, Panel, PanelHeader, formatDate, sentence } from "../components/Primitives";
 
@@ -38,6 +39,11 @@ interface ReplayPreflightAttempt {
 }
 
 export function ComparePage() {
+  const [params] = useSearchParams();
+  return params.has("receiver_job") || params.get("receiver") === "1" ? <ReceiverDefensePage /> : <ComparisonWorkspace />;
+}
+
+function ComparisonWorkspace() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const submissionRef = useRef<ReplayAttempt | undefined>(undefined);
@@ -225,6 +231,7 @@ export function ComparePage() {
   const execute = source?.mode === "execute"; const reviewReady = executeReviewReady(replayPreflight) && (strategy === "from_node" || Boolean(preparation)) && variantReady;
   return <div className="page compare-page"><PageHeader eyebrow="Replay & compare" title="Measure what changed" description="Compare what happened, inspect the evidence, and prepare the next run." actions={<Button variant="secondary" onClick={() => runsQuery.refetch()}><RotateCcw/>Refresh history</Button>} />
     {runsQuery.data.unavailable_run_count ? <Callout tone="warning" title="Unavailable run records excluded">{runsQuery.data.unavailable_run_count} in-flight, interrupted, or integrity-failed run record{runsQuery.data.unavailable_run_count === 1 ? " is" : "s are"} unavailable for replay and comparison. Refresh after finalization or recovery completes.</Callout> : null}
+    <p><Link className="button button-secondary button-medium" to="/compare?receiver=1">Test a lab receiver control</Link></p>
     <MethodComparison sourceId={sourceId} runs={runsQuery.data.runs} catalog={catalogQuery.data} />
     {compareMutation.isError && compareMutation.variables?.generation === comparisonGeneration.current ? <ErrorState title="Comparison unavailable" error={compareMutation.error} /> : comparison ? <div className="comparison-workspace" ref={resultsRef} tabIndex={-1} role="region" aria-label="Comparison results"><ComparisonResult comparison={comparison} /><DetectorEvaluationComparison runIds={comparison.summaries.map((run) => run.run_id)} /></div> : null}
     <details className="compare-setup" open={!comparison}><summary>{comparison ? "Choose different runs or prepare a replay" : "Choose runs and prepare a replay"}</summary>
