@@ -162,3 +162,15 @@ it("follows the accepted run through inspection even when preparation was interr
   expect(get.mock.calls.length).toBeGreaterThanOrEqual(2);
   expect(screen.getByRole("heading", { name: "Not enough evidence" })).toBeVisible();
 });
+
+it("labels runtime proposal review separately from Execute authorization", async () => {
+  const value = ready();
+  value.decision = { decision: "accept", preparation_digest: digest };
+  value.review_ready = false;
+  value.run_job = { schema_version: "bluefire.job.v1", job_id: `job-${"e".repeat(32)}`, kind: "scenario.run", state: "awaiting_approval", progress: { approval_kind: "ai_proposal" }, request: {
+    _run_submission_request: value.preparation!.run_request, assistance_run: { operation_job_id: preparationJob, preparation_digest: digest } } };
+  vi.spyOn(api, "assistanceRun").mockResolvedValue(value);
+  mount(true);
+  expect(await screen.findByRole("link", { name: "Review runtime proposal" })).toHaveAttribute("href", `/runs?job=${value.run_job.job_id}`);
+  expect(screen.queryByRole("link", { name: "Review Execute approval" })).not.toBeInTheDocument();
+});

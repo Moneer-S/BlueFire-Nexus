@@ -268,3 +268,13 @@ it("does not replay setup after a freshly validated stored job later disappears"
   expect(config().mode).toBe("simulate");
   expect(nonReads()).toEqual([]);
 });
+
+it("keeps an interrupted Assistant run with its operation instead of offering a replacement", async () => {
+  const operation = `job-${"e".repeat(32)}`;
+  const job: RunJob = { ...savedJob, state: "interrupted", approval_request: null, request: { ...savedJob.request, assistance_run: { operation_job_id: operation, preparation_digest: "bound-preparation" } }, progress: { phase: "interrupted" } };
+  const view = mount(`/runs?job=${job.job_id}`, "simulate", job);
+  expect(await screen.findByRole("link", { name: "Return to Assistant run and evidence" })).toHaveAttribute("href", `#/runs?assistance_job=${operation}`);
+  expect(screen.queryByRole("button", { name: "Retry as replacement" })).not.toBeInTheDocument();
+  expect(screen.getByText("Review this run and its cleanup before starting new work. Evidence recovery does not repeat execution.")).toBeVisible();
+  expect(view.fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/retry"))).toEqual([]);
+});

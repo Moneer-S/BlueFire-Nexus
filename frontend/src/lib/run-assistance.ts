@@ -97,3 +97,9 @@ export function storeRunDecision(jobId: string, value: OperatorRunDecision): boo
     return sameJson(readRunDecision(jobId), value);
   } catch { return false; }
 }
+
+export function assistanceRunLink(job?: RunJob | null): string | undefined {
+  const binding = job?.request?.assistance_run;
+  if (!binding || typeof binding !== "object" || !("operation_job_id" in binding) || typeof binding.operation_job_id !== "string" || !/^job-[0-9a-f]{32}$/.test(binding.operation_job_id)) return;
+  return `/runs?assistance_job=${encodeURIComponent(binding.operation_job_id)}`;
+}

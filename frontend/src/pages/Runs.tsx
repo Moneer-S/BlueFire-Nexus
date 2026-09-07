@@ -1,3 +1,4 @@
+import { assistanceRunLink } from "../lib/run-assistance";
 import { AssistedRunReview, SavedGraphRunSetup } from "./AssistedRun";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, AlertTriangle, CircleStop, Clock3, FileSearch, Gauge, ListTree, Pause, Play, RotateCcw, ShieldCheck, Sparkles, TerminalSquare } from "lucide-react";
@@ -31,7 +32,7 @@ const activeJobInventoryUnavailableNotice = "Active-job inventory is unavailable
 const durableJobId = /^job-[0-9a-f]{32}$/;
 
 function isRetryableInterruptedJob(job: RunJob | null | undefined): boolean {
-  return job?.schema_version === "bluefire.job.v1" && ["scenario.run", "scenario.replay"].includes(job.kind) && job.state === "interrupted" && !job.request?.method_comparison;
+  return job?.schema_version === "bluefire.job.v1" && ["scenario.run", "scenario.replay"].includes(job.kind) && job.state === "interrupted" && !job.request?.method_comparison && !job.request?.assistance_run;
 }
 
 function readStoredActiveJobId(): string | null {
@@ -349,6 +350,7 @@ function NativeRunsPage() {
   return <div className="page runs-page">
     <PageHeader eyebrow="Run control" title={linkedJobId ? "Follow this run" : "Review and run"} description={linkedJobId ? "Review its saved plan, follow progress, and inspect the result." : "Choose your environment, run preflight, and review what will happen."} actions={<div className="view-toggle" role="tablist" aria-label="Run workspace views"><button role="tab" aria-selected="true">Configure & live</button><button role="tab" aria-selected="false" onClick={() => activeRun && navigate(runReviewPath(activeRun.run_id))} disabled={!activeRun}>Review latest</button></div>} />
     {notice ? <Callout tone={runMutation.isError || approvalMutation.isError || runnerLifecycleMutation.isError || controlMutation.isError || activeJobsQuery.isError || jobQuery.isError || eventsQuery.isError || resultQuery.isError ? "danger" : preflight && !preflight.ready ? "warning" : "info"} title="Control-plane status">{notice}</Callout> : null}
+    {assistanceRunLink(activeJob) ? <Callout title="Part of your Assistant experiment"><p>This run belongs to the reviewed saved graph. Its evidence inspection and recovery stay with that operation.</p><Link className="button button-secondary button-medium" to={assistanceRunLink(activeJob)!}>Return to Assistant run and evidence</Link>{activeJob && terminalJobStates.has(activeJob.state) && activeJob.state !== "completed" ? <p>Review this run and its cleanup before starting new work. Evidence recovery does not repeat execution.</p> : null}</Callout> : null}
     {methodComparisonLink(activeJob) ? <Callout title="Part of your method test"><p>This replay belongs to the reviewed comparison workflow. Its saved rule will be evaluated against both runs.</p><Link className="button button-secondary button-medium" to={methodComparisonLink(activeJob)!}>Return to method test and results</Link>{activeJob && terminalJobStates.has(activeJob.state) && activeJob.state !== "completed" ? <p>Inspect the retained result and recover comparison work there. This run will not be replayed by a comparison retry.</p> : null}</Callout> : null}
     <>
       <details className="run-draft-details" open={!linkedJobId}><summary>Experiment setup</summary>{runConfig.mode === "execute" ? <ExecuteOnboarding submissionControls={submissionControls} profile={guidedProfile} seededScenario={guidedScenario} selectedScenario={scenario} config={runConfig} runner={runnerLifecycleQuery.data} runnerPending={runnerLifecycleQuery.isPending} runnerError={runnerLifecycleQuery.error} runnerActionPending={runnerLifecycleMutation.isPending} preflight={preflight} preflightPending={preflightMutation.isPending} preflightDisabled={jobActivityBlocksNewIntent} job={activeJob} approvalReleased={["consumed", "claimed"].includes(String(approvalRequest?.status ?? ""))} run={activeRun} jobSubmissionPending={runMutation.isPending} canCreateJob={canStart} demoMode={DEMO_MODE} onRunnerAction={(action) => runnerLifecycleMutation.mutate(action)} onSelectScenario={selectGuidedScenario} onPreflight={requestPreflight} onCreateJob={() => runMutation.mutate()} onReviewEnvelope={() => scrollToGuideTarget("execute-envelope-review")} onReviewApproval={() => scrollToGuideTarget("durable-execute-approval")} /> : null}
