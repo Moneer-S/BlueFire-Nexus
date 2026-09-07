@@ -13,11 +13,12 @@ import { RunConfigurationPanel, LocalExecuteReview } from "../components/RunConf
 import { ExecuteOnboarding, GUIDED_EXECUTE_PROFILE_ID, GUIDED_EXECUTE_SCENARIO_ID, guidedExecuteConfiguration, isExecuteRunnerReady } from "../components/ExecuteOnboarding";
 import { ProposalReviewWorkspace } from "../components/ProposalReview";
 import { useProduct } from "../state/ProductContext";
+import { useApprovalDeadline } from "../state/useApprovalDeadline";
 import type { AIProposalDecisionResult, AIProposalReview, CatalogResponse, PreflightReport, RunConfiguration, RunEventPage, RunJob, RunRecord, RunStep, Scenario } from "../types";
 import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState, PageHeader, Panel, PanelHeader, formatDate, sentence } from "../components/Primitives";
 
 import { CanonicalPlanReview } from "../components/CanonicalPlanReview";
-import { approvalDeadline, continuationApprovalPreflight, hasUsableStoredApprovalReview } from "../lib/approvalReview";
+import { continuationApprovalPreflight, hasUsableStoredApprovalReview } from "../lib/approvalReview";
 import { settlePendingReplay } from "../lib/replay-submission";
 
 import { cleanupSummary, recordedTargetScope, objectiveLabel, runLabel, runLimitationGroups, stepOutcomeLabel } from "../lib/run-presentation";
@@ -455,41 +456,6 @@ function LiveConsole({ run, job, events, pending, config, approvalPreflight, app
     <div className="console-tabs" role="tablist" aria-label="Run detail views">{(["timeline", "planner", "policy", "runner", "evidence", "detections"] as const).map((item) => <button key={item} role="tab" aria-selected={tab === item} onClick={() => setTab(item)}>{sentence(item)}</button>)}</div>
     <div className="console-detail">{tab === "timeline" ? <Timeline run={run} job={job} events={events} pending={pending} /> : tab === "planner" ? <StructuredPanel value={run?.planner_decisions?.length ? run.planner_decisions : run?.plan} empty="No planner decisions are available." /> : tab === "policy" ? <StructuredPanel value={run?.policy} empty="No policy decisions are available." /> : tab === "runner" ? <RunnerDetail run={run} /> : tab === "evidence" ? <EvidenceDetail run={run} /> : <DetectionDetail run={run} />}</div>
   </Panel>;
-}
-
-function useApprovalDeadline(expiresAt: unknown) {
-  const deadline = approvalDeadline(expiresAt);
-  const [observedAt, setObservedAt] = useState(() => Date.now());
-  const latestObservedAt = useRef(observedAt);
-  const recheck = useCallback(() => {
-    // A backward clock correction must not revive an approval already expired
-    // in this mounted review. The server remains the final clock authority.
-    latestObservedAt.current = Math.max(latestObservedAt.current, Date.now());
-    setObservedAt(latestObservedAt.current);
-    return Number.isFinite(deadline) && deadline > latestObservedAt.current;
-  }, [deadline]);
-  useEffect(() => {
-    let timer: number | undefined;
-    const refresh = () => {
-      window.clearTimeout(timer);
-      if (recheck()) {
-        // One deadline timer, clamped to the browser's signed timer limit.
-        // Long deadlines reschedule only at that bound; no periodic polling.
-        timer = window.setTimeout(refresh, Math.min(deadline - latestObservedAt.current, 2_147_483_647));
-      }
-    };
-    refresh();
-    window.addEventListener("focus", refresh);
-    window.addEventListener("pageshow", refresh);
-    document.addEventListener("visibilitychange", refresh);
-    return () => {
-      window.clearTimeout(timer);
-      window.removeEventListener("focus", refresh);
-      window.removeEventListener("pageshow", refresh);
-      document.removeEventListener("visibilitychange", refresh);
-    };
-  }, [deadline, recheck]);
-  return { valid: Number.isFinite(deadline), current: Number.isFinite(deadline) && deadline > Math.max(observedAt, Date.now()), recheck };
 }
 
 function JobApprovalGate({ job, preflight: ordinaryPreflight, approvalRequest, proposalReview, confirmed, approvedBy, pending, onConfirmed, onApprovedBy, onApprove }: { job: RunJob; preflight?: PreflightReport; approvalRequest: Record<string, unknown> | null; proposalReview?: AIProposalReview; confirmed: boolean; approvedBy: string; pending: boolean; onConfirmed: (confirmed: boolean) => void; onApprovedBy: (identity: string) => void; onApprove: () => void }) {

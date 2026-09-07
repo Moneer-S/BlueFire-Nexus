@@ -1,9 +1,9 @@
 import type { ComponentProps } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { CanonicalPlanReview } from "../src/components/CanonicalPlanReview";
 import { ProposalReviewWorkspace } from "../src/components/ProposalReview";
 import { ProviderSetup } from "../src/components/ProviderSetup";
@@ -90,11 +90,74 @@ it("keeps provider and review presentation stable during typing while checking c
 
     vi.spyOn(Date, "now").mockReturnValue(Date.parse(String(job.approval_request!.expires_at)));
     await user.type(operator, "!");
-    expect(screen.queryByRole("region", { name: "Canonical preflight plan" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Approve and release continuation" })).not.toBeInTheDocument();
-    expect(screen.getByText("Exact continuation review unavailable")).toBeVisible();
+    expect(screen.getByRole("region", { name: "Canonical preflight plan" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Approve and release continuation" })).toBeDisabled();
+    expect(screen.getByText("Approval review expired")).toBeVisible();
     expect(approve).not.toHaveBeenCalled();
   } finally {
     view.unmount(); client.clear();
   }
+});
+
+const deadlineClients: QueryClient[] = [];
+afterEach(() => { deadlineClients.splice(0).forEach((client) => client.clear()); vi.useRealTimers(); });
+async function openTimedContinuation(expiresAt?: string | null) {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2030-01-01T12:00:00Z"));
+  const { job, review } = continuation();
+  job.approval_request!.expires_at = expiresAt === undefined ? new Date(Date.now() + 10_000).toISOString() : expiresAt;
+  const deadline = Date.parse(String(job.approval_request!.expires_at));
+  const approve = vi.spyOn(api, "approveJob");
+  vi.spyOn(api, "job").mockResolvedValue(job);
+  vi.spyOn(api, "proposalReviews").mockResolvedValue({ schema_version: "bluefire.ai-proposal-review-list.v1", job_id: job.job_id, proposals: [review] });
+  vi.spyOn(api, "proposalReview").mockResolvedValue(review);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity, refetchOnWindowFocus: false } } });
+  deadlineClients.push(client); client.setQueryData(["catalog"], demoCatalog);
+  const view = render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter><AIPlannerPage/></MemoryRouter></ProductProvider></QueryClientProvider>);
+  fireEvent.change(screen.getByRole("textbox", { name: "Job ID" }), { target: { value: job.job_id } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+  for (let turn = 0; turn < 5; turn += 1) await act(async () => { await vi.advanceTimersByTimeAsync(5); });
+  expect(screen.getByRole("region", { name: "Canonical preflight plan" })).toBeVisible();
+  if (expiresAt === undefined) {
+    fireEvent.click(screen.getByRole("checkbox", { name: /I approve this exact proposal-continuation envelope once/ }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Operator identity for fresh Execute approval" }), { target: { value: "Reviewer" } });
+    expect(screen.getByRole("button", { name: "Approve and release continuation" })).toBeEnabled();
+  }
+  return { ...view, approve, deadline, job };
+}
+
+it.each(["idle", "resume", "click"])("expires Planner approval on %s while retaining its exact review and cancellation link", async (arrival) => {
+  const view = await openTimedContinuation();
+  try {
+    const plans = vi.mocked(CanonicalPlanReview).mock.calls.length;
+    const providers = vi.mocked(ProviderSetup).mock.calls.length;
+    if (arrival === "idle") await act(async () => { await vi.advanceTimersByTimeAsync(view.deadline - Date.now()); });
+    else {
+      // The wall clock advances while scheduled timers have not resumed.
+      vi.setSystemTime(view.deadline + 1);
+      if (arrival === "resume") fireEvent(window, new Event("pageshow"));
+      else fireEvent.click(screen.getByRole("button", { name: "Approve and release continuation" }));
+    }
+    expect(screen.getByText("Approval review expired")).toBeVisible();
+    expect(screen.getByRole("region", { name: "Canonical preflight plan" })).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: /I approve this exact proposal-continuation envelope once/ })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "Operator identity for fresh Execute approval" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Approve and release continuation" })).toBeDisabled();
+    expect(screen.getByRole("link", { name: "Open this job in Runs to inspect or cancel" })).toHaveAttribute("href", `/runs?job=${view.job.job_id}`);
+    expect(vi.mocked(CanonicalPlanReview).mock.calls).toHaveLength(plans);
+    expect(vi.mocked(ProviderSetup).mock.calls).toHaveLength(providers);
+    expect(view.approve).not.toHaveBeenCalled();
+  } finally { view.unmount(); }
+});
+
+it.each([null, "not-a-deadline", "2099"])("keeps malformed Planner expiry (%s) read-only without discarding the canonical plan", async (expiresAt) => {
+  const view = await openTimedContinuation(expiresAt);
+  try {
+    expect(screen.getByText("Approval deadline unavailable")).toBeVisible();
+    expect(screen.getByRole("region", { name: "Canonical preflight plan" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Approve and release continuation" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: /I approve this exact proposal-continuation envelope once/ })).toBeDisabled();
+    expect(screen.getByRole("link", { name: "Open this job in Runs to inspect or cancel" })).toHaveAttribute("href", `/runs?job=${view.job.job_id}`);
+    expect(view.approve).not.toHaveBeenCalled();
+  } finally { view.unmount(); }
 });
