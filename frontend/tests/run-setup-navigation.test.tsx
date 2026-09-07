@@ -40,7 +40,7 @@ function DraftHarness({ initialMode }: { initialMode: RunConfiguration["mode"] }
   </>;
 }
 
-function mount(path: string, initialMode: RunConfiguration["mode"], job?: RunJob, inventory?: Promise<RunJob[]>) {
+function mount(path: string, initialMode: RunConfiguration["mode"], job?: RunJob, inventory?: Promise<RunJob[]>, storedLookup?: { jobId: string; response: Promise<Response> }) {
   window.location.hash = `#${path}`;
   window.localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(demoScenario));
   const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } });
@@ -53,6 +53,7 @@ function mount(path: string, initialMode: RunConfiguration["mode"], job?: RunJob
     if (endpoint === "/runner") return json({ schema_version: "bluefire.runner-lifecycle-status.v1", state: "unbootstrapped", runner_id: "fixture-runner", profile_id: null, loopback_only: true, enrollment: "absent", process: "absent", runner: null, health: null });
     if (endpoint === "/detections/health") return json({ ready: false });
     if (endpoint === "/jobs") return json({ schema_version: "bluefire.active-job-list.v1", jobs: inventory ? await inventory : job ? [job] : [] });
+    if (storedLookup && endpoint === `/jobs/${storedLookup.jobId}`) return storedLookup.response;
     if (job && endpoint === `/jobs/${job.job_id}`) return json(job);
     if (job && endpoint === "/runs/preflight") return json(storedReview);
     if (endpoint === `/runs/${demoRuns[0]!.run_id}`) return json(demoRuns[0]);
@@ -178,4 +179,92 @@ it("keeps idle setup and history useful without an empty live console", async ()
   expect(screen.queryByRole("button", { name: "Pause" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
   expect(screen.getByRole("radio", { name: /^Simulate/ })).toBeChecked();
+});
+
+const staleStoredJobId = "job-abcdefabcdefabcdefabcdefabcdefab";
+function deferredStoredLookup() {
+  let settle!: (response: Response) => void;
+  const response = new Promise<Response>((resolve) => { settle = resolve; });
+  return { lookup: { jobId: staleStoredJobId, response }, settle };
+}
+function missingStoredJob(status = 404, code = "job_not_found") {
+  return new Response(JSON.stringify({ error: { code, message: "Stored job lookup did not resolve." } }), { status, headers: { "Content-Type": "application/json" } });
+}
+
+it.each(["simulate", "execute"] as const)("applies a %s setup arrival after the stored job is definitively missing", async (mode) => {
+  const opposite = mode === "execute" ? "simulate" : "execute";
+  window.localStorage.setItem("bluefire.local.active-job-id.v1", staleStoredJobId);
+  const { lookup, settle } = deferredStoredLookup();
+  const { config, nonReads } = mount(`/runs?setup=${mode}`, opposite, undefined, undefined, lookup);
+  await screen.findByRole("radio", { name: new RegExp(`^${opposite}`, "i") });
+  expect(config().mode).toBe(opposite);
+  expect(window.localStorage.getItem("bluefire.local.active-job-id.v1")).toBe(staleStoredJobId);
+  expect(screen.getByRole("button", { name: "Run preflight" })).toBeDisabled();
+  await act(async () => { settle(missingStoredJob()); });
+  await waitFor(() => expect(screen.getByRole("radio", { name: new RegExp(`^${mode}`, "i") })).toBeChecked());
+  expect(window.localStorage.getItem("bluefire.local.active-job-id.v1")).toBeNull();
+  expect(config()).toMatchObject({ mode, scopeRefs: ["operator.selected.scope"], provider: "operator-provider", model: "operator-model", autonomy: "assist" });
+  expect(nonReads()).toEqual([]);
+});
+
+it.each(["mode", "scope"] as const)("preserves a manual %s choice while the stale stored job lookup is pending", async (field) => {
+  window.localStorage.setItem("bluefire.local.active-job-id.v1", staleStoredJobId);
+  const { lookup, settle } = deferredStoredLookup();
+  const { config, user, nonReads } = mount("/runs?setup=execute", "simulate", undefined, undefined, lookup);
+  await screen.findByRole("radio", { name: /^Simulate/ });
+  if (field === "mode") {
+    await user.click(screen.getByRole("radio", { name: /^Execute/ }));
+    await user.click(screen.getByRole("radio", { name: /^Simulate/ }));
+  } else {
+    const scope = screen.getByRole("textbox", { name: /^Target scope/ });
+    await user.clear(scope);
+    await user.type(scope, "chosen.scope");
+  }
+  const edited = config();
+  await act(async () => { settle(missingStoredJob()); });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Run preflight" })).toBeEnabled());
+  expect(window.localStorage.getItem("bluefire.local.active-job-id.v1")).toBeNull();
+  expect(config()).toEqual(edited);
+  expect(nonReads()).toEqual([]);
+});
+
+it.each([[500, "service_unavailable"], [404, "unresolved_endpoint"]] as const)("does not apply setup after ambiguous stored lookup %s/%s", async (status, code) => {
+  window.localStorage.setItem("bluefire.local.active-job-id.v1", staleStoredJobId);
+  const { lookup, settle } = deferredStoredLookup();
+  const { config, nonReads } = mount("/runs?setup=execute", "simulate", undefined, undefined, lookup);
+  await screen.findByRole("radio", { name: /^Simulate/ });
+  await act(async () => { settle(missingStoredJob(status, code)); });
+  await screen.findByText("Stored job lookup did not resolve.");
+  expect(window.localStorage.getItem("bluefire.local.active-job-id.v1")).toBe(staleStoredJobId);
+  expect(config().mode).toBe("simulate");
+  expect(screen.getByRole("button", { name: "Run preflight" })).toBeDisabled();
+  expect(nonReads()).toEqual([]);
+});
+
+it("keeps explicit job URL precedence when that job is definitively missing", async () => {
+  const { lookup, settle } = deferredStoredLookup();
+  const { config, nonReads } = mount(`/runs?job=${staleStoredJobId}&setup=execute`, "simulate", undefined, undefined, lookup);
+  await screen.findByRole("heading", { name: "Follow this run" });
+  await act(async () => { settle(missingStoredJob()); });
+  await waitFor(() => expect(window.localStorage.getItem("bluefire.local.active-job-id.v1")).toBeNull());
+  expect(config().mode).toBe("simulate");
+  expect(nonReads()).toEqual([]);
+});
+
+it("does not replay setup after a freshly validated stored job later disappears", async () => {
+  window.localStorage.setItem("bluefire.local.active-job-id.v1", staleStoredJobId);
+  const { lookup, settle } = deferredStoredLookup();
+  const { config, client, nonReads } = mount("/runs?setup=execute", "simulate", undefined, undefined, lookup);
+  await screen.findByRole("radio", { name: /^Simulate/ });
+  await act(async () => {
+    settle(new Response(JSON.stringify({ ...savedJob, job_id: staleStoredJobId, state: "running", progress: { phase: "running" } }), { headers: { "Content-Type": "application/json" } }));
+  });
+  await screen.findByText(/Mutable controls remain disabled while ownership is reconciled/);
+  expect(config().mode).toBe("simulate");
+  lookup.response = Promise.resolve(missingStoredJob());
+  await act(async () => { await client.refetchQueries({ queryKey: ["job", staleStoredJobId], exact: true }); });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Run preflight" })).toBeEnabled());
+  expect(window.localStorage.getItem("bluefire.local.active-job-id.v1")).toBeNull();
+  expect(config().mode).toBe("simulate");
+  expect(nonReads()).toEqual([]);
 });

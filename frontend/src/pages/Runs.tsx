@@ -147,20 +147,6 @@ export function RunsPage() {
   const retryInventoryReady = inventoryAuthoritative && inventoryJobs.length === 0;
   const jobActivityBlocksNewIntent = inventoryUnavailable || inventoryJobs.length > 0 || Boolean(activeJobId) || Boolean(activeJob && !terminalJobStates.has(activeJob.state));
   const alternateInventoryJobAvailable = selectableInventoryJobs.some((job) => job.job_id !== activeJobId);
-  useEffect(() => {
-    if (consumedSetupArrival.current === location.key || (setupMode !== "simulate" && setupMode !== "execute")) return;
-    // A setup link never changes a selected durable job or historical review.
-    // Consume blocked arrivals too, so later job settlement cannot apply them.
-    if (runId || hasJobLink || activeJobId || activeJob || selectableInventoryJobs.length) { consumedSetupArrival.current = location.key; return; }
-    if (!catalog.data || !inventoryAuthoritative) return;
-    consumedSetupArrival.current = location.key;
-    const next = configurationForMode(runConfig, setupMode, catalog.data, scenario);
-    if (next !== runConfig) {
-      setRunConfig(next);
-      preflightGeneration.current += 1;
-      setPreflight(undefined);
-    }
-  }, [activeJob, activeJobId, catalog.data, hasJobLink, inventoryAuthoritative, location.key, runConfig, runId, scenario, selectableInventoryJobs.length, setRunConfig, setupMode]);
   const rememberTerminalJob = useCallback((job: RunJob) => {
     if (terminalJobStates.has(job.state)) setKnownTerminalJobIds((current) => current.has(job.job_id) ? current : new Set(current).add(job.job_id));
   }, []);
@@ -205,6 +191,22 @@ export function RunsPage() {
     return snapshot;
   }, [queryClient, rememberTerminalJob]);
   const jobQuery = useQuery({ queryKey: ["job", activeJobId], queryFn: async () => { const requestedJobId = activeJobId!; const receivedJob = await api.job(requestedJobId); if (receivedJob.job_id !== requestedJobId) throw new ApiError("The job detail response did not match the requested job.", "job_identity_mismatch", undefined, 502); settlePendingReplay(receivedJob); let job = preferNewerJobSnapshot(queryClient.getQueryData<RunJob>(["job", requestedJobId]), receivedJob); if (activeJobRef.current?.job_id === requestedJobId) job = preferNewerJobSnapshot(activeJobRef.current, job); rememberTerminalJob(job); return job; }, enabled: Boolean(activeJobId && (!activeJob || (activeJob.job_id === activeJobId && !terminalJobStates.has(activeJob.state)))), refetchInterval: (query) => { const state = (query.state.data as RunJob | undefined)?.state; return state && terminalJobStates.has(state) ? false : 750; }, staleTime: 0 });
+  useEffect(() => {
+    if (consumedSetupArrival.current === location.key || (setupMode !== "simulate" && setupMode !== "execute")) return;
+    // A setup link never changes a selected durable job or historical review.
+    // Confirmed jobs consume the arrival so later settlement cannot apply it.
+    // A stored ID alone must wait: a definitive 404 can still restore this setup.
+    const validatedStoredJob = activeJobId && jobQuery.isFetchedAfterMount && jobQuery.isSuccess && jobQuery.data?.job_id === activeJobId;
+    if (runId || hasJobLink || activeJob || validatedStoredJob || selectableInventoryJobs.length) { consumedSetupArrival.current = location.key; return; }
+    if (activeJobId || !catalog.data || !inventoryAuthoritative) return;
+    consumedSetupArrival.current = location.key;
+    const next = configurationForMode(runConfig, setupMode, catalog.data, scenario);
+    if (next !== runConfig) {
+      setRunConfig(next);
+      preflightGeneration.current += 1;
+      setPreflight(undefined);
+    }
+  }, [activeJob, activeJobId, catalog.data, hasJobLink, inventoryAuthoritative, jobQuery.data, jobQuery.isFetchedAfterMount, jobQuery.isSuccess, location.key, runConfig, runId, scenario, selectableInventoryJobs.length, setRunConfig, setupMode]);
   const refetchJob = jobQuery.refetch;
   const ordinaryApprovalNeedsPreflight = Boolean(controllerOwnsActiveJob && activeJob?.state === "awaiting_approval" && !["ai_proposal", "ai_proposal_execute"].includes(String(activeJob.progress.approval_kind ?? "")) && !hasUsableStoredApprovalReview(jobPreflight));
   const storedJobPreflightQuery = useQuery({ queryKey: ["job-preflight", activeJob?.job_id, activeJob?.request?.approval_request_id], queryFn: async () => ({ jobId: activeJob!.job_id, report: await api.preflightStoredJobRequest(activeJob!) }), enabled: ordinaryApprovalNeedsPreflight, staleTime: 0 });
