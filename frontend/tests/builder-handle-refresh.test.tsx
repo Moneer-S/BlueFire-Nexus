@@ -77,10 +77,14 @@ function fixedMeasurements() {
     const element = this as HTMLElement;
     const isHandle = element.classList.contains("react-flow__handle");
     const isNode = element.classList.contains("react-flow__node");
-    const x = isHandle && element.classList.contains("output-handle") ? 252 : 0;
-    const y = isHandle ? Number.parseFloat(element.style.top) || 0 : 0;
-    const width = isHandle ? 10 : isNode ? 252 : 1000;
-    const height = isHandle ? 10 : isNode ? 160 : 700;
+    // Browser rectangles include viewport zoom; offset dimensions above do not.
+    // The canvas may now frame its measured nodes before their handles change.
+    const viewport = element.closest(".react-flow__viewport");
+    const scale = viewport && (isHandle || isNode) ? new window.DOMMatrixReadOnly(getComputedStyle(viewport).transform).m22 : 1;
+    const x = (isHandle && element.classList.contains("output-handle") ? 252 : 0) * scale;
+    const y = (isHandle ? Number.parseFloat(element.style.top) || 0 : 0) * scale;
+    const width = (isHandle ? 10 : isNode ? 252 : 1000) * scale;
+    const height = (isHandle ? 10 : isNode ? 160 : 700) * scale;
     return { x, y, width, height, left: x, top: y, right: x + width, bottom: y + height, toJSON: () => ({}) };
   });
 }

@@ -5,8 +5,8 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { expect, it, vi } from "vitest";
 import { ExperimentAssistant } from "../src/components/ExperimentAssistant";
 import { api } from "../src/lib/api";
-import { assistanceJobId, assistancePath, readAssistanceReceipt, readAssistanceRecovery, storeAssistanceReceipt, type AssistanceContext, type AssistanceEnvelope, type AssistanceRequest } from "../src/lib/assistance";
-import { AssistanceProvider, usePublishAssistanceSelection, type AssistanceSelection } from "../src/state/AssistanceContext";
+import { assistanceJobId, assistancePath, readAssistanceReceipt, readAssistanceRecovery, storeAssistanceReceipt, isGraphRequest, type AssistanceContext, type AssistanceEnvelope, type AssistanceRequest } from "../src/lib/assistance";
+import { AssistanceProvider, useAssistancePanel, usePublishGraphAssistanceSelection, usePublishAssistanceSelection, type AssistanceSelection } from "../src/state/AssistanceContext";
 import { ProductProvider } from "../src/state/ProductContext";
 
 const digest = `sha256:${"a".repeat(64)}`;
@@ -20,7 +20,7 @@ function request(): AssistanceRequest { return { submission_id: "01234567-89ab-4
 function envelope(body = request(), status: AssistanceEnvelope["turn"]["status"] = "awaiting_review"): AssistanceEnvelope {
   return { job: { schema_version: "bluefire.job.v1", kind: "assistance.turn", job_id: assistanceJobId(body.submission_id), state: "completed", request: { submitted_request: body }, progress: {} },
     turn: { schema_version: "bluefire.assistance-turn.v1", status, can_start_new_turn: ["completed", "off", "cancelled"].includes(status), message: "Review the rule revision before it is saved and evaluated.", context_digest: body.context_digest,
-      selected: { run_id: body.run_id, candidate_id: body.candidate_id, candidate_resource_digest: body.candidate_resource_digest },
+      selected: isGraphRequest(body) ? body.selection : { run_id: body.run_id, candidate_id: body.candidate_id, candidate_resource_digest: body.candidate_resource_digest },
       plan: [{ step_id: "revise", capability_id: "detection.revise_and_evaluate", title: "Improve and evaluate the rule", detector_ref: "selected", reason: "Check smaller observed collections." }, { step_id: "compare", capability_id: "method.compare_same_detector", title: "Try another collection method", detector_ref: "revised", reason: "Keep the revised detector fixed for comparison." }],
       active_child: { job_id: "job-rule", kind: "detection.ai.propose", state: "completed", step_id: "revise", native_path: "/detection-lab?candidate=saved-rule&run=run-observed&ai_job=job-rule" },
       next_action: { kind: "review_detection", label: "Review rule revision", native_path: "/detection-lab?candidate=saved-rule&run=run-observed&ai_job=job-rule" }, results: [], continuation: null, limitations: ["Execute requires fresh approval."] } };
@@ -44,6 +44,70 @@ async function compose() {
   await user.type(screen.getByLabelText("What would you like to do?"), request().message);
   return user;
 }
+
+const graphContext: AssistanceContext = { schema_version: "bluefire.assistance-context.v1", context_digest: digest,
+  selected: { kind: "graph", base_scenario: null }, capabilities: [{ id: "graph.propose_and_validate", title: "Plan and validate an experiment", available: true, supported_autonomy: ["assist", "auto"], reason: "Saving requires your review.", native_path: "/builder" }], limitations: ["Creates a separate experiment; no execution."] };
+function GraphSelection() {
+  usePublishGraphAssistanceSelection(true);
+  const panel = useAssistancePanel();
+  return <button onClick={() => panel?.setOpen(true)}>Plan with Assistant</button>;
+}
+function graphEnvelope(body: AssistanceRequest): AssistanceEnvelope {
+  return { ...envelope(body), turn: { ...envelope(body).turn,
+    message: "Review the proposed experiment in Builder.",
+    plan: [{ step_id: "graph", capability_id: "graph.propose_and_validate", detector_ref: "none", title: "Build and validate", reason: "Use registered steps." }],
+    active_child: { job_id: "job-1234567890abcdef1234567890abcdef", kind: "graph.ai.propose", state: "completed", step_id: "graph", native_path: "/builder?graph_job=job-1234567890abcdef1234567890abcdef" },
+    next_action: { kind: "review_graph", label: "Review experiment", native_path: "/builder?graph_job=job-1234567890abcdef1234567890abcdef" } } };
+}
+function mountGraph() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  return render(<QueryClientProvider client={client}><MemoryRouter><ProductProvider><AssistanceProvider><GraphSelection /><ExperimentAssistant providers={[provider]} /></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>);
+}
+
+it("opens the shared Assistant from Builder and retains a graph request without invented evidence IDs", async () => {
+  const get = vi.spyOn(api, "assistanceGraphContext").mockResolvedValue(graphContext);
+  const detection = vi.spyOn(api, "assistanceContext");
+  const submit = vi.spyOn(api, "submitAssistance").mockImplementation(async (body) => graphEnvelope(body));
+  vi.spyOn(api, "assistanceTurn").mockImplementation(async () => graphEnvelope(readAssistanceReceipt()!));
+  mountGraph();
+  expect(get).not.toHaveBeenCalled();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Plan with Assistant" }));
+  await screen.findByText("New experiment");
+  expect(submit).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Start work" })).toBeDisabled();
+  expect(screen.queryByLabelText("Evidence case")).not.toBeInTheDocument();
+  await user.selectOptions(screen.getByLabelText("AI mode"), "auto");
+  await user.selectOptions(screen.getByLabelText("Provider"), provider.provider_id);
+  await user.type(screen.getByLabelText("What would you like to do?"), "Discover the owned lab and collect its test records.");
+  await user.dblClick(screen.getByRole("button", { name: "Start work" }));
+  expect(await screen.findByRole("link", { name: "Review experiment" })).toHaveAttribute("href", expect.stringContaining("/builder?graph_job="));
+  expect(submit).toHaveBeenCalledTimes(1);
+  expect(submit.mock.calls[0]![0]).toEqual({ submission_id: expect.any(String), context_digest: digest, selection: { kind: "graph", base_scenario: null }, message: "Discover the owned lab and collect its test records.", autonomy: "auto", provider_id: provider.provider_id });
+  expect(readAssistanceReceipt()).toEqual(submit.mock.calls[0]![0]);
+  expect(detection).not.toHaveBeenCalled();
+});
+
+it("restores a saved graph result while another native selection is active without claiming execution", async () => {
+  const body: AssistanceRequest = { submission_id: request().submission_id, context_digest: digest, selection: { kind: "graph", base_scenario: null }, message: "Create a collection experiment.", autonomy: "assist", provider_id: provider.provider_id };
+  storeAssistanceReceipt(body);
+  const saved = graphEnvelope(body);
+  saved.turn.status = "completed"; saved.turn.can_start_new_turn = true; saved.turn.active_child = null; saved.turn.next_action = null;
+  saved.turn.results = [{ kind: "graph_saved", step_id: "graph", proposal_job_id: "job-proposal", scenario_id: "experiment", version: 2, digest, operator_modified: true, native_path: "/builder?graph_job=job-proposal", execution_state: "not_run" }];
+  vi.spyOn(api, "assistanceTurn").mockResolvedValue(saved);
+  const submit = vi.spyOn(api, "submitAssistance");
+  mount(); await open();
+  await screen.findByText("Experiment saved");
+  expect(screen.getByText(/Version 2 · Includes your edits · Not run/)).toBeInTheDocument();
+  expect(screen.queryByText("Source rule and evidence")).not.toBeInTheDocument();
+  expect(submit).not.toHaveBeenCalled();
+});
+
+it("rejects a graph receipt with an incomplete saved reference", () => {
+  const body = { submission_id: request().submission_id, context_digest: digest, selection: { kind: "graph", base_scenario: { scenario_id: "example", version: 0, digest } }, message: "Draft a variation.", autonomy: "assist", provider_id: provider.provider_id };
+  sessionStorage.setItem("bluefire.assistance.receipt.v1", JSON.stringify(body));
+  expect(readAssistanceReceipt()).toBeUndefined();
+});
 
 it("keeps Off silent, retrieves context only on opening, and submits one exact bound operation", async () => {
   const getContext = vi.spyOn(api, "assistanceContext").mockResolvedValue(context);

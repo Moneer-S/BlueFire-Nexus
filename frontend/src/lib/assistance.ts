@@ -2,33 +2,41 @@ import type { DetectionCaseRole, RunJob } from "../types";
 import type { MethodSource } from "./method-comparison";
 import { sameJson } from "./replay-review";
 
-export type AssistanceCapability = "detection.revise_and_evaluate" | "method.compare_same_detector";
+export type AssistanceCapability = "detection.revise_and_evaluate" | "method.compare_same_detector" | "graph.propose_and_validate";
+export interface GraphSelection { kind: "graph"; base_scenario: null | { scenario_id: string; version: number; digest: string } }
 export interface AssistanceContext {
   schema_version: "bluefire.assistance-context.v1";
   context_digest: string;
-  selected: {
+  selected: GraphSelection | {
     run_id: string; candidate_id: string; candidate_resource_digest: string;
     title: string; definition_digest: string; target_language: string; source_binding: MethodSource;
   };
   capabilities: Array<{ id: AssistanceCapability; title: string; available: boolean; supported_autonomy: Array<"assist" | "auto">; reason: string; native_path: string }>;
   limitations: string[];
 }
-export interface AssistanceRequest {
+export interface DetectionAssistanceRequest {
   submission_id: string; context_digest: string; run_id: string; candidate_id: string;
   candidate_resource_digest: string; message: string; case_role: DetectionCaseRole;
   autonomy: "off" | "assist" | "auto"; provider_id?: string;
 }
+export interface GraphAssistanceRequest {
+  submission_id: string; context_digest: string; selection: GraphSelection; message: string;
+  autonomy: "off" | "assist" | "auto"; provider_id?: string;
+}
+export type AssistanceRequest = DetectionAssistanceRequest | GraphAssistanceRequest;
+export const isGraphRequest = (value: AssistanceRequest): value is GraphAssistanceRequest => "selection" in value && value.selection?.kind === "graph";
+export const isGraphSelection = (value: AssistanceContext["selected"]): value is GraphSelection => "kind" in value && value.kind === "graph";
 export type AssistanceStatus = "planning" | "off" | "working" | "awaiting_review" | "awaiting_execute_approval" | "ready_to_continue" | "completed" | "blocked" | "cancelling" | "cancelled";
 export interface AssistanceEnvelope {
   job: RunJob;
   turn: {
     schema_version: "bluefire.assistance-turn.v1"; status: AssistanceStatus; message: string; context_digest: string;
     can_start_new_turn: boolean;
-    selected: Pick<AssistanceRequest, "run_id" | "candidate_id" | "candidate_resource_digest">;
-    plan: Array<{ step_id: string; capability_id: AssistanceCapability; title: string; detector_ref: "selected" | "revised"; reason: string }>;
+    selected: GraphSelection | Pick<DetectionAssistanceRequest, "run_id" | "candidate_id" | "candidate_resource_digest">;
+    plan: Array<{ step_id: string; capability_id: AssistanceCapability; title: string; detector_ref: "selected" | "revised" | "none"; reason: string }>;
     active_child: null | { job_id: string; kind: string; state: string; step_id: string; native_path: string };
-    next_action: null | { kind: "review_detection" | "review_method" | "review_execute" | "continue" | "new_turn"; label: string; native_path: string | null };
-    results: Array<{ kind: "detection_revision" | "method_comparison"; step_id: string; candidate_id: string; evaluation_ids: string[]; run_ids: string[]; comparison_id: string | null; native_path: string }>;
+    next_action: null | { kind: "review_graph" | "review_detection" | "review_method" | "review_execute" | "continue" | "new_turn"; label: string; native_path: string | null };
+    results: Array<{ kind: "detection_revision" | "method_comparison"; step_id: string; candidate_id: string; evaluation_ids: string[]; run_ids: string[]; comparison_id: string | null; native_path: string } | { kind: "graph_saved"; step_id: string; proposal_job_id: string; scenario_id: string; version: number; digest: string; operator_modified: boolean; native_path: string; execution_state: "not_run" }>;
     continuation: null | { job_id: string; submission_id: string; state: string; context_digest: string };
     recovery?: null | {
       code: "runner_readiness_required" | "native_review_required" | "detection_review_required" | "source_review_required";
@@ -42,7 +50,7 @@ export const assistanceJobId = (submission: string) => `job-${submission.replace
 export const assistanceActive = (status: AssistanceStatus) => !["off", "completed", "blocked", "cancelled"].includes(status);
 export function assistancePath(value: unknown): string | undefined {
   if (typeof value !== "string" || [...value].some((character) => character === "\\" || character.charCodeAt(0) <= 32)) return;
-  if (!/^\/(?:detection-lab|compare|runs|runners)(?:\?|\/|$)/.test(value)) return;
+  if (!/^\/(?:builder|detection-lab|compare|runs|runners)(?:\?|\/|$)/.test(value)) return;
   const parsed = new URL(value, "https://bluefire.invalid");
   return parsed.origin === "https://bluefire.invalid" ? `${parsed.pathname}${parsed.search}${parsed.hash}` : undefined;
 }
@@ -55,10 +63,14 @@ export function readAssistanceReceipt(): AssistanceRequest | undefined {
     const raw = sessionStorage.getItem(storageKey);
     if (!raw || raw.length > 9000) return;
     const value = JSON.parse(raw) as AssistanceRequest;
-    if (!value || !uuid.test(value.submission_id) || !digest.test(value.context_digest) || !digest.test(value.candidate_resource_digest)
-      || !bounded(value.run_id) || !bounded(value.candidate_id) || !bounded(value.message, 1000)
-      || !["off", "assist", "auto"].includes(value.autonomy) || !["attack", "benign", "replay", "heldout"].includes(value.case_role)
+    if (!value || !uuid.test(value.submission_id) || !digest.test(value.context_digest) || !bounded(value.message, 1000)
+      || !["off", "assist", "auto"].includes(value.autonomy)
       || (value.provider_id !== undefined && !bounded(value.provider_id))) return;
+    if (isGraphRequest(value)) {
+      const base = value.selection.base_scenario;
+      if (base !== null && (!base || !bounded(base.scenario_id) || !Number.isSafeInteger(base.version) || base.version < 1 || !digest.test(base.digest))) return;
+    } else if ("selection" in value || !digest.test(value.candidate_resource_digest) || !bounded(value.run_id) || !bounded(value.candidate_id)
+      || !["attack", "benign", "replay", "heldout"].includes(value.case_role)) return;
     return value;
   } catch { return; }
 }
@@ -79,8 +91,8 @@ export function clearAssistanceReceipt(value: AssistanceRequest): boolean {
 export function matchesAssistanceReceipt(value: AssistanceEnvelope, receipt: AssistanceRequest): boolean {
   return value.job?.kind === "assistance.turn" && value.job.job_id === assistanceJobId(receipt.submission_id)
     && sameJson(value.job.request?.submitted_request, receipt) && value.turn?.schema_version === "bluefire.assistance-turn.v1"
-    && value.turn.context_digest === receipt.context_digest && value.turn.selected?.run_id === receipt.run_id
-    && value.turn.selected.candidate_id === receipt.candidate_id && value.turn.selected.candidate_resource_digest === receipt.candidate_resource_digest;
+    && value.turn.context_digest === receipt.context_digest && sameJson(value.turn.selected, isGraphRequest(receipt) ? receipt.selection
+      : { run_id: receipt.run_id, candidate_id: receipt.candidate_id, candidate_resource_digest: receipt.candidate_resource_digest });
 }
 
 export interface AssistanceRecovery { job_id: string; submission_id: string; context_digest: string }

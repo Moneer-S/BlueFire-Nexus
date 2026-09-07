@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type PropsWithChildren } from "react";
+import type { GraphSelection } from "../lib/assistance";
 
 export interface AssistanceSelection {
   runId: string;
@@ -8,21 +9,36 @@ export interface AssistanceSelection {
   manualEdits: boolean;
 }
 interface SelectionContext {
-  selection?: AssistanceSelection;
-  publish: (owner: symbol, value?: AssistanceSelection) => void;
+  selection?: AssistanceSelection | GraphWorkspaceSelection;
+  publish: (owner: symbol, value?: AssistanceSelection | GraphWorkspaceSelection) => void;
+  open: boolean;
+  setOpen: (value: boolean) => void;
 }
+export interface GraphWorkspaceSelection { kind: "graph"; baseScenario: GraphSelection["base_scenario"]; title: string; manualEdits: boolean }
 const Context = createContext<SelectionContext | null>(null);
 
 export function AssistanceProvider({ children }: PropsWithChildren) {
-  const [current, setCurrent] = useState<{ owner: symbol; value: AssistanceSelection }>();
-  const publish = useCallback((owner: symbol, value?: AssistanceSelection) => {
+  const [open, setOpen] = useState(false);
+  const [current, setCurrent] = useState<{ owner: symbol; value: AssistanceSelection | GraphWorkspaceSelection }>();
+  const publish = useCallback((owner: symbol, value?: AssistanceSelection | GraphWorkspaceSelection) => {
     setCurrent((previous) => value ? { owner, value } : previous?.owner === owner ? undefined : previous);
   }, []);
-  const value = useMemo(() => ({ selection: current?.value, publish }), [current, publish]);
+  const value = useMemo(() => ({ selection: current?.value, publish, open, setOpen }), [current, publish, open]);
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
 
+export function usePublishGraphAssistanceSelection(enabled: boolean) {
+  const publish = useContext(Context)?.publish;
+  useEffect(() => {
+    if (!publish || !enabled) return;
+    const owner = Symbol("graph-selection");
+    publish(owner, { kind: "graph", baseScenario: null, title: "New experiment", manualEdits: false });
+    return () => publish(owner);
+  }, [enabled, publish]);
+}
+
 export function useAssistanceSelection() { return useContext(Context)?.selection; }
+export function useAssistancePanel() { return useContext(Context); }
 
 /** Native views publish their actual selection, including unsaved-edit state. */
 export function usePublishAssistanceSelection(selection?: AssistanceSelection) {

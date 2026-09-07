@@ -2,7 +2,8 @@ import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDeci
 import { sameJson } from "./replay-review";
 import type { DetectionAIDecision, DetectionAIRequest } from "./detection-ai";
 import type { MethodContext, MethodDecision, MethodRequest } from "./method-comparison";
-import type { AssistanceContext, AssistanceEnvelope, AssistanceRequest } from "./assistance";
+import type { AssistanceContext, AssistanceEnvelope, AssistanceRequest, GraphSelection } from "./assistance";
+import type { GraphDecision, GraphEnvelope, GraphValidation } from "./graph-assistance";
 import { compareDemoRuns, demoCatalog, demoRuns, demoScenario } from "./demo";
 
 const API_ROOT = "/api/v1";
@@ -286,6 +287,27 @@ export function buildReplayPayload(options: ReplayPayloadOptions): Record<string
 }
 
 export const api = {
+  async assistanceGraphContext(base: GraphSelection["base_scenario"]): Promise<AssistanceContext> {
+    if (DEMO_MODE) throw new ApiError("Graph assistance requires the connected local service.", "demo_assistance_refused", undefined, 409);
+    const query = base ? `?${new URLSearchParams({ scenario_id: base.scenario_id, version: String(base.version), digest: base.digest })}` : "";
+    return request(`/assistance/graph-context${query}`);
+  },
+  async graphProposal(jobId: string): Promise<GraphEnvelope> {
+    if (DEMO_MODE) throw new ApiError("Saved graph proposals require the connected local service.", "demo_assistance_refused", undefined, 409);
+    return request(`/ai/graph-jobs/${encodeURIComponent(jobId)}`);
+  },
+  async validateGraphProposal(jobId: string, body: { proposal_digest: string; scenario: Scenario }): Promise<GraphValidation> {
+    if (DEMO_MODE) throw new ApiError("Graph review requires the connected local service.", "demo_assistance_refused", undefined, 409);
+    return request(`/ai/graph-jobs/${encodeURIComponent(jobId)}/validate`, { method: "POST", body: JSON.stringify(body) });
+  },
+  async reviewGraphProposal(jobId: string, body: GraphDecision): Promise<GraphEnvelope> {
+    if (DEMO_MODE) throw new ApiError("Graph review requires the connected local service.", "demo_assistance_refused", undefined, 409);
+    return request(`/ai/graph-jobs/${encodeURIComponent(jobId)}/review`, { method: "POST", body: JSON.stringify(body) });
+  },
+  async immutableScenarioVersion(id: string, version: number): Promise<{ schema_version: string; scenario: ScenarioVersion }> {
+    if (DEMO_MODE) throw new ApiError("Saved proposal versions require the connected local service.", "demo_assistance_refused", undefined, 409);
+    return request(`/scenario-versions/${encodeURIComponent(id)}/versions/${version}`);
+  },
   async assistanceContext(runId: string, candidateId: string): Promise<AssistanceContext> {
     if (DEMO_MODE) throw new ApiError("Contextual assistance requires saved observations in the connected local service.", "demo_assistance_refused", undefined, 409);
     return request(`/assistance/context?${new URLSearchParams({ run_id: runId, candidate_id: candidateId })}`);
