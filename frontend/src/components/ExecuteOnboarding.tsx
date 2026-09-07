@@ -65,6 +65,7 @@ interface ExecuteOnboardingProps {
   jobSubmissionPending: boolean;
   canCreateJob: boolean;
   demoMode: boolean;
+  submissionControls?: ReactNode;
   onRunnerAction: (action: RunnerAction) => void;
   onSelectScenario: () => void;
   onPreflight: () => void;
@@ -85,8 +86,12 @@ function Step({ number, state, title, detail, status, action }: { number: number
   </li>;
 }
 
+export function isExecuteRunnerReady(runner?: RunnerLifecycleStatus): boolean {
+  return runner?.state === "ready" && runner.enrollment === "active" && runner.process === "authenticated" && runner.health?.accepting_execute === true;
+}
+
 export function ExecuteOnboarding(props: ExecuteOnboardingProps) {
-  const runnerReady = props.runner?.state === "ready" && props.runner.enrollment === "active" && props.runner.process === "authenticated" && props.runner.health?.accepting_execute === true;
+  const runnerReady = isExecuteRunnerReady(props.runner);
   // Selection only makes the graph available for review. The server still
   // resolves allowed effects and returns the approval authority for that graph.
   const scenarioReady = Boolean(props.selectedScenario.id && props.selectedScenario.steps.length);
@@ -95,13 +100,15 @@ export function ExecuteOnboarding(props: ExecuteOnboardingProps) {
   const approvalReleased = Boolean(preflightReady && props.approvalReleased);
   const resultReady = Boolean(approvalReleased && props.job?.state === "completed" && props.run && props.job.result_ref === props.run.run_id && props.run.finalized_at && props.run.is_demo !== true && props.run.mode === "execute" && props.run.scenario_id === props.selectedScenario.id && props.run.runner_profile_id === props.config.profileId);
   const completed = resultReady && isCompletedGuidedExecuteRun(props.job, props.run);
-  const runnerState: StepState = runnerReady ? "complete" : "current";
-  const scenarioState: StepState = scenarioReady ? "complete" : runnerReady ? "current" : "upcoming";
-  const preflightState: StepState = preflightReady ? "complete" : scenarioReady ? "current" : "upcoming";
-  const approvalState: StepState = approvalReleased ? "complete" : preflightReady ? "current" : "upcoming";
-  const runState: StepState = completed ? "complete" : approvalReleased ? "current" : "upcoming";
+  const currentStep = props.job ? awaitingApproval ? 4 : 5 : !runnerReady ? 1 : !scenarioReady ? 2 : preflightReady ? 4 : 3;
+  const stepState = (number: number, complete: boolean): StepState => complete ? "complete" : currentStep === number ? "current" : "upcoming";
+  const runnerState = stepState(1, runnerReady);
+  const scenarioState = stepState(2, scenarioReady);
+  const preflightState = stepState(3, preflightReady);
+  const approvalState = stepState(4, approvalReleased);
+  const runState = stepState(5, completed);
 
-  const runnerAction = !props.demoMode && !runnerReady && !props.runnerPending && !props.runnerError && props.profile
+  const runnerAction = currentStep === 1 && !props.demoMode && !runnerReady && !props.runnerPending && !props.runnerError && props.profile
     ? props.runner?.state === "unbootstrapped"
       ? <Button size="small" variant="primary" disabled={props.runnerActionPending} onClick={() => props.onRunnerAction("bootstrap")}><ShieldCheck/>{props.runnerActionPending ? "Preparing runner" : "Prepare runner"}</Button>
       : props.runner?.state === "stopped" && props.runner.enrollment === "active"
@@ -110,22 +117,23 @@ export function ExecuteOnboarding(props: ExecuteOnboardingProps) {
     : undefined;
   const approvalAction = !props.job
     ? props.canCreateJob
-      ? <Button size="small" variant="primary" disabled={props.jobSubmissionPending} onClick={props.onCreateJob}><ShieldCheck/>{props.jobSubmissionPending ? "Creating request" : "Create run request"}</Button>
-      : <Button size="small" variant="secondary" onClick={props.onReviewEnvelope}>Review run details</Button>
+      ? props.submissionControls ? undefined : <Button size="small" variant="primary" disabled={props.jobSubmissionPending} onClick={props.onCreateJob}><ShieldCheck/>{props.jobSubmissionPending ? "Creating request" : "Create run request"}</Button>
+      : <Button size="small" variant="primary" onClick={props.onReviewEnvelope}>Review run details</Button>
     : awaitingApproval
       ? <Button size="small" variant="primary" onClick={props.onReviewApproval}>Review approval</Button>
       : undefined;
 
   return <Panel className="execute-onboarding" id="guided-execute" aria-label="Guided local Execute">
-    <PanelHeader eyebrow="Guided local Execute" title="Prepare, review, and run" detail="Review your selected experiment and environment. Execution stays stopped until you approve this run." actions={<Badge tone={completed ? "success" : resultReady ? "info" : "warning"}>{completed ? "Completed" : resultReady ? "Results ready" : "Review required"}</Badge>} />
+    <PanelHeader eyebrow="Guided local Execute" title="Prepare, review, and run" detail="Follow the current step. Execution needs a separate approval for this run." actions={<Badge tone={completed ? "success" : resultReady ? "info" : "warning"}>{completed ? "Completed" : resultReady ? "Results ready" : "Review required"}</Badge>} />
     {props.demoMode ? <Callout tone="warning" title="Production local service required">Demo mode cannot enroll a runner or execute effects. Relaunch the installed local service to use this guide.</Callout> : null}
     <ol className="execute-onboarding-steps">
       <Step number={1} state={runnerState} title="Make the local runner ready" detail="Prepare the installed runner, then start it in your chosen environment." status={props.runnerPending ? "Checking" : runnerReady ? "Ready" : props.runnerError ? "Unavailable" : sentence(props.runner?.state ?? "unavailable")} action={runnerAction} />
       <Step number={2} state={scenarioState} title="Review the selected experiment" detail={scenarioReady ? `${props.selectedScenario.title || props.selectedScenario.id} · ${props.selectedScenario.steps.length} steps. Preflight will check which effects are allowed.` : "Choose or build an experiment, or load the optional starter example."} status={scenarioReady ? "Selected for review" : "Choose an experiment"} action={scenarioState === "current" && props.profile && props.seededScenario ? <Button size="small" variant="primary" onClick={props.onSelectScenario}>Load starter example</Button> : undefined} />
-      <Step number={3} state={preflightState} title="Check what will run" detail="Check the selected graph, environment, observations, and cleanup before creating a run request." status={preflightReady ? "Ready for review" : props.preflightPending ? "Checking" : props.preflight ? sentence(props.preflight.status) : "Required"} action={preflightState === "current" ? <Button size="small" variant="primary" disabled={props.preflightPending || props.preflightDisabled} onClick={props.onPreflight}><ShieldCheck/>{props.preflightPending ? "Running preflight" : "Check selected experiment"}</Button> : undefined} />
+      <Step number={3} state={preflightState} title="Check what will run" detail="Check the selected graph, environment, observations, and cleanup before creating a run request." status={preflightReady ? "Ready for review" : props.preflightPending ? "Checking" : props.preflight ? sentence(props.preflight.status) : "Required"} action={preflightState === "current" && !props.submissionControls ? <Button size="small" variant="primary" disabled={props.preflightPending || props.preflightDisabled} onClick={props.onPreflight}><ShieldCheck/>{props.preflightPending ? "Running preflight" : "Check selected experiment"}</Button> : undefined} />
       <Step number={4} state={approvalState} title="Approve this run" detail={awaitingApproval ? "Execution is stopped. Review the returned run details and identify yourself to approve this one run." : "Review the preflight details and create a run request. Creating the request does not approve execution."} status={approvalReleased ? "Released" : awaitingApproval && preflightReady ? "Awaiting approval" : preflightReady ? "Review required" : "Locked"} action={approvalState === "current" ? approvalAction : undefined} />
       <Step number={5} state={runState} title="Run, observe, and clean up" detail="Review what ran, the observations, and cleanup in the saved results." status={completed ? "Completed" : resultReady ? "Results ready" : approvalReleased ? props.job?.state === "completed" ? "Awaiting saved result" : sentence(props.job?.state ?? "running") : "Waiting for approval"} action={resultReady && props.run ? <Link className="execute-guide-link" to={`/runs/${encodeURIComponent(props.run.run_id)}`}>Review results <ArrowRight/></Link> : undefined} />
     </ol>
+    {props.submissionControls}
     <details><summary>Technical details</summary><p>The installed runner is verified and enrolled before its authenticated loopback host starts. Certificate, HMAC, revocation, and removal controls are available in runner diagnostics.</p><p>Preflight binds the exact graph and profile to an immutable approval envelope. After local acknowledgement, creating a durable request still does not approve execution. Separate one-time approval releases that request. The starter canary's completion check additionally requires its exact observed marker and successful cleanup. Other finalized runs expose their recorded results without claiming that canary check.</p><p>Profile: <code>{props.config.profileId || "None selected"}</code> · Scope: <code>{props.config.scopeRefs.join(", ") || "None selected"}</code></p><Link to="/runners">Advanced runner diagnostics <ArrowRight/></Link></details>
   </Panel>;
 }

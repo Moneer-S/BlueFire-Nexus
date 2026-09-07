@@ -765,7 +765,7 @@ describe("product application", () => {
     expect(screen.getByText("Browser draft & configuration details").closest("details")).not.toHaveAttribute("open");
     expect(screen.getByText("Builder handoff")).not.toBeVisible();
     expect(screen.getByText("Not run for this handoff")).not.toBeVisible();
-    expect(screen.getByRole("heading", { name: "No active job" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "No active job" })).not.toBeInTheDocument();
     expect(screen.queryByText("Job submission in progress")).not.toBeInTheDocument();
     expect(screen.queryByText("Planning request submitted")).not.toBeInTheDocument();
   });
@@ -776,8 +776,8 @@ describe("product application", () => {
     expect(await screen.findByRole("heading", { name: "Review and run" })).toBeVisible();
     await user.click(screen.getByRole("radio", { name: /Execute/ }));
     await user.click(screen.getByText("Policy, approval & budgets"));
-    const approval = screen.getByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ });
-    const operator = screen.getByRole("textbox", { name: /Prepared operator label/ });
+    let approval = screen.getByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ });
+    let operator = screen.getByRole("textbox", { name: /Prepared operator label/ });
     expect(approval).toBeDisabled();
     expect(operator).toBeDisabled();
 
@@ -794,6 +794,8 @@ describe("product application", () => {
     expect(screen.getAllByText("scope-digest-test").length).toBeGreaterThan(0);
     expect(screen.getAllByText("envelope-digest-test").length).toBeGreaterThan(0);
     expect(screen.getByText("Full deterministic action contract")).toBeVisible();
+    approval = screen.getByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ });
+    operator = screen.getByRole("textbox", { name: /Prepared operator label/ });
     expect(approval).toBeEnabled();
     expect(operator).toBeEnabled();
 
@@ -846,7 +848,8 @@ describe("product application", () => {
     const exactJobRequests = () => fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith(`/jobs/${executeJob.job_id}`) && !init?.method).length;
     const terminalRequestCount = exactJobRequests();
     renderApp("/runs");
-    expect(await screen.findByRole("heading", { name: "No active job" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Run history" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "No active job" })).not.toBeInTheDocument();
     expect(exactJobRequests()).toBe(terminalRequestCount);
   });
 

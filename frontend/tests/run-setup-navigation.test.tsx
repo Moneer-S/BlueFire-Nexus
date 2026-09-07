@@ -169,3 +169,13 @@ it.each(["mode", "scope"] as const)("honors a manual %s edit made while setup aw
   expect(simulate).toBeChecked();
   expect(nonReads()).toEqual([]);
 });
+
+it("keeps idle setup and history useful without an empty live console", async () => {
+  mount("/runs", "simulate");
+  await screen.findByRole("heading", { name: "Run history" });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Run preflight" })).toBeEnabled());
+  expect(screen.queryByRole("heading", { name: "No active job" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Pause" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+  expect(screen.getByRole("radio", { name: /^Simulate/ })).toBeChecked();
+});

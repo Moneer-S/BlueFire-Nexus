@@ -131,3 +131,27 @@ it.each(["missing", "other graph", "other profile"])("does not claim completion 
   expect(screen.queryByText("Results ready")).not.toBeInTheDocument();
   expect(screen.getByText("Awaiting saved result")).toBeInTheDocument();
 });
+
+it("makes the stopped runner the only current step for an already selected graph", () => {
+  const value = props();
+  value.runner = { ...value.runner!, state: "stopped", process: "absent" };
+  const view = mount(value);
+  expect(view.container.querySelectorAll('[aria-current="step"]')).toHaveLength(1);
+  expect(screen.getByLabelText("Step 1 current")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Start runner" })).toBeEnabled();
+  expect(screen.queryByRole("button", { name: "Check selected experiment" })).not.toBeInTheDocument();
+  expect(value.onPreflight).not.toHaveBeenCalled();
+});
+
+it("returns to runner recovery when a retained preflight outlives runner readiness", () => {
+  const value = props();
+  value.preflight = approvedPreflight(value);
+  const view = mount(value);
+  expect(screen.getByLabelText("Step 4 current")).toBeInTheDocument();
+  view.rerender(<MemoryRouter><ExecuteOnboarding {...value} runner={{ ...value.runner!, state: "stopped", process: "absent" }} /></MemoryRouter>);
+  expect(view.container.querySelectorAll('[aria-current="step"]')).toHaveLength(1);
+  expect(screen.getByLabelText("Step 1 current")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Start runner" })).toBeEnabled();
+  expect(screen.queryByRole("button", { name: "Review run details" })).not.toBeInTheDocument();
+  expect(value.onCreateJob).not.toHaveBeenCalled();
+});

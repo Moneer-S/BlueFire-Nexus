@@ -55,3 +55,51 @@
   .run-outcome, .run-evidence-summary { grid-template-columns: minmax(0, 1fr); gap: 24px; }
   .run-outcome h2 { font-size: 1.4rem; }
 }
+
+/* Setup and exact review share the available width; live work appears only when owned. */
+.runs-page .run-draft-details > summary { padding: 12px 0; font-size: .9rem; cursor: pointer; }
+.runs-page .run-layout { grid-template-columns: minmax(0, 1.15fr) minmax(280px, .85fr); margin: 16px 0; }
+.runs-page .run-layout .plan-preview { position: static; }
+.runs-page .run-exact-review > .canonical-plan { margin: 16px 0; background: transparent; border-color: var(--line); }
+.runs-page .canonical-plan > .data-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; }
+.runs-page .review-steps { display: block; padding: 0 16px; }
+.runs-page .review-steps > article { grid-template-columns: 24px minmax(0, 1fr) minmax(110px, .65fr); border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; padding: 13px 0; }
+.runs-page .review-steps > article:last-child { border-bottom: 0; }
+.runs-page .review-steps > article p { margin: 4px 0; }
+.runs-page .review-steps > article > details > summary { cursor: pointer; padding: 3px 0; }
+.runs-page .run-local-review { margin: 16px 0; }
+.runs-page .run-local-review .approval-box { margin: 0; }
+.runs-page .run-local-review .approval-box > div { min-width: 0; width: 100%; }
+.runs-page .run-local-review .approval-binding-summary .data-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; }
+.runs-page .run-local-review .field { max-width: 440px; }
+.runs-page .execute-onboarding { margin-bottom: 16px; }
+.runs-page .execute-onboarding-steps { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; padding-bottom: 16px; }
+.runs-page .execute-onboarding-steps > li { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin: 0; padding: 12px 0 0; background: transparent; border-color: var(--line); }
+.runs-page .execute-onboarding-steps > li[data-state="current"] { margin: 0; padding: 12px 0 0; background: transparent; border-color: var(--amber); }
+.runs-page .execute-onboarding-steps > li[data-state="upcoming"] { opacity: 1; }
+.runs-page .execute-onboarding-steps small { font-size: .72rem; line-height: 1.5; }
+.runs-page .execute-onboarding-steps strong { font-size: .78rem; }
+.runs-page .execute-step-action { align-items: flex-start; flex-direction: column; margin-top: auto; gap: 8px; }
+.runs-page .execute-onboarding > .run-action-bar { margin: 0; border-width: 1px 0 0; border-radius: 0; }
+.runs-page .execute-onboarding > details { border-top: 1px solid var(--line); padding: 12px 18px; font-size: .75rem; line-height: 1.55; }
+.runs-page .execute-onboarding > details > summary { cursor: pointer; color: var(--muted-strong); }
+@media (max-width: 900px) {
+  .runs-page .run-layout { grid-template-columns: minmax(0, 1fr); }
+  .runs-page .execute-onboarding-steps { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .runs-page .execute-onboarding-steps > li { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; padding: 10px 0; }
+}
+@media (max-width: 600px) {
+  .runs-page .canonical-plan > .data-list, .runs-page .run-local-review .approval-binding-summary .data-list { grid-template-columns: minmax(0, 1fr); }
+  .runs-page .review-steps > article { grid-template-columns: 24px minmax(0, 1fr); }
+  .runs-page .review-steps > article > details { grid-column: 2; }
+  .runs-page .execute-onboarding-steps > li { grid-template-columns: 28px minmax(0, 1fr); }
+  .runs-page .execute-step-action { grid-column: 2; }
+}
+
+.runs-page .run-local-review .check-row strong, .runs-page .run-local-review .check-row small { display: block; }
+.runs-page .run-local-review .check-row small { margin-top: 4px; color: var(--muted); }
+.runs-page .review-steps > article > details { grid-column: 3; }
+@media (max-width: 600px) { .runs-page .review-steps > article > details { grid-column: 2; } }
+
+.runs-page .envelope-binding-note { display: block; overflow-wrap: anywhere; }
+.runs-page .envelope-binding-note > svg { display: inline-block; vertical-align: middle; margin-right: 7px; }
