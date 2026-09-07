@@ -46,10 +46,31 @@ function mount(review = false, seedOverrides = false) {
   return { ...view, user: userEvent.setup() };
 }
 function stubGraph() {
+  vi.spyOn(api, "runnerStatus").mockResolvedValue({ schema_version: "bluefire.runner-lifecycle-status.v1", state: "stopped", runner_id: "runner", profile_id: "sandbox-execute.v1", loopback_only: true, enrollment: "active", process: "absent", runner: null, health: null });
   vi.spyOn(api, "catalog").mockResolvedValue(demoCatalog);
   vi.spyOn(api, "graphProposal").mockResolvedValue(graph());
   vi.spyOn(api, "immutableScenarioVersion").mockResolvedValue({ schema_version: "bluefire.scenario-version.v1", scenario: { scenario_id: document.id, title: document.title, version: 2, digest, document, created_at: "2030-01-01" } });
 }
+
+it("starts the saved experiment runner without changing its selection or active draft", async () => {
+  stubGraph();
+  localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(demoScenario));
+  const start = vi.spyOn(api, "startRunner").mockImplementation(async () => {
+    const status = { schema_version: "bluefire.runner-lifecycle-status.v1", state: "ready", runner_id: "runner", profile_id: "sandbox-execute.v1", loopback_only: true as const, enrollment: "active", process: "authenticated", runner: null, health: { accepting_execute: true } };
+    vi.mocked(api.runnerStatus).mockResolvedValue(status); return status;
+  });
+  const view = mount(false, true);
+  await screen.findByRole("button", { name: "Start runner" });
+  const before = screen.getByLabelText("Published selection").textContent;
+  const draft = screen.getByLabelText("Active draft").textContent;
+  const preferences = screen.getByLabelText("Global run settings").textContent;
+  await view.user.click(screen.getByRole("button", { name: "Start runner" }));
+  expect(await screen.findByText("Ready for preflight")).toBeVisible();
+  expect(start).toHaveBeenCalledExactlyOnceWith("sandbox-execute.v1");
+  expect(screen.getByLabelText("Published selection").textContent).toBe(before);
+  expect(screen.getByLabelText("Active draft").textContent).toBe(draft);
+  expect(screen.getByLabelText("Global run settings").textContent).toBe(preferences);
+});
 
 it("retains separate settings across remount without replacing the active graph or runtime preferences", async () => {
   stubGraph();

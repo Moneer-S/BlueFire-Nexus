@@ -1,4 +1,9 @@
 .runs-page .run-next-step { margin: 0; padding: 14px 18px; color: var(--text); font-size: .8rem; line-height: 1.5; }
+.execute-runner-readiness { padding: 18px 0; border-block: 1px solid var(--line); }
+.execute-runner-readiness > div:first-child { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px 24px; }
+.execute-runner-readiness h2 { margin: 0; font-size: 1rem; }
+.execute-runner-readiness p { margin: 8px 0; max-width: 85ch; }
+.execute-runner-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .assisted-run-layout { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(240px, .8fr); gap: 32px; align-items: start; }
 .assisted-run-layout > * { min-width: 0; }
 .assisted-run-overview { padding: 20px 0; border-top: 1px solid var(--line-strong); }

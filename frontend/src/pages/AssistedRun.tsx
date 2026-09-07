@@ -10,6 +10,7 @@ import { useProduct } from "../state/ProductContext";
 import { useAssistancePanel, usePublishSavedGraphSelection } from "../state/AssistanceContext";
 import { CanonicalPlanReview } from "../components/CanonicalPlanReview";
 import { RunConfigurationPanel } from "../components/RunConfiguration";
+import { ExecuteRunnerReadiness } from "../components/ExecuteRunnerReadiness";
 import { Button, Callout, DataList, ErrorState, LoadingState, PageHeader, sentence } from "../components/Primitives";
 import type { CatalogResponse, RunConfiguration, ScenarioVersion } from "../types";
 import type { GraphApplication } from "../lib/graph-assistance";
@@ -59,6 +60,7 @@ function SavedGraphConfiguration({ saved, application, catalog }: { saved: Scena
     <PageHeader eyebrow="Saved experiment" title={saved.title} description={`Version ${saved.version} · Choose where and how this experiment will run.`} actions={<Button variant="primary" onClick={() => panel?.setOpen(true)} disabled={!panel}><MessageSquareText />Run with Assistant</Button>} />
     <Callout title="Run this reviewed version">The Assistant prepares this saved experiment using the settings below, then inspects the completed run. Your Builder draft stays available. Assist asks you to review the plan; Execute requires approval for the resulting job.</Callout>
     {setupError ? <ErrorState title="Settings are only available on this page" error={setupError} /> : null}
+    {config.mode === "execute" ? <ExecuteRunnerReadiness profileId={catalog.runner_profiles.find((profile) => profile.id === config.profileId && profile.mode === "execute")?.id} /> : null}
     <div className="assisted-run-layout">
       <RunConfigurationPanel scenario={saved.document} config={config} onChange={(next) => setConfig({ ...next, approved: false, approvedBy: "" })} catalog={catalog} assistedSetup />
       <section className="assisted-run-overview" aria-label="Saved experiment overview"><h2>Experiment to run</h2><DataList items={[{ label: "Version", value: saved.version }, { label: "Steps and routes", value: `${saved.document.steps.length} steps · ${saved.document.edges.length} routes` }, { label: "Effects", value: config.mode === "simulate" ? "Synthetic evidence only" : "Actions in the selected authorized lab" }, { label: "Scope", value: config.scopeRefs.join(", ") || "Choose a target scope" }]} /><ol>{saved.document.steps.map((step) => <li key={step.id}>{catalog.behaviors.find((item) => item.id === step.behavior_id)?.title ?? step.id}</li>)}</ol><Link to={`/builder?graph_job=${encodeURIComponent(application.proposal_job_id)}`}>Review the saved graph<ArrowRight /></Link></section>
