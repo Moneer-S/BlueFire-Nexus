@@ -9,6 +9,7 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { api, DEMO_MODE } from "../lib/api";
 import { demoScenario } from "../lib/demo";
 import { useProduct } from "../state/ProductContext";
+import { useServiceConnection } from "../state/useServiceConnection";
 import { AssistanceProvider } from "../state/AssistanceContext";
 import { ExperimentAssistant } from "./ExperimentAssistant";
 import { LabSessionNotice } from "./LabSessionNotice";
@@ -56,6 +57,7 @@ function WorkspaceShell() {
   const sidebarRef = useRef<HTMLElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const { theme, scenario, scenarioIsSeededFallback, setScenario } = useProduct();
+  const connection = useServiceConnection();
   const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog, retry: 1, staleTime: 60_000 });
   const scenarios = useQuery({ queryKey: ["scenarios"], queryFn: api.scenarios, retry: 1, staleTime: 60_000 });
   useEffect(() => {
@@ -126,7 +128,7 @@ function WorkspaceShell() {
       <header className="mobile-header" inert={mobileOpen}>
         <button ref={menuButtonRef} aria-label="Open navigation" aria-expanded={mobileOpen} aria-controls="workspace-navigation" onClick={() => setMobileOpen(true)}><Menu /></button>
         <a className="brand" href="#/" aria-label="BlueFire Nexus home"><FlameMark/><span><strong>BlueFire Nexus</strong><small>Research workspace</small></span></a>
-        <span role="img" className={`service-light ${catalog.isSuccess ? "ready" : catalog.isError ? "error" : "pending"}`} aria-label={catalog.isSuccess ? "Local service connected" : catalog.isError ? "Local service unavailable" : "Connecting"} />
+        <span role="img" className={`service-light ${connection.light}`} aria-label={connection.title} title={connection.detail} />
       </header>
       <div className={`mobile-scrim ${mobileOpen ? "visible" : ""}`} onClick={() => setMobileOpen(false)} aria-hidden="true" />
       <aside ref={sidebarRef} id="workspace-navigation" className={`sidebar ${mobileOpen ? "mobile-open" : ""}`} role={mobileOpen ? "dialog" : undefined} aria-modal={mobileOpen || undefined} aria-label="Workspace navigation">
@@ -139,12 +141,12 @@ function WorkspaceShell() {
           {moreOpen && <div id="more-navigation" className="nav-group secondary-nav" aria-label="More tools">{moreItems.map(renderLink)}</div>}
         </nav>
         <div className="sidebar-status">
-          <div><span className={`service-light ${catalog.isSuccess ? "ready" : catalog.isError ? "error" : "pending"}`} role="img" aria-label={catalog.isSuccess ? "Local service ready" : catalog.isError ? "Service unavailable" : "Connecting locally"}/><span><strong>{catalog.isSuccess ? "Local service ready" : catalog.isError ? "Service unavailable" : "Connecting locally"}</strong>{DEMO_MODE && <small>Demo workspace</small>}</span></div>
+          <div><span className={`service-light ${connection.light}`} role="img" aria-label={connection.title}/><span><strong>{connection.title}</strong><small>{connection.detail}</small>{connection.state !== "connected" && connection.state !== "demo" ? <button type="button" className="service-recheck" disabled={connection.checking} onClick={connection.check}>{connection.checking ? "Checking connection" : "Check connection"}</button> : null}</span></div>
         </div>
         <IconButton label={collapsed ? "Expand navigation" : "Collapse navigation"} className="sidebar-collapse" onClick={() => setCollapsed((value) => !value)}><ChevronLeft /></IconButton>
       </aside>
       <div className="workspace-shell" inert={mobileOpen}>
-        <header className="workspace-topbar"><div><strong>{current}</strong></div><div className="topbar-actions"><ExperimentAssistant providers={catalog.data?.ai.providers ?? []} /><Badge tone={catalog.isSuccess ? "success" : catalog.isError ? "danger" : "warning"} dot>{catalog.isSuccess ? "Connected" : catalog.isError ? "Offline" : "Connecting"}</Badge>{DEMO_MODE && <Badge tone="violet">Demo</Badge>}</div></header>
+        <header className="workspace-topbar"><div><strong>{current}</strong></div><div className="topbar-actions"><ExperimentAssistant providers={catalog.data?.ai.providers ?? []} /><span title={connection.detail}><Badge tone={connection.tone} dot>{connection.label}</Badge></span></div></header>
         <main id="main-content" tabIndex={-1}><LabSessionNotice providers={catalog.data?.ai.providers} /><Outlet /></main>
       </div>
     </div>

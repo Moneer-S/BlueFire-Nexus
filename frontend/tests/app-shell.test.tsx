@@ -26,6 +26,16 @@ describe("workbench navigation", () => {
     vi.mocked(api.scenarios).mockResolvedValue({ scenarios: [demoScenario] });
   });
 
+  it("labels demo state without claiming a live connection or making a health request", () => {
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    renderShell();
+    expect(screen.getByText("Demo")).toBeVisible();
+    expect(screen.queryByText("Connected")).not.toBeInTheDocument();
+    expect(screen.queryByText("Local service ready")).not.toBeInTheDocument();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("keeps the default navigation focused on six work destinations", () => {
     renderShell();
     const navigation = within(screen.getByRole("navigation", { name: "Primary navigation" }));

@@ -48,3 +48,6 @@
 @media (prefers-reduced-motion: reduce) {
   .workbench-shell .sidebar, .workbench-shell .nav-link { transition: none; }
 }
+
+.workbench-shell .service-recheck { margin-top: 6px; padding: 3px 0; border: 0; background: transparent; color: var(--blue-soft); font: inherit; font-size: .65rem; cursor: pointer; text-decoration: underline; }
+.workbench-shell .service-recheck:disabled { color: var(--muted); cursor: wait; }

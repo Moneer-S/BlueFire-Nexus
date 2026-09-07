@@ -291,6 +291,31 @@ export function buildReplayPayload(options: ReplayPayloadOptions): Record<string
 }
 
 export const api = {
+  /** Lightweight authenticated liveness only; never establishes or renews a session. */
+  async serviceConnection(signal?: AbortSignal): Promise<{ checkedAt: number }> {
+    if (DEMO_MODE) throw new ApiError("Demo mode does not connect to a local service.", "demo_service_unavailable");
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    const timer = window.setTimeout(abort, 5_000);
+    try {
+      const response = await fetch(`${API_ROOT}/session`, {
+        method: "GET", credentials: "same-origin", cache: "no-store", referrerPolicy: "no-referrer",
+        headers: { Accept: "application/json" }, signal: controller.signal,
+      });
+      if (controller.signal.aborted) throw new ApiError("The local service check did not complete.", "request_timeout");
+      if (response.status === 401 || response.status === 403) throw new ApiError(BROWSER_SESSION_RELAUNCH_MESSAGE, "browser_session_unavailable", undefined, response.status);
+      if (response.status !== 204) throw new ApiError("The local service did not confirm this browser session.", "service_unavailable", undefined, response.status);
+      return { checkedAt: Date.now() };
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new ApiError("The local service could not be reached. Cached work remains available.", "service_unavailable");
+    } finally {
+      window.clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+    }
+  },
   async receiverTests(cursor?: string): Promise<ReceiverTestList> {
     if (DEMO_MODE) return { schema_version: "bluefire.receiver-defense-list.v1", jobs: [], truncated: false, next_cursor: null };
     return request(`/receiver-defense/jobs${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`);
