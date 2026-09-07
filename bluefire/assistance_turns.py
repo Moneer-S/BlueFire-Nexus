@@ -19,7 +19,7 @@ from .detection_ai_jobs import _text
 from .graph_ai_context import GRAPH
 from .graph_ai_context import selection as graph_selection
 from .job_runtime import JobCancelled, JobContext, JobResult, JobRuntimeError
-from .product_store_assistance import KIND, reserve, stop, update
+from .product_store_assistance import KIND, attach_continuation, reserve, stop, update
 from .product_store_errors import ProductStoreError
 from .run_store import RUN_ID_RE
 from .util import content_hash
@@ -525,6 +525,7 @@ class ExperimentAssistance:
                 "assistance.continue", submission_id=request["submission_id"], intent_digest=intent
             )
             if existing is not None:
+                attach_continuation(self.store, parent_id, existing["job_id"])
                 return self.read(parent_id)
             document = {"parent_job_id": parent_id, "context_digest": request["context_digest"]}
             if (
@@ -543,7 +544,7 @@ class ExperimentAssistance:
                 submission_id=request["submission_id"],
                 intent_digest=intent,
             )
-            update(self.store, parent_id, {"continuation_job_id": continuation["job_id"]})
+            attach_continuation(self.store, parent_id, continuation["job_id"])
         except (ProductStoreError, ConfigError, JobRuntimeError) as exc:
             raise fail(str(exc)) from exc
         return self.read(parent_id)

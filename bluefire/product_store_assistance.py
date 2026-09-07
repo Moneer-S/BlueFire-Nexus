@@ -76,6 +76,56 @@ def turn_at(
     return job
 
 
+def attach_continuation(store: AssistanceStore, parent_id: str, continuation_id: str) -> None:
+    """Repair a durable receipt link without restarting work or replacing a newer receipt."""
+    with store._connection(write=True) as connection:
+        parent = turn_at(store, connection, parent_id)
+
+        def insertion_order(identifier: str) -> int:
+            row = connection.execute(
+                "SELECT rowid AS insertion_order, * FROM jobs WHERE job_id = ?", (identifier,)
+            ).fetchone()
+            if row is None:
+                raise ProductStoreError("Assistance continuation was not found.")
+            job = store._job_from_row(row)
+            try:
+                request = job["request"]
+                binding = request["_submission"]
+                submission_id = binding["submission_id"]
+                canonical_id = uuid.UUID(submission_id)
+                intent = content_hash(
+                    {
+                        "parent_job_id": parent_id,
+                        "submission_id": submission_id,
+                        "context_digest": request["context_digest"],
+                    }
+                )
+                valid = (
+                    job["kind"] == "assistance.continue"
+                    and request["parent_job_id"] == parent_id
+                    and str(canonical_id) == submission_id
+                    and identifier == "job-" + canonical_id.hex
+                    and binding
+                    == {
+                        "schema_version": "bluefire.job-submission.v1",
+                        "submission_id": submission_id,
+                        "intent_digest": intent,
+                    }
+                )
+            except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                raise ProductStoreError("Assistance continuation binding is invalid.") from exc
+            if not valid:
+                raise ProductStoreError("Assistance continuation binding is invalid.")
+            return int(row["insertion_order"])
+
+        candidate_order = insertion_order(continuation_id)
+        current_id = parent["progress"].get("continuation_job_id")
+        # Jobs are append-only. Compare insertion order only inside this transaction;
+        # never persist rowid as an external identity or infer order from wall clocks.
+        if current_id is None or candidate_order > insertion_order(current_id):
+            patch(connection, parent, {"continuation_job_id": continuation_id})
+
+
 def require_active(
     store: AssistanceStore, connection: sqlite3.Connection, child: Mapping[str, Any]
 ) -> None:
