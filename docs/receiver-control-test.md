@@ -24,15 +24,18 @@ the control test directly.
 In **Build**, save an experiment that creates public synthetic records, stages
 them as JSONL, hands the bundle to the registered peer method, and cleans up its
 workspace. Exactly one staging step must feed the single peer handoff. Both steps
-must have a fixed method, without alternate branches on those steps. Other graph
-validation and authorization requirements still apply.
+must have fixed methods with no permitted alternative behaviors. Keep explicit
+cleanup routes from the handoff for success, partial, blocked and failed outcomes.
+Other graph validation and authorization requirements still apply.
 
 To exercise the expected prevention difference, the staged records must retain
 some synthetic test values. Fully redacted records can legitimately pass both
 policies; that does not establish the intended prevention difference. Do not use
 personal files or real credentials.
 
-Select the saved version in Compare. Choose Execute, the enrolled lab profile and
+Select the saved version in Compare. **Inspect the selected saved experiment** opens
+that exact version in a read-only Builder view; opening it does not replace your
+working draft. Choose Execute, the enrolled lab profile and
 the exact scopes required by the graph. The page checks eligibility and lab
 readiness before the test can be saved. Runtime AI stays Off so that the phases
 use the reviewed experiment without model-driven changes.
@@ -57,6 +60,42 @@ Each receiver accepts at most one policy decision. A receiver can expire during
 review. BlueFire must verify its cleanup before allowing an explicit replacement,
 which receives its own review and approval. A phase whose execution began or is
 uncertain cannot simply be retried as a new run.
+
+## Coordinate with Assistant, or analyse an existing test
+
+Manual **Save control test** needs no model. To coordinate a new test instead,
+keep the same selected version and environment settings and choose **Coordinate
+with Assistant**. Select an **Assistant mode** and **Assistant provider**, describe
+the comparison, then choose **Start work**. This retains the exact saved version,
+scope and run settings; it does not replace the current Builder draft.
+
+Both **Assist** and the supported **Auto** mode can coordinate this bounded test
+and interpret verified phase evidence. Neither mode prepares a receiver or grants
+Execute approval. Follow the native links and explicitly prepare, review and
+approve each phase as above. Runtime AI remains Off throughout this control test.
+Assistant's submitted mode and provider stay bound to that operation; changing
+new-request settings does not cancel or change saved work.
+
+After each phase, Assistant can explain the accumulated verified observations.
+Its **Model interpretation** and suggested next step are separate from the native
+receiver decision, transport outcome and cleanup. **Verified facts supplied to
+this analysis** shows the supporting references and counts. Admission of the
+control-test owner is not completion of the three-phase comparison; an analysis
+failure does not erase a native result or establish prevention.
+
+For a manually created test with verified phase evidence, choose **Analyse with
+Assistant**. This analyses the selected evidence available at that time; it does
+not adopt the test or run a further phase. **Stop this operation** stops only that
+analysis. For a test created through Assistant, **Open saved Assistant work**
+returns to its coordinating operation: stopping that operation also requests
+cancellation of its owned native work. In either case, closing the panel is not
+Stop, and requested Stop is not verified cleanup.
+
+**Recover evidence analysis** explicitly recovers a failed or interrupted analysis
+or missing handoff. It reuses the recorded native phases; it does not repeat a run
+or renew a receiver. Reopening or polling saved work makes no model request.
+**Off** prevents new model submissions; use the saved operation's Stop control to
+cancel work already submitted under Assist or Auto.
 
 ## Read the outcome and recover work
 
@@ -85,3 +124,11 @@ version or grants authority over changed settings.
 **Stop control test** requests cancellation and cleanup; requested cancellation
 is not confirmation that the receiver and run have stopped. Uncertain cleanup
 must be resolved before the test is considered safely stopped.
+
+## What this guide establishes
+
+These are implemented operator controls backed by portable lifecycle, binding and
+provider-contract tests. Those tests use controlled provider and native protocol
+doubles. They do not establish a completed installed baseline/protected/restored
+journey or a live provider interpretation. Report those separately from actual
+retained runs and model receipts; no such proof is claimed by this guide.

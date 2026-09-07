@@ -1,12 +1,50 @@
 # Contextual experiment assistance
 
-An assistance turn binds one finalized observed run and one saved SQLite or Sigma detector. It uses the existing provider access and durable job controller to choose validated product capabilities. The first connected Assist sequence revises the selected rule, links its native review, evaluates the accepted immutable revision, and automatically proposes a registered method comparison using that exact revised detector. The method remains in native review; an Execute replay still requires its own fresh ordinary approval.
+Assistant works from the selected saved objects and settings in the workbench.
+It uses the existing provider access, durable jobs and native reviews. Choose the
+context first, then **Assistant mode**, **Assistant provider** and **Start work**.
+The operation header retains its submitted mode and provider. New-request
+settings are not a global server AI switch: **Off** prevents new model requests,
+while **Stop this operation** cancels already submitted work.
 
-The planner chooses typed capability references from authoritative context, not keyword dispatch. `detection.revise_and_evaluate` uses the selected detector. A subsequent `method.compare_same_detector` must use the committed revised detector; a comparison alone uses the selected detector. Model output cannot introduce arbitrary objects, code, scope, provider changes, approvals or executable steps. The existing method service remains responsible for compatible options, frozen authority, replay preparation and measured comparison.
+## Supported entry points
 
-`GET /api/v1/assistance/context?run_id=…&candidate_id=…` returns `bluefire.assistance-context.v1`: `context_digest`, `selected` (run ID, candidate ID/resource digest/title/definition digest/language and complete source binding), `capabilities` (ID/title/availability/reason/native path/`supported_autonomy`) and limitations. Supported capabilities currently advertise `['assist']`; this is a vertical-slice limitation, not removal of the broader Auto requirement. Off makes no model call or child operation. Assist requires an explicitly selected configured provider and pins its definition throughout the turn; no fallback provider or global default mutation is used.
+| Selected work | Operator entry | Supported continuation and review |
+| --- | --- | --- |
+| New graph, optionally with a saved reference | **Build → Plan with Assistant** | Assist/Auto propose and validate a separate graph; native Builder review saves it. [Graph review](contextual-graph-assistance.md). |
+| Accepted saved graph | **Run with Assistant** | Explicit run settings; Assist reviews preparation, bounded Auto may continue it. Execute always needs fresh ordinary approval. [Saved runs](assisted-runs.md). |
+| Completed observed run | Initial rule creation in Detection Lab | Choose the observed behavior, SQLite/Sigma and development case. Assist/Auto propose source; native source review saves and evaluates it. [Initial detection](initial-detection-creation.md). |
+| Saved SQLite/Sigma rule and observed run | Assistant in Detection Lab or Compare | Assist can revise/evaluate and then propose a same-rule method comparison. Auto is not supported for this selection. [Method comparison](ai_method_comparison.md). |
+| Eligible saved receiver experiment and frozen settings | **Compare → Test a lab receiver control → Coordinate with Assistant** | Assist/Auto coordinate and interpret phases; each receiver preparation, review and Execute approval remains explicit. [Receiver control](receiver-control-test.md). |
+| Existing receiver test with verified evidence | **Analyse with Assistant** | Assist/Auto interpret the selected phase prefix only; Stop applies to analysis, not the independent native test. [Ownership contract](receiver-assistance-contract.md). |
 
-`POST /api/v1/assistance/turns` accepts exactly `submission_id`, `context_digest`, `run_id`, `candidate_id`, `candidate_resource_digest`, `message` (1–1000 printable characters), `case_role`, `autonomy`, and optional `provider_id`. The job is `assistance.turn` with deterministic `job-` plus submission UUID hex. `job.request.submitted_request` preserves the complete original request. Syntactically valid admission failures close that UUID as a durable failed job; a stale or missing object/provider cannot become a late successful submission after the UI clears its failed receipt. Duplicate lookup precedes mutable admission resolution. A transport-uncertain GET 404 does not authorize clearing a pending request.
+The UI advertises the modes supported for the selected context. A completed
+planner or retained proposal is not a completed run, saved rule, or measured
+control comparison. Native receipts establish those separate outcomes. Reopening
+saved work reads its state; it does not repeat provider requests or target effects.
+If a response is uncertain, retain the exact request and use its recovery control.
+Changing saved context may require a separate request rather than a retry.
+
+The connection indicator checks only service reachability and the current browser
+session. It can show **Disconnected**, **Session unavailable** or **Connection
+unchecked** while cached work remains visible. **Check connection** performs a
+read-only check; it does not resume work. Runner/provider readiness and the lab
+session deadline remain separate. After a session ends, follow its relaunch
+guidance and inspect saved jobs and cleanup before continuing.
+
+## Selected detector revision and method comparison
+
+This context binds one finalized observed run and one saved SQLite or Sigma
+detector. A connected Assist sequence revises the selected rule, links its native
+review, evaluates the accepted immutable revision, and automatically proposes a
+registered method comparison using that exact revised detector. The method
+remains in native review; an Execute replay requires its own fresh approval.
+
+The planner chooses typed capability references from authoritative context, not keyword dispatch. `detection.revise_and_evaluate` uses the selected detector. A subsequent `method.compare_same_detector` must use the committed revised detector; a comparison alone uses the selected detector. Planner output cannot introduce arbitrary objects, code, scope, provider changes, approvals or executable steps. The existing method service remains responsible for compatible options, frozen authority, replay preparation and measured comparison.
+
+`GET /api/v1/assistance/context?run_id=…&candidate_id=…` returns `bluefire.assistance-context.v1`: `context_digest`, `selected` (run ID, candidate ID/resource digest/title/definition digest/language and complete source binding), `capabilities` (ID/title/availability/reason/native path/`supported_autonomy`) and limitations. These selected-detector capabilities advertise `['assist']`; bounded Auto support in other contexts does not extend to this sequence. Off makes no model call or child operation. Assist requires an explicitly selected configured provider and pins its definition throughout the turn; no fallback provider or global default mutation is used.
+
+`POST /api/v1/assistance/turns` accepts exactly `submission_id`, `context_digest`, `run_id`, `candidate_id`, `candidate_resource_digest`, `message` (1–1000 characters; ordinary line breaks and tabs allowed, other controls refused), `case_role`, `autonomy`, and optional `provider_id`. The job is `assistance.turn` with deterministic `job-` plus submission UUID hex. `job.request.submitted_request` preserves the complete original request. Syntactically valid admission failures close that UUID as a durable failed job; a stale or missing object/provider cannot become a late successful submission after the UI clears its failed receipt. Duplicate lookup precedes mutable admission resolution. A transport-uncertain GET 404 does not authorize clearing a pending request.
 
 Submit, `GET /api/v1/assistance/turns/{job_id}`, and `POST /api/v1/assistance/turns/{job_id}/continue` return `{job, turn}`. The original parent request is unchanged. `turn` contains `status`, `message`, `context_digest`, `selected`, `plan`, `active_child`, `next_action`, `results`, `continuation`, and limitations. Its status distinguishes planning, Off, actual child work, native review, fresh Execute approval, recoverable handoff, completed measured receipts, blocked work, cancellation requested, and settled cancellation. A completed planner is not a completed experiment.
 
@@ -16,7 +54,7 @@ Normal advancement runs from the existing native detection application's post-co
 
 The existing `POST /jobs/{parent_id}/cancel` returns the ordinary parent job response. It atomically marks the turn stopped before signalling native children. Child publication, rule acceptance/application, method acceptance and replay publication consult the same durable stop guard. Already committed artifacts remain readable. Cancellation is displayed as pending until the actual active native operation settles; prior approvals are never inherited by a new replay. Explicit native detection retries retain and validate their original parent lineage. No automatic retry repeats an uncertain planner request or target effects.
 
-Portable connected tests use real jobs, reviews, immutable detector revisions, query evaluation and Simulate replay, plus actual framed broker tests for both API dialects. These do not establish installed UI behavior, real-model quality, benign/held-out coverage, unattended operation or production readiness. Graph creation and saved-graph run inspection are additive supported contexts described separately. Broader defense context and additional capability-specific Auto policies remain unfinished extensions.
+Portable connected tests use real jobs, reviews, immutable detector revisions, query evaluation and Simulate replay, plus actual framed broker tests for both API dialects. These do not establish installed UI behavior, real-model quality, benign/held-out coverage, unattended operation or production readiness. The other supported contexts are linked above. Broader defense/deployment operations and additional capability-specific Auto policies remain separate work; the bounded receiver test does not imply general defense orchestration.
 
 `turn.can_start_new_turn` is the explicit replacement permission. Integrity failure does not imply settlement: a retained plan stays non-replaceable until stopped and every native lifecycle is independently verified terminal, even when result validation fails. Invalid result references remain hidden after cancellation. Planner/admission failures without a plan may close normally.
 
@@ -41,3 +79,27 @@ A finalized run links its exact bundle digest and ordinary job result reference 
 Inspection uses `run.evidence.inspect` and the fixed enrolled `bluefire_run_evidence_inspection` schema in both provider dialects. It verifies the finalized manifest, observed evidence hashes/IDs, exact source and accepted runtime lineage. Configured data policy supplies field shapes by default; values remain unavailable unless explicitly permitted. Every model finding must reference supplied observed IDs. No observations, too many observations (128 maximum), or simulation remain explicitly insufficient; no-observation results make no provider request. Findings are model interpretations of development evidence, never independent defense validation.
 
 Finalization advances automatically in the existing controller. GET never dispatches. Reopening can recover a missing inspection handoff through the parent continuation endpoint; at most three explicit inspection attempts share the same run. A published inspection recovered after process loss is reused without another model call. Generic native retry is refused for bound preparation/run/inspection children: an uncertain run is never cloned behind its parent's retained identity. A genuinely new experiment requires a new native request and fresh Execute approval. Portable tests cover both dialects, real process loss/reopen, native runtime review, atomic approval/Stop races, exact UUID recovery, schema enrollment and redaction. They do not establish installed execution or model quality.
+
+## Fixed provider purposes
+
+The provider boundary supports these fixed purposes, each with its exact schema,
+through the configured Responses or Chat Completions dialect. Enrollment may
+restrict which purposes a particular provider can use. Model output is validated
+against the selected objects and supplied references; a purpose name is not
+permission to run arbitrary work.
+
+| Purpose | Product use |
+| --- | --- |
+| `bluefire_connection_check` | Explicit provider connection check; separate from the shell's GET-only local service check. |
+| `bluefire_experiment_assistance` | Choose available typed capabilities for the selected context. |
+| `bluefire_ai_graph_draft` | Propose a registered graph for native review. |
+| `bluefire_ai_proposal` | Existing runtime proposal within its native review and approval controls. |
+| `bluefire_detection_source_creation` | Propose initial SQLite/Sigma source from selected observations. |
+| `bluefire_detection_source_revision` | Propose a revision to the selected saved rule. |
+| `bluefire_method_comparison` | Choose an offered compatible method under frozen replay settings. |
+| `bluefire_run_evidence_inspection` | Interpret bounded verified run evidence. |
+| `bluefire_receiver_defense_inspection` | Interpret a verified receiver phase prefix; next-phase advice grants no authority. |
+
+This list documents implementation support, not installed workflow completion or
+live model quality. Portable protocol doubles, framed broker tests and serialized
+UI contracts must not be relabeled as live-provider or full receiver A/B/A proof.

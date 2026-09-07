@@ -10,7 +10,7 @@ Off makes no model request. Assist and the explicitly advertised bounded Auto ca
 2. Choose **Start work**, then **Review graph proposal** when the proposal is ready. The proposal opens in a separate Builder workspace; the current experiment is kept in place.
 3. Edit steps, methods, inputs, routes, or the experiment name using the normal canvas and step list. Open **Plan, assumptions, and your changes** to inspect the rationale and changes before saving.
 4. Choose **Save experiment**. The service validates the reviewed graph and saves an immutable version. If the connection is lost, reopen Assistant or the review link and retry the retained decision; it does not create another model request or duplicate the saved version.
-5. Choose **Open saved experiment** to make that version active, then use **Review run** for environment setup and authorization. Saving a graph has not run it. Opening checks for current manual edits before replacing the active graph.
+5. Choose **Open saved experiment** to make that version active, then use **Review run** for manual environment setup and authorization. Or choose **Run with Assistant** to configure that exact saved version in its [separate run setup](assisted-runs.md), preserving the working draft. Saving a graph has not run it. Opening checks for current manual edits before replacing the active graph.
 
 The review retains local edits across reload in this browser session and keeps the original proposal available. Saved results reopen the exact accepted version. You can decline from the plan review or stop the operation in Assistant. Readonly results still support step inspection, zoom, and panning.
 
