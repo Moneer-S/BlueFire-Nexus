@@ -1,3 +1,4 @@
+import type { ComponentProps } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -16,7 +17,8 @@ import type { AIProposalReview, RunJob } from "../src/types";
 vi.mock("../src/components/ProviderSetup", () => ({ ProviderSetup: vi.fn(() => null) }));
 vi.mock("../src/components/CanonicalPlanReview", async (original) => {
   const module = await original<typeof import("../src/components/CanonicalPlanReview")>();
-  return { ...module, CanonicalPlanReview: vi.fn(module.CanonicalPlanReview) };
+  const { createElement } = await import("react");
+  return { ...module, CanonicalPlanReview: vi.fn((props: ComponentProps<typeof module.CanonicalPlanReview>) => createElement(module.CanonicalPlanReview, props)) };
 });
 vi.mock("../src/components/ProposalReview", async (original) => {
   const module = await original<typeof import("../src/components/ProposalReview")>();

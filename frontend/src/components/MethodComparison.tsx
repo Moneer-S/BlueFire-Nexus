@@ -21,6 +21,7 @@ export function MethodComparison({ sourceId, runs, catalog }: { sourceId: string
   const [localError, setLocalError] = useState<Error>();
   const [recoveryOverride, setRecoveryOverride] = useState<{ parentId: string; jobId: string }>();
   const heading = useRef<HTMLHeadingElement>(null);
+  const resultHeading = useRef<HTMLDivElement>(null);
   const models = (catalog.ai.providers ?? []).filter((item) => item.kind !== "deterministic");
   const context = useQuery({ queryKey: ["method-context", sourceId], queryFn: () => api.methodComparisonContext(sourceId), enabled: expanded && Boolean(sourceId) && !jobId && !DEMO_MODE, retry: false });
   const detectors = useQuery({ queryKey: ["detections"], queryFn: api.detections, enabled: expanded });
@@ -41,6 +42,7 @@ export function MethodComparison({ sourceId, runs, catalog }: { sourceId: string
   const replayJob = replay.data?.kind === "scenario.replay" && sameJson(replay.data.request?.method_comparison, { proposal_job_id: parent?.job_id, proposal_digest: proposal?.proposal_digest }) ? replay.data : undefined;
   const recoveryJob = recovery.data?.kind === "replay.comparison.recover" && recovery.data.request?.proposal_job_id === parent?.job_id && recovery.data.request?.replay_job_id === replayId ? recovery.data : undefined;
   const result = methodResult(parent, parent, proposal) ?? methodResult(replayJob, parent, proposal) ?? methodResult(recoveryJob, parent, proposal);
+  const ProposalSurface = result ? "details" : "div";
   const replaySource = (parent?.progress.replay_result as { source?: MethodSource } | undefined)?.source;
   const refetchJob = job.refetch;
   const boundDetector = detectors.data?.candidates.find((item) => item.id === proposal?.detector.candidate_id);
@@ -60,7 +62,7 @@ export function MethodComparison({ sourceId, runs, catalog }: { sourceId: string
   useEffect(() => { if (jobId) setExpanded(true); if (jobId && !params.get("method_job")) setParams((old) => { const next = new URLSearchParams(old); next.set("method_job", jobId); return next; }, { replace: true }); }, [jobId, params, setParams]);
   useEffect(() => { if (job.data && settleMethodPending(job.data)) setPending(undefined); }, [job.data]);
   useEffect(() => { setReviewer(""); }, [jobId]);
-  useEffect(() => { if (proposal?.proposal_digest) heading.current?.focus(); }, [proposal?.proposal_digest]);
+  useEffect(() => { if (result?.comparison_id) resultHeading.current?.focus(); else if (proposal?.proposal_digest) heading.current?.focus(); }, [proposal?.proposal_digest, result?.comparison_id, replaySource?.run_id]);
   useEffect(() => { setStep(""); }, [sourceId]);
   useEffect(() => { if (result && !replaySource) void refetchJob(); }, [result, replaySource, refetchJob]);
   const submit = useMutation({ mutationFn: async (saved: MethodPending) => { const response = await api.suggestMethodComparison(saved.sourceId, saved.request); if (!matchesMethodPending(response.job, saved)) throw new Error("The response does not match the saved request. Keep this request and check its status."); return response.job; }, onSuccess: (value) => { cacheJob(value); if (settleMethodPending(value)) setPending(undefined); } });
@@ -91,7 +93,7 @@ export function MethodComparison({ sourceId, runs, catalog }: { sourceId: string
       {!jobId ? <>
         <div className="config-grid"><Field label="Method test source run"><select value={sourceId} onChange={(event) => { const value = event.target.value; setParams((old) => { const next = new URLSearchParams(old); if (value) next.set("source", value); else next.delete("source"); return next; }); }}><option value="">Choose an observed run</option>{runs.map((run) => <option key={run.run_id} value={run.run_id}>{runLabel(run)} · {sentence(run.mode)} · {run.created_at ? new Date(run.created_at).toLocaleString() : run.run_id}</option>)}</select></Field><Field label="Method AI mode"><select value={mode} onChange={(event) => setMode(event.target.value)}><option value="off">Off · no model requests</option><option value="assist">Assist · review the proposed method</option><option value="auto">Auto · apply an allowed method</option></select></Field></div>
         <p>Every test repeats the full experiment in its original scope with runtime AI off. Execute always stops for a fresh approval. Both runs are evaluated with one unchanged rule.</p>
-        {DEMO_MODE ? <Callout title="Connect a local workspace">A method test needs a saved run with independent observations.</Callout> : sourceId && context.isPending ? <LoadingState label="Finding compatible methods" /> : context.isError ? <ErrorState title="Method test unavailable" error={context.error} retry={() => { void context.refetch(); }} /> : null}
+        {DEMO_MODE ? <Callout title="Connect a local workspace">A method test needs a saved run with independent observations.</Callout> : sourceId && context.isPending ? <LoadingState label="Finding compatible methods" /> : context.isError ? <Callout tone="warning" title="Method test could not be prepared"><p>{context.error.message}</p>{runs.find((run) => run.run_id === sourceId)?.mode === "execute" ? <p>Check that the original environment’s runner is ready, then retry here. <Link to="/runners" target="_blank" rel="noopener noreferrer">Open runner readiness in a new tab</Link>. Your source, rule and question stay on this page.</p> : null}<Button onClick={() => { void context.refetch(); }}>Retry method preparation</Button></Callout> : null}
         {context.data && !steps.length ? <Callout title="No compatible alternative">This run has no registered method swap that preserves its original scope, profile and observers.</Callout> : null}
         <div className="config-grid"><Field label="Step to vary"><select value={step} onChange={(event) => setStep(event.target.value)}><option value="">Choose a compatible step</option>{steps.map((item) => <option key={item.step_id} value={item.step_id}>{item.title_from} · {item.step_id}</option>)}</select></Field><Field label="Saved rule to evaluate"><select value={candidateId} onChange={(event) => setCandidateId(event.target.value)}><option value="">Choose a SQLite or Sigma rule</option>{choices.map((item) => <option key={item.id} value={item.id}>{item.document.title} · Revision {item.document.revision ?? 1}</option>)}</select></Field><Field label="Method model provider"><select value={providerId} onChange={(event) => setProviderId(event.target.value)}><option value="">Choose a configured model</option>{models.map((item) => <option key={item.provider_id} value={item.provider_id}>{item.provider_id} · {item.model}</option>)}</select></Field><Field label="Original case context"><select value={caseRole} onChange={(event) => setCaseRole(event.target.value as DetectionCaseRole)}><option value="attack">Attack case</option><option value="benign">Benign activity</option><option value="replay">Replay</option><option value="heldout">Previously withheld · becomes development input</option></select></Field></div>
         {detectors.isError ? <ErrorState title="Saved rules unavailable" error={detectors.error} retry={() => { void detectors.refetch(); }} /> : null}
@@ -106,6 +108,8 @@ export function MethodComparison({ sourceId, runs, catalog }: { sourceId: string
           {!result && decision?.decision !== "reject" && (!stopped || activeAnalysis) ? <Button disabled={cancel.isPending} onClick={() => cancel.mutate(parent.job_id)}>Stop method test</Button> : null}
           {errorText(parent) ? <Callout tone="warning" title="Method test needs attention">{errorText(parent)}</Callout> : null}
           {proposal ? <>
+            {result ? <div className="method-retained-result" role="region" aria-label="Method comparison results" tabIndex={-1} ref={resultHeading}>{replaySource?.run_id === result.child_run_id ? <MethodComparisonResult receipt={result} proposal={proposal} replaySource={replaySource} /> : <LoadingState label="Verifying the saved replay evidence binding" />}</div> : null}
+            <ProposalSurface className="method-proposal-review">{result ? <summary>Review the accepted method and replay plan</summary> : null}
             <h3 ref={heading} tabIndex={-1}>Review the method change</h3><p>{proposal.reason}</p>
             <div className="method-change"><div><span>Original method</span><strong>{proposal.option.title_from}</strong></div><span aria-hidden="true">→</span><div><span>Proposed method</span><strong>{proposal.option.title}</strong></div></div>
             <ol className="method-sequence"><li>Replay the full experiment with this method.</li><li>Evaluate the same saved rule on the original and replay observations.</li><li>Save the comparison and both evaluation records.</li></ol>
@@ -125,7 +129,7 @@ export function MethodComparison({ sourceId, runs, catalog }: { sourceId: string
               {canRecover ? <p>Recovery evaluates the existing runs. It cannot run the experiment again.</p> : null}
               {recovery.isError ? <ErrorState title="Comparison recovery status unavailable" error={recovery.error} retry={() => { void recovery.refetch(); }} /> : null}
             </> : null}
-            {result ? replaySource?.run_id === result.child_run_id ? <MethodComparisonResult receipt={result} proposal={proposal} replaySource={replaySource} /> : <LoadingState label="Verifying the saved replay evidence binding" /> : null}
+            </ProposalSurface>
           </> : null}
           {canStartAgain ? <Button onClick={() => { setParams((old) => { const next = new URLSearchParams(old); next.delete("method_job"); return next; }); submit.reset(); review.reset(); cancel.reset(); recover.reset(); setLocalError(undefined); }}>Set up another method test</Button> : null}
         </> : null}

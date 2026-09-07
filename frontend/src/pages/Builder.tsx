@@ -134,7 +134,15 @@ function GraphWorkspace({ behaviors, actions }: { behaviors: Behavior[]; actions
   const [paletteWidth, setPaletteWidth] = useState(290); const [inspectorWidth, setInspectorWidth] = useState(330);
   const clipboard = useRef<ScenarioStep | undefined>(undefined); const flow = useReactFlow<BehaviorFlowNode, FlowEdge>();
 
-  useEffect(() => { setNodes((current) => makeNodes(graph).map((node) => ({ ...node, selected: current.find((item) => item.id === node.id)?.selected ?? node.id === selectedId }))); setEdges(flowEdges(graph, behaviorMap)); }, [graph, behaviorMap, makeNodes, selectedId]);
+  useEffect(() => {
+    setNodes((current) => makeNodes(graph).map((node) => {
+      const previous = current.find((item) => item.id === node.id);
+      // Retain measurements while refreshing node data so selection never hides
+      // a focused node before ResizeObserver can measure it again.
+      return { ...node, measured: previous?.measured, selected: previous?.selected ?? node.id === selectedId };
+    }));
+    setEdges(flowEdges(graph, behaviorMap));
+  }, [graph, behaviorMap, makeNodes, selectedId]);
   useEffect(() => {
     if (!focusMode) return;
     const exitFocus = (event: globalThis.KeyboardEvent) => { if (event.key === "Escape" && !commandPaletteOpen) setFocusMode(false); };

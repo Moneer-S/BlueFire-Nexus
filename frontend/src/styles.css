@@ -1251,3 +1251,10 @@ pre,
 .method-change span { color: var(--muted-strong); }
 .method-sequence { padding-left: 24px; margin: 0; display: grid; gap: 10px; }
 @media (max-width: 760px) { .method-comparison > header { flex-direction: column; align-items: stretch; padding: 18px; } .method-comparison-body { padding: 0 18px 18px; } .method-change { gap: 12px; } }
+
+.method-proposal-review { min-width: 0; }
+div.method-proposal-review, details.method-proposal-review[open] { display: grid; gap: 20px; }
+.method-proposal-review > h3, .method-proposal-review > p { margin: 0; line-height: 1.6; }
+.method-proposal-review > summary { padding: 14px 0; cursor: pointer; font-weight: 600; }
+.method-retained-result { min-width: 0; }
+.method-retained-result:focus-visible { outline: 2px solid var(--blue-soft); outline-offset: 4px; }

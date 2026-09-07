@@ -116,6 +116,29 @@ test("keyboard selection, copy and deletion follow the focused step", async ({ p
   await expect(first).toHaveCount(1);
 });
 
+test("keyboard selection retains focus and text fields keep native copy", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto("./#/builder");
+  await page.getByRole("button", { name: "Show all branches", exact: true }).click();
+  for (const id of ["run_fixture", "place_fixture", "run_fixture"]) {
+    const node = page.locator(`.react-flow__node[data-id="${id}"]`);
+    await node.focus();
+    await page.keyboard.press("Enter");
+    await expect(node).toHaveClass(/selected/);
+    await expect(node).toBeFocused();
+    await page.keyboard.press("Control+c");
+    await expect(page.locator(".compatibility-banner")).toContainText(`${id} copied`);
+    await expect(node).toBeFocused();
+  }
+  const name = page.getByRole("textbox", { name: "Experiment name", exact: true });
+  await name.fill("Native text clipboard");
+  await name.press("Control+a");
+  await page.keyboard.press("Control+c");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("Native text clipboard");
+  await expect(name).toBeFocused();
+  await expect(page.locator(".compatibility-banner")).toContainText("run_fixture copied");
+});
+
 test("laptop canvas and step details fit the viewport without losing the experiment", async ({ page }) => {
   for (const viewport of [{ width: 1366, height: 768 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
     await page.setViewportSize(viewport);

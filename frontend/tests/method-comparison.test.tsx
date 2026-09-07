@@ -145,3 +145,40 @@ it("returns method-owned replay recovery to the same Compare operation", () => {
   expect(new URLSearchParams(path.split("?")[1]).get("source")).toBe(source.run_id);
   expect(methodComparisonLink({ ...child, request: {} })).toBeUndefined();
 });
+
+
+it("preserves the method draft while runner readiness is checked separately", async () => {
+  const { user, send } = mount();
+  vi.mocked(api.methodComparisonContext).mockRejectedValueOnce(new Error("Replay could not be prepared for review."));
+  await user.click(screen.getByRole("button", { name: "Set up method test" }));
+  const readiness = await screen.findByRole("link", { name: "Open runner readiness in a new tab" });
+  expect(readiness).toHaveAttribute("href", "/runners");
+  expect(readiness).toHaveAttribute("target", "_blank");
+  await user.selectOptions(screen.getByLabelText("Saved rule to evaluate"), detector.id);
+  await user.type(screen.getByLabelText("Question for this method test"), "Keep my method question");
+  await user.click(screen.getByRole("button", { name: "Retry method preparation" }));
+  await screen.findByRole("option", { name: "Record collection · collect" });
+  expect(screen.getByLabelText("Saved rule to evaluate")).toHaveValue(detector.id);
+  expect(screen.getByLabelText("Question for this method test")).toHaveValue("Keep my method question");
+  expect(screen.getByLabelText("Method AI mode")).toHaveValue("off");
+  expect(send).not.toHaveBeenCalled();
+});
+
+it("focuses the retained results and keeps the accepted proposal in a closed history disclosure", async () => {
+  const parent = proposalJob();
+  parent.progress.decision = { proposal_digest: digest, decision: "accept", reviewed_by: "reviewer" };
+  parent.progress.replay_result = { source: { ...context.source_run, run_id: "run-replay" } };
+  parent.progress.comparison = { schema_version: "bluefire.method-comparison-result.v1", proposal_job_id: parent.job_id, proposal_digest: digest, source_run_id: source.run_id, child_run_id: "run-replay", replay_job_id: methodJobId(childSubmission), candidate_id: detector.id, candidate_definition_digest: digest, baseline_evaluation_id: "evaluation-original", child_evaluation_id: "evaluation-replay", comparison_id: "comparison-retained", comparison_digest: digest };
+  vi.spyOn(api, "savedComparison").mockRejectedValue(new Error("Report temporarily unavailable"));
+  vi.spyOn(api, "detectionRunEvaluations").mockRejectedValue(new Error("Evaluations temporarily unavailable"));
+  const { user, send, effect } = mount(parent, replayJob(parent));
+  const results = await screen.findByRole("region", { name: "Method comparison results" });
+  expect(results).toHaveFocus();
+  expect(await screen.findByText("Comparison results unavailable")).toBeVisible();
+  const history = screen.getByText("Review the accepted method and replay plan");
+  expect(history.closest("details")).not.toHaveAttribute("open");
+  await user.click(history);
+  expect(screen.getByRole("heading", { name: "Review the method change" })).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Accept method and prepare approval" })).not.toBeInTheDocument();
+  expect(send).not.toHaveBeenCalled(); expect(effect).not.toHaveBeenCalled();
+});
