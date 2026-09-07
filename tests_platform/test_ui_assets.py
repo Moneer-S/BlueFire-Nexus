@@ -99,7 +99,7 @@ def test_execute_approval_is_ephemeral_and_operator_bound() -> None:
     )
     assert "const preferences = readBrowserUiPreferences()" in context
     assert "writeBrowserUiPreferences(buildUiPreferenceDocument" in context
-    assert "Explicit one-time Execute approval" in runs
+    assert "disabled={!exactEnvelopeReady || !confirmed || !approvedBy.trim() || pending}" in runs
     assert "onSettled: clearApproval" in runs
     assert "I approve this exact immutable" in runs
     assert '"job envelope"' in runs
@@ -313,7 +313,7 @@ def test_durable_proposal_review_and_retry_stay_separate_from_execute_approval()
     for journey_copy in (
         "Proposal, policy, and application trail",
         "Auto can apply only policy-valid Simulate choices from registered Behavior/Action contracts",
-        "Explicit one-time Execute approval",
+        "I approve this exact immutable",
         "Execute proposals still require durable review plus a fresh one-time approval before runner effects",
     ):
         assert journey_copy in runs
