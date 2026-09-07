@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, Mapping
+from typing import Mapping
 
 from .product_store_assistance import job_at, patch
 from .product_store_errors import ProductStoreError
