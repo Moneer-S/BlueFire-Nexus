@@ -2,6 +2,7 @@ import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDeci
 import { sameJson } from "./replay-review";
 import type { DetectionAIDecision, DetectionAIRequest } from "./detection-ai";
 import type { MethodContext, MethodDecision, MethodRequest } from "./method-comparison";
+import type { AssistanceContext, AssistanceEnvelope, AssistanceRequest } from "./assistance";
 import { compareDemoRuns, demoCatalog, demoRuns, demoScenario } from "./demo";
 
 const API_ROOT = "/api/v1";
@@ -285,6 +286,22 @@ export function buildReplayPayload(options: ReplayPayloadOptions): Record<string
 }
 
 export const api = {
+  async assistanceContext(runId: string, candidateId: string): Promise<AssistanceContext> {
+    if (DEMO_MODE) throw new ApiError("Contextual assistance requires saved observations in the connected local service.", "demo_assistance_refused", undefined, 409);
+    return request(`/assistance/context?${new URLSearchParams({ run_id: runId, candidate_id: candidateId })}`);
+  },
+  async submitAssistance(body: AssistanceRequest): Promise<AssistanceEnvelope> {
+    if (DEMO_MODE) throw new ApiError("The demo cannot submit assistant work.", "demo_assistance_refused", undefined, 409);
+    return request("/assistance/turns", { method: "POST", body: JSON.stringify(body) });
+  },
+  async assistanceTurn(jobId: string): Promise<AssistanceEnvelope> {
+    if (DEMO_MODE) throw new ApiError("Saved assistant work requires the connected local service.", "demo_assistance_refused", undefined, 409);
+    return request(`/assistance/turns/${encodeURIComponent(jobId)}`);
+  },
+  async continueAssistance(jobId: string, body: { submission_id: string; context_digest: string }): Promise<AssistanceEnvelope> {
+    if (DEMO_MODE) throw new ApiError("The demo cannot continue assistant work.", "demo_assistance_refused", undefined, 409);
+    return request(`/assistance/turns/${encodeURIComponent(jobId)}/continue`, { method: "POST", body: JSON.stringify(body) });
+  },
   async checkAIProvider(provider: Record<string, unknown>, connect: boolean): Promise<AIProviderCheck> {
     if (DEMO_MODE) return { schema_version: "bluefire.ai-provider-check.v1", provider_id: String(provider.id), api_style: String(provider.kind), model: String(provider.model), credential_state: "unavailable", connectivity: "not_tested", structured_output: "not_tested", attempts: 0, used_fallback: false, code: "demo_no_network", message: "Demo mode cannot resolve server credentials or test provider connections. No request was sent." };
     return request("/ai/providers/check", { method: "POST", body: JSON.stringify({ provider, connect }) }, 12_000);

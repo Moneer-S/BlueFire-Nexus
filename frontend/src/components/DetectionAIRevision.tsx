@@ -4,6 +4,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { detectionApplication, detectionJobActive, detectionJobId, detectionProposal, matchesDetectionAIReceipt, matchesDetectionRetry, proposalIsCurrent, readDetectionAIReceipt, settleDetectionAIReceipt, storeDetectionAIReceipt, type DetectionAIDecision, type DetectionAIReceipt } from "../lib/detection-ai";
 import { sourceObservedRecords } from "../lib/run-handoffs";
+import { usePublishAssistanceSelection } from "../state/AssistanceContext";
 import type { CatalogResponse, DetectionCaseRole, DetectionResource, RunJob, RunRecord } from "../types";
 import { Button, Callout, ErrorState, Field, LoadingState, sentence } from "./Primitives";
 
@@ -14,6 +15,7 @@ export function DetectionAIRevision({ resource, sourceRun, providers, defaultPro
   defaultProvider?: string;
   manualEdits: boolean;
 }) {
+  usePublishAssistanceSelection(resource && sourceRun ? { runId: sourceRun.run_id, candidateId: resource.id, resourceDigest: resource.digest, title: resource.document.title ?? resource.id, manualEdits } : undefined);
   const client = useQueryClient();
   const [params, setParams] = useSearchParams();
   const [receipt, setReceipt] = useState(readDetectionAIReceipt);

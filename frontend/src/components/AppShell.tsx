@@ -9,6 +9,8 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { api, DEMO_MODE } from "../lib/api";
 import { demoScenario } from "../lib/demo";
 import { useProduct } from "../state/ProductContext";
+import { AssistanceProvider } from "../state/AssistanceContext";
+import { ExperimentAssistant } from "./ExperimentAssistant";
 import { Badge, IconButton } from "./Primitives";
 import "./AppShell.css";
 
@@ -41,6 +43,10 @@ function FlameMark() {
 }
 
 export function AppShell() {
+  return <AssistanceProvider><WorkspaceShell /></AssistanceProvider>;
+}
+
+function WorkspaceShell() {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
@@ -137,7 +143,7 @@ export function AppShell() {
         <IconButton label={collapsed ? "Expand navigation" : "Collapse navigation"} className="sidebar-collapse" onClick={() => setCollapsed((value) => !value)}><ChevronLeft /></IconButton>
       </aside>
       <div className="workspace-shell" inert={mobileOpen}>
-        <header className="workspace-topbar"><div><strong>{current}</strong></div><div className="topbar-actions"><Badge tone={catalog.isSuccess ? "success" : catalog.isError ? "danger" : "warning"} dot>{catalog.isSuccess ? "Connected" : catalog.isError ? "Offline" : "Connecting"}</Badge>{DEMO_MODE && <Badge tone="violet">Demo</Badge>}</div></header>
+        <header className="workspace-topbar"><div><strong>{current}</strong></div><div className="topbar-actions"><ExperimentAssistant providers={catalog.data?.ai.providers ?? []} /><Badge tone={catalog.isSuccess ? "success" : catalog.isError ? "danger" : "warning"} dot>{catalog.isSuccess ? "Connected" : catalog.isError ? "Offline" : "Connecting"}</Badge>{DEMO_MODE && <Badge tone="violet">Demo</Badge>}</div></header>
         <main id="main-content" tabIndex={-1}><Outlet /></main>
       </div>
     </div>
