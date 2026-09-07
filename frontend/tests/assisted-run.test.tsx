@@ -25,7 +25,7 @@ function graph(): GraphEnvelope {
 }
 function ready(): AssistanceRunEnvelope {
   const preparation = { schema_version: "bluefire.assistance-run-preparation.v1" as const, preparation_digest: digest, context_digest: digest, selection,
-    scenario: document, run_request: { ...document, ...selection.run_intent }, preflight: { ready: true, status: "ready", plan: { steps: [], edges: [], mode: "simulate" } }, approval_created: false as const, effects_started: false as const };
+    scenario: document, run_request: { scenario: document, ...selection.run_intent }, preflight: { ready: true, status: "ready", plan: { steps: [], edges: [], mode: "simulate" } }, approval_created: false as const, effects_started: false as const };
   return { job: { schema_version: "bluefire.job.v1", job_id: preparationJob, kind: "run.assistance.prepare", state: "completed", request: {}, progress: { preparation } }, preparation,
     decision: null, run_job: null, inspection_job: null, inspection: null, result: null, review_ready: true };
 }
@@ -149,9 +149,11 @@ it("follows the accepted run through inspection even when preparation was interr
     run_job: { schema_version: "bluefire.job.v1" as const, job_id: `job-${"e".repeat(32)}`, kind: "scenario.run", state: "queued" as const, progress: {}, request: {
       _run_submission_request: initial.preparation!.run_request, assistance_run: { operation_job_id: preparationJob, preparation_digest: digest } } } };
   const completed: AssistanceRunEnvelope = { ...accepted,
-    run_job: { ...accepted.run_job, state: "completed" },
-    inspection: { schema_version: "bluefire.run-evidence-inspection.v1", run_id: "run-reviewed", run_digest: digest, summary: "Simulation completed without independent observations.", findings: [], limitations: ["Synthetic only"], observed_records: 0, total_records: 7, status: "insufficient", provider: null },
-    result: { kind: "run_inspected", step_id: "inspect", run_id: "run-reviewed", run_job_id: accepted.run_job.job_id, inspection_job_id: `job-${"f".repeat(32)}`, scenario_id: document.id, version: 2, digest, mode: "simulate", objective_reached: null, cleanup_state: "complete", observed_records: 0, total_records: 7, inspection_status: "insufficient", native_path: "/runs/run-reviewed" } };
+    run_job: { ...accepted.run_job, state: "completed", result_ref: "run-reviewed" },
+    inspection_job: { schema_version: "bluefire.job.v1", job_id: `job-${"f".repeat(32)}`, kind: "run.evidence.inspect", state: "completed", progress: {}, request: { run_id: "run-reviewed", run_digest: digest, assistance_run: { operation_job_id: preparationJob, preparation_digest: digest } } },
+    inspection: { schema_version: "bluefire.run-evidence-inspection.v1", run_id: "run-reviewed", run_digest: digest, summary: "Simulation completed without independent observations.", findings: [], limitations: ["Synthetic only"], observed_records: 0, total_records: 7, status: "insufficient", provider: null, model_interpretation: false },
+    result: { kind: "run_inspected", run_id: "run-reviewed", run_job_id: accepted.run_job.job_id, inspection_job_id: `job-${"f".repeat(32)}`, scenario_id: document.id, version: 2, digest, mode: "simulate", objective_reached: null, cleanup_state: "complete", observed_records: 0, total_records: 7, inspection_status: "insufficient", native_path: "/runs/run-reviewed" } };
+  expect(() => checkedAssistanceRun({ ...completed, inspection: { ...completed.inspection!, run_id: "unrelated-run" } }, preparationJob)).toThrow("does not match its saved inspection");
   const get = vi.spyOn(api, "assistanceRun").mockResolvedValueOnce(initial).mockResolvedValue(completed);
   vi.spyOn(api, "reviewAssistanceRun").mockResolvedValue(accepted);
   const view = mount(true);

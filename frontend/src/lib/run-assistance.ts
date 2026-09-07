@@ -15,7 +15,7 @@ export interface SavedGraphSelection { kind: "saved_graph"; proposal_job_id: str
 export interface RunPreparation {
   schema_version: "bluefire.assistance-run-preparation.v1";
   preparation_digest: string; context_digest: string; selection: SavedGraphSelection;
-  scenario: Scenario; run_request: Scenario & RunIntent; preflight: PreflightReport;
+  scenario: Scenario; run_request: { scenario: Scenario } & RunIntent; preflight: PreflightReport;
   approval_created: false; effects_started: false;
 }
 export interface RunPreparationDecision { decision: "accept" | "reject" | "policy"; preparation_digest: string }
@@ -23,7 +23,7 @@ export interface RunInspection {
   schema_version: "bluefire.run-evidence-inspection.v1"; run_id: string; run_digest: string;
   summary: string; findings: Array<{ claim: string; evidence_refs: string[] }>; limitations: string[];
   observed_records: number; total_records: number; status: "supported" | "insufficient";
-  provider: Record<string, unknown> | null;
+  provider: Record<string, unknown> | null; model_interpretation: boolean;
 }
 export interface RunInspectedResult {
   kind: "run_inspected"; step_id: string; run_id: string; run_job_id: string; inspection_job_id: string;
@@ -34,7 +34,7 @@ export interface RunInspectedResult {
 export interface AssistanceRunEnvelope {
   job: RunJob; preparation: RunPreparation | null; decision: RunPreparationDecision | null;
   run_job: RunJob | null; inspection_job: RunJob | null; inspection: RunInspection | null;
-  result: RunInspectedResult | null; review_ready: boolean;
+  result: Omit<RunInspectedResult, "step_id"> | null; review_ready: boolean;
 }
 export function runIntent(config: RunConfiguration): RunIntent {
   return { mode: config.mode, autonomy: config.autonomy, ai_provider_id: config.provider || null,
@@ -66,6 +66,16 @@ export function checkedAssistanceRun(value: AssistanceRunEnvelope, jobId: string
     || preparation.approval_created !== false || preparation.effects_started !== false)) throw new Error("The saved run preparation could not be verified.");
   if (value.decision && (!preparation || value.decision.preparation_digest !== preparation.preparation_digest || !["accept", "reject", "policy"].includes(value.decision.decision))) throw new Error("The recorded decision does not match this preparation.");
   if (value.run_job && (value.run_job.kind !== "scenario.run" || !preparation || !sameJson(value.run_job.request?._run_submission_request, preparation.run_request) || !sameJson(value.run_job.request?.assistance_run, { operation_job_id: jobId, preparation_digest: preparation?.preparation_digest }))) throw new Error("The run does not match the reviewed experiment and settings.");
+  const inspectionJob = value.inspection_job, inspection = value.inspection, result = value.result;
+  if (inspectionJob && (inspectionJob.kind !== "run.evidence.inspect" || !value.run_job?.result_ref
+    || inspectionJob.request?.run_id !== value.run_job.result_ref || !sameJson(inspectionJob.request?.assistance_run, { operation_job_id: jobId, preparation_digest: preparation?.preparation_digest }))) throw new Error("The evidence review does not belong to this recorded run.");
+  if (inspection && (!inspectionJob || inspection.schema_version !== "bluefire.run-evidence-inspection.v1"
+    || inspection.run_id !== inspectionJob.request?.run_id || inspection.run_digest !== inspectionJob.request?.run_digest
+    || !["supported", "insufficient"].includes(inspection.status) || typeof inspection.model_interpretation !== "boolean")) throw new Error("The evidence summary does not match its saved inspection.");
+  if (result && (!inspection || !preparation || result.run_id !== inspection.run_id || result.run_job_id !== value.run_job?.job_id
+    || result.inspection_job_id !== inspectionJob?.job_id || result.inspection_status !== inspection.status
+    || result.scenario_id !== preparation.selection.application.scenario_id || result.version !== preparation.selection.application.version
+    || result.digest !== preparation.selection.application.digest)) throw new Error("The saved outcome belongs to another experiment or evidence review.");
   return value;
 }
 
