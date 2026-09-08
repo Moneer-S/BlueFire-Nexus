@@ -222,4 +222,3 @@ it("preserves an oversized live edit across candidate switches in the open sessi
   await user.click(screen.getByRole("button", { name: "Discard local inputs" }));
   await user.click(screen.getByRole("button", { name: "Discard these inputs" }));
 });
-

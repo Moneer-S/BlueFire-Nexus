@@ -73,6 +73,13 @@ def test_all_required_product_routes_are_present() -> None:
     )
     for route in routes:
         assert f'path="{route}"' in app
+    runs_page = (SOURCE_ROOT / "pages" / "Runs.tsx").read_text(encoding="utf-8")
+    assert 'import { RunWorkspace } from "../components/RunWorkspace"' in runs_page
+    assert "return <RunWorkspace />" in runs_page
+    assert (
+        'export { RunReview, EvidenceDetail, DetectionDetail } from "../components/RunWorkspace"'
+        in runs_page
+    )
 
 
 def test_modes_and_autonomy_are_exact_and_independent(source: str) -> None:
@@ -89,7 +96,7 @@ def test_modes_and_autonomy_are_exact_and_independent(source: str) -> None:
 
 def test_execute_approval_is_ephemeral_and_operator_bound() -> None:
     context = (SOURCE_ROOT / "state" / "ProductContext.tsx").read_text(encoding="utf-8")
-    runs = (SOURCE_ROOT / "pages" / "Runs.tsx").read_text(encoding="utf-8")
+    runs = (SOURCE_ROOT / "components" / "RunWorkspace.tsx").read_text(encoding="utf-8")
     assert "approved: false" in context
     assert 'approvedBy: ""' in context
     assert "clearApproval" in context
@@ -111,7 +118,7 @@ def test_execute_approval_is_ephemeral_and_operator_bound() -> None:
 
 def test_run_ui_uses_durable_job_lifecycle_routes() -> None:
     api = (SOURCE_ROOT / "lib" / "api.ts").read_text(encoding="utf-8")
-    runs = (SOURCE_ROOT / "pages" / "Runs.tsx").read_text(encoding="utf-8")
+    runs = (SOURCE_ROOT / "components" / "RunWorkspace.tsx").read_text(encoding="utf-8")
     types = (SOURCE_ROOT / "types.ts").read_text(encoding="utf-8")
     for route in (
         'request("/runs"',
@@ -201,7 +208,7 @@ def test_graph_editor_exposes_typed_contract_controls(source: str) -> None:
 
 
 def test_run_ui_separates_preview_preferences_from_canonical_preflight() -> None:
-    runs = (SOURCE_ROOT / "pages" / "Runs.tsx").read_text(encoding="utf-8")
+    runs = (SOURCE_ROOT / "components" / "RunWorkspace.tsx").read_text(encoding="utf-8")
     configuration = (SOURCE_ROOT / "components" / "RunConfiguration.tsx").read_text(
         encoding="utf-8"
     )
@@ -282,7 +289,7 @@ def test_replay_compare_requires_fresh_execute_approval_and_strict_parameters() 
 
 def test_durable_proposal_review_and_retry_stay_separate_from_execute_approval() -> None:
     api = (SOURCE_ROOT / "lib" / "api.ts").read_text(encoding="utf-8")
-    runs = (SOURCE_ROOT / "pages" / "Runs.tsx").read_text(encoding="utf-8")
+    runs = (SOURCE_ROOT / "components" / "RunWorkspace.tsx").read_text(encoding="utf-8")
     planner = (SOURCE_ROOT / "pages" / "AIPlanner.tsx").read_text(encoding="utf-8")
     review = (SOURCE_ROOT / "components" / "ProposalReview.tsx").read_text(encoding="utf-8")
     for route in ("/retry`", "/proposals`", "/${action}`"):
