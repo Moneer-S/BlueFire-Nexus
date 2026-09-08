@@ -1,6 +1,11 @@
 """Bounded runner deadlines with fake clocks and Python-only process fixtures."""
 
+import os
+import stat
+import subprocess
+import sys
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -276,10 +281,11 @@ def test_managed_host_real_watchdog_respects_scaled_deadlines(tmp_path, mode):
     from concurrent.futures import ThreadPoolExecutor
 
     from bluefire.runner_client import RunnerTaskCancelled, RunnerTaskTimedOut
+    from tests_platform.runner_deadline_host_helper import deadline_bootstrap
     from tests_platform.runner_lifecycle_host_helper import ProcessTestSecretProvider
     from tests_platform.test_authenticated_runner_transport import _result
     from tests_platform.test_runner_cancellation import _full_manifest, _full_profile
-    from tests_platform.test_runner_lifecycle import PROFILE_ID, _fake_bootstrap, _host_command
+    from tests_platform.test_runner_lifecycle import PROFILE_ID, _host_command
 
     def command(spec):
         values = list(_host_command(spec))
@@ -291,7 +297,7 @@ def test_managed_host_real_watchdog_respects_scaled_deadlines(tmp_path, mode):
     lifecycle = ManagedRunnerLifecycle(
         tmp_path / "m",
         secret_provider=provider,
-        bootstrap_factory=_fake_bootstrap,
+        bootstrap_factory=deadline_bootstrap,
         host_command_factory=command,
         start_timeout_seconds=10,
         stop_timeout_seconds=10,
@@ -356,3 +362,78 @@ def test_managed_host_real_watchdog_respects_scaled_deadlines(tmp_path, mode):
         assert not lifecycle._owned_processes
     finally:
         lifecycle.stop(profile_id=PROFILE_ID)
+
+
+@pytest.mark.parametrize("platform_name", ["macos", "linux", "windows"])
+def test_deadline_fixture_binds_private_darwin_copies_without_launch(
+    tmp_path, monkeypatch, platform_name
+):
+    from bluefire.util import file_hash
+    from tests_platform import runner_deadline_host_helper as helper
+
+    source = tmp_path / "shared-python"
+    source.write_bytes(b"fixture bytes only; never executed\r\n\x1a")
+    monkeypatch.setattr(sys, "executable", str(source))
+    monkeypatch.setattr(subprocess, "Popen", lambda *_a, **_k: pytest.fail("no launch"))
+    bootstrap = helper.deadline_bootstrap(
+        managed_root=tmp_path / "managed", platform_name=platform_name, architecture="x86_64"
+    )
+    binary = bootstrap.binary_path
+    watchdog = binary.parent / "python-watchdog" if platform_name == "macos" else None
+    assert binary.read_bytes() == source.read_bytes()
+    assert bootstrap.binary_sha256 == file_hash(binary).removeprefix("sha256:")
+    assert bootstrap.manifest.sha256 == bootstrap.binary_sha256
+    assert bootstrap.manifest.size == binary.stat().st_size
+    if watchdog is not None:
+        assert binary != source and binary.name == "python-runner"
+        assert watchdog.read_bytes() == source.read_bytes()
+        assert not os.path.samefile(binary, watchdog)
+        assert not os.path.samefile(source, binary)
+        assert binary.stat().st_nlink == watchdog.stat().st_nlink == 1
+        if os.name != "nt":
+            for owned in (binary.parent, binary, watchdog):
+                assert stat.S_IMODE(owned.stat().st_mode) == 0o700
+                assert owned.stat().st_uid == os.geteuid()
+    else:
+        assert binary == source.resolve(strict=True)
+        assert not (bootstrap.sandbox_path / "fixture-runtime").exists()
+
+    constructions = []
+    serves = []
+
+    def capture_runner(*args, **kwargs):
+        constructions.append((args, kwargs))
+        return SimpleNamespace()
+
+    monkeypatch.setattr(helper, "TimedFixtureRunner", capture_runner)
+    monkeypatch.setattr(helper, "serve_managed_runner", lambda **kwargs: serves.append(kwargs))
+    monkeypatch.setattr(helper.runner_host, "AuthenticatedRunnerServer", object())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "helper",
+            "enrollment",
+            str(binary),
+            str(bootstrap.sandbox_path),
+            "state",
+            "record",
+            "gate",
+            "launch",
+            platform_name,
+            "7",
+        ],
+    )
+    helper.main()
+    assert constructions == [
+        (
+            (str(binary), bootstrap.sandbox_path),
+            {"timeout_seconds": 7.0, "_watchdog_interpreter": watchdog},
+        )
+    ]
+    assert len(serves) == 1
+    assert serves[0]["runner_binary"] == str(binary)
+    assert serves[0]["runner_timeout_seconds"] == 7.0
+    assert serves[0]["runner"].platform_name == platform_name
+    code = (Path(serves[0]["work_root"]) / "execute").read_text(encoding="utf-8")
+    assert 'open("fixture-started", "w").close()' in code and "time.sleep(1.25)" in code
