@@ -93,6 +93,7 @@ _RESOURCE_KINDS = {
     "model_provider",
     "plugin",
     "research_source",
+    "run_presentation",
     "runner",
     "runner_profile",
 }

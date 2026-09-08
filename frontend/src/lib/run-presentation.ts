@@ -1,9 +1,6 @@
 import type { RunRecord, RunStep } from "../types";
 
-// Presentation only: names come from the saved experiment, never today's catalog.
-export function runLabel(run: Pick<RunRecord, "scenario" | "scenario_title" | "objective" | "scenario_id">): string {
-  return run.scenario?.title?.trim() || run.scenario_title?.trim() || run.objective?.trim() || run.scenario_id || "Experiment";
-}
+export { runLabel, runMatchesSearch } from "./runPresentation";
 
 export function objectiveLabel(reached?: boolean, mode?: string): string {
   return reached === true ? (mode === "simulate" ? "Achieved (synthetic)" : "Achieved") : reached === false ? "Not achieved" : "Not established";

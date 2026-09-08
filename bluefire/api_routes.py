@@ -84,6 +84,16 @@ class APIRoutes:
             return ""
         return run_id
 
+    def _run_presentation_id(self, path: str) -> str | None:
+        prefix = f"{API_PREFIX}/runs/"
+        if not path.startswith(prefix) or not path.endswith("/presentation"):
+            return None
+        run_id = path[len(prefix) : -len("/presentation")]
+        if not _RUN_ID.fullmatch(run_id):
+            self._error(HTTPStatus.BAD_REQUEST, "invalid_run_id", "Run identifier is invalid.")
+            return ""
+        return run_id if self._management_query_free() else ""
+
     def _run_bundle_id(self, path: str) -> str | None:
         prefix = f"{API_PREFIX}/runs/"
         if not path.startswith(prefix) or not path.endswith("/bundle"):

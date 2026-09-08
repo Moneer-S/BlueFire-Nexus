@@ -342,6 +342,8 @@ class PlatformService(Protocol):
     def list(self) -> JsonResult:
         """Return run summaries suitable for history and comparison."""
 
+    def rename_run(self, run_id: str, request: JsonObject) -> JsonResult: ...
+
     def run_bundle(self, run_id: str) -> bytes: ...
 
     def detail(self, run_id: str) -> JsonResult:

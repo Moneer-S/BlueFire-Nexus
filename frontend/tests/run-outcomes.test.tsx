@@ -104,10 +104,10 @@ it("keeps outstanding cleanup visible and makes retained evidence inspectable", 
   expect(screen.getByText("Exact file content verified")).toBeVisible();
 });
 
-it("uses saved names and leaves objective text available as a legacy fallback", () => {
+it("uses frozen procedure names and a neutral fallback when the name is unavailable", () => {
   expect(runLabel({ scenario_title: "Original experiment", objective: "Long objective", scenario_id: "internal.v1" })).toBe("Original experiment");
-  expect(runLabel({ objective: "Legacy objective", scenario_id: "internal.v1" })).toBe("Legacy objective");
-  expect(runLabel({ scenario_title: "   ", scenario_id: "internal.v1" })).toBe("internal.v1");
+  expect(runLabel({ objective: "Legacy objective", scenario_id: "internal.v1" })).toBe("Run");
+  expect(runLabel({ scenario_title: "   ", scenario_id: "internal.v1" })).toBe("Run");
 });
 
 it("keeps an unexecuted counterfactual row out of the first actual stop", () => {

@@ -651,7 +651,16 @@ export interface RunStep {
   error?: { code?: string; message?: string };
 }
 
+export interface RunPresentation {
+  schema_version: "bluefire.run-presentation.v1";
+  run_id: string;
+  display_name: string | null;
+  default_name: string;
+  updated_at: string | null;
+}
+
 export interface RunRecord {
+  presentation?: RunPresentation;
   schema_version?: string;
   run_id: string;
   scenario_id?: string;

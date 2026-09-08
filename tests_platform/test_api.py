@@ -466,6 +466,10 @@ class StubService:
         self.calls.append(("list",))
         return {"runs": [{"run_id": RUN_ID, "status": "created"}]}
 
+    def rename_run(self, run_id: str, request: Mapping[str, Any]):
+        self.calls.append(("rename_run", run_id, request))
+        return {"run_id": run_id, "display_name": request.get("display_name")}
+
     def detail(self, run_id: str):
         self.calls.append(("detail", run_id))
         if run_id == "run-20260823T120000Z-ffffffffffffffff":

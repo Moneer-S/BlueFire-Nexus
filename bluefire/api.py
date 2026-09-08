@@ -858,6 +858,13 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if path == f"{API_PREFIX}/scenarios/validate":
             self._dispatch(lambda: self.platform_server.service.validate(body))
             return
+        presentation_id = self._routes._run_presentation_id(path)
+        if presentation_id is not None:
+            if presentation_id:
+                self._dispatch(
+                    lambda: self.platform_server.service.rename_run(presentation_id, body)
+                )
+            return
         if path == f"{API_PREFIX}/runs/preflight":
             self._dispatch(lambda: self.platform_server.service.preflight(body))
             return

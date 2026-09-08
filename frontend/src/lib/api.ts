@@ -1,8 +1,9 @@
 import type { AssistanceRunEnvelope, RunPreparationDecision, SavedGraphSelection } from "./run-assistance";
 import type { ReceiverContext, ReceiverContextRequest, ReceiverDecision, ReceiverDefenseEnvelope, ReceiverPhase, ReceiverTestList } from "./receiver-defense-types";
 import type { RunDetectionSelection, DetectionCreationSource, DetectionCreationEnvelope, DetectionCreationDecision, DetectionCreationValidation } from "./detection-creation";
-import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionRunEvaluation, DetectionCaseRole, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
+import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionRunEvaluation, DetectionCaseRole, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunPresentation, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
 import { approvalDeadline, storedRunApprovalPreflight } from "./approvalReview";
+import { isRunPresentation } from "./runPresentation";
 import { sameJson } from "./replay-review";
 import type { DetectionAIDecision, DetectionAIRequest } from "./detection-ai";
 import type { MethodContext, MethodDecision, MethodRequest } from "./method-comparison";
@@ -662,6 +663,16 @@ export const api = {
       window.clearTimeout(timeout);
       signal.removeEventListener("abort", abort);
     }
+  },
+  async renameRun(runId: string, displayName: string | null): Promise<RunPresentation> {
+    if (DEMO_MODE) throw new ApiError("Renaming runs requires the local service.", "demo_only");
+    const result = await request<unknown>(`/runs/${encodeURIComponent(runId)}/presentation`, {
+      method: "POST", body: JSON.stringify({ display_name: displayName }),
+    });
+    if (!isRunPresentation(result, runId) || result.display_name !== (displayName === null ? null : displayName.trim())) {
+      throw new ApiError("The saved run name could not be confirmed. Refresh this run before trying again.", "run_name_unconfirmed");
+    }
+    return result;
   },
   async runDetail(runId: string): Promise<RunRecord> {
     if (DEMO_MODE) {

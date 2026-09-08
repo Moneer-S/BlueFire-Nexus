@@ -20,6 +20,7 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 
 import yaml
 
+from . import product_store_run_presentation as run_presentation
 from . import receiver_defense_native
 from .action_catalog import (
     ActionCatalogError,
@@ -4148,13 +4149,55 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
                         raise
 
     def list(self) -> Mapping[str, Any]:
-        return {"schema_version": "bluefire.run-list.v1", "runs": self.store.list_runs()}
+        metadata = {
+            item["id"]: item for item in self.product_store.list_resources(run_presentation.KIND)
+        }
+        runs = [
+            {
+                **run,
+                "presentation": run_presentation.presentation(
+                    run, metadata.get(run_presentation.resource_id(run["run_id"]))
+                ),
+            }
+            for run in self.store.list_runs()
+        ]
+        return {"schema_version": "bluefire.run-list.v1", "runs": runs}
 
     def detail(self, run_id: str) -> Mapping[str, Any]:
         try:
-            return self.store.get_run(run_id)
+            run = self.store.get_run(run_id)
+            metadata = next(
+                (
+                    item
+                    for item in self.product_store.list_resources(run_presentation.KIND)
+                    if item["id"] == run_presentation.resource_id(run_id)
+                ),
+                None,
+            )
+            return {**run, "presentation": run_presentation.presentation(run, metadata)}
         except RunStoreError as exc:
             raise APIError(HTTPStatus.NOT_FOUND, "run_not_found", "Run was not found.") from exc
+
+    def rename_run(self, run_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        try:
+            name = run_presentation.display_name(request)
+        except ProductStoreError as exc:
+            raise APIError(HTTPStatus.BAD_REQUEST, "run_name_invalid", str(exc)) from exc
+        # Resolve an existing canonical record before any presentation write.
+        run = self.detail(run_id)
+        try:
+            resource = self.product_store.save_resource(
+                run_presentation.KIND,
+                run_presentation.resource_id(run_id),
+                {"schema_version": run_presentation.SCHEMA, "run_id": run_id, "display_name": name},
+            )
+        except ProductStoreError as exc:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "run_name_invalid",
+                "Run name could not be saved. Use a name without credentials or sensitive values.",
+            ) from exc
+        return run_presentation.presentation(run, resource)
 
     def run_bundle(self, run_id: str) -> bytes:
         try:
