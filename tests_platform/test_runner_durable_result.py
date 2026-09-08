@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from bluefire import runner_durable_result as result_module
+from bluefire.run_store import RunStore
 from bluefire.runner_durable_result import DurableRunnerResult, runner_pending_result_path
-from bluefire.runner_private_files import _PinnedPrivateDirectory
+from bluefire.runner_private_files import _PinnedPrivateDirectory, _windows_extended_path
 from bluefire.runner_transport_errors import (
     RunnerDurableResultExists,
     RunnerPendingResultExists,
@@ -175,3 +177,140 @@ def test_fresh_parent_guard_retains_borrowed_directory_and_mount_identity(
     assert captured == [
         (tmp_path, {"expected_identity": (7, 9), "expected_mount_identity": "mount-identity"})
     ]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows raw/extended journal spellings")
+@pytest.mark.parametrize("extended_owner", [False, True])
+def test_runstore_journal_alias_retains_exact_owner_and_publishes_bytes(
+    tmp_path: Path, extended_owner: bool
+) -> None:
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    raw_journal = runs / ".bluefire-runner-results"
+    raw_journal.mkdir()
+    store = RunStore(runs)
+    extended_journal = store.root / raw_journal.name
+    assert raw_journal != extended_journal
+    owner_path, requested = (
+        (extended_journal, raw_journal) if extended_owner else (raw_journal, extended_journal)
+    )
+    with _PinnedPrivateDirectory(owner_path) as live:
+        identity = live.directory_identity()
+        mount = live.directory_mount_identity()
+        owner = DurableRunnerResult(parent_guard=live)
+        final, pending, retained = owner.prepare(
+            requested / "result.json", "alias-task", retain_parent_guard=True
+        )
+        assert retained is not None
+        try:
+            assert retained.directory_identity() == identity
+            assert retained.directory_mount_identity() == mount
+        finally:
+            retained.close()
+        payload = b'{"status":"success","fixture":"files only"}\r\n'
+        stream = owner.open_pending(pending)
+        try:
+            stream.write(payload)
+            stream.flush()
+            pending_identity = stream.identity()
+        finally:
+            stream.close()
+        owner.promote(
+            pending,
+            final,
+            pending_expected=payload,
+            pending_identity=pending_identity,
+            final_payload=payload,
+        )
+        assert owner.read(final, maximum=len(payload)) == payload
+        assert not owner.exists(pending)
+        assert live.path == owner_path and live.directory_identity() == identity
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows raw/extended journal spellings")
+@pytest.mark.parametrize("invalid", ["path", "delete", "share_delete", "relative"])
+def test_windows_journal_alias_does_not_authorize_another_or_shared_parent(
+    tmp_path: Path, invalid: str
+) -> None:
+    requested = _windows_extended_path(tmp_path)
+    live = SimpleNamespace(
+        path=(
+            tmp_path / "other"
+            if invalid == "path"
+            else Path("relative") if invalid == "relative" else tmp_path
+        ),
+        delete=invalid == "delete",
+        share_delete=invalid == "share_delete",
+    )
+    with pytest.raises(RunnerTransportError, match="exclusive watchdog handoff"):
+        DurableRunnerResult(parent_guard=live)._parent_guard(requested)  # type: ignore[arg-type]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows raw/extended journal spellings")
+@pytest.mark.parametrize("mismatch", ["identity", "mount"])
+def test_windows_journal_alias_still_checks_retained_identity(
+    tmp_path: Path, mismatch: str
+) -> None:
+    journal = tmp_path / "journal"
+    journal.mkdir()
+    details = journal.stat()
+    identity = (details.st_dev, details.st_ino)
+    live = SimpleNamespace(
+        path=journal,
+        delete=False,
+        share_delete=False,
+        directory_identity=lambda: (
+            (identity[0], identity[1] + 1) if mismatch == "identity" else identity
+        ),
+        directory_mount_identity=lambda: 17 if mismatch == "mount" else None,
+    )
+    owner = DurableRunnerResult(parent_guard=live)  # type: ignore[arg-type]
+    with pytest.raises(RunnerTransportError, match="unavailable or unsafe"):
+        with owner._parent_guard(_windows_extended_path(journal)):
+            pytest.fail("A stale borrowed identity must not be opened")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows raw/extended journal spellings")
+def test_windows_unc_spelling_normalization_does_not_open_a_share(monkeypatch) -> None:
+    raw = Path(r"\\fixture-server\fixture-share\journal")
+    extended = Path(r"\\?\UNC\fixture-server\fixture-share\journal")
+    live = SimpleNamespace(
+        path=raw,
+        delete=False,
+        share_delete=False,
+        directory_identity=lambda: (7, 9),
+        directory_mount_identity=lambda: None,
+    )
+    captured = []
+    sentinel = object()
+
+    def capture(path, **options):
+        captured.append((path, options))
+        return sentinel
+
+    monkeypatch.setattr(result_module, "_PinnedPrivateDirectory", capture)
+    assert DurableRunnerResult(parent_guard=live)._parent_guard(extended) is sentinel  # type: ignore[arg-type]
+    assert captured == [(extended, {"expected_identity": (7, 9), "expected_mount_identity": None})]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows raw/extended journal spellings")
+def test_windows_journal_alias_does_not_follow_a_reparse_point(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    linked = tmp_path / "linked"
+    try:
+        linked.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"Directory symlinks unavailable: {exc.winerror}")
+    details = target.stat()
+    live = SimpleNamespace(
+        path=linked,
+        delete=False,
+        share_delete=False,
+        directory_identity=lambda: (details.st_dev, details.st_ino),
+        directory_mount_identity=lambda: None,
+    )
+    owner = DurableRunnerResult(parent_guard=live)  # type: ignore[arg-type]
+    with pytest.raises(RunnerTransportError, match="unavailable or unsafe"):
+        with owner._parent_guard(_windows_extended_path(linked)):
+            pytest.fail("A matching alias must not authorize a reparse target")

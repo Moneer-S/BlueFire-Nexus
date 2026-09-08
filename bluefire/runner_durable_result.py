@@ -12,6 +12,7 @@ from .runner_private_files import (
     _is_link_or_reparse,
     _PinnedPrivateDirectory,
     _PrivateFileCleanupError,
+    _windows_extended_path,
 )
 from .runner_transport_errors import (
     RunnerDurableResultExists,
@@ -62,7 +63,12 @@ class DurableRunnerResult:
         live = self._borrowed_parent_guard
         if live is None:
             return _PinnedPrivateDirectory(parent)
-        if live.path != parent or live.delete or live.share_delete:
+        same_parent = live.path == parent
+        if os.name == "nt" and live.path.is_absolute() and parent.is_absolute():
+            # RunStore uses extended paths; a borrowed owner can retain the
+            # equivalent raw spelling. This does not resolve filesystem aliases.
+            same_parent = _windows_extended_path(live.path) == _windows_extended_path(parent)
+        if not same_parent or live.delete or live.share_delete:
             raise RunnerTransportError(
                 "runner durable result guard cannot provide an exclusive watchdog handoff"
             )
