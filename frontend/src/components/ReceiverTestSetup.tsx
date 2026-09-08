@@ -27,11 +27,12 @@ export function ReceiverTestSetup({ disabled, onStart }: { disabled: boolean; on
   if (catalog.error || versions.error) return <ErrorState error={catalog.error ?? versions.error} retry={() => { void catalog.refetch(); void versions.refetch(); }} />;
   if (!catalog.data || !versions.data) return <LoadingState label="Loading saved experiments" />;
   return <section aria-label="Set up receiver control test" className="receiver-setup">
-    <div className="receiver-introduction"><h2>A controlled before-and-after test</h2><p>The baseline receiver accepts reviewed synthetic records. The protected receiver requires redaction and refuses records that retain their test values. Each phase uses a fresh, short-lived receiver in your owned lab.</p><p>This is a local handoff experiment with a deliberately permissive baseline. It does not demonstrate remote lateral movement or a newly discovered vulnerability.</p></div>
+    <h2>New control test</h2>
     <Field label="Saved experiment" hint="Choose an immutable version with a JSONL staging step connected to a peer handoff."><select value={selected} onChange={(event) => { setSelected(event.target.value); try { rememberReceiverSelection(event.target.value); setStorageError(undefined); } catch (error) { setStorageError(error); } }}><option value="">Choose a saved experiment</option>{versions.data.scenarios.map((item) => <option key={`${item.scenario_id}:${item.version}:${item.digest}`} value={`${item.scenario_id}:${item.version}:${item.digest}`}>{item.title} · version {item.version}</option>)}</select></Field>
     {storageError ? <ErrorState title="Selection is only available on this page" error={storageError} /> : null}
     {selected && !saved ? <p>The previously selected version is no longer in this list. Choose an available saved version to check its current eligibility.</p> : null}
     {!versions.data.scenarios.length ? <p>Save an experiment in <Link to="/builder">Build</Link> to select it here.</p> : null}
+    <details className="receiver-test-help"><summary>How the three phases work</summary><p>Run the same saved experiment with a receiver that accepts reviewed synthetic records, a receiver that requires redaction, then the original policy restored. Each phase uses a fresh, short-lived receiver in your owned lab and requires its own run approval.</p><p>This measures the local receiver policy. It does not establish external security-system prevention or detection coverage.</p></details>
     {saved ? <ReceiverConfiguration key={selected} saved={saved} catalog={catalog.data} disabled={disabled} onStart={onStart} /> : null}
   </section>;
 }
@@ -61,7 +62,7 @@ function ReceiverConfiguration({ saved, catalog, disabled, onStart }: { saved: S
         if (!context.data || !sameJson(context.data.selection, request.selection) || !sameJson(context.data.run_intent, request.run_intent)) return;
         onStart({ ...request, submission_id: crypto.randomUUID(), context_digest: context.data.context_digest });
       }}>Save control test</Button>
-      {assistant ? <div className="receiver-assistant-entry"><h3>Let Assistant coordinate the test</h3><p>Keep these exact settings and get an evidence interpretation after each phase. You still prepare each receiver and approve every run in the native review.</p><Button disabled={disabled || !assistantSelection || !context.data.eligible || context.isFetching} onClick={() => assistant.setOpen(true)}>Coordinate with Assistant</Button></div> : null}
+      {assistant ? <div className="receiver-assistant-entry"><Button disabled={disabled || !assistantSelection || !context.data.eligible || context.isFetching} onClick={() => assistant.setOpen(true)}>Coordinate with Assistant</Button><p>Uses these settings and interprets the recorded phases. Receiver preparation and each Execute approval remain yours.</p></div> : null}
     </> : null}
   </>;
 }

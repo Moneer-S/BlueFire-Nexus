@@ -78,8 +78,8 @@ export function ReceiverDefensePage() {
     write.reset(); stop.reset(); setLocalError(undefined);
   };
   return <div className="page receiver-defense-page">
-    <Link className="receiver-back" to="/compare">← Replay and compare</Link>
-    <PageHeader eyebrow="Lab control test" title="Does requiring redaction stop the handoff?" description="Measure the same experiment under two receiver policies, then restore the prior policy and replay." />
+    <Link className="receiver-back" to="/compare">← Compare runs</Link>
+    <PageHeader title={envelope?.context?.scenario_title ?? "Receiver control tests"} />
     {localError ? <ErrorState title="Request needs attention" error={localError} /> : null}
     {!id ? <><ReceiverSavedTests /><ReceiverTestSetup disabled={Boolean(restored.error)} onStart={(body) => submit({ kind: "create", id: receiverJobId(body.submission_id), body })} /></> : <>
       {!receiverJobValid(id) ? <ErrorState error={new Error("This control-test link is incomplete. Open the saved test from Runs.")} /> : query.isError ? <ErrorState title="Saved test status unavailable" error={query.error} retry={() => { void query.refetch(); }} /> : !envelope ? <LoadingState label={write.isPending ? "Saving the control test" : "Opening the control test"} /> : null}

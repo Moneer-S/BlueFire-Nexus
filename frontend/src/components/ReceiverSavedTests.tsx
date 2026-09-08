@@ -18,7 +18,7 @@ export function ReceiverSavedTests() {
   if (history.error) return <><ErrorState title="Saved control tests unavailable" error={history.error} retry={() => { void history.refetch(); }} />{cursor ? <Button onClick={() => setCursors([])}>Return to newest tests</Button> : null}</>;
   if (!history.data) return <LoadingState label="Finding saved control tests" />;
   if (!history.data.jobs.length && !history.data.truncated && !cursor) return null;
-  return <section className="receiver-saved-tests" aria-label="Saved control tests"><h2>Continue a saved test</h2><p>Unfinished work stays with its original experiment, receiver sessions and run approvals.</p>
+  return <section className="receiver-saved-tests" aria-label="Saved control tests"><h2>Saved control tests</h2>
     <ul>{history.data.jobs.map((job) => <li key={job.job_id}><Link to={`/compare?receiver_job=${encodeURIComponent(job.job_id)}`}><strong>{job.title}</strong><span>{sentence(job.status)}{job.phase ? ` · ${phaseTitle[job.phase]}` : ""}</span><small>{formatDate(job.updated_at ?? undefined)}</small></Link></li>)}</ul>
     <div className="receiver-actions">{cursor ? <Button onClick={() => setCursors((old) => old.slice(0, -1))}>Previous saved tests</Button> : null}{history.data.next_cursor ? <Button onClick={() => setCursors((old) => [...old, history.data!.next_cursor!])}>More saved tests</Button> : null}</div>
   </section>;

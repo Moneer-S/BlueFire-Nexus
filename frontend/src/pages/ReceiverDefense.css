@@ -1,7 +1,8 @@
 .receiver-defense-page { max-width: 1320px; }
-.receiver-back { display: inline-block; margin-bottom: 16px; font-size: .875rem; }
-.receiver-introduction { max-width: 78ch; margin-block: 24px; }
-.receiver-introduction p, .receiver-current > p, .receiver-results > p { color: var(--muted-strong); line-height: 1.65; }
+.receiver-back { display: inline-block; margin-bottom: 12px; font-size: .875rem; }
+.receiver-test-help { max-width: 78ch; margin-block: 12px; }
+.receiver-test-help p, .receiver-current > p, .receiver-results > p { color: var(--muted-strong); line-height: 1.6; }
+.receiver-setup > h2 { margin-block: 24px 16px; }
 .receiver-setup > .field { max-width: 760px; }
 .receiver-settings { margin-block: 24px; }
 .receiver-settings > summary { padding: 14px 0; cursor: pointer; font-weight: 600; }
@@ -27,7 +28,7 @@
 .receiver-cleanup { display: grid; gap: 5px; font-size: .875rem; }
 .receiver-records, .receiver-stop { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 20px; }
 .receiver-stop p { font-size: .875rem; color: var(--muted-strong); }
-.receiver-saved-tests { border-bottom: 1px solid var(--line); padding-bottom: 24px; }
+.receiver-saved-tests { border-bottom: 1px solid var(--line); padding-bottom: 12px; }
 .receiver-saved-tests ul { list-style: none; padding: 0; max-height: 320px; overflow: auto; }
 .receiver-saved-tests a { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 20px; padding: 14px 4px; border-top: 1px solid var(--line); }
 .receiver-saved-tests small { grid-column: 1 / -1; color: var(--muted-strong); }
@@ -41,6 +42,6 @@
   .receiver-actions > * { flex: 1 1 220px; justify-content: center; }
 }
 
-.receiver-assistant-entry { margin-block: 20px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
+.receiver-assistant-entry { margin-block: 20px; padding-block: 16px; border-top: 1px solid var(--line); }
 .receiver-assistant-entry h3 { margin: 0 0 8px; }
 .receiver-assistant-entry p { max-width: 76ch; }
