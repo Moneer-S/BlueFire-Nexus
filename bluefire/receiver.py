@@ -289,6 +289,14 @@ class _LoopbackTCPServer(socketserver.TCPServer):
         )
         self.session_id = secrets.token_hex(32)
         self.challenges: dict[str, _Challenge] = {}
+        # Fresh owned Linux policy sessions reuse the reviewed port after the
+        # prior connection enters TIME_WAIT. SO_REUSEADDR still excludes an
+        # active listener; never enable SO_REUSEPORT or Windows address sharing.
+        self.allow_reuse_address = (
+            sys.platform.startswith("linux")
+            and config.disposable_peer
+            and config.content_policy is not None
+        )
         super().__init__(server_address, handler_class)
 
     def handle_error(self, request: object, client_address: object) -> None:
