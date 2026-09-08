@@ -62,7 +62,7 @@ jobs:
         run: pnpm test:e2e
 
   python:
-    name: Python ${{ matrix.python-version }} · ${{ matrix.os }}
+    name: Python ${{ matrix.python-version }} Ã‚Â· ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -113,6 +113,9 @@ jobs:
     name: Native wheel - ${{ matrix.platform }} x86_64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: ./wheel-source
     strategy:
       fail-fast: false
       matrix:
@@ -145,6 +148,16 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      - name: Archive exact committed wheel source
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git archive --format=tar --output="$RUNNER_TEMP/bluefire-wheel-source.tar" "$GITHUB_SHA"
+          mkdir wheel-source
+          python -m tarfile -e "$RUNNER_TEMP/bluefire-wheel-source.tar" wheel-source
+          python -c "import os; from pathlib import Path; assert Path('wheel-source/bluefire/_source_revision.txt').read_text(encoding='ascii').strip() == os.environ['GITHUB_SHA']"
+
       - name: Install build tooling only
         run: |
           python -m pip install --upgrade pip
@@ -168,13 +181,17 @@ jobs:
       - name: Stage verified native runner resources
         run: >-
           python tools/stage_native_runner.py
-          --runner "${{ github.workspace }}/${{ matrix.runner-path }}"
-          --output-root "${{ github.workspace }}/bluefire/native"
+          --runner "${{ github.workspace }}/wheel-source/${{ matrix.runner-path }}"
+          --output-root "${{ github.workspace }}/wheel-source/bluefire/native"
           --platform "${{ matrix.platform }}"
           --architecture "${{ matrix.architecture }}"
 
       - name: Build platform wheel
         run: python -m build --wheel
+
+      - name: Verify embedded committed source identity
+        run: >-
+          python -c "import json, os, zipfile; from pathlib import Path; wheels = list(Path('dist').glob('*.whl')); assert len(wheels) == 1; archive = zipfile.ZipFile(wheels[0]); members = [name for name in archive.namelist() if name.endswith('/bluefire/_build_info.json')]; assert len(members) == 1; metadata = json.loads(archive.read(members[0])); assert metadata['source_revision'] == os.environ['GITHUB_SHA']; assert metadata['source_provenance'] == 'git_archive'; archive.close()"
 
       - name: Inspect wheel tag and native resources
         run: >-
@@ -201,13 +218,13 @@ jobs:
         with:
           name: bluefire-native-wheel-${{ matrix.platform }}-x86_64
           path: |
-            dist/*.whl
-            dist/package-inspection.json
+            wheel-source/dist/*.whl
+            wheel-source/dist/package-inspection.json
             ${{ runner.temp }}/installed-wheel-smoke.json
           if-no-files-found: error
 
   rust:
-    name: Rust runner · ${{ matrix.os }}
+    name: Rust runner Ã‚Â· ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
