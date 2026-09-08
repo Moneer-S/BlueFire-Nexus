@@ -153,7 +153,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          git archive --format=tar --output="$RUNNER_TEMP/bluefire-wheel-source.tar" "$GITHUB_SHA"
+          git -c tar.umask=0022 archive --format=tar --output="$RUNNER_TEMP/bluefire-wheel-source.tar" "$GITHUB_SHA"
           mkdir wheel-source
           python -m tarfile -e "$RUNNER_TEMP/bluefire-wheel-source.tar" wheel-source
           python -c "import os; from pathlib import Path; assert Path('wheel-source/bluefire/_source_revision.txt').read_text(encoding='ascii').strip() == os.environ['GITHUB_SHA']"

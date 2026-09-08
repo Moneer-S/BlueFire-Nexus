@@ -10,6 +10,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
@@ -42,8 +43,8 @@ def test_native_wheel_build_and_verification_use_the_exact_archive():
     assert archive["shell"] == "bash"
     assert 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"' in archive["run"]
     assert (
-        'git archive --format=tar --output="$RUNNER_TEMP/bluefire-wheel-source.tar" "$GITHUB_SHA"'
-        in archive["run"]
+        "git -c tar.umask=0022 archive --format=tar "
+        '--output="$RUNNER_TEMP/bluefire-wheel-source.tar" "$GITHUB_SHA"' in archive["run"]
     )
     assert "mkdir wheel-source" in archive["run"]
     assert (
@@ -97,6 +98,8 @@ def test_actual_committed_archives_distinguish_backend_changes_with_identical_ui
         ).stdout.strip()
 
     command("init")
+    # A permissive inherited archive setting must not override the workflow policy.
+    command("config", "tar.umask", "0002")
     (source / ".gitattributes").write_bytes((REPOSITORY / ".gitattributes").read_bytes())
     (source / "setup.py").write_bytes((REPOSITORY / "setup.py").read_bytes())
     package = source / "bluefire"
@@ -108,7 +111,10 @@ def test_actual_committed_archives_distinguish_backend_changes_with_identical_ui
         (package / "ui" / name).write_text(name + "\n", encoding="utf-8")
     backend = package / "backend.py"
     backend.write_text("committed = 1\n", encoding="utf-8")
+    executable = source / "fixture-executable.sh"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     command("add", ".")
+    command("update-index", "--chmod=+x", "fixture-executable.sh")
     command(
         "-c",
         "user.name=Build fixture",
@@ -122,7 +128,26 @@ def test_actual_committed_archives_distinguish_backend_changes_with_identical_ui
 
     def built_identity(revision, name):
         archive_path = tmp_path / (name + " source.tar")
-        command("archive", "--format=tar", "--output=" + str(archive_path), revision)
+        step = next(
+            step
+            for step in _package_job()["steps"]
+            if step["name"] == "Archive exact committed wheel source"
+        )
+        line = next(line for line in step["run"].splitlines() if " --format=tar " in line)
+        archive_command = shlex.split(line)
+        assert archive_command[0] == "git"
+        replacements = {
+            "--output=$RUNNER_TEMP/bluefire-wheel-source.tar": "--output=" + str(archive_path),
+            "$GITHUB_SHA": revision,
+        }
+        command(*(replacements.get(arg, arg) for arg in archive_command[1:]))
+        with tarfile.open(archive_path) as archive:
+            members = archive.getmembers()
+            assert members and any(member.isdir() for member in members)
+            assert all(member.mode & 0o022 == 0 for member in members)
+            assert archive.getmember("bluefire").mode == 0o755
+            assert archive.getmember("bluefire/backend.py").mode == 0o644
+            assert archive.getmember("fixture-executable.sh").mode == 0o755
         extracted = tmp_path / name
         extracted.mkdir()
         subprocess.run(
