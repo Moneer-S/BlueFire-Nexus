@@ -32,6 +32,8 @@ from .application_errors import APIError
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_REQUEST_BODY = 1_048_576
+_REJECTION_CLOSE_SECONDS = 0.2
+_REJECTION_DISCARD_BYTES = 65_536
 _REVIEWED_T1082_INTAKE_ROUTE = f"{API_PREFIX}/research-intakes/mitre-attack-t1082-v19-2"
 
 BROWSER_BOOTSTRAP_FRAGMENT_KEY = "bluefire-session"
@@ -1356,12 +1358,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return None
         length = int(raw_length, 10)
         if length > self.platform_server.max_request_body:
-            self.close_connection = True
-            self._error(
+            self._reject_unread_body(
                 HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
                 "body_too_large",
                 f"JSON request bodies are limited to {self.platform_server.max_request_body} bytes.",
-                extra_headers={"Connection": "close"},
             )
             return None
         content_types = self.headers.get_all("Content-Type", [])
@@ -1409,6 +1409,34 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
 
         self.close_connection = True
         self._error(status, code, message, extra_headers={"Connection": "close"})
+        self._finish_rejected_request()
+
+    def _finish_rejected_request(self) -> None:
+        """Deliver the rejection before bounded transport-only close cleanup.
+
+        A client may send its headers and body separately. Closing with incoming
+        bytes unread can reset the connection before it receives the error.
+        Half-close the response first, then discard only within fixed byte and
+        wall-clock bounds. Never interpret rejected framing or another request.
+        """
+
+        deadline = time.monotonic() + _REJECTION_CLOSE_SECONDS
+        remaining = _REJECTION_DISCARD_BYTES
+        try:
+            self.wfile.flush()
+            self.connection.shutdown(socket.SHUT_WR)
+            while remaining > 0:
+                timeout = deadline - time.monotonic()
+                if timeout <= 0:
+                    break
+                self.connection.settimeout(timeout)
+                chunk = self.connection.recv(min(8192, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        except OSError:
+            # A peer disconnect or the fixed timeout ends cleanup, not rejection.
+            pass
 
     def _serve_asset(self, route: str, *, include_body: bool) -> None:
         filename = _STATIC_ROUTES[route]
