@@ -3,7 +3,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
-import { AssistantRunReference } from "../src/components/AssistantRunReference";
+import { RunReference } from "../src/components/RunReference";
 import { ExperimentAssistant } from "../src/components/ExperimentAssistant";
 import { api } from "../src/lib/api";
 import { assistanceJobId, storeAssistanceReceipt, type AssistanceEnvelope, type AssistanceRequest } from "../src/lib/assistance";
@@ -26,7 +26,7 @@ function run(id = "run-a", name: string | null = "Collection before control"): R
 }
 function mountReference(runId = "run-a", queryClient = client()) {
   const onNavigate = vi.fn();
-  const tree = (id: string) => <QueryClientProvider client={queryClient}><MemoryRouter><AssistantRunReference runId={id} label="Reviewed run" onNavigate={onNavigate}/></MemoryRouter></QueryClientProvider>;
+  const tree = (id: string) => <QueryClientProvider client={queryClient}><MemoryRouter><RunReference runId={id} label="Reviewed run" onNavigate={onNavigate}/></MemoryRouter></QueryClientProvider>;
   const view = render(tree(runId));
   return { ...view, client: queryClient, onNavigate, changeRun: (id: string) => view.rerender(tree(id)) };
 }

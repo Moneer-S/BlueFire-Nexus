@@ -2,7 +2,7 @@ import { runLabel } from "../lib/run-presentation";
 import { formatDate } from "./Primitives";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { RunReference } from "./RunReference";
 import { api } from "../lib/api";
 import { DetectorEvaluationTable } from "./DetectorEvaluationComparison";
 import { evaluationLabel } from "../lib/detection-results";
@@ -58,7 +58,7 @@ export function EvaluationReport({ report, compact = false }: { report: Detectio
   const measured = result.match_count === null ? "Insufficient evidence or backend unavailable" : `${result.match_count} matched ${result.match_count === 1 ? "record" : "records"}`;
   const backend = `${report.backend.name}${report.backend.version ? ` · ${report.backend.version}` : ""} · ${report.backend.executed ? "Executed" : "Not executed"}`;
   const detail = <><DataList items={[
-    { label: "Source run", value: <Link to={`/runs/${encodeURIComponent(report.source.run_id)}`}>{report.source.run_id}</Link> },
+    { label: "Source run", value: <RunReference runId={report.source.run_id} /> },
     { label: "Detector revision", value: <span>{report.candidate.revision} · <code>{report.candidate.candidate_id}</code></span> },
     ...(!compact ? [{ label: "Observed / all records", value: `${report.source.observed_count} / ${report.source.evidence_count}` }, { label: "Query result", value: measured }] : []),
     { label: "Matched evidence", value: result.matched_evidence_ids.join(", ") || "None" },
