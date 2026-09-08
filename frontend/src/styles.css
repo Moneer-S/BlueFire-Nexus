@@ -1233,6 +1233,7 @@ pre,
 .detection-page .candidate-body textarea { font-size: .8125rem; line-height: 1.6; }
 .detection-page .editor-header > span { font-size: .8125rem; }
 .detection-page .candidate-actions { justify-content: flex-start; flex-wrap: wrap; gap: 8px; }
+.candidate-draft-tools { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 @media (min-width: 1121px) { .detection-page .detection-layout { grid-template-columns: minmax(230px, .3fr) minmax(0, 1fr); gap: 24px; } }
 @media (max-width: 1120px) { .detection-page .candidate-list > div:nth-child(2) { max-height: 210px; } }
 @media (max-width: 700px) { .detection-context-controls { flex-direction: column; align-items: stretch; } }
