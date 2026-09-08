@@ -200,6 +200,18 @@ function renderApp(path = "/", client = new QueryClient({ defaultOptions: { quer
   return render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={[path]}><App /></MemoryRouter></ProductProvider></QueryClientProvider>);
 }
 
+// IDs remain exact technical identity, disclosed separately from the human title.
+function displayedJobId(jobId: string) {
+  const summary = screen.queryByText("Job details", { selector: "summary" });
+  return summary ? within(summary.closest("details")!).queryByText(jobId, { selector: "code" }) : null;
+}
+async function findDisplayedJobId(jobId: string) {
+  await waitFor(() => expect(displayedJobId(jobId)).not.toBeNull());
+  const summary = screen.getByText("Job details", { selector: "summary" });
+  if (!summary.closest("details")!.open) await userEvent.setup().click(summary);
+  return displayedJobId(jobId)!;
+}
+
 describe("product application", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -248,7 +260,10 @@ describe("product application", () => {
   it("keeps Runs essentials visible while advanced disclosures preserve the exact request", async () => {
     const user = userEvent.setup();
     renderApp("/runs");
-    expect(await screen.findByRole("heading", { name: "Review and run" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Runs", level: 1 })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Run history" })).toBeVisible();
+    expect(screen.getByText(`Review a new run \u00b7 ${demoScenario.title}`).closest("details")).not.toHaveAttribute("open");
+    await user.click(screen.getByRole("link", { name: "Review new run" }));
     expect(screen.getByRole("combobox", { name: "Runner profile" })).toBeVisible();
     expect(screen.getByRole("textbox", { name: /Target scope/ })).toBeVisible();
     expect(screen.getByRole("button", { name: "Run preflight" })).toBeEnabled();
@@ -281,8 +296,8 @@ describe("product application", () => {
 
   it("keeps the canonical Execute review visible outside the collapsed browser draft", async () => {
     const user = userEvent.setup();
-    renderApp("/runs");
-    await screen.findByRole("heading", { name: "Review and run" });
+    renderApp("/runs?prepare=1");
+    await screen.findByRole("heading", { name: "Runs" });
     await user.click(screen.getByRole("radio", { name: /^Execute/ }));
     await user.click(screen.getByRole("button", { name: "Run preflight" }));
     const canonical = await screen.findByRole("region", { name: "Canonical preflight plan" });
@@ -298,10 +313,10 @@ describe("product application", () => {
     expect(screen.getByRole("button", { name: "Create approval-gated job" })).toBeDisabled();
   });
 
-  it("renders mission control and routes every research source link", async () => {
+  it("renders recent work and routes every research source link", async () => {
     const user = userEvent.setup();
     renderApp();
-    expect(await screen.findByRole("heading", { name: "Design the path. Observe the defense." })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Overview" })).toBeVisible();
     const indicators = await screen.findAllByRole("img", { name: "Local service connected" });
     expect(indicators).toHaveLength(2); // Mobile and sidebar use the same checked connection.
     for (const indicator of indicators) { expect(indicator).toBeVisible(); expect(indicator).toHaveClass("ready"); }
@@ -318,15 +333,14 @@ describe("product application", () => {
     const user = userEvent.setup();
     renderApp("/scenarios");
 
-    expect(await screen.findByRole("heading", { name: "Reusable security experiments" })).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "New scenario" }));
-    await waitFor(() => expect(document.querySelector<HTMLInputElement>(".dialog-content input")).not.toBeNull());
-    const title = document.querySelector<HTMLInputElement>(".dialog-content input")!;
+    expect(await screen.findByRole("heading", { name: "Experiments" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "New experiment" }));
+    const title = screen.getByRole("textbox", { name: "Experiment name" });
     await user.clear(title);
     await user.type(title, "Gate 08 local draft");
     await user.click(screen.getByRole("button", { name: "Create draft" }));
 
-    expect(await screen.findByRole("heading", { name: "Build your experiment" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Gate 08 local draft" })).toBeVisible();
     expect(screen.getByText("Start with one useful step")).toBeVisible();
     expect(screen.getByDisplayValue("Gate 08 local draft")).toBeVisible();
   });
@@ -334,8 +348,8 @@ describe("product application", () => {
   it("rejects malformed imported scenario members without persisting them", async () => {
     const user = userEvent.setup();
     renderApp("/scenarios");
-    expect(await screen.findByRole("heading", { name: "Reusable security experiments" })).toBeVisible();
-    const input = screen.getByLabelText("Import scenario JSON file");
+    expect(await screen.findByRole("heading", { name: "Experiments" })).toBeVisible();
+    const input = screen.getByLabelText("Import experiment JSON file");
     const firstStep = structuredClone(demoScenario.steps[0]!);
 
     await user.upload(input, new File([JSON.stringify({ ...demoScenario, steps: [{ ...firstStep, inputs: null }] })], "null-inputs.json", { type: "application/json" }));
@@ -348,7 +362,7 @@ describe("product application", () => {
     expect(await screen.findByText(/parameters\.record_count must be a string, finite number, boolean, or string array/)).toBeVisible();
     expect(window.localStorage.getItem("bluefire.local.scenario.v1")).toBeNull();
     await user.click(screen.getByRole("link", { name: /^Build$/ }));
-    expect(await screen.findByRole("heading", { name: "Build your experiment" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: demoScenario.title })).toBeVisible();
     expect(screen.getByDisplayValue(demoScenario.title)).toBeVisible();
   });
 
@@ -413,7 +427,7 @@ describe("product application", () => {
     if (editDuringSave) await user.type(name, " with newer edits");
     await act(async () => finishSave(json({ schema_version: "bluefire.scenario-version.v1", scenario: { version: 2 } })));
     expect(await screen.findByText(editDuringSave ? "Version 2 saved; newer changes remain unsaved." : "Version 2 saved.")).toBeVisible();
-    expect(screen.getByText(editDuringSave ? "Draft changes" : "Saved", { exact: true })).toBeVisible();
+    expect(screen.getByText(editDuringSave ? "Unsaved changes" : "Working copy", { exact: true })).toBeVisible();
     const leaving = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(leaving);
     expect(leaving.defaultPrevented).toBe(editDuringSave);
@@ -566,18 +580,25 @@ describe("product application", () => {
     expect(screen.getByText(/fresh identity\/inventory\/sandbox probe/i)).toBeVisible();
 
     await user.click(screen.getByRole("link", { name: /Configure Simulate/i }));
-    expect(await screen.findByRole("heading", { name: "Review and run" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Runs" })).toBeVisible();
     expect(window.scrollTo).toHaveBeenCalled();
   });
 
   it("opens recent runs in a reload-safe canonical review URL", async () => {
     const user = userEvent.setup();
+    const run = { ...demoRuns[0]!, scenario_title: "Collection baseline" };
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const path = String(input);
+      if (path.endsWith(`/runs/${run.run_id}`)) return Promise.resolve(json(run));
+      if (path.endsWith("/runs") && init?.method !== "POST") return Promise.resolve(json({ runs: [run, demoRuns[1]!] }));
+      return fallback(input, init);
+    });
     const firstRender = renderApp();
-    const run = demoRuns[0]!;
-    const reviewLink = await screen.findByRole("link", { name: `Review run ${run.objective} (${run.run_id})` });
+    const reviewLink = await screen.findByRole("link", { name: run.scenario_title });
     expect(reviewLink).toHaveAttribute("href", `/runs/${encodeURIComponent(run.run_id)}`);
     await user.click(reviewLink);
-    expect(await screen.findByRole("heading", { name: run.objective, level: 1 })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: run.scenario_title, level: 1 })).toBeVisible();
     expect(screen.getByRole("link", { name: "Back to run workspace" })).toHaveAttribute("href", "/runs");
     const rawSummary = screen.getByText("Raw reproducibility metadata");
     expect(rawSummary.closest("details")).not.toHaveAttribute("open");
@@ -586,14 +607,14 @@ describe("product application", () => {
 
     firstRender.unmount();
     renderApp(`/runs/${encodeURIComponent(run.run_id)}`);
-    expect(await screen.findByRole("heading", { name: run.objective, level: 1 })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: run.scenario_title, level: 1 })).toBeVisible();
     expect(detailCalls()).toBe(2);
   });
 
   it("renders the complete canonical comparison contract with technical data collapsed", async () => {
     const user = userEvent.setup();
     renderApp("/compare");
-    expect(await screen.findByRole("heading", { name: "Measure what changed" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Compare runs" })).toBeVisible();
     const runSelectors = screen.getAllByRole("checkbox");
     expect(runSelectors).toHaveLength(2);
     await user.click(runSelectors[0]!);
@@ -634,7 +655,7 @@ describe("product application", () => {
     });
 
     renderApp("/compare");
-    expect(await screen.findByRole("heading", { name: "Measure what changed" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Compare runs" })).toBeVisible();
     expect(screen.getByText("Unavailable run records excluded")).toBeVisible();
     expect(screen.getByText(/1 in-flight, interrupted, or integrity-failed run record is unavailable/)).toBeVisible();
     expect(screen.getAllByRole("checkbox")).toHaveLength(2);
@@ -681,7 +702,7 @@ describe("product application", () => {
     });
 
     renderApp("/compare");
-    expect(await screen.findByRole("heading", { name: "Measure what changed" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Compare runs" })).toBeVisible();
     await user.selectOptions(screen.getByLabelText("Source run"), executeRun.run_id);
     await waitFor(() => expect(screen.getByLabelText("Exact target scope")).toHaveValue("sandbox.workspace"));
     await user.click(screen.getByRole("button", { name: "Review Execute replay" }));
@@ -761,23 +782,23 @@ describe("product application", () => {
   }, 15_000);
 
   it("exposes exactly two effect modes and three independent autonomy levels", async () => {
-    renderApp("/runs");
-    expect(await screen.findByRole("heading", { name: "Review and run" })).toBeVisible();
+    renderApp("/runs?prepare=1");
+    expect(await screen.findByRole("heading", { name: "Runs" })).toBeVisible();
     expect(screen.getAllByRole("radio").filter((item) => item.getAttribute("name") === "run-mode")).toHaveLength(2);
     expect(screen.getAllByRole("radio").filter((item) => item.getAttribute("name") === "autonomy")).toHaveLength(3);
     expect(screen.getByText("Profile-owned enforcement")).toBeInTheDocument();
     expect(screen.getByText("Browser draft & configuration details").closest("details")).not.toHaveAttribute("open");
     expect(screen.getByText("Builder handoff")).not.toBeVisible();
     expect(screen.getByText("Not run for this handoff")).not.toBeVisible();
-    expect(screen.queryByRole("heading", { name: "No active job" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "No active run" })).not.toBeInTheDocument();
     expect(screen.queryByText("Job submission in progress")).not.toBeInTheDocument();
     expect(screen.queryByText("Planning request submitted")).not.toBeInTheDocument();
   });
 
   it("locks Execute approval until the complete bound envelope is rendered", async () => {
     const user = userEvent.setup();
-    renderApp("/runs");
-    expect(await screen.findByRole("heading", { name: "Review and run" })).toBeVisible();
+    renderApp("/runs?prepare=1");
+    expect(await screen.findByRole("heading", { name: "Runs" })).toBeVisible();
     await user.click(screen.getByRole("radio", { name: /Execute/ }));
     await user.click(screen.getByText("Policy, approval & budgets"));
     let approval = screen.getByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ });
@@ -819,8 +840,8 @@ describe("product application", () => {
     activeJobInventory = [executeJob];
     window.localStorage.setItem(activeJobStorageKey, executeJob.job_id);
 
-    const firstMount = renderApp("/runs");
-    expect(await screen.findByRole("heading", { name: executeJob.job_id })).toBeVisible();
+    const firstMount = renderApp("/runs?prepare=1");
+    expect(await findDisplayedJobId(executeJob.job_id)).toBeVisible();
     expect(await screen.findByRole("region", { name: "Durable Execute job approval" })).toBeVisible();
     expect(screen.getByRole("checkbox", { name: /I approve this exact immutable job envelope once/ })).toBeEnabled();
     expect(screen.getByRole("textbox", { name: "Operator identity for this job" })).toHaveValue("");
@@ -828,8 +849,8 @@ describe("product application", () => {
     expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/runs/preflight") && init?.method === "POST")).toBe(true);
     firstMount.unmount();
 
-    const secondMount = renderApp("/runs");
-    expect(await screen.findByRole("heading", { name: executeJob.job_id })).toBeVisible();
+    const secondMount = renderApp("/runs?prepare=1");
+    expect(await findDisplayedJobId(executeJob.job_id)).toBeVisible();
     expect(await screen.findByRole("region", { name: "Durable Execute job approval" })).toBeVisible();
     expect(screen.getByRole("checkbox", { name: /I approve this exact immutable job envelope once/ })).not.toBeChecked();
     expect(screen.getByRole("textbox", { name: "Operator identity for this job" })).toHaveValue("");
@@ -845,15 +866,15 @@ describe("product application", () => {
       return defaultImplementation(input, init);
     });
 
-    const terminalMount = renderApp("/runs");
+    const terminalMount = renderApp("/runs?prepare=1");
     await waitFor(() => expect(window.localStorage.getItem(activeJobStorageKey)).toBeNull());
     terminalMount.unmount();
 
     const exactJobRequests = () => fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith(`/jobs/${executeJob.job_id}`) && !init?.method).length;
     const terminalRequestCount = exactJobRequests();
-    renderApp("/runs");
+    renderApp("/runs?prepare=1");
     expect(await screen.findByRole("heading", { name: "Run history" })).toBeVisible();
-    expect(screen.queryByRole("heading", { name: "No active job" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "No active run" })).not.toBeInTheDocument();
     expect(exactJobRequests()).toBe(terminalRequestCount);
   });
 
@@ -873,20 +894,20 @@ describe("product application", () => {
       return defaultImplementation(input, init);
     });
 
-    const firstMount = renderApp("/runs");
-    await screen.findByRole("heading", { name: "Review and run" });
+    const firstMount = renderApp("/runs?prepare=1");
+    await screen.findByRole("heading", { name: "Runs" });
     await waitFor(() => expect(resolveDetail).toBeTypeOf("function"));
     expect(window.localStorage.getItem(activeJobStorageKey)).toBe(interruptedJob.job_id);
     expect(screen.getByRole("button", { name: "Run preflight" })).toBeDisabled();
 
     await act(async () => { resolveDetail(json(interruptedJob)); });
-    expect(await screen.findByRole("heading", { name: interruptedJob.job_id })).toBeVisible();
+    expect(await findDisplayedJobId(interruptedJob.job_id)).toBeVisible();
     expect(screen.getByRole("button", { name: "Retry as replacement" })).toBeVisible();
     expect(window.localStorage.getItem(activeJobStorageKey)).toBe(interruptedJob.job_id);
     firstMount.unmount();
 
-    renderApp("/runs");
-    expect(await screen.findByRole("heading", { name: interruptedJob.job_id })).toBeVisible();
+    renderApp("/runs?prepare=1");
+    expect(await findDisplayedJobId(interruptedJob.job_id)).toBeVisible();
     expect(screen.getByRole("button", { name: "Retry as replacement" })).toBeVisible();
     expect(window.localStorage.getItem(activeJobStorageKey)).toBe(interruptedJob.job_id);
     expect(fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith(`/jobs/${interruptedJob.job_id}`) && !init?.method)).toHaveLength(2);
@@ -915,15 +936,16 @@ describe("product application", () => {
       return defaultImplementation(input, init);
     });
 
-    renderApp("/runs");
-    expect(await screen.findByRole("heading", { name: runningJob.job_id })).toBeVisible();
+    renderApp("/runs?prepare=1");
+    expect(await findDisplayedJobId(runningJob.job_id)).toBeVisible();
     releaseControllerSlot = true;
     await waitFor(() => expect(inventoryReleased && Boolean(resolveFinalDetail)).toBe(true));
-    expect(screen.getByRole("heading", { name: runningJob.job_id })).toBeVisible();
+    expect(displayedJobId(runningJob.job_id)).toBeVisible();
     expect(window.localStorage.getItem(activeJobStorageKey)).toBe(runningJob.job_id);
 
-    resolveFinalDetail!();
-    expect(await screen.findByRole("heading", { name: completedRun.run_id })).toBeVisible();
+    await act(async () => { resolveFinalDetail!(); });
+    expect(await screen.findByRole("link", { name: "Review latest result" })).toHaveAttribute("href", `/runs/${encodeURIComponent(completedRun.run_id)}`);
+    expect(screen.getByRole("button", { name: "Review" })).toBeEnabled();
     expect(window.localStorage.getItem(activeJobStorageKey)).toBeNull();
   });
 
@@ -941,12 +963,12 @@ describe("product application", () => {
       return defaultImplementation(input, init);
     });
 
-    renderApp("/runs", client);
-    expect(await screen.findByRole("heading", { name: runningJob.job_id })).toBeVisible();
+    renderApp("/runs?prepare=1", client);
+    expect(await findDisplayedJobId(runningJob.job_id)).toBeVisible();
     terminalDetail = true;
     await client.refetchQueries({ queryKey: ["job", runningJob.job_id], exact: true });
     await waitFor(() => expect(window.localStorage.getItem(activeJobStorageKey)).toBeNull());
-    expect(screen.getByRole("heading", { name: runningJob.job_id })).toBeVisible();
+    expect(displayedJobId(runningJob.job_id)).toBeVisible();
     expect(screen.queryByRole("combobox", { name: "Active durable job" })).not.toBeInTheDocument();
   });
 
@@ -966,14 +988,14 @@ describe("product application", () => {
     });
 
     const user = userEvent.setup();
-    renderApp("/runs", client);
-    expect(await screen.findByRole("heading", { name: runningJob.job_id })).toBeVisible();
+    renderApp("/runs?prepare=1", client);
+    expect(await findDisplayedJobId(runningJob.job_id)).toBeVisible();
     terminalDetail = true;
     await client.refetchQueries({ queryKey: ["job", runningJob.job_id], exact: true });
     const selector = await screen.findByRole("combobox", { name: "Active durable job" });
     expect(screen.queryByRole("option", { name: new RegExp(runningJob.job_id) })).not.toBeInTheDocument();
     await user.selectOptions(selector, alternateJob.job_id);
-    expect(await screen.findByRole("heading", { name: alternateJob.job_id })).toBeVisible();
+    expect(await findDisplayedJobId(alternateJob.job_id)).toBeVisible();
     expect(screen.queryByRole("option", { name: new RegExp(runningJob.job_id) })).not.toBeInTheDocument();
   });
 
@@ -993,17 +1015,17 @@ describe("product application", () => {
     });
 
     const user = userEvent.setup();
-    renderApp("/runs", client);
+    renderApp("/runs?prepare=1", client);
     const selector = await screen.findByRole("combobox", { name: "Active durable job" });
     await waitFor(() => expect(resolveSourceDetail).toBeTypeOf("function"));
-    expect(screen.getByRole("heading", { name: runningJob.job_id })).toBeVisible();
+    expect(await findDisplayedJobId(runningJob.job_id)).toBeVisible();
     await user.selectOptions(selector, alternateJob.job_id);
-    expect(await screen.findByRole("heading", { name: alternateJob.job_id })).toBeVisible();
+    expect(await findDisplayedJobId(alternateJob.job_id)).toBeVisible();
 
     await act(async () => { resolveSourceDetail(json(cancelledJob)); });
     await waitFor(() => expect(client.getQueryData<RunJob>(["job", runningJob.job_id])?.state).toBe("cancelled"));
     await waitFor(() => expect(screen.queryByRole("option", { name: new RegExp(runningJob.job_id) })).not.toBeInTheDocument());
-    expect(screen.getByRole("heading", { name: alternateJob.job_id })).toBeVisible();
+    expect(displayedJobId(alternateJob.job_id)).toBeVisible();
     expect(window.localStorage.getItem(activeJobStorageKey)).toBe(alternateJob.job_id);
   });
 
@@ -1023,17 +1045,17 @@ describe("product application", () => {
     });
 
     const user = userEvent.setup();
-    renderApp("/runs", client);
+    renderApp("/runs?prepare=1", client);
     let selector = await screen.findByRole("combobox", { name: "Active durable job" });
     await waitFor(() => expect(resolveOriginalDetail).toBeTypeOf("function"));
     await user.selectOptions(selector, alternateJob.job_id);
-    expect(await screen.findByRole("heading", { name: alternateJob.job_id })).toBeVisible();
+    expect(await findDisplayedJobId(alternateJob.job_id)).toBeVisible();
 
     activeJobInventory = [refreshedJob, alternateJob];
     await client.refetchQueries({ queryKey: ["active-jobs"], exact: true });
     selector = await screen.findByRole("combobox", { name: "Active durable job" });
     await user.selectOptions(selector, refreshedJob.job_id);
-    expect(await screen.findByRole("heading", { name: refreshedJob.job_id })).toBeVisible();
+    expect(await findDisplayedJobId(refreshedJob.job_id)).toBeVisible();
     expect(screen.getByRole("button", { name: "Resume" })).toBeEnabled();
 
     await act(async () => { resolveOriginalDetail(json(originalJob)); });
@@ -1059,18 +1081,18 @@ describe("product application", () => {
     });
 
     const user = userEvent.setup();
-    renderApp("/runs", client);
+    renderApp("/runs?prepare=1", client);
     const selector = await screen.findByRole("combobox", { name: "Active durable job" });
-    expect(await screen.findByRole("heading", { name: runningJob.job_id })).toBeVisible();
+    expect(await findDisplayedJobId(runningJob.job_id)).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(resolveCancel).toBeTypeOf("function"));
     await user.selectOptions(selector, alternateJob.job_id);
-    expect(await screen.findByRole("heading", { name: alternateJob.job_id })).toBeVisible();
+    expect(await findDisplayedJobId(alternateJob.job_id)).toBeVisible();
 
     await act(async () => { resolveCancel(json(cancelledJob)); });
     await waitFor(() => expect(client.isMutating()).toBe(0));
     await waitFor(() => expect(screen.queryByRole("option", { name: new RegExp(runningJob.job_id) })).not.toBeInTheDocument());
-    expect(screen.getByRole("heading", { name: alternateJob.job_id })).toBeVisible();
+    expect(displayedJobId(alternateJob.job_id)).toBeVisible();
     expect(window.localStorage.getItem(activeJobStorageKey)).toBe(alternateJob.job_id);
   });
 
@@ -1081,8 +1103,8 @@ describe("product application", () => {
     const pendingInventory = new Promise<Response>((resolve) => { resolveInventory = resolve; });
     fetchMock.mockImplementation((input, init) => String(input).endsWith("/jobs") ? pendingInventory : defaultImplementation(input, init));
 
-    renderApp("/runs");
-    expect(await screen.findByRole("heading", { name: "Review and run" })).toBeVisible();
+    renderApp("/runs?prepare=1");
+    expect(await screen.findByRole("heading", { name: "Runs" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Run preflight" })).toBeDisabled();
 
     resolveInventory(new Response(JSON.stringify({ error: { code: "active_job_inventory_unavailable", message: "Inventory unavailable." } }), { status: 503, headers: { "Content-Type": "application/json" } }));
@@ -1099,8 +1121,8 @@ describe("product application", () => {
     const pendingInventory = new Promise<Response>((resolve) => { resolveInventory = resolve; });
     fetchMock.mockImplementation((input, init) => String(input).endsWith("/jobs") ? pendingInventory : defaultImplementation(input, init));
 
-    renderApp("/runs", client);
-    expect(await screen.findByRole("heading", { name: "Review and run" })).toBeVisible();
+    renderApp("/runs?prepare=1", client);
+    expect(await screen.findByRole("heading", { name: "Runs" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Run preflight" })).toBeDisabled();
 
     resolveInventory(json({ schema_version: "bluefire.active-job-list.v1", jobs: [] }));
@@ -1124,8 +1146,8 @@ describe("product application", () => {
       return defaultImplementation(input, init);
     });
 
-    renderApp("/runs", client);
-    expect(await screen.findByRole("heading", { name: runningJob.job_id })).toBeVisible();
+    renderApp("/runs?prepare=1", client);
+    expect(await findDisplayedJobId(runningJob.job_id)).toBeVisible();
     inventoryOutage = true;
     await client.refetchQueries({ queryKey: ["active-jobs"], exact: true });
     expect(await screen.findByText(/New preflight and submission remain disabled/)).toBeVisible();
@@ -1153,8 +1175,8 @@ describe("product application", () => {
       return defaultImplementation(input, init);
     });
 
-    renderApp("/runs");
-    await screen.findByRole("heading", { name: "Review and run" });
+    renderApp("/runs?prepare=1");
+    await screen.findByRole("heading", { name: "Runs" });
     await waitFor(() => expect(resolveMissing).toBeTypeOf("function"));
     expect(window.localStorage.getItem(activeJobStorageKey)).toBe(staleJobId);
     expect(screen.getByRole("button", { name: "Run preflight" })).toBeDisabled();
@@ -1178,16 +1200,16 @@ describe("product application", () => {
       return defaultImplementation(input, init);
     });
 
-    renderApp("/runs", client);
-    await screen.findByRole("heading", { name: "Review and run" });
+    renderApp("/runs?prepare=1", client);
+    await screen.findByRole("heading", { name: "Runs" });
     await waitFor(() => expect(resolveMissing).toBeTypeOf("function"));
-    expect(screen.getByRole("heading", { name: "No active job" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "No active run" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Pause" })).not.toBeEnabled();
     expect(screen.getByRole("button", { name: "Run preflight" })).toBeDisabled();
 
     await act(async () => { resolveMissing(new Response(JSON.stringify({ error: { code: "job_not_found", message: "Job was not found." } }), { status: 404, headers: { "Content-Type": "application/json" } })); });
     await waitFor(() => expect(window.localStorage.getItem(activeJobStorageKey)).toBeNull());
-    expect(screen.queryByRole("heading", { name: staleJob.job_id })).not.toBeInTheDocument();
+    expect(displayedJobId(staleJob.job_id)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run preflight" })).toBeEnabled();
   });
 
@@ -1201,10 +1223,10 @@ describe("product application", () => {
     });
 
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-    renderApp("/runs", client);
-    await screen.findByRole("heading", { name: "Review and run" });
+    renderApp("/runs?prepare=1", client);
+    await screen.findByRole("heading", { name: "Runs" });
     expect(await screen.findByText(/Mutable controls remain disabled while ownership is reconciled/)).toBeVisible();
-    expect(screen.getByRole("heading", { name: "No active job" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "No active run" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
     expect(screen.queryByRole("region", { name: "Durable Execute job approval" })).not.toBeInTheDocument();
@@ -1228,8 +1250,8 @@ describe("product application", () => {
       return defaultImplementation(input, init);
     });
 
-    renderApp("/runs");
-    expect(await screen.findByRole("heading", { name: interruptedJob.job_id })).toBeVisible();
+    renderApp("/runs?prepare=1");
+    expect(await findDisplayedJobId(interruptedJob.job_id)).toBeVisible();
     expect(screen.getByRole("button", { name: "Retry as replacement" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Retry as replacement" })).toHaveAttribute("title", "Retry requires a fresh empty active-job inventory");
     expect(screen.getByRole("combobox", { name: "Active durable job" })).toBeVisible();
@@ -1250,7 +1272,7 @@ describe("product application", () => {
       return defaultImplementation(input, init);
     });
 
-    renderApp("/runs", client);
+    renderApp("/runs?prepare=1", client);
     await waitFor(() => expect(resolveDetail).toBeTypeOf("function"));
     expect(await screen.findByRole("button", { name: "Pause" })).toBeEnabled();
     expect(screen.queryByRole("region", { name: "Durable Execute job approval" })).not.toBeInTheDocument();
@@ -1266,7 +1288,7 @@ describe("product application", () => {
     window.localStorage.setItem(activeJobStorageKey, executeJob.job_id);
     const user = userEvent.setup();
 
-    renderApp("/runs");
+    renderApp("/runs?prepare=1");
     const selector = await screen.findByRole("combobox", { name: "Active durable job" });
     expect(selector).toHaveValue(executeJob.job_id);
     const approval = await screen.findByRole("checkbox", { name: /I approve this exact immutable job envelope once/ });
@@ -1275,12 +1297,12 @@ describe("product application", () => {
     await user.type(operator, "must-not-cross-job-boundary");
 
     await user.selectOptions(selector, pausedJob.job_id);
-    expect(await screen.findByRole("heading", { name: pausedJob.job_id })).toBeVisible();
+    expect(await findDisplayedJobId(pausedJob.job_id)).toBeVisible();
     expect(window.localStorage.getItem(activeJobStorageKey)).toBe(pausedJob.job_id);
     expect(screen.queryByRole("region", { name: "Durable Execute job approval" })).not.toBeInTheDocument();
 
     await user.selectOptions(selector, executeJob.job_id);
-    expect(await screen.findByRole("heading", { name: executeJob.job_id })).toBeVisible();
+    expect(await findDisplayedJobId(executeJob.job_id)).toBeVisible();
     expect(await screen.findByRole("checkbox", { name: /I approve this exact immutable job envelope once/ })).not.toBeChecked();
     expect(screen.getByRole("textbox", { name: "Operator identity for this job" })).toHaveValue("");
   }, 10_000);
@@ -1303,7 +1325,7 @@ describe("product application", () => {
 
     const user = userEvent.setup();
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-    renderApp("/runs", client);
+    renderApp("/runs?prepare=1", client);
     const selector = await screen.findByRole("combobox", { name: "Active durable job" });
     const firstApproval = await screen.findByRole("checkbox", { name: /I approve this exact immutable job envelope once/ });
     await user.click(firstApproval);
@@ -1312,7 +1334,7 @@ describe("product application", () => {
     expect(approvalRequested).toBe(true);
 
     await user.selectOptions(selector, secondJob.job_id);
-    expect(await screen.findByRole("heading", { name: secondJob.job_id })).toBeVisible();
+    expect(await findDisplayedJobId(secondJob.job_id)).toBeVisible();
     const secondApproval = await screen.findByRole("checkbox", { name: /I approve this exact immutable job envelope once/ });
     const secondOperator = screen.getByRole("textbox", { name: "Operator identity for this job" });
     expect(secondApproval).toBeDisabled();
@@ -1323,7 +1345,7 @@ describe("product application", () => {
     await waitFor(() => expect(secondApproval).toBeEnabled());
     expect(secondApproval).not.toBeChecked();
     expect(secondOperator).toHaveValue("");
-    expect(screen.getByRole("heading", { name: secondJob.job_id })).toBeVisible();
+    expect(displayedJobId(secondJob.job_id)).toBeVisible();
   });
 
   it("does not let an older detail response roll back a successful approval", async () => {
@@ -1349,7 +1371,7 @@ describe("product application", () => {
     });
 
     const user = userEvent.setup();
-    renderApp("/runs", client);
+    renderApp("/runs?prepare=1", client);
     const approval = await screen.findByRole("checkbox", { name: /I approve this exact immutable job envelope once/ });
     await waitFor(() => expect(approval).toBeEnabled());
     await user.click(approval);
@@ -1388,7 +1410,7 @@ describe("product application", () => {
     });
 
     const user = userEvent.setup();
-    renderApp("/runs", client);
+    renderApp("/runs?prepare=1", client);
     const selector = await screen.findByRole("combobox", { name: "Active durable job" });
     const approval = await screen.findByRole("checkbox", { name: /I approve this exact immutable job envelope once/ });
     await waitFor(() => expect(approval).toBeEnabled());
@@ -1401,12 +1423,12 @@ describe("product application", () => {
     await client.refetchQueries({ queryKey: ["job", awaitingJob.job_id], exact: true });
     await waitFor(() => expect(client.getQueryData<RunJob>(["job", awaitingJob.job_id])?.state).toBe("cancelling"));
     await user.selectOptions(selector, alternateJob.job_id);
-    expect(await screen.findByRole("heading", { name: alternateJob.job_id })).toBeVisible();
+    expect(await findDisplayedJobId(alternateJob.job_id)).toBeVisible();
 
     await act(async () => { resolveApproval(json({ schema_version: "bluefire.job-approval.v1", job: olderApproval, approval_request: olderApproval.approval_request })); });
     await waitFor(() => expect(client.isMutating()).toBe(0));
     expect(client.getQueryData<RunJob>(["job", awaitingJob.job_id])).toMatchObject({ state: "cancelling", updated_at: newerDetail.updated_at });
-    expect(screen.getByRole("heading", { name: alternateJob.job_id })).toBeVisible();
+    expect(displayedJobId(alternateJob.job_id)).toBeVisible();
   });
 
   it("offers an alternate job while missing final detail is still pending", async () => {
@@ -1427,8 +1449,8 @@ describe("product application", () => {
     });
 
     const user = userEvent.setup();
-    renderApp("/runs", client);
-    expect(await screen.findByRole("heading", { name: sourceJob.job_id })).toBeVisible();
+    renderApp("/runs?prepare=1", client);
+    expect(await findDisplayedJobId(sourceJob.job_id)).toBeVisible();
     deferFinalDetail = true;
     activeJobInventory = [alternateJob];
     await client.refetchQueries({ queryKey: ["active-jobs"], exact: true });
@@ -1436,10 +1458,10 @@ describe("product application", () => {
 
     const selector = await screen.findByRole("combobox", { name: "Active durable job" });
     await user.selectOptions(selector, alternateJob.job_id);
-    expect(await screen.findByRole("heading", { name: alternateJob.job_id })).toBeVisible();
-    resolveFinalDetail!();
+    expect(await findDisplayedJobId(alternateJob.job_id)).toBeVisible();
+    await act(async () => { resolveFinalDetail!(); });
     await waitFor(() => expect(window.localStorage.getItem(activeJobStorageKey)).toBe(alternateJob.job_id));
-    expect(screen.getByRole("heading", { name: alternateJob.job_id })).toBeVisible();
+    expect(displayedJobId(alternateJob.job_id)).toBeVisible();
   });
 
   it("does not let a late retry response replace a newly selected active job", async () => {
@@ -1468,7 +1490,7 @@ describe("product application", () => {
 
     const user = userEvent.setup();
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-    renderApp("/runs", client);
+    renderApp("/runs?prepare=1", client);
     const retry = await screen.findByRole("button", { name: "Retry as replacement" });
     await client.refetchQueries({ queryKey: ["active-jobs"], exact: true });
     await waitFor(() => expect(retry).toBeEnabled());
@@ -1479,12 +1501,12 @@ describe("product application", () => {
     await client.refetchQueries({ queryKey: ["active-jobs"], exact: true });
     const selector = await screen.findByRole("combobox", { name: "Active durable job" });
     await user.selectOptions(selector, selectedJob.job_id);
-    expect(await screen.findByRole("heading", { name: selectedJob.job_id })).toBeVisible();
+    expect(await findDisplayedJobId(selectedJob.job_id)).toBeVisible();
 
     resolveRetry(json({ schema_version: "bluefire.job-retry.v1", retry_of_job_id: sourceJob.job_id, source_job: interruptedJob, job: replacementJob, approval_request: executeApprovalRequest, preflight: executePreflight }));
     await waitFor(() => expect(window.localStorage.getItem(activeJobStorageKey)).toBe(selectedJob.job_id));
-    expect(screen.getByRole("heading", { name: selectedJob.job_id })).toBeVisible();
-    expect(screen.queryByRole("heading", { name: replacementJob.job_id })).not.toBeInTheDocument();
+    expect(displayedJobId(selectedJob.job_id)).toBeVisible();
+    expect(displayedJobId(replacementJob.job_id)).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Durable Execute job approval" })).not.toBeInTheDocument();
   });
 
@@ -1499,8 +1521,8 @@ describe("product application", () => {
     });
 
     const user = userEvent.setup();
-    renderApp("/runs");
-    expect(await screen.findByRole("heading", { name: executeJob.job_id })).toBeVisible();
+    renderApp("/runs?prepare=1");
+    expect(await findDisplayedJobId(executeJob.job_id)).toBeVisible();
     const retry = await screen.findByRole("button", { name: "Retry approval review" });
     expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Approve and release job" })).toBeDisabled();
@@ -1565,7 +1587,7 @@ describe("product application", () => {
     expect(addEventListener).toHaveBeenCalledWith("change", expect.any(Function));
     expect(colorSchemeListener).toBeDefined();
     await user.click(screen.getByRole("link", { name: /^Build$/ }));
-    expect(await screen.findByRole("heading", { name: "Build your experiment" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: demoScenario.title })).toBeVisible();
     act(() => colorSchemeListener!({ matches: true } as MediaQueryListEvent));
     expect(document.documentElement.dataset.theme).toBe("light");
 

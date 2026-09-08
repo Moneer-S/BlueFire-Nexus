@@ -178,8 +178,12 @@ function keys(value: JsonObject): string[] {
   return Object.keys(value).sort();
 }
 
-function runCheckbox(page: Page, runId: string): Locator {
-  return page.locator(`.run-select-list code[title="${runId}"]`).locator("xpath=ancestor::label").getByRole("checkbox");
+async function runCheckbox(page: Page, runId: string): Promise<Locator> {
+  // The visible name is primary; exact-ID search disambiguates retained runs.
+  await page.getByRole("textbox", { name: "Search run history" }).fill(runId);
+  const choice = page.locator(".run-select-list").getByRole("checkbox");
+  await expect(choice).toHaveCount(1);
+  return choice;
 }
 
 test("production operator UI completes authoring, management, run, replay, and compare", async ({ page }) => {
@@ -201,9 +205,9 @@ test("production operator UI completes authoring, management, run, replay, and c
   completed.push("bootstrap_production_session");
 
   await navigation.getByRole("link", { name: "Experiments" }).click();
-  await expect(page.getByRole("heading", { name: "Reusable security experiments" })).toBeVisible();
-  await expect(page.locator(".scenario-card").first()).toContainText(/Working copy · saved v\d+/);
-  const initialCard = page.locator(".scenario-card").first();
+  await expect(page.getByRole("heading", { name: "Experiments" })).toBeVisible();
+  await expect(page.getByRole("article").filter({ hasText: "Current working copy" })).toContainText(/Saved v\d+/);
+  const initialCard = page.getByRole("article").filter({ hasText: "Current working copy" });
   const exportedTitle = (await initialCard.getByRole("heading", { level: 2 }).innerText()).trim();
   const downloadEvent = page.waitForEvent("download");
   await initialCard.getByRole("button", { name: "Export" }).click();
@@ -214,23 +218,29 @@ test("production operator UI completes authoring, management, run, replay, and c
   expect(Array.isArray(exportedScenario.edges)).toBe(true);
   completed.push("export_scenario");
 
-  await page.getByRole("button", { name: "New scenario" }).click();
-  await page.getByLabel("Scenario title").fill("Gate 08 authoring draft");
+  await page.getByRole("button", { name: "New experiment" }).click();
+  await page.getByLabel("Experiment name").fill("Gate 08 authoring draft");
   await page.getByRole("button", { name: "Create draft" }).click();
-  await expect(page.getByRole("heading", { name: "Build your experiment" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Gate 08 authoring draft" })).toBeVisible();
   await expect(page.getByText("Start with one useful step")).toBeVisible();
   completed.push("create_scenario_draft");
 
   await navigation.getByRole("link", { name: "Experiments" }).click();
-  await page.getByLabel("Import scenario JSON file").setInputFiles({
+  await page.getByLabel("Import experiment JSON file").setInputFiles({
     name: "gate08-exported-scenario.json",
     mimeType: "application/json",
     buffer: exportedBytes,
   });
+  const replacement = page.getByRole("dialog", { name: "Replace your working draft?" });
+  await expect(replacement).toContainText("Gate 08 authoring draft");
+  await expect(replacement).toContainText(exportedTitle);
+  await replacement.getByRole("button", { name: "Replace draft and import" }).click();
   await expect(page.getByText(`Imported ${exportedTitle} as a local draft.`)).toBeVisible();
-  const importedCard = page.locator(".scenario-card").filter({ has: page.getByRole("heading", { name: exportedTitle, level: 2 }) }).first();
-  await importedCard.getByRole("button", { name: "Open builder" }).click();
-  await expect(page.getByRole("heading", { name: "Build your experiment" })).toBeVisible();
+  const importedCard = page.getByRole("article").filter({ hasText: "Current working copy" });
+  await expect(importedCard).toHaveAttribute("aria-current", "true");
+  await expect(importedCard.getByRole("heading", { level: 2 })).toHaveText(exportedTitle);
+  await importedCard.getByRole("button", { name: "Continue editing" }).click();
+  await expect(page.getByRole("heading", { name: exportedTitle })).toBeVisible();
   completed.push("import_scenario");
 
   await expect(page.locator(".palette-panel")).toBeHidden();
@@ -384,7 +394,9 @@ test("production operator UI completes authoring, management, run, replay, and c
   completed.push("review_source_and_detection_surfaces");
 
   await navigation.getByRole("link", { name: "Runs" }).click();
-  await expect(page.getByRole("heading", { name: "Review and run" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Runs", level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Run history" })).toBeVisible();
+  await page.getByRole("link", { name: "Review new run", exact: true }).click();
   await page.getByRole("radio", { name: /Execute Approved runner actions/ }).check();
   await page.getByText("Policy, approval & budgets").click();
   await expect(page.getByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ })).toBeDisabled();
@@ -393,6 +405,7 @@ test("production operator UI completes authoring, management, run, replay, and c
   completed.push("review_execute_approval_boundary");
 
   await expect(page.getByRole("radio", { name: /Auto Policy-valid Simulate choices/ })).toBeChecked();
+  await page.getByText("AI provider & environment details", { exact: true }).click();
   await expect(page.getByLabel("Provider")).toHaveValue("deterministic-offline.v1");
   await expect(page.getByLabel("Runner profile")).toHaveValue("sandbox-simulate.v1");
   await page.getByLabel("Target scope").fill("sandbox.workspace");
@@ -410,7 +423,7 @@ test("production operator UI completes authoring, management, run, replay, and c
   await page.getByRole("button", { name: "Submit Simulate job" }).click();
   const submission = await (await submissionResponse).json() as JsonObject;
   expect(submission.schema_version).toBe("bluefire.run-job-submission.v1");
-  const reviewLatest = page.getByRole("tab", { name: "Review latest" });
+  const reviewLatest = page.getByRole("button", { name: "Review", exact: true });
   await expect(reviewLatest).toBeEnabled({ timeout: 90_000 });
   const runTabs = page.getByRole("tablist", { name: "Run detail views" });
   for (const name of ["Timeline", "Planner", "Policy", "Runner", "Evidence", "Detections"]) {
@@ -420,20 +433,23 @@ test("production operator UI completes authoring, management, run, replay, and c
   completed.push("submit_and_observe_simulate_job");
 
   await reviewLatest.click();
-  const canonicalReviewHeading = page.getByRole("heading", { name: "Canonical run review" });
+  const canonicalReviewHeading = page.getByRole("heading", { name: versionedTitle, level: 1 });
   await expect(canonicalReviewHeading).toBeVisible();
   const runMatch = new URL(page.url()).hash.match(/^#\/runs\/(run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16})$/);
   if (!runMatch) throw new Error("Canonical run review URL omitted the run identity.");
   const browserRunId = runMatch[1]!;
+  await page.getByText(/^AI decisions \(\d+\)$/).click();
   await expect(page.getByRole("heading", { name: "Proposal, policy, and application trail" })).toBeVisible();
+  await page.getByText(/^Inspect evidence records/).click();
   await expect(page.getByRole("heading", { name: "Provenance-separated records" })).toBeVisible();
+  await page.getByText(/^Inspect detection candidates/).click();
   await expect(page.getByRole("heading", { name: "Candidate lifecycle" })).toBeVisible();
   await canonicalReviewHeading.scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(screenshotDirectory, SCREENSHOTS[1]) });
   completed.push("review_canonical_run");
 
   await navigation.getByRole("link", { name: "Compare" }).click();
-  await expect(page.getByRole("heading", { name: "Measure what changed" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Compare runs" })).toBeVisible();
   await page.getByLabel("Source run").selectOption(browserRunId);
   await expect(page.getByRole("combobox", { name: "What will change?" })).toHaveValue("exact");
   const replayResponse = page.waitForResponse((response) => /^\/api\/v1\/runs\/[^/]+\/replays$/.test(new URL(response.url()).pathname) && response.request().method() === "POST");
@@ -444,10 +460,12 @@ test("production operator UI completes authoring, management, run, replay, and c
   await expect(page.getByText("Replay created")).toBeVisible();
   completed.push("create_production_replay");
 
-  await expect(runCheckbox(page, baselineRunId)).toBeVisible();
-  await expect(runCheckbox(page, String(replayRunId))).toBeVisible();
-  await runCheckbox(page, baselineRunId).check();
-  await runCheckbox(page, String(replayRunId)).check();
+  // Explicitly choose the comparison pair; replay creation may select its source.
+  await page.getByLabel("Source run").selectOption(baselineRunId);
+  await (await runCheckbox(page, baselineRunId)).check();
+  await (await runCheckbox(page, String(replayRunId))).check();
+  await page.getByRole("textbox", { name: "Search run history" }).clear();
+  await expect(page.locator(".run-select-list").getByRole("checkbox", { checked: true })).toHaveCount(2);
   const comparisonResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/comparisons" && response.request().method() === "POST");
   await page.getByRole("button", { name: "Compare selected" }).click();
   const comparison = await (await comparisonResponse).json() as JsonObject;
