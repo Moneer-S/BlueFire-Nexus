@@ -20,19 +20,20 @@ def _hook():
         return runpy.run_path(str(REPOSITORY / "setup.py"))
 
 
-def _package(tmp_path: Path) -> Path:
+def _package(tmp_path: Path, newline: bytes = b"\n") -> Path:
     root = tmp_path / "bluefire"
     (root / "ui").mkdir(parents=True)
     for name in ("app.js", "index.html", "styles.css"):
-        (root / "ui" / name).write_bytes((name + "\n").encode())
+        (root / "ui" / name).write_bytes(name.encode() + newline)
     return root
 
 
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
 @pytest.mark.parametrize("revision", [None, "$Format:%H$", "a" * 40])
 def test_build_output_roundtrips_actual_assets_without_runtime_revision_inference(
-    tmp_path, monkeypatch, revision
+    tmp_path, monkeypatch, revision, newline
 ):
-    root = _package(tmp_path)
+    root = _package(tmp_path, newline)
     if revision is not None:
         (root / "_source_revision.txt").write_text(revision, encoding="ascii")
     monkeypatch.setenv("GITHUB_SHA", "b" * 40)

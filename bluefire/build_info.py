@@ -39,7 +39,11 @@ def _read_regular(path: Path, maximum: int) -> bytes:
     if not stat.S_ISREG(before.st_mode) or path.is_symlink() or not 0 < before.st_size <= maximum:
         raise ValueError("diagnostic resource unavailable")
     descriptor = os.open(
-        path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        path,
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0),
     )
     try:
         opened = os.fstat(descriptor)
