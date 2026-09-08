@@ -5,7 +5,8 @@ import { phaseTitle, policyTitle, receiverOutcome } from "../lib/receiver-defens
 import { downloadArtifact } from "../lib/download";
 import { savedExperimentPath } from "../lib/receiver-navigation";
 import { CanonicalPlanReview } from "./CanonicalPlanReview";
-import { Button, Callout, DataList, Field, sentence } from "./Primitives";
+import { RunWorkspace } from "./RunWorkspace";
+import { Button, Callout, DataList, Field } from "./Primitives";
 
 type PrepareRequest = { submission_id: string; phase: ReceiverPhase; reviewed_by: string };
 const phaseDescription = {
@@ -13,9 +14,11 @@ const phaseDescription = {
   protected: "Start a fresh receiver that requires redaction. Replay the same staged bytes to measure whether this policy refuses them.",
   restored: "Start another fresh receiver with the original policy. Replay again to check whether restoring the policy restores acceptance.",
 };
-export function ReceiverTestProgress({ envelope, disabled, onPrepare, onReview }: {
+export function ReceiverTestProgress({ envelope, disabled: externalDisabled, onPrepare, onReview }: {
   envelope: ReceiverDefenseEnvelope & { context: ReceiverContext }; disabled: boolean; onPrepare: (body: PrepareRequest) => void; onReview: (body: ReceiverDecision) => void;
 }) {
+  const [executionStopRequested, setExecutionStopRequested] = useState(false);
+  const disabled = externalDisabled || executionStopRequested;
   const current = envelope.phases.find((item) => item.phase === envelope.next_action.phase);
   const [reviewer, setReviewer] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
@@ -50,6 +53,7 @@ export function ReceiverTestProgress({ envelope, disabled, onPrepare, onReview }
     if (current && preparation && canReview && reviewer.trim() && (decision === "reject" || acknowledged)) onReview({ submission_id: crypto.randomUUID(), phase: current.phase, preparation_digest: preparation.preparation_digest, decision, reviewed_by: reviewer.trim() });
   };
   return <section className="receiver-progress" aria-label="Receiver control test" ref={workspace}>
+    {executionStopRequested && envelope.status !== "stopped" ? <Callout tone="warning" title="Checking receiver shutdown">Cancellation was requested through this test's run. New phase preparation and release stay disabled while the saved owner, run and cleanup are reconciled. The test's Stop control remains available if the response was uncertain.</Callout> : null}
     <div className="receiver-context"><strong>{envelope.context.scenario_title}</strong><span>Version {envelope.context.selection.version} · Execute · {envelope.context.run_intent.target_scope.scope_refs.join(", ")}</span><Link to={savedExperimentPath(envelope.context.selection, envelope.job.job_id)}>Inspect saved experiment</Link></div>
     <ol className="receiver-phases" aria-label="Control test phases">{envelope.phases.map((phase, index) => <li key={phase.phase} aria-current={current?.phase === phase.phase ? "step" : undefined}>
       <span className="receiver-phase-number" aria-hidden="true">{index + 1}</span><div><strong>{phaseTitle[phase.phase]}</strong><p>{receiverOutcome(phase)}</p></div>
@@ -75,10 +79,10 @@ export function ReceiverTestProgress({ envelope, disabled, onPrepare, onReview }
         {preparation.preflight.plan ? <CanonicalPlanReview plan={preparation.preflight.plan} scope={preparation.preflight.scope} cleanup={preparation.preflight.cleanup} binding={preparation.preflight.approval_binding} envelope={preparation.preflight.approval_envelope} /> : <Callout title="Run plan unavailable">This preparation cannot be accepted without the complete run review.</Callout>}
         <label className="check-row"><input type="checkbox" checked={acknowledged} disabled={!canReview} onChange={(event) => setAcknowledged(event.target.checked)} /><span>I reviewed this receiver policy and the complete run plan.</span></label>
         <Field label="Reviewed by"><input autoComplete="off" maxLength={128} value={reviewer} disabled={!canReview} onChange={(event) => setReviewer(event.target.value)} /></Field>
-        <p>Accepting saves this review and creates the ordinary run job. The next screen requires fresh Execute approval before experiment actions start.</p>
-        <div className="receiver-actions"><Button variant="primary" disabled={!canReview || !preparation.preflight.plan || !acknowledged || !reviewer.trim()} onClick={() => review("accept")}>Accept and continue to run approval</Button><Button disabled={!canReview || !reviewer.trim()} onClick={() => review("reject")}>Decline this phase</Button></div>
+        <p>Accepting saves this review and creates the ordinary run job. Fresh Execute approval remains a separate step here before experiment actions start.</p>
+        <div className="receiver-actions"><Button variant="primary" disabled={!canReview || !preparation.preflight.plan || !acknowledged || !reviewer.trim()} onClick={() => review("accept")}>Accept and review run approval</Button><Button disabled={!canReview || !reviewer.trim()} onClick={() => review("reject")}>Decline this phase</Button></div>
       </> : null}
-      {current.execution_job && !current.result ? <div className="receiver-execution"><p role="status">{current.execution_job.state === "awaiting_approval" ? "The run is ready for fresh approval." : `Run: ${sentence(current.execution_job.state)}`}</p><Link className={`button button-${!disabled && envelope.next_action.kind === "approve_execute" ? "primary" : "secondary"} button-medium`} to={`/runs?job=${encodeURIComponent(current.execution_job.job_id)}`}>{disabled ? "Check run status" : current.execution_job.state === "awaiting_approval" ? "Review and approve this run" : "Open run progress"}</Link></div> : null}
+      {current.execution_job && (!current.result || !["completed", "failed", "interrupted", "cancelled"].includes(current.execution_job.state)) ? <RunWorkspace key={current.execution_job.job_id} embedded={{ job: current.execution_job, onCancelRequested: () => setExecutionStopRequested(true), controlsEnabled: !disabled && envelope.status === "active", releaseEnabled: !disabled && envelope.status === "active" && envelope.next_action.kind === "approve_execute" }} /> : null}
       {envelope.next_action.kind === "wait" ? <p role="status">{current.status === "preparing" ? "Preparing and checking the owned receiver…" : "Waiting for saved execution evidence and cleanup…"}</p> : null}
       {envelope.next_action.kind === "cleanup_required" ? <Callout tone="warning" title={cleanupSettled ? "This phase cannot continue" : "Cleanup must be confirmed"}><CleanupSummary phase={current} /><p>{cleanupSettled ? "Inspect the retained review and outcome. A separate test becomes available when the service confirms that all owned work is settled." : "A new receiver or replay stays unavailable while the previous session or run is uncertain."}</p></Callout> : null}
     </section> : null}

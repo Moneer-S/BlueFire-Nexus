@@ -3,11 +3,13 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { expect, it, vi } from "vitest";
+import { ProductProvider } from "../src/state/ProductContext";
 import { ReceiverTestProgress } from "../src/components/ReceiverTestProgress";
 import { ReceiverDefensePage } from "../src/pages/ReceiverDefense";
 import { api } from "../src/lib/api";
 import { readReceiverPending, storeReceiverPending, type ReceiverPending } from "../src/lib/receiver-defense";
 import type { ReceiverDefenseEnvelope } from "../src/lib/receiver-defense-types";
+import { nativeReceiverFixture } from "./receiver-inline-run-fixture";
 import { receiverFixture, receiverFixtureId } from "./receiver-defense-fixture";
 
 function mountProgress(value = receiverFixture()) {
@@ -19,7 +21,7 @@ function mountProgress(value = receiverFixture()) {
 it("requires a deliberate native review and never creates Execute approval itself", async () => {
   const approve = vi.spyOn(api, "approveJob");
   const { user, onReview } = mountProgress();
-  const accept = screen.getByRole("button", { name: "Accept and continue to run approval" });
+  const accept = screen.getByRole("button", { name: "Accept and review run approval" });
   expect(accept).toBeDisabled();
   await user.type(screen.getByLabelText("Reviewed by"), "lab operator");
   expect(accept).toBeDisabled();
@@ -37,14 +39,14 @@ it("clears review acknowledgement and identity when a replacement preparation ar
   rerender(ui(fresh));
   expect(screen.getByLabelText("Reviewed by")).toHaveValue("");
   expect(screen.getByRole("checkbox")).not.toBeChecked();
-  expect(screen.getByRole("button", { name: "Accept and continue to run approval" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Accept and review run approval" })).toBeDisabled();
 });
 
 it("refuses an expired review instead of silently preparing another receiver", async () => {
   const value = receiverFixture(); value.phases[0]!.preparation!.session.expires_at_ms = Date.now() - 1;
   const { onPrepare, onReview } = mountProgress(value);
   expect(screen.getByText(/This receiver review has expired/)).toBeVisible();
-  expect(screen.getByRole("button", { name: "Accept and continue to run approval" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Accept and review run approval" })).toBeDisabled();
   expect(onPrepare).not.toHaveBeenCalled(); expect(onReview).not.toHaveBeenCalled();
 });
 
@@ -68,7 +70,7 @@ function pendingCreate(): ReceiverPending {
 }
 function mountPage(ownerId = receiverFixtureId) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return { client, user: userEvent.setup(), ...render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/compare?receiver_job=${ownerId}`]}><ReceiverDefensePage /></MemoryRouter></QueryClientProvider>) };
+  return { client, user: userEvent.setup(), ...render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={[`/compare?receiver_job=${ownerId}`]}><ReceiverDefensePage /></MemoryRouter></ProductProvider></QueryClientProvider>) };
 }
 
 it.each([false, true])("keeps a refused submission readable and closes only its retained request, unavailable context=%s", async (unavailable) => {
@@ -92,7 +94,7 @@ it.each([false, true])("keeps a refused submission readable and closes only its 
   await waitFor(() => expect(readReceiverPending()).toBeUndefined());
   expect(screen.getByRole("button", { name: "Set up another control test" })).toBeEnabled();
   expect(screen.queryByRole("button", { name: /Prepare .* receiver/ })).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Accept and continue to run approval" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Accept and review run approval" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Retry this exact request" })).not.toBeInTheDocument();
   expect(create).not.toHaveBeenCalled(); expect(prepare).not.toHaveBeenCalled(); expect(review).not.toHaveBeenCalled();
 });
@@ -144,15 +146,20 @@ it("a late review POST cannot reopen approval controls after Stop was confirmed"
 });
 
 it("suppresses the approval action while a Stop response is still pending", async () => {
-  vi.spyOn(api, "receiverTest").mockResolvedValue(receiverFixture("baseline", "approval"));
+  const envelope = nativeReceiverFixture(); const child = envelope.phases[0]!.execution_job!;
+  vi.spyOn(api, "receiverTest").mockResolvedValue(envelope);
+  vi.spyOn(api, "activeJobs").mockResolvedValue({ schema_version: "bluefire.active-job-list.v1", jobs: [child] });
+  vi.spyOn(api, "job").mockResolvedValue(child);
   let resolveStop!: (value: ReturnType<typeof receiverFixture>["job"]) => void;
   vi.spyOn(api, "controlJob").mockReturnValue(new Promise((resolve) => { resolveStop = resolve; }));
   const { user } = mountPage();
-  await screen.findByRole("link", { name: "Review and approve this run" });
+  await screen.findByRole("checkbox", { name: /I approve this exact immutable job envelope once/ });
   await user.click(screen.getByRole("button", { name: "Stop control test" }));
   expect(await screen.findByText("Stop requested")).toBeVisible();
   expect(screen.queryByRole("link", { name: "Review and approve this run" })).not.toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Check run status" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Approve and release job" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  expect(screen.getByRole("link", { name: "Open this job in Runs" })).toBeVisible();
   await act(async () => resolveStop(receiverFixture().job));
 });
 
