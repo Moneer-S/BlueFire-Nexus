@@ -1204,7 +1204,7 @@ pre,
 @media (max-width: 700px) { .detection-ai-setup { grid-template-columns: minmax(0, 1fr); } .detection-assistance-heading { align-items: flex-start; flex-direction: column; } }
 
 .detection-page > .page-header { min-height: 64px; }
-.detection-page > .page-header h1 { font-size: 1.9rem; }
+.detection-page > .page-header h1 { font-size: 1.65rem; }
 .detection-page .candidate-body > p { margin: 0; font-size: var(--font-body-sm); line-height: 1.55; }
 .detection-context { border-block: 1px solid var(--line); padding: 12px 0; }
 .detection-context-controls { display: flex; align-items: flex-end; gap: 16px; }
@@ -1217,13 +1217,22 @@ pre,
 .detection-tools > details[open] { flex: 1 0 100%; }
 .detection-tools > details > .panel { margin-top: 8px; }
 .detection-tools > details .detail-body { max-width: 920px; }
-.detection-page .candidate-list strong { font-size: .85rem; line-height: 1.5; }
-.detection-page .candidate-list small { font-size: .75rem; line-height: 1.5; }
+.detection-page .candidate-list strong { font-size: .875rem; line-height: 1.45; }
+.detection-page .candidate-list small { font-size: .8125rem; line-height: 1.45; }
 .detection-page .candidate-list code { display: none; }
 .detection-page .candidate-list .candidate-icon { display: none; }
 .detection-page .candidate-list button { grid-template-columns: minmax(0, 1fr); padding: 12px; }
 .detection-page .candidate-list button > span:last-child { justify-items: start; }
-.detection-page .candidate-workspace > .panel-header { padding: 20px; }
+.detection-page .candidate-list, .detection-page .candidate-workspace { border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.detection-page .candidate-list .history-search { padding: 0 0 12px; }
+.detection-page .candidate-list > div:nth-child(2) { padding: 0; }
+.detection-page .candidate-workspace > .panel-header { padding: 0 0 16px; align-items: flex-start; }
+.detection-page .candidate-workspace > .panel-header h2 { font-size: 1.05rem; line-height: 1.4; }
+.detection-page .candidate-workspace > .workspace-tabs { padding-inline: 0; }
+.detection-page .candidate-body { padding: 16px 0; }
+.detection-page .candidate-body textarea { font-size: .8125rem; line-height: 1.6; }
+.detection-page .editor-header > span { font-size: .8125rem; }
+.detection-page .candidate-actions { justify-content: flex-start; flex-wrap: wrap; gap: 8px; }
 @media (min-width: 1121px) { .detection-page .detection-layout { grid-template-columns: minmax(230px, .3fr) minmax(0, 1fr); gap: 24px; } }
 @media (max-width: 1120px) { .detection-page .candidate-list > div:nth-child(2) { max-height: 210px; } }
 @media (max-width: 700px) { .detection-context-controls { flex-direction: column; align-items: stretch; } }
