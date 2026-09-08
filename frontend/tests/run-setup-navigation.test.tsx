@@ -175,7 +175,7 @@ it("keeps idle setup and history useful without an empty live console", async ()
   mount("/runs", "simulate");
   await screen.findByRole("heading", { name: "Run history" });
   await waitFor(() => expect(screen.getByRole("button", { name: "Run preflight" })).toBeEnabled());
-  expect(screen.queryByRole("heading", { name: "No active job" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "No active run" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Pause" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
   expect(screen.getByRole("radio", { name: /^Simulate/ })).toBeChecked();
@@ -244,7 +244,7 @@ it.each([[500, "service_unavailable"], [404, "unresolved_endpoint"]] as const)("
 it("keeps explicit job URL precedence when that job is definitively missing", async () => {
   const { lookup, settle } = deferredStoredLookup();
   const { config, nonReads } = mount(`/runs?job=${staleStoredJobId}&setup=execute`, "simulate", undefined, undefined, lookup);
-  await screen.findByRole("heading", { name: "Follow this run" });
+  await screen.findByRole("heading", { name: "Run details" });
   await act(async () => { settle(missingStoredJob()); });
   await waitFor(() => expect(window.localStorage.getItem("bluefire.local.active-job-id.v1")).toBeNull());
   expect(config().mode).toBe("simulate");
@@ -277,4 +277,21 @@ it("keeps an interrupted Assistant run with its operation instead of offering a 
   expect(screen.queryByRole("button", { name: "Retry as replacement" })).not.toBeInTheDocument();
   expect(screen.getByText("Review this run and its cleanup before starting new work. Evidence recovery does not repeat execution.")).toBeVisible();
   expect(view.fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/retry"))).toEqual([]);
+});
+
+
+it("opens history first and reopens the same new-review link without changing Execute settings", async () => {
+  const { user, config, nonReads } = mount("/runs", "execute");
+  await screen.findByRole("heading", { name: "Run history" });
+  const setup = screen.getByText("Review a new run \u00b7 " + demoScenario.title).closest("details")!;
+  expect(setup).not.toHaveAttribute("open");
+  const before = config();
+  await user.click(screen.getAllByRole("link", {name:"Review new run"})[0]!);
+  await waitFor(() => expect(setup).toHaveAttribute("open"));
+  await user.click(setup.querySelector("summary")!);
+  await waitFor(() => expect(setup).not.toHaveAttribute("open"));
+  await user.click(screen.getAllByRole("link", {name:"Review new run"})[0]!);
+  await waitFor(() => expect(setup).toHaveAttribute("open"));
+  expect(config()).toEqual(before);
+  expect(nonReads()).toEqual([]);
 });

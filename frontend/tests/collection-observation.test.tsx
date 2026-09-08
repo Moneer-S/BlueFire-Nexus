@@ -31,7 +31,7 @@ it("selects and visibly binds collection contents through the ordinary Execute p
   }));
   const user = userEvent.setup();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter><ChooseScenario/><RunsPage/></MemoryRouter></ProductProvider></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={["/runs?prepare=1"]}><ChooseScenario/><RunsPage/></MemoryRouter></ProductProvider></QueryClientProvider>);
   await screen.findByRole("radio", { name: /^Simulate/ });
   await user.click(screen.getByRole("button", { name: "Choose collection experiment" }));
   await user.click(screen.getByRole("radio", { name: /^Execute/ }));

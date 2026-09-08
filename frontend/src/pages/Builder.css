@@ -2,14 +2,16 @@
 .page.workbench-builder { display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 0; padding: 16px 20px; }
 .workbench-builder > .page-header { min-height: 0; margin: 0; gap: 12px; }
 .workbench-builder > .page-header > div:first-child > p:last-child { font-size: .75rem; }
-.workbench-builder .page-header h1 { margin: 0; font-size: 1.5rem; letter-spacing: -.03em; }
+.workbench-builder .page-header h1 { margin: 0; font-size: 1.15rem; line-height: 1.35; letter-spacing: -.02em; }
 .workbench-builder .page-header > div:first-child { min-height: 0; }
 .workbench-builder .page-header .eyebrow { display: none; }
 .workbench-builder .page-header p { margin: 4px 0 0; font-size: .75rem; }
 .workbench-builder .builder-actions { flex-wrap: wrap; gap: 7px; }
 .workbench-builder .button { font-size: .72rem; }
 .workbench-builder .experiment-summary { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-width: 0; }
-.workbench-builder .experiment-summary > p { margin: 0; max-width: 88ch; color: var(--muted); font-size: .75rem; line-height: 1.4; }
+.workbench-builder .experiment-summary > details { min-width: 0; font-size: .8rem; color: var(--muted-strong); }
+.workbench-builder .experiment-summary summary { cursor: pointer; }
+.workbench-builder .experiment-summary p { max-width: 88ch; margin: 8px 0 0; line-height: 1.5; }
 .workbench-builder .experiment-summary > button { flex-shrink: 0; }
 .workbench-builder .objective-bar { margin: 0; padding: 12px; }
 .workbench-builder .builder-layout { position: relative; display: block; flex: 1; min-height: 360px; height: auto; }
@@ -19,7 +21,7 @@
 .workbench-builder .graph-edit-actions { grid-row: 1; grid-column: 2; }
 .workbench-builder .graph-view-actions { grid-row: 2; }
 .workbench-builder .graph-title-controls .field { display: flex; align-items: center; gap: 12px; }
-.workbench-builder .graph-title-controls .field-label { font-size: .67rem; flex-shrink: 0; }
+.workbench-builder .graph-title-controls .field-label { font-size: .78rem; flex-shrink: 0; }
 .workbench-builder .graph-title-controls input { font-size: .85rem; min-height: 32px; }
 .workbench-builder .graph-title-controls .badge { flex-shrink: 0; }
 .workbench-builder .graph-view-actions { padding-top: 6px; gap: 5px; }

@@ -5,20 +5,20 @@
 .experiments-list { border-top: 1px solid var(--line); }
 .experiment-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 20px; padding: 20px 0; border-bottom: 1px solid var(--line); scroll-margin: 90px; }
 .experiment-row:focus { outline: 2px solid var(--blue); outline-offset: 5px; }
-.experiment-row[aria-current="true"] .experiment-summary h2 button { text-decoration: underline; text-underline-offset: 5px; }
-.experiment-summary { min-width: 0; }
-.experiment-summary h2 { margin: 0; font-size: 1rem; }
-.experiment-summary h2 button { padding: 0; color: var(--text); background: transparent; border: 0; text-align: left; font: inherit; font-weight: 650; cursor: pointer; overflow-wrap: anywhere; }
-.experiment-summary p { margin: 6px 0 10px; max-width: 80ch; color: var(--muted-strong); font-size: .875rem; line-height: 1.5; overflow-wrap: anywhere; }
+.experiment-row[aria-current="true"] .experiments-page .experiment-summary h2 button { text-decoration: underline; text-underline-offset: 5px; }
+.experiments-page .experiment-summary { min-width: 0; }
+.experiments-page .experiment-summary h2 { margin: 0; font-size: 1rem; }
+.experiments-page .experiment-summary h2 button { padding: 0; color: var(--text); background: transparent; border: 0; text-align: left; font: inherit; font-weight: 650; cursor: pointer; overflow-wrap: anywhere; }
+.experiments-page .experiment-summary p { margin: 6px 0 10px; max-width: 80ch; color: var(--muted-strong); font-size: .875rem; line-height: 1.5; overflow-wrap: anywhere; }
 .experiment-meta { display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--muted-strong); font-size: .8125rem; }
-.experiment-summary details { margin-top: 10px; font-size: .8125rem; line-height: 1.6; }
-.experiment-summary summary { cursor: pointer; color: var(--muted-strong); }
-.experiment-summary dl, .experiments-dialog dl { display: grid; gap: 8px; margin: 12px 0; }
-.experiment-summary dl > div, .experiments-dialog dl > div { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 12px; }
-.experiment-summary dt, .experiments-dialog dt { color: var(--muted); }
-.experiment-summary dd, .experiments-dialog dd { margin: 0; overflow-wrap: anywhere; }
-.experiment-summary h3 { font-size: .875rem; margin: 10px 0 4px; }
-.experiment-summary ul { margin: 0; padding-left: 20px; color: var(--muted-strong); }
+.experiments-page .experiment-summary details { margin-top: 10px; font-size: .8125rem; line-height: 1.6; }
+.experiments-page .experiment-summary summary { cursor: pointer; color: var(--muted-strong); }
+.experiments-page .experiment-summary dl, .experiments-dialog dl { display: grid; gap: 8px; margin: 12px 0; }
+.experiments-page .experiment-summary dl > div, .experiments-dialog dl > div { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 12px; }
+.experiments-page .experiment-summary dt, .experiments-dialog dt { color: var(--muted); }
+.experiments-page .experiment-summary dd, .experiments-dialog dd { margin: 0; overflow-wrap: anywhere; }
+.experiments-page .experiment-summary h3 { font-size: .875rem; margin: 10px 0 4px; }
+.experiments-page .experiment-summary ul { margin: 0; padding-left: 20px; color: var(--muted-strong); }
 .experiment-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .experiments-page .button, .experiments-dialog .button { font-size: .8125rem; }
 .experiments-notice, .experiments-empty { padding: 12px 0; font-size: .875rem; line-height: 1.5; }
@@ -28,4 +28,4 @@
 .experiments-dialog { font-size: .875rem; }
 .experiments-dialog pre { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .8125rem; }
 @media (max-width: 900px) { .experiment-row { grid-template-columns: 1fr; gap: 12px; } .experiment-actions { justify-content: start; } }
-@media (max-width: 600px) { .experiments-search { grid-template-columns: 1fr; gap: 6px; } .experiments-search > span { text-align: left; } .experiment-summary dl > div, .experiments-dialog dl > div { grid-template-columns: 1fr; gap: 2px; } .experiments-unavailable { flex-direction: column; } }
+@media (max-width: 600px) { .experiments-search { grid-template-columns: 1fr; gap: 6px; } .experiments-search > span { text-align: left; } .experiments-page .experiment-summary dl > div, .experiments-dialog dl > div { grid-template-columns: 1fr; gap: 2px; } .experiments-unavailable { flex-direction: column; } }

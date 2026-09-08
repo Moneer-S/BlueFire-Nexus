@@ -28,7 +28,7 @@ it("prepares a full replay with only an AI setup change and preserves the graph"
   const replay = vi.spyOn(api, "submitReplay").mockImplementation(async (_id, preparation, submissionId) => ({ schema_version: "bluefire.replay-job-submission.v1", preparation, preflight: preparation.preflight, job: { schema_version: "bluefire.job.v1", job_id: `job-${submissionId.replaceAll("-", "")}`, kind: "scenario.replay", state: "completed", progress: {} } }));
   vi.spyOn(api, "prepareReplay").mockImplementation(async (id, request) => ({ schema_version: "bluefire.replay-preparation.v1", preparation_id: "prepared", preparation_context: {}, binding: { source: { run_id: id }, replay_request: request }, replay_request: request, replay_extent: "full", scenario: demoScenario, lineage: {}, preflight: { ready: true, status: "ready" }, approval_created: false, effects_started: false }));
   mount(`/compare?source=${encodeURIComponent(demoRuns[0]!.run_id)}`, <ComparePage />);
-  await screen.findByRole("heading", { name: "Measure what changed" });
+  await screen.findByRole("heading", { name: "Compare runs" });
   await user.selectOptions(screen.getByRole("combobox", { name: "What will change?" }), "setup");
   expect(screen.getByRole("button", { name: "Create Simulate replay" })).toBeDisabled();
   await user.selectOptions(screen.getByRole("combobox", { name: "AI autonomy override" }), "assist");
@@ -45,7 +45,7 @@ it.each(["selection", "navigation"])("discards a late comparison after %s change
   const pending = new Promise<ComparisonResponse>((resolve) => { finish = resolve; });
   const compare = vi.spyOn(api, "compare").mockReturnValue(pending);
   mount("/compare", <ComparePage />);
-  await screen.findByRole("heading", { name: "Measure what changed" });
+  await screen.findByRole("heading", { name: "Compare runs" });
   const boxes = screen.getAllByRole("checkbox");
   await user.click(boxes[0]!);
   await user.click(boxes[1]!);
@@ -65,7 +65,7 @@ it("reports a comparison whose returned run identities do not match the request"
   baseMocks();
   vi.spyOn(api, "compare").mockResolvedValue(compareDemoRuns([demoRuns[1]!.run_id, demoRuns[0]!.run_id]));
   mount("/compare", <ComparePage />);
-  await screen.findByRole("heading", { name: "Measure what changed" });
+  await screen.findByRole("heading", { name: "Compare runs" });
   for (const box of screen.getAllByRole("checkbox")) await user.click(box);
   await user.click(screen.getByRole("button", { name: "Compare selected" }));
   expect(await screen.findByText(/returned comparison does not match/)).toBeInTheDocument();

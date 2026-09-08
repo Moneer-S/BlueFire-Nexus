@@ -1,59 +1,38 @@
+import { runLabel } from "../lib/runPresentation";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, Bot, CheckCircle2, FlaskConical, Network, Play, ShieldAlert } from "lucide-react";
+import { ArrowRight, RotateCcw } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, DEMO_MODE } from "../lib/api";
 import { useProduct } from "../state/ProductContext";
-import type { RunRecord } from "../types";
-import { Badge, Button, ErrorState, formatDate, LoadingState, PageHeader, Panel, PanelHeader, Stat, sentence } from "../components/Primitives";
+import { Badge, Button, ErrorState, formatDate, LoadingState, PageHeader, sentence } from "../components/Primitives";
+import "./Overview.css";
 
 export function OverviewPage() {
-  const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
-  const scenarios = useQuery({ queryKey: ["scenarios"], queryFn: api.scenarios });
+  const experiments = useQuery({ queryKey: ["scenarios"], queryFn: api.scenarios });
   const runs = useQuery({ queryKey: ["runs"], queryFn: api.runs });
-  const { scenario } = useProduct();
-  if (catalog.isPending || scenarios.isPending || runs.isPending) return <LoadingState label="Opening BlueFire Nexus" />;
-  if (catalog.isError) return <ErrorState error={catalog.error} retry={() => catalog.refetch()} />;
-  const recent = runs.data?.runs.slice(0, 4) ?? [];
-  const runCount = runs.data?.runs.length ?? 0;
-  const executable = catalog.data.behaviors.filter((item) => item.execution_state === "action").length;
-  const activeProvider = catalog.data.ai.providers?.find((item) => item.provider_id === catalog.data.ai.active_provider) ?? catalog.data.ai.providers?.[0];
-  const providerHealth = activeProvider?.health?.state ?? catalog.data.ai.provider_health;
-
+  const { scenario, dirty } = useProduct();
+  const recent = runs.data?.runs.slice(0, 8);
+  const unavailable = runs.data?.unavailable_run_count ?? 0;
   return <div className="page overview-page">
-    <PageHeader eyebrow="Mission control" title="Design the path. Observe the defense." description="Build typed behavior graphs, simulate expected telemetry, and dispatch only approved actions through bounded runners." actions={<><Link to="/builder"><Button variant="secondary">Open builder</Button></Link><Link to="/runs"><Button variant="primary"><Play aria-hidden="true"/>Configure run</Button></Link></>} />
-    {DEMO_MODE ? <div className="demo-ribbon"><FlaskConical aria-hidden="true"/><span><strong>Sanitized demo workspace</strong> Every displayed result is synthetic; Execute is preview-only.</span><Badge tone="violet">No effects</Badge></div> : null}
-    <div className="stat-grid">
-      <Stat label="Scenarios" value={scenarios.data?.scenarios.length ?? 0} detail="Versioned local catalog" />
-      <Stat label="Behavior contracts" value={catalog.data.behaviors.length} detail={`${executable} execute-ready`} tone="success" />
-      <Stat label="Registered actions" value={catalog.data.actions.length} detail="Deny by default" />
-      <Stat label="Run records" value={runCount} detail={runCount ? "Canonical local bundles" : "No run history yet"} tone={runCount ? "success" : "warning"} />
-    </div>
-    <div className="overview-grid">
-      <Panel className="mission-panel">
-        <PanelHeader eyebrow="Active experiment" title={scenario.title} detail={scenario.purpose} actions={<Badge tone="info">v{scenario.id.match(/\.v(\d+)$/)?.[1] ?? "draft"}</Badge>} />
-        <div className="mission-path" aria-label="Scenario flow summary" tabIndex={0}>
-          {scenario.steps.slice(0, 6).map((step, index) => <div key={step.id}><span>{String(index + 1).padStart(2, "0")}</span><strong>{catalog.data.behaviors.find((item) => item.id === step.behavior_id)?.title ?? step.behavior_id}</strong><small>{step.id}</small></div>)}
-        </div>
-        <footer><div><Network aria-hidden="true"/><span><strong>{scenario.steps.length} typed nodes</strong><small>{scenario.edges.length} explicit outcome routes</small></span></div><Link to="/builder">Edit graph <ArrowRight aria-hidden="true"/></Link></footer>
-      </Panel>
-      <Panel>
-        <PanelHeader eyebrow="Trust boundary" title="Readiness" detail="Configuration is not proof of runner connectivity." />
-        <div className="readiness-list">
-          <div><CheckCircle2 className="success"/><span><strong>Local API</strong><small>Same-origin loopback adapter</small></span><Badge tone="success">Ready</Badge></div>
-          <div><CheckCircle2 className="success"/><span><strong>Simulate</strong><small>Deterministic offline planning</small></span><Badge tone="success">Ready</Badge></div>
-          <div><ShieldAlert className="warning"/><span><strong>Rust runners</strong><small>Verify inventory before Execute</small></span><Badge tone="warning">Check</Badge></div>
-          <div><Bot className="muted"/><span><strong>AI provider</strong><small>{activeProvider ? `${activeProvider.provider_id} · ${activeProvider.model}` : "No provider metadata reported"}</small></span><Badge tone={providerHealth === "ready" || providerHealth === "healthy" ? "success" : "neutral"}>{providerHealth ? sentence(providerHealth) : "Optional"}</Badge></div>
-        </div>
-        <Link className="panel-link" to="/runner-profiles">Review profiles <ArrowRight /></Link>
-      </Panel>
-    </div>
-    <Panel>
-      <PanelHeader eyebrow="Feedback loop" title="Recent runs" detail="Replay after a defense change, then compare canonical evidence—not screenshots." actions={<Link to="/compare"><Button size="small">Open compare</Button></Link>} />
-      {recent.length ? <div className="table-scroll"><table><thead><tr><th>Run</th><th>Mode</th><th>Objective</th><th>Created</th><th>Status</th></tr></thead><tbody>{recent.map((run) => <tr key={run.run_id}><td><Link to={runReviewPath(run.run_id)} aria-label={`Review run ${runLabel(run)} (${shortId(run.run_id)})`}><code title={run.run_id}>{shortId(run.run_id)}</code></Link>{run.is_demo ? <Badge tone="violet">Demo</Badge> : null}</td><td><Badge tone={run.mode === "execute" ? "warning" : "info"}>{sentence(run.mode)}</Badge></td><td><Link to={runReviewPath(run.run_id)}>{runLabel(run)}</Link></td><td>{formatDate(run.created_at)}</td><td><Badge tone={run.status === "completed" ? "success" : "neutral"} dot>{sentence(run.status)}</Badge></td></tr>)}</tbody></table></div> : <div className="inline-empty"><span>No canonical runs yet.</span><Link to="/getting-started">Start the guided Simulate path</Link></div>}
-    </Panel>
+    <PageHeader title="Overview" actions={<Link className="button button-primary button-medium" to="/scenarios">Open experiments<ArrowRight aria-hidden="true"/></Link>} />
+    {DEMO_MODE ? <p className="workspace-note" role="status">Demo workspace · synthetic results · Execute previews have no effects.</p> : null}
+    <section className="work-section" aria-labelledby="recent-work-heading">
+      <header className="work-section-heading"><h2 id="recent-work-heading">Recent runs</h2><Button variant="ghost" size="small" disabled={runs.isFetching} onClick={() => runs.refetch()}><RotateCcw aria-hidden="true"/>{runs.isFetching ? "Refreshing" : "Refresh runs"}</Button></header>
+      {runs.isError ? <><ErrorState title="Run history unavailable" error={runs.error} retry={() => runs.refetch()}/>{recent ? <p className="workspace-note">Showing previously loaded runs. Their current state could not be checked.</p> : null}</> : null}
+      {unavailable > 0 ? <p className="workspace-note" role="status">{unavailable} run {unavailable === 1 ? "record is" : "records are"} unavailable. Only readable records are shown.</p> : null}
+      {runs.isPending ? <LoadingState label="Loading run history"/> : recent?.length ? <div className="table-scroll"><table className="recent-work-table"><thead><tr><th>Run</th><th>Mode</th><th>Created</th><th>Outcome</th></tr></thead><tbody>{recent.map(run => {
+        const name = runLabel(run);
+        return <tr key={run.run_id}><td><Link to={"/runs/" + encodeURIComponent(run.run_id)}>{name}</Link>{run.is_demo ? <Badge tone="violet">Demo</Badge> : null}</td><td>{sentence(run.mode)}</td><td><time dateTime={run.created_at}>{formatDate(run.created_at)}</time></td><td><Badge tone={run.status === "completed" ? "neutral" : run.status === "failed" ? "danger" : "info"}>{sentence(run.status)}</Badge></td></tr>;
+      })}</tbody></table></div> : runs.isSuccess && unavailable === 0 ? <div className="work-empty"><p>No runs have been recorded.</p><Link to="/runs?prepare=1">Review new run<ArrowRight aria-hidden="true"/></Link></div> : null}
+    </section>
+    <section className="work-section working-copy" aria-labelledby="working-copy-heading">
+      <header className="work-section-heading"><h2 id="working-copy-heading">Working draft</h2><Badge tone={dirty ? "warning" : "neutral"}>{dirty ? "Unsaved changes" : "No unsaved changes"}</Badge></header>
+      <div><h3>{scenario.title}</h3><p>{scenario.steps.length} steps · {scenario.edges.length} routes</p><Link className="button button-secondary button-medium" to="/builder">Continue editing<ArrowRight aria-hidden="true"/></Link><Link className="button button-ghost button-medium" to="/runs?prepare=1">Review run</Link></div>
+    </section>
+    <section className="work-section" aria-labelledby="experiments-heading">
+      <header className="work-section-heading"><h2 id="experiments-heading">Experiments</h2><Link to="/scenarios">View all<ArrowRight aria-hidden="true"/></Link></header>
+      {experiments.isError ? <><ErrorState title="Experiments unavailable" error={experiments.error} retry={() => experiments.refetch()}/>{experiments.data ? <p className="workspace-note">Showing previously loaded experiments. Your working draft is preserved.</p> : null}</> : null}
+      {experiments.isPending ? <LoadingState label="Loading experiments"/> : experiments.data?.scenarios.length ? <ul className="work-object-list">{experiments.data.scenarios.slice(0, 5).map(item => <li key={item.id}><span><strong>{item.title}</strong><small>{item.steps.length} steps · {item.edges.length} routes</small></span><Link to={"/scenarios?selected=" + encodeURIComponent(item.id)}>Open in library<ArrowRight aria-hidden="true"/></Link></li>)}</ul> : experiments.isSuccess ? <div className="work-empty"><p>No experiments are available.</p><Link to="/scenarios">Create an experiment</Link></div> : null}
+    </section>
   </div>;
 }
-
-function runReviewPath(runId: string) { return `/runs/${encodeURIComponent(runId)}`; }
-function runLabel(run: Pick<RunRecord, "objective" | "scenario_id">) { return run.objective ?? run.scenario_id ?? "Untitled experiment"; }
-function shortId(value: string) { return value.length > 22 ? `${value.slice(0, 10)}…${value.slice(-8)}` : value; }

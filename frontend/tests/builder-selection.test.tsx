@@ -44,7 +44,7 @@ describe("Builder selection and navigation", () => {
     expect(leaving.defaultPrevented).toBe(editAfterNavigation);
     await user.click(screen.getByRole("link", { name: "Return to Builder" }));
     expect(await screen.findByRole("textbox", { name: "Experiment name" })).toHaveValue(editAfterNavigation ? "Newer scenario after navigation" : submitted.title);
-    expect(screen.getByText(editAfterNavigation ? "Draft changes" : "Saved", { exact: true })).toBeVisible();
+    expect(screen.getByText(editAfterNavigation ? "Unsaved changes" : "Working copy", { exact: true })).toBeVisible();
   });
 
   it.each(["copy", "delete", "duplicate"])("preserves a hidden selected branch during %s", async (operation) => {

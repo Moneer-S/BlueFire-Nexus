@@ -97,7 +97,7 @@ describe("workbench navigation", () => {
     expect(within(drawer).getByRole("button", { name: "Close navigation" })).toHaveFocus();
     expect(document.getElementById("main-content")?.parentElement).toHaveAttribute("inert");
     expect(document.body.style.overflow).toBe("hidden");
-    within(drawer).getByRole("button", { name: "Collapse navigation" }).focus();
+    within(drawer).getByRole("button", { name: "Show more tools" }).focus();
     await user.keyboard("{Tab}");
     expect(within(drawer).getByRole("link", { name: "BlueFire Nexus home" })).toHaveFocus();
     await user.keyboard("{Escape}");
@@ -115,4 +115,21 @@ describe("workbench navigation", () => {
     expect(document.getElementById("main-content")).toHaveFocus();
     expect(screen.getByText("Destination: /runs/run-123")).toBeVisible();
   });
+});
+
+it("keeps the collapse control in the header with its base styling and restores the layout preference", async () => {
+  const user = userEvent.setup();
+  localStorage.removeItem("bluefire.navigation.collapsed.v1");
+  vi.mocked(api.catalog).mockResolvedValue(demoCatalog);
+  vi.mocked(api.scenarios).mockResolvedValue({ scenarios: [demoScenario] });
+  const first = renderShell();
+  const collapse = screen.getByRole("button", { name: "Collapse navigation" });
+  expect(collapse.closest(".sidebar-brand-row")).not.toBeNull();
+  expect(collapse).toHaveClass("icon-button", "sidebar-collapse");
+  expect(collapse).toHaveAttribute("aria-expanded", "true");
+  await user.click(collapse);
+  expect(localStorage.getItem("bluefire.navigation.collapsed.v1")).toBe("true");
+  first.unmount(); renderShell();
+  expect(screen.getByRole("button", { name: "Expand navigation" })).toHaveAttribute("aria-expanded", "false");
+  expect(document.querySelector(".app-shell")).toHaveClass("nav-collapsed");
 });

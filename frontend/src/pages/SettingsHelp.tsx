@@ -1,7 +1,8 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, Download, FileJson2, Github, KeyRound, LifeBuoy, LockKeyhole, Moon, RotateCcw, Save, ShieldCheck, Sun, Upload } from "lucide-react";
+import { BookOpen, Download, FileJson2, Github, LifeBuoy, LockKeyhole, Moon, RotateCcw, Save, ShieldCheck, Sun, Upload } from "lucide-react";
 import { Link } from "react-router-dom";
+import { BuildDiagnostics } from "../components/BuildDiagnostics";
 import { api } from "../lib/api";
 import {
   buildUiPreferenceDocument,
@@ -9,7 +10,7 @@ import {
   useProduct,
   type UiTheme,
 } from "../state/ProductContext";
-import { Badge, Button, Callout, DataList, Field, PageHeader, Panel, PanelHeader } from "../components/Primitives";
+import { Badge, Button, Callout, Field, PageHeader, Panel, PanelHeader } from "../components/Primitives";
 
 function readTextFile(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -71,9 +72,7 @@ export function SettingsPage() {
 
   return <div className="page settings-page">
     <PageHeader
-      eyebrow="Application configuration"
       title="Settings"
-      description="Manage exactly three non-authoritative UI preferences: theme, preferred effect mode, and preferred AI autonomy."
       actions={<>
         <input aria-label="Import UI preferences file" className="sr-only" ref={fileRef} type="file" accept="application/json" onChange={(event) => importSettings(event.target.files?.[0])} />
         <Button variant="secondary" onClick={() => fileRef.current?.click()}><Upload />Import</Button>
@@ -84,45 +83,26 @@ export function SettingsPage() {
     {notice ? <Callout title="Settings">{notice}</Callout> : settingsQuery.isError ? <Callout tone="warning" title="Durable settings unavailable">The form is using browser preferences. Save after the local service is ready.</Callout> : null}
     <div className="settings-grid">
       <Panel>
-        <PanelHeader eyebrow="Appearance" title="Workspace theme" />
+        <PanelHeader title="Appearance" />
         <div className="detail-body"><div className="theme-picker">{(["dark", "light", "system"] as UiTheme[]).map((item) => <button key={item} className={theme === item ? "selected" : ""} onClick={() => setTheme(item)}>{item === "dark" ? <Moon /> : item === "light" ? <Sun /> : <RotateCcw />}<span><strong>{item[0]!.toUpperCase() + item.slice(1)}</strong><small>{item === "system" ? "Follow operating system" : `${item} interface`}</small></span></button>)}</div></div>
       </Panel>
       <Panel>
-        <PanelHeader eyebrow="Preference defaults" title="New run starting choices" />
+        <PanelHeader title="New run defaults" />
         <div className="detail-body">
           <Field label="Effect mode"><select value={runConfig.mode} onChange={(event) => setRunConfig({ ...runConfig, mode: event.target.value as "simulate" | "execute", approved: false, approvedBy: "" })}><option value="simulate">Simulate</option><option value="execute">Execute</option></select></Field>
           <Field label="AI autonomy"><select value={runConfig.autonomy} onChange={(event) => setRunConfig({ ...runConfig, autonomy: event.target.value as typeof runConfig.autonomy })}><option value="off">Off</option><option value="assist">Assist</option><option value="auto">Auto</option></select></Field>
-          <Callout title="Starting choices, not authority">These preferences initialize a new run form. The selected canonical profile and preflight still determine effective safety, scope, policy, budgets, cleanup, capabilities, and action allowlists.</Callout>
-          <Callout title="Approval never persists">Execute confirmation and operator identity are cleared on load and import and are never part of saved preferences.</Callout>
-        </div>
-      </Panel>
-      <Panel>
-        <PanelHeader eyebrow="Durable effect" title="Strict preference schema" />
-        <div className="detail-body">
-          <DataList items={[
-            { label: "Theme", value: "Applied immediately and restored locally" },
-            { label: "Effect mode", value: "Starting choice for a new preflight form" },
-            { label: "AI autonomy", value: "Starting choice for a new preflight form" },
-            { label: "Import and export", value: "Round-trips only this versioned three-preference schema" },
-            { label: "Everything else", value: "Never persisted or imported by this page" },
-          ]} />
-          <Callout title="Operational authority stays canonical">Provider, model, profile, scope, safety, approval, budgets, collectors, detection backends, cleanup, counterfactuals, fixtures, action implementations, identity, and endpoint are excluded from browser, durable, imported, and exported preferences.</Callout>
-        </div>
-      </Panel>
-      <Panel>
-        <PanelHeader eyebrow="Integrations" title="Secret references" />
-        <div className="detail-body">
-          <div className="secret-row"><span><KeyRound /></span><div><strong>OPENAI_API_KEY</strong><small>Environment reference · value never read by browser</small></div><Badge tone="neutral">Not checked</Badge></div>
-          <div className="secret-row"><span><LockKeyhole /></span><div><strong>BLUEFIRE_RUNNER_BINARY</strong><small>Optional source-development bootstrap override · never read by browser</small></div><Badge tone="neutral">Not checked</Badge></div>
-          <Callout title="No plaintext secret fields">Provider tokens, runner credentials, and backend credentials must be resolved at the boundary that needs them.</Callout>
+          <p>Each run still requires its own review. Execute approval and operator identity are never saved as preferences.</p>
         </div>
       </Panel>
     </div>
+    <details className="settings-import-details"><summary>Preference import and security</summary><p>Import and export include only theme, preferred effect mode and AI autonomy. Provider credentials, environment permissions, approval and execution limits remain with their configured services and profiles.</p></details>
+    <BuildDiagnostics/>
+
   </div>;
 }
 
 const helpCards = [
-  { title: "First Simulate run", icon: ShieldCheck, to: "/runs", text: "Open a scenario, validate the graph, choose Simulate with AI Off, review preflight, then inspect synthetic evidence." },
+  { title: "First Simulate run", icon: ShieldCheck, to: "/runs?prepare=1", text: "Open an experiment, validate the graph, choose Simulate with AI Off, review preflight, then inspect synthetic evidence." },
   { title: "Prepare Execute", icon: LockKeyhole, to: "/runners", text: "Bootstrap and start the verified managed runner, require authenticated readiness, select an Execute profile and scope, then review the exact approval envelope." },
   { title: "Tune a detection", icon: FileJson2, to: "/detection-lab", text: "Link a behavior hypothesis, parse with an authoritative backend when available, exercise fixtures, attach observed evidence, and evaluate benign records." },
   { title: "Replay a defense change", icon: RotateCcw, to: "/compare", text: "Select an immutable source run, declare the defense change, choose an available safe replay strategy, then compare canonical deltas." },

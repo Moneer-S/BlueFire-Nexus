@@ -3,9 +3,9 @@ import * as Tooltip from "@radix-ui/react-tooltip";
 import { AlertCircle, CheckCircle2, Info, LoaderCircle, X } from "lucide-react";
 import type { ButtonHTMLAttributes, HTMLAttributes, PropsWithChildren, ReactNode } from "react";
 
-export function PageHeader({ eyebrow, title, description, actions }: { eyebrow?: string; title: string; description: string; actions?: ReactNode }) {
+export function PageHeader({ eyebrow, title, description, actions }: { eyebrow?: string; title: string; description?: string; actions?: ReactNode }) {
   return <header className="page-header">
-    <div>{eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}<h1>{title}</h1><p>{description}</p></div>
+    <div>{eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}<h1>{title}</h1>{description ? <p>{description}</p> : null}</div>
     {actions ? <div className="page-actions">{actions}</div> : null}
   </header>;
 }
@@ -26,8 +26,8 @@ export function Button({ variant = "secondary", size = "medium", className = "",
   return <button className={`button button-${variant} button-${size} ${className}`} {...props} />;
 }
 
-export function IconButton({ label, children, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {
-  return <Tooltip.Root><Tooltip.Trigger asChild><button className="icon-button" aria-label={label} {...props}>{children}</button></Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip" sideOffset={8}>{label}<Tooltip.Arrow className="tooltip-arrow" /></Tooltip.Content></Tooltip.Portal></Tooltip.Root>;
+export function IconButton({ label, children, className = "", ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {
+  return <Tooltip.Root><Tooltip.Trigger asChild><button className={`icon-button ${className}`} aria-label={label} {...props}>{children}</button></Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip" sideOffset={8}>{label}<Tooltip.Arrow className="tooltip-arrow" /></Tooltip.Content></Tooltip.Portal></Tooltip.Root>;
 }
 
 export function Field({ label, hint, error, children, className = "" }: PropsWithChildren<{ label: string; hint?: string; error?: string; className?: string }>) {

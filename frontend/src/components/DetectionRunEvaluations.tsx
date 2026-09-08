@@ -1,3 +1,5 @@
+import { runLabel } from "../lib/run-presentation";
+import { formatDate } from "./Primitives";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
@@ -37,7 +39,7 @@ export function DetectionRunEvaluations({ candidate, resourceId, sourceRunId, ru
     <p>Test this rule on the selected run's independently observed events, then repeat on separate benign activity and a replay. Missing telemetry stays visible as not enough evidence.</p>
     {!canEvaluate ? <Callout tone="warning" title="Parsed query candidate required">Save and parse a SQLite or Sigma candidate to evaluate a run. Internal matcher results retain internal semantics, and YARA cannot inspect file bytes from metadata alone.</Callout> : null}
     <Field label="Experiment question"><textarea rows={2} maxLength={1000} value={question} onChange={(event) => setQuestion(event.target.value)} /></Field>
-    <Field label="Evaluation source run"><select value={runId} onChange={(event) => setRunId(event.target.value)}><option value="">Select immutable run</option>{runId && !runs.some((run) => run.run_id === runId) ? <option value={runId}>{runId}</option> : null}{runs.map((run) => <option key={run.run_id} value={run.run_id}>{run.run_id}</option>)}</select></Field>
+    <Field label="Evaluation source run"><select value={runId} onChange={(event) => setRunId(event.target.value)}><option value="">Select a run</option>{runId && !runs.some((run) => run.run_id === runId) ? <option value={runId}>{runId}</option> : null}{runs.map((run) => <option key={run.run_id} value={run.run_id}>{runLabel(run)} · {sentence(run.mode)} · {formatDate(run.created_at)}</option>)}</select></Field>
     <Field label="Operator-assigned case role" hint="This label supplies context; it cannot assert intent or determine the measured result."><select value={role} onChange={(event) => setRole(event.target.value as DetectionCaseRole)}><option value="attack">Attack case</option><option value="benign">Benign activity</option><option value="replay">Replay</option><option value="heldout">Held-out variation</option></select></Field>
     <Button onClick={() => resourceId && evaluate.mutate({ candidateId: resourceId, run_id: runId, question: question.trim(), case_role: role })} disabled={!canEvaluate || !runId || !question.trim() || evaluate.isPending}>{evaluate.isPending ? "Evaluating immutable evidence" : "Evaluate full observed run"}</Button>
     {resultForSelection && evaluate.isError ? <ErrorState title="Evaluation refused" error={evaluate.error} /> : null}

@@ -102,7 +102,7 @@ describe("guided local Execute onboarding", () => {
     vi.stubGlobal("fetch", fetchMock);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     const user = userEvent.setup();
-    render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter><RunsPage /></MemoryRouter></ProductProvider></QueryClientProvider>);
+    render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={["/runs?prepare=1"]}><RunsPage /></MemoryRouter></ProductProvider></QueryClientProvider>);
 
     expect(await screen.findByRole("radio", { name: /^Simulate/ })).toBeChecked();
     expect(screen.queryByRole("region", { name: "Guided local Execute" })).not.toBeInTheDocument();
@@ -191,7 +191,7 @@ describe("guided local Execute onboarding", () => {
     vi.stubGlobal("fetch", fetchMock);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     const user = userEvent.setup();
-    render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter><RunsPage /></MemoryRouter></ProductProvider></QueryClientProvider>);
+    render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={["/runs?prepare=1"]}><RunsPage /></MemoryRouter></ProductProvider></QueryClientProvider>);
 
     await user.click(await screen.findByRole("radio", { name: /Execute/ }));
     const guide = await screen.findByRole("region", { name: "Guided local Execute" });
@@ -224,7 +224,7 @@ describe("guided local Execute onboarding", () => {
     vi.stubGlobal("fetch", fetchMock);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     const user = userEvent.setup();
-    render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter><RunsPage /></MemoryRouter></ProductProvider></QueryClientProvider>);
+    render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={["/runs?prepare=1"]}><RunsPage /></MemoryRouter></ProductProvider></QueryClientProvider>);
 
     await user.click(await screen.findByRole("radio", { name: /Execute/ }));
     const guide = await screen.findByRole("region", { name: "Guided local Execute" });

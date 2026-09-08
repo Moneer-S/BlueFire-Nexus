@@ -1,7 +1,7 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Activity, Bot, Braces, BookOpen, ChevronDown, ChevronLeft, FlaskConical, GitCompareArrows, HelpCircle,
+  Activity, Bot, Braces, BookOpen, ChevronDown, PanelLeftClose, PanelLeftOpen, FlaskConical, GitCompareArrows, HelpCircle,
   Home, ListChecks, Menu, MoreHorizontal, Network, PackageCheck, PlaySquare, Puzzle, ScrollText, Settings, SlidersHorizontal, X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -49,7 +49,12 @@ export function AppShell() {
 }
 
 function WorkspaceShell() {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return window.localStorage.getItem("bluefire.navigation.collapsed.v1") === "true"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem("bluefire.navigation.collapsed.v1", String(collapsed)); } catch { /* Layout remains usable when browser storage is unavailable. */ }
+  }, [collapsed]);
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -132,7 +137,7 @@ function WorkspaceShell() {
       </header>
       <div className={`mobile-scrim ${mobileOpen ? "visible" : ""}`} onClick={() => setMobileOpen(false)} aria-hidden="true" />
       <aside ref={sidebarRef} id="workspace-navigation" className={`sidebar ${mobileOpen ? "mobile-open" : ""}`} role={mobileOpen ? "dialog" : undefined} aria-modal={mobileOpen || undefined} aria-label="Workspace navigation">
-        <div className="sidebar-brand-row"><a className="brand" href="#/" aria-label="BlueFire Nexus home" onClick={() => setMobileOpen(false)}><FlameMark/><span><strong>BlueFire Nexus</strong><small>Research workspace</small></span></a><button className="mobile-close" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X /></button></div>
+        <div className="sidebar-brand-row"><a className="brand" href="#/" aria-label="BlueFire Nexus home" onClick={() => setMobileOpen(false)}><FlameMark/><span><strong>BlueFire Nexus</strong></span></a><IconButton label={collapsed ? "Expand navigation" : "Collapse navigation"} className="sidebar-collapse" aria-expanded={!collapsed} aria-controls="workspace-navigation" onClick={() => setCollapsed((value) => !value)}>{collapsed ? <PanelLeftOpen/> : <PanelLeftClose/>}</IconButton><button className="mobile-close" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X /></button></div>
         <nav aria-label="Primary navigation">
           <div className="nav-group work-nav">{workItems.map(renderLink)}</div>
           <button className="nav-disclosure" aria-label={settingsOpen ? "Hide settings tools" : "Show settings tools"} aria-expanded={settingsOpen} aria-controls="settings-navigation" onClick={() => setSettingsOpen((value) => !value)}><SlidersHorizontal aria-hidden="true"/><span>Settings tools</span><ChevronDown aria-hidden="true"/></button>
@@ -143,7 +148,6 @@ function WorkspaceShell() {
         <div className="sidebar-status">
           <div><span className={`service-light ${connection.light}`} role="img" aria-label={connection.title}/><span><strong>{connection.title}</strong><small>{connection.detail}</small>{connection.state !== "connected" && connection.state !== "demo" ? <button type="button" className="service-recheck" disabled={connection.checking} onClick={connection.check}>{connection.checking ? "Checking connection" : "Check connection"}</button> : null}</span></div>
         </div>
-        <IconButton label={collapsed ? "Expand navigation" : "Collapse navigation"} className="sidebar-collapse" onClick={() => setCollapsed((value) => !value)}><ChevronLeft /></IconButton>
       </aside>
       <div className="workspace-shell" inert={mobileOpen}>
         <header className="workspace-topbar"><div><strong>{current}</strong></div><div className="topbar-actions"><ExperimentAssistant providers={catalog.data?.ai.providers ?? []} /><span title={connection.detail}><Badge tone={connection.tone} dot>{connection.label}</Badge></span></div></header>

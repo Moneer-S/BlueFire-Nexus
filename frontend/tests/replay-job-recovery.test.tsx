@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
@@ -49,6 +49,12 @@ function mount(route = `/runs?job=${firstId}`) {
   const view = render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={[route]}><Location /><Link to={`/runs?job=${secondId}`}>Open another saved job</Link><RunsPage /></MemoryRouter></ProductProvider></QueryClientProvider>);
   return { ...view, client };
 }
+async function expectJobDetails(id: string) {
+  await screen.findByRole("heading", { name: "Run progress" });
+  const details = screen.getByText("Job details").closest("details")!;
+  if (!details.open) await userEvent.setup().click(details.querySelector("summary")!);
+  await waitFor(() => expect(within(details).getByText(id, { exact: true })).toBeVisible());
+}
 function inventory(jobs: RunJob[]) { vi.spyOn(api, "activeJobs").mockImplementation(async () => ({ schema_version: "bluefire.active-job-list.v1", jobs })); }
 function receipt() {
   const value = { sourceId, payload, preparation, submissionId };
@@ -90,13 +96,13 @@ it("keeps the ordinary run workspace open when its restored inventory selection 
   const user = userEvent.setup(); const first = replayJob(); const second = replayJob(secondId);
   inventory([first, second]);
   vi.spyOn(api, "job").mockImplementation(async (id) => id === firstId ? first : second);
-  mount("/runs");
-  await screen.findByRole("heading", { name: firstId });
+  mount("/runs?prepare=1");
+  await expectJobDetails(firstId);
   await user.selectOptions(screen.getByRole("combobox", { name: "Active durable job" }), secondId);
-  await screen.findByRole("heading", { name: secondId });
-  expect(screen.getByLabelText("Current route")).toHaveTextContent(/^\/runs$/);
-  expect(screen.getByRole("heading", { name: "Review and run" })).toBeVisible();
-  expect(screen.getByText("Experiment setup").closest("details")).toHaveAttribute("open");
+  await expectJobDetails(secondId);
+  expect(screen.getByLabelText("Current route")).toHaveTextContent(/^\/runs\?prepare=1$/);
+  expect(screen.getByRole("heading", { name: "Runs" })).toBeVisible();
+  expect(screen.getByText("Review a new run \u00b7 " + demoScenario.title).closest("details")).toHaveAttribute("open");
 });
 
 it("keeps the selected inventory job in the URL and restores that exact review after reload", async () => {
@@ -106,7 +112,7 @@ it("keeps the selected inventory job in the URL and restores that exact review a
   vi.spyOn(api, "job").mockImplementation(async (id) => id === firstId ? first : second);
   const approval = vi.spyOn(api, "approveJob");
   const view = mount(`/runs?job=${firstId}&view=live`);
-  await screen.findByRole("heading", { name: firstId });
+  await expectJobDetails(firstId);
   await user.selectOptions(await screen.findByRole("combobox", { name: "Active durable job" }), secondId);
   await waitFor(() => expect(screen.getByLabelText("Current route")).toHaveTextContent(`/runs?job=${secondId}&view=live`));
   const checkbox = await screen.findByRole("checkbox", { name: /I approve this exact immutable job envelope once/ });
@@ -119,7 +125,7 @@ it("keeps the selected inventory job in the URL and restores that exact review a
   const route = screen.getByLabelText("Current route").textContent!;
   view.unmount(); view.client.clear();
   mount(route);
-  await screen.findByRole("heading", { name: secondId });
+  await expectJobDetails(secondId);
   await waitFor(() => expect(screen.getByRole("checkbox", { name: /I approve this exact immutable job envelope once/ })).toBeEnabled());
   expect(screen.getByRole("checkbox", { name: /I approve this exact immutable job envelope once/ })).not.toBeChecked();
   expect(screen.getByRole("textbox", { name: "Operator identity for this job" })).toHaveValue("");
@@ -147,7 +153,7 @@ it("replaces the URL with a retry job while retaining its fresh returned approva
   const route = screen.getByLabelText("Current route").textContent!;
   view.unmount(); view.client.clear(); restoredReview.mockRestore();
   mount(route);
-  await screen.findByRole("heading", { name: secondId });
+  await expectJobDetails(secondId);
   await waitFor(() => expect(screen.getByRole("checkbox", { name: /I approve this exact immutable job envelope once/ })).toBeEnabled());
   expect(screen.getByRole("button", { name: "Approve and release job" })).toBeDisabled();
 });
@@ -162,7 +168,7 @@ it("follows an incoming job URL without the previous job snapshot taking selecti
   await user.click(approval);
   await user.type(screen.getByRole("textbox", { name: "Operator identity for this job" }), "Operator A");
   await user.click(screen.getByRole("link", { name: "Open another saved job" }));
-  await screen.findByRole("heading", { name: secondId });
+  await expectJobDetails(secondId);
   await waitFor(() => expect(screen.getByRole("checkbox", { name: /I approve this exact immutable job envelope once/ })).toBeEnabled());
   expect(screen.getByLabelText("Current route")).toHaveTextContent(`/runs?job=${secondId}`);
   expect(screen.getByRole("checkbox", { name: /I approve this exact immutable job envelope once/ })).not.toBeChecked();
@@ -176,7 +182,7 @@ it("settles an exact receipt only after a matching fresh job GET, without approv
   vi.spyOn(api, "job").mockReturnValue(new Promise((done) => { resolve = done; }));
   const approval = vi.spyOn(api, "approveJob");
   const view = mount();
-  await screen.findByRole("heading", { name: firstId });
+  await expectJobDetails(firstId);
   expect(readPendingReplay()).toEqual(pendingReceipt);
   await act(async () => { resolve(job); });
   await waitFor(() => expect(readPendingReplay()).toBeUndefined());
@@ -206,7 +212,7 @@ it("keeps an incoming completed job selected when the previous job read becomes 
     await act(async () => { rejectFirst(new ApiError("The previous job was not found", "job_not_found", undefined, 404)); });
     await waitFor(() => expect(detail).toHaveBeenCalledWith(secondId));
     await act(async () => { resolveSecond(completed); await secondRead; });
-    await screen.findByRole("heading", { name: secondId });
+    await expectJobDetails(secondId);
     expect(detail).toHaveBeenCalledWith(secondId);
     expect(screen.getByLabelText("Current route")).toHaveTextContent(`/runs?job=${secondId}`);
     expect(screen.queryByText("The previous job was not found")).not.toBeInTheDocument();

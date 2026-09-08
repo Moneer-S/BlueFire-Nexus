@@ -291,7 +291,16 @@ export function buildReplayPayload(options: ReplayPayloadOptions): Record<string
   };
 }
 
+export interface BuildInfo {
+  schema_version: "bluefire.build-info.v1";
+  product: { name: string; version: string };
+  source: { revision: string | null; provenance: "git_archive" | "unavailable" };
+  build: { metadata_status: "embedded" | "unavailable" | "invalid"; digest: string | null };
+  ui: { digest: string | null; files: { name: string; sha256: string; size: number }[]; matches_build: boolean | null };
+}
+
 export const api = {
+  async buildInfo(): Promise<BuildInfo> { return request("/build-info"); },
   /** Lightweight authenticated liveness only; never establishes or renews a session. */
   async serviceConnection(signal?: AbortSignal): Promise<{ checkedAt: number }> {
     if (DEMO_MODE) throw new ApiError("Demo mode does not connect to a local service.", "demo_service_unavailable");
