@@ -4,7 +4,7 @@ test("builder supports add, undo, redo, filtering, and keyboard shortcuts", asyn
   const consoleErrors: string[] = [];
   page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()); });
   await page.goto("./#/builder");
-  await expect(page.getByRole("heading", { name: "Build your experiment" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Endpoint control validation", level: 1 })).toBeVisible();
   await page.getByRole("button", { name: "Show all branches", exact: true }).click();
   const nodes = page.locator(".react-flow__node");
   const initial = await nodes.count();
@@ -89,7 +89,7 @@ test("builder workspace exposes commands, layout, focus, legend, panels, and con
   })).toEqual({ binding: false, layout: false, route: false, start: "run_fixture", step: false });
 
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Build your experiment" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Endpoint control validation", level: 1 })).toBeVisible();
   await page.getByRole("button", { name: "Show all branches", exact: true }).click();
   await expect(nodes).toHaveCount(initial - 1);
   await expect(page.locator('.react-flow__node[data-id="place_fixture"]')).toHaveCount(0);
@@ -143,7 +143,7 @@ test("laptop canvas and step details fit the viewport without losing the experim
   for (const viewport of [{ width: 1366, height: 768 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
     await page.setViewportSize(viewport);
     await page.goto("./#/builder");
-    await expect(page.getByRole("heading", { name: "Build your experiment" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Endpoint control validation", level: 1 })).toBeVisible();
     const canvas = await page.locator(".graph-canvas").boundingBox();
     expect(canvas?.y).toBeLessThan(360);
     expect(canvas?.height).toBeGreaterThan(350);
@@ -190,7 +190,8 @@ test("large branched experiments keep complete data while focusing readable sect
 
 test("Execute approval cannot bypass canonical review and legacy authority is scrubbed after reload", async ({ page }) => {
   await page.goto("./#/runs");
-  await expect(page.getByRole("heading", { name: "Review and run" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Runs", level: 1 })).toBeVisible();
+  await page.getByRole("link", { name: "Review new run", exact: true }).click();
   await page.getByRole("radio", { name: /Execute/ }).check();
   await page.getByText("Policy, approval & budgets").click();
   const approval = page.getByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ });

@@ -5,6 +5,8 @@ test("Runs fits laptop and narrow screens while idle history stays ahead of live
   await page.goto("./#/runs");
   await expect(page.getByRole("heading", { name: "Run history" })).toBeVisible();
   await expect(page.locator(".live-console")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Run preflight", exact: true })).toHaveCount(0);
+  await page.getByRole("link", { name: "Review new run", exact: true }).click();
   await expect(page.getByRole("button", { name: "Run preflight", exact: true })).toHaveCount(1);
   await page.getByRole("radio", { name: /Execute/ }).check();
   await expect(page.locator('[aria-current="step"]')).toHaveCount(1);
@@ -22,5 +24,9 @@ test("Runs fits laptop and narrow screens while idle history stays ahead of live
   await page.getByRole("button", { name: "Run preflight", exact: true }).click();
   await page.getByRole("button", { name: "Submit Simulate job" }).click();
   await expect(page.locator(".live-console")).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Review latest" })).toBeEnabled();
+  await expect(page.locator(".live-console").getByRole("button", { name: "Review", exact: true })).toBeEnabled();
+  const result = page.getByRole("link", { name: "Review latest result", exact: true });
+  await expect(result).toHaveAttribute("href", "#/runs/demo-simulate-baseline");
+  await result.click();
+  await expect(page).toHaveURL(/#\/runs\/demo-simulate-baseline$/);
 });

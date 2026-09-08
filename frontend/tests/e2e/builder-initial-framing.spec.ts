@@ -15,7 +15,7 @@ test("initially frames the complete visible demo path and preserves the operator
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.goto("./#/builder");
   const canvas = page.getByLabel("Scenario graph canvas");
-  await expect(page.getByRole("heading", { name: "Build your experiment" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Endpoint control validation", level: 1 })).toBeVisible();
   await expect(page.locator(".react-flow__node:visible")).toHaveCount(6);
   await expect(page.getByText(/6 of 7 steps shown/)).toBeVisible();
   // No Fit graph click: every measured node on the normal initial path must fit.
