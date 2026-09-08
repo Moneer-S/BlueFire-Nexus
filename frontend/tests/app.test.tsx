@@ -472,7 +472,7 @@ describe("product application", () => {
     await user.click(await screen.findByRole("button", { name: "Add step" }));
     await user.click(await screen.findByRole("button", { name: /Typed enum review/ }));
 
-    const evidenceBasis = await screen.findByRole("combobox", { name: "evidence_basis" }) as HTMLSelectElement;
+    const evidenceBasis = await screen.findByRole("combobox", { name: "Evidence basis" }) as HTMLSelectElement;
     expect(evidenceBasis.selectedOptions[0]).toHaveTextContent("hypothesis");
     await waitFor(() => {
       const stored = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1") ?? "{}") as { steps?: Array<{ behavior_id: string; parameters: Record<string, unknown> }> };
@@ -491,7 +491,7 @@ describe("product application", () => {
       expect(parameters).not.toHaveProperty("optional_note");
       expect(parameters).not.toHaveProperty("empty_integer_range");
     });
-    expect(screen.getByRole("spinbutton", { name: "empty_integer_range" })).toHaveValue(null);
+    expect(screen.getByRole("spinbutton", { name: "Empty integer range" })).toHaveValue(null);
   });
 
   it("preserves numeric and boolean enum member types when editing parameters", async () => {
@@ -506,9 +506,9 @@ describe("product application", () => {
     renderApp("/builder");
     await user.click(await screen.findByRole("button", { name: "Add step" }));
     await user.click(await screen.findByRole("button", { name: /Typed enum review/ }));
-    const sampleCount = await screen.findByRole("combobox", { name: "sample_count" });
-    const strictMatch = screen.getByRole("combobox", { name: "strict_match" });
-    const labelSet = screen.getByRole("combobox", { name: "label_set" });
+    const sampleCount = await screen.findByRole("combobox", { name: "Sample count" });
+    const strictMatch = screen.getByRole("combobox", { name: "Strict match" });
+    const labelSet = screen.getByRole("combobox", { name: "Label set" });
     await user.selectOptions(sampleCount, within(sampleCount).getByRole("option", { name: "2" }));
     await user.selectOptions(strictMatch, within(strictMatch).getByRole("option", { name: "false" }));
     await user.selectOptions(labelSet, within(labelSet).getByRole("option", { name: "beta, gamma" }));
@@ -535,9 +535,9 @@ describe("product application", () => {
     const view = renderApp("/builder");
     await user.click(await screen.findByRole("button", { name: "Add step" }));
     await user.click(await screen.findByRole("button", { name: /Typed enum review/ }));
-    const optionalInteger = await screen.findByRole("spinbutton", { name: "zero_default" });
-    const optionalNumber = screen.getByRole("spinbutton", { name: "optional_number" });
-    const requiredInteger = screen.getByRole("spinbutton", { name: "positive_integer" });
+    const optionalInteger = await screen.findByRole("spinbutton", { name: "Zero default" });
+    const optionalNumber = screen.getByRole("spinbutton", { name: "Optional number" });
+    const requiredInteger = screen.getByRole("spinbutton", { name: "Positive integer" });
 
     await user.clear(optionalInteger);
     await user.clear(optionalNumber);
