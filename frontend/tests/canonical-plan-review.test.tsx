@@ -62,3 +62,33 @@ it.each(["plan", "scope", "cleanup", "binding", "envelope"] as const)("renders a
     expect(screen.queryByText("Original fixture method")).not.toBeInTheDocument();
   }
 });
+
+it.each(["simulate", "execute"] as const)("names the bound runner profile without inventing an environment for %s", (mode) => {
+  render(<CanonicalPlanReview {...initial} plan={{ ...initial.plan, mode, runner_profile_id: "plan-profile" }} />);
+  const term = screen.getByText("Runner profile", { selector: "dt" });
+  expect(term.nextElementSibling).toHaveTextContent("profile-original");
+  expect(screen.queryByText("Environment", { selector: "dt" })).not.toBeInTheDocument();
+});
+
+it("uses the recorded plan profile when Simulate has no Execute binding", () => {
+  render(<CanonicalPlanReview plan={{ mode: "simulate", runner_profile_id: "sandbox-simulate.v1", steps: [], edges: [] }} cleanup={{ policy: "always" }} />);
+  const term = screen.getByText("Runner profile", { selector: "dt" });
+  expect(term.nextElementSibling).toHaveTextContent("sandbox-simulate.v1");
+  expect(screen.getByText("Simulated cleanup; no external files are removed. Policy: Always.")).toBeVisible();
+  expect(screen.queryByText("Remove created lab files after the run")).not.toBeInTheDocument();
+});
+
+it("updates cleanup wording with the exact mode while retaining its policy and full plan", async () => {
+  const plan = { mode: "simulate", runner_profile_id: "sandbox-simulate.v1", steps: [], edges: [] };
+  const view = render(<CanonicalPlanReview plan={plan} cleanup={{ policy: "manual" }} />);
+  expect(screen.getByText("Simulated cleanup; no external files are removed. Policy: Manual.")).toBeVisible();
+  await userEvent.setup().click(screen.getByText("Run identities and full plan"));
+  const recordedPlan = screen.getByText("Run identities and full plan").closest("details")!.querySelector("pre")!;
+  expect(recordedPlan).toBeVisible();
+  expect(recordedPlan.textContent).toBe(JSON.stringify(plan, null, 2));
+  view.rerender(<CanonicalPlanReview plan={{ ...plan, mode: "execute" }} cleanup={{ policy: "always" }} />);
+  expect(screen.getByText("Remove created lab files after the run")).toBeVisible();
+  expect(screen.queryByText(/no external files are removed/)).not.toBeInTheDocument();
+  view.rerender(<CanonicalPlanReview plan={{ steps: [], edges: [] }} />);
+  expect(screen.queryByText(/no external files are removed/)).not.toBeInTheDocument();
+});

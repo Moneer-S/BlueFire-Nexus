@@ -77,7 +77,7 @@ it("shows a cancelled job's retained events without claiming it is awaiting a ru
   expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
 });
 
-it.each(["cancelled", "interrupted", "failed"] as const)("loads the linked %s record for review without claiming completion", async (state) => {
+it.each(["cancelled", "interrupted", "failed", "completed"] as const)("loads the linked %s record with its actual outcome and a concise result notice", async (state) => {
   const run = { ...structuredClone(demoRuns[0]!), run_id: "run-retained", status: state, steps: [] };
   const job = { ...replayJob(firstId, state), progress: {}, result_ref: run.run_id };
   inventory([]);
@@ -88,7 +88,8 @@ it.each(["cancelled", "interrupted", "failed"] as const)("loads the linked %s re
   expect(await screen.findByText(`Run ${state}`)).toBeVisible();
   expect(detail).toHaveBeenCalledWith(run.run_id);
   expect(screen.getByRole("button", { name: "Review" })).toBeEnabled();
-  expect(screen.getByText(`Run ${run.run_id} is ${state}; its canonical record is ready for review.`)).toBeVisible();
+  expect(screen.getByText(`Run ${state}; its recorded result is ready for review.`)).toBeVisible();
+  expect(screen.queryByText(new RegExp(`Run ${run.run_id} is`))).not.toBeInTheDocument();
   expect(screen.queryByText(/completed and its canonical/)).not.toBeInTheDocument();
 });
 

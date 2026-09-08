@@ -10,11 +10,14 @@ export const CanonicalPlanReview = memo(function CanonicalPlanReview({ plan, cle
   const scopeRecord = scope && typeof scope === "object" ? scope as Record<string, unknown> : null;
   const scopeLabel = typeof scope === "string" ? scope : Array.isArray(scopeRecord?.scope_refs) ? scopeRecord.scope_refs.join(", ") : "Not reported";
   const cleanupRecord = cleanup && typeof cleanup === "object" ? cleanup as Record<string, unknown> : null;
-  const cleanupLabel = typeof cleanup === "string" ? sentence(cleanup) : cleanupRecord?.policy === "always" ? "Remove created lab files after the run" : sentence(String(cleanupRecord?.policy ?? "not reported"));
+  const cleanupPolicy = typeof cleanup === "string" ? cleanup : cleanupRecord?.policy;
+  const cleanupLabel = plan.mode === "simulate"
+    ? `Simulated cleanup; no external files are removed. Policy: ${sentence(String(cleanupPolicy ?? "not reported"))}.`
+    : typeof cleanup === "string" ? sentence(cleanup) : cleanupRecord?.policy === "always" ? "Remove created lab files after the run" : sentence(String(cleanupRecord?.policy ?? "not reported"));
   return <section className="canonical-plan" aria-label="Canonical preflight plan">
     <header><div><span>{envelope ? "Ready for your review" : "Run review"}</span><strong>What this run will do</strong></div><Badge tone={envelope ? "warning" : "info"}>{steps.length} steps · {sentence(String(plan.mode ?? "not reported"))}</Badge></header>
     <DataList items={[
-      { label: "Environment", value: binding?.profile_id ?? String(plan.runner_profile_id ?? "Not reported") },
+      { label: "Runner profile", value: binding?.profile_id ?? String(plan.runner_profile_id ?? "Not reported") },
       { label: "Allowed scope", value: scopeLabel },
       { label: "Cleanup", value: cleanupLabel },
       { label: "Full experiment", value: `${steps.length} steps and ${edges.length} routes, including hidden branches` },
