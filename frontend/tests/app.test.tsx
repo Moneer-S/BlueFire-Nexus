@@ -421,10 +421,16 @@ describe("product application", () => {
     renderApp("/builder");
     const name = await screen.findByRole("textbox", { name: "Experiment name" });
     await user.clear(name);
-    await user.type(name, "Submitted experiment");
+    // This contract concerns the exact saved document; per-character updates
+    // have their own real-canvas regression in builder-metadata.test.tsx.
+    await user.paste("Submitted experiment");
     await user.click(screen.getByRole("button", { name: "Save version" }));
     await waitFor(() => expect(submittedTitle).toBe("Submitted experiment"));
-    if (editDuringSave) await user.type(name, " with newer edits");
+    if (editDuringSave) {
+      await user.click(name);
+      await user.keyboard("{End}");
+      await user.paste(" with newer edits");
+    }
     await act(async () => finishSave(json({ schema_version: "bluefire.scenario-version.v1", scenario: { version: 2 } })));
     expect(await screen.findByText(editDuringSave ? "Version 2 saved; newer changes remain unsaved." : "Version 2 saved.")).toBeVisible();
     expect(screen.getByText(editDuringSave ? "Unsaved changes" : "Working copy", { exact: true })).toBeVisible();
@@ -439,7 +445,8 @@ describe("product application", () => {
     renderApp("/builder");
     const name = await screen.findByRole("textbox", { name: "Experiment name" });
     await user.clear(name);
-    await user.type(name, "Renamed experiment");
+    // Set the complete name, then test that the next graph edit owns Undo/Redo.
+    await user.paste("Renamed experiment");
     await user.click(screen.getByRole("button", { name: "Add step" }));
     const palette = screen.getByRole("heading", { name: "Add a step" }).closest("section")!;
     await user.click(within(palette).getAllByRole("button").find((button) => button.draggable)!);
