@@ -35,8 +35,12 @@ personal files or real credentials.
 
 Select the saved version in Compare. **Inspect the selected saved experiment** opens
 that exact version in a read-only Builder view; opening it does not replace your
-working draft. Choose Execute, the enrolled lab profile and
-the exact scopes required by the graph. The page checks eligibility and lab
+working draft. In **Environment and run settings**, choose Execute and the
+enrolled lab profile. **Target scope** must explicitly include
+`sandbox.workspace` and `network.loopback`; the selected profile must permit both.
+Include any other scopes required by the graph. Missing required scopes are
+refused before receiver preparation; BlueFire does not add them for you.
+The page checks eligibility and lab
 readiness before the test can be saved. Runtime AI stays Off so that the phases
 use the reviewed experiment without model-driven changes.
 
@@ -45,10 +49,10 @@ use the reviewed experiment without model-driven changes.
 1. **Save control test** retains the selected experiment and run settings.
 2. **Prepare baseline receiver** starts a short-lived, memory-only receiver in
    the lab. Review its policy, complete run plan, scope and cleanup.
-3. **Accept and continue to run approval** saves that review. Open the resulting
-   run and give its fresh Execute approval through the ordinary Runs controls.
-4. Follow run progress, then use **Return to receiver control test**. Inspect the
-   receiver observation and run cleanup before continuing.
+3. **Accept and review run approval** saves that review. Give the resulting run
+   its fresh Execute approval through the ordinary run controls shown inline.
+4. Follow run progress. Inspect the receiver observation and run cleanup before
+   continuing.
 5. Prepare the protected receiver, review the changed policy and replay, and
    approve the resulting run. The replay is bound to the staged bytes recorded
    independently in the baseline.
@@ -124,6 +128,11 @@ version or grants authority over changed settings.
 **Stop control test** requests cancellation and cleanup; requested cancellation
 is not confirmation that the receiver and run have stopped. Uncertain cleanup
 must be resolved before the test is considered safely stopped.
+**Cancel** on a phase's run also stops the entire control test, including when its
+Execute approval has expired. That test and its unfinished phase cannot resume.
+After the service confirms cleanup, choose **Set up another control test** to
+start a separate test. Earlier phase results remain in the original test's
+history; no approval is renewed automatically.
 
 ## What this guide establishes
 

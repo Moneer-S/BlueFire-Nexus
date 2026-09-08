@@ -98,6 +98,8 @@ it.each([undefined, null, "not-a-deadline", "2099", "2000-01-01T00:00:00Z"])("ke
   expect(fetch).not.toHaveBeenCalled();
   mount(job);
   await screen.findByText(expiresAt === "2000-01-01T00:00:00Z" ? "Approval review expired" : "Approval deadline unavailable");
+  expect(screen.getByText(/Cancel it and return to its setup page for a fresh review/)).toBeVisible();
+  expect(screen.queryByRole("link", { name: "Open the saved control test" })).not.toBeInTheDocument();
   await waitFor(() => expect(screen.getAllByText("reviewed-plan").length).toBeGreaterThan(0));
   expect(screen.getByRole("checkbox", { name: /I approve this exact immutable job envelope once/ })).toBeDisabled();
   expect(screen.getByRole("textbox", { name: "Operator identity for this job" })).toBeDisabled();

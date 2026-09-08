@@ -97,12 +97,18 @@ it.each(["state_digest", "plan_digest", "target_scope_digest", "profile_id", "ma
   expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled(); expect(view.approve).not.toHaveBeenCalled(); expect(view.preflight).not.toHaveBeenCalled();
 });
 
-it("reopens an expired approval as read-only inline", async () => {
-  const envelope = nativeReceiverFixture(); envelope.phases[0]!.execution_job!.approval_request!.expires_at = "2000-01-01T00:00:00Z";
+it.each(["baseline", "protected", "restored"] as const)("explains the whole-test Cancel scope for an expired %s approval", async (phase) => {
+  const envelope = nativeReceiverFixture(phase); envelope.phases.find((item) => item.phase === phase)!.execution_job!.approval_request!.expires_at = "2000-01-01T00:00:00Z";
   const view = mount(envelope);
   await screen.findByText("Approval review expired");
   expect(screen.getByRole("button", { name: "Approve and release job" })).toBeDisabled(); expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
-  await waitFor(() => expect(screen.getAllByText("reviewed-plan-baseline").length).toBeGreaterThan(0)); expect(view.approve).not.toHaveBeenCalled();
+  await waitFor(() => expect(screen.getAllByText(`reviewed-plan-${phase}`).length).toBeGreaterThan(0));
+  expect(screen.getByText(/Cancelling it also stops the entire receiver control test/)).toHaveTextContent("the stopped phase cannot resume");
+  expect(screen.getByRole("link", { name: "Open the saved control test" })).toHaveAttribute("href", `/compare?receiver_job=${envelope.job.job_id}`);
+  expect(screen.queryByText(/Cancel it and return to its setup page for a fresh review/)).not.toBeInTheDocument();
+  expect(view.approve).not.toHaveBeenCalled(); expect(view.retry).not.toHaveBeenCalled(); expect(view.submit).not.toHaveBeenCalled(); expect(view.replay).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(view.control).toHaveBeenCalledExactlyOnceWith(view.selected.job_id, "cancel"));
 });
 
 it("reconciles a lost approval response through reads without repeating release", async () => {

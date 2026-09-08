@@ -50,6 +50,20 @@ it("refuses an expired review instead of silently preparing another receiver", a
   expect(onPrepare).not.toHaveBeenCalled(); expect(onReview).not.toHaveBeenCalled();
 });
 
+it("explains that a stopped final phase requires a separate test while preserving earlier outcomes", () => {
+  const value = receiverFixture("restored", "prepared");
+  value.status = "stopped";
+  value.job.progress.stopped = true;
+  value.next_action = { kind: "stopped", phase: null, native_path: null };
+  const { onPrepare, onReview } = mountProgress(value);
+  expect(screen.getByText(/This test cannot resume/)).toHaveTextContent("After the service confirms cleanup, use Set up another control test");
+  expect(screen.getByRole("region", { name: "Measured receiver outcomes" })).toBeVisible();
+  expect(screen.getByRole("link", { name: "Compare baseline and protected run" })).toHaveAttribute("href", "/compare?source=run-baseline&replay=run-protected");
+  expect(screen.queryByRole("button", { name: /Prepare .* receiver/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Accept and review run approval" })).not.toBeInTheDocument();
+  expect(onPrepare).not.toHaveBeenCalled(); expect(onReview).not.toHaveBeenCalled();
+});
+
 it("preserves focus in another workspace when polling advances the phase", async () => {
   const { user, rerender, ui } = mountProgress();
   const other = screen.getByRole("button", { name: "Another workspace" }); await user.click(other);
