@@ -5361,7 +5361,11 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         for result in self.store.list_runs():
             required = {"run_id", "scenario_id", "mode", "status", "created_at"}
             if required.issubset(result):
-                self._index_run(result)
+                digest = result.get("bundle_digest")
+                self._index_run(
+                    result,
+                    validated_bundle_digest=digest if isinstance(digest, str) else None,
+                )
 
     @staticmethod
     def _approval_review_expires_at() -> str:
@@ -5375,9 +5379,18 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         lifetime = timedelta(seconds=max(15 * 60, profile.budgets.max_seconds + 60))
         return (datetime.now(timezone.utc) + lifetime).isoformat().replace("+00:00", "Z")
 
-    def _index_run(self, result: Mapping[str, Any]) -> None:
+    def _index_run(
+        self,
+        result: Mapping[str, Any],
+        *,
+        validated_bundle_digest: str | None = None,
+    ) -> None:
         manifest = result.get("manifest")
-        bundle_digest = manifest.get("bundle_hash") if isinstance(manifest, Mapping) else None
+        bundle_digest = (
+            manifest.get("bundle_hash")
+            if isinstance(manifest, Mapping)
+            else validated_bundle_digest
+        )
         summary = {
             key: result[key]
             for key in (

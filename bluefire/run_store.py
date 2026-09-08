@@ -493,6 +493,7 @@ class RunStore:
         for path in sorted(self.root.iterdir(), reverse=True):
             if not path.is_dir() or not RUN_ID_RE.fullmatch(path.name):
                 continue
+            validated_bundle_digest: str | None = None
             try:
                 manifest_path = self._contained_child(path, "manifest.json")
             except RunStoreError as exc:
@@ -518,6 +519,11 @@ class RunStore:
                         )
                     )
                     continue
+                manifest = integrity.get("manifest")
+                if isinstance(manifest, Mapping):
+                    digest = manifest.get("bundle_hash")
+                    if isinstance(digest, str):
+                        validated_bundle_digest = digest
             try:
                 result = self.read_json(path.name, "result.json")
             except RunStoreError:
@@ -535,6 +541,12 @@ class RunStore:
             # Present the title frozen with this run, not a mutable catalog name.
             # Enrich the response only; immutable result files and hashes stay intact.
             summary = dict(result)
+            # Provenance comes only from the manifest validated above, never
+            # from similarly named fields embedded in the result document.
+            summary.pop("manifest", None)
+            summary.pop("bundle_digest", None)
+            if validated_bundle_digest is not None:
+                summary["bundle_digest"] = validated_bundle_digest
             if manifest_path.exists():
                 try:
                     scenario = self.read_json(path.name, "scenario.json")
