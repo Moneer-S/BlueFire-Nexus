@@ -55,13 +55,23 @@ def test_rejection_reaches_client_before_delayed_body_and_closes_without_dispatc
         finish_after_client_observes_response,
     )
     with running_server() as (server, service):
+        accepted: list[Any] = []
+        original_get_request = server.get_request
+
+        def get_request() -> Any:
+            request, address = original_get_request()
+            accepted.append(request)
+            return request, address
+
+        monkeypatch.setattr(server, "get_request", get_request)
         with socket.create_connection(server.server_address, timeout=3) as client:
             closed = threading.Event()
-            peer = client.getsockname()
             original_shutdown = server.shutdown_request
 
             def shutdown_request(request: Any) -> None:
-                selected = request.getpeername() == peer
+                # Peer addresses may already be unavailable after half-close on
+                # Linux. Observe the accepted socket identity without querying it.
+                selected = any(request is item for item in accepted)
                 original_shutdown(request)
                 if selected:
                     closed.set()
