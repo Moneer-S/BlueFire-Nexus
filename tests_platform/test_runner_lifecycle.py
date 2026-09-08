@@ -98,7 +98,8 @@ def _fake_bootstrap(**values: Any) -> BootstrappedRunner:
 def _host_command(spec: RunnerHostSpec) -> Sequence[str]:
     platform_name = current_platform()
     return (
-        str(Path(sys.executable).resolve(strict=True)),
+        # Preserve the selected venv and its dependencies, as the production host does.
+        str(Path(sys.executable).absolute()),
         "-m",
         "tests_platform.runner_lifecycle_host_helper",
         str(spec.enrollment_root),
@@ -110,6 +111,56 @@ def _host_command(spec: RunnerHostSpec) -> Sequence[str]:
         spec.launch_id,
         platform_name,
         str(spec.runner_timeout_seconds),
+    )
+
+
+@pytest.mark.parametrize("symlinked", [False, True])
+def test_process_fixture_preserves_selected_interpreter_without_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, symlinked: bool
+) -> None:
+    base = tmp_path / "base-python"
+    base.write_bytes(b"not an executable: command construction only")
+    selected = base
+    if symlinked:
+        selected = tmp_path / "venv" / "bin" / "python"
+        selected.parent.mkdir(parents=True)
+        try:
+            selected.symlink_to(base)
+        except OSError:
+            pytest.skip("File symlinks are unavailable on this host")
+        assert selected.resolve(strict=True) == base
+    monkeypatch.setattr(sys, "executable", str(selected))
+    monkeypatch.setattr("bluefire.runner_bootstrap.host_platform.system", lambda: "Linux")
+
+    def refuse_launch(*_args: Any, **_kwargs: Any) -> None:
+        pytest.fail("Constructing the fixture command must not launch a process")
+
+    monkeypatch.setattr(subprocess, "Popen", refuse_launch)
+    spec = RunnerHostSpec(
+        enrollment_root=tmp_path / "enrollment",
+        runner_binary=base.resolve(strict=True),
+        work_root=tmp_path / "sandbox",
+        state_path=tmp_path / "transport.sqlite3",
+        process_record_path=tmp_path / "process.json",
+        start_gate_path=tmp_path / "start.gate",
+        launch_id="a" * 64,
+        runner_timeout_seconds=35,
+    )
+
+    command = _host_command(spec)
+
+    assert command[0] == str(selected.absolute())
+    assert command[1:3] == ("-m", "tests_platform.runner_lifecycle_host_helper")
+    assert command[3:] == (
+        str(spec.enrollment_root),
+        str(base.resolve(strict=True)),
+        str(spec.work_root),
+        str(spec.state_path),
+        str(spec.process_record_path),
+        str(spec.start_gate_path),
+        spec.launch_id,
+        current_platform(),
+        "35",
     )
 
 
@@ -1392,7 +1443,7 @@ def test_failed_start_terminates_the_exact_host_process_tree(
 
     def hanging_host(spec: RunnerHostSpec) -> Sequence[str]:
         return (
-            str(Path(sys.executable).resolve(strict=True)),
+            str(Path(sys.executable).absolute()),
             "-m",
             "tests_platform.runner_lifecycle_host_helper",
             "descendant-hang",
