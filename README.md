@@ -23,33 +23,34 @@ Start with the [minimal local demo](#minimal-local-demo), then follow the
 
 ## Minimal local demo
 
-Python 3.10 or newer is required. From a source checkout, create an environment and install the
-project. Docker and a runner are not required for Simulate.
+Python 3.10 or newer is required. This checkout is an unreleased candidate; the example below
+assumes you already have a reviewed wheel for your platform, not a published download. Replace
+the wheel placeholder with that file and the workspace placeholder with an **absolute directory**
+outside the source checkout and virtual environment. See [Installation](docs/INSTALLATION.md).
 
 ```bash
 python -m venv .venv
 # Linux/macOS: source .venv/bin/activate
 # Windows PowerShell: .venv\Scripts\Activate.ps1
-python -m pip install -e ".[dev]"
+python -m pip install "path/to/the-reviewed-bluefire-nexus-wheel.whl"
+bluefire --runs-dir "path/to/your/bluefire-workspace" ui
 ```
 
-Run the packaged sandbox scenario. Simulate is the default and writes a local run bundle.
+BlueFire attempts to open the browser after the local listener is ready. If it cannot, open the
+complete one-use URL printed in the terminal; it connects to the same running process. Add
+`--no-browser` after `ui` to choose manual opening. Keep this terminal running while using the UI.
+Reuse the same absolute `--runs-dir` on every restart and upgrade to retain saved experiments,
+rules, jobs and run bundles. For source development and its optional developer dependencies,
+see [Development](docs/DEVELOPMENT.md).
 
-```bash
-bluefire --runs-dir .bluefire-runs scenario run \
-  --scenario-id scenario.sandbox.research.chain.v1
-```
+In **Experiments**, open a packaged experiment or create a new one. Review it in **Build** and
+save a version when you change it. In **Runs**, choose **Review new run**, select **Simulate**
+and AI **Off**, then run preflight and submit the Simulate job. Open its result to inspect the
+path and evidence. Docker, a runner and a model account are not needed for this first simulation.
+The [operator guide](docs/OPERATOR_GUIDE.md) walks through the visible controls and saved results.
 
-Launch the product UI against the same run directory:
-
-```bash
-bluefire --runs-dir .bluefire-runs ui --host 127.0.0.1 --port 8765
-```
-
-Open the one-use URL printed after the listener is ready. The UI is a same-user loopback service,
-not a remotely authenticated application; do not expose it through a proxy, tunnel, or port
-forward. A successful Simulate run proves graph validation and simulation, not that a runner
-action or defensive control executed.
+The UI is a same-user loopback service; do not expose it through a proxy, tunnel, or port forward.
+A Simulate result records a preview, not evidence that a runner action or defensive control executed.
 
 ## Product loop
 
