@@ -310,6 +310,7 @@ def _kill_linux_adopted_descendants(
 
 def _redact_runtime_paths(text: str, *, repository: Path, run_dir: Path) -> str:
     replacements = {
+        os.fspath(Path(sys.executable).absolute()): "{python}",
         os.fspath(Path(sys.executable).resolve()): "{python}",
         os.fspath(repository.resolve()): "{repository}",
         os.fspath(run_dir.resolve()): "{run_dir}",

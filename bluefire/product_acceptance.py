@@ -124,7 +124,8 @@ def _render_command(
     receipt: Path,
 ) -> list[str]:
     values = {
-        "python": os.fspath(Path(sys.executable).resolve()),
+        # Resolving a venv symlink selects the base interpreter and loses its dependencies.
+        "python": os.fspath(Path(sys.executable).absolute()),
         "repository": os.fspath(repository),
         "run_dir": os.fspath(run_dir),
         "gate_dir": os.fspath(gate_dir),
