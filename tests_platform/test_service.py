@@ -446,7 +446,7 @@ def test_default_run_store_uses_callers_working_directory(
 
     service = BlueFireService(project_root=ROOT)
 
-    assert service.store.root == (tmp_path / ".bluefire-runs").resolve()
+    assert service.store.root.samefile(tmp_path / ".bluefire-runs")
 
 
 def test_validate_reports_oversized_integer_as_invalid_scenario(tmp_path: Path) -> None:

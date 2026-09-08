@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -417,3 +418,56 @@ def test_json_writer_rejects_non_finite_values(tmp_path: Path) -> None:
     handle = _create(store)
     with pytest.raises(ValueError):
         store.write_json(handle.run_id, "comparison.json", {"score": float("nan")})
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Win32 extended-path persistence")
+@pytest.mark.parametrize("root_length", [202, 280])
+def test_windows_long_roots_persist_reload_and_preserve_bundle_integrity(
+    tmp_path: Path, root_length: int
+) -> None:
+    # The first root exists within legacy limits but its atomic temp names do
+    # not. The second tests initial directory creation beyond MAX_PATH too.
+    root = tmp_path / "long-store"
+    root_length = max(root_length, len(str(root)) + 2)
+    while len(str(root)) < root_length:
+        remaining = root_length - len(str(root))
+        length = min(60, remaining - 1)
+        if remaining - length - 1 == 1:
+            length -= 1
+        assert length > 0
+        root /= "p" * length
+    assert len(str(root)) == root_length
+    store = RunStore(root)
+    handle = _create(store)
+    assert len(str(handle.path / "result.json")) > 250
+    assert os.path.samefile(store.root, Path("\\\\?\\" + str(root)))
+    assert handle.path.parent == store.root
+    store.append_event(handle.run_id, "storage.probe", {"synthetic": True})
+    manifest = store.finalize(
+        handle.run_id,
+        result={"schema_version": "bluefire.run.v1", "status": "success"},
+        evidence=[],
+        detections=[],
+    )
+    before = {path.name: path.read_bytes() for path in handle.path.iterdir() if path.is_file()}
+    reopened = RunStore(root)
+    assert reopened.root == store.root
+    assert RunStore(store.root).root == store.root
+    assert reopened.get_run(handle.run_id)["manifest"] == manifest
+    assert len(reopened.read_events(handle.run_id)) == 3
+    assert reopened.list_runs()[0]["run_id"] == handle.run_id
+    record = reopened.append_recovery_record(handle.run_id, {"synthetic_storage_probe": True})
+    assert RunStore(root).read_recovery_records(handle.run_id) == [record]
+    assert {name: (handle.path / name).read_bytes() for name in before} == before
+    assert reopened.validate_bundle(handle.run_id)["valid"] is True
+    with pytest.raises(RunStoreError, match="invalid run identifier"):
+        reopened.get_run("../outside")
+    with pytest.raises(RunStoreError, match="unsupported bundle file"):
+        reopened.write_json(handle.run_id, "../outside.json", {})
+    outside_id = "run-20260101T000000Z-0000000000000009"
+    (store.root / outside_id).symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(RunStoreError, match="escapes the configured output root"):
+        reopened.get_run(outside_id)
+    (handle.path / "policy.json").write_text('{"altered":true}', encoding="utf-8")
+    with pytest.raises(RunStoreError, match="integrity"):
+        RunStore(root).get_run(handle.run_id)

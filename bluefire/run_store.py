@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .util import canonical_json_bytes, content_hash, file_hash, json_clone
+from .windows_owner_acl import _windows_extended_path
 
 RUN_ID_RE = re.compile(r"^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$")
 RECOVERY_ID_RE = re.compile(r"^recovery-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$")
@@ -81,6 +82,11 @@ class RunStore:
 
     def __init__(self, root: str | Path) -> None:
         candidate = Path(root).expanduser()
+        if os.name == "nt":
+            # Normalize once so descendants, including longer atomic temporary
+            # names and recovery directories, retain Win32 long-path support.
+            # Resolve below still establishes the canonical containment root.
+            candidate = _windows_extended_path(candidate)
         candidate.mkdir(parents=True, exist_ok=True)
         self.root = candidate.resolve(strict=True)
         if not self.root.is_dir():
