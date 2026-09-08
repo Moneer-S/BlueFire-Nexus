@@ -639,6 +639,7 @@ function CandidateWorkspace({
         key={candidate.resolvedId}
         candidate={candidate}
         resourceId={resource?.id}
+        resourceDigest={resource?.digest}
         sourceRunId={sourceRunId}
         runs={finalizedRuns}
         revisions={lineage.filter((item) => item.resourceId).map((item) => ({ id: item.resourceId!, label: `Revision ${item.revision ?? 1} · ${item.resourceId}` }))}

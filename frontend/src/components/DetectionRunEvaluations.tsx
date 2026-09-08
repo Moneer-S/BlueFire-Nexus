@@ -1,7 +1,9 @@
+import * as Dialog from "@radix-ui/react-dialog";
 import { runLabel } from "../lib/run-presentation";
 import { formatDate } from "./Primitives";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { detectionDraftIdentity, useDetectionDraft } from "../state/useDetectionDraft";
 import { RunReference } from "./RunReference";
 import { api } from "../lib/api";
 import { DetectorEvaluationTable } from "./DetectorEvaluationComparison";
@@ -11,37 +13,56 @@ import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, Loadin
 
 const questionSeed = "Does this detector identify bounded collection staging while avoiding observed benign activity?";
 
-export function DetectionRunEvaluations({ candidate, resourceId, sourceRunId, runs, revisions }: {
+export function DetectionRunEvaluations({ candidate, resourceId, resourceDigest, sourceRunId, runs, revisions }: {
   candidate: DetectionCandidate;
   resourceId?: string;
+  resourceDigest?: string;
   sourceRunId: string;
   runs: RunRecord[];
   revisions: Array<{ id: string; label: string }>;
 }) {
   const client = useQueryClient();
-  const [runId, setRunId] = useState(sourceRunId);
-  const [question, setQuestion] = useState(questionSeed);
-  const [role, setRole] = useState<DetectionCaseRole>("attack");
-  const [relatedId, setRelatedId] = useState("");
-  useEffect(() => { setRunId(sourceRunId); }, [sourceRunId]);
-  useEffect(() => { setRelatedId(""); }, [resourceId]);
+  const binding = useMemo(() => detectionDraftIdentity({ workspace: "evaluation-inputs", resourceId: resourceId ?? null, resourceDigest: resourceDigest ?? null, candidate, sourceRunId }), [candidate, resourceId, resourceDigest, sourceRunId]);
+  const draft = useDetectionDraft(binding, { runId: sourceRunId, question: questionSeed, role: "attack" as DetectionCaseRole, relatedId: "" });
+  const { runId, question, role, relatedId } = draft.value;
+  const setRunId = (value: string) => draft.update("runId", value);
+  const setQuestion = (value: string) => draft.update("question", value);
+  const setRole = (value: DetectionCaseRole) => draft.update("role", value);
+  const setRelatedId = (value: string) => draft.update("relatedId", value);
+  const [discardFor, setDiscardFor] = useState<string | null>(null);
+  useEffect(() => setDiscardFor(null), [binding]);
+  const exportInputs = () => {
+    const payload = { schema_version: "bluefire.detection-evaluation-inputs.v1", binding, inputs: draft.value };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2) + "\n"], { type: "application/json" }));
+    const link = document.createElement("a"); link.href = url; link.download = "detection-evaluation-inputs.json"; link.click(); URL.revokeObjectURL(url);
+  };
   const reports = useQuery({ queryKey: ["detection-evaluations", resourceId], queryFn: () => api.detectionRunEvaluations(resourceId!), enabled: Boolean(resourceId) });
   const related = useQuery({ queryKey: ["detection-evaluations", relatedId], queryFn: () => api.detectionRunEvaluations(relatedId), enabled: Boolean(relatedId) });
   const evaluate = useMutation({
-    mutationFn: (body: { candidateId: string; run_id: string; question: string; case_role: DetectionCaseRole }) => api.evaluateDetectionRun(body.candidateId, { run_id: body.run_id, question: body.question, case_role: body.case_role }),
+    mutationFn: (body: { candidateId: string; run_id: string; question: string; case_role: DetectionCaseRole; binding: string }) => api.evaluateDetectionRun(body.candidateId, { run_id: body.run_id, question: body.question, case_role: body.case_role }),
     onSuccess: (_result, body) => { void client.invalidateQueries({ queryKey: ["detection-evaluations", body.candidateId] }); },
   });
   const language = candidate.target_language ?? candidate.language ?? "internal";
   const canEvaluate = resourceId && ["sqlite", "sigma"].includes(language) && ["parsed", "fixture_exercised", "observed_exercised", "benign_evaluated"].includes(candidate.state);
   const rows = [...(reports.data?.evaluations ?? []), ...(related.data?.evaluations ?? [])];
-  const resultForSelection = evaluate.variables?.candidateId === resourceId && evaluate.variables?.run_id === runId;
+  const resultForSelection = evaluate.variables?.binding === binding && evaluate.variables?.candidateId === resourceId && evaluate.variables?.run_id === runId && evaluate.variables.question === question.trim() && evaluate.variables.case_role === role;
   return <>
     <p>Test this rule on the selected run's independently observed events, then repeat on separate benign activity and a replay. Missing telemetry stays visible as not enough evidence.</p>
     {!canEvaluate ? <Callout tone="warning" title="Parsed query candidate required">Save and parse a SQLite or Sigma candidate to evaluate a run. Internal matcher results retain internal semantics, and YARA cannot inspect file bytes from metadata alone.</Callout> : null}
+    {draft.warning ? <p role="alert">{draft.warning}</p> : draft.retained ? <p role="status">Evaluation inputs kept in this browser tab. They are not a saved evaluation.</p> : null}
+    <div className="candidate-actions"><Button variant="ghost" size="small" onClick={exportInputs}>Export evaluation inputs</Button>
+      <Dialog.Root open={discardFor === binding} onOpenChange={open => setDiscardFor(open ? binding : null)}>
+        <Dialog.Trigger asChild><Button variant="ghost" size="small" disabled={evaluate.isPending}>Discard evaluation inputs</Button></Dialog.Trigger>
+        <Dialog.Portal><Dialog.Overlay className="dialog-overlay"/><Dialog.Content className="dialog-content">
+          <Dialog.Title>Discard these evaluation inputs?</Dialog.Title><Dialog.Description>Reset the question, source choice, assigned role and related revision selection for this candidate and source context. Retained evaluation records stay intact.</Dialog.Description>
+          <div className="dialog-actions"><Dialog.Close asChild><Button>Keep editing</Button></Dialog.Close><Button variant="danger" onClick={() => { if (discardFor !== binding) return; draft.discard(); setDiscardFor(null); }}>Discard these inputs</Button></div>
+        </Dialog.Content></Dialog.Portal>
+      </Dialog.Root>
+    </div>
     <Field label="Experiment question"><textarea rows={2} maxLength={1000} value={question} onChange={(event) => setQuestion(event.target.value)} /></Field>
     <Field label="Evaluation source run"><select value={runId} onChange={(event) => setRunId(event.target.value)}><option value="">Select a run</option>{runId && !runs.some((run) => run.run_id === runId) ? <option value={runId}>{runId}</option> : null}{runs.map((run) => <option key={run.run_id} value={run.run_id}>{runLabel(run)} · {sentence(run.mode)} · {formatDate(run.created_at)}</option>)}</select></Field>
     <Field label="Operator-assigned case role" hint="This label supplies context; it cannot assert intent or determine the measured result."><select value={role} onChange={(event) => setRole(event.target.value as DetectionCaseRole)}><option value="attack">Attack case</option><option value="benign">Benign activity</option><option value="replay">Replay</option><option value="heldout">Held-out variation</option></select></Field>
-    <Button onClick={() => resourceId && evaluate.mutate({ candidateId: resourceId, run_id: runId, question: question.trim(), case_role: role })} disabled={!canEvaluate || !runId || !question.trim() || evaluate.isPending}>{evaluate.isPending ? "Evaluating immutable evidence" : "Evaluate full observed run"}</Button>
+    <Button onClick={() => resourceId && evaluate.mutate({ binding, candidateId: resourceId, run_id: runId, question: question.trim(), case_role: role })} disabled={!canEvaluate || !runId || !question.trim() || evaluate.isPending}>{evaluate.isPending ? "Evaluating immutable evidence" : "Evaluate full observed run"}</Button>
     {resultForSelection && evaluate.isError ? <ErrorState title="Evaluation refused" error={evaluate.error} /> : null}
     {resultForSelection && evaluate.data ? <Callout title="Evaluation retained">{evaluationLabel(evaluate.data.evaluation)}. The measured result comes from the query and source evidence.</Callout> : null}
     {revisions.some((revision) => revision.id !== resourceId) ? <Field label="Related revision reports"><select value={relatedId} onChange={(event) => setRelatedId(event.target.value)}><option value="">Selected revision only</option>{revisions.filter((revision) => revision.id !== resourceId).map((revision) => <option key={revision.id} value={revision.id}>{revision.label}</option>)}</select></Field> : null}

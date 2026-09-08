@@ -14,6 +14,7 @@ function valid<T extends Record<string, unknown>>(value: unknown, defaults: T): 
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   if ("tab" in defaults && !["candidate", "revisions", "evaluations", "fixtures", "observed", "history"].includes(String(record.tab))) return false;
+  if ("role" in defaults && !["attack", "benign", "replay", "heldout"].includes(String(record.role))) return false;
   if ("revisionKind" in defaults && !["clone", "tune"].includes(String(record.revisionKind))) return false;
   return Object.keys(record).length === Object.keys(defaults).length && Object.entries(defaults).every(([key, example]) =>
     Array.isArray(example) ? Array.isArray(record[key]) && record[key].length <= 128 && record[key].every(item => typeof item === "string" && item.length <= 1024)
