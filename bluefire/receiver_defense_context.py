@@ -108,8 +108,28 @@ def context(service: Any, request: Mapping[str, Any]) -> Mapping[str, Any]:
                 "message": "The owned receiver requires the supported isolated Linux environment; it cannot start on this host.",
             }
         )
-    for message in service._scope_problems(run_intent, profile, mode):
+    scope_problems = service._scope_problems(run_intent, profile, mode)
+    for message in scope_problems:
         reasons.append({"code": "scope_required", "message": str(message)})
+    if not scope_problems:
+        # Staging/cleanup require the workspace; the fixed literal-loopback
+        # handoff also requires network.loopback under the runtime scope check.
+        references = run_intent["target_scope"]["scope_refs"]
+        missing = [
+            ref for ref in ("sandbox.workspace", "network.loopback") if ref not in references
+        ]
+        if missing:
+            reasons.append(
+                {
+                    "code": "receiver_scope_required",
+                    "message": (
+                        "Receiver experiments require sandbox.workspace and network.loopback. "
+                        "In Environment and run settings, update Target scope to explicitly "
+                        "include: " + ", ".join(missing) + ". The selected runner profile must "
+                        "permit both references."
+                    ),
+                }
+            )
     steps = saved["document"]["steps"]
     handoffs = [
         step
