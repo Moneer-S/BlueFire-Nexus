@@ -10,7 +10,49 @@ from typing import Any
 import pytest
 
 import bluefire.api as api_module
-from tests_platform.test_api import running_server
+from tests_platform.test_api import request, running_server
+
+
+@pytest.mark.parametrize(
+    ("path", "code"),
+    [
+        ("/api/v1/%FF", "invalid_path"),
+        ("/api/v1/%252e%252e/catalog", "path_traversal"),
+        ("/api/v1/%5Ccatalog", "invalid_path"),
+        ("/api/v1/%00catalog", "invalid_path"),
+        ("http://example.test/api/v1/catalog", "invalid_path"),
+        ("api/v1/catalog", "invalid_path"),
+    ],
+)
+def test_post_path_refusal_closes_unread_body_without_parsing_following_request(
+    path: str, code: str
+) -> None:
+    with running_server() as (server, service):
+        authority = f"127.0.0.1:{server.server_address[1]}"
+        with socket.create_connection(server.server_address, timeout=3) as client:
+            client.sendall(
+                (
+                    f"POST {path} HTTP/1.1\r\nHost: {authority}\r\n"
+                    f"Origin: http://{authority}\r\nCookie: {server._test_browser_cookie}\r\n"
+                    "Content-Length: 2\r\nContent-Type: application/json\r\n\r\n"
+                    "{}GET /api/v1/catalog HTTP/1.1\r\n"
+                    f"Host: {authority}\r\nCookie: {server._test_browser_cookie}\r\n\r\n"
+                ).encode("ascii")
+            )
+            client.shutdown(socket.SHUT_WR)
+            with client.makefile("rb") as response:
+                reply = response.read()
+        headers, body = reply.split(b"\r\n\r\n", 1)
+        assert headers.startswith(b"HTTP/1.1 400 ")
+        # The rejected JSON must not become a new HTTP method or consume the
+        # following request. The only response is the original safe refusal.
+        assert reply.count(b"HTTP/1.1 ") == 1
+        assert json.loads(body)["error"]["code"] == code
+        assert b"Connection: close" in headers
+        assert service.calls == []
+        # A normal subsequent client reconnects and reaches the API normally.
+        status, _, _ = request(server, "GET", "/api/v1/catalog")
+        assert status == 200 and service.calls == [("catalog",)]
 
 
 @pytest.mark.parametrize(

@@ -596,7 +596,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         self._method_not_allowed("GET")
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
-        path = self._request_path()
+        path = self._request_path(unread_body=True)
         if path is None or not self._validate_host() or not self._validate_same_origin():
             return
         if path == f"{API_PREFIX}/session":
@@ -1244,33 +1244,34 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             extra_headers={"Set-Cookie": cookie},
         )
 
-    def _request_path(self) -> str | None:
+    def _request_path(self, *, unread_body: bool = False) -> str | None:
+        reject = self._reject_unread_body if unread_body else self._error
         try:
             parsed_target = urlsplit(self.path)
             if parsed_target.scheme or parsed_target.netloc:
                 raise ValueError("absolute request targets are not accepted")
             raw_path = parsed_target.path
         except ValueError:
-            self._error(HTTPStatus.BAD_REQUEST, "invalid_path", "Request path is invalid.")
+            reject(HTTPStatus.BAD_REQUEST, "invalid_path", "Request path is invalid.")
             return None
         candidate = raw_path
         for _ in range(3):
             try:
                 decoded = unquote(candidate, errors="strict")
             except (UnicodeDecodeError, ValueError):
-                self._error(HTTPStatus.BAD_REQUEST, "invalid_path", "Request path is invalid.")
+                reject(HTTPStatus.BAD_REQUEST, "invalid_path", "Request path is invalid.")
                 return None
             if decoded == candidate:
                 break
             candidate = decoded
         if "\\" in candidate or "\x00" in candidate:
-            self._error(HTTPStatus.BAD_REQUEST, "invalid_path", "Request path is invalid.")
+            reject(HTTPStatus.BAD_REQUEST, "invalid_path", "Request path is invalid.")
             return None
         if any(part in {".", ".."} for part in candidate.split("/")):
-            self._error(HTTPStatus.BAD_REQUEST, "path_traversal", "Path traversal is not allowed.")
+            reject(HTTPStatus.BAD_REQUEST, "path_traversal", "Path traversal is not allowed.")
             return None
         if not candidate.startswith("/") or candidate.startswith("//"):
-            self._error(HTTPStatus.BAD_REQUEST, "invalid_path", "Request path is invalid.")
+            reject(HTTPStatus.BAD_REQUEST, "invalid_path", "Request path is invalid.")
             return None
         return candidate
 
