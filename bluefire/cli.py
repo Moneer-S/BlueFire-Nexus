@@ -7,6 +7,7 @@ import base64
 import binascii
 import json
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -17,6 +18,7 @@ from .api import (
     generate_browser_bootstrap_capability,
     serve,
 )
+from .browser_launch import open_console_url
 from .config import AutonomyLevel, BlueFireConfig, RunnerProfile
 from .contracts import ExecutionMode, load_scenario
 from .product_acceptance import AcceptanceFailure, run_release_acceptance, verify_release_result
@@ -80,6 +82,11 @@ def _parser() -> argparse.ArgumentParser:
     ui = commands.add_parser("ui", help="Serve the local experiment console")
     ui.add_argument("--host", default="127.0.0.1")
     ui.add_argument("--port", type=int, default=8765)
+    ui.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Print the authenticated console URL without opening a browser",
+    )
 
     receiver = commands.add_parser(
         "receiver", help="Receive bounded artifacts on a literal loopback socket"
@@ -484,6 +491,30 @@ def _json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
 
 
+def _browser_open_failed() -> None:
+    print(
+        "The browser could not be opened automatically. "
+        "Open the console URL printed above in your browser; "
+        "keep this command running. No second service is needed.",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _open_console_browser(launch_url: str, stopped: threading.Event) -> None:
+    # The listener is already bound. Browser startup must not block its HTTP loop
+    # or service cleanup, and a queued launch must not reopen a stopped session.
+    if stopped.is_set():
+        return
+    try:
+        opened = open_console_url(launch_url)
+    except Exception:
+        # Browser errors may embed the one-use URL or platform-local paths.
+        opened = False
+    if not opened and not stopped.is_set():
+        _browser_open_failed()
+
+
 def _execute(
     args: argparse.Namespace,
     *,
@@ -544,6 +575,7 @@ def _execute(
         return service.run(payload)
     if args.command == "ui":
         browser_capability = generate_browser_bootstrap_capability()
+        launch_stopped = threading.Event()
 
         def announce_ready(server: Any) -> None:
             address = server.server_address
@@ -556,14 +588,27 @@ def _execute(
             )
             print(f"BlueFire local console: {launch_url}", file=sys.stderr)
             sys.stderr.flush()
+            if not args.no_browser:
+                try:
+                    threading.Thread(
+                        target=_open_console_browser,
+                        args=(launch_url, launch_stopped),
+                        name="bluefire-browser-launch",
+                        daemon=True,
+                    ).start()
+                except (OSError, RuntimeError):
+                    _browser_open_failed()
 
-        serve(
-            service,
-            host=args.host,
-            port=args.port,
-            browser_bootstrap_capability=browser_capability,
-            on_ready=announce_ready,
-        )
+        try:
+            serve(
+                service,
+                host=args.host,
+                port=args.port,
+                browser_bootstrap_capability=browser_capability,
+                on_ready=announce_ready,
+            )
+        finally:
+            launch_stopped.set()
         return None
     if args.command == "runner":
         if args.runner_command == "status":

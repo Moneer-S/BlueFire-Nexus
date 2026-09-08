@@ -293,7 +293,7 @@ def test_final_exec_ui_protects_before_channel_and_waits_for_admission_before_cl
         assert endpoint.closed
         assert kwargs["ai_provider_access"].enrollment.digest == binding.digest
         assert kwargs["config"].ai.provider() == binding.config
-        assert argv[-5:] == ["ui", "--host", "127.0.0.1", "--port", "8767"]
+        assert argv[-6:] == ["ui", "--no-browser", "--host", "127.0.0.1", "--port", "8767"]
         return 0
 
     monkeypatch.setattr("bluefire.cli.main", cli)

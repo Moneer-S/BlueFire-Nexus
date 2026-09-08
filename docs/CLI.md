@@ -446,7 +446,27 @@ bluefire --runs-dir .bluefire-runs research intake-t1082 --destination-id operat
 bluefire ui --host 127.0.0.1 --port 8765
 ```
 
-`plugins inventory` reports the static loader boundary and does not read saved/active manifests; use `resources list plugin` or the local API/UI for managed plugin metadata. Research status lists metadata-only behaviors; it does not download or execute public research. The reviewed intake command uses only the already-vendored pinned T1082 asset; it performs no network access. The UI and API bind loopback only. `bluefire ui` prints its one-use capability URL only after a successful bind; open that exact URL, do not log or share it, and relaunch if the local browser session is absent or expired.
+`plugins inventory` reports the static loader boundary and does not read saved/active manifests; use `resources list plugin` or the local API/UI for managed plugin metadata. Research status lists metadata-only behaviors; it does not download or execute public research. The reviewed intake command uses only the already-vendored pinned T1082 asset; it performs no network access. The UI and API bind loopback only.
+
+`bluefire ui` opens your default browser once, after successfully binding the
+listener. It also prints the exact one-use capability URL, including the assigned
+port when using `--port 0`. Do not log or share that URL. Use `--no-browser` for a
+headless session, a manually chosen browser, or a diagnostic that must consume the
+one-use capability itself. Prepared-lab guest launches always use this opt-out;
+their existing operator URL and relay remain unchanged.
+
+If automatic opening fails, keep the command running and open the printed URL.
+Browser startup does not block the HTTP loop or service cleanup. Successful browser
+handoff is not proof that the page loaded; the same manual URL is available if no
+window appears. No automatic retry, second service, session renewal, or existing
+instance takeover occurs. If a bind or management ownership check refuses launch,
+use the original session instead of starting another instance. An expired session
+requires stopping the original command and explicitly launching a fresh session.
+
+Desktop opening uses the registered URL handler on Windows and the fixed system
+opener on macOS/Linux. Opener output is suppressed, and the Unix helper receives
+only desktop-routing environment fields. `BROWSER` commands are not evaluated.
+If the system opener is unavailable, use the printed URL with your chosen browser.
 
 ## JSON request-file rules
 

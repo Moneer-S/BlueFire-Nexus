@@ -674,7 +674,12 @@ def test_cli_ui_delivers_one_capability_only_in_the_launch_url_fragment(
 
     monkeypatch.setattr(cli, "serve", record_serve)
 
-    result = _execute(_parser().parse_args(["ui", "--host", "127.0.0.1", "--port", "0"]))
+    monkeypatch.setattr(
+        cli.threading, "Thread", lambda **_kwargs: pytest.fail("browser opening was disabled")
+    )
+    result = _execute(
+        _parser().parse_args(["ui", "--no-browser", "--host", "127.0.0.1", "--port", "0"])
+    )
 
     assert result is None
     assert serve_calls == [
@@ -706,6 +711,9 @@ def test_cli_ui_bind_failure_never_announces_the_capability(
     capability = "B" * 64
     monkeypatch.setattr(cli, "_service", lambda _args: service)
     monkeypatch.setattr(cli, "generate_browser_bootstrap_capability", lambda: capability)
+    monkeypatch.setattr(
+        cli.threading, "Thread", lambda **_kwargs: pytest.fail("listener is not ready")
+    )
 
     def fail_before_ready(_target: Any, **_kwargs: Any) -> None:
         raise OSError("listener unavailable")
@@ -719,6 +727,131 @@ def test_cli_ui_bind_failure_never_announces_the_capability(
     assert output.out == ""
     assert output.err == ""
     assert capability not in output.out + output.err
+
+
+def test_cli_ui_opens_only_the_bound_authenticated_url_once(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    service = _RecordingService()
+    events: list[str] = []
+    capability = "C" * 64
+    opened: list[str] = []
+    monkeypatch.setattr(cli, "_service", lambda _args: service)
+    monkeypatch.setattr(cli, "generate_browser_bootstrap_capability", lambda: capability)
+
+    def open_browser(url: str) -> bool:
+        assert events == ["bound"]
+        opened.append(url)
+        return True
+
+    class InlineThread:
+        def __init__(self, **kwargs: Any) -> None:
+            assert kwargs["daemon"] is True
+            self.kwargs = kwargs
+
+        def start(self) -> None:
+            self.kwargs["target"](*self.kwargs["args"])
+
+    def serve_bound(_service: Any, **kwargs: Any) -> None:
+        events.append("bound")
+        kwargs["on_ready"](type("BoundServer", (), {"server_address": ("127.0.0.1", 49322)})())
+        events.append("serving")
+
+    monkeypatch.setattr(cli, "open_console_url", open_browser)
+    monkeypatch.setattr(cli.threading, "Thread", InlineThread)
+    monkeypatch.setattr(cli, "serve", serve_bound)
+    _execute(_parser().parse_args(["ui", "--port", "0"]))
+    url = f"http://127.0.0.1:49322/#bluefire-session={capability}"
+    assert opened == [url]
+    assert events == ["bound", "serving"]
+    assert capsys.readouterr().err == f"BlueFire local console: {url}\n"
+
+
+@pytest.mark.parametrize("throws", [False, True])
+def test_cli_browser_failure_is_sanitized_and_preserves_manual_retry(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], throws: bool
+) -> None:
+    # Synthetic bootstrap capability; no listener or browser is started.
+    bootstrap_url = "http://127.0.0.1:49322/#bluefire-session=" + "D" * 64
+
+    def fail_browser(_url: str, **_kwargs: Any) -> bool:
+        if throws:
+            raise RuntimeError(bootstrap_url + " private platform path")
+        return False
+
+    monkeypatch.setattr(cli, "open_console_url", fail_browser)
+    cli._open_console_browser(bootstrap_url, cli.threading.Event())
+    message = capsys.readouterr().err
+    assert "console URL printed above" in message
+    assert "keep this command running" in message
+    assert "No second service" in message
+    assert bootstrap_url not in message
+    assert "private platform path" not in message
+
+
+def test_cli_queued_browser_launch_is_cancelled_after_service_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pending: list[dict[str, Any]] = []
+    monkeypatch.setattr(cli, "_service", lambda _args: _RecordingService())
+    monkeypatch.setattr(
+        cli, "open_console_url", lambda *_args, **_kwargs: pytest.fail("session has stopped")
+    )
+
+    class QueuedThread:
+        def __init__(self, **kwargs: Any) -> None:
+            pending.append(kwargs)
+
+        def start(self) -> None:
+            pass
+
+    def serve_bound(_service: Any, **kwargs: Any) -> None:
+        kwargs["on_ready"](type("BoundServer", (), {"server_address": ("127.0.0.1", 49323)})())
+
+    monkeypatch.setattr(cli.threading, "Thread", QueuedThread)
+    monkeypatch.setattr(cli, "serve", serve_bound)
+    _execute(_parser().parse_args(["ui"]))
+    assert len(pending) == 1
+    pending[0]["target"](*pending[0]["args"])
+
+
+def test_cli_blocked_browser_does_not_block_serving_or_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered, release = cli.threading.Event(), cli.threading.Event()
+    threads: list[Any] = []
+    real_thread = cli.threading.Thread
+    events: list[str] = []
+    monkeypatch.setattr(cli, "_service", lambda _args: _RecordingService())
+
+    def blocked_browser(_url: str, **_kwargs: Any) -> bool:
+        entered.set()
+        assert release.wait(5)
+        return True
+
+    def record_thread(**kwargs: Any) -> Any:
+        thread = real_thread(**kwargs)
+        threads.append(thread)
+        return thread
+
+    def serve_bound(_service: Any, **kwargs: Any) -> None:
+        kwargs["on_ready"](type("BoundServer", (), {"server_address": ("127.0.0.1", 49324)})())
+        assert entered.wait(2)
+        events.extend(["serving", "closed"])
+
+    monkeypatch.setattr(cli, "open_console_url", blocked_browser)
+    monkeypatch.setattr(cli.threading, "Thread", record_thread)
+    monkeypatch.setattr(cli, "serve", serve_bound)
+    try:
+        _execute(_parser().parse_args(["ui"]))
+        assert events == ["serving", "closed"]
+        assert threads[0].is_alive()
+        assert threads[0].daemon
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(2)
+            assert not thread.is_alive()
 
 
 def test_cli_detection_commands_cover_the_full_immutable_lifecycle(

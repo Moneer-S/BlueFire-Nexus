@@ -166,6 +166,7 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/prepared_lab_broker.py",
         "bluefire/prepared_lab_ui_bootstrap.py",
         "bluefire/prepared_lab_product.py",
+        "bluefire/browser_launch.py",
         "runner/src/cancellation_witness.rs",
         "runner/src/process.rs",
     )
@@ -396,6 +397,12 @@ def _structural_report() -> dict[str, Any]:
                             "process_calls": ["subprocess.Popen.__init__"],
                             "unexpected_findings": [],
                         },
+                        "browser_launch.py": {
+                            "passed": True,
+                            "shell_imports": 1,
+                            "process_calls": ["os.startfile", "subprocess.Popen"],
+                            "unexpected_findings": [],
+                        },
                         "prepared_lab_product.py": {
                             "passed": True,
                             "shell_imports": 0,
@@ -486,6 +493,7 @@ def test_live_source_audit_round_trips_locked_structural_validator() -> None:
 @pytest.mark.parametrize(
     "relative",
     [
+        "bluefire/browser_launch.py",
         "bluefire/ai_receiver_inspection.py",
         "bluefire/assistance_receiver_context.py",
         "bluefire/assistance_receiver.py",

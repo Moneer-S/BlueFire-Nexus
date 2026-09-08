@@ -469,7 +469,7 @@ Use the returned `next_sequence` as the next request's `after_sequence`. When `i
 
 ## Authenticated curl diagnostics
 
-The supported operator surfaces are the CLI and the packaged browser. A bare curl request is intentionally refused. For a local diagnostic only, launch `bluefire ui`, take the 64-character value after `#bluefire-session=` from its exact one-use URL, and exchange it once into a private cookie jar. Do not put the capability in a URL, request body, shell history, log, or shared file.
+The supported operator surfaces are the CLI and the packaged browser. A bare curl request is intentionally refused. For a local diagnostic only, launch `bluefire ui --no-browser`, take the 64-character value after `#bluefire-session=` from its exact one-use URL, and exchange it once into a private cookie jar. Do not put the capability in a URL, request body, shell history, log, or shared file.
 
 ```bash
 umask 077

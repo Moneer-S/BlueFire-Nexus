@@ -168,7 +168,9 @@ def inner(port: int, *bootstrap: str) -> None:
             server = start_ui(port, int(bootstrap[0]), bootstrap[1])
         else:
             server = subprocess.Popen(  # nosec B603
-                PRODUCT + ["ui", "--host", "127.0.0.1", "--port", str(port)], env=ENV, cwd=HOME
+                PRODUCT + ["ui", "--no-browser", "--host", "127.0.0.1", "--port", str(port)],
+                env=ENV,
+                cwd=HOME,
             )
         print(
             "Isolated lab ready. Enter BlueFire arguments (for example: runner status --profile sandbox-execute.v1). Enter quit to stop the session.",

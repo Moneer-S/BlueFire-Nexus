@@ -27,9 +27,8 @@ execution authority or the content of a previously cached browser tab. It report
 no filesystem paths, environment, credentials, process identities or user data.
 Reads are bounded to regular non-symlink resources and fixed names.
 
-The existing normal `bluefire ui` launcher binds the loopback listener before
-printing its private one-use bootstrap URL. Its current path does not automatically
-open a browser. Binding/management ownership failure does not create a replacement
-service; the existing owner remains authoritative. Browser auto-open and an
-operator-friendly existing-instance handoff are separate launcher work, not
-implemented by this diagnostics change.
+The normal `bluefire ui` launcher binds the loopback listener before printing its
+private one-use bootstrap URL and attempting to open the browser. Use
+`bluefire ui --no-browser` to open that URL manually. Binding/management ownership
+failure does not open a browser or create a replacement service; the existing
+owner remains authoritative. See the launch guidance in [CLI.md](CLI.md).

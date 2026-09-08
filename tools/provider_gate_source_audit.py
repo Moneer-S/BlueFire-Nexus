@@ -1458,6 +1458,7 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
     }
     texts = {f"bluefire/{name}": path.read_text(encoding="utf-8") for name, path in paths.items()}
     expected_calls = {
+        "browser_launch.py": ["os.startfile", "subprocess.Popen"],
         "runner_client.py": ["subprocess.Popen", "subprocess.Popen"],
         "runner_bootstrap.py": [],
         "runner_darwin_containment.py": [],
@@ -1468,6 +1469,7 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
         "receiver_session_worker.py": [],
     }
     expected_imports = {
+        "browser_launch.py": 1,
         "runner_client.py": 1,
         "runner_bootstrap.py": 0,
         "runner_darwin_containment.py": 1,

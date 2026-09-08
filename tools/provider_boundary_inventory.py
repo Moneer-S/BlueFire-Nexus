@@ -25,12 +25,13 @@ _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
     "bluefire/ai_transport.py": "sha256:b806740e5ab11b6d10d771b57a08230d666483115782b30ced443f5cec0be507",
     "bluefire/_ai_transport_worker.py": "sha256:812f45cf12dfba5f4d125e1b0a629a0ebace4c6c4b24dedee937ae466dd26d7a",
     "bluefire/prepared_lab.py": "sha256:1da8bc6a72ed2681d00045499619266a13e44436e8a886f60b4314151ebb09dc",
-    "bluefire/prepared_lab_guest.py": "sha256:9e36e2f3e967445f078ee3c67be39fd637c624e340a87a5ac5423ddd11eba33c",
+    "bluefire/prepared_lab_guest.py": "sha256:db87ca32a31a34d12761a033369991774c90c044c268e1ec5e85aa3b6c67318f",
     "bluefire/prepared_lab_runtime.py": "sha256:c2aea180c4a89c2a4234eda9bcb350e53e4e6d109ac23479437c28d6b9bc7a66",
     "bluefire/prepared_lab_install.py": "sha256:aa660ad7e03b63c9124bce32436dd5e550271f7f7ae412f909aad2adbf976028",
     "bluefire/prepared_lab_broker.py": "sha256:970191f6782403857cc4d3860547cc1e1c7c1de10a15cfd9b1be653ab8c7087b",
     "bluefire/prepared_lab_ui_bootstrap.py": "sha256:7de08b08b2dbf7120e679f5cc1c81446a125dcddc205b69f244b0c6d4ed50b4c",
-    "bluefire/prepared_lab_product.py": "sha256:10a8f7516972ce90cab96afa75addac69aabe8dacbf81af77d380a3656591a75",
+    "bluefire/prepared_lab_product.py": "sha256:3a5e38cfa1eb8c7b23c88fe2d8ab89f98cbeb00f27357c7af21c61fa95df7ea9",
+    "bluefire/browser_launch.py": "sha256:6e076db5dfba032cbec26da70a71e5490846eae80f4f31f3d17c91ef64d7778f",
 }
 _REVIEWED_RUST_PROCESS_BOUNDARY_SOURCES = (
     "runner/src/cancellation_witness.rs",

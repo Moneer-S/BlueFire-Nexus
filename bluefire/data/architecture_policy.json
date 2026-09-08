@@ -256,6 +256,7 @@
         "bluefire.api_context",
         "bluefire.api_routes",
         "bluefire.cli",
+        "bluefire.browser_launch",
         "bluefire.cloud_identity_pack"
       ]
     },

@@ -186,6 +186,7 @@ TRUSTED_PROCESS_BOUNDARY_PATHS = (
     "bluefire/prepared_lab_broker.py",
     "bluefire/prepared_lab_ui_bootstrap.py",
     "bluefire/prepared_lab_product.py",
+    "bluefire/browser_launch.py",
     "runner/src/cancellation_witness.rs",
     "runner/src/process.rs",
 )

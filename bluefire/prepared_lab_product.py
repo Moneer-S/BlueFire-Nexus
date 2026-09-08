@@ -79,6 +79,7 @@ def run(port: int, bootstrap_fd: int, launch_id: str) -> int:
                 "--runs-dir",
                 str(HOME / "experiments"),
                 "ui",
+                "--no-browser",
                 "--host",
                 "127.0.0.1",
                 "--port",

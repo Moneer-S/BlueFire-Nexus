@@ -152,6 +152,7 @@ _SOURCE_AUDIT_PATHS = (
     "bluefire/prepared_lab_broker.py",
     "bluefire/prepared_lab_ui_bootstrap.py",
     "bluefire/prepared_lab_product.py",
+    "bluefire/browser_launch.py",
     "runner/src/cancellation_witness.rs",
     "runner/src/process.rs",
 )
@@ -240,6 +241,12 @@ _PYTHON_BOUNDARIES = {
         "passed": True,
         "shell_imports": 1,
         "process_calls": ["subprocess.Popen.__init__"],
+        "unexpected_findings": [],
+    },
+    "browser_launch.py": {
+        "passed": True,
+        "shell_imports": 1,
+        "process_calls": ["os.startfile", "subprocess.Popen"],
         "unexpected_findings": [],
     },
     "prepared_lab_product.py": {
