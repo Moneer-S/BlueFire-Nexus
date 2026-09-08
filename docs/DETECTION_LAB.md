@@ -18,6 +18,12 @@ Detection assistance currently supports reviewed source revision and evaluation 
 
 The API uses the same services: `POST /api/v1/detections/{candidate_id}/ai-revision-jobs` accepts a UUID `submission_id`, `run_id`, `parent_resource_digest`, `question`, operator-assigned `case_role`, `provider_id`, and optional `autonomy: "assist"`. Read its durable job through `GET /api/v1/jobs/{job_id}`. Submit review through `POST /api/v1/jobs/{job_id}/detection-revision-decisions` with `proposal_digest`, `parent_resource_digest`, `decision` (`accept` or `reject`), and `reviewed_by`. Repeated matching submissions and decisions recover the same operation; they do not allocate another revision. A conflicting decision is refused.
 
+### Unsent revision requests
+
+The revision panel keeps an unsent question and development-case choice in this browser tab for the exact saved rule revision and source run. Returning to that selection restores those inputs; a different revision or run has its own draft. Reopening the page keeps AI Off and never submits the draft. Model/provider selection and reviewer identity are not restored from this draft.
+
+**Discard request draft** asks before clearing these unsent inputs. It does not clear a submitted request, job, decision or saved rule. If browser storage fails, the panel reports that limitation and keeps edits in the open session. Copy the question before closing or reloading in that case.
+
 ## Candidate contract
 
 A newly created `bluefire.detection.v2` candidate records (`v1` is accepted only when reading legacy origins):

@@ -21,10 +21,113 @@ function readyJob(saved = receipt()): RunJob {
   return { schema_version: "bluefire.job.v1", job_id: detectionJobId(saved.request.submission_id), kind: "detection.ai.propose", state: "completed", request: { candidate_id: saved.candidateId, submitted_request: saved.request, parent, source_run: source, observed_ids: ["observation-1", "observation-2"], application_submission_id: "11234567-89ab-4def-8123-456789abcdef" }, progress: { proposal } };
 }
 function LocationProbe() { return <><label>Unrelated notes<input /></label><Link to={`/detection-lab?candidate=${resource.id}&candidate_scope=registry&run=${sourceRun.run_id}&ai_job=${readyJob().job_id}`}>Review rule revision</Link><output data-testid="location">{useLocation().search}</output><Link to="/detection-lab?ai_job=job-other">Open other work</Link></>; }
-function mount(options: { jobId?: string; manualEdits?: boolean; selected?: DetectionResource; client?: QueryClient } = {}) {
+function mount(options: { jobId?: string; manualEdits?: boolean; selected?: DetectionResource; source?: RunRecord; client?: QueryClient } = {}) {
   const client = options.client ?? new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/detection-lab${options.jobId ? `?ai_job=${options.jobId}` : ""}`]}><LocationProbe /><DetectionAIRevision resource={options.selected ?? resource} sourceRun={sourceRun} providers={[provider]} defaultProvider={provider.provider_id} manualEdits={options.manualEdits ?? false} /></MemoryRouter></QueryClientProvider>);
+  const view = (selected = options.selected ?? resource, source = options.source ?? sourceRun) => <QueryClientProvider client={client}><MemoryRouter initialEntries={[`/detection-lab${options.jobId ? `?ai_job=${options.jobId}` : ""}`]}><LocationProbe /><DetectionAIRevision resource={selected} sourceRun={source} providers={[provider]} defaultProvider={provider.provider_id} manualEdits={options.manualEdits ?? false} /></MemoryRouter></QueryClientProvider>;
+  const rendered = render(view());
+  return { ...rendered, select: (selected: DetectionResource, source: RunRecord) => rendered.rerender(view(selected, source)) };
 }
+
+it("restores an unsent question and case choice after remount without restoring AI authority", async () => {
+  const user = userEvent.setup();
+  const send = vi.spyOn(api, "suggestDetectionRevision");
+  const first = mount();
+  await user.click(screen.getByRole("button", { name: "Open assistance" }));
+  await user.type(screen.getByLabelText(/What should this rule detect better/), "Explain the benign false positive");
+  await user.selectOptions(screen.getByLabelText("Development case context"), "benign");
+  await user.selectOptions(screen.getByLabelText("Detection AI mode"), "assist");
+  first.unmount();
+  mount();
+  await user.click(screen.getByRole("button", { name: "Open assistance" }));
+  expect(screen.getByLabelText(/What should this rule detect better/)).toHaveValue("Explain the benign false positive");
+  expect(screen.getByLabelText("Development case context")).toHaveValue("benign");
+  expect(screen.getByLabelText("Detection AI mode")).toHaveValue("off");
+  expect(screen.getByRole("button", { name: "Propose rule revision" })).toBeDisabled();
+  expect(send).not.toHaveBeenCalled();
+  expect(readDetectionAIReceipt()).toBeUndefined();
+});
+
+it("keeps unsent inputs separate when the selected source or saved revision changes in place", async () => {
+  const user = userEvent.setup();
+  const view = mount();
+  await user.click(screen.getByRole("button", { name: "Open assistance" }));
+  await user.type(screen.getByLabelText(/What should this rule detect better/), "Original evidence question");
+  await user.selectOptions(screen.getByLabelText("Development case context"), "heldout");
+  const otherRun = { ...sourceRun, run_id: "run-other-observed" };
+  view.select(resource, otherRun);
+  expect(screen.getByLabelText(/What should this rule detect better/)).toHaveValue("");
+  expect(screen.getByLabelText("Development case context")).toHaveValue("attack");
+  await user.type(screen.getByLabelText(/What should this rule detect better/), "Other evidence question");
+  view.select({ ...resource, digest: `sha256:${"c".repeat(64)}` }, sourceRun);
+  expect(screen.getByLabelText(/What should this rule detect better/)).toHaveValue("");
+  view.select(resource, sourceRun);
+  expect(screen.getByLabelText(/What should this rule detect better/)).toHaveValue("Original evidence question");
+  expect(screen.getByLabelText("Development case context")).toHaveValue("heldout");
+  view.select(resource, otherRun);
+  expect(screen.getByLabelText(/What should this rule detect better/)).toHaveValue("Other evidence question");
+});
+
+it("requires explicit discard and clears only this unsent draft without submitting work", async () => {
+  const user = userEvent.setup();
+  const send = vi.spyOn(api, "suggestDetectionRevision");
+  const first = mount();
+  await user.click(screen.getByRole("button", { name: "Open assistance" }));
+  await user.type(screen.getByLabelText(/What should this rule detect better/), "Keep this until discarded");
+  await user.selectOptions(screen.getByLabelText("Development case context"), "benign");
+  await user.click(screen.getByRole("button", { name: "Discard request draft" }));
+  expect(screen.getByRole("dialog", { name: "Discard this unsent request?" })).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Keep editing" }));
+  expect(screen.getByLabelText(/What should this rule detect better/)).toHaveValue("Keep this until discarded");
+  await user.click(screen.getByRole("button", { name: "Discard request draft" }));
+  await user.click(screen.getByRole("button", { name: "Discard request" }));
+  expect(screen.getByLabelText(/What should this rule detect better/)).toHaveValue("");
+  expect(screen.getByLabelText("Development case context")).toHaveValue("attack");
+  first.unmount();
+  mount();
+  await user.click(screen.getByRole("button", { name: "Open assistance" }));
+  expect(screen.getByLabelText(/What should this rule detect better/)).toHaveValue("");
+  expect(send).not.toHaveBeenCalled();
+});
+
+it("dismisses an old discard review when the selected source changes and retains both drafts", async () => {
+  const user = userEvent.setup();
+  const view = mount();
+  const otherRun = { ...sourceRun, run_id: "run-other-discard" };
+  await user.click(screen.getByRole("button", { name: "Open assistance" }));
+  await user.type(screen.getByLabelText(/What should this rule detect better/), "First source question");
+  view.select(resource, otherRun);
+  await user.type(screen.getByLabelText(/What should this rule detect better/), "Second source question");
+  view.select(resource, sourceRun);
+  await user.click(screen.getByRole("button", { name: "Discard request draft" }));
+  expect(screen.getByRole("dialog")).toBeVisible();
+  view.select(resource, otherRun);
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.getByLabelText(/What should this rule detect better/)).toHaveValue("Second source question");
+  view.select(resource, sourceRun);
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.getByLabelText(/What should this rule detect better/)).toHaveValue("First source question");
+});
+
+it("reports storage failure and keeps unsent edits through remount until explicit discard", async () => {
+  const user = userEvent.setup();
+  const send = vi.spyOn(api, "suggestDetectionRevision");
+  const uniqueSource = { ...sourceRun, run_id: "run-storage-failure-draft" };
+  const storage = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("full"); });
+  const first = mount({ source: uniqueSource });
+  await user.click(screen.getByRole("button", { name: "Open assistance" }));
+  await user.type(screen.getByLabelText(/What should this rule detect better/), "Keep my unsent question");
+  expect(screen.getByRole("alert")).toHaveTextContent("could not be kept in browser storage");
+  first.unmount();
+  storage.mockRestore();
+  mount({ source: uniqueSource });
+  await user.click(screen.getByRole("button", { name: "Open assistance" }));
+  expect(screen.getByLabelText(/What should this rule detect better/)).toHaveValue("Keep my unsent question");
+  expect(screen.getByLabelText("Detection AI mode")).toHaveValue("off");
+  expect(send).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Discard request draft" }));
+  await user.click(screen.getByRole("button", { name: "Discard request" }));
+  expect(screen.getByLabelText(/What should this rule detect better/)).toHaveValue("");
+});
 
 it("keeps Off silent and sends one bound request only after explicit Assist selection", async () => {
   const user = userEvent.setup();

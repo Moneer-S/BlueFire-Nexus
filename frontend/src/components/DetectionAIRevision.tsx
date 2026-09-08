@@ -1,3 +1,4 @@
+import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
@@ -5,6 +6,7 @@ import { api } from "../lib/api";
 import { detectionApplication, detectionJobActive, detectionJobId, detectionProposal, matchesDetectionAIReceipt, matchesDetectionRetry, proposalIsCurrent, readDetectionAIReceipt, settleDetectionAIReceipt, storeDetectionAIReceipt, type DetectionAIDecision, type DetectionAIReceipt } from "../lib/detection-ai";
 import { sourceObservedRecords } from "../lib/run-handoffs";
 import { usePublishAssistanceSelection } from "../state/AssistanceContext";
+import { useDetectionDraft } from "../state/useDetectionDraft";
 import type { CatalogResponse, DetectionCaseRole, DetectionResource, RunJob, RunRecord } from "../types";
 import { Button, Callout, ErrorState, Field, LoadingState, sentence } from "./Primitives";
 
@@ -29,8 +31,12 @@ export function DetectionAIRevision({ resource, sourceRun, providers, defaultPro
   const assistanceHeading = useRef<HTMLHeadingElement>(null);
   const [autonomy, setAutonomy] = useState("off");
   const [provider, setProvider] = useState(defaultProvider ?? "");
-  const [question, setQuestion] = useState("");
-  const [role, setRole] = useState<DetectionCaseRole>("attack");
+  const draftBinding = JSON.stringify(["ai-revision", resource?.id ?? "", resource?.digest ?? "", sourceRun?.run_id ?? ""]);
+  const draft = useDetectionDraft(draftBinding, { question: "", role: "attack" as DetectionCaseRole });
+  const { question, role } = draft.value;
+  const draftWarning = draft.warning.replace("export them", "copy the question and case choice").replace("saved definition", "empty request");
+  const [discardFor, setDiscardFor] = useState<string>();
+  useEffect(() => { setDiscardFor(undefined); }, [draftBinding]);
   const [reviewer, setReviewer] = useState("");
   const [error, setError] = useState<Error>();
   const [applicationOverride, setApplicationOverride] = useState<{ proposalId: string; jobId: string }>();
@@ -114,7 +120,7 @@ export function DetectionAIRevision({ resource, sourceRun, providers, defaultPro
   const retryApplication = useMutation({ mutationFn: async ({ source }: { source: RunJob; proposalId: string }) => { const response = await api.retryJob(source.job_id); if (!matchesDetectionRetry(response, source)) throw new Error("The save retry does not match the accepted proposal."); return response; }, onSuccess: (response, submitted) => { bindJob(response.job); setApplicationOverride({ proposalId: submitted.proposalId, jobId: response.job.job_id }); } });
   const start = () => {
     setError(undefined);
-    if (!resource || !sourceRun || autonomy !== "assist" || manualEdits || receipt) return;
+    if (!resource || !sourceRun || autonomy !== "assist" || manualEdits || receipt || !question.trim() || question.length > 1000 || /[\r\n]/.test(question)) return;
     const saved: DetectionAIReceipt = { candidateId: resource.id, request: { submission_id: crypto.randomUUID(), run_id: sourceRun.run_id, parent_resource_digest: resource.digest,
       question: question.trim(), case_role: role, provider_id: provider, autonomy: "assist" } };
     if (!storeDetectionAIReceipt(saved)) { setError(new Error("The original request could not be saved for recovery. Check browser storage before sending a model request.")); return; }
@@ -127,7 +133,7 @@ export function DetectionAIRevision({ resource, sourceRun, providers, defaultPro
     if (!proposal || !proposalJob) return;
     review.mutate({ id: proposalJob.job_id, body: { proposal_digest: proposal.proposal_digest, parent_resource_digest: proposal.parent.resource_digest, decision: choice, reviewed_by: reviewer.trim() } });
   };
-  const canStart = resource && ["sqlite", "sigma"].includes(resource.document.target_language ?? "") && resource.document.rule_source && sourceRun?.finalized_at && sourceCount > 0 && !sourceRun.is_demo && !manualEdits && autonomy === "assist" && models.some((item) => item.provider_id === provider) && question.trim() && !/[\r\n]/.test(question) && !receipt;
+  const canStart = resource && ["sqlite", "sigma"].includes(resource.document.target_language ?? "") && resource.document.rule_source && sourceRun?.finalized_at && sourceCount > 0 && !sourceRun.is_demo && !manualEdits && autonomy === "assist" && models.some((item) => item.provider_id === provider) && question.trim() && question.length <= 1000 && !/[\r\n]/.test(question) && !receipt;
   const boundLink = proposal ? `/detection-lab?candidate=${encodeURIComponent(proposal.parent.candidate_id)}&candidate_scope=registry&run=${encodeURIComponent(proposal.source_run.run_id)}&ai_job=${encodeURIComponent(jobId)}` : undefined;
   return <section className={`detection-assistance${expanded ? " is-open" : ""}`} aria-label="Detection assistance">
     <div className="detection-assistance-heading"><div><h3 ref={assistanceHeading} tabIndex={-1}>Improve this rule with AI</h3><p>Propose a change from the selected evidence, review it here, then test the saved revision.</p></div><Button aria-expanded={expanded} aria-controls="detection-assistance-content" onClick={() => { focusJob.current = expanded ? undefined : jobId || undefined; setExpanded(!expanded); }}>{expanded ? "Hide assistance" : jobId ? "Resume AI work" : "Open assistance"}</Button></div>
@@ -135,8 +141,17 @@ export function DetectionAIRevision({ resource, sourceRun, providers, defaultPro
       {receipt && jobId !== detectionJobId(receipt.request.submission_id) ? <Callout title="Another request still needs confirmation">Your earlier request is retained. Resolve it before starting another model request.<Button onClick={() => viewJob(detectionJobId(receipt.request.submission_id))}>Resume pending request</Button></Callout> : null}
       {!jobId ? <>
         <div className="detection-ai-setup"><Field label="Detection AI mode"><select value={autonomy} onChange={(event) => setAutonomy(event.target.value)}><option value="off">Off · no model requests</option><option value="assist">Assist · review every change</option></select></Field><Field label="Detection model provider"><select value={provider} onChange={(event) => setProvider(event.target.value)}><option value="">Choose configured provider</option>{models.map((item) => <option value={item.provider_id} key={item.provider_id}>{item.provider_id} · {item.model}</option>)}</select></Field></div>
-        <Field label="What should this rule detect better?" hint="Use the selected run as a development case. Independent benign and withheld cases still need separate evaluation."><input maxLength={1000} value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Explain the missed behavior or false positive to investigate" /></Field>
-        <Field label="Development case context"><select value={role} onChange={(event) => setRole(event.target.value as DetectionCaseRole)}><option value="attack">Attack case</option><option value="benign">Benign activity</option><option value="replay">Replay</option><option value="heldout">Previously withheld case · becomes development input</option></select></Field>
+        <Field label="What should this rule detect better?" hint="Use the selected run as a development case. Independent benign and withheld cases still need separate evaluation."><input maxLength={1000} value={question} onChange={(event) => draft.update("question", event.target.value)} placeholder="Explain the missed behavior or false positive to investigate" /></Field>
+        <Field label="Development case context"><select value={role} onChange={(event) => draft.update("role", event.target.value as DetectionCaseRole)}><option value="attack">Attack case</option><option value="benign">Benign activity</option><option value="replay">Replay</option><option value="heldout">Previously withheld case · becomes development input</option></select></Field>
+        {draftWarning ? <p role="alert">{draftWarning}</p> : draft.retained && (question || role !== "attack") ? <p role="status">Unsent request kept in this browser tab for this rule revision and source run.</p> : null}
+        {question.length > 1000 ? <p role="alert">Shorten the request to 1,000 characters before sending.</p> : null}
+        {question || role !== "attack" || draft.warning ? <Dialog.Root open={discardFor === draftBinding} onOpenChange={(open) => setDiscardFor(open ? draftBinding : undefined)}>
+          <Dialog.Trigger asChild><Button variant="ghost" size="small">Discard request draft</Button></Dialog.Trigger>
+          <Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content">
+            <Dialog.Title>Discard this unsent request?</Dialog.Title><Dialog.Description>Clear the question and development-case choice for this rule revision and source run. Submitted work and saved rules stay intact.</Dialog.Description>
+            <div className="dialog-actions"><Dialog.Close asChild><Button>Keep editing</Button></Dialog.Close><Button variant="danger" onClick={() => { if (discardFor === draftBinding) draft.discard(); setDiscardFor(undefined); }}>Discard request</Button></div>
+          </Dialog.Content></Dialog.Portal>
+        </Dialog.Root> : null}
         {!resource?.document.rule_source || !["sqlite", "sigma"].includes(resource.document.target_language ?? "") ? <p>Save and validate a SQLite or Sigma rule before requesting a revision.</p> : !sourceRun?.finalized_at || !sourceCount ? <p>Select a completed run with independent observations in Source run and evidence above.</p> : <p>{sourceCount} independent observations from the selected run will inform this request. The configured provider controls whether bounded, redacted content or field metadata is included.</p>}
         {manualEdits ? <Callout title="Unsaved manual changes">Save your rule edits first, or restore the saved source before requesting AI changes.</Callout> : null}
         {!models.length ? <p><Link to="/ai-planner">Configure a model provider</Link> to use detection assistance.</p> : null}
