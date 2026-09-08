@@ -21,6 +21,9 @@ class PlatformService(Protocol):
     service so browser, CLI, and future adapters share identical semantics.
     """
 
+    def build_info(self) -> JsonResult:
+        """Return recorded artifact identity and current packaged asset digests."""
+
     def catalog(self) -> JsonResult:
         """Return the neutral behavior catalog and runner-profile metadata."""
 

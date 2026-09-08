@@ -371,6 +371,7 @@
         "bluefire.secret_store",
         "bluefire.util",
         "bluefire.version",
+        "bluefire.build_info",
         "bluefire.windows_owner_acl"
       ]
     },

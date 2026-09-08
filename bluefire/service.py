@@ -410,6 +410,11 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             raise ProductStoreError("run action-package catalog authority is invalid")
         return dict(authority) if isinstance(authority, Mapping) else None
 
+    def build_info(self) -> Mapping[str, Any]:
+        from .build_info import build_info
+
+        return build_info()
+
     def catalog(self) -> Mapping[str, Any]:
         with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
             snapshot = self._action_catalog_boundary()

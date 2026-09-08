@@ -12,12 +12,14 @@ import hashlib
 import json
 import platform
 import re
+import stat
 import sys
 from pathlib import Path
 from typing import Any
 
 from setuptools import setup
 from setuptools.command.bdist_wheel import bdist_wheel
+from setuptools.command.build_py import build_py
 
 _ROOT = Path(__file__).resolve().parent
 _NATIVE = _ROOT / "bluefire" / "native"
@@ -208,4 +210,79 @@ class PlatformNativeWheel(bdist_wheel):
         return "py3", "none", platform_tag
 
 
-setup(cmdclass={"bdist_wheel": PlatformNativeWheel})
+def _write_build_identity(build_root: Path, source_root: Path, version: str) -> None:
+    """Record archive provenance and the assets actually copied into this build."""
+
+    def read(path: Path, maximum: int) -> bytes:
+        details = path.lstat()
+        if (
+            path.is_symlink()
+            or not stat.S_ISREG(details.st_mode)
+            or not 0 < details.st_size <= maximum
+        ):
+            raise RuntimeError("build identity resource is invalid")
+        with path.open("rb") as stream:
+            payload = stream.read(maximum + 1)
+        after = path.lstat()
+        if len(payload) != details.st_size or (
+            details.st_dev,
+            details.st_ino,
+            details.st_size,
+            details.st_mtime_ns,
+        ) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            raise RuntimeError("build identity resource changed")
+        return payload
+
+    def canonical(value: Any) -> bytes:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+            "utf-8"
+        )
+
+    def digest(payload: bytes) -> str:
+        return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+    revision = None
+    try:
+        recorded = read(source_root / "_source_revision.txt", 128).decode("ascii").strip()
+        if re.fullmatch(r"[0-9a-f]{40}", recorded):
+            revision = recorded
+        elif recorded != "$Format:%H$":
+            raise RuntimeError("archive source revision is invalid")
+    except FileNotFoundError:
+        pass
+    ui = build_root / "ui"
+    if ui.is_symlink() or not ui.is_dir():
+        raise RuntimeError("build assets are unavailable")
+    files = []
+    for name in ("app.js", "index.html", "styles.css"):
+        payload = read(ui / name, 8 * 1024 * 1024)
+        files.append({"name": name, "sha256": digest(payload), "size": len(payload)})
+    value = {
+        "schema_version": "bluefire.build-metadata.v1",
+        "version": version,
+        "source_revision": revision,
+        "source_provenance": "git_archive" if revision else "unavailable",
+        "ui_files": files,
+        "ui_digest": digest(canonical(files)),
+    }
+    (build_root / "_build_info.json").write_bytes(canonical(value) + b"\n")
+
+
+class ArtifactIdentityBuild(build_py):
+    """Generate metadata in build output, never alter the source checkout."""
+
+    def run(self) -> None:
+        super().run()
+        _write_build_identity(
+            Path(self.build_lib) / "bluefire",
+            _ROOT / "bluefire",
+            str(self.distribution.metadata.version),
+        )
+
+    def get_outputs(self, include_bytecode: bool = True) -> list[str]:
+        outputs = list(super().get_outputs(include_bytecode=include_bytecode))
+        metadata = str(Path(self.build_lib) / "bluefire" / "_build_info.json")
+        return outputs if metadata in outputs else [*outputs, metadata]
+
+
+setup(cmdclass={"bdist_wheel": PlatformNativeWheel, "build_py": ArtifactIdentityBuild})

@@ -15,6 +15,7 @@ zip-safe = false
 
 [tool.setuptools.package-data]
 bluefire = [
+  "_source_revision.txt",
   "catalog/*.yaml",
   "data/*.yaml",
   "data/*.json",

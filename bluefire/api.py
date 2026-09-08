@@ -388,6 +388,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     lambda: self.platform_server.service.detection_candidate(candidate_id)
                 )
             return
+        if path == f"{API_PREFIX}/build-info":
+            if self._routes._management_query_free():
+                self._dispatch(lambda: self.platform_server.service.build_info())
+            return
         if path == f"{API_PREFIX}/catalog":
             self._dispatch(lambda: self.platform_server.service.catalog())
             return
@@ -1093,6 +1097,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         if path in {
             f"{API_PREFIX}/catalog",
+            f"{API_PREFIX}/build-info",
             f"{API_PREFIX}/scenarios",
         }:
             self._method_not_allowed("GET")

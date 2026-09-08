@@ -22,7 +22,7 @@ def _load_build_hook() -> dict[str, Any]:
             str(REPOSITORY / "setup.py"),
             run_name="bluefire_native_wheel_build_test",
         )
-    assert set(setup.call_args.kwargs["cmdclass"]) == {"bdist_wheel"}
+    assert set(setup.call_args.kwargs["cmdclass"]) == {"bdist_wheel", "build_py"}
     return namespace
 
 

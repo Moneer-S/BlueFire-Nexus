@@ -3,3 +3,4 @@
 LICENSE text eol=lf
 /bluefire/data/mitre_attack_t1082_v19_2.json text eol=lf
 /bluefire/data/mitre_attack_v19_2_LICENSE.txt text eol=lf
+/bluefire/_source_revision.txt export-subst text eol=lf

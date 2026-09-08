@@ -41,6 +41,10 @@ class StubService:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
 
+    def build_info(self):
+        self.calls.append(("build_info",))
+        return {"schema_version": "bluefire.build-info.v1"}
+
     def catalog(self):
         self.calls.append(("catalog",))
         return {"behaviors": [{"id": "observe.host.v1"}], "runner_profiles": []}
@@ -1021,6 +1025,7 @@ def test_get_routes_dispatch_to_the_injected_service() -> None:
     with running_server() as (server, service):
         routes = [
             ("/api/v1/catalog", "catalog"),
+            ("/api/v1/build-info", "build_info"),
             ("/api/v1/scenarios", "scenarios"),
             ("/api/v1/settings", "settings"),
             ("/api/v1/scenario-versions", "scenario_versions"),
@@ -2142,3 +2147,24 @@ def test_invalid_service_json_is_sanitized() -> None:
         "code": "invalid_service_response",
         "message": "The platform service returned an invalid response.",
     }
+
+
+@pytest.mark.parametrize("suffix", ["?source=other", "#fragment"])
+def test_build_info_refuses_query_authority(suffix: str) -> None:
+    with running_server() as (server, service):
+        status, _, payload = request(server, "GET", "/api/v1/build-info" + suffix)
+    assert status == 400
+    assert json_body(payload)["error"]["code"] == "invalid_management_query"
+    assert not service.calls
+
+
+def test_build_info_requires_browser_session_and_has_no_mutation_route() -> None:
+    with running_server(authenticate=False) as (server, service):
+        status, _, _ = request(server, "GET", "/api/v1/build-info")
+        assert status == 401
+        assert not service.calls
+    with running_server() as (server, service):
+        status, headers, _ = request(server, "POST", "/api/v1/build-info", body={})
+        assert status == 405
+        assert headers["Allow"] == "GET"
+        assert not service.calls
