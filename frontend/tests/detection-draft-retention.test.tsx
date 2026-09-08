@@ -13,6 +13,8 @@ const edited = "SELECT fixture_id FROM logs WHERE observation_kind = 'collection
 const id = `detection-${"a".repeat(20)}`;
 const otherId = `detection-${"c".repeat(20)}`;
 const parent: DetectionResource = { kind: "detections", id, status: "parsed", digest: "sha256:parent", created_at: "2026-09-06", updated_at: "2026-09-06", document: { candidate_id: id, revision_root_id: id, revision: 1, title: "Baseline SQL", target_language: "sqlite", state: "parsed", rule_source: source, selection: { observation_kind: "filesystem" }, logsource: { category: "file_event" }, parser_backend: { name: "SQLite bounded executor" } } };
+const manualKey = "bluefire.detection-draft.v1:manual-new-rule";
+const manualDefaults = { title: "Sandbox staging observation", behaviorId: "sandbox.collection.stage.v1", language: "internal" };
 
 function LocationWitness() {
   return <output data-testid="location">{useLocation().search}</output>;
@@ -221,4 +223,176 @@ it("preserves an oversized live edit across candidate switches in the open sessi
   expect(action).not.toHaveBeenCalled();
   await user.click(screen.getByRole("button", { name: "Discard local inputs" }));
   await user.click(screen.getByRole("button", { name: "Discard these inputs" }));
+});
+
+async function openManual(user: ReturnType<typeof userEvent.setup>) {
+  await screen.findByRole("heading", { name: "Baseline SQL" });
+  await user.click(screen.getByText("New rule", { selector: "summary" }));
+  expect(screen.getByRole("textbox", { name: "Title" })).toBeVisible();
+}
+
+it("keeps manual New rule inputs open across navigation, reload and evidence selections without saving", async () => {
+  const { user, remount } = setup();
+  const save = vi.spyOn(api, "upsertDetection");
+  await openManual(user);
+  const title = screen.getByRole("textbox", { name: "Title" });
+  await user.clear(title); await user.paste("Manual collection draft");
+  const behavior = demoCatalog.behaviors.find(item => item.id !== manualDefaults.behaviorId)!;
+  await user.selectOptions(screen.getByRole("combobox", { name: "Registered behavior" }), behavior.id);
+  await user.selectOptions(screen.getByRole("combobox", { name: "Target language" }), "sqlite");
+  await user.click(screen.getByRole("link", { name: "Leave lab" }));
+  await user.click(screen.getByRole("link", { name: "Return to lab" }));
+  expect(await screen.findByRole("textbox", { name: "Title" })).toBeVisible();
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Manual collection draft");
+  remount(`/detection-lab?run=${demoRuns[1]!.run_id}&candidate=${otherId}&candidate_scope=registry`);
+  expect(await screen.findByRole("textbox", { name: "Title" })).toBeVisible();
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Manual collection draft");
+  expect(screen.getByRole("combobox", { name: "Registered behavior" })).toHaveValue(behavior.id);
+  expect(screen.getByRole("combobox", { name: "Target language" })).toHaveValue("sqlite");
+  expect(save).not.toHaveBeenCalled();
+});
+
+it("confirms manual discard, returns focus, and preserves other rule drafts", async () => {
+  const { user, remount } = setup();
+  const save = vi.spyOn(api, "upsertDetection");
+  await edit(user);
+  await openManual(user);
+  await user.type(screen.getByRole("textbox", { name: "Title" }), " edited");
+  await user.click(screen.getByRole("button", { name: "Discard New rule inputs" }));
+  expect(screen.getByRole("dialog", { name: "Discard New rule inputs?" })).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Keep editing" }));
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue(manualDefaults.title + " edited");
+  await user.click(screen.getByRole("button", { name: "Discard New rule inputs" }));
+  await user.click(screen.getByRole("button", { name: "Discard these inputs" }));
+  expect(screen.getByRole("textbox", { name: "Title" })).toBeVisible();
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue(manualDefaults.title);
+  expect(screen.getByRole("button", { name: "Discard New rule inputs" })).toHaveFocus();
+  expect(sessionStorage.getItem(manualKey)).toBeNull();
+  expect(screen.getByRole("textbox", { name: /sqlite source/i })).toHaveValue(edited);
+  remount();
+  expect(await screen.findByRole("textbox", { name: /sqlite source/i })).toHaveValue(edited);
+  expect(save).not.toHaveBeenCalled();
+});
+
+it("keeps a storage-failed manual draft in this session until explicit discard", async () => {
+  const { user, remount } = setup();
+  const save = vi.spyOn(api, "upsertDetection");
+  await openManual(user);
+  const write = Storage.prototype.setItem;
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+    if (key === manualKey) throw new DOMException("Full", "QuotaExceededError");
+    write.call(this, key, value);
+  });
+  await user.type(screen.getByRole("textbox", { name: "Title" }), " only in session");
+  expect(screen.getByRole("alert")).toHaveTextContent("only for this open session");
+  remount();
+  expect(await screen.findByRole("textbox", { name: "Title" })).toBeVisible();
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue(manualDefaults.title + " only in session");
+  await user.click(screen.getByRole("button", { name: "Discard New rule inputs" }));
+  await user.click(screen.getByRole("button", { name: "Discard these inputs" }));
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue(manualDefaults.title);
+  expect(save).not.toHaveBeenCalled();
+});
+
+it.each(["malformed", "oversized", "unknown-envelope"])("preserves unreadable %s manual storage until confirmed discard", async kind => {
+  const raw = kind === "malformed" ? "{unreadable" : kind === "oversized" ? "x".repeat(2 * 1024 * 1024 + 1) : JSON.stringify({ binding: "manual-new-rule", value: manualDefaults, unknown: "retained" });
+  sessionStorage.setItem(manualKey, raw);
+  const { user } = setup();
+  const save = vi.spyOn(api, "upsertDetection");
+  expect(await screen.findByRole("textbox", { name: "Title" })).toBeVisible();
+  expect(screen.getByRole("alert")).toHaveTextContent("stored bytes have been left untouched");
+  await user.type(screen.getByRole("textbox", { name: "Title" }), " new edit");
+  expect(sessionStorage.getItem(manualKey)).toBe(raw);
+  await user.click(screen.getByRole("button", { name: "Discard New rule inputs" }));
+  await user.click(screen.getByRole("button", { name: "Keep editing" }));
+  expect(sessionStorage.getItem(manualKey)).toBe(raw);
+  await user.click(screen.getByRole("button", { name: "Discard New rule inputs" }));
+  await user.click(screen.getByRole("button", { name: "Discard these inputs" }));
+  expect(sessionStorage.getItem(manualKey)).toBeNull();
+  expect(save).not.toHaveBeenCalled();
+});
+
+it("shows unavailable retained manual choices truthfully and refuses save without substituting", async () => {
+  const value = { ...manualDefaults, behaviorId: "missing.behavior.v1", language: "missing-language" };
+  const raw = JSON.stringify({ binding: "manual-new-rule", value });
+  sessionStorage.setItem(manualKey, raw);
+  const { user } = setup();
+  const save = vi.spyOn(api, "upsertDetection");
+  expect(await screen.findByRole("textbox", { name: "Title" })).toBeVisible();
+  expect(screen.getByRole("combobox", { name: "Registered behavior" })).toHaveValue(value.behaviorId);
+  expect(screen.getByRole("combobox", { name: "Target language" })).toHaveValue(value.language);
+  expect(screen.getByRole("option", { name: "Unavailable behavior" })).toBeVisible();
+  expect(screen.getByRole("option", { name: "Unavailable language" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Save strict hypothesis" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Save strict hypothesis" }));
+  expect(sessionStorage.getItem(manualKey)).toBe(raw);
+  await user.selectOptions(screen.getByRole("combobox", { name: "Registered behavior" }), demoCatalog.behaviors[0]!.id);
+  expect(screen.getByRole("button", { name: "Save strict hypothesis" })).toBeDisabled();
+  await user.selectOptions(screen.getByRole("combobox", { name: "Target language" }), "sqlite");
+  expect(screen.getByRole("button", { name: "Save strict hypothesis" })).toBeEnabled();
+  expect(save).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("preserves newer manual edits when an earlier save completes (remount=%s)", async remountWhilePending => {
+  const { user, remount } = setup();
+  let finish!: (value: Awaited<ReturnType<typeof api.upsertDetection>>) => void;
+  const save = vi.spyOn(api, "upsertDetection").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  await openManual(user);
+  const title = screen.getByRole("textbox", { name: "Title" });
+  await user.clear(title); await user.paste("Submitted manual rule");
+  await user.click(screen.getByRole("button", { name: "Save strict hypothesis" }));
+  expect(save).toHaveBeenCalledTimes(1);
+  expect(save.mock.calls[0]![0]).toMatchObject({ title: "Submitted manual rule", behavior_id: manualDefaults.behaviorId, target_language: "internal" });
+  expect(screen.getByRole("button", { name: "Discard New rule inputs" })).toBeDisabled();
+  if (remountWhilePending) remount();
+  const newer = await screen.findByRole("textbox", { name: "Title" });
+  await user.clear(newer); await user.paste("Newer manual draft");
+  const location = screen.getByTestId("location").textContent;
+  await act(async () => { finish({ schema_version: "v1", candidate: { ...parent, id: "detection-newly-saved" } }); });
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Newer manual draft");
+  expect(screen.getByTestId("location").textContent).toBe(location);
+  expect(save.mock.calls[0]![0]).toMatchObject({ title: "Submitted manual rule" });
+  remount();
+  expect(await screen.findByRole("textbox", { name: "Title" })).toBeVisible();
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Newer manual draft");
+  expect(save).toHaveBeenCalledTimes(1);
+});
+
+it.each(["candidate", "run"])("does not redirect a manual save after navigating %s away and back", async field => {
+  const { user } = setup();
+  let finish!: (value: Awaited<ReturnType<typeof api.upsertDetection>>) => void;
+  const save = vi.spyOn(api, "upsertDetection").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  await openManual(user);
+  await user.type(screen.getByRole("textbox", { name: "Title" }), " submitted");
+  await user.click(screen.getByRole("button", { name: "Save strict hypothesis" }));
+  const original = screen.getByTestId("location").textContent;
+  if (field === "candidate") {
+    await user.click(screen.getByRole("button", { name: /Other SQL/ }));
+    await user.click(screen.getByRole("button", { name: /Baseline SQL/ }));
+  } else {
+    await user.selectOptions(screen.getByRole("combobox", { name: "Detection source run" }), "");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Detection source run" }), demoRuns[0]!.run_id);
+  }
+  expect(new URLSearchParams(screen.getByTestId("location").textContent!).get("candidate")).toBe(id);
+  expect(new URLSearchParams(screen.getByTestId("location").textContent!).get("run")).toBe(new URLSearchParams(original!).get("run"));
+  const returned = screen.getByTestId("location").textContent;
+  await act(async () => { finish({ schema_version: "v1", candidate: { ...parent, id: "detection-newly-saved" } }); });
+  expect(screen.getByTestId("location").textContent).toBe(returned);
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue(manualDefaults.title + " submitted");
+  expect(save).toHaveBeenCalledTimes(1);
+});
+
+it("keeps manual inputs after save and describes the returned rule's existing state", async () => {
+  const { user, remount } = setup();
+  const save = vi.spyOn(api, "upsertDetection").mockResolvedValue({ schema_version: "v1", candidate: parent });
+  await openManual(user);
+  await user.type(screen.getByRole("textbox", { name: "Title" }), " my input");
+  await user.click(screen.getByRole("button", { name: "Save strict hypothesis" }));
+  expect(await screen.findByText(/Baseline SQL saved at its parsed state/)).toBeVisible();
+  expect(screen.queryByText(/It has not been parsed or exercised/)).not.toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue(manualDefaults.title + " my input");
+  remount();
+  expect(await screen.findByRole("textbox", { name: "Title" })).toBeVisible();
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue(manualDefaults.title + " my input");
+  expect(save).toHaveBeenCalledTimes(1);
 });

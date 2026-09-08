@@ -155,6 +155,8 @@ BlueFire's built-in research registry references MITRE ATT&CK, Sigma specificati
 
 The selected rule is the main workspace. Open **New rule** to create a draft; **Detection backends** and **Validation stages** contain setup and lifecycle details. An empty SQLite draft offers an editable staged-file query for the `logs` table. Inserting it performs no validation or evaluation. Choose evidence fields appropriate to the source run, validate the rule, and measure actual matches. Changing the source run keeps a selected registry rule and its current source edits in place.
 
+The manual **New rule** form keeps its title, behavior and target language across navigation and reload in the same browser tab. These inputs do not belong to a selected run or saved rule, and restoring them does not save or evaluate a detection. They remain available after a save until you explicitly discard them. If a retained behavior or language is unavailable, choose an available value before saving. Storage failures are shown beside the form; copy your inputs before closing or reloading when storage is unavailable.
+
 Detection Lab clients can inspect persisted candidates, create local hypotheses, show lifecycle counts, and organize candidate/fixture/field/baseline views. Local draft source and disabled backend buttons do not indicate that a parser ran. Trust only the service response's backend metadata, resource status, lifecycle state, and ordered history.
 
 Observed evidence cannot be supplied by a client. The service reads a finalized run bundle, validates its manifest and every evidence hash/identity, and then admits only `observed` provenance. Unfinalized, corrupted, synthetic, executed, or caller-invented evidence cannot advance the observed state.

@@ -28,6 +28,11 @@ import type {
 import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, LoadingState, PageHeader, Panel, PanelHeader, sentence } from "../components/Primitives";
 
 const lifecycle = ["hypothesis", "parsed", "fixture_exercised", "observed_exercised", "benign_evaluated", "rejected"];
+const manualRuleDefaults = { title: "Sandbox staging observation", behaviorId: "sandbox.collection.stage.v1", language: "internal" };
+const manualRuleLanguages = [
+  ["internal", "Internal structured matcher"], ["sigma", "Sigma converted to bounded SQLite"],
+  ["sqlite", "SQLite query (bounded executor)"], ["yara", "YARA"], ["spl", "SPL structural check"],
+] as const;
 const baselineRelationships = new Set(["imported", "adapted", "inspired", "comparative"]);
 const baselineReviews = new Set(["reviewed", "conditional", "prohibited"]);
 const baselineUseClassifications = new Set(["reference_only", "metadata_import", "clean_reimplementation", "external_adapter", "compatible_code_adaptation", "incompatible_or_restricted"]);
@@ -211,9 +216,23 @@ function DetectionRegistryPage() {
   const selectedId = linkedSelectionId;
   const setSelectedId = (value: string) => setSearchParams(old => { const next = new URLSearchParams(old); next.set("candidate", value); next.set("candidate_scope", "registry"); return next; });
   const [notice, setNotice] = useState<string>();
-  const [title, setTitle] = useState("Sandbox staging observation");
-  const [behaviorId, setBehaviorId] = useState("sandbox.collection.stage.v1");
-  const [language, setLanguage] = useState("internal");
+  // Manual hypothesis inputs contain no run evidence or candidate authority.
+  const manualDraft = useDetectionDraft("manual-new-rule", manualRuleDefaults);
+  const { title, behaviorId, language } = manualDraft.value;
+  const manualChanged = detectionDraftIdentity(manualDraft.value) !== detectionDraftIdentity(manualRuleDefaults);
+  const [manualOpen, setManualOpen] = useState(Boolean(manualDraft.retained || manualDraft.warning || manualChanged));
+  const [manualDiscardOpen, setManualDiscardOpen] = useState(false);
+  const manualGeneration = useRef(0);
+  const manualMounted = useRef(false);
+  const manualQuery = searchParams.toString();
+  const manualNavigation = useMemo(() => ({ query: manualQuery }), [manualQuery]);
+  const manualNavigationRef = useRef(manualNavigation);
+  manualNavigationRef.current = manualNavigation;
+  useEffect(() => { manualMounted.current = true; return () => { manualMounted.current = false; }; }, []);
+  const updateManual = (field: keyof typeof manualRuleDefaults, value: string) => {
+    manualGeneration.current += 1;
+    manualDraft.update(field, value);
+  };
   const activeSelection = useRef("");
 
   const refreshDetections = () => {
@@ -221,22 +240,26 @@ function DetectionRegistryPage() {
     void client.invalidateQueries({ queryKey: ["detection-health"] });
   };
   const createMutation = useMutation({
-    mutationFn: () => api.upsertDetection({
-      behavior_id: behaviorId,
-      title,
-      target_language: language,
+    mutationFn: ({ inputs }: { inputs: typeof manualRuleDefaults; generation: number; navigation: typeof manualNavigation }) => api.upsertDetection({
+      behavior_id: inputs.behaviorId,
+      title: inputs.title,
+      target_language: inputs.language,
       logsource: { category: "file_event", product: "generic" },
       selection: { artifact_type: "file_observation", "path|contains": "staged/" },
       provenance: { source: "operator-authored", license: "Review required" },
       known_misses: ["Requires declared observation fields."],
       predicted_fields: ["artifact_type", "path"],
     }),
-    onSuccess: ({ candidate }) => {
-      setSelectedId(candidate.id);
-      setNotice(`${candidate.id} saved as a strict hypothesis. It has not been parsed or exercised.`);
+    onSuccess: ({ candidate }, submitted) => {
       refreshDetections();
+      if (!manualMounted.current) return;
+      const newerInputs = manualGeneration.current !== submitted.generation;
+      if (!newerInputs && manualNavigationRef.current === submitted.navigation) setSelectedId(candidate.id);
+      const savedTitle = typeof candidate.document.title === "string" && candidate.document.title.trim() ? candidate.document.title : "Hypothesis";
+      const savedState = candidate.status === "hypothesis" ? "saved as a strict hypothesis. It has not been parsed or exercised." : `saved at its ${sentence(candidate.status).toLowerCase()} state.`;
+      setNotice(`${savedTitle} ${savedState}${newerInputs ? " Your newer draft inputs are still kept." : " New rule inputs remain available until you discard them."}`);
     },
-    onError: (error) => setNotice(error instanceof Error ? error.message : "The hypothesis could not be saved."),
+    onError: (error) => { if (manualMounted.current) setNotice(error instanceof Error ? error.message : "The hypothesis could not be saved."); },
   });
   const saveLinkedMutation = useMutation({
     mutationFn: ({ candidate, run }: { candidate: DetectionCandidate; run: RunRecord }) => api.detectionFromRun(run.run_id, candidate.candidate_id ?? candidate.id ?? ""),
@@ -318,6 +341,9 @@ function DetectionRegistryPage() {
     .filter((item) => (item.revision_root_id ?? item.candidate_id ?? item.resolvedId) === rootId)
     .sort((left, right) => (left.revision ?? 1) - (right.revision ?? 1));
   const sources = researchSourcesQuery.data?.resources ?? [];
+  const manualBehaviorAvailable = catalogQuery.data.behaviors.some(behavior => behavior.id === behaviorId);
+  const manualLanguageAvailable = manualRuleLanguages.some(([value]) => value === language);
+  const manualCanSave = Boolean(title.trim()) && title.length <= 200 && manualBehaviorAvailable && manualLanguageAvailable;
 
   return <div className="page detection-page">
     <PageHeader title="Detection Lab" actions={<Link className="button button-secondary button-medium" to={detectionCreationPath(sourceRunId)}>Create from run evidence</Link>} />
@@ -330,15 +356,25 @@ function DetectionRegistryPage() {
       {sourceRunId && sourceQuery.isPending ? <LoadingState label="Loading source run evidence" /> : sourceQuery.isError ? <ErrorState title="Source run unavailable" error={sourceQuery.error} retry={() => { void sourceQuery.refetch(); }} /> : sourceRun ? <details className="detection-source-details"><summary>{sourceObservedRecords(sourceRun).length} independent observations · inspect source evidence</summary><SourceRunEvidence run={sourceRun} /></details> : null}
     </section>
     <div className="detection-tools">
-      <details open={!candidates.length}>
+      <details open={manualOpen || !candidates.length} onToggle={event => setManualOpen(event.currentTarget.open)}>
         <summary>New rule</summary>
         <Panel>
         <PanelHeader title="Start a rule draft" detail="Choose the behavior and query language, then edit and validate its source." />
         <div className="detail-body">
-          <Field label="Title"><input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={200} /></Field>
-          <Field label="Registered behavior"><select value={behaviorId} onChange={(event) => setBehaviorId(event.target.value)}>{catalogQuery.data.behaviors.map((behavior) => <option key={behavior.id} value={behavior.id}>{behavior.title}</option>)}</select></Field>
-          <Field label="Target language"><select value={language} onChange={(event) => setLanguage(event.target.value)}><option value="internal">Internal structured matcher</option><option value="sigma">Sigma converted to bounded SQLite</option><option value="sqlite">SQLite query (bounded executor)</option><option value="yara">YARA</option><option value="spl">SPL structural check</option></select></Field>
-          <Button variant="primary" onClick={() => createMutation.mutate()} disabled={createMutation.isPending || !title || !behaviorId}><Plus />Save strict hypothesis</Button>
+          {manualDraft.warning ? <p role="alert">{manualDraft.warning}</p> : manualDraft.retained || manualChanged ? <p role="status">Draft inputs kept in this browser tab.</p> : null}
+          {!manualBehaviorAvailable || !manualLanguageAvailable ? <p role="alert">The selected behavior or language is unavailable. Choose a registered behavior and a supported target language before saving.</p> : null}
+          {title.length > 200 ? <p role="alert">Shorten the title to 200 characters before saving.</p> : null}
+          <Field label="Title"><input value={title} onChange={(event) => updateManual("title", event.target.value)} maxLength={200} /></Field>
+          <Field label="Registered behavior"><select value={behaviorId} onChange={(event) => updateManual("behaviorId", event.target.value)}>{!manualBehaviorAvailable ? <option value={behaviorId}>Unavailable behavior</option> : null}{catalogQuery.data.behaviors.map((behavior) => <option key={behavior.id} value={behavior.id}>{behavior.title}</option>)}</select></Field>
+          <Field label="Target language"><select value={language} onChange={(event) => updateManual("language", event.target.value)}>{!manualLanguageAvailable ? <option value={language}>Unavailable language</option> : null}{manualRuleLanguages.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
+          <div className="candidate-actions"><Button variant="primary" onClick={() => { if (manualCanSave && !createMutation.isPending) createMutation.mutate({ inputs: { ...manualDraft.value }, generation: manualGeneration.current, navigation: manualNavigation }); }} disabled={createMutation.isPending || !manualCanSave}><Plus />Save strict hypothesis</Button>
+          <Dialog.Root open={manualDiscardOpen} onOpenChange={setManualDiscardOpen}>
+            <Dialog.Trigger asChild><Button variant="ghost" size="small" disabled={createMutation.isPending}>Discard New rule inputs</Button></Dialog.Trigger>
+            <Dialog.Portal><Dialog.Overlay className="dialog-overlay"/><Dialog.Content className="dialog-content">
+              <Dialog.Title>Discard New rule inputs?</Dialog.Title><Dialog.Description>Reset this manual form to its starting values. Saved rules and other drafts stay intact.</Dialog.Description>
+              <div className="dialog-actions"><Dialog.Close asChild><Button>Keep editing</Button></Dialog.Close><Button variant="danger" onClick={() => { manualGeneration.current += 1; manualDraft.discard(); setManualOpen(true); setManualDiscardOpen(false); }}>Discard these inputs</Button></div>
+            </Dialog.Content></Dialog.Portal>
+          </Dialog.Root></div>
         </div>
         </Panel>
       </details>
