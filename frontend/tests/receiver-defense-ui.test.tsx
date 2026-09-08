@@ -87,6 +87,36 @@ function mountPage(ownerId = receiverFixtureId) {
   return { client, user: userEvent.setup(), ...render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={[`/compare?receiver_job=${ownerId}`]}><ReceiverDefensePage /></MemoryRouter></ProductProvider></QueryClientProvider>) };
 }
 
+it("retains measured outcomes across a rejected poll and recovers by GET without repeating work", async () => {
+  const complete = receiverFixture("restored", "completed");
+  const publishing = structuredClone(complete);
+  publishing.status = "active";
+  publishing.can_start_new_test = false;
+  publishing.next_action = { kind: "wait", phase: null, native_path: null };
+  publishing.phases[2]!.execution_job!.state = "running";
+  publishing.phases[2]!.execution_job!.result_ref = null;
+  const malformed = structuredClone(complete);
+  malformed.phases[2]!.execution_job!.result_ref = "run-another-result";
+  const read = vi.spyOn(api, "receiverTest").mockResolvedValueOnce(publishing)
+    .mockResolvedValueOnce(malformed).mockResolvedValue(complete);
+  const create = vi.spyOn(api, "createReceiverTest"), prepare = vi.spyOn(api, "prepareReceiver");
+  const review = vi.spyOn(api, "reviewReceiver"), approve = vi.spyOn(api, "approveJob");
+  mountPage();
+  expect(await screen.findByRole("heading", { name: "Results so far" })).toBeVisible();
+  const originalLinks = screen.getAllByRole("link", { name: "Inspect run" }).map((link) => link.getAttribute("href"));
+  expect(originalLinks).toEqual(["/runs/run-baseline", "/runs/run-protected", "/runs/run-restored"]);
+  expect(await screen.findByText("Saved test status unavailable", {}, { timeout: 2000 })).toBeVisible();
+  expect(screen.getAllByRole("link", { name: "Inspect run" }).map((link) => link.getAttribute("href"))).toEqual(originalLinks);
+  expect(screen.queryByRole("button", { name: "Set up another control test" })).not.toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "Measured control outcome" }, { timeout: 2000 })).toBeVisible();
+  expect(screen.queryByText("Saved test status unavailable")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Set up another control test" })).toBeEnabled();
+  expect(read).toHaveBeenCalledTimes(3);
+  expect(read.mock.calls.every(([id]) => id === receiverFixtureId)).toBe(true);
+  expect(create).not.toHaveBeenCalled(); expect(prepare).not.toHaveBeenCalled();
+  expect(review).not.toHaveBeenCalled(); expect(approve).not.toHaveBeenCalled();
+});
+
 it.each([false, true])("keeps a refused submission readable and closes only its retained request, unavailable context=%s", async (unavailable) => {
   storeReceiverPending(pendingCreate());
   const refused: ReceiverDefenseEnvelope = receiverFixture("baseline", "idle");

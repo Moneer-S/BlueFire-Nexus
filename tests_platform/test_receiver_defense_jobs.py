@@ -400,7 +400,23 @@ def test_full_three_phase_ordinary_run_replay_retains_independent_policy_results
     sandbox = original_factory(None)[1]
     service.runner_factory = lambda _profile: (runner, sandbox)
     errors = []
-    from bluefire import receiver_defense_native
+    from bluefire import receiver_defense_native, receiver_defense_view
+
+    before_publish, publish, published, finish = (threading.Event() for _ in range(4))
+    original_update = records.update
+
+    def hold_final_publication(store, child_id, values, **kwargs):
+        final = values.get("result", {}).get("phase") == "restored"
+        if final:
+            before_publish.set()
+            assert publish.wait(10), "Final result publication was not released."
+        result = original_update(store, child_id, values, **kwargs)
+        if final:
+            published.set()
+            assert finish.wait(10), "Final execution callback was not released."
+        return result
+
+    monkeypatch.setattr(records, "update", hold_final_publication)
 
     original_execute = receiver_defense_native.finish
 
@@ -417,6 +433,7 @@ def test_full_three_phase_ordinary_run_replay_retains_independent_policy_results
     monkeypatch.setattr(receiver_defense_native, "finish", execute)
     parent, _, envelope = prepared(setup)
     snapshots = []
+    publication_windows = {}
     for index, phase in enumerate(("baseline", "protected", "restored")):
         if index:
             submit = {
@@ -446,6 +463,65 @@ def test_full_three_phase_ordinary_run_replay_retains_independent_policy_results
             execution["job_id"], {JobState.AWAITING_APPROVAL}, timeout=10
         )
         service.approve_job(execution["job_id"], {"approved_by": "Portable native review"})
+        if phase == "restored":
+            try:
+                assert before_publish.wait(10), errors
+                child_id = current["receiver_job"]["job_id"]
+                original_visible = receiver_defense_view.visible_job
+
+                def publish_after_child_read(
+                    coordinator, identifier, *, read=original_visible, target=child_id
+                ):
+                    snapshot = read(coordinator, identifier)
+                    if identifier == target:
+                        assert snapshot["progress"].get("result") is None
+                        publish.set()
+                        assert published.wait(10)
+                    return snapshot
+
+                with monkeypatch.context() as window:
+                    window.setattr(receiver_defense_view, "visible_job", publish_after_child_read)
+                    publication_windows["old_child_after_publication"] = (
+                        service.receiver_defense_job(parent["job_id"])
+                    )
+                assert (
+                    publication_windows["old_child_after_publication"]["phases"][2]["result"]
+                    is None
+                )
+                publication_windows["published_before_terminal"] = service.receiver_defense_job(
+                    parent["job_id"]
+                )
+                pending = publication_windows["published_before_terminal"]
+                assert pending["status"] == "active" and not pending["can_start_new_test"]
+                assert pending["phases"][2]["result"] is not None
+                assert pending["phases"][2]["execution_job"]["state"] == "running"
+
+                def finish_after_execution_read(
+                    coordinator, identifier, *, read=original_visible, target=execution["job_id"]
+                ):
+                    snapshot = read(coordinator, identifier)
+                    if identifier == target:
+                        assert snapshot["state"] == "running"
+                        finish.set()
+                        assert (
+                            service.job_controller.wait(identifier, timeout=10)["state"]
+                            == "completed"
+                        )
+                    return snapshot
+
+                with monkeypatch.context() as window:
+                    window.setattr(
+                        receiver_defense_view, "visible_job", finish_after_execution_read
+                    )
+                    publication_windows["old_execution_after_terminal"] = (
+                        service.receiver_defense_job(parent["job_id"])
+                    )
+                mixed = publication_windows["old_execution_after_terminal"]
+                assert mixed["status"] == "active" and not mixed["can_start_new_test"]
+                assert mixed["phases"][2]["execution_job"]["state"] == "running"
+            finally:
+                publish.set()
+                finish.set()
         terminal = service.job_controller.wait(execution["job_id"], timeout=20)
         assert terminal["state"] == "completed", (terminal["error"], errors)
         envelope = service.receiver_defense_job(parent["job_id"])
@@ -466,6 +542,7 @@ def test_full_three_phase_ordinary_run_replay_retains_independent_policy_results
                 "fixture_kind": "portable native protocol doubles; no real receiver process, transport, or defense proof",
                 "context": service.receiver_defense_context(request),
                 "phases": snapshots,
+                "publication_windows": publication_windows,
             },
             ensure_ascii=False,
         ),
