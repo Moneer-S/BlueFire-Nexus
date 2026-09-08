@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -35,6 +36,7 @@ from bluefire.runner_inventory import (
 )
 from bluefire.runner_transport import AuthenticatedRunnerClient
 from bluefire.util import content_hash
+from bluefire.windows_owner_acl import _windows_extended_path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCENARIO_PATH = ROOT / "scenarios" / "sandbox_research_chain.yaml"
@@ -74,7 +76,8 @@ def _write_bound_receipt(
     created_at: str = "2026-08-24T00:00:00Z",
 ) -> str:
     sandbox_root = Path(str(profile["sandbox_root"]))
-    receipt_root = sandbox_root / ".bluefire" / "receipts"
+    io_root = _windows_extended_path(sandbox_root) if os.name == "nt" else sandbox_root
+    receipt_root = io_root / ".bluefire" / "receipts"
     receipt_root.mkdir(parents=True, exist_ok=True)
     workspace_id = hashlib.sha256(
         str(sandbox_root.resolve(strict=True)).replace("\\", "/").encode("utf-8")
@@ -117,7 +120,7 @@ def _write_bound_receipt(
         encoding="utf-8",
     )
     if committed:
-        commit_root = sandbox_root / ".bluefire" / "receipt-commits"
+        commit_root = io_root / ".bluefire" / "receipt-commits"
         commit_root.mkdir(parents=True, exist_ok=True)
         (commit_root / f"{receipt_id}.json").write_text(
             json.dumps(
@@ -268,8 +271,10 @@ class StructuredFakeRunner:
         if status != "success":
             error = {"code": f"fake_{status}", "message": f"structured {status} result"}
         if action_id == "sandbox.cleanup.v1":
-            receipt_root = Path(str(profile["sandbox_root"])) / ".bluefire" / "receipts"
-            commit_root = Path(str(profile["sandbox_root"])) / ".bluefire" / "receipt-commits"
+            sandbox_root = Path(str(profile["sandbox_root"]))
+            io_root = _windows_extended_path(sandbox_root) if os.name == "nt" else sandbox_root
+            receipt_root = io_root / ".bluefire" / "receipts"
+            commit_root = io_root / ".bluefire" / "receipt-commits"
             for receipt_id in manifest["params"].get("receipt_ids", []):
                 (receipt_root / f"{receipt_id}.json").unlink(missing_ok=True)
                 (commit_root / f"{receipt_id}.json").unlink(missing_ok=True)
@@ -456,6 +461,90 @@ def test_receipt_discovery_requires_full_identity_and_optional_commit(tmp_path: 
     receipt_path.write_text(json.dumps(tampered), encoding="utf-8")
     with pytest.raises(RunnerTransportError, match="content digest"):
         Orchestrator._discover_runner_receipts(sandbox, **discovery)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows long-path fake receipt I/O")
+def test_fake_runner_long_receipts_preserve_binding_and_are_actually_removed(
+    tmp_path: Path,
+) -> None:
+    sandbox = tmp_path / "long-receipt-sandbox"
+    target_length = max(180, len(str(sandbox)) + 2)
+    while len(str(sandbox)) < target_length:
+        remaining = target_length - len(str(sandbox))
+        length = min(60, remaining - 1)
+        if remaining - length - 1 == 1:
+            length -= 1
+        sandbox /= "p" * length
+    io_root = _windows_extended_path(sandbox)
+    io_root.mkdir(parents=True)
+    manifest = {
+        "request_id": "file-only-request",
+        "run_id": "file-only-run",
+        "step_id": "file-only-step",
+        "behavior_id": "file-only-behavior",
+        "runner_id": "bluefire-rust-runner.v1",
+        "runner_profile_id": "sandbox-execute.v1",
+        "request_hash": "sha256:" + "1" * 64,
+        "action_id": "sandbox.fixture.create.v1",
+        "params": {"path": "fixtures/input.jsonl"},
+    }
+    profile = {
+        "sandbox_root": str(sandbox),
+        "profile_id": "sandbox-execute.v1",
+        "platform": "windows",
+        "policy_digest": "sha256:" + "2" * 64,
+    }
+    original = copy.deepcopy((manifest, profile))
+    receipt_id = _write_bound_receipt(manifest, profile, committed=False)
+    receipt = io_root / ".bluefire" / "receipts" / f"{receipt_id}.json"
+    commit = io_root / ".bluefire" / "receipt-commits" / f"{receipt_id}.json"
+    assert len(str(sandbox / ".bluefire" / "receipts" / receipt.name)) > 260
+    payload_bytes = receipt.read_bytes()
+    payload = json.loads(payload_bytes)
+    workspace_id = hashlib.sha256(
+        str(sandbox.resolve(strict=True)).replace("\\", "/").encode("utf-8")
+    ).hexdigest()
+    assert payload == {
+        "receipt_id": receipt_id,
+        "schema_version": "bluefire.receipt/v1",
+        "request_hash": manifest["request_hash"],
+        "action_id": manifest["action_id"],
+        "runner_profile_id": profile["profile_id"],
+        "workspace_id": workspace_id,
+        "created_at": "2026-08-24T00:00:00Z",
+        "paths": [
+            {"relative_path": "fixtures/input.jsonl", "kind": "file", "sha256": "0" * 64, "size": 0}
+        ],
+    }
+    assert (
+        content_hash({key: value for key, value in payload.items() if key != "receipt_id"})
+        == "sha256:" + receipt_id
+    )
+    assert not commit.exists()
+    assert _write_bound_receipt(manifest, profile) == receipt_id
+    assert receipt.read_bytes() == payload_bytes
+    assert json.loads(commit.read_bytes()) == {
+        "schema_version": "bluefire.receipt-commit/v1",
+        "receipt_id": receipt_id,
+        "runner_profile_id": profile["profile_id"],
+        "workspace_id": workspace_id,
+        "committed_at": "2026-08-24T00:00:01Z",
+    }
+    assert Orchestrator._discover_runner_receipts(
+        sandbox,
+        expected_profile_id=profile["profile_id"],
+        expected_request_hash=manifest["request_hash"],
+        expected_action_id=manifest["action_id"],
+        require_commit=True,
+    ) == (receipt_id,)
+    cleanup = {
+        **manifest,
+        "action_id": "sandbox.cleanup.v1",
+        "params": {"receipt_ids": [receipt_id]},
+    }
+    StructuredFakeRunner().execute(cleanup, profile)
+    assert not receipt.exists() and not commit.exists()
+    assert (manifest, profile) == original
 
 
 def test_receipt_discovery_accepts_rust_nanosecond_timestamp(tmp_path: Path) -> None:
