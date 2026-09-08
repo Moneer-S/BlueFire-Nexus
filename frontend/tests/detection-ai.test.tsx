@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, useLocation } from "react-router-dom";
 import { expect, it, vi } from "vitest";
@@ -78,10 +78,12 @@ it("requires explicit discard and clears only this unsent draft without submitti
   expect(screen.getByRole("dialog", { name: "Discard this unsent request?" })).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Keep editing" }));
   expect(screen.getByLabelText(/What should this rule detect better/)).toHaveValue("Keep this until discarded");
+  expect(screen.getByRole("button", { name: "Discard request draft" })).toHaveFocus();
   await user.click(screen.getByRole("button", { name: "Discard request draft" }));
   await user.click(screen.getByRole("button", { name: "Discard request" }));
   expect(screen.getByLabelText(/What should this rule detect better/)).toHaveValue("");
   expect(screen.getByLabelText("Development case context")).toHaveValue("attack");
+  await waitFor(() => expect(screen.getByLabelText(/What should this rule detect better/)).toHaveFocus());
   first.unmount();
   mount();
   await user.click(screen.getByRole("button", { name: "Open assistance" }));
@@ -106,6 +108,20 @@ it("dismisses an old discard review when the selected source changes and retains
   view.select(resource, sourceRun);
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(screen.getByLabelText(/What should this rule detect better/)).toHaveValue("First source question");
+});
+
+it("does not move focus into another source after a confirmed discard", async () => {
+  const user = userEvent.setup();
+  const view = mount();
+  await user.click(screen.getByRole("button", { name: "Open assistance" }));
+  await user.type(screen.getByLabelText(/What should this rule detect better/), "First source question");
+  await user.click(screen.getByRole("button", { name: "Discard request draft" }));
+  fireEvent.click(screen.getByRole("button", { name: "Discard request" }));
+  view.select(resource, { ...sourceRun, run_id: "run-after-confirmation" });
+  screen.getByLabelText("Unrelated notes").focus();
+  // Radix restores focus after its unmount task; switch context before that task.
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+  expect(screen.getByLabelText("Unrelated notes")).toHaveFocus();
 });
 
 it("reports storage failure and keeps unsent edits through remount until explicit discard", async () => {

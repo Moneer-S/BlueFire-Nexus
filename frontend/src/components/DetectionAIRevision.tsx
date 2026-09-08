@@ -36,6 +36,10 @@ export function DetectionAIRevision({ resource, sourceRun, providers, defaultPro
   const { question, role } = draft.value;
   const draftWarning = draft.warning.replace("export them", "copy the question and case choice").replace("saved definition", "empty request");
   const [discardFor, setDiscardFor] = useState<string>();
+  const questionInput = useRef<HTMLInputElement>(null);
+  const currentDraftBinding = useRef(draftBinding);
+  currentDraftBinding.current = draftBinding;
+  const focusAfterDiscard = useRef<{ binding: string; input: HTMLInputElement | null } | undefined>(undefined);
   useEffect(() => { setDiscardFor(undefined); }, [draftBinding]);
   const [reviewer, setReviewer] = useState("");
   const [error, setError] = useState<Error>();
@@ -141,15 +145,20 @@ export function DetectionAIRevision({ resource, sourceRun, providers, defaultPro
       {receipt && jobId !== detectionJobId(receipt.request.submission_id) ? <Callout title="Another request still needs confirmation">Your earlier request is retained. Resolve it before starting another model request.<Button onClick={() => viewJob(detectionJobId(receipt.request.submission_id))}>Resume pending request</Button></Callout> : null}
       {!jobId ? <>
         <div className="detection-ai-setup"><Field label="Detection AI mode"><select value={autonomy} onChange={(event) => setAutonomy(event.target.value)}><option value="off">Off · no model requests</option><option value="assist">Assist · review every change</option></select></Field><Field label="Detection model provider"><select value={provider} onChange={(event) => setProvider(event.target.value)}><option value="">Choose configured provider</option>{models.map((item) => <option value={item.provider_id} key={item.provider_id}>{item.provider_id} · {item.model}</option>)}</select></Field></div>
-        <Field label="What should this rule detect better?" hint="Use the selected run as a development case. Independent benign and withheld cases still need separate evaluation."><input maxLength={1000} value={question} onChange={(event) => draft.update("question", event.target.value)} placeholder="Explain the missed behavior or false positive to investigate" /></Field>
+        <Field label="What should this rule detect better?" hint="Use the selected run as a development case. Independent benign and withheld cases still need separate evaluation."><input ref={questionInput} maxLength={1000} value={question} onChange={(event) => draft.update("question", event.target.value)} placeholder="Explain the missed behavior or false positive to investigate" /></Field>
         <Field label="Development case context"><select value={role} onChange={(event) => draft.update("role", event.target.value as DetectionCaseRole)}><option value="attack">Attack case</option><option value="benign">Benign activity</option><option value="replay">Replay</option><option value="heldout">Previously withheld case · becomes development input</option></select></Field>
         {draftWarning ? <p role="alert">{draftWarning}</p> : draft.retained && (question || role !== "attack") ? <p role="status">Unsent request kept in this browser tab for this rule revision and source run.</p> : null}
         {question.length > 1000 ? <p role="alert">Shorten the request to 1,000 characters before sending.</p> : null}
         {question || role !== "attack" || draft.warning ? <Dialog.Root open={discardFor === draftBinding} onOpenChange={(open) => setDiscardFor(open ? draftBinding : undefined)}>
-          <Dialog.Trigger asChild><Button variant="ghost" size="small">Discard request draft</Button></Dialog.Trigger>
-          <Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content">
+          <div className="candidate-actions"><Dialog.Trigger asChild><Button variant="ghost" size="small">Discard request draft</Button></Dialog.Trigger></div>
+          <Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content" onCloseAutoFocus={(event) => {
+            const target = focusAfterDiscard.current;
+            if (!target) return;
+            event.preventDefault(); focusAfterDiscard.current = undefined;
+            if (target.binding === currentDraftBinding.current && target.input === questionInput.current && target.input?.isConnected) target.input.focus();
+          }}>
             <Dialog.Title>Discard this unsent request?</Dialog.Title><Dialog.Description>Clear the question and development-case choice for this rule revision and source run. Submitted work and saved rules stay intact.</Dialog.Description>
-            <div className="dialog-actions"><Dialog.Close asChild><Button>Keep editing</Button></Dialog.Close><Button variant="danger" onClick={() => { if (discardFor === draftBinding) draft.discard(); setDiscardFor(undefined); }}>Discard request</Button></div>
+            <div className="dialog-actions"><Dialog.Close asChild><Button>Keep editing</Button></Dialog.Close><Button variant="danger" onClick={() => { if (discardFor === draftBinding) { focusAfterDiscard.current = { binding: draftBinding, input: questionInput.current }; draft.discard(); } setDiscardFor(undefined); }}>Discard request</Button></div>
           </Dialog.Content></Dialog.Portal>
         </Dialog.Root> : null}
         {!resource?.document.rule_source || !["sqlite", "sigma"].includes(resource.document.target_language ?? "") ? <p>Save and validate a SQLite or Sigma rule before requesting a revision.</p> : !sourceRun?.finalized_at || !sourceCount ? <p>Select a completed run with independent observations in Source run and evidence above.</p> : <p>{sourceCount} independent observations from the selected run will inform this request. The configured provider controls whether bounded, redacted content or field metadata is included.</p>}
