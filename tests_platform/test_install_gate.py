@@ -554,6 +554,7 @@ def _copy_structural_inputs(destination: Path) -> None:
         "bluefire/cli.py",
         "bluefire/ui/app.js",
         "frontend/src/components/ExecuteOnboarding.tsx",
+        "frontend/src/components/RunWorkspace.tsx",
         "frontend/src/pages/Runs.tsx",
     ):
         source = REPOSITORY / relative
@@ -568,27 +569,27 @@ def test_structural_proof_rejects_disconnected_or_stale_guided_ui(tmp_path: Path
     baseline = install_gate._structural_report(repository)
     validation.validate_structural(baseline)
 
-    runs_path = repository / "frontend/src/pages/Runs.tsx"
-    original_runs = runs_path.read_text(encoding="utf-8")
-    disconnected = original_runs.replace(
+    workspace_path = repository / "frontend/src/components/RunWorkspace.tsx"
+    original_workspace = workspace_path.read_text(encoding="utf-8")
+    disconnected = original_workspace.replace(
         "import { ExecuteOnboarding,",
         "import { DisconnectedExecuteOnboarding,",
         1,
     )
-    assert disconnected != original_runs
-    runs_path.write_text(disconnected, encoding="utf-8")
+    assert disconnected != original_workspace
+    workspace_path.write_text(disconnected, encoding="utf-8")
     assert (
         install_gate._structural_report(repository)["checks"]["guided_execute_onboarding"] is False
     )
 
-    unrendered = original_runs.replace("<ExecuteOnboarding", "<DisconnectedOnboarding", 1)
-    assert unrendered != original_runs
-    runs_path.write_text(unrendered, encoding="utf-8")
+    unrendered = original_workspace.replace("<ExecuteOnboarding", "<DisconnectedOnboarding", 1)
+    assert unrendered != original_workspace
+    workspace_path.write_text(unrendered, encoding="utf-8")
     assert (
         install_gate._structural_report(repository)["checks"]["guided_execute_onboarding"] is False
     )
 
-    runs_path.write_text(original_runs, encoding="utf-8")
+    workspace_path.write_text(original_workspace, encoding="utf-8")
     app_path = repository / "bluefire/ui/app.js"
     packaged_app = app_path.read_text(encoding="utf-8")
     stale_app = packaged_app.replace("Prepare, review, and run", "Stale guided workflow", 1)
@@ -596,6 +597,67 @@ def test_structural_proof_rejects_disconnected_or_stale_guided_ui(tmp_path: Path
     app_path.write_text(stale_app, encoding="utf-8")
     report = install_gate._structural_report(repository)
     assert report["checks"]["guided_execute_onboarding"] is False
+    with pytest.raises(ValueError):
+        validation.validate_structural(report)
+
+
+@pytest.mark.parametrize(
+    ("relative", "original", "replacement"),
+    [
+        ("pages/Runs.tsx", "import { RunWorkspace }", "import { DisconnectedWorkspace }"),
+        ("pages/Runs.tsx", "../components/RunWorkspace", "../components/UnusedWorkspace"),
+        ("pages/Runs.tsx", "<RunWorkspace", "<DisconnectedWorkspace"),
+        (
+            "components/RunWorkspace.tsx",
+            "export function RunWorkspace",
+            "export function UnusedWorkspace",
+        ),
+    ],
+)
+def test_structural_proof_requires_the_routed_run_workspace(
+    tmp_path: Path, relative: str, original: str, replacement: str
+) -> None:
+    repository = tmp_path / "repository"
+    _copy_structural_inputs(repository)
+    validation.validate_structural(install_gate._structural_report(repository))
+    source = repository / "frontend/src" / relative
+    original_source = source.read_text(encoding="utf-8")
+    disconnected = original_source.replace(original, replacement, 1)
+    assert disconnected != original_source
+    source.write_text(disconnected, encoding="utf-8")
+
+    report = install_gate._structural_report(repository)
+    assert report["checks"]["guided_execute_onboarding"] is False
+    assert report["checks"]["fresh_approval_boundary"] is False
+    with pytest.raises(ValueError):
+        validation.validate_structural(report)
+
+
+@pytest.mark.parametrize(
+    "relative", ["frontend/src/components/RunWorkspace.tsx", "bluefire/ui/app.js"]
+)
+@pytest.mark.parametrize(
+    "approval_copy",
+    [
+        "Create approval-gated job",
+        "I approve this exact immutable",
+        "Approve and release job",
+    ],
+)
+def test_structural_proof_requires_each_native_approval_control(
+    tmp_path: Path, relative: str, approval_copy: str
+) -> None:
+    repository = tmp_path / "repository"
+    _copy_structural_inputs(repository)
+    validation.validate_structural(install_gate._structural_report(repository))
+    source = repository / relative
+    original_source = source.read_text(encoding="utf-8")
+    stale = original_source.replace(approval_copy, "Missing native approval control")
+    assert stale != original_source
+    source.write_text(stale, encoding="utf-8")
+
+    report = install_gate._structural_report(repository)
+    assert report["checks"]["fresh_approval_boundary"] is False
     with pytest.raises(ValueError):
         validation.validate_structural(report)
 

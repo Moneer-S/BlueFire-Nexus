@@ -744,6 +744,9 @@ def _structural_report(repository: Path) -> Mapping[str, Any]:
         repository / "frontend" / "src" / "components" / "ExecuteOnboarding.tsx"
     ).read_text(encoding="utf-8")
     runs = (repository / "frontend" / "src" / "pages" / "Runs.tsx").read_text(encoding="utf-8")
+    workspace = (repository / "frontend" / "src" / "components" / "RunWorkspace.tsx").read_text(
+        encoding="utf-8"
+    )
     packaged_app = (repository / "bluefire" / "ui" / "app.js").read_text(encoding="utf-8")
     guided_copy = (
         "Prepare, review, and run",
@@ -758,15 +761,25 @@ def _structural_report(repository: Path) -> Mapping[str, Any]:
         "I approve this exact immutable",
         "Approve and release job",
     )
+    workspace_connected = (
+        "export function RunWorkspace" in workspace
+        and re.search(
+            r"import\s*\{[^}]*\bRunWorkspace\b[^}]*\}\s*from\s*"
+            r'["\']\.\./components/RunWorkspace["\']\s*;?',
+            runs,
+        )
+        is not None
+        and re.search(r"<RunWorkspace(?:\s|/|>)", runs) is not None
+    )
     onboarding_imported = (
         re.search(
             r"import\s*\{[^}]*\bExecuteOnboarding\b[^}]*\}\s*from\s*"
             r'["\']\.\./components/ExecuteOnboarding["\']\s*;?',
-            runs,
+            workspace,
         )
         is not None
     )
-    onboarding_rendered = re.search(r"<ExecuteOnboarding(?:\s|/|>)", runs) is not None
+    onboarding_rendered = re.search(r"<ExecuteOnboarding(?:\s|/|>)", workspace) is not None
     checks = {
         "console_entrypoint": 'bluefire = "bluefire.cli:main"' in pyproject,
         "packaged_ui_and_runner": all(
@@ -796,13 +809,15 @@ def _structural_report(repository: Path) -> Mapping[str, Any]:
         ),
         "guided_execute_onboarding": (
             "export function ExecuteOnboarding" in onboarding
+            and workspace_connected
             and onboarding_imported
             and onboarding_rendered
             and all(token in onboarding for token in guided_copy)
             and all(token in packaged_app for token in guided_copy)
         ),
         "fresh_approval_boundary": (
-            all(token in onboarding + runs for token in approval_copy)
+            workspace_connected
+            and all(token in workspace for token in approval_copy)
             and all(token in packaged_app for token in approval_copy)
         ),
     }
