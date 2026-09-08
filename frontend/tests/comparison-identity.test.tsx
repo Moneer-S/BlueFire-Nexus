@@ -57,7 +57,7 @@ it.each(["selection", "navigation"])("discards a late comparison after %s change
   await waitFor(() => expect(screen.getByRole("button", { name: "Compare selected" })).toBeDisabled());
   expect(screen.queryByRole("heading", { name: "Compare detector results" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Export comparison and evidence" })).not.toBeInTheDocument();
-  expect(screen.getByText("Select at least two runs")).toBeInTheDocument();
+  expect(screen.getByText(/Select at least two runs/)).toBeInTheDocument();
 });
 
 it("reports a comparison whose returned run identities do not match the request", async () => {

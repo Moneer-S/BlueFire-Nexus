@@ -133,3 +133,10 @@
   .workbench-builder .ordered-steps .badge { margin-left: 37px; }
   .workbench-builder .objective-bar { display: flex; flex-wrap: wrap; }
 }
+
+.workbench-builder .graph-toolbar .button, .workbench-builder .builder-actions .button { font-size: .8125rem; }
+
+@media (min-width: 1001px) {
+  .workbench-builder .builder-layout:not(.inspector-hidden) .graph-stage { margin-right: calc(var(--inspector-width, 330px) + 12px); }
+  .workbench-builder .builder-layout:not(.inspector-hidden) .inspector-panel { right: 0; box-shadow: none; border-radius: 0; border-width: 0 0 0 1px; }
+}

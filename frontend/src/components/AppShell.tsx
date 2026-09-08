@@ -122,7 +122,7 @@ function WorkspaceShell() {
   const current = allItems.find((item) => item.to === location.pathname || (item.to === "/runs" && location.pathname.startsWith("/runs/")))?.label ?? "BlueFire Nexus";
   const renderLink = (item: typeof allItems[number]) => {
     const Icon = item.icon;
-    const link = <NavLink to={item.to} end={item.to === "/"} aria-label={item.label} onClick={() => setMobileOpen(false)} className={({ isActive }) => `nav-link ${isActive ? "active" : ""}`}><Icon aria-hidden="true"/><span>{item.label}</span></NavLink>;
+    const link = <NavLink to={item.to} end={item.to === "/"} aria-label={item.label} onClick={() => setMobileOpen(false)} className="nav-link"><Icon aria-hidden="true"/><span>{item.label}</span></NavLink>;
     return collapsed ? <Tooltip.Root key={item.to}><Tooltip.Trigger asChild>{link}</Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip" side="right" sideOffset={10}>{item.label}</Tooltip.Content></Tooltip.Portal></Tooltip.Root> : <span key={item.to}>{link}</span>;
   };
 

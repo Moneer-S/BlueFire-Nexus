@@ -1258,3 +1258,16 @@ div.method-proposal-review, details.method-proposal-review[open] { display: grid
 .settings-build code, .copy-record-id code { overflow-wrap: anywhere; }
 .copy-record-id { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .job-details { padding: 12px 18px; }
+
+/* Readable working controls and lists; graph/editor typography stays scoped. */
+.button { font-size: .875rem; font-weight: 600; letter-spacing: 0; }
+.button-small { font-size: .8125rem; }
+input:not([type="checkbox"]):not([type="radio"]), select { font-size: .875rem; }
+.recent-work-table td, .run-history-workspace td, .comparison-outcomes td { font-size: .875rem; line-height: 1.5; }
+.run-select-list strong { font-size: .875rem; line-height: 1.45; font-weight: 600; }
+.run-select-list small { font-size: .8125rem; line-height: 1.45; }
+.compare-page .history-panel, .compare-page .replay-panel { border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.compare-page .history-panel > .panel-header, .compare-page .replay-panel > .panel-header { padding-left: 0; }
+.compare-page .history-panel .history-search, .compare-page .run-select-list { padding-left: 0; padding-right: 0; }
+.compare-page .replay-body { padding-left: 0; padding-right: 0; }
+.compare-page .method-comparison { margin-top: 20px; }

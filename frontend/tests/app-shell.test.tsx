@@ -129,6 +129,8 @@ it("keeps the collapse control in the header with its base styling and restores 
   expect(collapse).toHaveAttribute("aria-expanded", "true");
   await user.click(collapse);
   expect(localStorage.getItem("bluefire.navigation.collapsed.v1")).toBe("true");
+  expect(screen.getByRole("link", { name: "Build", exact: true })).toHaveClass("nav-link");
+  expect(screen.getByRole("link", { name: "Build", exact: true }).getAttribute("class")).not.toContain("=>");
   first.unmount(); renderShell();
   expect(screen.getByRole("button", { name: "Expand navigation" })).toHaveAttribute("aria-expanded", "false");
   expect(document.querySelector(".app-shell")).toHaveClass("nav-collapsed");
