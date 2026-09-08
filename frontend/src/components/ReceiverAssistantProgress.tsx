@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import type { ReceiverAssistanceProgress } from "../lib/receiver-assistance";
+import { AssistantRunReference } from "./AssistantRunReference";
 import { sentence } from "./Primitives";
 
 const phaseNames = { baseline: "Baseline", protected: "Protected", restored: "Restoration" };
@@ -14,7 +15,7 @@ export function ReceiverAssistantProgress({ progress, onNavigate, showNativeLink
     <ol className="assistant-receiver-phases">{progress.phases.map((phase) => <li key={phase.phase}>
       <strong>{phaseNames[phase.phase]}</strong>
       <span>{phase.result ? decisions[phase.result.decision] : sentence(phase.status)}</span>
-      {phase.result ? <><small>Receiver cleanup: {sentence(phase.cleanup.receiver)} · Run cleanup: {sentence(phase.cleanup.run)}</small><Link onClick={onNavigate} to={`/runs/${encodeURIComponent(phase.result.run_id)}`}>Inspect {phaseNames[phase.phase].toLowerCase()} run</Link></> : null}
+      {phase.result ? <><small>Receiver cleanup: {sentence(phase.cleanup.receiver)} · Run cleanup: {sentence(phase.cleanup.run)}</small><AssistantRunReference runId={phase.result.run_id} label={`${phaseNames[phase.phase]} run`} onNavigate={onNavigate}/></> : null}
     </li>)}</ol>
     {[...progress.inspections].reverse().map((item, index) => <details className="assistant-receiver-analysis" key={item.job.job_id} open={index === 0} aria-label={`Receiver analysis ${progress.inspections.length - index}`}>
       <summary>{index === 0 ? "Latest analysis" : "Earlier analysis"} · through {phaseNames[item.phases[item.phases.length - 1]!.phase].toLowerCase()}</summary>

@@ -1,0 +1,6 @@
+.assistant-run-reference { display: grid; gap: 3px; min-width: 0; margin-block: 9px; }
+.assistant-run-reference > a { font-weight: 600; overflow-wrap: anywhere; }
+.assistant-run-reference > small, .assistant-run-reference > details { color: var(--muted-strong); font-size: .72rem; overflow-wrap: anywhere; }
+.assistant-run-reference summary { cursor: pointer; width: fit-content; }
+.assistant-run-reference .copy-record-id { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.assistant-run-reference code { overflow-wrap: anywhere; }

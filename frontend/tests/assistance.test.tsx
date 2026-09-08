@@ -244,7 +244,7 @@ it("keeps polling the durable turn after its planner job completed and displays 
   vi.mocked(api.assistanceTurn).mockResolvedValue(completed);
   await act(async () => { await view.client.refetchQueries({ queryKey: ["assistance-turn"] }); });
   await screen.findByRole("heading", { name: "Work completed" });
-  expect(screen.getByRole("link", { name: "Inspect saved result" })).toHaveAttribute("href", "/compare?source=run-observed&replay=run-replay");
+  expect(screen.getByRole("link", { name: "Open method comparison" })).toHaveAttribute("href", "/compare?source=run-observed&replay=run-replay");
   expect(screen.getByText("2 evaluations · 2 runs")).toBeInTheDocument();
 });
 
