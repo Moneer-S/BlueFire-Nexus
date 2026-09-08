@@ -517,6 +517,9 @@ def test_service_seeds_durable_product_state_and_indexes_completed_runs(
     assert restarted.recovered_jobs == 0
     assert all(item["version"] == 1 for item in restarted.product_store.list_scenarios())
     assert restarted.product_store.list_runs()[0]["run_id"] == result["run_id"]
+    assert (
+        restarted.product_store.list_runs()[0]["bundle_digest"] == result["manifest"]["bundle_hash"]
+    )
 
 
 def test_service_recovers_inflight_product_jobs_after_restart(tmp_path: Path) -> None:
