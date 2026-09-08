@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -114,7 +115,9 @@ def _running(process_id: int) -> bool:
     if sys.platform.startswith("linux"):
         try:
             payload = (Path("/proc") / str(process_id) / "stat").read_bytes()
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
+            # Linux may return ESRCH after opening stat if the process exits
+            # before read; this is the same stopped state as a missing entry.
             return False
         close = payload.rfind(b")")
         return close < 0 or payload[close + 2 : close + 3] != b"Z"
@@ -125,6 +128,44 @@ def _running(process_id: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+@pytest.mark.parametrize(
+    "failure,stopped",
+    [
+        (FileNotFoundError(errno.ENOENT, "missing proc entry"), True),
+        (ProcessLookupError(errno.ESRCH, "process exited during read"), True),
+        (PermissionError(errno.EACCES, "proc read denied"), False),
+        (OSError(errno.EIO, "proc read failed"), False),
+    ],
+)
+def test_proc_liveness_read_distinguishes_exit_from_unavailable_state(
+    monkeypatch: pytest.MonkeyPatch, failure: OSError, stopped: bool
+) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    reads: list[Path] = []
+
+    def read_stat(path: Path) -> bytes:
+        reads.append(path)
+        raise failure
+
+    monkeypatch.setattr(Path, "read_bytes", read_stat)
+    if stopped:
+        assert not _running(4242)
+    else:
+        with pytest.raises(type(failure)) as caught:
+            _running(4242)
+        assert caught.value is failure
+    assert reads == [Path("/proc") / "4242" / "stat"]
+
+
+@pytest.mark.parametrize("state,running", [(b"S", True), (b"Z", False)])
+def test_proc_liveness_read_preserves_live_and_zombie_distinction(
+    monkeypatch: pytest.MonkeyPatch, state: bytes, running: bool
+) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(Path, "read_bytes", lambda _path: b"4242 (owned helper) " + state + b" 1")
+    assert _running(4242) is running
 
 
 def _group_running(process_group: int) -> bool:
