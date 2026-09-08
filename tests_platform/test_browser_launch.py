@@ -41,7 +41,13 @@ def test_fixed_desktop_handoff_is_quiet_scrubbed_and_never_retried(
         return Process()
 
     monkeypatch.setattr(launch.subprocess, "Popen", popen)
-    assert launch.open_console_url(URL) is (outcome in (0, "timeout"))
+    reasons: list[str] = []
+    assert launch.open_console_url(URL, on_failure=reasons.append) is (outcome in (0, "timeout"))
+    assert len(reasons) == (0 if outcome in (0, "timeout") else 1)
+    assert URL not in " ".join(reasons)
+    assert "private diagnostic" not in " ".join(reasons)
+    if outcome == 1:
+        assert "status 1" in reasons[0]
     assert len(calls) == 1
     argv, kwargs = calls[0]
     assert argv == [executable, URL]
@@ -115,6 +121,37 @@ def test_other_literal_loopback_bindings_are_supported(
     url = URL.replace("127.0.0.1", host)
     assert launch.open_console_url(url) is True
     assert calls == [url]
+
+
+@pytest.mark.parametrize(
+    "code,expected",
+    [
+        (1155, "Choose a default browser in Windows Settings (error 1155)"),
+        (2, "Windows reported a missing file or path (error 2)"),
+        (5, "Windows denied the browser request (error 5)"),
+        (1460, "Windows could not open the browser (error 1460)"),
+        ("private-platform-detail", "The operating system could not open the browser"),
+    ],
+)
+def test_windows_failure_reports_safe_reason_without_exception_payload(
+    monkeypatch: pytest.MonkeyPatch, code: Any, expected: str
+) -> None:
+    monkeypatch.setattr(launch.sys, "platform", "win32")
+    reasons: list[str] = []
+    calls: list[str] = []
+
+    def startfile(url: str) -> None:
+        calls.append(url)
+        error = OSError("private-platform-detail " + URL)
+        error.winerror = code
+        error.filename = "private-platform-detail"
+        raise error
+
+    monkeypatch.setattr(launch.os, "startfile", startfile, raising=False)
+    assert launch.open_console_url(URL, on_failure=reasons.append) is False
+    assert calls == [URL] and len(reasons) == 1
+    assert expected in reasons[0]
+    assert "private-platform-detail" not in reasons[0] and URL not in reasons[0]
 
 
 def test_browser_boundary_source_pin_refuses_changed_launch_flags() -> None:

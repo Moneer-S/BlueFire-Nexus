@@ -491,10 +491,11 @@ def _json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
 
 
-def _browser_open_failed() -> None:
+def _browser_open_failed(reason: str | None = None) -> None:
     print(
         "The browser could not be opened automatically. "
-        "Open the console URL printed above in your browser; "
+        + (f"{reason} " if reason else "")
+        + "Open the console URL printed above in your browser; "
         "keep this command running. No second service is needed.",
         file=sys.stderr,
         flush=True,
@@ -506,13 +507,15 @@ def _open_console_browser(launch_url: str, stopped: threading.Event) -> None:
     # or service cleanup, and a queued launch must not reopen a stopped session.
     if stopped.is_set():
         return
+    reasons: list[str] = []
     try:
-        opened = open_console_url(launch_url)
+        opened = open_console_url(launch_url, on_failure=reasons.append)
     except Exception:
         # Browser errors may embed the one-use URL or platform-local paths.
         opened = False
+        reasons = ["The desktop handoff failed before completion."]
     if not opened and not stopped.is_set():
-        _browser_open_failed()
+        _browser_open_failed(reasons[0] if reasons else None)
 
 
 def _execute(
@@ -597,7 +600,7 @@ def _execute(
                         daemon=True,
                     ).start()
                 except (OSError, RuntimeError):
-                    _browser_open_failed()
+                    _browser_open_failed("The browser-opening task could not start.")
 
         try:
             serve(

@@ -739,7 +739,7 @@ def test_cli_ui_opens_only_the_bound_authenticated_url_once(
     monkeypatch.setattr(cli, "_service", lambda _args: service)
     monkeypatch.setattr(cli, "generate_browser_bootstrap_capability", lambda: capability)
 
-    def open_browser(url: str) -> bool:
+    def open_browser(url: str, **_kwargs: Any) -> bool:
         assert events == ["bound"]
         opened.append(url)
         return True
@@ -813,6 +813,31 @@ def test_cli_queued_browser_launch_is_cancelled_after_service_shutdown(
     _execute(_parser().parse_args(["ui"]))
     assert len(pending) == 1
     pending[0]["target"](*pending[0]["args"])
+
+
+def test_cli_missing_browser_explains_recovery_without_echoing_session(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from bluefire import browser_launch
+
+    bootstrap_url = "http://127.0.0.1:49322/#bluefire-session=" + "D" * 64
+    requests: list[str] = []
+
+    def no_browser(url: str) -> None:
+        requests.append(url)
+        error = OSError("private-handler-location " + url)
+        error.winerror = 1155
+        raise error
+
+    monkeypatch.setattr(browser_launch.sys, "platform", "win32")
+    monkeypatch.setattr(browser_launch.os, "startfile", no_browser, raising=False)
+    cli._open_console_browser(bootstrap_url, cli.threading.Event())
+    message = capsys.readouterr().err
+    assert requests == [bootstrap_url]
+    assert "Choose a default browser in Windows Settings (error 1155)" in message
+    assert "console URL printed above" in message and "No second service" in message
+    assert message.count("could not be opened automatically") == 1
+    assert bootstrap_url not in message and "private-handler-location" not in message
 
 
 def test_cli_blocked_browser_does_not_block_serving_or_cleanup(
