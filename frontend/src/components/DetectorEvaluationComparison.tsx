@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import { compareDetectorEvaluations, evaluationLabel } from "../lib/detection-results";
 import type { DetectionResource, DetectionRunEvaluation } from "../types";
 import { Badge, Button, EmptyState, ErrorState, Field, LoadingState, Panel, PanelHeader, sentence } from "./Primitives";
+import { RunReference } from "./RunReference";
 
 function download(name: string, content: string, type: string) {
   const url = URL.createObjectURL(new Blob([content], { type }));
@@ -26,7 +27,7 @@ export function DetectorEvaluationTable({ baseline, revised, baselineLabel, revi
   const rows = compareDetectorEvaluations(baseline, revised, runIds);
   return rows.length ? <div className="detector-comparison-table" role="region" aria-label="Measured detector comparison" tabIndex={0}>
     <table><caption>Retained query evaluations by run and detector revision</caption><thead><tr><th scope="col">Run / case</th><th scope="col">{baselineLabel}</th><th scope="col">{revisedLabel}</th><th scope="col">Measured change</th></tr></thead>
-      <tbody>{rows.map((row) => <tr key={row.runId}><th scope="row"><Link to={`/runs/${encodeURIComponent(row.runId)}`}>{row.runId}</Link><small>{row.roles.length ? row.roles.map(sentence).join(" / ") : "Case not assigned"}</small></th>
+      <tbody>{rows.map((row) => <tr key={row.runId}><th scope="row"><RunReference runId={row.runId} /><small>{row.roles.length ? row.roles.map(sentence).join(" / ") : "Case not assigned"}</small></th>
         <td><EvaluationCell reports={row.baseline} /></td><td><EvaluationCell reports={row.revised} /></td><td>{row.change}</td></tr>)}</tbody>
     </table>
   </div> : <EmptyState title="No run evaluations yet" description="Evaluate both revisions in Detection Lab on separate attack, benign, and replay runs. Their actual results will appear here." />;
@@ -73,7 +74,7 @@ export function DetectorEvaluationComparison({ runIds }: { runIds: string[] }) {
   };
   const label = (item: DetectionResource) => `${item.document.title ?? item.id} · revision ${item.document.revision ?? 1}`;
   return <Panel className="detector-comparison">
-    <PanelHeader eyebrow="Detection improvement" title="Compare detector results" detail="Choose the original rule and its revision. Results come from retained query evaluations on the selected runs." />
+    <PanelHeader title="Compare detector results" />
     <div className="detail-body">
       {candidates.isPending ? <LoadingState label="Loading detector revisions" /> : candidates.isError ? <ErrorState title="Detector revisions unavailable" error={candidates.error} retry={() => { void candidates.refetch(); }} /> : !resources.length ? <p>Save and evaluate a SQLite or Sigma rule in <Link to={runIds[0] ? `/detection-lab?run=${encodeURIComponent(runIds[0])}` : "/detection-lab"}>Detection Lab</Link> to compare its revisions here.</p> : <>
         <div className="two-column"><Field label="Original detector"><select value={baselineId} onChange={(event) => { setBaselineId(event.target.value); setRevisedId(""); }}><option value="">Choose a detector</option>{resources.map((item) => <option key={item.id} value={item.id}>{label(item)}</option>)}</select></Field>

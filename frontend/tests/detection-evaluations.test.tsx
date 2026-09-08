@@ -42,6 +42,10 @@ beforeEach(() => {
       return new Response(JSON.stringify({ evaluation }), { status: 200 });
     }
     if (path.endsWith("/evaluations")) return new Response(JSON.stringify({ evaluations: retained.filter((row) => row.candidate.candidate_id === id) }), { status: 200 });
+    const sourceId = [runId, otherRunId].find(value => path.endsWith(`/runs/${value}`));
+    if (sourceId) return new Response(JSON.stringify({ ...demoRuns[0]!, run_id: sourceId,
+      scenario_title: sourceId === runId ? "Original collection" : "Collection after change", scenario: undefined,
+      presentation: undefined }), { status: 200 });
     throw new Error(`Unexpected evaluation request: ${path}`);
   }));
 });
@@ -95,8 +99,9 @@ it("shows immutable baseline and revision results together and preserves each so
   await waitFor(() => expect(screen.getByText("Not matched")).toBeInTheDocument());
   expect(screen.getByText("Matched")).toBeInTheDocument();
   const table = within(screen.getByRole("region", { name: "Measured detector comparison" }));
-  expect(table.getByRole("link", { name: runId })).toHaveAttribute("href", `/runs/${runId}`);
-  expect(table.getByRole("link", { name: otherRunId })).toHaveAttribute("href", `/runs/${otherRunId}`);
+  expect(await table.findByRole("link", { name: "Original collection" })).toHaveAttribute("href", `/runs/${runId}`);
+  expect(await table.findByRole("link", { name: "Collection after change" })).toHaveAttribute("href", `/runs/${otherRunId}`);
+  expect(retained.map(item => item.source.run_id)).toEqual([runId, otherRunId]);
   expect(screen.getByText(candidateId)).toBeInTheDocument();
   expect(screen.getByText(parentId)).toBeInTheDocument();
 });
