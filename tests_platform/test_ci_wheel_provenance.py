@@ -21,7 +21,14 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 
 
 def _package_job():
-    workflow = yaml.safe_load((REPOSITORY / ".github/workflows/tests.yml").read_text())
+    workflow = yaml.safe_load(
+        (REPOSITORY / ".github/workflows/tests.yml").read_text(encoding="utf-8")
+    )
+    assert (
+        workflow["jobs"]["python"]["name"]
+        == "Python ${{ matrix.python-version }} \u00b7 ${{ matrix.os }}"
+    )
+    assert workflow["jobs"]["rust"]["name"] == "Rust runner \u00b7 ${{ matrix.os }}"
     return workflow["jobs"]["package"]
 
 
@@ -164,8 +171,9 @@ def test_actual_committed_archives_distinguish_backend_changes_with_identical_ui
     assert first_digest != second_digest
 
 
+@pytest.mark.parametrize("layout", ["root", "purelib", "platlib", "duplicate", "unrelated"])
 @pytest.mark.parametrize("recorded", ["exact", "wrong", "missing"])
-def test_workflow_checks_actual_wheel_metadata_before_upload(tmp_path, recorded):
+def test_workflow_checks_actual_wheel_metadata_before_upload(tmp_path, recorded, layout):
     step = next(
         step
         for step in _package_job()["steps"]
@@ -175,17 +183,26 @@ def test_workflow_checks_actual_wheel_metadata_before_upload(tmp_path, recorded)
     assert command[:2] == ["python", "-c"]
     command[0] = str(Path(sys.executable).absolute())
     (tmp_path / "dist").mkdir()
+    root_member = "bluefire/_build_info.json"
+    layouts = {
+        "root": [root_member],
+        "purelib": ["fixture.data/purelib/" + root_member],
+        "platlib": ["fixture.data/platlib/" + root_member],
+        "duplicate": [root_member, "fixture.data/purelib/" + root_member],
+        "unrelated": ["unrelated/" + root_member],
+    }
     with zipfile.ZipFile(tmp_path / "dist/fixture.whl", "w") as archive:
         if recorded != "missing":
-            archive.writestr(
-                "fixture.data/purelib/bluefire/_build_info.json",
-                json.dumps(
-                    {
-                        "source_revision": "a" * 40 if recorded == "exact" else "b" * 40,
-                        "source_provenance": "git_archive",
-                    }
-                ),
-            )
+            for member in layouts[layout]:
+                archive.writestr(
+                    member,
+                    json.dumps(
+                        {
+                            "source_revision": "a" * 40 if recorded == "exact" else "b" * 40,
+                            "source_provenance": "git_archive",
+                        }
+                    ),
+                )
     result = subprocess.run(
         command,
         cwd=tmp_path,
@@ -193,4 +210,6 @@ def test_workflow_checks_actual_wheel_metadata_before_upload(tmp_path, recorded)
         capture_output=True,
         timeout=15,
     )
-    assert (result.returncode == 0) is (recorded == "exact")
+    assert (result.returncode == 0) is (
+        recorded == "exact" and layout not in {"duplicate", "unrelated"}
+    )

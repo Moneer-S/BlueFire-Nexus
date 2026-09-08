@@ -62,7 +62,7 @@ jobs:
         run: pnpm test:e2e
 
   python:
-    name: Python ${{ matrix.python-version }} Ã‚Â· ${{ matrix.os }}
+    name: Python ${{ matrix.python-version }} · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -191,7 +191,7 @@ jobs:
 
       - name: Verify embedded committed source identity
         run: >-
-          python -c "import json, os, zipfile; from pathlib import Path; wheels = list(Path('dist').glob('*.whl')); assert len(wheels) == 1; archive = zipfile.ZipFile(wheels[0]); members = [name for name in archive.namelist() if name.endswith('/bluefire/_build_info.json')]; assert len(members) == 1; metadata = json.loads(archive.read(members[0])); assert metadata['source_revision'] == os.environ['GITHUB_SHA']; assert metadata['source_provenance'] == 'git_archive'; archive.close()"
+          python -c "import json, os, re, zipfile; from pathlib import Path; wheels = list(Path('dist').glob('*.whl')); assert len(wheels) == 1; archive = zipfile.ZipFile(wheels[0]); members = [name for name in archive.namelist() if name == 'bluefire/_build_info.json' or re.fullmatch(r'[^/]+\.data/(?:purelib|platlib)/bluefire/_build_info\.json', name)]; assert len(members) == 1; metadata = json.loads(archive.read(members[0])); assert metadata['source_revision'] == os.environ['GITHUB_SHA']; assert metadata['source_provenance'] == 'git_archive'; archive.close()"
 
       - name: Inspect wheel tag and native resources
         run: >-
@@ -224,7 +224,7 @@ jobs:
           if-no-files-found: error
 
   rust:
-    name: Rust runner Ã‚Â· ${{ matrix.os }}
+    name: Rust runner · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
