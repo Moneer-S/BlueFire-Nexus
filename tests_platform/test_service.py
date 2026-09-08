@@ -279,9 +279,13 @@ class RecordingRunnerLifecycle:
         self.sandbox = sandbox
         self.calls: list[tuple[str, object]] = []
         self.client_available = True
+        self.profile_budgets: list[tuple[str, int | None]] = []
 
-    def status(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
+    def status(
+        self, *, profile_id: str | None = None, profile_budget_seconds: int | None = None
+    ) -> Mapping[str, Any]:
         self.calls.append(("status", profile_id))
+        self.profile_budgets.append(("status", profile_budget_seconds))
         return {
             "schema_version": "bluefire.runner-lifecycle-status.v1",
             "state": "ready",
@@ -297,8 +301,11 @@ class RecordingRunnerLifecycle:
         self.calls.append(("bootstrap", (allowed_profile_ids, allow_upgrade)))
         return self.status(profile_id=allowed_profile_ids[0])
 
-    def start(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
+    def start(
+        self, *, profile_id: str | None = None, profile_budget_seconds: int | None = None
+    ) -> Mapping[str, Any]:
         self.calls.append(("start", profile_id))
+        self.profile_budgets.append(("start", profile_budget_seconds))
         return self.status(profile_id=profile_id)
 
     def stop(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
@@ -316,8 +323,11 @@ class RecordingRunnerLifecycle:
             "state": "unbootstrapped",
         }
 
-    def client_for_profile(self, profile_id: str) -> tuple[ReadyInventoryRunner, Path]:
+    def client_for_profile(
+        self, profile_id: str, *, profile_budget_seconds: int | None = None
+    ) -> tuple[ReadyInventoryRunner, Path]:
         self.calls.append(("client_for_profile", profile_id))
+        self.profile_budgets.append(("client_for_profile", profile_budget_seconds))
         if not self.client_available:
             raise RunnerLifecycleError("managed runner is stopped")
         return self.runner, self.sandbox
@@ -1039,6 +1049,15 @@ def test_managed_runner_lifecycle_is_inert_and_actions_are_explicit(tmp_path: Pa
         item.id for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
     }
     assert ("start", profile.id) in lifecycle.calls
+    assert ("status", profile.budgets.max_seconds) in lifecycle.profile_budgets
+    assert (
+        "start",
+        max(
+            item.budgets.max_seconds
+            for item in service._runner_profiles()
+            if item.mode is ExecutionMode.EXECUTE
+        ),
+    ) in lifecycle.profile_budgets
     assert ("stop", profile.id) in lifecycle.calls
     assert ("remove", RUNNER_ID) in lifecycle.calls
     service.close()
@@ -1068,6 +1087,7 @@ def test_default_runner_binding_never_bootstraps_or_starts_implicitly(tmp_path: 
 
     assert report["runner_readiness"]["profile_id"] == profile.id
     assert lifecycle.calls == [("client_for_profile", profile.id)]
+    assert lifecycle.profile_budgets == [("client_for_profile", profile.budgets.max_seconds)]
     service.close()
 
 

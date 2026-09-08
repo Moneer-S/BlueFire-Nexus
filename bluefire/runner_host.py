@@ -224,7 +224,10 @@ def serve_managed_runner(
             state_path,
             host=LOOPBACK_HOST,
             port=0,
-            socket_timeout_seconds=max(runner_timeout_seconds + 5.0, 10.0),
+            # Native execution has its own watchdog deadline. Socket reads are
+            # ingress/control traffic, not a reason to admit slow requests for
+            # the entire approved action budget.
+            socket_timeout_seconds=10.0,
             secret_provider=secret_provider,
         )
         host, port = server.server_address

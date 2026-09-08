@@ -150,6 +150,10 @@ class RunnerLifecycleError(RuntimeError):
     """A deliberately path- and secret-free lifecycle refusal."""
 
 
+class RunnerProfileBudgetError(RunnerLifecycleError):
+    """The running host cannot cover the selected profile's reviewed budget."""
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class RunnerHostSpec:
     enrollment_root: Path
@@ -233,8 +237,11 @@ class ManagedRunnerLifecycle:
         trust_removal: TrustRemoval = remove_local_enrollment,
         start_timeout_seconds: float = 15.0,
         stop_timeout_seconds: float = 15.0,
-        runner_timeout_seconds: float = 35.0,
+        runner_timeout_seconds: float | None = None,
     ) -> None:
+        automatic_runner_timeout = runner_timeout_seconds is None
+        if runner_timeout_seconds is None:
+            runner_timeout_seconds = 35.0
         root = Path(managed_root).expanduser()
         if (
             not root.is_absolute()
@@ -257,6 +264,7 @@ class ManagedRunnerLifecycle:
         self.start_timeout_seconds = float(start_timeout_seconds)
         self.stop_timeout_seconds = float(stop_timeout_seconds)
         self.runner_timeout_seconds = float(runner_timeout_seconds)
+        self._automatic_runner_timeout = automatic_runner_timeout
         self._instance_operation_lock = threading.RLock()
         self._owned_processes: dict[str, _OwnedHostProcess] = {}
         self._pending_launches = _local_pending_launches(root)
@@ -529,7 +537,9 @@ class ManagedRunnerLifecycle:
             raise RunnerLifecycleError("Runner bootstrap state could not be persisted.") from None
         return self.status(profile_id=profiles[0])
 
-    def status(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
+    def status(
+        self, *, profile_id: str | None = None, profile_budget_seconds: int | None = None
+    ) -> Mapping[str, Any]:
         """Return path-free lifecycle state; only authenticated health yields ready."""
 
         if self._has_pending_launches() or (
@@ -662,8 +672,9 @@ class ManagedRunnerLifecycle:
             isinstance(health.get("ledger"), Mapping)
             and health["ledger"].get("accepting_execute") is True
         )
+        budget_supported = self._supports_profile_budget(health, profile_budget_seconds)
         return self._status_payload(
-            state="ready" if accepting_execute else "unavailable",
+            state="ready" if accepting_execute and budget_supported else "unavailable",
             enrollment_state=enrollment_state,
             process_state="authenticated",
             profile_id=selected,
@@ -674,22 +685,37 @@ class ManagedRunnerLifecycle:
                 "runner_binary_digest": health["runner_binary_digest"],
                 "inventory_digest": health.get("inventory_digest"),
                 "accepting_execute": accepting_execute,
+                "execution_timeout_seconds": health.get("execution_timeout_seconds"),
+                "profile_budget_supported": budget_supported,
             },
         )
 
-    def start(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
+    def start(
+        self, *, profile_id: str | None = None, profile_budget_seconds: int | None = None
+    ) -> Mapping[str, Any]:
         with self._operation_guard(adopt=False):
-            return self._start_locked(profile_id=profile_id)
+            return self._start_locked(
+                profile_id=profile_id, profile_budget_seconds=profile_budget_seconds
+            )
 
-    def _start_locked(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
+    def _start_locked(
+        self, *, profile_id: str | None = None, profile_budget_seconds: int | None = None
+    ) -> Mapping[str, Any]:
         """Launch the installed host module and require authenticated health."""
 
+        execution_timeout = self._timeout_for_profile(profile_budget_seconds)
         enrollment = self._load_active_enrollment()
         bootstrap = self._load_bootstrap(enrollment)
         selected = self._selected_profile(enrollment, profile_id)
         if self.process_record_path.exists() or _is_link_or_reparse(self.process_record_path):
             current = self.status(profile_id=selected)
             if current["state"] == "ready":
+                if not self._supports_profile_budget(
+                    current.get("health", {}), profile_budget_seconds
+                ):
+                    raise RunnerProfileBudgetError(
+                        "Runner deadline cannot cover this profile; after current work completes, stop and start the runner in Runners."
+                    )
                 return current
             if self._ledger_lock_state() != "free":
                 raise RunnerLifecycleError("Runner host state is unavailable; start was refused.")
@@ -709,7 +735,7 @@ class ManagedRunnerLifecycle:
             process_record_path=self.process_record_path,
             start_gate_path=start_gate_path,
             launch_id=launch_id,
-            runner_timeout_seconds=self.runner_timeout_seconds,
+            runner_timeout_seconds=execution_timeout,
         )
         command = _validated_host_command(self.host_command_factory(spec))
         launch: _LaunchProcess | None = None
@@ -781,12 +807,16 @@ class ManagedRunnerLifecycle:
                         self._clear_pending_launch_marker(launch_id)
                     self._owned_processes[launch_id] = owned
                     self._pending_launches.pop(launch_id, None)
-                    return self.status(profile_id=selected)
+                    return self.status(
+                        profile_id=selected, profile_budget_seconds=profile_budget_seconds
+                    )
             time.sleep(0.025)
         self._stop_exact_failed_launch(launch_id, launch)
         raise RunnerLifecycleError("Runner host did not reach authenticated readiness.")
 
-    def client_for_profile(self, profile_id: str) -> tuple[AuthenticatedRunnerClient, Path]:
+    def client_for_profile(
+        self, profile_id: str, *, profile_budget_seconds: int | None = None
+    ) -> tuple[AuthenticatedRunnerClient, Path]:
         """Return a verified client and the exact sandbox for one enrolled profile."""
 
         enrollment = self._load_active_enrollment()
@@ -806,13 +836,43 @@ class ManagedRunnerLifecycle:
         ledger = _health.get("ledger")
         if not isinstance(ledger, Mapping) or ledger.get("accepting_execute") is not True:
             raise RunnerLifecycleError("Runner recovery ledger cannot accept execution.")
+        if not self._supports_profile_budget(_health, profile_budget_seconds):
+            raise RunnerProfileBudgetError(
+                "Runner deadline cannot cover this profile; after current work completes, stop and start the runner in Runners."
+            )
         client = self._new_client(
             enrollment,
             selected,
             port=int(record["port"]),
             execution=True,
+            execution_timeout_seconds=_health.get("execution_timeout_seconds"),
         )
         return client, bootstrap.sandbox_path
+
+    def _timeout_for_profile(self, budget: int | None) -> float:
+        if budget is None:
+            return self.runner_timeout_seconds
+        if isinstance(budget, bool) or not isinstance(budget, int) or not 1 <= budget <= 86_400:
+            raise RunnerLifecycleError("Runner profile execution budget is invalid.")
+        if not self._automatic_runner_timeout:
+            return self.runner_timeout_seconds
+        # Allow the sealed native action to finish and publish its result before
+        # the outer watchdog deadline. Never expand the existing 24-hour cap.
+        timeout = budget + 5.0
+        if timeout > 86_400:
+            raise RunnerLifecycleError("Runner profile budget leaves no bounded completion margin.")
+        return timeout
+
+    def _supports_profile_budget(self, health: Mapping[str, Any], budget: int | None) -> bool:
+        if budget is None or not self._automatic_runner_timeout:
+            return True
+        required = self._timeout_for_profile(budget)
+        actual = health.get("execution_timeout_seconds")
+        return (
+            not isinstance(actual, bool)
+            and isinstance(actual, (int, float))
+            and required <= actual <= 86_400
+        )
 
     def stop(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
         with self._operation_guard(adopt=False):
@@ -1471,7 +1531,17 @@ class ManagedRunnerLifecycle:
         *,
         port: int,
         execution: bool = False,
+        execution_timeout_seconds: float | None = None,
     ) -> AuthenticatedRunnerClient:
+        actual_timeout = self.runner_timeout_seconds
+        if execution_timeout_seconds is not None:
+            if (
+                isinstance(execution_timeout_seconds, bool)
+                or not isinstance(execution_timeout_seconds, (int, float))
+                or not 0.1 <= execution_timeout_seconds <= 86_400
+            ):
+                raise RunnerLifecycleError("Runner execution deadline is invalid.")
+            actual_timeout = float(execution_timeout_seconds)
         try:
             client = self.client_factory(
                 enrollment.root,
@@ -1485,7 +1555,7 @@ class ManagedRunnerLifecycle:
                 # request validation. Lifecycle control probes retain their
                 # short readiness bound.
                 socket_timeout_seconds=(
-                    max(self.runner_timeout_seconds + 5.0, 10.0) + 5.0
+                    max(actual_timeout + 5.0, 10.0) + 5.0
                     if execution
                     else min(5.0, self.start_timeout_seconds)
                 ),

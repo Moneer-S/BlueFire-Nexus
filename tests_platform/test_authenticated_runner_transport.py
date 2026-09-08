@@ -644,6 +644,7 @@ def test_mutual_tls_health_inventory_execute_and_exact_duplicate_recovery(
     profile: Mapping[str, Any],
 ) -> None:
     runner = RecordingRunner()
+    runner.timeout_seconds = 125.0
     with AuthenticatedRunnerServer(
         enrollment_root,
         runner,
@@ -677,6 +678,9 @@ def test_mutual_tls_health_inventory_execute_and_exact_duplicate_recovery(
         assert health["authenticated_peer_fingerprint"] == health["client_fingerprint"]
         assert str(health["inventory_digest"]).startswith("sha256:")
         assert health["ledger"]["accepting_execute"] is True
+        assert health["execution_timeout_seconds"] == 125.0
+        assert server.socket_timeout_seconds == 10.0
+        assert server.worker_shutdown_timeout_seconds == 130.0
         assert client.inventory()["runner_id"] == "bluefire-rust-runner.v1"
 
         first = client.execute(manifest, profile)

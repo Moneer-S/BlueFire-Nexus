@@ -1036,6 +1036,16 @@ class AuthenticatedRunnerServer:
         self.host = _loopback_host(host)
         self.port = _port(port, allow_zero=True)
         self.socket_timeout_seconds = float(socket_timeout_seconds)
+        # Keep socket ingress independent of a long native action, but retain
+        # the execution/publication envelope when joining an owned worker.
+        native_timeout = getattr(runner, "timeout_seconds", None)
+        self.worker_shutdown_timeout_seconds = (
+            max(self.socket_timeout_seconds, float(native_timeout) + 5.0)
+            if not isinstance(native_timeout, bool)
+            and isinstance(native_timeout, (int, float))
+            and 0 < native_timeout <= 86_400
+            else self.socket_timeout_seconds
+        )
         self.max_frame_bytes = int(max_frame_bytes)
         self.max_workers = int(max_workers)
         self.control_worker_reserve = int(control_worker_reserve)
@@ -2809,7 +2819,7 @@ class AuthenticatedRunnerServer:
             workers = tuple(self._workers)
         for worker in workers:
             if worker is not threading.current_thread():
-                worker.join(timeout=self.socket_timeout_seconds + 1.0)
+                worker.join(timeout=self.worker_shutdown_timeout_seconds + 1.0)
         with self._workers_lock:
             release_lock = not self._workers
         if release_lock:
@@ -2995,6 +3005,7 @@ class AuthenticatedRunnerServer:
                     "enrollment_generation": binding["enrollment_generation"],
                     "runner_binary_digest": runner_binary_digest,
                     "inventory_digest": content_hash(canonical_inventory),
+                    "execution_timeout_seconds": getattr(self.runner, "timeout_seconds", None),
                     "ledger": self._ledger_capacity_status(),
                 }
             elif operation == "inventory":

@@ -31,7 +31,12 @@ class RunnerManagementServiceMixin:
         selected = self._runner_lifecycle_profile(profile_id)
         try:
             return self.runner_lifecycle.status(
-                profile_id=selected.id if selected is not None else None
+                profile_id=selected.id if selected is not None else None,
+                profile_budget_seconds=(
+                    selected.budgets.max_seconds
+                    if selected is not None
+                    else self._managed_host_profile_budget()
+                ),
             )
         except RunnerLifecycleError as exc:
             raise APIError(
@@ -82,7 +87,8 @@ class RunnerManagementServiceMixin:
         selected = self._runner_lifecycle_profile(profile_id)
         try:
             return self.runner_lifecycle.start(
-                profile_id=selected.id if selected is not None else None
+                profile_id=selected.id if selected is not None else None,
+                profile_budget_seconds=self._managed_host_profile_budget(),
             )
         except RunnerLifecycleError as exc:
             raise APIError(
@@ -91,6 +97,16 @@ class RunnerManagementServiceMixin:
                 "Managed runner start was refused.",
                 [str(exc)],
             ) from exc
+
+    def _managed_host_profile_budget(self) -> int | None:
+        return max(
+            (
+                profile.budgets.max_seconds
+                for profile in self._runner_profiles()
+                if profile.mode is ExecutionMode.EXECUTE
+            ),
+            default=None,
+        )
 
     def stop_runner(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
         selected = self._runner_lifecycle_profile(profile_id)

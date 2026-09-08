@@ -140,7 +140,7 @@ from .runner_client import (
     runner_transport_identity,
 )
 from .runner_contracts import RunnerContractError
-from .runner_lifecycle import ManagedRunnerLifecycle, RunnerLifecycleError
+from .runner_lifecycle import ManagedRunnerLifecycle, RunnerLifecycleError, RunnerProfileBudgetError
 from .runner_management_service import RunnerManagementServiceMixin
 from .util import content_hash, file_hash
 
@@ -5417,7 +5417,14 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         """Bind an already-running authenticated host; never mutate lifecycle state."""
 
         try:
-            return self.runner_lifecycle.client_for_profile(profile.id)
+            return self.runner_lifecycle.client_for_profile(
+                profile.id, profile_budget_seconds=profile.budgets.max_seconds
+            )
+        except RunnerProfileBudgetError:
+            raise RunnerReadinessError(
+                "Runner deadline cannot cover this profile. After current work completes, "
+                "stop and start the runner in Runners."
+            ) from None
         except RunnerLifecycleError:
             raise RunnerReadinessError(
                 "Managed runner is not authenticated and ready; use an explicit lifecycle action."
