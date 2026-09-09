@@ -745,6 +745,9 @@ describe("product application", () => {
     expect(await screen.findByRole("heading", { name: "Detection Lab" })).toBeVisible();
     await user.click(screen.getByRole("tab", { name: "Revisions" }));
 
+    expect(screen.getByText("Advanced clone and tune").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByRole("button", { name: "Compare immutable revisions" })).toBeVisible();
+    await user.click(screen.getByText("Advanced clone and tune"));
     expect(screen.getByText("Advanced definition revisions")).toBeVisible();
     expect(screen.getByText(/does not copy compiled source or results/)).toBeVisible();
     expect(screen.getAllByText(/Revision 1 · Origin/).length).toBeGreaterThan(0);

@@ -54,6 +54,7 @@ it("retains source, reasons, tuning and fixtures across candidate changes and ro
   const revise = vi.spyOn(api, "reviseDetectionSource");
   await edit(user);
   await user.click(screen.getByRole("tab", { name: "Revisions" }));
+  await user.click(screen.getByText("Advanced clone and tune"));
   await user.click(screen.getByRole("radio", { name: /Tune rule behavior/ }));
   const selection = screen.getByRole("textbox", { name: /^Tuned selection JSON/ });
   await user.clear(selection); await user.paste('{"custom":"draft"}');
@@ -74,6 +75,7 @@ it("retains source, reasons, tuning and fixtures across candidate changes and ro
   await user.click(screen.getByRole("link", { name: "Return to lab" }));
   expect(await screen.findByRole("textbox", { name: /^Malicious fixtures JSON/ })).toHaveValue("draft fixture text");
   await user.click(screen.getByRole("tab", { name: "Revisions" }));
+  await user.click(screen.getByText("Advanced clone and tune"));
   expect(screen.getByRole("textbox", { name: /^Tuned selection JSON/ })).toHaveValue('{"custom":"draft"}');
   expect(screen.getByRole("textbox", { name: /^Tuned log source JSON/ })).toHaveValue('{"category":"custom"}');
   expect(screen.getByRole("textbox", { name: "Revision title" })).toHaveValue("Baseline SQL edited");
@@ -91,7 +93,9 @@ it("restores exact selection, filter, tab and failed-save inputs after reload", 
   await screen.findByText("Validation refused");
   await user.type(screen.getByRole("textbox", { name: "Search detection candidates" }), "Baseline");
   await user.click(screen.getByRole("tab", { name: "Revisions" }));
+  await user.click(screen.getByText("Advanced clone and tune"));
   remount();
+  await user.click(await screen.findByText("Advanced clone and tune"));
   expect(await screen.findByRole("textbox", { name: /^Required research reason/ })).toHaveValue("Inspect contents observations");
   expect(screen.getByRole("textbox", { name: "Search detection candidates" })).toHaveValue("Baseline");
   expect(new URLSearchParams(screen.getByTestId("location").textContent!).get("candidate")).toBe(id);

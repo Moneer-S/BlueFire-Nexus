@@ -67,6 +67,7 @@ it("edits SQL directly, saves a parsed child and opens the selected run without 
   expect(screen.getByRole("button", { name: "Evaluate full observed run" })).toBeEnabled();
   await user.click(screen.getByRole("tab", { name: "Revisions" }));
   expect(screen.getByText(/Revision 2 · Source/, { selector: "strong" })).toBeVisible();
+  await user.click(screen.getByText("Advanced clone and tune"));
   expect(screen.getByText(/Clone copies the structured definition into an unparsed hypothesis/)).toBeVisible();
 });
 
@@ -156,6 +157,7 @@ it.each(["clone", "tune"] as const)("keeps newer navigation when a pending %s fi
   const submit = vi.spyOn(api, kind === "clone" ? "cloneDetection" : "tuneDetection").mockReturnValue(pending);
   await screen.findByRole("heading", { name: "Baseline SQL" });
   await user.click(screen.getByRole("tab", { name: "Revisions" }));
+  await user.click(screen.getByText("Advanced clone and tune"));
   if (kind === "tune") {
     await user.click(screen.getByRole("radio", { name: /Tune rule behavior/i }));
     await user.clear(screen.getByRole("textbox", { name: /Tuned selection JSON/ }));
@@ -180,6 +182,7 @@ it.each(["success", "error"])("does not restore an old clone request after navig
   vi.spyOn(api, "cloneDetection").mockReturnValue(pending);
   await screen.findByRole("heading", { name: "Baseline SQL" });
   await user.click(screen.getByRole("tab", { name: "Revisions" }));
+  await user.click(screen.getByText("Advanced clone and tune"));
   await user.type(screen.getByRole("textbox", { name: /Required research reason/ }), "Review this immutable alternative.");
   await user.click(screen.getByRole("button", { name: "Create immutable clone" }));
   await waitFor(() => expect(api.cloneDetection).toHaveBeenCalledTimes(1));

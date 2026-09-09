@@ -1,3 +1,4 @@
+import "./DetectionRevisionReview.css";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Beaker, CheckCircle2, Code2, FileCheck2, FlaskConical, Plus, Search, ShieldQuestion } from "lucide-react";
@@ -49,6 +50,12 @@ const baselineRelationships = new Set(["imported", "adapted", "inspired", "compa
 const baselineReviews = new Set(["reviewed", "conditional", "prohibited"]);
 const baselineUseClassifications = new Set(["reference_only", "metadata_import", "clean_reimplementation", "external_adapter", "compatible_code_adaptation", "incompatible_or_restricted"]);
 const baselineUpdateStatuses = new Set(["current", "review_due", "superseded", "blocked"]);
+
+type ReviewedComparison = { report: DetectionComparisonResponse; sources: CandidateView[] };
+
+function candidateReviewLabel(candidate: DetectionCandidate) {
+  return `${candidate.title?.trim() || "Untitled rule"} · ${revisionLabel(candidate)}`;
+}
 
 type CandidateView = DetectionCandidate & { resolvedId: string; resourceId?: string; runId?: string; demo?: boolean };
 
@@ -322,8 +329,12 @@ function DetectionRegistryPage() {
     },
   });
   const comparisonMutation = useMutation({
-    mutationFn: ({ baselineId, candidateId }: { baselineId: string; candidateId: string }) => api.compareDetections(baselineId, candidateId),
-    onError: (error) => setNotice(error instanceof Error ? error.message : "The revision comparison was refused."),
+    mutationFn: async ({ baselineId, candidateId, sources }: { baselineId: string; candidateId: string; sources: CandidateView[]; navigation: typeof manualNavigation }): Promise<ReviewedComparison> => {
+      const report = await api.compareDetections(baselineId, candidateId);
+      if (report.baseline.candidate_id !== baselineId || report.candidate.candidate_id !== candidateId) throw new Error("The returned comparison does not match the requested revisions. Select and compare them again.");
+      return { report, sources };
+    },
+    onError: (error, submitted) => { if (manualMounted.current && manualNavigationRef.current === submitted.navigation) setNotice(error instanceof Error ? error.message : "The revision comparison was refused."); },
   });
 
   if (runsQuery.isPending || catalogQuery.isPending || candidatesQuery.isPending || healthQuery.isPending) return <LoadingState label="Opening Detection Lab" />;
@@ -431,11 +442,11 @@ function DetectionRegistryPage() {
         lifecyclePending={actionMutation.isPending}
         revisionPending={revisionMutation.isPending || sourceRevisionMutation.isPending}
         comparisonPending={comparisonMutation.isPending}
-        comparison={comparisonMutation.data}
+        comparison={comparisonMutation.data?.report.baseline.candidate_id === selected.resourceId ? comparisonMutation.data : undefined}
         onAction={(action, body) => selected.resourceId && actionMutation.mutate({ id: selected.resourceId, action, body })}
         onRevision={(kind, body) => selected.resourceId && revisionMutation.mutate({ id: selected.resourceId, kind, body, navigation: manualNavigationRef.current })}
         onSourceRevision={(body) => selected.resourceId && sourceRevisionMutation.mutate({ id: selected.resourceId, selection: activeSelection.current, body })}
-        onCompare={(candidateId) => selected.resourceId && comparisonMutation.mutate({ baselineId: selected.resourceId, candidateId })}
+        onCompare={(candidateId) => selected.resourceId && comparisonMutation.mutate({ baselineId: selected.resourceId, candidateId, sources: structuredClone(lineage.filter(item => item.resourceId === selected.resourceId || item.resourceId === candidateId)), navigation: manualNavigation })}
       /> : <Panel><DetectionAIRevision sourceRun={sourceRun} providers={catalogQuery.data.ai.providers ?? []} defaultProvider={catalogQuery.data.ai.active_provider} manualEdits={false} /><EmptyState icon={<FlaskConical />} title={selectedId ? "Detector unavailable" : "Select a candidate"} description={selectedId ? "The requested detector is not available in this registry or source run. Select an available detector from the list." : "Inspect lifecycle evidence, fixtures, fields, immutable revisions, and reviewed public baselines."} /></Panel>}
     </div>
   </div>;
@@ -497,7 +508,7 @@ function CandidateWorkspace({
   lifecyclePending: boolean;
   revisionPending: boolean;
   comparisonPending: boolean;
-  comparison?: DetectionComparisonResponse;
+  comparison?: ReviewedComparison;
   onAction: (action: LifecycleAction, body: Record<string, unknown>) => void;
   onRevision: (kind: RevisionKind, body: DetectionCloneRequest | DetectionTuneRequest) => void;
   onSourceRevision: (body: DetectionSourceRevisionRequest) => void;
@@ -748,7 +759,7 @@ function RevisionWorkspace({
   persisted: boolean;
   lineage: CandidateView[];
   comparisonChoices: CandidateView[];
-  comparison?: DetectionComparisonResponse;
+  comparison?: ReviewedComparison;
   comparisonPending: boolean;
   compareId: string;
   setCompareId: (value: string) => void;
@@ -772,11 +783,19 @@ function RevisionWorkspace({
   onCompare: (candidateId: string) => void;
 }) {
   return <div className="review-stack">
-    <Callout title="Advanced definition revisions">Clone copies the structured definition into an unparsed hypothesis; it does not copy compiled source or results. Tune changes structured selection or log source. To edit SQLite or Sigma, use the source editor in the Rule tab. Each revision receives a new ID and parent link.</Callout>
+
     <div>
       <h3>Lineage</h3>
-      <div className="structured-list">{lineage.length ? lineage.map((item) => <article key={item.resolvedId}><strong>{revisionLabel(item)}</strong><span>{sentence(item.state)}</span><details><summary>Revision identity</summary><DataList items={[{ label: "Candidate ID", value: <code>{item.resolvedId}</code> }, { label: "Parent candidate", value: item.parent_candidate_id ? <code>{item.parent_candidate_id}</code> : "Origin has no parent" }, { label: "Definition digest", value: item.definition_digest ? <code>{item.definition_digest}</code> : "Not reported" }]} /></details></article>) : <EmptyState title="No persisted lineage" description="Run-linked records cannot be revised in place." />}</div>
+      <div className="structured-list">{lineage.length ? lineage.map((item) => <article key={item.resolvedId}><strong>{candidateReviewLabel(item)}</strong><span>{sentence(item.state)}</span><details><summary>Revision identity</summary><DataList items={[{ label: "Candidate ID", value: <code>{item.resolvedId}</code> }, { label: "Parent candidate", value: item.parent_candidate_id ? <code>{item.parent_candidate_id}</code> : "Origin has no parent" }, { label: "Definition digest", value: item.definition_digest ? <code>{item.definition_digest}</code> : "Not reported" }]} /></details></article>) : <EmptyState title="No persisted lineage" description="Run-linked records cannot be revised in place." />}</div>
     </div>
+    <div>
+      <h3>Compare two revisions</h3>
+      <div className="config-grid"><Field label="Baseline revision"><input value={candidateReviewLabel(candidate)} readOnly disabled /></Field><Field label="Candidate revision"><select value={compareId} onChange={(event) => setCompareId(event.target.value)} disabled={!comparisonChoices.length}><option value="">Select same-lineage revision</option>{comparisonChoices.map((item) => <option key={item.resolvedId} value={item.resourceId}>{candidateReviewLabel(item)}</option>)}</select></Field></div>
+      <div className="candidate-actions"><Button onClick={() => onCompare(compareId)} disabled={!persisted || !compareId || comparisonPending}>{comparisonPending ? "Comparing revisions…" : "Compare immutable revisions"}</Button></div>
+    </div>
+    {comparison ? <DetectionComparisonView review={comparison} sourcesById={sourcesById} /> : <Callout title="No comparison loaded">Choose another revision from this lineage to inspect source, rule, field, lifecycle, fixture, observed, and benign deltas.</Callout>}
+    <details className="detection-advanced-revisions"><summary>Advanced clone and tune</summary>
+    <Callout title="Advanced definition revisions">Clone copies the structured definition into an unparsed hypothesis; it does not copy compiled source or results. Tune changes structured selection or log source. To edit SQLite or Sigma, use the source editor in the Rule tab. Each revision receives a new ID and parent link.</Callout>
     <fieldset>
       <legend>Revision intent</legend>
       <div className="choice-grid two">{(["clone", "tune"] as const).map((kind) => <label key={kind}><input type="radio" name="detection-revision-kind" checked={revisionKind === kind} onChange={() => setRevisionKind(kind)} disabled={!persisted} /><span><strong>{kind === "clone" ? "Clone unchanged rule behavior" : "Tune rule behavior"}</strong><small>{kind === "clone" ? "Branch attribution, title, known misses, fields, or public baselines." : "Change the structured selection or log source and retain a durable reason."}</small></span></label>)}</div>
@@ -800,12 +819,7 @@ function RevisionWorkspace({
       <PublicBaselineList baselines={selectableBaselines.filter((item) => selectedBaselineIds.includes(item.research_source_id))} sourcesById={sourcesById} empty="No public baseline will be attached to the new revision." />
     </fieldset>
     <div className="candidate-actions"><Button variant="primary" onClick={onSubmit} disabled={!persisted || revisionPending || !revisionReason.trim()}>{revisionKind === "clone" ? "Create immutable clone" : "Create immutable tune"}</Button></div>
-    <div>
-      <h3>Compare two revisions</h3>
-      <div className="config-grid"><Field label="Baseline revision"><input value={`Revision ${candidate.revision ?? 1} · ${candidate.resolvedId}`} readOnly disabled /></Field><Field label="Candidate revision"><select value={compareId} onChange={(event) => setCompareId(event.target.value)} disabled={!comparisonChoices.length}><option value="">Select same-lineage revision</option>{comparisonChoices.map((item) => <option key={item.resolvedId} value={item.resourceId}>Revision {item.revision ?? 1} · {sentence(item.revision_kind ?? "origin")} · {item.resolvedId}</option>)}</select></Field></div>
-      <div className="candidate-actions"><Button onClick={() => onCompare(compareId)} disabled={!persisted || !compareId || comparisonPending}>{comparisonPending ? "Comparing revisions…" : "Compare immutable revisions"}</Button></div>
-    </div>
-    {comparison ? <DetectionComparisonView comparison={comparison} sourcesById={sourcesById} /> : <Callout title="No comparison loaded">Choose another revision from this lineage to inspect source, rule, field, lifecycle, fixture, observed, and benign deltas.</Callout>}
+    </details>
   </div>;
 }
 
@@ -827,18 +841,33 @@ function SetDeltaView({ label, delta }: { label: string; delta: DetectionSetDelt
   return <article><header><strong>{label}</strong><Badge tone={delta.added.length || delta.removed.length ? "warning" : "neutral"}>{delta.added.length + delta.removed.length ? "Changed" : "Stable"}</Badge></header><DataList items={[{ label: "Added", value: listText(delta.added) }, { label: "Removed", value: listText(delta.removed) }, { label: "Unchanged", value: listText(delta.unchanged) }]} /></article>;
 }
 
-function DetectionComparisonView({ comparison, sourcesById }: { comparison: DetectionComparisonResponse; sourcesById: Map<string, ResearchSourceResource> }) {
+function DetectionComparisonView({ review, sourcesById }: { review: ReviewedComparison; sourcesById: Map<string, ResearchSourceResource> }) {
+  const comparison = review.report;
+  const boundSources = [comparison.baseline, comparison.candidate].map(identity => {
+    const matches = review.sources.filter(item => item.resourceId === identity.candidate_id && item.candidate_id === identity.candidate_id && Boolean(identity.definition_digest) && item.definition_digest === identity.definition_digest && item.revision === identity.revision && (item.revision_root_id ?? item.candidate_id) === comparison.revision_root_id);
+    return matches.length === 1 ? matches[0] : undefined;
+  });
+  const sourcesBound = boundSources.every(Boolean);
   const changedCategories = Object.values(comparison.deltas).filter((item) => item.changed).length;
   const { source, rule, fields, lifecycle: lifecycleDelta, fixtures, observed, benign } = comparison.deltas;
   return <div className="review-stack" aria-label="Detection revision comparison">
-    <Callout tone={changedCategories ? "warning" : "success"} title="Immutable revision comparison">{changedCategories} of 7 delta categories changed. The comparison is constrained to lineage <code>{comparison.revision_root_id}</code>.</Callout>
-    <DataList items={[
+    <Callout tone={changedCategories ? "warning" : "success"} title="Immutable revision comparison">{changedCategories} of 7 delta categories changed. These are the saved results for the compared revisions. Changing the selection above does not change this result.</Callout>
+    <section className="detection-saved-sources" aria-label="Compared saved rule sources">
+      <h3>Saved rule sources</h3>
+      <p>Read-only source from the requested immutable revisions. Unsaved editor changes are not included.</p>
+      <div className="delta-columns">{[comparison.baseline, comparison.candidate].map((identity, index) => <section key={index} aria-label={index === 0 ? "Baseline saved source" : "Candidate saved source"}>
+        <h4>{index === 0 ? "Baseline" : "Candidate"}: {boundSources[index] ? candidateReviewLabel(boundSources[index]!) : `Revision ${identity.revision} · ${sentence(identity.revision_kind)}`}</h4>
+        {sourcesBound && typeof boundSources[index]?.rule_source === "string" && boundSources[index]!.rule_source!.length > 0 ? <pre tabIndex={0}>{boundSources[index]!.rule_source}</pre> : <p>{sourcesBound ? "No saved rule source was recorded for this revision. Structured definitions can be inspected in the comparison details." : "Saved source unavailable: both requested revisions must match the comparison’s immutable identity and definition digest. No current selection or draft has been substituted."}</p>}
+      </section>)}</div>
+    </section>
+    <details><summary>Comparison identity and definitions</summary><DataList items={[
+      { label: "Lineage ID", value: <code>{comparison.revision_root_id}</code> },
       { label: "Comparison ID", value: <code>{comparison.comparison_id}</code> },
       { label: "Baseline", value: <><code>{comparison.baseline.candidate_id}</code> · revision {comparison.baseline.revision} · {sentence(comparison.baseline.revision_kind)} · {sentence(comparison.baseline.state)}</> },
       { label: "Candidate", value: <><code>{comparison.candidate.candidate_id}</code> · revision {comparison.candidate.revision} · {sentence(comparison.candidate.revision_kind)} · {sentence(comparison.candidate.state)}</> },
       { label: "Baseline definition", value: <code>{comparison.baseline.definition_digest}</code> },
       { label: "Candidate definition", value: <code>{comparison.candidate.definition_digest}</code> },
-    ]} />
+    ]} /></details>
     <div className="record-grid">
       <article>
         <header><Badge tone={source.changed ? "warning" : "success"}>{source.changed ? "Changed" : "Stable"}</Badge><strong>Source attribution</strong></header>
