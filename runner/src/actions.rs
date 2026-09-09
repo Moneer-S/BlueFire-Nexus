@@ -2618,50 +2618,73 @@ impl PreparedAction for AtomicGzipPrepared {
             remaining,
         )
         .map_err(atomic_gzip_failure)?;
-        if started.elapsed() >= task_timeout
-            || crate::contract::utc_now() >= context.manifest.expires_at
-        {
-            return Err(ActionFailure::timed_out(
-                "atomic_gzip_timeout",
-                "The sealed gzip deadline elapsed before publication.",
-            ));
-        }
-        let target = context
-            .root
-            .prepare_new_file(&destination)
-            .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
-        let intent = begin_receipt(
+        publish_atomic_gzip(
             context,
-            receipt_paths(
-                target.relative.clone(),
-                &compressed.bytes,
-                &target.created_directories,
-            ),
-        )?;
-        context
-            .root
-            .write_new(&target, &compressed.bytes, &intent)
-            .map_err(|error| ActionFailure::failed("atomic_gzip_write_failed", error))?;
-        let receipt = commit_receipt(context, &intent)?;
-        let mut outcome = ActionOutcome::success(json!({
-            "artifact": target.relative, "container": "gzip", "input_count": 1,
-            "source_sha256": params.expected_sha256, "size": compressed.bytes.len(),
-            "sha256": crate::contract::sha256_hex(&compressed.bytes),
-            "tool": {"executable": compressed.executable, "sha256": compressed.executable_sha256,
-                     "arguments": ["-n", "-c"], "source_test": "cde3c2af-3485-49eb-9c1f-0ed60e9cc0af"}
-        })).with_receipt(receipt);
-        if started.elapsed() >= task_timeout
-            || crate::contract::utc_now() >= context.manifest.expires_at
-        {
-            outcome.status = TaskStatus::TimedOut;
-            outcome.error = Some(ErrorRecord {
-                code: "atomic_gzip_timeout".to_string(),
-                message: "The gzip deadline elapsed during publication; the receipt is retained for cleanup.".to_string(),
-            });
-        }
-        Ok(outcome)
+            &destination,
+            compressed,
+            &params.expected_sha256,
+            started,
+        )
     }
 }
+
+// Compression has already executed and been reaped. Publication failures must
+// retain that execution fact, even when no output file can be created.
+fn publish_atomic_gzip(
+    context: &ActionContext<'_>,
+    destination: &str,
+    compressed: crate::atomic_gzip::GzipOutput,
+    source_sha256: &str,
+    started: Instant,
+) -> Result<ActionOutcome, ActionFailure> {
+    let task_timeout = Duration::from_millis(context.manifest.limits.timeout_ms);
+    if started.elapsed() >= task_timeout
+        || crate::contract::utc_now() >= context.manifest.expires_at
+    {
+        return Err(ActionFailure::timed_out(
+            "atomic_gzip_timeout",
+            "The sealed gzip deadline elapsed before publication.",
+        ));
+    }
+    let target = context
+        .root
+        .prepare_new_file(destination)
+        .map_err(|error| ActionFailure::failed("path_rejected", error))?;
+    let intent = begin_receipt(
+        context,
+        receipt_paths(
+            target.relative.clone(),
+            &compressed.bytes,
+            &target.created_directories,
+        ),
+    )?;
+    context
+        .root
+        .write_new(&target, &compressed.bytes, &intent)
+        .map_err(|error| ActionFailure::failed("atomic_gzip_write_failed", error))?;
+    let receipt = commit_receipt(context, &intent)?;
+    let mut outcome = ActionOutcome::success(json!({
+        "artifact": target.relative, "container": "gzip", "input_count": 1,
+        "source_sha256": source_sha256, "size": compressed.bytes.len(),
+        "sha256": crate::contract::sha256_hex(&compressed.bytes),
+        "tool": {"executable": compressed.executable, "sha256": compressed.executable_sha256,
+                 "arguments": ["-n", "-c"], "source_test": "cde3c2af-3485-49eb-9c1f-0ed60e9cc0af"}
+    }))
+    .with_receipt(receipt);
+    if started.elapsed() >= task_timeout
+        || crate::contract::utc_now() >= context.manifest.expires_at
+    {
+        outcome.status = TaskStatus::TimedOut;
+        outcome.error = Some(ErrorRecord {
+            code: "atomic_gzip_timeout".to_string(),
+            message:
+                "The gzip deadline elapsed during publication; the receipt is retained for cleanup."
+                    .to_string(),
+        });
+    }
+    Ok(outcome)
+}
+
 struct AtomicGzipAction;
 static ATOMIC_GZIP_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
     platforms: &[Platform::Linux],
@@ -4634,6 +4657,80 @@ mod tests {
             invalid[field] = value;
             assert!(action.prepare(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn atomic_gzip_publication_rejection_retains_execution_and_existing_destination() {
+        let path = std::env::temp_dir().join(format!(
+            "bluefire-gzip-publication-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&path).unwrap();
+        let root = SafeRoot::open(&path).unwrap();
+        let limits = json!({"timeout_ms": 60000, "max_stdout_bytes": 8192, "max_stderr_bytes": 8192, "max_artifact_bytes": 1048576, "max_files": 32});
+        let scope = json!({"filesystem": ["staged"], "network": []});
+        let profile: RunnerProfile = serde_json::from_value(json!({
+            "schema_version": crate::contract::PROFILE_SCHEMA_VERSION,
+            "profile_id": "profile:test", "runner_id": "runner:test", "platform": Platform::current(),
+            "sandbox_root": path, "allowed_actions": ["sandbox.collection.atomic-gzip.v1"],
+            "capabilities": ["filesystem_read", "filesystem_write", "process_spawn"],
+            "max_safety_tier": "controlled", "target_scope": scope, "limits": limits,
+            "policy_digest": "a".repeat(64)
+        })).unwrap();
+        let now = crate::contract::utc_now();
+        let manifest: ExecutionManifest = serde_json::from_value(json!({
+            "schema_version": crate::contract::MANIFEST_SCHEMA_VERSION,
+            "request_id": "request:test", "run_id": "run:test", "step_id": "step:collection",
+            "behavior_id": "sandbox.collection.atomic-gzip.v1", "action_id": "sandbox.collection.atomic-gzip.v1",
+            "mode": "execute", "runner_id": profile.runner_id, "runner_profile_id": profile.profile_id,
+            "platform": Platform::current(), "requested_at": now, "expires_at": now + chrono::Duration::minutes(1),
+            "params": {}, "target_scope": scope,
+            "required_capabilities": ["filesystem_read", "filesystem_write", "process_spawn"],
+            "safety_tier": "controlled", "limits": limits, "cleanup_action_id": "sandbox.cleanup.v1",
+            "policy_digest": profile.policy_digest, "request_hash": "b".repeat(64)
+        })).unwrap();
+        let context = ActionContext {
+            manifest: &manifest,
+            profile: &profile,
+            root: &root,
+        };
+        fs::create_dir_all(path.join("staged/collection")).unwrap();
+        let destination = "staged/collection/bundle.jsonl.gz";
+        let preserved = b"pre-existing operator fixture";
+        fs::write(path.join(destination), preserved).unwrap();
+        // Supply the already-compressed stage directly. This test never invokes
+        // the external utility, but executes the production publication path.
+        let failure = publish_atomic_gzip(
+            &context,
+            destination,
+            crate::atomic_gzip::GzipOutput {
+                bytes: b"synthetic compressed output".to_vec(),
+                executable: "/usr/bin/gzip".into(),
+                executable_sha256: "c".repeat(64),
+            },
+            &"d".repeat(64),
+            Instant::now(),
+        )
+        .unwrap_err();
+        assert_eq!(failure.status, TaskStatus::Failed);
+        assert_eq!(failure.code, "path_rejected");
+        assert_eq!(fs::read(path.join(destination)).unwrap(), preserved);
+        assert!(!path.join(".bluefire").exists());
+        assert_eq!(
+            fs::read_dir(path.join("staged/collection"))
+                .unwrap()
+                .count(),
+            1
+        );
+        drop(root);
+        fs::remove_file(path.join(destination)).unwrap();
+        fs::remove_dir(path.join("staged/collection")).unwrap();
+        fs::remove_dir(path.join("staged")).unwrap();
+        fs::remove_dir(path).unwrap();
     }
 
     #[test]
