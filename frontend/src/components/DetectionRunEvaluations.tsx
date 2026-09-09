@@ -1,3 +1,4 @@
+import { evaluationReportMarkdown, type EvaluationReportGroup } from "../lib/evaluation-report";
 import * as Dialog from "@radix-ui/react-dialog";
 import { runLabel } from "../lib/run-presentation";
 import { formatDate } from "./Primitives";
@@ -50,6 +51,32 @@ export function DetectionRunEvaluations({ candidate, resourceId, resourceDigest,
   const language = candidate.target_language ?? candidate.language ?? "internal";
   const canEvaluate = resourceId && ["sqlite", "sigma"].includes(language) && ["parsed", "fixture_exercised", "observed_exercised", "benign_evaluated"].includes(candidate.state);
   const rows = [...(reports.data?.evaluations ?? []), ...(related.data?.evaluations ?? [])];
+  const [downloadError, setDownloadError] = useState<string>();
+  useEffect(() => setDownloadError(undefined), [binding, relatedId]);
+  const reportDownload = useMemo(() => {
+    const groups: EvaluationReportGroup[] = [{ id: resourceId ?? "", label: `Selected · ${candidate.title ?? "Detector"} · revision ${candidate.revision ?? 1}`,
+      status: reports.isFetching ? "loading" : reports.isSuccess ? "loaded" : reports.isError ? "unavailable" : "loading", reports: reports.isSuccess && !reports.isFetching ? reports.data.evaluations : [] }];
+    if (relatedId) groups.push({ id: relatedId, label: revisions.find(revision => revision.id === relatedId)?.label ?? "Related revision",
+      status: related.isFetching ? "loading" : related.isSuccess ? "loaded" : related.isError ? "unavailable" : "loading", reports: related.isSuccess && !related.isFetching ? related.data.evaluations : [] });
+    const partial = groups.some(group => group.status !== "loaded");
+    if (!groups.some(group => group.reports.length)) return { partial, markdown: undefined, error: undefined };
+    try {
+      if (candidate.candidate_id && candidate.candidate_id !== resourceId) throw new Error("The displayed candidate does not match the selected revision. Reload its history before exporting.");
+      if (relatedId && !revisions.some(revision => revision.id === relatedId)) throw new Error("The related revision is no longer in this selection. Select its current history before exporting.");
+      return { partial, markdown: evaluationReportMarkdown(groups, runs), error: undefined };
+    }
+    catch (error) { return { partial, markdown: undefined, error: error instanceof Error ? error.message : "The retained reports could not be exported." }; }
+  }, [resourceId, candidate.candidate_id, candidate.title, candidate.revision, reports.isFetching, reports.isSuccess, reports.isError, reports.data, relatedId, related.isFetching, related.isSuccess, related.isError, related.data, revisions, runs]);
+  const downloadReport = () => {
+    if (!reportDownload.markdown) return;
+    let url: string | undefined;
+    try {
+      url = URL.createObjectURL(new Blob([reportDownload.markdown], { type: "text/markdown;charset=utf-8" }));
+      const link = document.createElement("a"); link.href = url; link.download = "bluefire-evaluation-report.md"; link.click(); setDownloadError(undefined);
+    } catch { setDownloadError("The report could not be downloaded. Its retained results remain available."); }
+    finally { if (url) URL.revokeObjectURL(url); }
+  };
+
   const resultForSelection = evaluate.variables?.binding === binding && evaluate.variables?.candidateId === resourceId && evaluate.variables?.run_id === runId && evaluate.variables.question === question.trim() && evaluate.variables.case_role === role && evaluate.variables.evaluation_use === evaluationUse;
   return <>
     <p>Test this rule against the entire observed dataset in one query. Up to 10,000 records and 16 MiB of normalized fields are supported; resource refusals never become partial results. AI context has a separate, smaller limit.</p>
@@ -76,6 +103,10 @@ export function DetectionRunEvaluations({ candidate, resourceId, resourceDigest,
     {reports.isError ? <ErrorState title="Evaluation history unavailable" error={reports.error} retry={() => { void reports.refetch(); }} /> : null}
     {related.isError ? <ErrorState title="Related revision history unavailable" error={related.error} retry={() => { void related.refetch(); }} /> : null}
     {resourceId && reports.isPending ? <LoadingState label="Loading immutable evaluation reports" /> : null}
+    <div className="candidate-actions"><Button onClick={downloadReport} disabled={!reportDownload.markdown}>{reportDownload.partial ? "Download available reports" : "Download evaluation report"}</Button></div>
+    {reportDownload.partial && (resourceId || relatedId) ? <p role="status">Some selected revision history is loading or unavailable. Only successfully loaded retained reports can be downloaded; the export will be marked partial.</p> : null}
+    {reportDownload.error ? <p role="alert">{reportDownload.error}</p> : null}
+    {downloadError ? <p role="alert">{downloadError}</p> : null}
     {relatedId && reports.isSuccess && related.isSuccess ? <DetectorEvaluationTable baseline={related.data.evaluations} revised={reports.data.evaluations} baselineLabel={revisions.find((revision) => revision.id === relatedId)?.label ?? "Related revision"} revisedLabel={`Selected · revision ${candidate.revision ?? 1}`} /> : null}
     {rows.length ? <details className="evaluation-history" open={!relatedId}><summary>All retained evaluation records ({rows.length})</summary><div className="structured-list" aria-label="Immutable run evaluations">{rows.map((report) => <EvaluationReport key={report.evaluation_id} report={report} />)}</div></details> : reports.isSuccess ? <EmptyState title="No retained run evaluations" description="Evaluate an immutable run to record its actual query matches, activity, data use, and evidence limits." /> : null}
   </>;

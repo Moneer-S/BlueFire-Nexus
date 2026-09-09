@@ -62,3 +62,12 @@ A completed `detection.ai.apply` job points to the child candidate in `result_re
 The selected source run was used to propose the source, so its evaluation is explicitly a **development case**, even if its operator-declared case role is `heldout`. It does not establish independent held-out validation, deployment or prevention. Evaluate separate run evidence through the existing run evaluation endpoint to obtain independent cases.
 
 Completed proposals and decisions survive reconnects. Running jobs interrupted by a process exit use the existing `POST /api/v1/jobs/{job_id}/retry` operation, which requires an empty JSON body. A retry gets its own durable attempt ID and records `retry_of_job_id`; repeating the same retry returns that attempt. Application attempts share the original proposal's atomic receipt and cannot create duplicate children or reports. Cancelled and failed jobs are not automatically resumed. The ordinary job cancellation endpoint also applies to detection jobs.
+
+
+## Download retained evaluation results
+
+In **Related revision reports**, choose a revision to include its loaded results alongside the selected detector. **Download evaluation report** saves readable Markdown with source run names and creation times, recorded detector revisions, matched and evaluated counts, actual query status, comparison results, and evidence limits. Its Details appendix preserves the exact retained report records, immutable IDs and digests, and backend identity.
+
+If either selected history is still loading or unavailable, **Download available reports** exports only successfully loaded records and marks the report partial. Insufficient evidence and backend errors never become zero-match conclusions. Development data and operator-declared independence remain explicit. The export describes the reports loaded at download time; it does not imply that every run or revision was evaluated.
+
+**Export evaluation inputs** remains a separate download of the browser's question and source choices. Those inputs are not evaluation results. Downloading either file does not evaluate a run, call a model, or execute an experiment.
