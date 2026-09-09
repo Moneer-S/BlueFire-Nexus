@@ -160,7 +160,18 @@ def test_real_provider_revision_evaluation_and_idempotent_reconnect(setup, kind)
     reports = service.detection_run_evaluations(child["id"])["evaluations"]
     assert len(reports) == 1 and reports[0]["evaluation_id"] == receipt["evaluation_id"]
     assert reports[0]["result"]["state"] == "matched"
-    assert any("development-case" in text for text in reports[0]["limitations"])
+    # The proposal used these observations: this is development data regardless
+    # of the operator's activity label or the wording of the limitations text.
+    report = reports[0]
+    assert report["source"]["run_id"] == body["run_id"]
+    assert report["development_case"] is True
+    classification = report["classification"]
+    assert classification["activity_label"] == "attack"
+    assert classification["evaluation_use"] == "development"
+    assert classification["requested_use"] == "unspecified"
+    assert classification["use_basis"] == "recorded_development"
+    assert "proposal_source" in classification["development_reasons"]
+    assert classification["independence_verified"] is False
     assert service.detection_candidate(candidate_id) == parent
     again = service.decide_detection_ai_revision(job["job_id"], decision_body(job))
     assert again["application_job"]["job_id"] == completed["job_id"]
