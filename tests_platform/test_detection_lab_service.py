@@ -1015,3 +1015,58 @@ def test_native_sqlite_parse_rejects_non_select_and_missing_identity_output(
     )
     assert missing_identity["state"] == "rejected"
     assert "fixture_id" in str(missing_identity["rejection_reason"])
+
+
+def test_manual_second_title_returns_exact_conflict_and_explicit_clone_preserves_saved_work(
+    service: BlueFireService, tmp_path: Path
+) -> None:
+    from tests_platform.test_detection_evaluations import evaluate, observed_run
+
+    request = _hypothesis("sqlite")
+    created = service.upsert_detection_hypothesis(request)["candidate"]
+    candidate_id = str(created["id"])
+    service.parse_detection_candidate(
+        candidate_id,
+        {"source": "SELECT fixture_id FROM logs WHERE observation_kind = 'filesystem'"},
+    )
+    run_id, _ = observed_run(service, tmp_path)
+    evaluation = evaluate(service, candidate_id, run_id)
+    before = service.detection_candidate(candidate_id)["candidate"]
+    assert evaluation["result"]["state"] == "matched"
+
+    second_request = {**request, "title": "Second staged-file rule draft"}
+    with pytest.raises(APIError) as collision:
+        service.upsert_detection_hypothesis(second_request)
+    assert collision.value.status == 409
+    assert collision.value.code == "detection_revision_required"
+    assert collision.value.details == {"existing_candidate_id": candidate_id}
+    assert service.detection_candidate(candidate_id)["candidate"] == before
+    assert len(service.product_store.list_resources("detection")) == 1
+
+    child = service.clone_detection_candidate(
+        candidate_id,
+        {
+            "title": second_request["title"],
+            "reason": "Start another operator-authored draft from the same starter definition.",
+        },
+    )["candidate"]
+    document = child["document"]
+    assert document["title"] == second_request["title"]
+    assert document["parent_candidate_id"] == document["revision_root_id"] == candidate_id
+    assert document["revision_kind"] == "clone" and document["revision"] == 2
+    assert document["selection"] == before["document"]["selection"]
+    assert document["logsource"] == before["document"]["logsource"]
+    assert document["state"] == "hypothesis"
+    assert document["rule_source"] is None
+    assert document["parser_backend"] == document["validation"] == {}
+    assert document["match_count"] == 0
+    assert service.detection_run_evaluations(str(child["id"]))["evaluations"] == []
+    reopened = BlueFireService(
+        project_root=ROOT, runs_dir=tmp_path / "runs", product_db_path=tmp_path / "product.sqlite3"
+    )
+    try:
+        assert reopened.detection_candidate(candidate_id)["candidate"] == before
+        assert reopened.detection_run_evaluations(candidate_id)["evaluations"] == [evaluation]
+        assert reopened.detection_candidate(str(child["id"]))["candidate"] == child
+    finally:
+        reopened.close()

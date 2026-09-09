@@ -3,7 +3,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { expect, it, vi } from "vitest";
-import { api } from "../src/lib/api";
+import { api, ApiError } from "../src/lib/api";
 import { demoCatalog, demoRuns } from "../src/lib/demo";
 import { DetectionLabPage } from "../src/pages/DetectionLab";
 import type { DetectionResource } from "../src/types";
@@ -414,4 +414,167 @@ it("starts a full-run rule in SQLite while preserving an older manual language c
   remount();
   expect(await screen.findByRole("combobox", { name: "Target language" })).toHaveValue("internal");
   expect(save).not.toHaveBeenCalled();
+});
+
+
+const starter: DetectionResource = { ...structuredClone(parent), document: { ...structuredClone(parent.document),
+  behavior_id: manualDefaults.behaviorId, revision_kind: "origin", logsource: { category: "file_event", product: "generic" },
+  selection: { artifact_type: "file_observation", "path|contains": "staged/" }, validation: { source_rule_executed: false },
+} };
+const another: DetectionResource = { ...structuredClone(starter), id: `detection-${"b".repeat(20)}`, status: "hypothesis",
+  document: { ...structuredClone(starter.document), candidate_id: `detection-${"b".repeat(20)}`, parent_candidate_id: id,
+    revision: 2, revision_kind: "clone", title: "Second SQL", state: "hypothesis", rule_source: null, parser_backend: {}, validation: {} } };
+function conflictError(details: unknown = { existing_candidate_id: id }) {
+  return new ApiError("Existing definition is immutable", "detection_revision_required", details, 409);
+}
+async function submitSecond(user: ReturnType<typeof userEvent.setup>) {
+  await openManual(user);
+  await user.type(screen.getByRole("textbox", { name: "Title" }), "Second SQL");
+  await user.click(screen.getByRole("button", { name: "Save rule draft" }));
+}
+
+it("recovers a second rule title through an explicit clone while keeping the existing source and results", async () => {
+  const { user, candidates } = setup();
+  candidates[0] = structuredClone(starter);
+  vi.spyOn(api, "upsertDetection").mockRejectedValue(conflictError());
+  const read = vi.spyOn(api, "detection").mockResolvedValue({ schema_version: "v1", candidate: starter });
+  const clone = vi.spyOn(api, "cloneDetection").mockImplementation(async () => { candidates.push(another); return { schema_version: "v1", candidate: another }; });
+  const action = vi.spyOn(api, "detectionAction");
+  await submitSecond(user);
+  expect(await screen.findByRole("region", { name: "Matching saved rule" })).toHaveTextContent("Baseline SQL already uses this starter definition (Parsed)");
+  const start = await screen.findByRole("button", { name: "Start another draft" });
+  expect(read).toHaveBeenCalledWith(id);
+  expect(clone).not.toHaveBeenCalled();
+  expect(screen.getByText(/These fields describe lifecycle checks/)).toBeVisible();
+  expect(screen.getByRole("textbox", { name: /sqlite source/i })).toHaveValue(source);
+  await user.click(start);
+  await waitFor(() => expect(new URLSearchParams(screen.getByTestId("location").textContent!).get("candidate")).toBe(another.id));
+  expect(clone).toHaveBeenCalledExactlyOnceWith(id, { title: "Second SQL", reason: "Start another operator-authored draft from the same starter definition." });
+  expect(await screen.findByText(/Second SQL saved as a new rule draft/)).toBeVisible();
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Second SQL");
+  expect(candidates[0]).toEqual(starter);
+  expect(action).not.toHaveBeenCalled();
+});
+
+it("retains the exact conflict and inputs through a read failure and an explicit clone refusal then retry", async () => {
+  const { user, candidates } = setup();
+  vi.spyOn(api, "upsertDetection").mockRejectedValue(conflictError());
+  const read = vi.spyOn(api, "detection").mockRejectedValueOnce(new Error("Rule read disconnected")).mockResolvedValue({ schema_version: "v1", candidate: starter });
+  let reject!: (error: Error) => void;
+  const clone = vi.spyOn(api, "cloneDetection").mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }))
+    .mockImplementationOnce(async () => { candidates.push(another); return { schema_version: "v1", candidate: another }; });
+  await submitSecond(user);
+  expect(await screen.findByText("Rule read disconnected")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Start another draft" })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Try again" }));
+  await user.click(await screen.findByRole("button", { name: "Start another draft" }));
+  expect(screen.getByRole("button", { name: "Start another draft" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Save rule draft" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Start another draft" }));
+  expect(clone).toHaveBeenCalledTimes(1);
+  await act(async () => reject(new Error("Clone save refused")));
+  expect(await screen.findByText("Clone save refused")).toBeVisible();
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Second SQL");
+  await user.click(screen.getByRole("button", { name: "Start another draft" }));
+  await screen.findByText(/Second SQL saved as a new rule draft/);
+  expect(clone).toHaveBeenCalledTimes(2);
+  expect(read).toHaveBeenCalledTimes(2);
+});
+
+it.each(["id", "document-id", "behavior", "language", "selection", "logsource", "revision"])("refuses a conflict read with a mismatched %s", async field => {
+  const { user } = setup();
+  vi.spyOn(api, "upsertDetection").mockRejectedValue(conflictError());
+  const bad = structuredClone(starter);
+  if (field === "id") bad.id = otherId;
+  else if (field === "document-id") bad.document.candidate_id = otherId;
+  else if (field === "behavior") bad.document.behavior_id = "unrelated.behavior.v1";
+  else if (field === "language") bad.document.target_language = "sigma";
+  else if (field === "selection") bad.document.selection = { artifact_type: "file_observation", "path|contains": "another/" };
+  else if (field === "logsource") bad.document.logsource = { category: "file_event", product: "generic", extra: "field" };
+  else bad.document.revision_kind = "clone";
+  vi.spyOn(api, "detection").mockResolvedValue({ schema_version: "v1", candidate: bad });
+  const clone = vi.spyOn(api, "cloneDetection");
+  await submitSecond(user);
+  expect(await screen.findByText(/saved rule does not match this starter definition/)).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Start another draft" })).not.toBeInTheDocument();
+  expect(clone).not.toHaveBeenCalled();
+});
+
+it.each([{}, { existing_candidate_id: "invalid-id" }, [id]])("does not guess a matching rule from malformed conflict details %j", async details => {
+  const { user } = setup();
+  vi.spyOn(api, "upsertDetection").mockRejectedValue(conflictError(details));
+  const read = vi.spyOn(api, "detection");
+  const clone = vi.spyOn(api, "cloneDetection");
+  await submitSecond(user);
+  expect(await screen.findByText("Existing definition is immutable")).toBeVisible();
+  expect(read).not.toHaveBeenCalled(); expect(clone).not.toHaveBeenCalled();
+});
+
+it.each(["inputs", "navigation", "remount"])("ignores a delayed matching-rule read after %s changes", async change => {
+  const { user, remount } = setup();
+  vi.spyOn(api, "upsertDetection").mockRejectedValue(conflictError());
+  let finish!: (value: Awaited<ReturnType<typeof api.detection>>) => void;
+  vi.spyOn(api, "detection").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const clone = vi.spyOn(api, "cloneDetection");
+  await submitSecond(user);
+  await screen.findByText("Loading the matching saved rule");
+  if (change === "inputs") await user.type(screen.getByRole("textbox", { name: "Title" }), " newer");
+  else if (change === "remount") remount();
+  else { await user.click(screen.getByRole("button", { name: /Other SQL/ })); await user.click(screen.getByRole("button", { name: /Baseline SQL/ })); }
+  await act(async () => finish({ schema_version: "v1", candidate: starter }));
+  expect(screen.queryByRole("region", { name: "Matching saved rule" })).not.toBeInTheDocument();
+  expect(clone).not.toHaveBeenCalled();
+});
+
+it.each(["inputs", "navigation", "remount"])("does not redirect or discard edits when clone finishes after %s changes", async change => {
+  const { user, remount } = setup();
+  vi.spyOn(api, "upsertDetection").mockRejectedValue(conflictError());
+  vi.spyOn(api, "detection").mockResolvedValue({ schema_version: "v1", candidate: starter });
+  let finish!: (value: Awaited<ReturnType<typeof api.cloneDetection>>) => void;
+  const clone = vi.spyOn(api, "cloneDetection").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  await submitSecond(user);
+  await user.click(await screen.findByRole("button", { name: "Start another draft" }));
+  if (change === "inputs") await user.type(screen.getByRole("textbox", { name: "Title" }), " newer");
+  else if (change === "remount") remount();
+  else { await user.click(screen.getByRole("button", { name: /Other SQL/ })); await user.click(screen.getByRole("button", { name: /Baseline SQL/ })); }
+  await screen.findByRole("textbox", { name: "Title" });
+  const previous = screen.getByTestId("location").textContent;
+  await act(async () => finish({ schema_version: "v1", candidate: another }));
+  expect(screen.getByTestId("location").textContent).toBe(previous);
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue(change === "inputs" ? "Second SQL newer" : "Second SQL");
+  expect(screen.queryByText(/Second SQL saved as a new rule draft/)).not.toBeInTheDocument();
+  expect(clone).toHaveBeenCalledExactlyOnceWith(id, { title: "Second SQL", reason: "Start another operator-authored draft from the same starter definition." });
+});
+
+
+it.each(["inputs", "navigation", "remount"])("ignores a late conflict from Save rule draft after %s changes", async change => {
+  const { user, remount } = setup();
+  let reject!: (error: Error) => void;
+  vi.spyOn(api, "upsertDetection").mockImplementation(() => new Promise((_resolve, fail) => { reject = fail; }));
+  const read = vi.spyOn(api, "detection");
+  const clone = vi.spyOn(api, "cloneDetection");
+  await submitSecond(user);
+  if (change === "inputs") await user.type(screen.getByRole("textbox", { name: "Title" }), " newer");
+  else if (change === "remount") remount();
+  else { await user.click(screen.getByRole("button", { name: /Other SQL/ })); await user.click(screen.getByRole("button", { name: /Baseline SQL/ })); }
+  await act(async () => reject(conflictError()));
+  expect(screen.queryByRole("region", { name: "Matching saved rule" })).not.toBeInTheDocument();
+  expect(read).not.toHaveBeenCalled(); expect(clone).not.toHaveBeenCalled();
+});
+
+it("opens the matching saved rule without cloning or losing New rule inputs", async () => {
+  const { user, candidates } = setup();
+  candidates[0] = structuredClone(starter);
+  vi.spyOn(api, "upsertDetection").mockRejectedValue(conflictError());
+  vi.spyOn(api, "detection").mockResolvedValue({ schema_version: "v1", candidate: starter });
+  const clone = vi.spyOn(api, "cloneDetection");
+  await openManual(user);
+  await user.click(screen.getByRole("button", { name: /Other SQL/ }));
+  await user.type(screen.getByRole("textbox", { name: "Title" }), "Second SQL");
+  await user.click(screen.getByRole("button", { name: "Save rule draft" }));
+  await user.click(await screen.findByRole("button", { name: "View saved rule" }));
+  await waitFor(() => expect(new URLSearchParams(screen.getByTestId("location").textContent!).get("candidate")).toBe(id));
+  expect(screen.getByRole("textbox", { name: /sqlite source/i })).toHaveValue(source);
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Second SQL");
+  expect(clone).not.toHaveBeenCalled();
 });

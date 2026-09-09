@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Beaker, CheckCircle2, Code2, FileCheck2, FlaskConical, Plus, Search, ShieldQuestion } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { api } from "../lib/api";
+import { api, ApiError } from "../lib/api";
 import { detectionDraftIdentity, useDetectionDraft } from "../state/useDetectionDraft";
 import { syntheticSelectionExample } from "../lib/detection-fixtures";
 import { runLabel } from "../lib/run-presentation";
@@ -30,6 +30,13 @@ import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, Loadin
 
 const lifecycle = ["hypothesis", "parsed", "fixture_exercised", "observed_exercised", "benign_evaluated", "rejected"];
 const manualRuleDefaults = { title: "", behaviorId: "sandbox.collection.stage.v1", language: "sqlite" };
+const manualLogsource = { category: "file_event", product: "generic" };
+const manualSelection = { artifact_type: "file_observation", "path|contains": "staged/" };
+function matchesManualFields(value: unknown, expected: Record<string, string>) {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).length === Object.keys(expected).length
+    && Object.entries(expected).every(([key, field]) => (value as Record<string, unknown>)[key] === field);
+}
 const manualRuleLanguages = [
   ["internal", "Internal structured matcher"], ["sigma", "Sigma"],
   ["sqlite", "SQLite"], ["yara", "YARA"], ["spl", "SPL structural check"],
@@ -252,6 +259,31 @@ function DetectionRegistryPage() {
     manualGeneration.current += 1;
     manualDraft.update(field, value);
   };
+  type ManualSubmission = { inputs: typeof manualRuleDefaults; generation: number; navigation: typeof manualNavigation };
+  const manualSavePending = useRef(false);
+  const [manualConflict, setManualConflict] = useState<{ id: string; submitted: ManualSubmission }>();
+  const currentManualSubmission = (submitted: ManualSubmission) => manualMounted.current
+    && manualGeneration.current === submitted.generation && manualNavigationRef.current === submitted.navigation;
+  const currentConflict = manualConflict && manualGeneration.current === manualConflict.submitted.generation
+    && manualNavigation === manualConflict.submitted.navigation ? manualConflict : undefined;
+  const conflictQuery = useQuery({
+    queryKey: ["detection-new-rule-conflict", currentConflict?.id, currentConflict?.submitted.generation, currentConflict?.submitted.navigation],
+    enabled: Boolean(currentConflict), retry: false,
+    queryFn: async () => {
+      if (!currentConflict) throw new Error("The earlier New rule inputs have changed. Save the current inputs to check again.");
+      const { candidate } = await api.detection(currentConflict.id);
+      const definition = candidate?.document;
+      if (candidate?.id !== currentConflict.id || definition?.candidate_id !== currentConflict.id
+        || definition.behavior_id !== currentConflict.submitted.inputs.behaviorId
+        || definition.target_language !== currentConflict.submitted.inputs.language
+        || definition.revision_kind !== "origin" || definition.revision_root_id !== currentConflict.id
+        || !matchesManualFields(definition.logsource, manualLogsource)
+        || !matchesManualFields(definition.selection, manualSelection)) {
+        throw new Error("The saved rule does not match this starter definition. No new draft was created.");
+      }
+      return candidate;
+    },
+  });
   const activeSelection = useRef("");
 
   const refreshDetections = () => {
@@ -259,12 +291,12 @@ function DetectionRegistryPage() {
     void client.invalidateQueries({ queryKey: ["detection-health"] });
   };
   const createMutation = useMutation({
-    mutationFn: ({ inputs }: { inputs: typeof manualRuleDefaults; generation: number; navigation: typeof manualNavigation }) => api.upsertDetection({
+    mutationFn: ({ inputs }: ManualSubmission) => api.upsertDetection({
       behavior_id: inputs.behaviorId,
       title: inputs.title,
       target_language: inputs.language,
-      logsource: { category: "file_event", product: "generic" },
-      selection: { artifact_type: "file_observation", "path|contains": "staged/" },
+      logsource: manualLogsource,
+      selection: manualSelection,
       provenance: { source: "operator-authored", license: "Review required" },
       known_misses: ["Requires declared observation fields."],
       predicted_fields: ["artifact_type", "path"],
@@ -278,7 +310,35 @@ function DetectionRegistryPage() {
       const savedState = candidate.status === "hypothesis" ? "saved as a strict hypothesis. It has not been parsed or exercised." : `saved at its ${sentence(candidate.status).toLowerCase()} state.`;
       setNotice(`${savedTitle} ${savedState}${newerInputs ? " Your newer draft inputs are still kept." : " New rule inputs remain available until you discard them."}`);
     },
-    onError: (error) => { if (manualMounted.current) setNotice(error instanceof Error ? error.message : "The hypothesis could not be saved."); },
+    onError: (error, submitted) => {
+      if (!currentManualSubmission(submitted)) return;
+      const details = error instanceof ApiError ? error.details : undefined;
+      const existingId = details && typeof details === "object" && !Array.isArray(details)
+        ? (details as Record<string, unknown>).existing_candidate_id : undefined;
+      if (error instanceof ApiError && error.code === "detection_revision_required" && error.status === 409
+        && typeof existingId === "string" && /^detection-[0-9a-f]{20}$/.test(existingId)) {
+        setNotice(undefined);
+        setManualConflict({ id: existingId, submitted });
+      } else setNotice(error instanceof Error ? error.message : "The rule draft could not be saved.");
+    },
+    onSettled: () => { manualSavePending.current = false; },
+  });
+  const anotherDraftMutation = useMutation({
+    mutationFn: (conflict: NonNullable<typeof manualConflict>) => api.cloneDetection(conflict.id, {
+      title: conflict.submitted.inputs.title,
+      reason: "Start another operator-authored draft from the same starter definition.",
+    }),
+    onSuccess: ({ candidate }, conflict) => {
+      refreshDetections();
+      if (!currentManualSubmission(conflict.submitted)) return;
+      setManualConflict(undefined);
+      setSelectedId(candidate.id);
+      setNotice(`${conflict.submitted.inputs.title} saved as a new rule draft. The existing rule and its results were kept. Edit and validate the new draft's source before evaluating runs.`);
+    },
+    onError: (error, conflict) => {
+      if (currentManualSubmission(conflict.submitted)) setNotice(error instanceof Error ? error.message : "The new draft could not be saved.");
+    },
+    onSettled: () => { manualSavePending.current = false; },
   });
   const saveLinkedMutation = useMutation({
     mutationFn: ({ candidate, run }: { candidate: DetectionCandidate; run: RunRecord; navigation: typeof manualNavigation }) => api.detectionFromRun(run.run_id, candidate.candidate_id ?? candidate.id ?? ""),
@@ -395,14 +455,27 @@ function DetectionRegistryPage() {
           <Field label="Registered behavior"><select value={behaviorId} onChange={(event) => updateManual("behaviorId", event.target.value)}>{!manualBehaviorAvailable ? <option value={behaviorId}>Unavailable behavior</option> : null}{catalogQuery.data.behaviors.map((behavior) => <option key={behavior.id} value={behavior.id}>{behavior.title}</option>)}</select></Field>
           <Field label="Target language"><select value={language} onChange={(event) => updateManual("language", event.target.value)}>{!manualLanguageAvailable ? <option value={language}>Unavailable language</option> : null}{manualRuleLanguages.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
           <QueryEvaluator language={language} ready={healthQuery.data.languages[language]?.ready} />
-          <div className="candidate-actions"><Button variant="primary" onClick={() => { if (manualCanSave && !createMutation.isPending) createMutation.mutate({ inputs: { ...manualDraft.value }, generation: manualGeneration.current, navigation: manualNavigation }); }} disabled={createMutation.isPending || !manualCanSave}><Plus />Save rule draft</Button>
+          <div className="candidate-actions"><Button variant="primary" onClick={() => { if (manualCanSave && !manualSavePending.current) { manualSavePending.current = true; setManualConflict(undefined); createMutation.mutate({ inputs: { ...manualDraft.value }, generation: manualGeneration.current, navigation: manualNavigation }); } }} disabled={createMutation.isPending || anotherDraftMutation.isPending || !manualCanSave}><Plus />Save rule draft</Button>
           <Dialog.Root open={manualDiscardOpen} onOpenChange={setManualDiscardOpen}>
-            <Dialog.Trigger asChild><Button variant="ghost" size="small" disabled={createMutation.isPending}>Discard New rule inputs</Button></Dialog.Trigger>
+            <Dialog.Trigger asChild><Button variant="ghost" size="small" disabled={createMutation.isPending || anotherDraftMutation.isPending}>Discard New rule inputs</Button></Dialog.Trigger>
             <Dialog.Portal><Dialog.Overlay className="dialog-overlay"/><Dialog.Content className="dialog-content">
               <Dialog.Title>Discard New rule inputs?</Dialog.Title><Dialog.Description>Reset this manual form to its starting values. Saved rules and other drafts stay intact.</Dialog.Description>
               <div className="dialog-actions"><Dialog.Close asChild><Button>Keep editing</Button></Dialog.Close><Button variant="danger" onClick={() => { manualGeneration.current += 1; manualDraft.discard(); setManualOpen(true); setManualDiscardOpen(false); }}>Discard these inputs</Button></div>
             </Dialog.Content></Dialog.Portal>
           </Dialog.Root></div>
+          {currentConflict ? <section aria-label="Matching saved rule">
+            {conflictQuery.isPending ? <LoadingState label="Loading the matching saved rule" /> : conflictQuery.isError ? <ErrorState title="Matching saved rule unavailable" error={conflictQuery.error} retry={() => { void conflictQuery.refetch(); }} /> : conflictQuery.data ? <>
+              <p><strong>{conflictQuery.data.document.title}</strong> already uses this starter definition ({sentence(conflictQuery.data.status)}).</p>
+              <p>Start another draft titled <strong>{currentConflict.submitted.inputs.title}</strong> from the same starter definition. Its source must be edited and validated separately. The saved rule, its source and evaluation results stay intact; those results are not copied.</p>
+              <div className="candidate-actions">
+                <Button onClick={() => setSelectedId(currentConflict.id)} disabled={anotherDraftMutation.isPending}>View saved rule</Button>
+                <Button variant="primary" disabled={anotherDraftMutation.isPending || createMutation.isPending || !manualCanSave} onClick={() => {
+                  if (manualSavePending.current || !currentManualSubmission(currentConflict.submitted)) return;
+                  manualSavePending.current = true; setNotice(undefined); anotherDraftMutation.mutate(currentConflict);
+                }}>Start another draft</Button>
+              </div>
+            </> : null}
+          </section> : null}
         </div>
         </Panel>
       </details>
@@ -659,6 +732,7 @@ function CandidateWorkspace({
           { label: "Parser version", value: candidate.parser_backend?.version ?? backend?.version ?? "Not reported" },
         ]} /></details>
         {["sigma", "sqlite"].includes(language) && Object.keys(queryValidation).length ? <>
+          <p>These fields describe lifecycle checks. Saved Run evaluations report their own query execution and results separately.</p>
           <DataList items={[
             { label: "Conversion backend", value: [queryValidation.conversion_backend, queryValidation.conversion_backend_version].filter((item): item is string => typeof item === "string").join(" · ") || "Native bounded SQLite" },
             { label: "Execution backend", value: [queryValidation.execution_backend, queryValidation.execution_backend_version].filter((item): item is string => typeof item === "string").join(" · ") || "Not executed" },

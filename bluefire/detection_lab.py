@@ -243,6 +243,7 @@ class DetectionLabService:
                     HTTPStatus.CONFLICT,
                     "detection_revision_required",
                     "An existing candidate definition is immutable; clone or tune it explicitly.",
+                    {"existing_candidate_id": before.candidate_id},
                 )
             recorded = self._record(
                 before,
