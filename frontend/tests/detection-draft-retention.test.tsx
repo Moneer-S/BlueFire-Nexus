@@ -329,13 +329,13 @@ it("shows unavailable retained manual choices truthfully and refuses save withou
   expect(screen.getByRole("combobox", { name: "Target language" })).toHaveValue(value.language);
   expect(screen.getByRole("option", { name: "Unavailable behavior" })).toBeVisible();
   expect(screen.getByRole("option", { name: "Unavailable language" })).toBeVisible();
-  expect(screen.getByRole("button", { name: "Save strict hypothesis" })).toBeDisabled();
-  await user.click(screen.getByRole("button", { name: "Save strict hypothesis" }));
+  expect(screen.getByRole("button", { name: "Save rule draft" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Save rule draft" }));
   expect(sessionStorage.getItem(manualKey)).toBe(raw);
   await user.selectOptions(screen.getByRole("combobox", { name: "Registered behavior" }), demoCatalog.behaviors[0]!.id);
-  expect(screen.getByRole("button", { name: "Save strict hypothesis" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Save rule draft" })).toBeDisabled();
   await user.selectOptions(screen.getByRole("combobox", { name: "Target language" }), "sqlite");
-  expect(screen.getByRole("button", { name: "Save strict hypothesis" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Save rule draft" })).toBeEnabled();
   expect(save).not.toHaveBeenCalled();
 });
 
@@ -346,7 +346,7 @@ it.each([false, true])("preserves newer manual edits when an earlier save comple
   await openManual(user);
   const title = screen.getByRole("textbox", { name: "Title" });
   await user.clear(title); await user.paste("Submitted manual rule");
-  await user.click(screen.getByRole("button", { name: "Save strict hypothesis" }));
+  await user.click(screen.getByRole("button", { name: "Save rule draft" }));
   expect(save).toHaveBeenCalledTimes(1);
   expect(save.mock.calls[0]![0]).toMatchObject({ title: "Submitted manual rule", behavior_id: manualDefaults.behaviorId, target_language: "sqlite" });
   expect(screen.getByRole("button", { name: "Discard New rule inputs" })).toBeDisabled();
@@ -370,7 +370,7 @@ it.each(["candidate", "run"])("does not redirect a manual save after navigating 
   const save = vi.spyOn(api, "upsertDetection").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
   await openManual(user);
   await user.type(screen.getByRole("textbox", { name: "Title" }), " submitted");
-  await user.click(screen.getByRole("button", { name: "Save strict hypothesis" }));
+  await user.click(screen.getByRole("button", { name: "Save rule draft" }));
   const original = screen.getByTestId("location").textContent;
   if (field === "candidate") {
     await user.click(screen.getByRole("button", { name: /Other SQL/ }));
@@ -393,7 +393,7 @@ it("keeps manual inputs after save and describes the returned rule's existing st
   const save = vi.spyOn(api, "upsertDetection").mockResolvedValue({ schema_version: "v1", candidate: parent });
   await openManual(user);
   await user.type(screen.getByRole("textbox", { name: "Title" }), " my input");
-  await user.click(screen.getByRole("button", { name: "Save strict hypothesis" }));
+  await user.click(screen.getByRole("button", { name: "Save rule draft" }));
   expect(await screen.findByText(/Baseline SQL saved at its parsed state/)).toBeVisible();
   expect(screen.queryByText(/It has not been parsed or exercised/)).not.toBeInTheDocument();
   expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue(manualDefaults.title + " my input");
@@ -409,7 +409,7 @@ it("starts a full-run rule in SQLite while preserving an older manual language c
   await openManual(user);
   expect(screen.getByRole("combobox", { name: "Target language" })).toHaveValue("sqlite");
   expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("");
-  expect(screen.getByRole("button", { name: "Save strict hypothesis" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Save rule draft" })).toBeDisabled();
   await user.selectOptions(screen.getByRole("combobox", { name: "Target language" }), "internal");
   remount();
   expect(await screen.findByRole("combobox", { name: "Target language" })).toHaveValue("internal");

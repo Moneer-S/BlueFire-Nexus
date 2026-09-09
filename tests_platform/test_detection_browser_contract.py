@@ -37,8 +37,8 @@ def test_production_spec_drives_ui_without_mock_or_direct_api_shortcuts() -> Non
     for required in (
         'getByRole("link", { name: "Detection Lab" })',
         'selectOption("sqlite")',
-        'getByRole("button", { name: "Save strict hypothesis" })',
-        'getByRole("button", { name: "Parse / compile honestly" })',
+        'getByRole("button", { name: "Save rule draft" })',
+        'getByRole("button", { name: "Validate source" })',
         'getByRole("button", { name: "Exercise malicious fixtures" })',
         "page.reload",
         '"Source query executed"',

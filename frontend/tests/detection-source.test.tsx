@@ -105,7 +105,7 @@ it("offers an editable SQLite starter without claiming validation or sending it 
   await user.type(editor, "{End}{Enter}LIMIT 1");
   expect(editor).toHaveValue("SELECT fixture_id FROM logs\nWHERE artifact_type = 'file_observation'\n  AND path LIKE '%staged/%'\nLIMIT 1");
   expect(screen.getByText("Draft source not validated")).toBeVisible();
-  expect(screen.getByRole("button", { name: "Parse / compile honestly" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Validate source" })).toBeEnabled();
   expect(action).not.toHaveBeenCalled();
 });
 

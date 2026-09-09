@@ -391,7 +391,7 @@ test("production operator UI completes authoring, management, run, replay, and c
   if (await newRule.getAttribute("open") === null) await page.getByText("New rule", { exact: true }).click();
   await page.getByLabel("Title", { exact: true }).fill(DETECTION_TITLE);
   await page.getByLabel("Target language").selectOption("internal");
-  await page.getByRole("button", { name: "Save strict hypothesis" }).click();
+  await page.getByRole("button", { name: "Save rule draft" }).click();
   await expect(page.getByText(/saved as a strict hypothesis\. It has not been parsed or exercised\./)).toBeVisible();
   completed.push("review_source_and_detection_surfaces");
 

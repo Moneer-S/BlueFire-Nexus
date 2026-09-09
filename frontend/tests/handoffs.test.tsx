@@ -158,7 +158,7 @@ describe("run journey handoffs", () => {
     registry = [{ ...resourceMetadata, id: candidateId, status: "hypothesis", document: { ...linkedCandidate, title: "Already registered candidate", state: "hypothesis" } }];
     renderJourney(detectionLink(sourceId, candidateId));
     await user.click(await screen.findByRole("button", { name: "Save hypothesis from run" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Parse / compile honestly" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Validate source" })).toBeEnabled());
     const body = postBody("/detections/from-run")!;
     expect(body).toEqual({ run_id: sourceId, candidate_id: candidateId });
     expect(postBody("/detections")).toBeUndefined();
@@ -167,7 +167,7 @@ describe("run journey handoffs", () => {
     expect(body).not.toHaveProperty("match_count");
     expect(body).not.toHaveProperty("observed_evidence_ids");
     expect(registry.at(-1)?.document.target_language).toBe("internal");
-    await user.click(screen.getByRole("button", { name: "Parse / compile honestly" }));
+    await user.click(screen.getByRole("button", { name: "Validate source" }));
     await waitFor(() => expect(postBody(`/detections/${savedId}/parse`)).toEqual({}));
     await user.click(screen.getByRole("tab", { name: "Observed" }));
     expect(screen.getByRole("combobox", { name: "Finalized run" })).toHaveValue(sourceId);
@@ -209,7 +209,7 @@ describe("run journey handoffs", () => {
     renderJourney(scope === "registry" ? registeredDetectionLink(sourceId, candidateId) : detectionLink(sourceId, candidateId));
     expect(await screen.findByText("Detector unavailable")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save hypothesis from run" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Parse / compile honestly" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Validate source" })).not.toBeInTheDocument();
     expect(postBody("/detections/from-run")).toBeUndefined();
   });
 

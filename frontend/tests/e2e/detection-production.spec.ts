@@ -195,7 +195,7 @@ test("production Detection Lab executes and persists a native SQLite candidate",
   }
   await page.getByLabel("Title", { exact: true }).fill(title);
   await page.getByLabel("Target language").selectOption("sqlite");
-  await page.getByRole("button", { name: "Save strict hypothesis" }).click();
+  await page.getByRole("button", { name: "Save rule draft" }).click();
   await expect(page.getByText(/saved as a strict hypothesis\. It has not been parsed or exercised\./)).toBeVisible();
   const workspace = page.locator("section.candidate-workspace");
   await expect(workspace.getByRole("heading", { name: title })).toBeVisible();
@@ -207,7 +207,7 @@ test("production Detection Lab executes and persists a native SQLite candidate",
   monitoring.assertClean();
 
   await workspace.getByLabel(/Sqlite source/i).fill(query);
-  await workspace.getByRole("button", { name: "Parse / compile honestly" }).click();
+  await workspace.getByRole("button", { name: "Validate source" }).click();
   await expect(page.getByText(new RegExp(`${candidateId} advanced honestly to parsed\\.`, "i"))).toBeVisible();
   await expect(workspace.locator(".panel-header .badge")).toHaveText("Parsed");
   await openDisclosure(workspace, "Query source and identity");

@@ -66,7 +66,7 @@ or expired request needs a fresh review; reopening a result never grants approva
 Choose **Open Detection Lab** from a result to retain its source run. Inspect the available
 independent observations before creating a rule. A linked candidate inside an immutable run
 is separate from a saved detection: use **Save hypothesis from run** when that action is
-available. For manual authoring, open **New rule** and **Save strict hypothesis**. The separate
+available. For manual authoring, open **New rule** and **Save rule draft**. The separate
 **Create from run evidence** path offers **Draft rule with Assistant** and requires eligible
 independent observations and an available configured provider. The AI-Off synthetic walkthrough
 alone does not supply those prerequisites.
