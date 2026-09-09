@@ -1195,6 +1195,7 @@ describe("product application", () => {
       const jobs = laterOwned ? [{ ...executeJob, job_id: staleJobId, state: "running", progress: { phase: "running" }, request: {} }] : [];
       await act(async () => resolveInventory(json({ schema_version: "bluefire.active-job-list.v1", jobs })));
       if (laterOwned) {
+        await screen.findByRole("heading", { name: "Run progress" });
         await act(async () => { await vi.advanceTimersByTimeAsync(750); });
         await waitFor(() => expect(fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith(`/jobs/${staleJobId}`) && !init?.method)).toHaveLength(2));
         expect(window.localStorage.getItem(activeJobStorageKey)).toBe(staleJobId);
