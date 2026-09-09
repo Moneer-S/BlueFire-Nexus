@@ -6,17 +6,17 @@ candidate; obtain its wheel from the actual PR build below.
 
 ## Download the candidate
 
-Open the [candidate build](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/34306390632)
-for [PR #200](https://github.com/Moneer-S/BlueFire-Nexus/pull/200). This build contains
-`d40c024`; GitHub's PR merge revision is `71bf3f3`, with an identical source tree.
-Check the native-wheel job for your platform, then download its artifact from the run's
-**Artifacts** section. GitHub may require you to sign in to download an Actions artifact.
+Open [PR #200's checks](https://github.com/Moneer-S/BlueFire-Nexus/pull/200/checks)
+and select the **tests** run for the candidate you intend to install. Open that run's
+**Summary**, then download the matching artifact from **Artifacts** after its native-wheel
+job succeeds. This follows the selected candidate instead of a fixed link to an older build.
+GitHub may require you to sign in to download an Actions artifact.
 
 | Computer | Artifact | Wheel inside the ZIP |
 |---|---|---|
-| Windows x86-64 | [bluefire-native-wheel-windows-x86_64](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/34306390632/artifacts/10086826406) | `bluefire_nexus-3.0.0-py3-none-win_amd64.whl` |
-| Linux x86-64 | [bluefire-native-wheel-linux-x86_64](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/34306390632/artifacts/10086805381) | `bluefire_nexus-3.0.0-py3-none-linux_x86_64.whl` |
-| macOS Intel | [bluefire-native-wheel-macos-x86_64](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/34306390632/artifacts/10086839885) | `bluefire_nexus-3.0.0-py3-none-macosx_11_0_x86_64.whl` |
+| Windows x86-64 | `bluefire-native-wheel-windows-x86_64` | `bluefire_nexus-3.0.0-py3-none-win_amd64.whl` |
+| Linux x86-64 | `bluefire-native-wheel-linux-x86_64` | `bluefire_nexus-3.0.0-py3-none-linux_x86_64.whl` |
+| macOS Intel | `bluefire-native-wheel-macos-x86_64` | `bluefire_nexus-3.0.0-py3-none-macosx_11_0_x86_64.whl` |
 
 Choose the **native-wheel** artifact, not a standalone runner executable. Create a fresh
 `bluefire-v3` directory, extract the ZIP, and put its `.whl` file in a `wheels` subdirectory.
@@ -58,9 +58,10 @@ opening, use `bluefire --runs-dir "path/to/your/bluefire-workspace" ui --no-brow
 Keep the launching terminal running; closing the browser tab does not stop the local service.
 
 Start in **Experiments**, open a packaged experiment or create one, then inspect it in **Build**.
-Save a version after editing. In **Runs**, choose **Review new run**, select **Simulate** and AI
-**Off**, run preflight and submit the Simulate job. Inspect its saved result before moving to
-Execute. Simulate needs neither a runner nor a model account. Follow the
+Save a version after editing. For a preview, choose **Runs > Review new run**, select
+**Simulate**, AI **Off** and **Local simulation**, run preflight and submit the Simulate job.
+Inspect its saved result. Simulate needs neither a runner nor a model account and is optional;
+for real effects, continue with **Prepare Execute** below. Follow the
 [operator guide](OPERATOR_GUIDE.md) for the current UI walkthrough.
 
 The default listener is `127.0.0.1:8765`. It is a same-user local session, not a remote service.
