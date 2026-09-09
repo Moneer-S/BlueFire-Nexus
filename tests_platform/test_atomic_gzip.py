@@ -186,9 +186,10 @@ def test_new_process_boundary_is_byte_bound_and_drift_fails_review() -> None:
         assert not reviewed_gzip_source(changed)
 
 
+@pytest.mark.parametrize("profile_id", ["sandbox-execute.v1", "sandbox-blocked-network.v1"])
 @pytest.mark.parametrize("platform", ["windows", "macos", "linux"])
 def test_shared_profile_stays_ready_and_only_selected_gzip_requires_linux(
-    platform: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    profile_id: str, platform: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from dataclasses import replace
 
@@ -209,7 +210,7 @@ def test_shared_profile_stays_ready_and_only_selected_gzip_requires_linux(
         runner_factory=lambda _profile: (runner, sandbox),
     )
     try:
-        profile = service._profile("sandbox-execute.v1", ExecutionMode.EXECUTE)
+        profile = service._profile(profile_id, ExecutionMode.EXECUTE)
         assert profile is not None
         _, _, readiness = service._execute_readiness_boundary(profile)
         assert readiness["platform"] == platform
