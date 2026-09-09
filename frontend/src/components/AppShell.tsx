@@ -35,7 +35,7 @@ const moreItems = [
   { to: "/getting-started", label: "Getting Started", icon: ListChecks },
   { to: "/behaviors", label: "Behaviors", icon: Braces },
   { to: "/research-sources", label: "Research Sources", icon: BookOpen },
-  { to: "/ai-planner", label: "AI Planner", icon: Bot },
+  { to: "/ai-planner?view=audit", label: "Proposal audit", icon: Bot },
   { to: "/help", label: "Help & Docs", icon: HelpCircle },
 ];
 const allItems = [...workItems, ...settingsItems, ...moreItems];
@@ -88,8 +88,8 @@ function WorkspaceShell() {
   }, [catalog.data, scenario, scenarioIsSeededFallback, scenarios.data, setScenario]);
   useEffect(() => {
     setMobileOpen(false);
-    if (location.pathname === "/settings" || settingsItems.some((item) => item.to === location.pathname)) setSettingsOpen(true);
-    if (moreItems.some((item) => item.to !== "/" && item.to === location.pathname)) setMoreOpen(true);
+    if (location.pathname === "/settings" || settingsItems.some((item) => item.to.split("?")[0] === location.pathname)) setSettingsOpen(true);
+    if (moreItems.some((item) => item.to !== "/" && item.to.split("?")[0] === location.pathname)) setMoreOpen(true);
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
     document.getElementById("main-content")?.scrollTo?.({ top: 0, left: 0, behavior: "auto" });
   }, [location.pathname]);
@@ -120,7 +120,7 @@ function WorkspaceShell() {
       menuButton?.focus();
     };
   }, [mobileOpen]);
-  const current = allItems.find((item) => item.to === location.pathname || (item.to === "/runs" && location.pathname.startsWith("/runs/")))?.label ?? "BlueFire Nexus";
+  const current = allItems.find((item) => item.to.split("?")[0] === location.pathname || (item.to === "/runs" && location.pathname.startsWith("/runs/")))?.label ?? "BlueFire Nexus";
   const renderLink = (item: typeof allItems[number]) => {
     const Icon = item.icon;
     const link = <NavLink to={item.to} end={item.to === "/"} aria-label={item.label} onClick={() => setMobileOpen(false)} className="nav-link"><Icon aria-hidden="true"/><span>{item.label}</span></NavLink>;

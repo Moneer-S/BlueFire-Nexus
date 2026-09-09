@@ -18,7 +18,7 @@ function renderPlanner() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } });
   client.setQueryData(["catalog"], demoCatalog);
   vi.spyOn(api, "proposalReviews").mockImplementation(async (jobId) => ({ schema_version: "bluefire.ai-proposal-review-list.v1", job_id: jobId, proposals: [] }));
-  const rendered = render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter><AIPlannerPage /></MemoryRouter></ProductProvider></QueryClientProvider>);
+  const rendered = render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={["/ai-planner?view=audit"]}><AIPlannerPage /></MemoryRouter></ProductProvider></QueryClientProvider>);
   return { ...rendered, client };
 }
 

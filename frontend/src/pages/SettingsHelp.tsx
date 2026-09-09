@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { BookOpen, Download, FileJson2, Github, LifeBuoy, LockKeyhole, Moon, RotateCcw, Save, ShieldCheck, Sun, Upload } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { ProviderSetup } from "../components/ProviderSetup";
 import { BuildDiagnostics } from "../components/BuildDiagnostics";
 import { api } from "../lib/api";
@@ -24,6 +24,12 @@ function readTextFile(file: File): Promise<string> {
 
 export function SettingsPage() {
   const { theme, setTheme, newRunDefaults, setNewRunDefaults } = useProduct();
+  const location = useLocation();
+  useEffect(() => {
+    if (location.hash !== "#model-connection") return;
+    const timer = window.setTimeout(() => document.getElementById("model-connection")?.scrollIntoView({ block: "start" }), 0);
+    return () => window.clearTimeout(timer);
+  }, [location.hash]);
   const fileRef = useRef<HTMLInputElement>(null);
   const [notice, setNotice] = useState<string>();
   const hydrated = useRef(false);

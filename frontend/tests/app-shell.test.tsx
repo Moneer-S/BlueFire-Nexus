@@ -51,7 +51,7 @@ describe("workbench navigation", () => {
     const navigation = within(screen.getByRole("navigation", { name: "Primary navigation" }));
     navigation.getByRole("button", { name: "Show more tools" }).focus();
     await user.keyboard("{Enter}");
-    for (const [label, path] of [["Overview", "/"], ["Getting Started", "/getting-started"], ["Behaviors", "/behaviors"], ["Research Sources", "/research-sources"], ["AI Planner", "/ai-planner"], ["Help & Docs", "/help"]]) {
+    for (const [label, path] of [["Overview", "/"], ["Getting Started", "/getting-started"], ["Behaviors", "/behaviors"], ["Research Sources", "/research-sources"], ["Proposal audit", "/ai-planner?view=audit"], ["Help & Docs", "/help"]]) {
       expect(navigation.getByRole("link", { name: label })).toHaveAttribute("href", path);
     }
     navigation.getByRole("link", { name: "Research Sources" }).focus();

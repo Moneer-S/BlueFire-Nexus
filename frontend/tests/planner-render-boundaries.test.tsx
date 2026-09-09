@@ -64,7 +64,7 @@ it("keeps provider and review presentation stable during typing while checking c
   vi.spyOn(api, "proposalReview").mockResolvedValue(review);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } });
   client.setQueryData(["catalog"], demoCatalog);
-  const view = render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter><AIPlannerPage /></MemoryRouter></ProductProvider></QueryClientProvider>);
+  const view = render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={["/ai-planner?view=audit"]}><AIPlannerPage /></MemoryRouter></ProductProvider></QueryClientProvider>);
   try {
     const providerRenders = vi.mocked(ProviderSetup).mock.calls.length;
     await user.type(screen.getByRole("textbox", { name: "Job ID" }), job.job_id);
@@ -113,7 +113,7 @@ async function openTimedContinuation(expiresAt?: string | null) {
   vi.spyOn(api, "proposalReview").mockResolvedValue(review);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity, refetchOnWindowFocus: false } } });
   deadlineClients.push(client); client.setQueryData(["catalog"], demoCatalog);
-  const view = render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter><AIPlannerPage/></MemoryRouter></ProductProvider></QueryClientProvider>);
+  const view = render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={["/ai-planner?view=audit"]}><AIPlannerPage/></MemoryRouter></ProductProvider></QueryClientProvider>);
   fireEvent.change(screen.getByRole("textbox", { name: "Job ID" }), { target: { value: job.job_id } });
   await act(async () => { await vi.advanceTimersByTimeAsync(200); });
   for (let turn = 0; turn < 5; turn += 1) await act(async () => { await vi.advanceTimersByTimeAsync(5); });

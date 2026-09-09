@@ -1,62 +1,34 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, Bot, Braces, CheckCircle2, KeyRound, LockKeyhole, Route, ShieldCheck, Sparkles } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { LockKeyhole } from "lucide-react";
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { CanonicalPlanReview } from "../components/CanonicalPlanReview";
 import { continuationApprovalPreflight } from "../lib/approvalReview";
-import { ProviderSetup } from "../components/ProviderSetup";
 import { ProposalReviewWorkspace } from "../components/ProposalReview";
 import { api } from "../lib/api";
-import { initialParameterValue, shouldInitializeParameter } from "../lib/parameters";
+import { useAssistancePanel } from "../state/AssistanceContext";
 import { useProduct } from "../state/ProductContext";
 import { useApprovalDeadline } from "../state/useApprovalDeadline";
-import type { AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AutonomyLevel, Behavior, RunJob, Scenario } from "../types";
-import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState, PageHeader, Panel, PanelHeader, sentence } from "../components/Primitives";
+import type { AIProposalDecisionResult, AIProposalReview, RunJob } from "../types";
+import { Badge, Button, Callout, DataList, Field, LoadingState, PageHeader, Panel, PanelHeader, sentence } from "../components/Primitives";
 
 export function AIPlannerPage() {
-  const query = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
-  const { scenario, setScenario, runConfig, setRunConfig, activeRun } = useProduct(); const [objective, setObjective] = useState(scenario.purpose); const [notice, setNotice] = useState<string>(); const navigate = useNavigate();
-  // A new input snapshot also invalidates edit-away-and-back arrivals. Keep the
-  // original POST pending; discarding its preview does not cancel server work.
-  const draftInputs = useMemo(() => ({ objective, provider: runConfig.provider || null }), [objective, runConfig.provider]);
-  const currentDraftInputs = useRef(draftInputs);
-  currentDraftInputs.current = draftInputs;
-  const mounted = useRef(true);
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  const [draft, setDraft] = useState<{ inputs: typeof draftInputs; result?: AIGraphDraftResult; notice: string }>();
-  const currentDraft = draft?.inputs === draftInputs ? draft : undefined;
-  const draftResult = currentDraft?.result;
-  const serverDraft = useMutation({
-    mutationFn: (inputs: typeof draftInputs) => api.aiDraft(inputs.objective.trim(), inputs.provider, 8, 16),
-    onSuccess: (result, inputs) => {
-      if (mounted.current && currentDraftInputs.current === inputs) setDraft({ inputs, result, notice: `${result.draft_id} returned as an unsaved registered-contract draft. Nothing was saved or authorized.` });
-    },
-    onError: (error, inputs) => {
-      if (mounted.current && currentDraftInputs.current === inputs) setDraft({ inputs, notice: error instanceof Error ? error.message : "The control-plane draft was refused." });
-    },
-  });
-  if (query.isPending) return <LoadingState label="Loading AI planner configuration" />;
-  if (query.isError) return <ErrorState error={query.error} retry={() => query.refetch()} />;
-  const setAutonomy = (autonomy: AutonomyLevel) => setRunConfig({ ...runConfig, autonomy });
-  const providers = query.data.ai.providers ?? [{ provider_id: query.data.ai.active_provider ?? "deterministic-offline.v1", kind: "deterministic", model: "deterministic-planner.v1", credential_reference: null, health: { state: query.data.ai.provider_health ?? "not_reported", message: "Legacy catalog health" } }];
-  const selectedProvider = providers.find((provider) => provider.provider_id === runConfig.provider) ?? providers[0]; const providerHealth = selectedProvider?.health?.state ?? "not_reported";
-  const offlineDraft = () => { const words = new Set(objective.toLowerCase().split(/\W+/)); const candidates = query.data.behaviors.filter((item) => item.execution_state !== "metadata_only").sort((left, right) => score(right) - score(left)).slice(0, 5); function score(item: Behavior) { return `${item.title} ${item.purpose} ${item.techniques.join(" ")}`.toLowerCase().split(/\W+/).filter((word) => words.has(word)).length; } const steps = candidates.map((behavior, index) => ({ id: `local_draft_${index + 1}`, behavior_id: behavior.id, parameters: Object.fromEntries(behavior.parameters.filter(shouldInitializeParameter).map((item) => [item.name, initialParameterValue(item)])), inputs: {}, alternates: [] })); const localScenario: Scenario = { ...scenario, title: objective.slice(0, 80) || "Local fallback draft", purpose: objective, start: steps[0]?.id ?? "missing_start", steps, edges: steps.slice(0, -1).map((step, index) => ({ from_step: step.id, outcome: "success", to_step: steps[index + 1]!.id })), layout: undefined }; setDraft({ inputs: draftInputs, notice: "A browser-local fallback draft was created. It remains unsaved and unauthorized.", result: { schema_version: "bluefire.ai-graph-draft-result.v1", draft_id: `local-fallback-${Date.now()}`, saved: false, scenario: localScenario, rationale: "Browser-local deterministic keyword ranking over the already loaded registered catalog.", assumptions: ["No provider or server draft endpoint was used.", "This local fallback requires full operator review."], audit: { unsaved: true, provider: { requested_provider_id: null, effective_provider_id: "browser-local-fallback", model: "keyword-ranking", attempts: 0, used_fallback: true, fallback_reason: "operator_selected_local_fallback", usage: null }, selected_behavior_ids: steps.map((step) => step.behavior_id), validation: { authority: "none", catalog_snapshot_only: true } } } }); setNotice(undefined); };
-  const openDraft = () => { if (!draftResult) return; const next = withDraftLayout(draftResult.scenario); setScenario(next); navigate("/builder"); };
+  const [search] = useSearchParams();
+  const audit = search.get("view") === "audit";
+  const setAssistantOpen = useAssistancePanel()?.setOpen;
+  const { activeRun } = useProduct();
+  const [notice, setNotice] = useState<string>();
+  useEffect(() => { if (!audit) setAssistantOpen?.(true); }, [audit, setAssistantOpen]);
+  if (!audit) return <Navigate to="/builder" replace />;
   const decisions = activeRun?.planner_decisions ?? [];
-  return <div className="page ai-page"><PageHeader eyebrow="Bounded intelligence" title="AI Planner" description="Draft unsaved graphs, configure secret-safe provider metadata, and review durable bounded runtime proposals without confusing model choice, deterministic policy, or execution approval." />
-    {notice || currentDraft?.notice ? <Callout title="AI control plane">{notice || currentDraft?.notice}</Callout> : null}
-    <div className="ai-hero-grid"><Panel><PanelHeader eyebrow="Autonomy policy" title="Decision authority" detail="Independent from Simulate or Execute mode; every proposal remains inside a request-specific allowlist."/><div className="autonomy-stack">{(["off", "assist", "auto"] as AutonomyLevel[]).map((level) => <button key={level} className={runConfig.autonomy === level ? "selected" : ""} onClick={() => setAutonomy(level)}><span>{level === "off" ? <Braces/> : level === "assist" ? <Bot/> : <Sparkles/>}</span><div><strong>{sentence(level)}</strong><p>{level === "off" ? "Deterministic planner only; no model calls." : level === "assist" ? "Every bounded runtime change pauses at a durable exact-digest operator review." : "May apply a policy-valid bounded change in Simulate; every Execute mutation stops for fresh one-time approval."}</p></div><i>{runConfig.autonomy === level ? <CheckCircle2/> : null}</i></button>)}</div></Panel>
-      <Panel><PanelHeader eyebrow="Active runtime" title="Structured model connection" actions={<Badge tone={providerHealth === "ready" || providerHealth === "healthy" ? "success" : "warning"} dot>{sentence(providerHealth)}</Badge>}/><div className="detail-body"><Field label="Provider adapter"><select value={selectedProvider?.provider_id ?? runConfig.provider} onChange={(event) => { const provider = providers.find((item) => item.provider_id === event.target.value); setRunConfig({ ...runConfig, provider: event.target.value, model: provider?.model ?? "", endpoint: "" }); }}>{providers.map((provider) => <option value={provider.provider_id} key={provider.provider_id}>{provider.provider_id} · {sentence(provider.kind)}</option>)}</select></Field><Field label="Model" hint="Read-only control-plane configuration."><input value={selectedProvider?.model ?? runConfig.model} readOnly disabled/></Field><Field label="Endpoint" hint="Provider endpoints and resolved credentials are intentionally absent from browser metadata."><input value="" readOnly disabled placeholder="Control-plane managed"/></Field><DataList items={[{ label: "Credential boundary", value: <><KeyRound/> {selectedProvider?.credential_reference ? "Environment reference configured server-side" : "No credential required"}</> }, { label: "Proposal application", value: sentence(selectedProvider?.proposal_application ?? "not reported") }, { label: "Health meaning", value: "Configuration readiness only; not a network or quality probe" }]} /></div></Panel></div>
-    <Panel className="trust-boundary"><PanelHeader eyebrow="Three separate gates" title="A model choice never becomes effect authority"/><div className="trust-flow"><div><Bot/><strong>Model proposal</strong><small>Exact observed edge and bounded registered fields</small></div><ArrowRight/><div><Braces/><strong>Schema validation</strong><small>Known IDs, typed primitives, and exact digests</small></div><ArrowRight/><div><Route/><strong>Deterministic policy</strong><small>Compatibility, exact profile, scope, tier, and retry budget</small></div><ArrowRight/><div><ShieldCheck/><strong>Proposal decision</strong><small>Assist reviews; Auto applies only policy-valid Simulate changes</small></div><ArrowRight/><div><LockKeyhole/><strong>Execute approval</strong><small>Every Execute mutation needs a fresh one-time binding</small></div></div><Callout title="Current v2 planner limits are explicit">At the exact observed next edge, the model may select that registered successor, substitute one compatible registered behavior, change allowlisted typed primitive parameters, choose an action registered for the exact active profile, or request one bounded retry. It cannot issue arbitrary commands, create capabilities, widen scope, change profile, tier, or policy, select an edge for another outcome, or runtime-apply detection or replay proposals.</Callout></Panel>
-    <div className="two-column"><ProviderSetup/>
-      <Panel><PanelHeader eyebrow="Unsaved graph draft" title="Objective to registered contracts" detail="The control plane normalizes known behaviors and typed parameters; it never saves, runs, or approves the result."/><div className="detail-body"><Field label="Experiment objective"><textarea rows={5} value={objective} onChange={(event) => setObjective(event.target.value)} maxLength={4000} placeholder="Describe the defensive question to test"/></Field><Button variant="primary" onClick={() => { setDraft(undefined); setNotice(undefined); serverDraft.mutate(draftInputs); }} disabled={!objective.trim() || serverDraft.isPending}><Sparkles/>{serverDraft.isPending ? "Drafting through control plane" : "Generate registered draft"}</Button><Button variant="secondary" onClick={offlineDraft} disabled={!objective.trim() || serverDraft.isPending}><Braces/>Use explicit local fallback</Button><p className="field-note">The local fallback uses browser keyword matching only. Both paths produce an unsaved, unauthorized preview for operator review.</p></div></Panel></div>
-    {draftResult ? <Panel><PanelHeader eyebrow="Unsaved preview" title={draftResult.scenario.title} detail={draftResult.rationale} actions={<Badge tone="warning">Not saved · not authorized</Badge>}/><div className="detail-body"><DataList items={[{ label: "Draft ID", value: <code>{draftResult.draft_id}</code> }, { label: "Provider", value: draftResult.audit.provider?.effective_provider_id ?? "Not reported" }, { label: "Model", value: draftResult.audit.provider?.model ?? "Not reported" }, { label: "Fallback", value: draftResult.audit.provider?.used_fallback ? sentence(draftResult.audit.provider.fallback_reason ?? "used") : "No fallback reported" }, { label: "Bounds", value: `${draftResult.scenario.steps.length} nodes · ${draftResult.scenario.edges.length} edges` }, { label: "Selected behaviors", value: draftResult.audit.selected_behavior_ids?.join(", ") || draftResult.scenario.steps.map((step) => step.behavior_id).join(", ") }]} />{draftResult.assumptions.length ? <Callout title="Draft assumptions"><ul>{draftResult.assumptions.map((item) => <li key={item}>{item}</li>)}</ul></Callout> : null}<details><summary>Normalization and validation audit</summary><pre>{JSON.stringify({ allowlist: draftResult.audit.allowlist, parameter_fields: draftResult.audit.parameter_fields, normalization: draftResult.audit.normalization, validation: draftResult.audit.validation }, null, 2)}</pre></details><Button variant="primary" onClick={openDraft}><Route/>Open unsaved draft in Builder</Button><p className="field-note">Opening replaces the current in-memory graph and clears any Execute confirmation. Save/version and run review remain separate actions.</p></div></Panel> : null}
-    <PlannerJobReview setNotice={setNotice}><Panel><PanelHeader eyebrow="Completed run audit" title="Planner decisions" actions={<Badge>{decisions.length}</Badge>}/>{decisions.length ? <div className="decision-list">{decisions.map((decision, index) => <article key={index}><span>{String(index + 1).padStart(2, "0")}</span><pre>{JSON.stringify(decision, null, 2)}</pre></article>)}</div> : <Callout title="No completed-run decisions loaded">Durable proposal review uses the job-bound panel below. Completed canonical decisions appear here after a run record is loaded.</Callout>}</Panel></PlannerJobReview>
+  return <div className="page ai-page">
+    <PageHeader title="Runtime proposal audit" description="Inspect durable runtime decisions and their original approval review." actions={<Link className="button button-secondary button-medium" onClick={() => setAssistantOpen?.(true)} to="/builder">Plan with Assistant</Link>} />
+    {notice ? <Callout title="Proposal review">{notice}</Callout> : null}
+    <PlannerJobReview setNotice={setNotice}><Panel><PanelHeader title="Completed run decisions"/>{decisions.length ? <div className="detail-body">{decisions.map((decision, index) => <details key={index}><summary>Decision {index + 1}</summary><pre>{JSON.stringify(decision, null, 2)}</pre></details>)}</div> : <Callout title="No completed run selected">Open a run to inspect its decisions. New experiment drafting and saved proposal review are available in Builder with Assistant.</Callout>}</Panel></PlannerJobReview>
   </div>;
 }
 
-
-// Keep draft/provider editing independent from job lookup and approval typing.
+// Keep approval typing independent from unchanged review presentation.
 // These wrappers skip unchanged presentation only; the approval validator below
 // still checks the current request; the shared deadline hook handles idle expiry.
 const StableProposalReviewWorkspace = memo(ProposalReviewWorkspace);
@@ -114,10 +86,6 @@ function PlannerJobReview({ children, setNotice }: { children: ReactNode; setNot
     {selectedJob ? <StableProposalReviewWorkspace job={selectedJob} onDecision={handleProposalDecision} onReviewLoaded={handleReviewLoaded}/> : null}
     {selectedJob?.state === "awaiting_approval" && selectedJob.progress.approval_kind === "ai_proposal_execute" ? selectedJob.approval_request && acceptedReview ? <PlannerContinuationApproval job={selectedJob} request={selectedJob.approval_request!} review={acceptedReview} confirmed={approvalConfirmed} operator={approvalOperator} pending={approveContinuation.isPending} onConfirmed={setApprovalConfirmed} onOperator={setApprovalOperator} onApprove={() => approveContinuation.mutate({ jobId: reviewJobId, operator: approvalOperator.trim() })}/> : <Callout tone="danger" title="Fresh Execute envelope is not loaded">This job is waiting for a proposal-continuation approval, but the nonce-free public binding or accepted proposal review is unavailable. Approval is intentionally disabled; never approve a job whose fresh digests are not displayed.</Callout> : null}
   </>;
-}
-
-function withDraftLayout(scenario: Scenario): Scenario {
-  return { ...scenario, layout: Object.fromEntries(scenario.steps.map((step, index) => [step.id, { x: 70 + (index % 4) * 300, y: 110 + Math.floor(index / 4) * 230 }])) };
 }
 
 function PlannerContinuationApproval({ job, request, review, confirmed, operator, pending, onConfirmed, onOperator, onApprove }: { job: RunJob; request: Record<string, unknown>; review: AIProposalReview; confirmed: boolean; operator: string; pending: boolean; onConfirmed: (value: boolean) => void; onOperator: (value: string) => void; onApprove: () => void }) {

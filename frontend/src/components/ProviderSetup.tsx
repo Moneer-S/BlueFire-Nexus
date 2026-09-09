@@ -10,7 +10,7 @@ const styles: Record<APIStyle, string> = {
   openai_responses: "Responses API · strict structured output",
   chat_completions: "Chat Completions API · strict structured output",
 };
-const initial = { id: "deterministic.local-review.v1", kind: "deterministic" as APIStyle, model: "deterministic-planner.v1", endpoint: "", env: "", timeout: 30, tokens: 800, retries: 0 };
+const initial = { id: "provider.local.v1", kind: "openai_responses" as APIStyle, model: "", endpoint: "", env: "", timeout: 30, tokens: 800, retries: 0 };
 
 export function ProviderSetup() {
   const client = useQueryClient();
@@ -36,8 +36,9 @@ export function ProviderSetup() {
   const busy = save.isPending || probe.isPending || lifecycle.isPending;
   const valid = Boolean(form.id.trim() && form.model.trim() && (form.kind === "deterministic" || form.endpoint.trim()));
   const active = resources.data?.resources.some(resource => resource.id === form.id && resource.status === "active");
-  return <Panel><PanelHeader eyebrow="Provider setup" title="Model provider drafts" detail="Choose the API contract your endpoint actually supports. Model names are sent exactly as entered."/>
+  return <Panel><PanelHeader eyebrow="Provider setup" title="Connect a model" detail="Use a supported API endpoint and a secret environment variable available to the BlueFire service."/>
     <div className="detail-body">
+      <p>Set the API key in the environment of the process that starts BlueFire, then restart the service. Enter that variable’s name below. Save the configuration, check it, and activate it before selecting the provider in Assistant or run setup.</p>
       {notice ? <Callout title="Provider setup">{notice}</Callout> : null}
       <Field label="Provider ID"><input value={form.id} disabled={busy} onChange={event => update({ id: event.target.value })} placeholder="provider.local.v1" maxLength={200}/></Field>
       <Field label="API style"><select value={form.kind} disabled={busy} onChange={event => update({ kind: event.target.value as APIStyle, model: event.target.value === "deterministic" ? "deterministic-planner.v1" : "", endpoint: "", env: "" })}>{Object.entries(styles).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</select></Field>

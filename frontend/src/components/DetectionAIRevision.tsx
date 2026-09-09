@@ -163,7 +163,7 @@ export function DetectionAIRevision({ resource, sourceRun, providers, defaultPro
         </Dialog.Root> : null}
         {!resource?.document.rule_source || !["sqlite", "sigma"].includes(resource.document.target_language ?? "") ? <p>Save and validate a SQLite or Sigma rule before requesting a revision.</p> : !sourceRun?.finalized_at || !sourceCount ? <p>Select a completed run with independent observations in Source run and evidence above.</p> : <p>{sourceCount} independent observations from the selected run will inform this request. The configured provider controls whether bounded, redacted content or field metadata is included.</p>}
         {manualEdits ? <Callout title="Unsaved manual changes">Save your rule edits first, or restore the saved source before requesting AI changes.</Callout> : null}
-        {!models.length ? <p><Link to="/ai-planner">Configure a model provider</Link> to use detection assistance.</p> : null}
+        {!models.length ? <p><Link to="/settings#model-connection">Configure a model provider</Link> to use detection assistance.</p> : null}
         <Button variant="primary" disabled={!canStart || submit.isPending} onClick={start}>Propose rule revision</Button>
       </> : <>
         {receipt && !proposalJob ? <Callout title="Keep the original request">The submission is retained until its matching job is found. Retrying uses the same request and cannot create a second job.<div className="candidate-actions"><Button disabled={submit.isPending} onClick={() => submit.mutate(receipt)}>{submit.isPending ? "Sending original request" : "Retry original request"}</Button><Button onClick={() => { void job.refetch(); }}>Check request status</Button></div></Callout> : null}

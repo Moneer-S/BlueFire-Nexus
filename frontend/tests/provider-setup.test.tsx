@@ -47,8 +47,9 @@ describe("explicit provider setup", () => {
     await waitFor(() => expect(api.saveResource).toHaveBeenCalledWith("model-providers", doc.id, doc, "draft"));
     expect(api.checkAIProvider).not.toHaveBeenCalled();
   });
-  it("keeps deterministic mode free of a live-test button", () => {
+  it("keeps deterministic mode free of a live-test button", async () => {
     mount();
+    await userEvent.setup().selectOptions(screen.getByLabelText("API style"), "deterministic");
     expect(screen.queryByRole("button", { name: "Send live connection test" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Secret environment reference", { exact: false })).not.toBeInTheDocument();
   });

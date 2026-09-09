@@ -275,7 +275,7 @@ describe("product application", () => {
     expect(screen.getByRole("combobox", { name: "Provider" })).not.toBeVisible();
     await user.click(providerDetails);
     expect(screen.getByRole("combobox", { name: "Provider" })).toBeVisible();
-    expect(screen.getByRole("link", { name: "Configure providers" })).toHaveAttribute("href", "/ai-planner");
+    expect(screen.getByRole("link", { name: "Configure providers" })).toHaveAttribute("href", "/settings#model-connection");
     const providerId = (screen.getByRole("combobox", { name: "Provider" }) as HTMLSelectElement).value;
     await user.click(providerDetails);
     await user.click(draftDetails);
@@ -1664,29 +1664,22 @@ describe("product application", () => {
     expect(removeEventListener).toHaveBeenCalledWith("change", colorSchemeListener);
   });
 
-  it("reviews a server-normalized graph draft before importing it", async () => {
-    const user = userEvent.setup();
+  it("routes legacy drafting into the shared Assistant without replacing the working graph", async () => {
     renderApp("/ai-planner");
-    expect(await screen.findByRole("heading", { name: "AI Planner" })).toBeVisible();
-    const objective = screen.getByRole("textbox", { name: "Experiment objective" });
-    await user.clear(objective);
-    await user.type(objective, "Validate a bounded registered graph");
-    await user.click(screen.getByRole("button", { name: "Generate registered draft" }));
-    expect(await screen.findByText("Not saved · not authorized")).toBeVisible();
-    expect(screen.getByText("Normalized from registered contracts.")).toBeVisible();
-    expect(screen.getAllByText("deterministic-offline.v1").length).toBeGreaterThan(0);
-    const call = vi.mocked(fetch).mock.calls.find(([input]) => String(input).endsWith("/ai/drafts"));
-    expect(JSON.parse(String((call?.[1] as RequestInit).body))).toMatchObject({ objective: "Validate a bounded registered graph", max_nodes: 8, max_edges: 16 });
+    expect(await screen.findByRole("complementary", { name: "Experiment assistant" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "What would you like to do?" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Generate registered draft" })).not.toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).endsWith("/ai/drafts"))).toBe(false);
   });
 
-  it.each(["/runs", "/ai-planner"])("reloads the exact continuation plan before enabling approval on %s", async (path) => {
+  it.each(["/runs", "/ai-planner?view=audit"])("reloads the exact continuation plan before enabling approval on %s", async (path) => {
     const accepted = acceptedProposalFixture();
     currentProposal = accepted.proposal;
     currentProposalJob = accepted.job;
     activeJobInventory = [accepted.job];
     const user = userEvent.setup();
     renderApp(path);
-    if (path === "/ai-planner") await user.type(await screen.findByRole("textbox", { name: "Job ID" }), accepted.job.job_id);
+    if (path === "/ai-planner?view=audit") await user.type(await screen.findByRole("textbox", { name: "Job ID" }), accepted.job.job_id);
     const canonical = await screen.findByRole("region", { name: "Canonical preflight plan" });
     expect(canonical).toBeVisible();
     expect(within(canonical).getByText("sandbox.workspace")).toBeVisible();
@@ -1704,9 +1697,9 @@ describe("product application", () => {
   });
 
   it.each([
-    ["/runs", "missing"], ["/ai-planner", "missing"],
-    ["/runs", "mismatch"], ["/ai-planner", "mismatch"],
-    ["/runs", "consumed"], ["/ai-planner", "consumed"],
+    ["/runs", "missing"], ["/ai-planner?view=audit", "missing"],
+    ["/runs", "mismatch"], ["/ai-planner?view=audit", "mismatch"],
+    ["/runs", "consumed"], ["/ai-planner?view=audit", "consumed"],
   ])("refuses a %s continuation with %s canonical authority", async (path, change) => {
     const accepted = acceptedProposalFixture();
     if (change === "missing") delete accepted.proposal.execute_approval_review;
@@ -1717,7 +1710,7 @@ describe("product application", () => {
     activeJobInventory = [accepted.job];
     const user = userEvent.setup();
     renderApp(path);
-    if (path === "/ai-planner") await user.type(await screen.findByRole("textbox", { name: "Job ID" }), accepted.job.job_id);
+    if (path === "/ai-planner?view=audit") await user.type(await screen.findByRole("textbox", { name: "Job ID" }), accepted.job.job_id);
     await screen.findByText("Proposal is accepted");
     expect(screen.queryByRole("region", { name: "Canonical preflight plan" })).not.toBeInTheDocument();
     const release = screen.queryByRole("button", { name: /Approve and release/ });
@@ -1742,7 +1735,7 @@ describe("product application", () => {
     });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     const user = userEvent.setup();
-    renderApp("/ai-planner", client);
+    renderApp("/ai-planner?view=audit", client);
     const lookup = await screen.findByRole("textbox", { name: "Job ID" });
     await user.type(lookup, accepted.job.job_id);
     await screen.findByRole("region", { name: "Canonical preflight plan" });
@@ -1775,8 +1768,8 @@ describe("product application", () => {
 
   it("keeps proposal acceptance separate from a fresh unchecked Execute approval", async () => {
     const user = userEvent.setup();
-    renderApp("/ai-planner");
-    expect(await screen.findByRole("heading", { name: "AI Planner" })).toBeVisible();
+    renderApp("/ai-planner?view=audit");
+    expect(await screen.findByRole("heading", { name: "Runtime proposal audit" })).toBeVisible();
     await user.type(screen.getByRole("textbox", { name: "Job ID" }), proposalJob.job_id);
     expect(await screen.findByText("Bounded runtime proposal")).toBeVisible();
     await user.click(screen.getByRole("checkbox", { name: /I reviewed these exact three digests/ }));
