@@ -2,6 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { BookOpen, Download, FileJson2, Github, LifeBuoy, LockKeyhole, Moon, RotateCcw, Save, ShieldCheck, Sun, Upload } from "lucide-react";
 import { Link } from "react-router-dom";
+import { ProviderSetup } from "../components/ProviderSetup";
 import { BuildDiagnostics } from "../components/BuildDiagnostics";
 import { api } from "../lib/api";
 import {
@@ -22,7 +23,7 @@ function readTextFile(file: File): Promise<string> {
 }
 
 export function SettingsPage() {
-  const { theme, setTheme, runConfig, setRunConfig } = useProduct();
+  const { theme, setTheme, newRunDefaults, setNewRunDefaults } = useProduct();
   const fileRef = useRef<HTMLInputElement>(null);
   const [notice, setNotice] = useState<string>();
   const hydrated = useRef(false);
@@ -36,16 +37,16 @@ export function SettingsPage() {
     try {
       const preferences = parseUiPreferenceDocument(value);
       setTheme(preferences.theme);
-      setRunConfig({ ...runConfig, mode: preferences.effect_mode, autonomy: preferences.autonomy, approved: false, approvedBy: "" });
+      setNewRunDefaults({ mode: preferences.effect_mode, autonomy: preferences.autonomy });
     } catch (error) {
       setNotice(`Durable preferences were ignored. ${error instanceof Error ? error.message : "The preference document was invalid."}`);
     }
-  }, [runConfig, setRunConfig, setTheme, settingsQuery.data]);
+  }, [newRunDefaults, setNewRunDefaults, setTheme, settingsQuery.data]);
 
-  const preferenceDocument = () => buildUiPreferenceDocument(theme, runConfig.mode, runConfig.autonomy);
+  const preferenceDocument = () => buildUiPreferenceDocument(theme, newRunDefaults.mode, newRunDefaults.autonomy);
   const saveMutation = useMutation({
     mutationFn: () => api.saveSetting("ui.preferences", preferenceDocument()),
-    onSuccess: ({ setting }) => setNotice(`Preferences saved durably at ${new Date(setting.updated_at).toLocaleString()}. Execute approval remained cleared.`),
+    onSuccess: ({ setting }) => setNotice(`Preferences saved durably at ${new Date(setting.updated_at).toLocaleString()}. Current run settings and prepared approvals were unchanged.`),
     onError: (error) => setNotice(error instanceof Error ? error.message : "Preferences could not be saved."),
   });
   const exportSettings = () => {
@@ -61,8 +62,8 @@ export function SettingsPage() {
     try {
       const preferences = parseUiPreferenceDocument(JSON.parse(await readTextFile(file)) as unknown);
       setTheme(preferences.theme);
-      setRunConfig({ ...runConfig, mode: preferences.effect_mode, autonomy: preferences.autonomy, approved: false, approvedBy: "" });
-      setNotice("Theme, effect mode, and autonomy were imported into this form. No authority fields were accepted; review and save these preferences.");
+      setNewRunDefaults({ mode: preferences.effect_mode, autonomy: preferences.autonomy });
+      setNotice("Theme and future run defaults were imported into this form. No authority fields were accepted; review and save these preferences.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Import failed.");
     } finally {
@@ -89,13 +90,14 @@ export function SettingsPage() {
       <Panel>
         <PanelHeader title="New run defaults" />
         <div className="detail-body">
-          <Field label="Effect mode"><select value={runConfig.mode} onChange={(event) => setRunConfig({ ...runConfig, mode: event.target.value as "simulate" | "execute", approved: false, approvedBy: "" })}><option value="simulate">Simulate</option><option value="execute">Execute</option></select></Field>
-          <Field label="AI autonomy"><select value={runConfig.autonomy} onChange={(event) => setRunConfig({ ...runConfig, autonomy: event.target.value as typeof runConfig.autonomy })}><option value="off">Off</option><option value="assist">Assist</option><option value="auto">Auto</option></select></Field>
-          <p>Each run still requires its own review. Execute approval and operator identity are never saved as preferences.</p>
+          <Field label="Effect mode"><select value={newRunDefaults.mode} onChange={(event) => setNewRunDefaults({ ...newRunDefaults, mode: event.target.value as "simulate" | "execute" })}><option value="simulate">Simulate</option><option value="execute">Execute</option></select></Field>
+          <Field label="AI autonomy"><select value={newRunDefaults.autonomy} onChange={(event) => setNewRunDefaults({ ...newRunDefaults, autonomy: event.target.value as typeof newRunDefaults.autonomy })}><option value="off">Off</option><option value="assist">Assist</option><option value="auto">Auto</option></select></Field>
+          <p>These defaults apply when opening a fresh workspace. Current run settings and prepared requests stay unchanged. Execute approval and operator identity are never saved as preferences.</p>
         </div>
       </Panel>
     </div>
     <details className="settings-import-details"><summary>Preference import and security</summary><p>Import and export include only theme, preferred effect mode and AI autonomy. Provider credentials, environment permissions, approval and execution limits remain with their configured services and profiles.</p></details>
+    <section id="model-connection" aria-label="Model connection"><ProviderSetup/></section>
     <BuildDiagnostics/>
 
   </div>;

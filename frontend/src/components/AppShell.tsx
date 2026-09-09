@@ -10,7 +10,7 @@ import { api, DEMO_MODE } from "../lib/api";
 import { demoScenario } from "../lib/demo";
 import { useProduct } from "../state/ProductContext";
 import { useServiceConnection } from "../state/useServiceConnection";
-import { AssistanceProvider } from "../state/AssistanceContext";
+import { AssistanceProvider, useAssistancePanel } from "../state/AssistanceContext";
 import { ExperimentAssistant } from "./ExperimentAssistant";
 import { LabSessionNotice } from "./LabSessionNotice";
 import { Badge, IconButton } from "./Primitives";
@@ -49,6 +49,7 @@ export function AppShell() {
 }
 
 function WorkspaceShell() {
+  const assistantOpen = useAssistancePanel()?.open;
   const [collapsed, setCollapsed] = useState(() => {
     try { return window.localStorage.getItem("bluefire.navigation.collapsed.v1") === "true"; } catch { return false; }
   });
@@ -151,7 +152,7 @@ function WorkspaceShell() {
       </aside>
       <div className="workspace-shell" inert={mobileOpen}>
         <header className="workspace-topbar"><div><strong>{current}</strong></div><div className="topbar-actions"><ExperimentAssistant providers={catalog.data?.ai.providers ?? []} /><span title={connection.detail}><Badge tone={connection.tone} dot>{connection.label}</Badge></span></div></header>
-        <main id="main-content" tabIndex={-1}><LabSessionNotice providers={catalog.data?.ai.providers} /><Outlet /></main>
+        <div className={`workspace-content ${assistantOpen ? "assistant-open" : ""}`}><main id="main-content" tabIndex={-1}><LabSessionNotice providers={catalog.data?.ai.providers} /><Outlet /></main><div id="assistant-dock" /></div>
       </div>
     </div>
     </Tooltip.Provider>

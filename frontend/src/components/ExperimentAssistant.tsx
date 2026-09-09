@@ -1,4 +1,4 @@
-import * as Dialog from "@radix-ui/react-dialog";
+import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Check, MessageSquareText, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -11,7 +11,7 @@ import { RunReference } from "./RunReference";
 import { ReceiverAssistantProgress } from "./ReceiverAssistantProgress";
 import { detectionCreationPath } from "../lib/detection-creation";
 import { sameJson } from "../lib/replay-review";
-import { assistanceActive, assistanceJobId, assistancePath, clearAssistanceReceipt, clearAssistanceRecovery, matchesAssistanceReceipt, readAssistanceReceipt, readAssistanceRecovery, storeAssistanceReceipt, storeAssistanceRecovery, type AssistanceEnvelope, type AssistanceRequest, type AssistanceStatus } from "../lib/assistance";
+import { readAssistanceHistory, rememberAssistanceRequest, readViewedAssistanceRequest, viewAssistanceRequest, assistanceActive, assistanceJobId, assistancePath, clearAssistanceReceipt, clearAssistanceRecovery, matchesAssistanceReceipt, readAssistanceReceipt, readAssistanceRecovery, storeAssistanceReceipt, storeAssistanceRecovery, type AssistanceEnvelope, type AssistanceRequest, type AssistanceStatus } from "../lib/assistance";
 import { useAssistancePanel, useAssistanceSelection } from "../state/AssistanceContext";
 import { useProduct } from "../state/ProductContext";
 import type { CatalogResponse, DetectionCaseRole } from "../types";
@@ -38,37 +38,47 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
   const panel = useAssistancePanel();
   const open = panel?.open ?? localOpen;
   const setOpen = panel?.setOpen ?? setLocalOpen;
-  const [receipt, setReceipt] = useState(readAssistanceReceipt);
+  const [ownedReceipt, setOwnedReceipt] = useState(readAssistanceReceipt);
+  const [receipt, setReceiptState] = useState(readViewedAssistanceRequest);
+  const [history, setHistory] = useState(readAssistanceHistory);
+  const setReceipt = (value?: AssistanceRequest) => { setReceiptState(value); viewAssistanceRequest(value); };
+  const remember = (value: AssistanceRequest) => {
+    if (!rememberAssistanceRequest(value)) return false;
+    setHistory(readAssistanceHistory()); return true;
+  };
   const [message, setMessage] = useState(readDraft);
   const [caseRole, setCaseRole] = useState<DetectionCaseRole>("attack");
   const [localError, setLocalError] = useState<Error>();
   const [stopRequested, setStopRequested] = useState<string>();
   const [recovery, setRecovery] = useState(readAssistanceRecovery);
   const submissionLock = useRef(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const close = () => { setOpen(false); triggerRef.current?.focus(); };
   const requestedJobId = panel?.requestedJobId, requestedReceiverJobId = panel?.requestedReceiverJobId, finishOpenJob = panel?.finishOpenJob;
   useEffect(() => {
     if (!requestedJobId || !finishOpenJob) return;
-    if (receipt) {
-      if (assistanceJobId(receipt.submission_id) !== requestedJobId) setLocalError(new Error("Another saved operation is open. Check or finish it and choose Start another request before opening this run's Assistant work."));
-      finishOpenJob(); return;
-    }
     let current = true;
     void api.assistanceTurn(requestedJobId).then((value) => {
       if (!current) return;
       if (requestedReceiverJobId && (!value.turn.receiver_test?.owns_lifecycle || value.turn.receiver_test.owner_job_id !== requestedReceiverJobId)) throw new Error("This Assistant turn does not own the selected receiver test. The current request and test remain intact.");
       const original = value.job.request?.submitted_request as AssistanceRequest | undefined;
-      if (!original || value.job.job_id !== requestedJobId || !matchesAssistanceReceipt(value, original) || !storeAssistanceReceipt(original)) throw new Error("This operation could not be restored safely. Its saved results remain available; check browser session storage and retry.");
-      setReceipt(original); setLocalError(undefined); finishOpenJob();
+      if (!original || value.job.job_id !== requestedJobId || !matchesAssistanceReceipt(value, original) || !rememberAssistanceRequest(original)) throw new Error("This operation could not be restored safely. Its saved results remain available; check browser session storage and retry.");
+      setHistory(readAssistanceHistory()); setReceiptState(original); viewAssistanceRequest(original);
+      if (!ownedReceipt && value.turn.can_start_new_turn !== true) {
+        if (!storeAssistanceReceipt(original)) throw new Error("The active operation could not be retained. No new work was started.");
+        setOwnedReceipt(original);
+      }
+      setLocalError(undefined); finishOpenJob();
     }).catch((error: unknown) => { if (current) { setLocalError(error instanceof Error ? error : new Error("Saved Assistant work is unavailable.")); finishOpenJob(); } });
     return () => { current = false; };
-  }, [requestedJobId, requestedReceiverJobId, finishOpenJob, receipt]);
+  }, [requestedJobId, requestedReceiverJobId, finishOpenJob, ownedReceipt]);
   const selection = useAssistanceSelection();
   const graphSelection = selection && "kind" in selection && selection.kind === "graph" ? selection : undefined;
   const savedGraphSelection = selection && "kind" in selection && selection.kind === "saved_graph" ? selection : undefined;
   const creationSelection = selection && "kind" in selection && selection.kind === "run_detection" ? selection : undefined;
   const receiverSelection = selection && "kind" in selection && selection.kind === "receiver" ? selection : undefined;
   const detectionSelection = selection && !("kind" in selection) ? selection : undefined;
-  const { runConfig, setRunConfig } = useProduct();
+  const { assistantPreferences, setAssistantPreferences } = useProduct();
   const client = useQueryClient();
   const jobId = receipt ? assistanceJobId(receipt.submission_id) : "";
   const key = ["assistance-turn", jobId];
@@ -97,6 +107,13 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
     }, onSettled: () => { submissionLock.current = false; } });
   const operation = useQuery({ queryKey: key, queryFn: async () => validate(await api.assistanceTurn(jobId), receipt!), enabled: Boolean(receipt) && !submit.isPending && !DEMO_MODE, retry: false,
     refetchInterval: (query) => query.state.data && (assistanceActive(query.state.data.turn.status) || (query.state.data.turn.status === "blocked" && query.state.data.turn.can_start_new_turn !== true)) && !query.state.error ? 1500 : false });
+  const ownedJobId = ownedReceipt ? assistanceJobId(ownedReceipt.submission_id) : "";
+  const ownedOperation = useQuery({ queryKey: ["assistance-turn", ownedJobId],
+    queryFn: async () => validate(await api.assistanceTurn(ownedJobId), ownedReceipt!),
+    enabled: Boolean(ownedReceipt) && ownedJobId !== jobId && !submit.isPending && !DEMO_MODE, retry: false,
+    refetchInterval: (query) => query.state.data?.turn.can_start_new_turn !== true && !query.state.error ? 1500 : false });
+  const ownerStatus = ownedJobId === jobId ? operation : ownedOperation;
+  const ownerBusy = Boolean(ownedReceipt && (ownerStatus.isError || ownerStatus.data?.turn.can_start_new_turn !== true));
   useEffect(() => {
     if (open && jobId && !submit.isPending) void client.invalidateQueries({ queryKey: ["assistance-turn", jobId] });
   }, [open, jobId, client, submit.isPending]);
@@ -105,7 +122,7 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
   const cancel = useMutation({ mutationFn: async () => { setStopRequested(jobId); await client.cancelQueries({ queryKey: key, exact: true }); return api.controlJob(jobId, "cancel"); }, onSuccess: () => { void operation.refetch(); } });
   const turn = operation.data?.turn;
   const continuation = turn?.continuation;
-  const triggerStatus = receipt ? operation.isError ? "Status unavailable" : turn ? triggerLabels[turn.status] : "Checking status" : undefined;
+  const triggerStatus = ownedReceipt && ownedJobId !== jobId ? ownerStatus.isError ? "Status unavailable" : ownerStatus.data ? triggerLabels[ownerStatus.data.turn.status] : "Checking status" : receipt ? operation.isError ? "Status unavailable" : turn ? triggerLabels[turn.status] : "Checking status" : undefined;
   const guidance = turn?.status === "ready_to_continue" ? turn.recovery : undefined;
   const guidancePath = assistancePath(guidance?.action.native_path);
   useEffect(() => {
@@ -115,46 +132,63 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
   const active = turn ? turn.can_start_new_turn !== true : Boolean(receipt);
   const submittedRunIntent = receipt && isReceiverRequest(receipt) && receipt.selection.kind === "receiver_scenario" ? receipt.selection.run_intent : receipt && isSavedGraphRequest(receipt) ? receipt.selection.run_intent : undefined;
   const models = providers.filter((item) => item.kind !== "deterministic");
-  const selectedProvider = models.find((item) => item.provider_id === runConfig.provider);
+  const supportedModes = context.data?.capabilities.filter(item => item.available).flatMap(item => item.supported_autonomy) ?? [];
+  const autonomy = assistantPreferences.autonomy === "auto" && context.data && !supportedModes.includes("auto") && supportedModes.includes("assist") ? "assist" : assistantPreferences.autonomy;
+  const selectedProvider = models.find((item) => item.provider_id === assistantPreferences.provider);
   const selected = context.data?.selected;
   const current = Boolean(selected && (isReceiverSelection(selected) ? receiverSelection && sameJson(selected, receiverSelection.selected) : isRunDetectionSelection(selected) ? creationSelection && sameJson(selected, creationSelection.selected) : isSavedRunSelection(selected) ? savedGraphSelection && sameJson(selected, savedGraphSelection.selected) : isGraphSelection(selected) ? graphSelection && sameJson(selected.base_scenario, graphSelection.baseScenario)
     : detectionSelection && selected.run_id === detectionSelection.runId && selected.candidate_id === detectionSelection.candidateId && selected.candidate_resource_digest === detectionSelection.resourceDigest));
-  const modeSupported = context.data?.capabilities.some((item) => item.available && item.supported_autonomy?.some((mode) => mode === runConfig.autonomy));
-  const ready = !requestedJobId && current && !selection?.manualEdits && runConfig.autonomy !== "off" && Boolean(selectedProvider) && Boolean(message.trim()) && modeSupported;
+  const modeSupported = context.data?.capabilities.some((item) => item.available && item.supported_autonomy?.some((mode) => mode === autonomy));
+  const ready = !ownerBusy && !requestedJobId && current && !selection?.manualEdits && autonomy !== "off" && Boolean(selectedProvider) && Boolean(message.trim()) && modeSupported;
   const action = turn?.next_action;
   const stopping = stopRequested === jobId || turn?.status === "cancelling" || turn?.status === "cancelled";
   const actionPath = action?.kind === "wait" || action?.kind === "continue" || stopping ? undefined : assistancePath(action?.native_path);
   const actionLabel = action?.label ?? (action?.kind === "approve_execute" ? "Review and approve this Execute run" : action?.kind === "open_results" ? "Inspect saved receiver results" : "Open receiver preparation and review");
   const childPath = assistancePath(turn?.active_child?.native_path);
-  const navigate = () => setOpen(false);
+  const navigate = () => { /* Native review remains usable beside this panel. */ };
   const updateMessage = (value: string) => {
     setMessage(value);
     try { sessionStorage.setItem(draftKey, value); } catch { /* The required submission receipt is checked separately. */ }
   };
-  const start = () => {
+  const start = async () => {
     if (!ready || !context.data || !selection || receipt || submissionLock.current) return;
     const common = { submission_id: crypto.randomUUID(), context_digest: context.data.context_digest,
-      message: message.trim(), autonomy: runConfig.autonomy, provider_id: runConfig.provider };
+      message: message.trim(), autonomy, provider_id: assistantPreferences.provider };
     const request: AssistanceRequest = receiverSelection ? { ...common, selection: receiverSelection.selected } : creationSelection ? { ...common, selection: creationSelection.selected } : savedGraphSelection ? { ...common, selection: savedGraphSelection.selected } : graphSelection ? { ...common, selection: { kind: "graph", base_scenario: graphSelection.baseScenario } }
       : { ...common, run_id: detectionSelection!.runId, candidate_id: detectionSelection!.candidateId, candidate_resource_digest: detectionSelection!.resourceDigest, case_role: caseRole };
-    if (!storeAssistanceReceipt(request)) { setLocalError(new Error("Enable browser session storage before starting. The request must be retained so a disconnect cannot duplicate the work.")); return; }
     submissionLock.current = true;
-    setLocalError(undefined); setReceipt(request); submit.mutate(request);
+    if (ownedReceipt) {
+      const latest = await ownerStatus.refetch();
+      if (latest.error || latest.data?.turn.can_start_new_turn !== true || !remember(ownedReceipt) || !clearAssistanceReceipt(ownedReceipt)) { submissionLock.current = false; setLocalError(new Error("Check the previous operation before starting more work.")); return; }
+      setOwnedReceipt(undefined);
+    }
+    if (!storeAssistanceReceipt(request)) { submissionLock.current = false; setLocalError(new Error("Enable browser session storage before starting. The request must be retained so a disconnect cannot duplicate the work.")); return; }
+    submissionLock.current = true;
+    remember(request); setLocalError(undefined); setOwnedReceipt(request); setReceipt(request); submit.mutate(request);
   };
   const newRequest = async () => {
     if (!receipt || active || operation.isFetching) return;
     const latest = await operation.refetch();
     if (latest.error || !latest.data) { setLocalError(new Error("Check the saved operation before starting another request.")); return; }
     if (latest.data.turn.can_start_new_turn !== true) { setLocalError(new Error("This operation has work to settle. Open its native view or stop it before replacing the request.")); return; }
-    if (!clearAssistanceReceipt(receipt)) { setLocalError(new Error("The saved receipt could not be cleared. Check browser session storage before starting another request.")); return; }
-    if (recovery && clearAssistanceRecovery(recovery)) setRecovery(undefined);
+    if (!remember(receipt)) { setLocalError(new Error("The conversation could not be retained. Check browser session storage.")); return; }
+    if (ownedReceipt?.submission_id === receipt.submission_id && !clearAssistanceReceipt(receipt)) { setLocalError(new Error("The saved receipt could not be cleared. Check browser session storage before starting another request.")); return; }
+    if (ownedReceipt?.submission_id === receipt.submission_id) setOwnedReceipt(undefined);
+    if (recovery?.job_id === jobId && clearAssistanceRecovery(recovery)) setRecovery(undefined);
     setReceipt(undefined); setStopRequested(undefined); setLocalError(undefined); submit.reset(); recover.reset(); cancel.reset();
   };
-  return <Dialog.Root open={open} onOpenChange={setOpen}>
-    <Dialog.Trigger asChild><button className="assistant-trigger" aria-label={triggerStatus ? `Assistant: ${triggerStatus}` : "Assistant"}><MessageSquareText aria-hidden="true" /><span>Assistant</span>{triggerStatus ? <span className="assistant-trigger-status">{triggerStatus}</span> : null}</button></Dialog.Trigger>
-    <Dialog.Portal><Dialog.Overlay className="assistant-overlay" /><Dialog.Content className="experiment-assistant" aria-describedby="assistant-description">
-      <header className="assistant-header"><div><Dialog.Title>Experiment assistant</Dialog.Title><Dialog.Description id="assistant-description">Plan an experiment or work from selected evidence. Review changes in the workspace.</Dialog.Description></div><Dialog.Close asChild><button className="assistant-close" aria-label="Close assistant"><X /></button></Dialog.Close></header>
+  return <>
+    <button ref={triggerRef} aria-expanded={open} aria-controls="experiment-assistant" onClick={() => setOpen(!open)} className="assistant-trigger" aria-label={triggerStatus ? `Assistant: ${triggerStatus}` : "Assistant"}><MessageSquareText aria-hidden="true" /><span>Assistant</span>{triggerStatus ? <span className="assistant-trigger-status">{triggerStatus}</span> : null}</button>
+    {open ? createPortal(<aside id="experiment-assistant" className="experiment-assistant" aria-labelledby="assistant-title" onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); close(); } }}>
+      <header className="assistant-header"><div><h2 id="assistant-title">Experiment assistant</h2><p>Review changes beside your experiment and results.</p></div><button onClick={close} className="assistant-close" aria-label="Close assistant"><X /></button></header>
       <div className="assistant-body">
+        <nav className="assistant-work-switcher" aria-label="Assistant workspace">
+          <button type="button" aria-pressed={!receipt} onClick={() => { setReceipt(undefined); setLocalError(undefined); }}>Current selection</button>
+          {ownedReceipt ? <button type="button" aria-pressed={receipt?.submission_id === ownedReceipt.submission_id} onClick={() => setReceipt(ownedReceipt)}>{ownerBusy ? "Return to active work" : "Recent operation"}</button> : null}
+          {history.length ? <Field label="Saved conversations"><select value={receipt?.submission_id ?? ""} onChange={event => { const selected = history.find(item => item.submission_id === event.target.value); if (selected) { setReceipt(selected); setLocalError(undefined); } }}><option value="">Choose saved work</option>{history.map(item => <option key={item.submission_id} value={item.submission_id}>{item.message.slice(0, 100)}</option>)}</select></Field> : null}
+        </nav>
+        {receipt && selection ? <p className="assistant-viewed-context">Workspace: {selection.title}. The saved request below keeps its original context.</p> : null}
+        {!receipt && ownerBusy ? <p role="status">Your active operation is still running or waiting for review. You can inspect this selection and draft a follow-up; return to active work before starting another operation.</p> : null}
         {requestedJobId ? <p role="status">Opening the Assistant operation for this run…</p> : null}
         {receipt ? <section className="assistant-operation" aria-label="Saved assistant work">
           <p className="assistant-request">{receipt.message}</p>
@@ -204,14 +238,15 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
           </>}
         </>}
         {!receipt ? <section className="assistant-composer" aria-label="Assistant controls">
-          <div className="assistant-options"><Field label={savedGraphSelection || receiverSelection ? "Assistant mode" : "AI mode"}><select value={runConfig.autonomy} disabled={Boolean(turn && active)} onChange={(event) => setRunConfig({ ...runConfig, autonomy: event.target.value as AssistanceRequest["autonomy"] })}><option value="off">Off</option><option value="assist">Assist · reviewed changes</option><option value="auto">Auto · permitted work</option></select></Field><Field label={savedGraphSelection || receiverSelection ? "Assistant provider" : "Provider"}><select value={selectedProvider?.provider_id ?? ""} disabled={Boolean(receipt)} onChange={(event) => { const model = models.find((item) => item.provider_id === event.target.value); if (model) setRunConfig({ ...runConfig, provider: model.provider_id, model: model.model }); }}><option value="" disabled>Select a configured provider</option>{models.map((item) => <option value={item.provider_id} key={item.provider_id}>{item.model} · {item.provider_id}</option>)}</select></Field></div>
-          {runConfig.autonomy === "off" ? <p>Off makes no new model requests. Manual tools remain available.</p> : <p>{runConfig.autonomy === "assist" ? "Review proposed changes in their native views. " : "Only supported operations can continue automatically. "}Execute still requires its own valid approval.</p>}
-          {current && runConfig.autonomy !== "off" && !modeSupported ? <p role="status">{runConfig.autonomy === "auto" ? "The actions available for this selection require Assist review. Select Assist to continue; Auto is not supported for this workflow." : "No available action supports this mode for the current selection."}</p> : null}
-          {!models.length ? <p><Link onClick={navigate} to="/settings">Configure a provider in Settings</Link> to use model assistance.</p> : null}
-          {!receipt ? <form onSubmit={(event) => { event.preventDefault(); start(); }}><Field label="What would you like to do?"><textarea rows={4} maxLength={1000} value={message} onChange={(event) => updateMessage(event.target.value)} placeholder={receiverSelection ? receiverSelection.selected.kind === "receiver_scenario" ? "Guide the baseline, protected and restored phases, then explain the observed differences." : "Explain the verified receiver results and what evidence the next phase would add." : creationSelection ? "Draft a rule for this behavior from the selected observations, then evaluate the source I approve." : savedGraphSelection ? "Run this saved experiment with the selected settings, then explain its outcomes, observations, and cleanup." : graphSelection ? "Build an experiment to discover the lab system, collect owned test records, and verify cleanup." : "Improve this rule from the selected run, then try another method and compare detections."} /></Field><div className="assistant-send-row">{!receiverSelection && !graphSelection && !savedGraphSelection && !creationSelection ? <Field label="Evidence case"><select value={caseRole} onChange={(event) => setCaseRole(event.target.value as DetectionCaseRole)}><option value="attack">Attack</option><option value="benign">Benign</option><option value="replay">Replay</option><option value="heldout">Held-out</option></select></Field> : <p>{receiverSelection ? "Only bounded evidence analysis can continue automatically. Native effects stay explicitly reviewed." : creationSelection ? "Your selected behavior, language, and development case stay bound to this request. Saving waits for review." : savedGraphSelection ? "Use the settings selected in Runs. Evidence review follows the saved run." : "Proposal and validation only. Saving waits for your review."}</p>}<Button type="submit" variant="primary" disabled={!ready || submit.isPending || DEMO_MODE}>Start work<ArrowRight aria-hidden="true" /></Button></div></form> : null}
+          <div className="assistant-options"><Field label={savedGraphSelection || receiverSelection ? "Assistant mode" : "AI mode"}><select value={autonomy} disabled={Boolean(turn && active)} onChange={(event) => setAssistantPreferences({ ...assistantPreferences, autonomy: event.target.value as AssistanceRequest["autonomy"] })}><option value="off">Off</option><option value="assist">Assist · reviewed changes</option>{(!context.data || context.data.capabilities.some(item => item.available && item.supported_autonomy.includes("auto")) || autonomy === "auto") ? <option value="auto" disabled={Boolean(context.data && !context.data.capabilities.some(item => item.available && item.supported_autonomy.includes("auto")))}>Auto · permitted work</option> : null}</select></Field><Field label={savedGraphSelection || receiverSelection ? "Assistant provider" : "Provider"}><select value={selectedProvider?.provider_id ?? ""} disabled={Boolean(receipt)} onChange={(event) => { const model = models.find((item) => item.provider_id === event.target.value); if (model) setAssistantPreferences({ ...assistantPreferences, provider: model.provider_id, model: model.model }); }}><option value="" disabled>Select a configured provider</option>{models.map((item) => <option value={item.provider_id} key={item.provider_id}>{item.model} · {item.provider_id}</option>)}</select></Field></div>
+          {autonomy === "off" ? <p>Off makes no new model requests. Manual tools remain available.</p> : <p>{autonomy === "assist" ? "Review proposed changes in their native views. " : "Only supported operations can continue automatically. "}Execute still requires its own valid approval.</p>}
+          {assistantPreferences.autonomy === "auto" && autonomy === "assist" ? <p>This work uses Assist because its changes require review.</p> : null}
+          {current && autonomy !== "off" && !modeSupported ? <p role="status">{autonomy === "auto" ? "The actions available for this selection require Assist review. Select Assist to continue; Auto is not supported for this workflow." : "No available action supports this mode for the current selection."}</p> : null}
+          {!models.length ? <p><Link onClick={navigate} to="/settings#model-connection">Configure a provider in Settings</Link> to use model assistance.</p> : null}
+          {!receipt ? <form onSubmit={(event) => { event.preventDefault(); void start(); }}><Field label="What would you like to do?"><textarea rows={4} maxLength={1000} value={message} onChange={(event) => updateMessage(event.target.value)} placeholder={receiverSelection ? receiverSelection.selected.kind === "receiver_scenario" ? "Guide the baseline, protected and restored phases, then explain the observed differences." : "Explain the verified receiver results and what evidence the next phase would add." : creationSelection ? "Draft a rule for this behavior from the selected observations, then evaluate the source I approve." : savedGraphSelection ? "Run this saved experiment with the selected settings, then explain its outcomes, observations, and cleanup." : graphSelection ? "Build an experiment to discover the lab system, collect owned test records, and verify cleanup." : "Improve this rule from the selected run, then try another method and compare detections."} /></Field><div className="assistant-send-row">{!receiverSelection && !graphSelection && !savedGraphSelection && !creationSelection ? <Field label="Development activity"><select value={caseRole} onChange={(event) => setCaseRole(event.target.value as DetectionCaseRole)}><option value="attack">Attack</option><option value="benign">Benign</option></select></Field> : <p>{receiverSelection ? "Only bounded evidence analysis can continue automatically. Native effects stay explicitly reviewed." : creationSelection ? "Your selected behavior, language, and development case stay bound to this request. Saving waits for review." : savedGraphSelection ? "Use the settings selected in Runs. Evidence review follows the saved run." : "Proposal and validation only. Saving waits for your review."}</p>}<Button type="submit" variant="primary" disabled={!ready || submit.isPending || DEMO_MODE}>Start work<ArrowRight aria-hidden="true" /></Button></div></form> : null}
         </section> : null}
         {localError || submit.error || recover.error || cancel.error ? <ErrorState title="Assistant needs attention" error={localError ?? submit.error ?? recover.error ?? cancel.error} /> : null}
       </div>
-    </Dialog.Content></Dialog.Portal>
-  </Dialog.Root>;
+    </aside>, document.getElementById("assistant-dock") ?? document.body) : null}
+  </>;
 }

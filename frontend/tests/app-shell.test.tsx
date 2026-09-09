@@ -95,7 +95,7 @@ describe("workbench navigation", () => {
     const drawer = screen.getByRole("dialog", { name: "Workspace navigation" });
     expect(drawer).toHaveAttribute("aria-modal", "true");
     expect(within(drawer).getByRole("button", { name: "Close navigation" })).toHaveFocus();
-    expect(document.getElementById("main-content")?.parentElement).toHaveAttribute("inert");
+    expect(document.getElementById("main-content")?.closest("[inert]")).toHaveAttribute("inert");
     expect(document.body.style.overflow).toBe("hidden");
     within(drawer).getByRole("button", { name: "Show more tools" }).focus();
     await user.keyboard("{Tab}");

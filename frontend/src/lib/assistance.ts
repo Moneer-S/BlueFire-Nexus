@@ -70,9 +70,9 @@ const storageKey = "bluefire.assistance.receipt.v1";
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const digest = /^sha256:[0-9a-f]{64}$/;
 const bounded = (value: unknown, limit = 200): value is string => typeof value === "string" && value.trim().length > 0 && value.length <= limit && [...value].every((character) => character.charCodeAt(0) >= 32 || "\t\n\r".includes(character));
-export function readAssistanceReceipt(): AssistanceRequest | undefined {
+function readStoredRequest(key: string): AssistanceRequest | undefined {
   try {
-    const raw = sessionStorage.getItem(storageKey);
+    const raw = sessionStorage.getItem(key);
     if (!raw || raw.length > 16384) return;
     const value = JSON.parse(raw) as AssistanceRequest;
     if (!value || !uuid.test(value.submission_id) || !digest.test(value.context_digest) || !bounded(value.message, 1000)
@@ -91,6 +91,44 @@ export function readAssistanceReceipt(): AssistanceRequest | undefined {
       || !["attack", "benign", "replay", "heldout"].includes(value.case_role)) return;
     return value;
   } catch { return; }
+}
+export function readAssistanceReceipt(): AssistanceRequest | undefined { return readStoredRequest(storageKey); }
+const historyKey = "bluefire.assistance.history.v1";
+const viewedKey = "bluefire.assistance.viewed.v1";
+export function readAssistanceHistory(): AssistanceRequest[] {
+  try {
+    const raw = sessionStorage.getItem(historyKey);
+    if (!raw || raw.length > 4000) return [];
+    const ids: unknown = JSON.parse(raw);
+    if (!Array.isArray(ids) || ids.length > 20) return [];
+    return ids.flatMap(id => {
+      if (typeof id !== "string" || !uuid.test(id)) return [];
+      const request = readStoredRequest(`${historyKey}.${id}`);
+      return request && request.submission_id === id ? [request] : [];
+    });
+  } catch { return []; }
+}
+export function rememberAssistanceRequest(request: AssistanceRequest): boolean {
+  try {
+    const key = `${historyKey}.${request.submission_id}`;
+    const existing = readStoredRequest(key);
+    if (existing && !sameJson(existing, request)) return false;
+    sessionStorage.setItem(key, JSON.stringify(request));
+    if (!sameJson(readStoredRequest(key), request)) return false;
+    const ids = [request.submission_id, ...readAssistanceHistory().map(item => item.submission_id).filter(id => id !== request.submission_id)].slice(0, 20);
+    sessionStorage.setItem(historyKey, JSON.stringify(ids));
+    return readAssistanceHistory().some(item => sameJson(item, request));
+  } catch { return false; }
+}
+export function viewAssistanceRequest(request?: AssistanceRequest) {
+  try { sessionStorage.setItem(viewedKey, request?.submission_id ?? "selection"); } catch { /* Active ownership remains separately retained. */ }
+}
+export function readViewedAssistanceRequest(): AssistanceRequest | undefined {
+  try {
+    const id = sessionStorage.getItem(viewedKey);
+    if (id === "selection") return;
+    return readAssistanceHistory().find(item => item.submission_id === id) ?? readAssistanceReceipt();
+  } catch { return readAssistanceReceipt(); }
 }
 export function storeAssistanceReceipt(value: AssistanceRequest): boolean {
   try {

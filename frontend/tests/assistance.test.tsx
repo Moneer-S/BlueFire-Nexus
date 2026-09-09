@@ -37,7 +37,7 @@ function mount(value = selection, client = new QueryClient({ defaultOptions: { q
   const view = render(tree(value));
   return { ...view, client, changeSelection: (next: AssistanceSelection) => view.rerender(tree(next)) };
 }
-async function open() { await userEvent.setup().click(screen.getByRole("button", { name: /^Assistant/ })); }
+async function open() { const trigger = screen.getByRole("button", { name: /^Assistant/ }); if (trigger.getAttribute("aria-expanded") !== "true") await userEvent.setup().click(trigger); }
 async function compose() {
   const user = userEvent.setup();
   await open();
@@ -78,7 +78,7 @@ it("opens the shared Assistant from Builder and retains a graph request without 
   await screen.findByText("New experiment");
   expect(submit).not.toHaveBeenCalled();
   expect(screen.getByRole("button", { name: "Start work" })).toBeDisabled();
-  expect(screen.queryByLabelText("Evidence case")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("Development activity")).not.toBeInTheDocument();
   await user.selectOptions(screen.getByLabelText("AI mode"), "auto");
   await user.selectOptions(screen.getByLabelText("Provider"), provider.provider_id);
   await user.type(screen.getByLabelText("What would you like to do?"), "Discover the owned lab and collect its test records.");
@@ -149,7 +149,9 @@ it("restores native review after reload without submitting again and returns foc
   await userEvent.setup().click(await screen.findByRole("link", { name: "Review rule revision" }));
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(screen.getByTestId("location")).toHaveTextContent("ai_job=job-rule");
-  await waitFor(() => expect(screen.getByRole("button", { name: /^Assistant/ })).toHaveFocus());
+  expect(screen.getByRole("complementary", { name: "Experiment assistant" })).toBeVisible();
+  await userEvent.setup().click(screen.getByRole("button", { name: "Close assistant" }));
+  expect(screen.getByRole("button", { name: /^Assistant/ })).toHaveFocus();
   expect(submit).not.toHaveBeenCalled();
   expect(readAssistanceReceipt()).toEqual(request());
 });
@@ -282,13 +284,12 @@ it("admits only internal native operation paths", () => {
   expect(assistancePath("/runs/job-123?review=1")).toBe("/runs/job-123?review=1");
 });
 
-it("explains unsupported Auto before any request is submitted", async () => {
+it("offers only supported modes before any request is submitted", async () => {
   vi.spyOn(api, "assistanceContext").mockResolvedValue(context);
   const submit = vi.spyOn(api, "submitAssistance");
-  mount(); const user = await compose();
-  await user.selectOptions(screen.getByLabelText("AI mode"), "auto");
-  expect(screen.getByRole("button", { name: "Start work" })).toBeDisabled();
-  expect(screen.getByText(/Auto is not supported for this workflow/)).toBeInTheDocument();
+  mount(); await compose();
+  expect(screen.queryByRole("option", { name: "Auto · permitted work" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Start work" })).toBeEnabled();
   expect(submit).not.toHaveBeenCalled();
 });
 
@@ -440,16 +441,35 @@ it("restores a directly linked parent from its saved request without submitting 
   expect(submit).not.toHaveBeenCalled();
 });
 
-it("does not replace an existing saved operation when another run's parent is opened", async () => {
+it("views other saved work without replacing active ownership, then returns to its exact operation", async () => {
   const body = request(); storeAssistanceReceipt(body);
-  const lookup = vi.spyOn(api, "assistanceTurn").mockResolvedValue(envelope(body));
-  const other = `job-${"f".repeat(32)}`;
+  vi.spyOn(api, "assistanceContext").mockResolvedValue(context);
+  const other: AssistanceRequest = { ...body, submission_id: "12345678-9abc-4def-8123-456789abcdef", message: "Earlier completed rule investigation" };
+  const lookup = vi.spyOn(api, "assistanceTurn").mockImplementation(async id => envelope(id === assistanceJobId(other.submission_id) ? other : body, id === assistanceJobId(other.submission_id) ? "completed" : "working"));
+  const submit = vi.spyOn(api, "submitAssistance");
+  const cancel = vi.spyOn(api, "controlJob");
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  render(<QueryClientProvider client={client}><MemoryRouter><ProductProvider><AssistanceProvider><OpenBoundOperation jobId={other} /><ExperimentAssistant providers={[provider]} /></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>);
-  await userEvent.setup().click(screen.getByRole("button", { name: "Open run's Assistant work" }));
-  expect(await screen.findByText(/Another saved operation is open/)).toBeVisible();
+  const tree = <QueryClientProvider client={client}><MemoryRouter><ProductProvider><AssistanceProvider><Selection/><OpenBoundOperation jobId={assistanceJobId(other.submission_id)} /><ExperimentAssistant providers={[provider]} /></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>;
+  const view = render(tree);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Open run's Assistant work" }));
+  expect(await screen.findByText(other.message, { selector: "p" })).toBeVisible();
   expect(readAssistanceReceipt()).toEqual(body);
-  expect(lookup).not.toHaveBeenCalledWith(other);
+  await user.click(screen.getByRole("button", { name: "Current selection" }));
+  expect(await screen.findByText(/Your active operation is still/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "Start work" })).toBeDisabled();
+  await user.type(screen.getByLabelText("What would you like to do?"), "Keep this follow-up draft");
+  await user.click(screen.getByRole("button", { name: "Return to active work" }));
+  expect(await screen.findByText(body.message)).toBeVisible();
+  expect(readAssistanceReceipt()).toEqual(body);
+  await user.selectOptions(screen.getByLabelText("Saved conversations"), other.submission_id);
+  view.unmount(); render(tree);
+  expect(await screen.findByText(other.message, { selector: "p" })).toBeVisible();
+  expect(readAssistanceReceipt()).toEqual(body);
+  await user.click(screen.getByRole("button", { name: "Current selection" }));
+  expect(screen.getByLabelText("What would you like to do?")).toHaveValue("Keep this follow-up draft");
+  expect(lookup).toHaveBeenCalledWith(assistanceJobId(other.submission_id));
+  expect(submit).not.toHaveBeenCalled(); expect(cancel).not.toHaveBeenCalled();
 });
 
 const createSelection: RunDetectionSelection = { kind: "run_detection", run_id: "run-20300101T000000Z-1234567890abcdef", source_binding_digest: digest, behavior_id: "sandbox.collection.records.v1", target_language: "sqlite", case_role: "benign" };
@@ -468,7 +488,7 @@ it("carries the selected run, language, behavior and development case into initi
   const user = await compose();
   expect(get).toHaveBeenCalledWith(createSelection);
   expect(old).not.toHaveBeenCalled();
-  expect(screen.queryByLabelText("Evidence case")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("Development activity")).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Start work" }));
   await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
   expect(submit.mock.calls[0]![0]).toMatchObject({ selection: createSelection, autonomy: "assist", provider_id: provider.provider_id });

@@ -134,3 +134,21 @@ describe("cached scenario hydration", () => {
     expect(screen.getByLabelText("scenario-origin")).toHaveTextContent("operator-owned");
   });
 });
+
+it("changes future defaults and Assistant preferences without changing current authority or approval", async () => {
+  function SeparatePreferences() {
+    const { runConfig, setRunConfig, setNewRunDefaults, setAssistantPreferences } = useProduct();
+    return <><output aria-label="Current intent">{JSON.stringify(runConfig)}</output>
+      <button onClick={() => setRunConfig({ ...runConfig, approved: true, approvedBy: "reviewed-operator" })}>Approve current intent</button>
+      <button onClick={() => { setNewRunDefaults({ mode: "execute", autonomy: "auto" }); setAssistantPreferences({ autonomy: "assist", provider: "review-provider", model: "review-model" }); }}>Change future preferences</button></>;
+  }
+  render(<ProductProvider><SeparatePreferences/></ProductProvider>);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Approve current intent" }));
+  const current = screen.getByLabelText("Current intent").textContent;
+  await user.click(screen.getByRole("button", { name: "Change future preferences" }));
+  expect(screen.getByLabelText("Current intent").textContent).toBe(current);
+  expect(JSON.parse(localStorage.getItem(settingsKey)!)).toMatchObject({ effect_mode: "execute", autonomy: "auto" });
+  expect(JSON.parse(localStorage.getItem("bluefire.local.assistant-preferences.v1")!)).toEqual({ autonomy: "assist", provider: "review-provider", model: "review-model" });
+  expect(localStorage.getItem(settingsKey)).not.toContain("reviewed-operator");
+});

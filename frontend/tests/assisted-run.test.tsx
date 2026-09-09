@@ -31,8 +31,8 @@ function ready(): AssistanceRunEnvelope {
 }
 function Witness() {
   const selected = useAssistanceSelection();
-  const { scenario, runConfig, setRunConfig } = useProduct();
-  return <><button onClick={() => setRunConfig({ ...runConfig, autonomy: "auto" })}>Change Assistant mode in test</button><output aria-label="Published selection">{JSON.stringify(selected)}</output><output aria-label="Active draft">{JSON.stringify(scenario)}</output><output aria-label="Global run settings">{JSON.stringify(runConfig)}</output></>;
+  const { scenario, runConfig, assistantPreferences, setAssistantPreferences, setNewRunDefaults } = useProduct();
+  return <><button onClick={() => setAssistantPreferences({ autonomy: "auto", provider: "different-provider", model: "different-model" })}>Change Assistant mode in test</button><button onClick={() => setNewRunDefaults({ mode: "execute", autonomy: "assist" })}>Change new run defaults</button><output aria-label="Assistant preferences">{JSON.stringify(assistantPreferences)}</output><output aria-label="Published selection">{JSON.stringify(selected)}</output><output aria-label="Active draft">{JSON.stringify(scenario)}</output><output aria-label="Global run settings">{JSON.stringify(runConfig)}</output></>;
 }
 function OverrideSeed() {
   const { runConfig, setRunConfig } = useProduct();
@@ -177,11 +177,13 @@ it("retains the untouched runtime snapshot when Assistant mode changes before re
   const first = mount();
   await screen.findByLabelText(/^Target scope/);
   await first.user.click(screen.getByRole("button", { name: "Change Assistant mode in test" }));
-  expect(JSON.parse(screen.getByLabelText("Global run settings").textContent!).autonomy).toBe("auto");
+  expect(JSON.parse(screen.getByLabelText("Global run settings").textContent!).autonomy).toBe("off");
+  expect(JSON.parse(screen.getByLabelText("Assistant preferences").textContent!).autonomy).toBe("auto");
   first.unmount(); mount();
   await screen.findByLabelText(/^Target scope/);
   expect(JSON.parse(screen.getByLabelText("Published selection").textContent!).selected.run_intent.autonomy).toBe("off");
-  expect(JSON.parse(screen.getByLabelText("Global run settings").textContent!).autonomy).toBe("auto");
+  expect(JSON.parse(screen.getByLabelText("Global run settings").textContent!).autonomy).toBe("off");
+  expect(JSON.parse(screen.getByLabelText("Assistant preferences").textContent!).autonomy).toBe("auto");
 });
 
 it.each([false, true])("follows an interrupted preparation through inspection and preserves runtime changes (%s)", async (runtimeModified) => {
@@ -257,4 +259,22 @@ it("labels runtime proposal review separately from Execute authorization", async
   mount(true);
   expect(await screen.findByRole("link", { name: "Review runtime proposal" })).toHaveAttribute("href", `/runs?job=${value.run_job.job_id}`);
   expect(screen.queryByRole("link", { name: "Review Execute approval" })).not.toBeInTheDocument();
+});
+
+it("keeps a prepared request and its review digest frozen after Assistant and future-default changes", async () => {
+  const prepared = ready();
+  const snapshot = structuredClone(prepared);
+  vi.spyOn(api, "assistanceRun").mockResolvedValue(prepared);
+  const accepted = { ...prepared, decision: { decision: "accept" as const, preparation_digest: digest }, review_ready: false };
+  const review = vi.spyOn(api, "reviewAssistanceRun").mockResolvedValue(accepted);
+  const { user } = mount(true);
+  await screen.findByRole("button", { name: "Accept and prepare run" });
+  await user.click(screen.getByRole("button", { name: "Change Assistant mode in test" }));
+  await user.click(screen.getByRole("button", { name: "Change new run defaults" }));
+  expect(JSON.parse(screen.getByLabelText("Global run settings").textContent!)).toMatchObject({ mode: "simulate", autonomy: "off", approved: false });
+  expect(prepared).toEqual(snapshot);
+  await user.click(screen.getByRole("button", { name: "Accept and prepare run" }));
+  expect(review).toHaveBeenCalledExactlyOnceWith(preparationJob, { decision: "accept", preparation_digest: digest });
+  expect(prepared.preparation?.run_request).toEqual(snapshot.preparation?.run_request);
+  expect(readRunDecision(preparationJob)).toEqual({ decision: "accept", preparation_digest: digest });
 });

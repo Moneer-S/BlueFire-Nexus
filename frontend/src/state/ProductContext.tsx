@@ -7,6 +7,18 @@ import type { RunConfiguration, RunRecord, Scenario } from "../types";
 const scenarioKey = "bluefire.local.scenario.v1";
 const savedScenarioKey = "bluefire.local.scenario-saved.v1";
 const settingsKey = "bluefire.local.run-config.v1";
+const assistantSettingsKey = "bluefire.local.assistant-preferences.v1";
+export type NewRunDefaults = Pick<RunConfiguration, "mode" | "autonomy">;
+export type AssistantPreferences = Pick<RunConfiguration, "autonomy" | "provider" | "model">;
+
+function readAssistantPreferences(): AssistantPreferences {
+  const fallback: AssistantPreferences = { autonomy: "off", provider: "", model: "" };
+  try {
+    const value = JSON.parse(localStorage.getItem(assistantSettingsKey) ?? "null") as Partial<AssistantPreferences> | null;
+    return value && ["off", "assist", "auto"].includes(value.autonomy ?? "") && typeof value.provider === "string" && typeof value.model === "string"
+      ? { autonomy: value.autonomy!, provider: value.provider, model: value.model } : fallback;
+  } catch { return fallback; }
+}
 
 export const UI_PREFERENCE_SCHEMA_VERSION = "bluefire.ui-preferences.v1" as const;
 export type UiTheme = "dark" | "light" | "system";
@@ -153,6 +165,10 @@ interface ProductState {
   markSaved: (savedScenario: Scenario) => boolean;
   runConfig: RunConfiguration;
   setRunConfig: (config: RunConfiguration) => void;
+  newRunDefaults: NewRunDefaults;
+  setNewRunDefaults: (defaults: NewRunDefaults) => void;
+  assistantPreferences: AssistantPreferences;
+  setAssistantPreferences: (preferences: AssistantPreferences) => void;
   clearApproval: () => void;
   activeRun: RunRecord | null;
   setActiveRun: (run: RunRecord | null) => void;
@@ -162,6 +178,11 @@ const ProductContext = createContext<ProductState | null>(null);
 
 export function ProductProvider({ children }: PropsWithChildren) {
   const [theme, setTheme] = useState<UiTheme>(() => readBrowserTheme());
+  const [newRunDefaults, setNewRunDefaults] = useState<NewRunDefaults>(() => {
+    const preferences = readBrowserUiPreferences();
+    return { mode: preferences?.effect_mode ?? "simulate", autonomy: preferences?.autonomy ?? "off" };
+  });
+  const [assistantPreferences, setAssistantPreferences] = useState(readAssistantPreferences);
   const [scenarioState, setScenarioState] = useState<ScenarioHydration>(() => readCachedScenario());
   const { scenario, scenarioIsSeededFallback } = scenarioState;
   const currentScenario = useRef(scenario);
@@ -212,14 +233,17 @@ export function ProductProvider({ children }: PropsWithChildren) {
   }, [scenario, scenarioIsSeededFallback]);
   useEffect(() => {
     writeBrowserTheme(theme);
-    writeBrowserUiPreferences(buildUiPreferenceDocument(theme, runConfig.mode, runConfig.autonomy));
-  }, [runConfig.autonomy, runConfig.mode, theme]);
+    writeBrowserUiPreferences(buildUiPreferenceDocument(theme, newRunDefaults.mode, newRunDefaults.autonomy));
+  }, [newRunDefaults.autonomy, newRunDefaults.mode, theme]);
+  useEffect(() => {
+    writeBrowserStorage(assistantSettingsKey, JSON.stringify(assistantPreferences));
+  }, [assistantPreferences]);
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => { if (dirty) event.preventDefault(); };
     window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
 
-  const value = { theme, setTheme, scenario, scenarioIsSeededFallback, setScenario, dirty, markSaved, runConfig, setRunConfig, clearApproval, activeRun, setActiveRun };
+  const value = { theme, setTheme, scenario, scenarioIsSeededFallback, setScenario, dirty, markSaved, runConfig, setRunConfig, newRunDefaults, setNewRunDefaults, assistantPreferences, setAssistantPreferences, clearApproval, activeRun, setActiveRun };
   return <ProductContext.Provider value={value}>{children}</ProductContext.Provider>;
 }
 
