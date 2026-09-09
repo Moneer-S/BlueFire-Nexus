@@ -80,8 +80,10 @@ it("distinguishes same-title immutable revisions without grouping away older sel
   expect(screen.getByRole("textbox", { name: /^SQLite source/ })).toHaveValue(child.document.rule_source);
   expect(new URLSearchParams(screen.getByTestId("location").textContent!).get("candidate")).toBe(childId);
   await user.click(screen.getByRole("tab", { name: "Revisions" }));
-  expect(screen.getByText("Revision 2 · Source", { selector: "strong" })).toBeVisible();
+  expect(screen.getByText("Collection rule · Revision 2 · Source", { selector: "strong" })).toBeVisible();
   await user.click(previous);
   expect(new URLSearchParams(screen.getByTestId("location").textContent!).get("candidate")).toBe(id);
+  await user.click(screen.getByRole("tab", { name: "Rule" }));
+  expect(screen.getByRole("textbox", { name: /^SQLite source/ })).toHaveValue(original.document.rule_source);
   expect(action).not.toHaveBeenCalled(); expect(revise).not.toHaveBeenCalled(); expect(evaluate).not.toHaveBeenCalled();
 });
