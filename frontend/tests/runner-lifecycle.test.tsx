@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { demoCatalog } from "../src/lib/demo";
@@ -41,16 +42,16 @@ describe("managed runner lifecycle", () => {
         return json({ schema_version: "bluefire.resource-list.v1", kind: "runner-profiles", resources: [] });
       }
       if (path.endsWith("/runner/bootstrap") && init?.method === "POST") return json(upgraded);
-      if (path.endsWith("/runner")) return json(stopped);
+      if (path.endsWith("/runner?profile_id=sandbox-execute.v1")) return json(stopped);
       throw new Error(`Unhandled test request: ${path}`);
     });
     vi.stubGlobal("fetch", fetchMock);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     const user = userEvent.setup();
 
-    render(<QueryClientProvider client={client}><RunnersPage /></QueryClientProvider>);
+    render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/runners?profile=sandbox-execute.v1"]}><RunnersPage /></MemoryRouter></QueryClientProvider>);
 
-    await user.click(await screen.findByRole("button", { name: /Upgrade & re-enroll/i }));
+    await user.click(await screen.findByRole("button", { name: /Upgrade managed runner/i }));
     expect(screen.getByRole("heading", { name: "Upgrade managed runner" })).toBeVisible();
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/runner/bootstrap"))).toBe(false);
 
@@ -90,17 +91,17 @@ describe("managed runner lifecycle", () => {
         return json({ schema_version: "bluefire.resource-list.v1", kind: "runner-profiles", resources: [] });
       }
       if (path.endsWith("/runner/stop") && init?.method === "POST") return json(stopped);
-      if (path.endsWith("/runner")) return json(stale);
+      if (path.endsWith("/runner?profile_id=sandbox-execute.v1")) return json(stale);
       throw new Error(`Unhandled test request: ${path}`);
     });
     vi.stubGlobal("fetch", fetchMock);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     const user = userEvent.setup();
 
-    render(<QueryClientProvider client={client}><RunnersPage /></QueryClientProvider>);
+    render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/runners?profile=sandbox-execute.v1"]}><RunnersPage /></MemoryRouter></QueryClientProvider>);
 
     expect(await screen.findByRole("button", { name: /Reconcile stale host/i })).toBeVisible();
-    expect(screen.queryByRole("button", { name: /Upgrade & re-enroll/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Upgrade managed runner/i })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Reconcile stale host/i }));
 
     await waitFor(() => {

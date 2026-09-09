@@ -85,7 +85,7 @@ it("starts the saved experiment runner without changing its selection or active 
   const draft = screen.getByLabelText("Active draft").textContent;
   const preferences = screen.getByLabelText("Global run settings").textContent;
   await view.user.click(screen.getByRole("button", { name: "Start runner" }));
-  expect(await screen.findByText("Ready for preflight")).toBeVisible();
+  expect(await screen.findByText("Runner authenticated")).toBeVisible();
   expect(start).toHaveBeenCalledExactlyOnceWith("sandbox-execute.v1");
   expect(screen.getByLabelText("Published selection").textContent).toBe(before);
   expect(screen.getByLabelText("Active draft").textContent).toBe(draft);

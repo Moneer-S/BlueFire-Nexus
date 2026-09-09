@@ -25,7 +25,7 @@ it("prepares then starts only the selected profile through explicit actions", as
   expect(bootstrap).not.toHaveBeenCalled(); expect(start).not.toHaveBeenCalled();
   await user.click(screen.getByRole("button", { name: "Prepare runner" }));
   await user.click(await screen.findByRole("button", { name: "Start runner" }));
-  expect(await screen.findByText("Ready for preflight")).toBeVisible();
+  expect(await screen.findByText("Runner authenticated")).toBeVisible();
   expect(bootstrap).toHaveBeenCalledExactlyOnceWith("selected-execute.v1");
   expect(start).toHaveBeenCalledExactlyOnceWith("selected-execute.v1");
   expect(submit).not.toHaveBeenCalled();
@@ -40,7 +40,7 @@ it("shows a refused start and allows a status check without retrying the action"
   status.mockResolvedValue({ ...stopped, enrollment: "revoked" });
   await waitFor(() => expect(screen.getByRole("button", { name: "Check runner status" })).toBeEnabled());
   await user.click(screen.getByRole("button", { name: "Check runner status" }));
-  expect(await screen.findByRole("link", { name: "Open runner diagnostics" })).toHaveAttribute("href", "/runners");
+  expect(await screen.findByRole("link", { name: "Open runner diagnostics" })).toHaveAttribute("href", "/runners?profile=selected-execute.v1");
   expect(screen.queryByRole("button", { name: "Start runner" })).not.toBeInTheDocument();
   expect(start).toHaveBeenCalledTimes(1);
 });
@@ -49,7 +49,7 @@ it("does not call a runner ready without authenticated accepting health", async 
   vi.spyOn(api, "runnerStatus").mockResolvedValue({ ...ready, health: { accepting_execute: false } });
   mount();
   await screen.findByRole("link", { name: "Open runner diagnostics" });
-  expect(screen.queryByText("Ready for preflight")).not.toBeInTheDocument();
+  expect(screen.queryByText("Runner authenticated")).not.toBeInTheDocument();
 });
 
 it("requires a selected profile and never silently starts the default", async () => {
@@ -82,7 +82,7 @@ it("isolates selected profile status from default cache and late setup responses
   finish(ready);
   await waitFor(() => expect(screen.queryByText("Finishing runner setup for the previous profile…")).not.toBeInTheDocument());
   expect(screen.getByRole("link", { name: "Open runner diagnostics" })).toBeVisible();
-  expect(screen.queryByText("Ready for preflight")).not.toBeInTheDocument();
+  expect(screen.queryByText("Runner authenticated")).not.toBeInTheDocument();
   expect(start).toHaveBeenCalledExactlyOnceWith("selected-execute.v1");
   expect(client.getQueryData<RunnerLifecycleStatus>(["runner-lifecycle", "new-execute.v1"])?.enrollment).toBe("revoked");
 });

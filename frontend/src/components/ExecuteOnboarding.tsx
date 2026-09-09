@@ -1,5 +1,6 @@
 import { Activity, ArrowRight, CheckCircle2, CircleDashed, Play, ShieldCheck } from "lucide-react";
 import type { ReactNode } from "react";
+import { runnerDiagnosticsPath } from "../lib/runner-diagnostics";
 import { Link } from "react-router-dom";
 import type { PreflightReport, RunConfiguration, RunJob, RunRecord, RunnerLifecycleStatus, RunnerProfile, Scenario } from "../types";
 import { Badge, Button, Callout, Panel, PanelHeader, sentence } from "./Primitives";
@@ -113,7 +114,7 @@ export function ExecuteOnboarding(props: ExecuteOnboardingProps) {
       ? <Button size="small" variant="primary" disabled={props.runnerActionPending} onClick={() => props.onRunnerAction("bootstrap")}><ShieldCheck/>{props.runnerActionPending ? "Preparing runner" : "Prepare runner"}</Button>
       : props.runner?.state === "stopped" && props.runner.enrollment === "active"
         ? <Button size="small" variant="primary" disabled={props.runnerActionPending} onClick={() => props.onRunnerAction("start")}><Play/>{props.runnerActionPending ? "Starting runner" : "Start runner"}</Button>
-        : <Link className="execute-guide-link" to="/runners">Open runner diagnostics <ArrowRight/></Link>
+        : <Link className="execute-guide-link" to={runnerDiagnosticsPath(props.config.profileId)}>Open runner diagnostics <ArrowRight/></Link>
     : undefined;
   const approvalAction = !props.job
     ? props.canCreateJob
@@ -134,6 +135,6 @@ export function ExecuteOnboarding(props: ExecuteOnboardingProps) {
       <Step number={5} state={runState} title="Run, observe, and clean up" detail="Review what ran, the observations, and cleanup in the saved results." status={completed ? "Completed" : resultReady ? "Results ready" : approvalReleased ? props.job?.state === "completed" ? "Awaiting saved result" : sentence(props.job?.state ?? "running") : "Waiting for approval"} action={resultReady && props.run ? <Link className="execute-guide-link" to={`/runs/${encodeURIComponent(props.run.run_id)}`}>Review results <ArrowRight/></Link> : undefined} />
     </ol>
     {props.submissionControls}
-    <details><summary>Technical details</summary><p>The installed runner is verified and enrolled before its authenticated loopback host starts. Certificate, HMAC, revocation, and removal controls are available in runner diagnostics.</p><p>Preflight binds the exact graph and profile to an immutable approval envelope. Creating a saved request does not approve execution. One exact, current approval releases that request. The starter canary's completion check additionally requires its exact observed marker and successful cleanup. Other finalized runs expose their recorded results without claiming that canary check.</p><p>Profile: <code>{props.config.profileId || "None selected"}</code> · Scope: <code>{props.config.scopeRefs.join(", ") || "None selected"}</code></p><Link to="/runners">Advanced runner diagnostics <ArrowRight/></Link></details>
+    <details><summary>Technical details</summary><p>The installed runner is verified and enrolled before its authenticated loopback host starts. Certificate, HMAC, revocation, and removal controls are available in runner diagnostics.</p><p>Preflight binds the exact graph and profile to an immutable approval envelope. Creating a saved request does not approve execution. One exact, current approval releases that request. The starter canary's completion check additionally requires its exact observed marker and successful cleanup. Other finalized runs expose their recorded results without claiming that canary check.</p><p>Profile: <code>{props.config.profileId || "None selected"}</code> · Scope: <code>{props.config.scopeRefs.join(", ") || "None selected"}</code></p><Link to={runnerDiagnosticsPath(props.config.profileId)}>Advanced runner diagnostics <ArrowRight/></Link></details>
   </Panel>;
 }
