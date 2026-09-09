@@ -788,14 +788,14 @@ class FilesystemCollector:
 
 
 class CollectionSemanticsCollector(FilesystemCollector):
-    """Observe aggregate synthetic JSONL/USTAR semantics from the hashed handle."""
+    """Observe aggregate synthetic JSONL/USTAR/gzip semantics from the hashed handle."""
 
     descriptor = CollectorDescriptor(
         id="collector.collection-semantics.sandbox.v1",
         name="Sandbox collection semantics observer",
         version="1.0.0",
         kind="collection_semantics",
-        capabilities=("file_metadata", "sha256", "synthetic_record_counts", "jsonl", "ustar"),
+        capabilities=("file_metadata", "sha256", "synthetic_record_counts", "jsonl", "ustar", "gzip"),
         independent_observation=True,
     )
     _observation_kind = "collection_semantics"
@@ -811,7 +811,7 @@ class CollectionSemanticsCollector(FilesystemCollector):
     )
     _limitations = (
         "aggregate counts of reviewed synthetic fixture values only; no record values retained",
-        "one bounded JSONL stream or deterministic single-member USTAR; no general archive extraction",
+        "one bounded JSONL stream, single-member USTAR or no-name gzip; no general archive extraction",
     )
     _result_limitations = _limitations
 

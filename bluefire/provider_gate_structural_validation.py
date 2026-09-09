@@ -155,6 +155,7 @@ _SOURCE_AUDIT_PATHS = (
     "bluefire/browser_launch.py",
     "runner/src/cancellation_witness.rs",
     "runner/src/process.rs",
+    "runner/src/atomic_gzip.rs",
 )
 _PROCESS_CHECKS = {
     "python_process_call_inventory": True,

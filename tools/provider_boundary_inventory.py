@@ -36,6 +36,7 @@ _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
 _REVIEWED_RUST_PROCESS_BOUNDARY_SOURCES = (
     "runner/src/cancellation_witness.rs",
     "runner/src/process.rs",
+    "runner/src/atomic_gzip.rs",
 )
 
 

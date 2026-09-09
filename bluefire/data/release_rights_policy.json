@@ -44,7 +44,8 @@
       "48 external crates in `Cargo.lock`",
       "pySigma 1.5.0 (LGPL-2.1-only)",
       "BlueFire Nexus remains MIT licensed",
-      "does not contain contributor assignments"
+      "does not contain contributor assignments",
+      "Atomic gzip collection adapter"
     ]
   },
   "python": {
@@ -357,6 +358,7 @@
         "bluefire/data/__init__.py",
         "bluefire/data/ai_adaptive_safe_chain.yaml",
         "bluefire/data/architecture_policy.json",
+        "bluefire/data/atomic_gzip_collection.yaml",
         "bluefire/data/bluefire.example.yaml",
         "bluefire/data/deep_behavior_packs.json",
         "bluefire/data/detection_regression.yaml",
@@ -402,11 +404,15 @@
         "docs/assets/screenshots/live-run.png",
         "docs/assets/screenshots/overview.png",
         "docs/assets/screenshots/runners.png"
+      ],
+      "third-party-adapted-test-license-mit": [
+        "bluefire/data/atomic_red_team_LICENSE.txt"
       ]
     },
     "third_party_integrity": {
       "bluefire/data/mitre_attack_t1082_v19_2.json": "dd2e50ceef844302a690a1debac8336864e93ebd19da526eefac3072f5ee9a02",
-      "bluefire/data/mitre_attack_v19_2_LICENSE.txt": "4de9222b0d5bc69b758f9cf0afdaea48fdcbfe7d33c7481973a6aa07d6cbea9d"
+      "bluefire/data/mitre_attack_v19_2_LICENSE.txt": "4de9222b0d5bc69b758f9cf0afdaea48fdcbfe7d33c7481973a6aa07d6cbea9d",
+      "bluefire/data/atomic_red_team_LICENSE.txt": "65af6027045d23175366eab50e460ab3ee7790e591cb84cc32c78ac63a4c90e1"
     }
   },
   "project_authored_code": {

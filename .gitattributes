@@ -1,4 +1,6 @@
 /runner/src/process.rs text eol=lf
+/runner/src/atomic_gzip.rs text eol=lf
+/bluefire/data/atomic_red_team_LICENSE.txt text eol=lf
 /runner/src/cancellation_witness.rs text eol=lf
 LICENSE text eol=lf
 /bluefire/data/mitre_attack_t1082_v19_2.json text eol=lf

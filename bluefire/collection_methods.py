@@ -1,4 +1,4 @@
-"""Exact typed bindings for two bounded collection implementations."""
+"""Exact typed bindings for reviewed bounded collection implementations."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from .util import canonical_json_bytes, content_hash
 COLLECTION_METHODS = {
     "sandbox.collection.records.v1": "jsonl",
     "sandbox.collection.archive.v1": "ustar",
+    "sandbox.collection.atomic-gzip.v1": "gzip",
 }
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SOURCE_PATH = "fixtures/transformed.jsonl"
@@ -28,7 +29,8 @@ def _selection(action_id: str, parameters: Mapping[str, Any]) -> tuple[str, str,
         raise CollectionMethodError("stage_variant must be primary or heldout")
     directory = "staged/collection" if variant == "primary" else "staged/variation"
     container = COLLECTION_METHODS[action_id]
-    path = f"{directory}/bundle.{'tar' if container == 'ustar' else 'jsonl'}"
+    extension = {"ustar": "tar", "jsonl": "jsonl", "gzip": "jsonl.gz"}[container]
+    path = f"{directory}/bundle.{extension}"
     return str(variant), directory, path
 
 
@@ -78,8 +80,22 @@ def collection_artifacts(
 ) -> dict[str, Any]:
     params, _, paths = collection_request(action_id, parameters, bound_inputs)
     digest, size = output.get("sha256"), output.get("size")
+    expected_fields = {"artifact", "container", "input_count", "source_sha256", "size", "sha256"}
+    if COLLECTION_METHODS[action_id] == "gzip":
+        expected_fields.add("tool")
+        tool = output.get("tool")
+        if (
+            not isinstance(tool, Mapping)
+            or set(tool) != {"executable", "sha256", "arguments", "source_test"}
+            or tool.get("executable") not in ("/usr/bin/gzip", "/bin/gzip")
+            or not isinstance(tool.get("sha256"), str)
+            or not _SHA256.fullmatch(tool["sha256"])
+            or tool.get("arguments") != ["-n", "-c"]
+            or tool.get("source_test") != "cde3c2af-3485-49eb-9c1f-0ed60e9cc0af"
+        ):
+            raise CollectionMethodError("gzip result lacks its reviewed executable identity")
     if (
-        set(output) != {"artifact", "container", "input_count", "source_sha256", "size", "sha256"}
+        set(output) != expected_fields
         or output.get("artifact") != paths[0]
         or output.get("container") != COLLECTION_METHODS[action_id]
         or type(output.get("input_count")) is not int

@@ -169,6 +169,7 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/browser_launch.py",
         "runner/src/cancellation_witness.rs",
         "runner/src/process.rs",
+        "runner/src/atomic_gzip.rs",
     )
     return {
         "schema_version": provider_gate.STRUCTURAL_SCHEMA,

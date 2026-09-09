@@ -175,3 +175,32 @@ sources:
     update_status: current
     transformation_history: Used as a comparative behavior/test-structure reference only.
     notes: The immutable public snapshot is a comparative behavior and detection-test reference only; no external scripts or corpus content are vendored or executed.
+
+  - schema_version: bluefire.research-source.v1
+    id: research.atomic-gzip-adaptation.v1
+    name: Atomic Red Team single-file gzip adaptation
+    source_type: software
+    project: redcanaryco/atomic-red-team
+    authority: Red Canary
+    reference_url: https://github.com/redcanaryco/atomic-red-team/blob/388942adbd9641f4dfdcf079d7efe9a75ec0ac43/atomics/T1560.001/T1560.001.yaml
+    version: "T1560.001 test cde3c2af-3485-49eb-9c1f-0ed60e9cc0af"
+    pin: 388942adbd9641f4dfdcf079d7efe9a75ec0ac43
+    exact_ref: 388942adbd9641f4dfdcf079d7efe9a75ec0ac43
+    retrieved_at: "2026-09-08"
+    license: MIT
+    license_url: https://github.com/redcanaryco/atomic-red-team/blob/388942adbd9641f4dfdcf079d7efe9a75ec0ac43/LICENSE.txt
+    file_level_license_review: Selected single-file gzip test and its containing YAML reviewed at this exact commit; no additional file-level license applies. Complete MIT license and Red Canary copyright retained in bluefire/data/atomic_red_team_LICENSE.txt.
+    trademark_considerations: Descriptive attribution only; no Red Canary or Atomic Red Team endorsement is implied.
+    license_review: reviewed
+    relationship: adapted
+    use_classification: compatible_code_adaptation
+    uses: [behavior_mapping, comparison]
+    imported_paths: [runner/src/atomic_gzip.rs]
+    cache_policy: vendored_code
+    executable_content: true
+    attribution: Adapted test method credited in source, action provenance, documentation and THIRD_PARTY_NOTICES.md; the original corpus and shell script are not bundled.
+    security_review: Fixed protected Linux system gzip ELF receives only verified synthetic bytes on stdin with compiled no-name/stdout arguments. No PATH search, shell, caller executable or filename, install, network or elevation. Output is bounded and receipt-owned; independent decoding validates one bounded gzip member.
+    last_verified_at: "2026-09-08"
+    update_status: current
+    transformation_history: Ported the upstream gzip-and-preserve-input method into a fixed Rust process adapter. Replaced shell conditionals, fallback sample content, caller paths and shell cleanup with existing typed synthetic fixture bindings and verified receipt cleanup; retained actual gzip execution. The native record and USTAR methods remain BlueFire authored.
+    notes: Reviewed YAML SHA-256 681f0727810cc1fa1d2032f818d0cdb5b02dd058ed85416658ee26437773e681, 20402 bytes. Preserved license SHA-256 65af6027045d23175366eab50e460ab3ee7790e591cb84cc32c78ac63a4c90e1, 1078 bytes. System GNU gzip is an external GPL-3.0-or-later dependency and is not redistributed inside the wheel. Registration proves availability of the adapter contract, not that the tool executed or a detector fired.  # pragma: allowlist secret -- verified public Atomic Red Team MIT license SHA-256

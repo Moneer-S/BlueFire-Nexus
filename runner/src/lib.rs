@@ -5,6 +5,7 @@
 //! side effect.
 
 pub mod actions;
+mod atomic_gzip;
 mod cancellation_witness;
 pub mod contract;
 mod process;

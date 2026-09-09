@@ -265,6 +265,35 @@ items:
     provenance: *authored
 
   - schema_version: bluefire.action.v1
+    id: sandbox.collection.atomic-gzip.v1
+    title: Atomic gzip collection
+    purpose: Compress the digest-bound synthetic fixture through one fixed Linux system gzip adapter adapted from Atomic Red Team.
+    safety_tier: controlled
+    capabilities: [sandbox.archive, filesystem.read, filesystem.write, process.spawn]
+    platforms: [linux]
+    inputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.collection.v1
+    parameters:
+      - name: stage_variant
+        type: string
+        default: primary
+        enum: [primary, heldout]
+        description: Choose one of two fixed runner-owned staging directories.
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
+    provenance:
+      source: Atomic Red Team single-file gzip method, constrained BlueFire adaptation
+      reference: https://github.com/redcanaryco/atomic-red-team/blob/388942adbd9641f4dfdcf079d7efe9a75ec0ac43/atomics/T1560.001/T1560.001.yaml
+      license: MIT
+      derived: true
+      notes: Adapted test cde3c2af-3485-49eb-9c1f-0ed60e9cc0af; fixed system gzip consumes verified synthetic bytes on stdin, without the upstream shell, default input, fallback file creation or shell cleanup.
+
+  - schema_version: bluefire.action.v1
     id: sandbox.network.loopback.v1
     title: Send bundle to loopback sink
     purpose: Exercise an explicitly loopback-only transport boundary.

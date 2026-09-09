@@ -189,6 +189,7 @@ TRUSTED_PROCESS_BOUNDARY_PATHS = (
     "bluefire/browser_launch.py",
     "runner/src/cancellation_witness.rs",
     "runner/src/process.rs",
+    "runner/src/atomic_gzip.rs",
 )
 SOURCE_AUDIT_PATHS = (*STRICT_SOURCE_AUDIT_PATHS, *TRUSTED_PROCESS_BOUNDARY_PATHS)
 PYTHON_SHELL_MODULES = frozenset({"asyncio.subprocess", "commands", "shlex", "subprocess"})

@@ -11,13 +11,16 @@ import type { Scenario } from "../src/types";
 
 const scenario: Scenario = { ...structuredClone(demoScenario), id: "scenario.endpoint.lab-collection-methods.v1", steps: [{ id: "stage_collection", behavior_id: "sandbox.collection.records.v1", parameters: { stage_variant: "primary" }, inputs: {}, alternates: ["sandbox.collection.archive.v1"] }], start: "stage_collection", edges: [] };
 function json(value: unknown) { return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } }); }
-function ChooseScenario() {
+function ChooseScenario({ method = "sandbox.collection.records.v1" }: { method?: string }) {
   const { setScenario } = useProduct();
-  return <><button onClick={() => setScenario(scenario)}>Choose collection experiment</button><button onClick={() => setScenario({ ...scenario, steps: [{ ...scenario.steps[0]!, behavior_id: "package.reviewed-collection.v1" }] })}>Choose package collection</button></>;
+  return <><button onClick={() => setScenario({ ...scenario, steps: [{ ...scenario.steps[0]!, behavior_id: method }] })}>Choose collection experiment</button><button onClick={() => setScenario({ ...scenario, steps: [{ ...scenario.steps[0]!, behavior_id: "package.reviewed-collection.v1" }] })}>Choose package collection</button></>;
 }
 afterEach(() => { vi.unstubAllGlobals(); localStorage.clear(); });
 
-it("selects and visibly binds collection contents through the ordinary Execute preflight request", async () => {
+it.each([
+  ["sandbox.collection.records.v1", "jsonl"],
+  ["sandbox.collection.atomic-gzip.v1", "jsonl.gz"],
+])("selects and visibly binds %s collection contents through the ordinary Execute preflight request", async (method, extension) => {
   const requests: Record<string, unknown>[] = [];
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
@@ -31,13 +34,13 @@ it("selects and visibly binds collection contents through the ordinary Execute p
   }));
   const user = userEvent.setup();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={["/runs?prepare=1"]}><ChooseScenario/><RunsPage/></MemoryRouter></ProductProvider></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={["/runs?prepare=1"]}><ChooseScenario method={method}/><RunsPage/></MemoryRouter></ProductProvider></QueryClientProvider>);
   await screen.findByRole("radio", { name: /^Simulate/ });
   await user.click(screen.getByRole("button", { name: "Choose collection experiment" }));
   await user.click(screen.getByRole("radio", { name: /^Execute/ }));
   const collector = screen.getByRole("checkbox", { name: /Collection contents/ });
   expect(collector).toBeChecked();
-  expect(screen.getByText("staged/collection/bundle.jsonl")).toBeVisible();
+  expect(screen.getByText(`staged/collection/bundle.${extension}`)).toBeVisible();
   const preflight = screen.getByRole("button", { name: /^Run preflight$/ });
   await waitFor(() => expect(preflight).toBeEnabled());
   await user.click(preflight);
@@ -62,5 +65,6 @@ it("selects and visibly binds collection contents through the ordinary Execute p
 
 it("shows the heldout archive path and leaves earlier behaviors outside semantic collection", () => {
   expect(collectionObservationSteps({ ...scenario, steps: [{ ...scenario.steps[0]!, behavior_id: "sandbox.collection.archive.v1", parameters: { stage_variant: "heldout" } }] })).toEqual([{ stepId: "stage_collection", path: "staged/variation/bundle.tar" }]);
+  expect(collectionObservationSteps({ ...scenario, steps: [{ ...scenario.steps[0]!, behavior_id: "sandbox.collection.atomic-gzip.v1", parameters: { stage_variant: "heldout" } }] })).toEqual([{ stepId: "stage_collection", path: "staged/variation/bundle.jsonl.gz" }]);
   expect(collectionObservationSteps({ ...scenario, steps: [{ ...scenario.steps[0]!, behavior_id: "sandbox.collection.stage.v1" }] })).toEqual([]);
 });

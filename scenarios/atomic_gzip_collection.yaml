@@ -1,0 +1,48 @@
+schema_version: bluefire.scenario.v1
+id: scenario.atomic.gzip-collection.v1
+title: Atomic gzip collection comparison
+purpose: Test whether a detector identifies retained synthetic values in independently observed collected bytes, including compressed output, without flagging redacted benign staging.
+start: create_fixture
+steps:
+  - id: create_fixture
+    behavior_id: sandbox.fixture.create.v1
+    parameters: {record_count: 8}
+  - id: transform_fixture
+    behavior_id: sandbox.fixture.transform.v1
+    parameters: {redact_values: false}
+    inputs:
+      workspace: {from_step: create_fixture, artifact: workspace}
+  - id: select_records
+    behavior_id: sandbox.discovery.metadata.v1
+    inputs:
+      fixture: {from_step: transform_fixture, artifact: fixture}
+  - id: stage_collection
+    behavior_id: sandbox.collection.atomic-gzip.v1
+    alternates: [sandbox.collection.records.v1, sandbox.collection.archive.v1]
+    parameters: {stage_variant: primary}
+    inputs:
+      records: {from_step: select_records, artifact: records}
+  - id: cleanup_workspace
+    behavior_id: sandbox.cleanup.v1
+    parameters: {verify_removal: true}
+    inputs:
+      workspace: {from_step: create_fixture, artifact: workspace}
+edges:
+  - {from_step: create_fixture, outcome: success, to_step: transform_fixture}
+  - {from_step: transform_fixture, outcome: success, to_step: select_records}
+  - {from_step: select_records, outcome: success, to_step: stage_collection}
+  - {from_step: stage_collection, outcome: success, to_step: cleanup_workspace}
+  - {from_step: stage_collection, outcome: blocked, to_step: cleanup_workspace}
+  - {from_step: stage_collection, outcome: failed, to_step: cleanup_workspace}
+provenance:
+  source: BlueFire collection experiment using the constrained Atomic Red Team gzip adaptation
+  reference: https://github.com/redcanaryco/atomic-red-team/blob/388942adbd9641f4dfdcf079d7efe9a75ec0ac43/atomics/T1560.001/T1560.001.yaml
+  license: MIT
+  derived: true
+  notes: Atomic test cde3c2af-3485-49eb-9c1f-0ed60e9cc0af is adapted in the fixed Linux gzip method; preparation, observation and cleanup use BlueFire services.
+limitations:
+  - Requires a protected installed Linux gzip utility. No dependency installation, shell, host-file selection, network, or elevation is performed.
+  - Eight public synthetic records are the default. All methods consume the same digest-bound transformed fixture, with outputs limited to the reviewed sandbox paths.
+  - Leave Collection contents enabled in Run review; BlueFire derives the exact collection paths and observation schedule. Compressed command completion alone does not establish observed content or detector success.
+  - For benign activity enable Redact values in the transform step. For a held-out variation select the alternate staging location or an existing native collection method through normal controls.
+  - Evaluate and compare real detector revisions against the recorded observations separately; no host process audit or external EDR detection is claimed.

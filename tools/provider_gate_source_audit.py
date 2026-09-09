@@ -1422,13 +1422,17 @@ def _native_process_inventory_is_fixed(process_source: bytes) -> bool:
 
 
 def _native_command_source_inventory_is_fixed(repository: Path) -> bool:
+    from tools.atomic_gzip_source_audit import reviewed_gzip_source
+
     source_root = repository / "runner" / "src"
     command_sources: dict[str, bytes] = {}
     for path in source_root.rglob("*.rs"):
         source = path.read_bytes()
         if re.search(rb"\bCommand\b", source) is not None:
             command_sources[path.relative_to(source_root).as_posix()] = source
-    if set(command_sources) != {"process.rs", "cancellation_witness.rs"}:
+    if set(command_sources) != {"process.rs", "cancellation_witness.rs", "atomic_gzip.rs"}:
+        return False
+    if not reviewed_gzip_source(command_sources["atomic_gzip.rs"]):
         return False
     cancellation_source = command_sources["cancellation_witness.rs"]
     if (

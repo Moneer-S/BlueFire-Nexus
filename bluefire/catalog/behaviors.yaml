@@ -309,6 +309,40 @@ items:
     limitations: [Exactly one digest-bound transformed fixture is collected within 1 MiB; record counts and retained values require independent semantic observation.]
 
   - schema_version: bluefire.behavior.v1
+    id: sandbox.collection.atomic-gzip.v1
+    title: Atomic gzip collection
+    purpose: Compress the digest-bound synthetic fixture through one fixed Linux system gzip adapter adapted from Atomic Red Team.
+    execution_state: action
+    safety_tier: controlled
+    capabilities: [sandbox.archive, filesystem.read, filesystem.write, process.spawn]
+    platforms: [linux]
+    techniques: [T1560.001]
+    inputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.collection.v1
+    parameters:
+      - name: stage_variant
+        type: string
+        default: primary
+        enum: [primary, heldout]
+        description: Choose one of two fixed runner-owned staging directories.
+    simulation_id: simulation.sandbox.collection.atomic-gzip.v1
+    action_ids: [sandbox.collection.atomic-gzip.v1]
+    telemetry: [sandbox.collection.material_staged]
+    detection_hints: [Independently inspect staged bytes to distinguish retained and redacted public lab values.]
+    provenance:
+      source: Atomic Red Team single-file gzip method, constrained BlueFire adaptation
+      reference: https://github.com/redcanaryco/atomic-red-team/blob/388942adbd9641f4dfdcf079d7efe9a75ec0ac43/atomics/T1560.001/T1560.001.yaml
+      license: MIT
+      derived: true
+      notes: Adapted test cde3c2af-3485-49eb-9c1f-0ed60e9cc0af; fixed system gzip consumes verified synthetic bytes on stdin, without the upstream shell, default input, fallback file creation or shell cleanup.
+    limitations: [Requires a protected installed Linux gzip ELF; no automatic installation. One digest-bound fixture and bounded compressed output; receipt-owned cleanup and independent decoded semantic observation.]
+
+  - schema_version: bluefire.behavior.v1
     id: sandbox.network.loopback.v1
     title: Exercise loopback transport
     purpose: Send a synthetic bundle only to a runner-enforced loopback sink.

@@ -148,6 +148,7 @@ _ALLOWED_PROGRAM_CONSTANTS: Mapping[str, Mapping[str, frozenset[str] | type[int]
             "sandbox.collection.stage.v1": MappingProxyType({}),
             "sandbox.collection.records.v1": MappingProxyType({}),
             "sandbox.collection.archive.v1": MappingProxyType({}),
+            "sandbox.collection.atomic-gzip.v1": MappingProxyType({}),
             "sandbox.discovery.list.v1": MappingProxyType({}),
             "sandbox.discovery.metadata.v1": MappingProxyType({}),
             "sandbox.discovery.recursive.v1": MappingProxyType({}),

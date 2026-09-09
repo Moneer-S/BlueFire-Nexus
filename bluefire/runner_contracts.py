@@ -98,6 +98,7 @@ _REVIEWED_PROGRAM_CONSTANTS: Mapping[str, Mapping[str, Any]] = {
     "sandbox.collection.stage.v1": {},
     "sandbox.collection.records.v1": {},
     "sandbox.collection.archive.v1": {},
+    "sandbox.collection.atomic-gzip.v1": {},
     "sandbox.discovery.list.v1": {},
     "sandbox.discovery.metadata.v1": {},
     "sandbox.discovery.recursive.v1": {},

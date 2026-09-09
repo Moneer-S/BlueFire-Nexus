@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import zlib
 from typing import Any
 
 from .evidence import EvidenceError
@@ -36,7 +37,10 @@ def parse_collection_semantics(payload: bytes) -> dict[str, str | int]:
     if not isinstance(payload, bytes) or not 1 <= len(payload) <= MAX_COLLECTION_BYTES:
         raise _refuse()
     container = "jsonl"
-    if len(payload) >= 512 and payload[257:263] == b"ustar\0":
+    if payload.startswith(b"\x1f\x8b"):
+        container = "gzip"
+        payload = _gzip_member(payload)
+    elif len(payload) >= 512 and payload[257:263] == b"ustar\0":
         container = "ustar"
         payload = _ustar_member(payload)
     if not payload.endswith(b"\n"):
@@ -84,6 +88,25 @@ def parse_collection_semantics(payload: bytes) -> dict[str, str | int]:
         "retained_record_count": retained,
         "empty_record_count": empty,
     }
+
+
+def _gzip_member(payload: bytes) -> bytes:
+    """Decode exactly one bounded no-name member, validating its CRC and size."""
+    if len(payload) < 18 or payload[:8] != b"\x1f\x8b\x08\x00\x00\x00\x00\x00":
+        raise _refuse()
+    decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    try:
+        decoded = decoder.decompress(payload, MAX_COLLECTION_BYTES + 1)
+    except zlib.error:
+        raise _refuse() from None
+    if (
+        not 1 <= len(decoded) <= MAX_COLLECTION_BYTES
+        or not decoder.eof
+        or decoder.unused_data
+        or decoder.unconsumed_tail
+    ):
+        raise _refuse()
+    return decoded
 
 
 def _ustar_member(payload: bytes) -> bytes:

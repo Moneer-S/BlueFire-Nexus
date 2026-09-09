@@ -12,6 +12,7 @@ from .ai_method_comparison import PROPOSAL_SCHEMA, suggest_method
 from .ai_provider_access import AIProviderAccess
 from .ai_wire import AIProviderCancelled, AIProviderError
 from .application_errors import APIError
+from .collection_methods import COLLECTION_METHODS
 from .comparison import compare_runs
 from .config import AIConfig, AIProviderConfig, AIProviderKind, ConfigError
 from .contracts import ExecutionMode, ScenarioDefinition
@@ -124,7 +125,7 @@ class MethodComparisonJobs:
             if selected_step_id is not None and step.id != selected_step_id:
                 continue
             alternatives = step.alternates
-            collection_pair = {"sandbox.collection.records.v1", "sandbox.collection.archive.v1"}
+            collection_pair = set(COLLECTION_METHODS)
             if step.behavior_id in collection_pair:
                 alternatives = tuple(sorted(collection_pair - {step.behavior_id}))
             recorded_steps = run.get("steps", [])

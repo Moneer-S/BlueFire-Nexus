@@ -114,6 +114,7 @@ class SimulationRegistry:
             "simulation.sandbox.collection.stage.v1",
             "simulation.sandbox.collection.records.v1",
             "simulation.sandbox.collection.archive.v1",
+            "simulation.sandbox.collection.atomic-gzip.v1",
             "simulation.sandbox.execution.native-canary.v1",
             "simulation.sandbox.execution.process-tree-cancellation-witness.v1",
             "simulation.sandbox.identity-material.seed.v1",

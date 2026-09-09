@@ -11,9 +11,30 @@ Current built-in records are stored in `bluefire/data/research_sources.yaml` and
 | pySigma | `external_adapter` | Separately installed optional package; no source vendored | Used only through bounded parser-validation integration when available. |
 | pySigma SQLite backend | `external_adapter` | Separately installed optional package; no source vendored | LGPL-3.0-only converter pinned for reviewed adapter integration. Package presence is not evidence that conversion or query execution occurred. |
 | yara-python | `external_adapter` | Separately installed optional package; no source vendored | Used only through bounded compiler integration when available. |
-| Atomic Red Team | `reference_only` | Metadata only | Used as a comparative behavior/test-structure reference; external tests are not copied or executed. |
+| Atomic Red Team general snapshot | `reference_only` | Metadata only | Historical comparative behavior/test-structure reference; this record does not import the corpus. |
+| Atomic Red Team single-file gzip test | `compatible_code_adaptation` | One reviewed method adapted into the fixed Linux gzip adapter | MIT, Copyright (c) 2018 Red Canary, Inc.; complete license preserved at `bluefire/data/atomic_red_team_LICENSE.txt`. |
 
 Before any `compatible_code_adaptation`, perform file-level license review, preserve attribution and notices, isolate copied code paths, and record modifications in the source metadata.
+
+## Atomic gzip collection adapter
+
+The fixed adapter in `runner/src/atomic_gzip.rs` adapts Atomic Red Team T1560.001
+test `cde3c2af-3485-49eb-9c1f-0ed60e9cc0af`, reviewed at commit
+`388942adbd9641f4dfdcf079d7efe9a75ec0ac43`. The containing YAML is 20,402 bytes,
+SHA-256 `681f0727810cc1fa1d2032f818d0cdb5b02dd058ed85416658ee26437773e681`.
+Its complete MIT license (Copyright (c) 2018 Red Canary, Inc.) is preserved at
+`bluefire/data/atomic_red_team_LICENSE.txt`, 1,078 bytes, SHA-256
+`65af6027045d23175366eab50e460ab3ee7790e591cb84cc32c78ac63a4c90e1`.
+See `docs/ATOMIC_GZIP.md` for the exact source and modifications: fixed stdin/stdout
+gzip invocation replaces the shell, fallback input and caller paths, while
+BlueFire owns bounded publication and cleanup. The complete Atomic framework is
+not imported. Existing native record/USTAR code remains BlueFire authored.
+
+GNU gzip is an external operating-system dependency licensed GPL-3.0-or-later;
+its source and binary are not bundled into BlueFire's wheel. BlueFire's MIT
+license does not replace the system utility's terms. The adapter records the
+actual selected tool digest, and fails closed if the required utility is missing
+or fails its integrity checks. Attribution does not imply endorsement.
 
 ## MITRE ATT&CK® Enterprise T1082 metadata
 

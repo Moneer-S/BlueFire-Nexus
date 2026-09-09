@@ -3774,6 +3774,7 @@ class Orchestrator:
             "sandbox.collection.stage.v1": ("fixtures", "staged"),
             "sandbox.collection.records.v1": ("fixtures", "staged"),
             "sandbox.collection.archive.v1": ("fixtures", "staged"),
+            "sandbox.collection.atomic-gzip.v1": ("fixtures", "staged"),
             "sandbox.network.loopback.v1": ("staged",),
             "sandbox.peer.handoff.v1": ("staged",),
             "sandbox.observability.variant.v1": ("staged", "observability"),
