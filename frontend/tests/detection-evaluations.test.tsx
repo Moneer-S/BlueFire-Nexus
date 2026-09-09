@@ -54,14 +54,14 @@ it("submits source identity and case context only, and exposes a measured benign
   const user = userEvent.setup();
   mount();
   expect(screen.getByRole("combobox", { name: "Evaluation source run" })).toHaveValue(runId);
-  await user.selectOptions(screen.getByRole("combobox", { name: /Operator-assigned case role/ }), "benign");
+  await user.selectOptions(screen.getByRole("combobox", { name: /Activity label/ }), "benign");
   await user.click(screen.getByRole("button", { name: "Evaluate full observed run" }));
   expect(await screen.findByText("Match in a declared benign case")).toBeInTheDocument();
   const post = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === "POST")!;
   expect(String(post[0])).toContain(`/detections/${candidateId}/evaluate-run`);
-  expect(JSON.parse(String(post[1]!.body))).toEqual({ run_id: runId, question: expect.any(String), case_role: "benign" });
+  expect(JSON.parse(String(post[1]!.body))).toEqual({ run_id: runId, question: expect.any(String), case_role: "benign", activity_label: "benign", evaluation_use: "unspecified" });
   expect(candidate.state).toBe("parsed");
-  expect(screen.getByText("evidence-observed")).toBeInTheDocument();
+  expect(screen.getByText(/"matched_evidence_ids":/)).toHaveTextContent("evidence-observed");
   // A parsed query can evaluate observed evidence directly, without a fixture step.
   expect(screen.getByRole("button", { name: "Evaluate full observed run" })).toBeEnabled();
 });
@@ -70,12 +70,12 @@ it("retains a telemetry gap as insufficient without presenting a zero-match resu
   resultState = "insufficient_evidence";
   const user = userEvent.setup();
   mount();
-  await user.selectOptions(screen.getByRole("combobox", { name: /Operator-assigned case role/ }), "heldout");
+  await user.selectOptions(screen.getByRole("combobox", { name: /Use of this data/ }), "independent");
   await user.click(screen.getByRole("button", { name: "Evaluate full observed run" }));
   expect(await screen.findByText("Insufficient evidence or backend unavailable")).toBeInTheDocument();
   expect(screen.getByText("Source contains evidence gaps")).toBeInTheDocument();
   expect(screen.queryByText("0 matched records")).not.toBeInTheDocument();
-  expect(retained[0]?.case_role).toBe("heldout");
+  expect(retained[0]?.case_role).toBe("unknown");
 });
 
 it("keeps AI development evidence visible even when its original case was withheld", async () => {
@@ -83,9 +83,9 @@ it("keeps AI development evidence visible even when its original case was withhe
   retained.push(report(parentId, runId, "heldout"));
   mount();
   expect(await screen.findByText("Development evidence")).toBeVisible();
-  expect(screen.getByText(/AI used this run while proposing the rule/)).toBeVisible();
+  expect(screen.getByText(/This data was used or declared for rule development/)).toBeVisible();
   await userEvent.setup().selectOptions(screen.getByRole("combobox", { name: "Related revision reports" }), parentId);
-  expect(await screen.findByText("Includes development evidence used to propose this rule")).toBeVisible();
+  expect(await screen.findByText("Includes development data; not an untouched independent test")).toBeVisible();
 });
 
 it("shows immutable baseline and revision results together and preserves each source", async () => {

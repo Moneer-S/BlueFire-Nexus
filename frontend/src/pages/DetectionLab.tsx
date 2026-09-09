@@ -28,7 +28,7 @@ import type {
 import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, LoadingState, PageHeader, Panel, PanelHeader, sentence } from "../components/Primitives";
 
 const lifecycle = ["hypothesis", "parsed", "fixture_exercised", "observed_exercised", "benign_evaluated", "rejected"];
-const manualRuleDefaults = { title: "Sandbox staging observation", behaviorId: "sandbox.collection.stage.v1", language: "internal" };
+const manualRuleDefaults = { title: "", behaviorId: "sandbox.collection.stage.v1", language: "sqlite" };
 const manualRuleLanguages = [
   ["internal", "Internal structured matcher"], ["sigma", "Sigma converted to bounded SQLite"],
   ["sqlite", "SQLite query (bounded executor)"], ["yara", "YARA"], ["spl", "SPL structural check"],

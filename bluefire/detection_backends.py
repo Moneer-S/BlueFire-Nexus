@@ -20,6 +20,7 @@ from .detection_backend_health import (
 from .detection_backend_health import SQLITE_BACKEND_PIN as _SQLITE_BACKEND_PIN
 from .detection_backend_health import YARA_PIN as _YARA_PIN
 from .detection_backend_health import detection_backend_health
+from .detection_query_limits import RUN_EXECUTION_LIMITS as _RUN_EXECUTION_LIMITS
 from .evidence import EvidenceProvenance
 
 
@@ -376,12 +377,14 @@ def _sqlite_value(value: Any) -> Any:
 
 def _prepare_fixtures(
     fixtures: Sequence[Mapping[str, Any]],
+    limits: Mapping[str, int],
 ) -> tuple[list[str], list[tuple[Any, ...]], list[str], list[str]]:
     if isinstance(fixtures, (str, bytes)) or not isinstance(fixtures, Sequence):
         raise DetectionBackendError("SQLite fixtures must be a sequence")
-    if len(fixtures) > _MAX_FIXTURES:
+    if len(fixtures) > limits["fixtures"]:
         raise DetectionBackendError("SQLite fixture count exceeds its limit")
     fixture_ids: list[str] = []
+    seen_ids: set[str] = set()
     inserts: list[tuple[Any, ...]] = []
     mapped_fields: set[str] = set()
     unsupported_fields: set[str] = set()
@@ -392,7 +395,7 @@ def _prepare_fixtures(
         raw_id = fixture.get("fixture_id")
         if not isinstance(raw_id, str) or _FIXTURE_ID.fullmatch(raw_id) is None:
             raise DetectionBackendError("each SQLite fixture requires a valid fixture_id")
-        if raw_id in fixture_ids:
+        if raw_id in seen_ids:
             raise DetectionBackendError("SQLite fixture IDs must be unique")
         values: dict[str, Any] = {"fixture_id": raw_id}
         for raw_field, raw_value in _flatten_fixture(fixture):
@@ -412,9 +415,10 @@ def _prepare_fixtures(
             for item in row
             if item is not None
         )
-        if total_bytes > _MAX_TOTAL_FIXTURE_BYTES:
+        if total_bytes > limits["fixture_bytes"]:
             raise DetectionBackendError("SQLite fixtures exceed the total byte limit")
         fixture_ids.append(raw_id)
+        seen_ids.add(raw_id)
         inserts.append(row)
     return fixture_ids, inserts, sorted(mapped_fields), sorted(unsupported_fields)
 
@@ -455,9 +459,12 @@ def _sqlite_authorizer(
 def execute_sqlite_query(
     query: str,
     fixtures: Sequence[Mapping[str, Any]],
+    *,
+    observed_dataset: bool = False,
 ) -> Mapping[str, Any]:
     """Execute one reviewed SELECT against a fresh, bounded in-memory database."""
 
+    limits = _RUN_EXECUTION_LIMITS if observed_dataset else _EXECUTION_LIMITS
     inspection = inspect_sqlite_query(query)
     if inspection["unsupported_fields"]:
         raise DetectionBackendError(
@@ -465,16 +472,16 @@ def execute_sqlite_query(
             + ", ".join(inspection["unsupported_fields"])
         )
     fixture_ids, inserts, mapped_fixture_fields, unsupported_fixture_fields = _prepare_fixtures(
-        fixtures
+        fixtures, limits
     )
     connection = sqlite3.connect(":memory:", isolation_level=None, timeout=0.0)
     progress_calls = 0
-    deadline = monotonic() + _QUERY_DEADLINE_SECONDS
+    deadline = monotonic() + (limits["deadline_ms"] / 1000)
 
     def progress() -> int:
         nonlocal progress_calls
         progress_calls += 1
-        if progress_calls * _PROGRESS_GRANULARITY > _MAX_VM_STEPS:
+        if progress_calls * _PROGRESS_GRANULARITY > limits["vm_steps"]:
             return 1
         return int(monotonic() > deadline)
 
@@ -500,7 +507,28 @@ def execute_sqlite_query(
             ]
             if len(fixture_columns) != 1:
                 raise DetectionBackendError("SQLite SELECT must output fixture_id exactly once")
-            rows = cursor.fetchmany(_MAX_RESULT_ROWS + 1)
+            known_ids = set(fixture_ids)
+            matched_ids: list[str] = []
+            matched_set: set[str] = set()
+            result_bytes = sum(len(field.encode("utf-8")) for field in result_fields)
+            fixture_column = fixture_columns[0]
+            for row_number, row in enumerate(cursor, 1):
+                if row_number > limits["result_rows"]:
+                    raise DetectionBackendError("SQLite result row count exceeds its limit")
+                result_bytes += sum(
+                    len(value) if isinstance(value, bytes) else len(str(value).encode("utf-8"))
+                    for value in row
+                    if value is not None
+                )
+                if result_bytes > limits["result_bytes"]:
+                    raise DetectionBackendError("SQLite result bytes exceed the limit")
+                fixture_id = row[fixture_column]
+                if not isinstance(fixture_id, str) or fixture_id not in known_ids:
+                    raise DetectionBackendError("SQLite result contains an unknown fixture_id")
+                if fixture_id in matched_set:
+                    raise DetectionBackendError("SQLite result contains a duplicate fixture_id")
+                matched_ids.append(fixture_id)
+                matched_set.add(fixture_id)
         except sqlite3.DatabaseError as exc:
             message = str(exc).casefold()
             if "interrupted" in message:
@@ -508,26 +536,6 @@ def execute_sqlite_query(
             if "authorized" in message:
                 raise DetectionBackendError("SQLite authorizer denied the query") from exc
             raise DetectionBackendError("SQLite query failed: " + str(exc)[:200]) from exc
-        if len(rows) > _MAX_RESULT_ROWS:
-            raise DetectionBackendError("SQLite result row count exceeds its limit")
-        known_ids = set(fixture_ids)
-        matched_ids: list[str] = []
-        result_bytes = sum(len(field.encode("utf-8")) for field in result_fields)
-        fixture_column = fixture_columns[0]
-        for row in rows:
-            result_bytes += sum(
-                len(value) if isinstance(value, bytes) else len(str(value).encode("utf-8"))
-                for value in row
-                if value is not None
-            )
-            if result_bytes > _MAX_RESULT_BYTES:
-                raise DetectionBackendError("SQLite result bytes exceed the limit")
-            fixture_id = row[fixture_column]
-            if not isinstance(fixture_id, str) or fixture_id not in known_ids:
-                raise DetectionBackendError("SQLite result contains an unknown fixture_id")
-            if fixture_id in matched_ids:
-                raise DetectionBackendError("SQLite result contains a duplicate fixture_id")
-            matched_ids.append(fixture_id)
         return {
             "fixture_ids": fixture_ids,
             "matched_fixture_ids": matched_ids,
@@ -536,11 +544,11 @@ def execute_sqlite_query(
             "mapped_fixture_fields": mapped_fixture_fields,
             "unsupported_fixture_fields": unsupported_fixture_fields,
             "result_fields": result_fields,
-            "row_count": len(rows),
+            "row_count": len(matched_ids),
             "sqlite_version": sqlite3.sqlite_version,
             "query_only": True,
             "authorizer": True,
-            "limits": dict(_EXECUTION_LIMITS),
+            "limits": dict(limits),
         }
     finally:
         connection.set_progress_handler(None, 0)
@@ -702,7 +710,11 @@ class ExternalDetectionValidator:
         )
 
     def _execute_candidate_query(
-        self, candidate: Any, fixtures: Sequence[Mapping[str, Any]]
+        self,
+        candidate: Any,
+        fixtures: Sequence[Mapping[str, Any]],
+        *,
+        observed_dataset: bool = False,
     ) -> Mapping[str, Any]:
         if candidate.target_language not in {"sigma", "sqlite"} or not candidate.rule_source:
             raise DetectionError("candidate has no executable query source")
@@ -745,7 +757,7 @@ class ExternalDetectionValidator:
                 raise DetectionBackendError(
                     "persisted query digest does not match fresh conversion"
                 )
-            result = execute_sqlite_query(query, fixtures)
+            result = execute_sqlite_query(query, fixtures, observed_dataset=observed_dataset)
         except DetectionBackendError as exc:
             raise DetectionError(str(exc)) from exc
         if result["query_sha256"] != digest:

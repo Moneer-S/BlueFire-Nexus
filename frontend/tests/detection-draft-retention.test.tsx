@@ -14,7 +14,7 @@ const id = `detection-${"a".repeat(20)}`;
 const otherId = `detection-${"c".repeat(20)}`;
 const parent: DetectionResource = { kind: "detections", id, status: "parsed", digest: "sha256:parent", created_at: "2026-09-06", updated_at: "2026-09-06", document: { candidate_id: id, revision_root_id: id, revision: 1, title: "Baseline SQL", target_language: "sqlite", state: "parsed", rule_source: source, selection: { observation_kind: "filesystem" }, logsource: { category: "file_event" }, parser_backend: { name: "SQLite bounded executor" } } };
 const manualKey = "bluefire.detection-draft.v1:manual-new-rule";
-const manualDefaults = { title: "Sandbox staging observation", behaviorId: "sandbox.collection.stage.v1", language: "internal" };
+const manualDefaults = { title: "", behaviorId: "sandbox.collection.stage.v1", language: "sqlite" };
 
 function LocationWitness() {
   return <output data-testid="location">{useLocation().search}</output>;
@@ -313,7 +313,7 @@ it.each(["malformed", "oversized", "unknown-envelope"])("preserves unreadable %s
 });
 
 it("shows unavailable retained manual choices truthfully and refuses save without substituting", async () => {
-  const value = { ...manualDefaults, behaviorId: "missing.behavior.v1", language: "missing-language" };
+  const value = { ...manualDefaults, title: "Retained manual rule", behaviorId: "missing.behavior.v1", language: "missing-language" };
   const raw = JSON.stringify({ binding: "manual-new-rule", value });
   sessionStorage.setItem(manualKey, raw);
   const { user } = setup();
@@ -342,7 +342,7 @@ it.each([false, true])("preserves newer manual edits when an earlier save comple
   await user.clear(title); await user.paste("Submitted manual rule");
   await user.click(screen.getByRole("button", { name: "Save strict hypothesis" }));
   expect(save).toHaveBeenCalledTimes(1);
-  expect(save.mock.calls[0]![0]).toMatchObject({ title: "Submitted manual rule", behavior_id: manualDefaults.behaviorId, target_language: "internal" });
+  expect(save.mock.calls[0]![0]).toMatchObject({ title: "Submitted manual rule", behavior_id: manualDefaults.behaviorId, target_language: "sqlite" });
   expect(screen.getByRole("button", { name: "Discard New rule inputs" })).toBeDisabled();
   if (remountWhilePending) remount();
   const newer = await screen.findByRole("textbox", { name: "Title" });
@@ -395,4 +395,17 @@ it("keeps manual inputs after save and describes the returned rule's existing st
   expect(await screen.findByRole("textbox", { name: "Title" })).toBeVisible();
   expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue(manualDefaults.title + " my input");
   expect(save).toHaveBeenCalledTimes(1);
+});
+
+it("starts a full-run rule in SQLite while preserving an older manual language choice", async () => {
+  const { user, remount } = setup();
+  const save = vi.spyOn(api, "upsertDetection");
+  await openManual(user);
+  expect(screen.getByRole("combobox", { name: "Target language" })).toHaveValue("sqlite");
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("");
+  expect(screen.getByRole("button", { name: "Save strict hypothesis" })).toBeDisabled();
+  await user.selectOptions(screen.getByRole("combobox", { name: "Target language" }), "internal");
+  remount();
+  expect(await screen.findByRole("combobox", { name: "Target language" })).toHaveValue("internal");
+  expect(save).not.toHaveBeenCalled();
 });

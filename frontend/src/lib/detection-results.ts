@@ -31,7 +31,7 @@ export function compareDetectorEvaluations(baseline: DetectionRunEvaluation[], r
     const left = baseline.filter((report) => report.source.run_id === runId);
     const right = revised.filter((report) => report.source.run_id === runId);
     const all = [...left, ...right];
-    const roles = [...new Set(all.map((report) => report.case_role))];
+    const roles = [...new Set(all.map(activityLabel))];
     let change = "Evaluate both revisions";
     if (left.length && right.length) {
       if (new Set(all.map(sourceKey)).size !== 1) change = "Different evidence — review separately";
@@ -45,4 +45,15 @@ export function compareDetectorEvaluations(baseline: DetectionRunEvaluation[], r
     }
     return { runId, baseline: left, revised: right, roles, change };
   });
+}
+
+// Legacy role values describe mixed dimensions; they never establish independence.
+export function activityLabel(report: DetectionRunEvaluation): string {
+  return report.classification?.activity_label ?? (["attack", "benign"].includes(report.case_role) ? report.case_role : "unknown");
+}
+
+export function evaluationUseLabel(report: DetectionRunEvaluation): string {
+  if (report.development_case || report.classification?.evaluation_use === "development") return "Development data";
+  if (report.classification?.evaluation_use === "independent") return "Independent test data · operator declared";
+  return "Data use unknown";
 }

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import builtins
+import sqlite3
 from dataclasses import replace
+from typing import Any
 
 import pytest
 
@@ -341,3 +343,83 @@ def test_yara_fixture_inventory_is_bounded_and_attributable() -> None:
                 {"fixture_id": "duplicate", "data": "BLUEFIRE"},
             ],
         )
+
+
+def test_full_dataset_budget_is_separate_and_never_truncates() -> None:
+    from bluefire.detection_backends import DetectionBackendError, execute_sqlite_query
+
+    rows = [{"fixture_id": f"record-{index}", "path": "public-test"} for index in range(129)]
+    with pytest.raises(DetectionBackendError, match="count exceeds"):
+        execute_sqlite_query("SELECT fixture_id FROM logs", rows)
+    full = execute_sqlite_query("SELECT fixture_id FROM logs", rows, observed_dataset=True)
+    assert len(full["matched_fixture_ids"]) == 129
+    assert full["limits"]["fixture_bytes"] == 16 * 1024 * 1024
+    with pytest.raises(DetectionBackendError, match="count exceeds"):
+        execute_sqlite_query(
+            "SELECT fixture_id FROM logs",
+            [{"fixture_id": f"r-{i}"} for i in range(10_001)],
+            observed_dataset=True,
+        )
+    with pytest.raises(DetectionBackendError, match="total byte"):
+        execute_sqlite_query(
+            "SELECT fixture_id FROM logs",
+            [{"fixture_id": f"r-{i}", "path": "x" * 16_384} for i in range(1_024)],
+            observed_dataset=True,
+        )
+
+
+def test_sqlite_streams_before_its_byte_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bluefire.detection_backends import DetectionBackendError, execute_sqlite_query
+
+    consumed = 0
+
+    class StreamingCursor(sqlite3.Cursor):
+        def fetchmany(self, size: int | None = None) -> list[Any]:
+            raise AssertionError("A whole amplified result must never be materialized")
+
+        def __next__(self) -> Any:
+            nonlocal consumed
+            row = super().__next__()
+            consumed += 1
+            return row
+
+    class StreamingConnection(sqlite3.Connection):
+        def execute(self, sql: str, parameters: Any = ()) -> sqlite3.Cursor:
+            return self.cursor(factory=StreamingCursor).execute(sql, parameters)
+
+    connect = sqlite3.connect
+    monkeypatch.setattr(
+        sqlite3,
+        "connect",
+        lambda *args, **kwargs: connect(*args, **kwargs, factory=StreamingConnection),
+    )
+    rows = [{"fixture_id": f"r-{i}", "path": "x" * 16_384} for i in range(32)]
+    query = "SELECT fixture_id, path FROM logs"
+    with pytest.raises(DetectionBackendError, match="result bytes"):
+        execute_sqlite_query(query, rows)
+    assert 1 <= consumed <= 17
+    assert consumed < len(rows)
+
+
+def test_full_dataset_refuses_amplified_projection_without_weakening_parser() -> None:
+    query = "SELECT fixture_id, " + " || ".join(["path"] * 8) + " AS content FROM logs"
+    with pytest.raises(DetectionBackendError, match="bare fields"):
+        execute_sqlite_query(query, [{"fixture_id": "r1", "path": "x"}], observed_dataset=True)
+
+
+def test_full_dataset_result_byte_boundary_has_no_partial_result() -> None:
+    from bluefire.detection_query_limits import RUN_EXECUTION_LIMITS
+
+    ids = [f"record-{i}" for i in range(1024)]
+    remaining = RUN_EXECUTION_LIMITS["fixture_bytes"] - sum(len(value) for value in ids)
+    rows = []
+    for value in ids:
+        size = min(16_384, remaining)
+        rows.append({"fixture_id": value, "path": "x" * size})
+        remaining -= size
+    assert remaining == 0
+    # Fixed result column names add bytes beyond the exact admitted input budget.
+    with pytest.raises(DetectionBackendError, match="result bytes"):
+        execute_sqlite_query("SELECT fixture_id, path FROM logs", rows, observed_dataset=True)

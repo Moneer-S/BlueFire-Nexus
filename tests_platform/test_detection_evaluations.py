@@ -384,3 +384,100 @@ def test_failed_evaluation_schema_upgrade_rolls_back_table_and_version(
             ).fetchone()
             is None
         )
+
+
+def test_full_run_evaluates_after_model_context_limit_and_keeps_whole_sql_semantics(
+    service: BlueFireService,
+) -> None:
+    handle = service.store.create_run(
+        scenario={"schema_version": "test"}, plan={}, policy={}, profile={}
+    )
+    records = [
+        EvidenceRecord.create(
+            run_id=handle.run_id,
+            step_id="observed",
+            behavior_id="sandbox.collection.stage.v1",
+            provenance=EvidenceProvenance.OBSERVED,
+            producer="unit-normalized-dataset",
+            content={"artifact_type": "collector_observation", "path": f"item-{index}"},
+            target_scope_ref="unit:test",
+        )
+        for index in range(300)
+    ]
+    service.store.finalize(
+        handle.run_id,
+        result={"status": "completed", "mode": "execute", "steps": []},
+        evidence=[record.to_dict() for record in records],
+        detections=[],
+    )
+    candidate_id = query_candidate(service, "path = 'item-299'")
+    late = evaluate(service, candidate_id, handle.run_id)
+    assert late["result"]["matched_evidence_ids"] == [records[-1].evidence_id]
+    assert len(late["result"]["evaluated_evidence_ids"]) == 300
+    assert late["result"]["matched_evidence_hashes"] == {
+        records[-1].evidence_id: records[-1].record_hash
+    }
+    assert late["backend"]["limits"]["fixtures"] == 10_000
+    candidate_id = service.clone_detection_candidate(
+        candidate_id, {"reason": "Whole dataset aggregate"}
+    )["candidate"]["id"]
+    # A whole-dataset aggregate fails if execution is split into 128-row pages.
+    service.parse_detection_candidate(
+        candidate_id,
+        {"source": "SELECT fixture_id FROM logs GROUP BY artifact_type HAVING count(*) = 300"},
+    )
+    aggregate = evaluate(service, candidate_id, handle.run_id)
+    assert aggregate["result"]["match_count"] == 1
+    assert len(aggregate["result"]["evaluated_evidence_ids"]) == 300
+
+
+def test_recorded_development_use_overrides_independent_claim_on_later_revision(
+    service: BlueFireService, tmp_path: Path
+) -> None:
+    from bluefire.detection_evaluations import build_run_evaluation
+
+    candidate_id = query_candidate(service)
+    run_id, _ = observed_run(service, tmp_path)
+    lab = service.detection_lab
+    resource = lab._resource(candidate_id)
+    candidate = lab._candidate_from_resource(resource)
+    report = build_run_evaluation(
+        lab,
+        candidate,
+        resource,
+        {"run_id": run_id, "question": QUESTION, "case_role": "attack"},
+        development_case=True,
+    )
+    service.product_store.save_detection_evaluation(report)
+    child = service.clone_detection_candidate(candidate_id, {"reason": "Retain source lineage"})[
+        "candidate"
+    ]["id"]
+    service.parse_detection_candidate(child, {"source": candidate.rule_source})
+    result = service.evaluate_detection_run(
+        child,
+        {
+            "run_id": run_id,
+            "question": "",
+            "case_role": "benign",
+            "activity_label": "benign",
+            "evaluation_use": "independent",
+        },
+    )["evaluation"]
+    assert result["classification"]["evaluation_use"] == "development"
+    assert result["classification"]["requested_use"] == "independent"
+    assert result["classification"]["activity_label"] == "benign"
+    assert "retained_development_evaluation" in result["classification"]["development_reasons"]
+    assert result["classification"]["independence_verified"] is False
+    assert result["development_case"] is True
+    assert service.product_store.detection_evaluations(candidate_id)[0] == report
+
+
+@pytest.mark.parametrize("role", ["heldout", "replay"])
+def test_legacy_mixed_role_does_not_claim_activity_or_independent_data(
+    service: BlueFireService, tmp_path: Path, role: str
+) -> None:
+    report = evaluate(service, query_candidate(service), observed_run(service, tmp_path)[0], role)
+    assert report["case_role"] == role
+    assert report["classification"]["activity_label"] == "unknown"
+    assert report["classification"]["evaluation_use"] == "unspecified"
+    assert report["classification"]["source_lineage"] != "replay"

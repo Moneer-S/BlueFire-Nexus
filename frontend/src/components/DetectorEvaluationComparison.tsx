@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import { compareDetectorEvaluations, evaluationLabel } from "../lib/detection-results";
 import type { DetectionResource, DetectionRunEvaluation } from "../types";
 import { Badge, Button, EmptyState, ErrorState, Field, LoadingState, Panel, PanelHeader, sentence } from "./Primitives";
+import { MatchedObservations } from "./MatchedObservations";
 import { RunReference } from "./RunReference";
 
 function download(name: string, content: string, type: string) {
@@ -37,12 +38,12 @@ function EvaluationCell({ reports }: { reports: DetectionRunEvaluation[] }) {
   if (!reports.length) return <span>Not evaluated</span>;
   const labels = [...new Set(reports.map(evaluationLabel))];
   return <><strong>{labels.length === 1 ? labels[0] : "Mixed results"}</strong><small>{reports.length} retained evaluation{reports.length === 1 ? "" : "s"}</small>
-    {reports.some((report) => report.development_case) ? <small>Includes development evidence used to propose this rule</small> : null}
+    {reports.some((report) => report.development_case) ? <small>Includes development data; not an untouched independent test</small> : null}
     <details><summary>Evidence and engine</summary>{reports.map((report) => <article key={report.evaluation_id}>
       <Badge tone={evaluationLabel(report).includes("evidence") || report.result.state === "backend_error" ? "warning" : "info"}>{evaluationLabel(report)}</Badge>
       <p>{report.question}</p><p>{report.source.observed_count} independently observed events · {report.source.evidence_count} total records</p>
       <p>{report.backend.name} {report.backend.version ?? ""} · {report.backend.executed ? "Executed" : "Not executed"}</p>
-      <p>Matched evidence: {report.result.matched_evidence_ids.join(", ") || "None"}</p>
+      <MatchedObservations key={report.evaluation_id} report={report} />
       <p>Evidence gaps: {report.result.gap_count}. Missing fields: {report.result.missing_fields.join(", ") || "None reported"}.</p>
       <Link to={registeredDetectionLink(report.source.run_id, report.candidate.candidate_id)}>Open detector and run</Link>
       <details><summary>Full evaluation record</summary><pre>{JSON.stringify(report, null, 2)}</pre></details>

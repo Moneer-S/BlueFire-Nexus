@@ -14,7 +14,9 @@ EVALUATION_SCHEMA = "bluefire.detection-run-evaluation.v1"
 _EVALUATION_ID = re.compile(r"^detection-evaluation-[0-9a-f]{64}$")
 _CANDIDATE_ID = re.compile(r"^detection-[0-9a-f]{20}$")
 _RUN_ID = re.compile(r"^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$")
-_MAX_REPORT_BYTES = 256 * 1024
+_MAX_REPORT_BYTES = (
+    4 * 1024 * 1024
+)  # Two complete 10,000-record identity lists, no evidence content.
 MAX_EVALUATIONS_PER_CANDIDATE = 256
 
 

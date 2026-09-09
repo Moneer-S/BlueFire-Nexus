@@ -9,6 +9,8 @@ from typing import Any, Mapping
 
 from .application_errors import APIError
 from .detection_context import DetectionContext
+from .detection_evaluation_semantics import classify
+from .detection_query_limits import RUN_EXECUTION_LIMITS
 from .detections import DetectionCandidate, DetectionError, DetectionState
 from .evidence import EvidenceError, EvidenceProvenance, EvidenceRecord
 from .product_store_detection_evaluations import EVALUATION_SCHEMA, bind_report
@@ -16,9 +18,9 @@ from .product_store_errors import ProductStoreError
 from .run_store import RUN_ID_RE, RunStoreError
 from .util import content_hash
 
-_ROLES = {"attack", "benign", "replay", "heldout"}
+_ROLES = {"attack", "benign", "replay", "heldout", "unknown"}
 _MAX_SOURCE_RECORDS = 10_000
-_MAX_OBSERVED = 128  # Existing bounded SQLite executor limit; never truncate a case.
+_MAX_GAP_DISPLAY = 128  # Display only; all gap records still prevent execution.
 _LANGUAGES = {"sqlite", "sigma"}
 _EXECUTABLE_STATES = {
     DetectionState.PARSED,
@@ -143,27 +145,39 @@ def build_run_evaluation(
     service._fields(
         request,
         required={"run_id", "question", "case_role"},
-        optional=set(),
+        optional={"activity_label", "evaluation_use"},
         context="run evaluation",
     )
     question = request.get("question")
     role = request.get("case_role")
     if (
         not isinstance(question, str)
-        or not 1 <= len(question.strip()) <= 1000
+        or len(question.strip()) > 1000
         or any(ord(char) < 32 for char in question)
     ):
         raise APIError(
             HTTPStatus.BAD_REQUEST,
             "detection_evaluation_question_invalid",
-            "Describe the experiment question in 1–1000 printable characters.",
+            "Describe the experiment question in 1â€“1000 printable characters.",
         )
     if not isinstance(role, str) or role not in _ROLES:
         raise APIError(
             HTTPStatus.BAD_REQUEST,
             "detection_evaluation_role_invalid",
-            "Case role must be attack, benign, replay, or heldout.",
+            "Choose attack, benign, or unknown activity. Legacy replay and heldout labels remain readable.",
         )
+    for field, choices in (
+        ("activity_label", {"attack", "benign", "unknown"}),
+        ("evaluation_use", {"development", "independent", "unspecified"}),
+    ):
+        if field in request and (
+            not isinstance(request[field], str) or request[field] not in choices
+        ):
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "detection_evaluation_classification_invalid",
+                "Choose a supported activity label and evaluation use.",
+            )
     if candidate.target_language not in _LANGUAGES:
         raise APIError(
             HTTPStatus.CONFLICT,
@@ -185,8 +199,6 @@ def build_run_evaluation(
         diagnostics.append("observed_evidence_unavailable")
     if gaps:
         diagnostics.append("source_contains_evidence_gaps")
-    if len(observed) > _MAX_OBSERVED:
-        diagnostics.append("observed_evidence_limit_exceeded")
     objective = run.get("objective_evaluation")
     integrity = objective.get("observation_integrity") if isinstance(objective, Mapping) else None
     if isinstance(integrity, Mapping) and integrity.get("satisfied") is False:
@@ -196,7 +208,8 @@ def build_run_evaluation(
         "match_count": None,
         "evaluated_evidence_ids": [],
         "matched_evidence_ids": [],
-        "gap_evidence_ids": gaps[:_MAX_OBSERVED],
+        "matched_evidence_hashes": {},
+        "gap_evidence_ids": gaps[:_MAX_GAP_DISPLAY],
         "gap_count": len(gaps),
         "mapped_fields": _field_names(candidate.validation.get("mapped_fields")),
         "available_fields": [],
@@ -204,12 +217,17 @@ def build_run_evaluation(
         "missing_fields": [],
         "diagnostic_codes": diagnostics,
     }
-    backend: dict[str, Any] = {"name": "SQLite in-memory bounded executor", "executed": False}
+    backend: dict[str, Any] = {
+        "name": "SQLite in-memory bounded executor",
+        "executed": False,
+        "limits": dict(RUN_EXECUTION_LIMITS),
+    }
     if not diagnostics:
         try:
             execution = service.validator._execute_candidate_query(
                 candidate,
                 [dict(record.content, fixture_id=record.evidence_id) for record in observed],
+                observed_dataset=True,
             )
         except DetectionError:
             result["state"] = "backend_error"
@@ -236,15 +254,31 @@ def build_run_evaluation(
                 diagnostics.append("required_observation_fields_unavailable")
             else:
                 matched = list(execution["matched_fixture_ids"])
+                matched_set = set(matched)
                 result.update(
                     state="matched" if matched else "not_matched",
                     match_count=len(matched),
                     matched_evidence_ids=matched,
+                    matched_evidence_hashes={
+                        record.evidence_id: record.record_hash
+                        for record in observed
+                        if record.evidence_id in matched_set
+                    },
                 )
+    classification = classify(
+        service,
+        candidate,
+        run,
+        {record.evidence_id for record in records},
+        request,
+        development_case=development_case,
+    )
+    development_case = classification["evaluation_use"] == "development"
     report = bind_report(
         {
             "schema_version": EVALUATION_SCHEMA,
-            "question": question.strip(),
+            "question": question.strip() or f"Does {candidate.title} match the observed records?",
+            "classification": classification,
             "case_role": role,
             "case_role_basis": "operator_declared",
             **({"development_case": True} if development_case else {}),
@@ -254,13 +288,14 @@ def build_run_evaluation(
             "backend": backend,
             "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "limitations": [
-                "Case role is operator-declared context, not observed intent or an expected-result assertion.",
+                "Activity label is operator-declared context, not observed intent or an expected-result assertion.",
+                "Independent test data is an operator declaration, not proof of unseen data or detection coverage. Recorded development use takes precedence.",
                 "Matches describe the bounded query against independently observed run metadata; they do not establish host detection deployment or prevention.",
-                "All observed records in this bundle are included; excluded provenance cannot supply missing observations.",
+                "Execution uses the whole observed dataset within its explicit resource budget. A refused execution has no partial result; excluded provenance cannot supply missing observations.",
                 "This report does not promote, reject, or rewrite the candidate lifecycle or source run.",
                 *(
                     [
-                        "This is a development-case evaluation on the same run used to propose the revision; it is not independent held-out validation."
+                        "This data was used during rule development or was declared development data; it is not an untouched independent test."
                     ]
                     if development_case
                     else []

@@ -622,7 +622,7 @@ export const api = {
     if (DEMO_MODE) throw new ApiError("Demo candidates cannot produce durable revision comparisons.", "demo_detection_comparison_refused", undefined, 409);
     return request(`/detections/${encodeURIComponent(baselineCandidateId)}/compare`, { method: "POST", body: JSON.stringify({ candidate_id: candidateId }) });
   },
-  async evaluateDetectionRun(candidateId: string, body: { run_id: string; question: string; case_role: DetectionCaseRole }): Promise<{ evaluation: DetectionRunEvaluation }> {
+  async evaluateDetectionRun(candidateId: string, body: { run_id: string; question: string; case_role: DetectionCaseRole; activity_label?: "attack" | "benign" | "unknown"; evaluation_use?: "development" | "independent" | "unspecified" }): Promise<{ evaluation: DetectionRunEvaluation }> {
     if (DEMO_MODE) throw new ApiError("Demo mode cannot retain immutable detector evaluations.", "demo_detection_evaluation_refused", undefined, 409);
     return request(`/detections/${encodeURIComponent(candidateId)}/evaluate-run`, { method: "POST", body: JSON.stringify(body) });
   },
