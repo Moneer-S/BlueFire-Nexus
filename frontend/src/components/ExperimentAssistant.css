@@ -78,3 +78,19 @@
 .assistant-work-switcher .field { width: 100%; margin-top: 6px; min-width: 0; }
 .assistant-work-switcher select { width: 100%; min-width: 0; }
 .assistant-viewed-context { color: var(--muted-strong); font-size: .72rem; }
+
+/* Keep the selected step and its next action compact on laptop side panels. */
+.assistant-graph-composer .assistant-context { gap: 4px; padding-bottom: 12px; }
+.assistant-graph-composer .assistant-context > strong { font-size: .93rem; line-height: 1.35; }
+.assistant-graph-composer .assistant-context > p { margin: 3px 0; }
+.assistant-source-details { min-width: 0; color: var(--muted-strong); font-size: .76rem; }
+.assistant-source-details > summary { cursor: pointer; padding: 5px 0; color: var(--text); }
+.assistant-source-details > summary:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; border-radius: 3px; }
+.assistant-source-details p { overflow-wrap: anywhere; }
+.assistant-graph-composer .assistant-composer { margin-top: 12px; padding-top: 0; border-top: 0; }
+.assistant-graph-composer .assistant-composer form { margin-top: 10px; gap: 10px; }
+.assistant-graph-composer .assistant-composer textarea { min-height: 82px; }
+.assistant-graph-composer .assistant-composer > p { margin-block: 6px 8px; }
+.assistant-graph-composer .assistant-send-row { gap: 10px; }
+.assistant-graph-composer .assistant-send-row > p { margin: 0; font-size: .74rem; }
+.assistant-graph-composer .assistant-details { margin-top: 14px; }
