@@ -27,7 +27,7 @@ describe("canonical run records", () => {
     expect(screen.getByText("runner-observer.v1")).toBeVisible();
     expect(screen.getAllByText("endpoint.discovery.system.v1").length).toBeGreaterThan(0);
     expect(screen.getByText("endpoint.discovery.system.execute.v1")).toBeVisible();
-    expect(screen.getByText("Confidence 93%")).toBeVisible();
+    expect(screen.getByText(/Reported confidence: 93%/)).toBeVisible();
     expect(screen.getByText("Host clock skew was not independently measured.")).toBeVisible();
     expect(screen.getByLabelText("Evidence content evidence-canonical-test")).toHaveTextContent('"observed_value": 7');
   });

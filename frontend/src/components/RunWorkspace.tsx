@@ -1,3 +1,4 @@
+import { EvidenceRecords } from "./EvidenceRecords";
 import { RunnerInventoryRecovery } from "./ExecuteRunnerReadiness";
 import { RunNameControl, CopyRunId } from "../components/RunNameControl";
 import { assistanceRunLink } from "../lib/run-assistance";
@@ -582,7 +583,7 @@ function RunnerDetail({ run }: { run: RunRecord | null }) {
 
 export function EvidenceDetail({ run }: { run: RunRecord | null }) {
   const records = run?.evidence?.records ?? []; if (!records.length) return <div className="console-empty compact"><FileSearch/><span>No evidence records are available.</span></div>;
-  return <div className="record-grid">{records.map((record, index) => { const content = record.content ?? record.fields; const contentSummary = content && typeof content.summary === "string" ? content.summary : undefined; return <article key={record.evidence_id ?? record.id ?? index}><header><Badge tone={record.provenance === "observed" ? "success" : record.provenance === "control_blocked" ? "warning" : record.provenance === "counterfactual" ? "violet" : "info"}>{sentence(record.provenance)}</Badge><code>{record.step_id ?? "unattributed"}</code></header><strong>{record.kind ?? record.behavior_id ?? "Evidence record"}</strong><p>{record.summary ?? contentSummary ?? "Canonical structured evidence content."}</p><div className="evidence-meta"><span>Producer <code>{record.producer ?? "Not reported"}</code></span><span>Behavior <code>{record.behavior_id ?? "Not reported"}</code></span><span>Action <code>{record.action_id ?? "None"}</code></span><span>Confidence {typeof record.confidence === "number" ? `${Math.round(record.confidence * 100)}%` : "Not reported"}</span></div>{content ? <details><summary>Show technical evidence content</summary><pre aria-label={`Evidence content ${record.evidence_id ?? record.id ?? index + 1}`}>{JSON.stringify(content, null, 2)}</pre></details> : null}{record.limitations?.length ? <div className="evidence-limitations"><strong>Limitations</strong><ul>{record.limitations.map((item) => <li key={item}>{item}</li>)}</ul></div> : null}</article>; })}</div>;
+  return <EvidenceRecords records={records} />;
 }
 
 export function DetectionDetail({ run }: { run: RunRecord | null }) {
