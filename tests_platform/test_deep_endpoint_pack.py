@@ -160,7 +160,10 @@ def test_peer_catalog_keeps_remote_compromise_out_of_the_executable_contract() -
     assert behavior.execution_state.value == "action"
     assert behavior.safety_tier is SafetyTier.CONTROLLED
     assert behavior.parameters[0].name == "port"
-    assert any("authenticated same-host transfer between disposable lab roles" in item for item in behavior.limitations)
+    assert any(
+        "authenticated same-host transfer between disposable lab roles" in item
+        for item in behavior.limitations
+    )
     assert any("never compromises" in item for item in behavior.limitations)
 
 

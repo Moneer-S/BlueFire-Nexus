@@ -795,7 +795,14 @@ class CollectionSemanticsCollector(FilesystemCollector):
         name="Sandbox collection semantics observer",
         version="1.0.0",
         kind="collection_semantics",
-        capabilities=("file_metadata", "sha256", "synthetic_record_counts", "jsonl", "ustar", "gzip"),
+        capabilities=(
+            "file_metadata",
+            "sha256",
+            "synthetic_record_counts",
+            "jsonl",
+            "ustar",
+            "gzip",
+        ),
         independent_observation=True,
     )
     _observation_kind = "collection_semantics"

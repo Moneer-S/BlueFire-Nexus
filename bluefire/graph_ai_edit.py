@@ -24,7 +24,7 @@ from .registry import BehaviorRegistry
 from .util import canonical_json_bytes
 
 PURPOSE = "bluefire_graph_step_edit"
-OUTPUT_SCHEMA = {
+OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "required": ["parameters", "rationale", "assumptions"],

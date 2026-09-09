@@ -114,7 +114,7 @@ def test_execute_approval_is_ephemeral_and_operator_bound() -> None:
     local_review = (SOURCE_ROOT / "components" / "RunConfiguration.tsx").read_text(encoding="utf-8")
     assert "<LocalExecuteReview" not in runs
     assert "hasExecutePlanReview(preflight)" in runs
-    assert 'config.scopeRefs.includes(reference)' in local_review
+    assert "config.scopeRefs.includes(reference)" in local_review
     assert "Operator identity" in runs
 
 
@@ -152,7 +152,9 @@ def test_management_ui_uses_durable_secret_safe_routes() -> None:
         assert route in api
     assert "api.saveScenarioVersion(submitted)" in builder
     assert 'api.saveSetting("ui.preferences"' in settings
-    assert "buildUiPreferenceDocument(theme, newRunDefaults.mode, newRunDefaults.autonomy)" in settings
+    assert (
+        "buildUiPreferenceDocument(theme, newRunDefaults.mode, newRunDefaults.autonomy)" in settings
+    )
     assert "setNewRunDefaults" in settings
     assert "parseUiPreferenceDocument" in settings
     assert "No authority fields were accepted" in settings
