@@ -15,8 +15,8 @@ const maxCharacters = 1_048_576;
 export function hasReplayExtent(prepared: ReplayPreparation | undefined): boolean {
   if (!prepared) return false;
   const step = prepared.replay_request?.from_step_id;
-  if (step == null) return prepared.replay_extent === "full" && (prepared.binding?.replay_extent == null || prepared.binding.replay_extent === "full") && prepared.lineage?.from_step_id == null;
-  if (typeof step !== "string" || !step || prepared.replay_extent !== "from_step" || prepared.binding?.replay_extent !== "from_step" || prepared.lineage?.from_step_id !== step) return false;
+  if (step == null) return prepared.replay_extent === "full" && (prepared.binding?.replay_extent == null || prepared.binding.replay_extent === "full") && prepared.lineage?.from_step_id == null && prepared.binding?.replay_request?.from_step_id == null;
+  if (typeof step !== "string" || !step || prepared.replay_extent !== "from_step" || prepared.binding?.replay_extent !== "from_step" || prepared.lineage?.from_step_id !== step || prepared.binding?.replay_request?.from_step_id !== step) return false;
   if (prepared.preflight?.plan?.mode !== "execute") return prepared.preflight?.plan?.mode === "simulate";
   const resolution = prepared.binding.resolution as { restoration_plan?: Record<string, unknown> } | undefined;
   const restoration = resolution?.restoration_plan;

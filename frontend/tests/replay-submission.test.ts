@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { api, replaySubmittedRequest, type ReplayPreparation, type ReplaySubmissionResolution } from "../src/lib/api";
 import { demoScenario } from "../src/lib/demo";
-import { clearPendingReplay, readPendingReplay, settlePendingReplay, settleReplayResolution, storePendingReplay } from "../src/lib/replay-submission";
+import { hasReplayExtent, clearPendingReplay, readPendingReplay, settlePendingReplay, settleReplayResolution, storePendingReplay } from "../src/lib/replay-submission";
 import type { RunJob } from "../src/types";
 
 const key = "bluefire.replay.pending-submission.v1";
@@ -152,4 +152,13 @@ it.each([undefined, null])("keeps existing full replay receipts when from_step_i
   Object.assign(original.payload, from_step_id === undefined ? {} : { from_step_id });
   expect(storePendingReplay(original)).toBe(true);
   expect(readPendingReplay()).toEqual(original);
+});
+
+
+it("refuses a full replay receipt whose bound request still names a restart step", () => {
+  const original = receipt();
+  original.preparation.binding.replay_request = { ...original.payload, from_step_id: "inspect" };
+  expect(hasReplayExtent(original.preparation)).toBe(false);
+  sessionStorage.setItem(key, JSON.stringify(original));
+  expect(readPendingReplay()).toBeUndefined();
 });

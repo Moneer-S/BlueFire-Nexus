@@ -238,7 +238,7 @@ it.each(["404", "job", "source", "request", "preparation", "context"])("retains 
 });
 
 
-it.each([false, true])("restores checkpoint review at approval and blocks mismatched restoration: %s", async (mismatch) => {
+it.each(["none", "restoration", "missing-preparation", "missing-step", "changed-step", "prepared-full", "source", "binding-step"])("restores checkpoint review at approval and blocks mismatch: %s", async (mismatch) => {
   const job = replayJob();
   const prepared = structuredClone(preparation);
   const checkpointRequest = { from_step_id: "inspect" };
@@ -247,14 +247,22 @@ it.each([false, true])("restores checkpoint review at approval and blocks mismat
     binding: { source: { run_id: sourceId }, replay_extent: "from_step", replay_request: checkpointRequest,
       resolution: { restoration_plan: { source_run_id: sourceId, checkpoint_before_step_id: "inspect", checkpoint_id: "checkpoint-saved", plan_hash: "sha256:saved" } } },
   });
-  if (mismatch) prepared.lineage.restoration_plan_hash = "sha256:changed";
-  job.request = { ...job.request, replay_request: checkpointRequest, replay_preparation: prepared };
+  if (mismatch === "restoration") prepared.lineage.restoration_plan_hash = "sha256:changed";
+  if (mismatch === "missing-step") prepared.replay_request = {};
+  if (mismatch === "changed-step") prepared.replay_request = { from_step_id: "different" };
+  if (mismatch === "binding-step") prepared.binding.replay_request = { from_step_id: "different" };
+  if (mismatch === "source") prepared.binding.source.run_id = "different-source";
+  if (mismatch === "prepared-full") {
+    prepared.replay_extent = "full"; prepared.replay_request = {}; prepared.binding.replay_extent = "full";
+    prepared.binding.replay_request = {}; prepared.lineage = {};
+  }
+  job.request = { ...job.request, replay_request: checkpointRequest, replay_preparation: mismatch === "missing-preparation" ? undefined : prepared };
   inventory([job]);
   vi.spyOn(api, "job").mockResolvedValue(job);
   const approve = vi.spyOn(api, "approveJob");
   const user = userEvent.setup();
   const view = mount();
-  if (mismatch) {
+  if (mismatch !== "none") {
     await screen.findByText("Checkpoint review unavailable");
     expect(screen.getByRole("checkbox", { name: /I approve this exact/ })).toBeDisabled();
     expect(approve).not.toHaveBeenCalled();
