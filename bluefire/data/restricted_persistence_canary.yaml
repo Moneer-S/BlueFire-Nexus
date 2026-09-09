@@ -1,7 +1,7 @@
 schema_version: bluefire.scenario.v1
 id: scenario.restricted.persistence-canary.v1
-title: Restricted Persistence Detection Canary
-purpose: Exercise restricted-tier approval, runner receipts, independent observation, and cleanup by writing one fixed non-executable marker inside the bound sandbox workspace.
+title: Test restricted approval and cleanup
+purpose: Create and remove a non-executable marker to check approval enforcement and file observations.
 start: create_persistence_canary
 steps:
   - id: create_persistence_canary
@@ -31,7 +31,7 @@ provenance:
   reference: scenario.restricted.persistence-canary.v1
   license: MIT
   derived: false
-  notes: Original safe canary design; ATT&CK T1547 supplies only detection-research terminology.
+  notes: Original approval and cleanup test; no operating-system persistence or ATT&CK T1547 coverage.
 limitations:
   - The canary never changes startup configuration, services, scheduled tasks, login items, registry state, or any other host persistence mechanism.
   - Execute is available only through the restricted runner profile, exact one-time approval, fixed workspace-relative path, durable receipt protocol, and mandatory cleanup.

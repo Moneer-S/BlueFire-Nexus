@@ -1,7 +1,7 @@
 schema_version: bluefire.scenario.v1
 id: scenario.linux-container.validation.v1
-title: Linux Container Telemetry Chain
-purpose: Validate a disposable Linux or container runner by creating a harmless fixture, observing bounded system and process facts, discovering and archiving runner-owned files, exercising an internal transport with an approved fallback, and cleaning every receipt.
+title: Inspect a Linux lab runner
+purpose: Inspect system and process facts, archive workspace samples and test a local transfer before cleanup.
 start: create_fixture
 steps:
   - id: create_fixture

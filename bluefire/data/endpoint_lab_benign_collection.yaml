@@ -1,7 +1,7 @@
 schema_version: bluefire.scenario.v1
 id: scenario.endpoint.lab-benign-collection.v1
-title: Endpoint Lab — Redacted Benign Collection
-purpose: Determine whether a detector identifies retained public lab values through either bounded collection method while avoiding redacted benign staging, using independent observations of the resulting bytes.
+title: Collect redacted samples
+purpose: Collect redacted sample records to check for unwanted detector matches.
 start: create_fixture
 steps:
   - id: create_fixture
@@ -60,7 +60,7 @@ limitations:
   - All material is generated public lab data inside the runner-owned sandbox; no personal file or credential is selected.
   - Record collection validates and canonicalizes the transformed JSONL; whole-file collection preserves that same file inside one uncompressed ustar member. The output type and experiment objective are identical.
   - This declared benign case performs genuine bounded discovery, transformation, and staging with redacted values; the label alone cannot determine a detector result.
-  - Enable collector.collection-semantics.sandbox.v1 explicitly after stage_collection for its exact output path; missing or malformed observations leave the observed objective incomplete.
+  - Enable Collection contents in Run review; the product selects the collection paths and observation schedule. Missing observations leave the objective incomplete.
   - The primary output is staged/collection/bundle.jsonl or staged/collection/bundle.tar. The heldout parameter selects staged/variation with the same respective filename.
   - System and process discovery and public canary inspection produce executed evidence; the semantic collector proves only the independently read staged bytes and bounded parsed counts.
   - Evaluate immutable detector revisions separately against the full observed run, meaningful benign activity, a real replay, and a held-out variation; successful action completion does not claim a detector fired.

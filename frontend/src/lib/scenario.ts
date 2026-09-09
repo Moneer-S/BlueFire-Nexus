@@ -41,7 +41,12 @@ function isParameterValue(value: unknown) {
 
 export function parseScenarioDocument(value: unknown): Scenario {
   if (!isRecord(value)) throw new Error("The document is not a BlueFire scenario object.");
-  for (const field of ["schema_version", "id", "title", "purpose", "start"]) requireString(value, field, "document");
+  for (const field of ["schema_version", "id", "title"]) requireString(value, field, "document");
+  // Draft restoration checks structure, not readiness to save or execute. A user
+  // can add steps before writing a purpose without losing that work on reload.
+  if (typeof value.purpose !== "string") throw new Error("Scenario document.purpose must be a string.");
+  const emptyDraft = Array.isArray(value.steps) && value.steps.length === 0 && Array.isArray(value.edges) && value.edges.length === 0;
+  if (!emptyDraft || typeof value.start !== "string") requireString(value, "start", "document");
   if (!Array.isArray(value.steps)) throw new Error("Scenario document.steps must be an array.");
   const steps = value.steps.map((candidate, index) => {
     const path = `document.steps[${index}]`;

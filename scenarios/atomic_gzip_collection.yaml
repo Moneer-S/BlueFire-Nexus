@@ -1,7 +1,7 @@
 schema_version: bluefire.scenario.v1
 id: scenario.atomic.gzip-collection.v1
-title: Atomic gzip collection comparison
-purpose: Test whether a detector identifies retained synthetic values in independently observed collected bytes, including compressed output, without flagging redacted benign staging.
+title: Compare collection with gzip
+purpose: Compare detection of retained and redacted sample values in compressed collection output.
 start: create_fixture
 steps:
   - id: create_fixture

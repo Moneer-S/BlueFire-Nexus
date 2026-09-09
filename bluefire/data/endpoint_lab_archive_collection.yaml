@@ -1,7 +1,7 @@
 schema_version: bluefire.scenario.v1
 id: scenario.endpoint.lab-archive-collection.v1
-title: Endpoint Lab — Whole-file Archive Collection
-purpose: Produce independently observed staging artifacts for comparing collection of the same public synthetic workspace through selected validated records or whole-file archiving, with bounded discovery, controlled material access, and verified cleanup.
+title: Archive sample files
+purpose: Compare observed collection of selected sample records and whole sample files.
 start: create_fixture
 steps:
   - id: create_fixture

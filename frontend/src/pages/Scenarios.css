@@ -29,3 +29,9 @@
 .experiments-dialog pre { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .8125rem; }
 @media (max-width: 900px) { .experiment-row { grid-template-columns: 1fr; gap: 12px; } .experiment-actions { justify-content: start; } }
 @media (max-width: 600px) { .experiments-search { grid-template-columns: 1fr; gap: 6px; } .experiments-search > span { text-align: left; } .experiments-page .experiment-summary dl > div, .experiments-dialog dl > div { grid-template-columns: 1fr; gap: 2px; } .experiments-unavailable { flex-direction: column; } }
+
+.experiment-identity { border-bottom: 1px solid var(--line); }
+.experiment-identity .experiment-row { border-bottom: 0; }
+.experiment-version-label { margin: 14px 0 -10px; color: var(--muted); font-size: .8125rem; }
+.experiment-history { margin: 0 0 16px; padding-inline-start: 16px; border-inline-start: 1px solid var(--line); }
+.experiment-history > summary { cursor: pointer; font-size: .875rem; color: var(--muted-strong); }

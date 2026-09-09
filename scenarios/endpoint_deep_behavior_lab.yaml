@@ -1,7 +1,7 @@
 schema_version: bluefire.scenario.v1
 id: scenario.endpoint.deep-behavior-lab.v1
-title: Endpoint Deep Behavior Disposable Lab
-purpose: Execute the reviewed endpoint phases for native computation, system and process discovery, a restricted persistence-detection canary, collection and staging, reversible telemetry shaping, one-task credential proof, authorized peer movement, and receipt-bound cleanup.
+title: Inspect, collect and transfer in the lab
+purpose: Inspect the runner, collect samples, test restricted approval and send a bundle to the authenticated local receiver.
 start: run_native_canary
 steps:
   - id: run_native_canary
@@ -108,7 +108,7 @@ provenance:
   notes: Uses only compiled reviewed actions, fixed runner-owned artifacts, a managed one-task HMAC capability, and distinct one-shot processes on literal loopback.
 
 limitations:
-  - The persistence phase is a fixed non-executable detection canary inside the runner-owned workspace; it never changes startup configuration, services, scheduled tasks, login items, registry state, or another host mechanism.
+  - The approval test writes a fixed non-executable marker inside the runner-owned workspace; it never changes startup configuration, services, scheduled tasks, login items, registry state, or another host mechanism.
   - Credential research is limited to proving one high-entropy capability derived for the approved task and ephemeral receiver; the runner never reads user, host, browser, cloud, or adjacent credentials.
   - Peer movement is limited to a separately managed disposable receiver on literal 127.0.0.1 and does not compromise or authorize another host.
   - The observability variant is transparent and reversible telemetry shaping for side-by-side defensive observation; it is not a bypass or control-impairment mechanism.

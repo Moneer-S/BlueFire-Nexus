@@ -1,7 +1,7 @@
 schema_version: bluefire.scenario.v1
 id: scenario.endpoint.lab-selective-collection.v1
-title: Endpoint Lab — Selected Record Collection
-purpose: Produce independently observed staging artifacts for comparing collection of the same public synthetic workspace through selected validated records or whole-file archiving, with bounded discovery, controlled material access, and verified cleanup.
+title: Collect selected sample records
+purpose: Compare observed collection of selected sample records and whole sample files.
 start: create_fixture
 steps:
   - id: create_fixture

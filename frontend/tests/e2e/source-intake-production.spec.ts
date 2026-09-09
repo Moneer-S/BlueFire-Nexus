@@ -181,6 +181,7 @@ test("production UI exposes pinned intake provenance and its active behavior", a
   completedOperations.push("expand_intake_review");
   monitoring.assertClean();
 
+  await page.getByText("Advanced · Reviewed package intake", { exact: true }).click();
   await page.getByLabel("Reviewed intake destination ID").fill(INTAKE_DESTINATION_ID);
   await page.getByLabel("Reviewed intake runner profile").selectOption(profileId);
   await page.getByLabel("Reviewed intake operator ID").fill(INTAKE_OPERATOR_ID);
@@ -202,18 +203,19 @@ test("production UI exposes pinned intake provenance and its active behavior", a
   monitoring.assertClean();
 
   await navigation.getByRole("link", { name: "Behaviors" }).click();
-  await expect(page.getByRole("heading", { name: "Neutral, typed behavior contracts", level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Methods", level: 1 })).toBeVisible();
   completedOperations.push("open_behaviors");
   await page.getByLabel("Search behaviors").fill(BEHAVIOR_ID);
-  const behaviorRow = page.getByRole("listitem").filter({ hasText: BEHAVIOR_ID }).first();
+  const behaviorRow = page.getByRole("listitem").first();
   await expect(behaviorRow).toBeVisible();
   await behaviorRow.click();
   const detail = page.locator(".detail-panel");
+  await detail.getByText("Identifiers and ATT&CK mapping", { exact: true }).click();
   await expect(dataValue(detail, "Behavior ID")).toHaveText(BEHAVIOR_ID);
   await expect(dataValue(detail, "Techniques")).toHaveText("T1082");
   await expect(dataValue(detail, "Actions")).toHaveText(ACTION_ID);
   await expect(detail.locator(".panel-header")).toContainText("System Information Discovery");
-  await expect(behaviorRow).toContainText("Action");
+  await expect(behaviorRow).toContainText("Executable method");
   completedOperations.push("verify_imported_behavior");
   const provenanceReference = `urn:bluefire:source-intake:${INTAKE_ID}:sha256:${expectedRecordSha256.slice("sha256:".length)}`;
   await expect(dataValue(detail, "Source")).toHaveText("Reviewed MITRE ATT&CK® v19.2 T1082 intake");
@@ -224,9 +226,9 @@ test("production UI exposes pinned intake provenance and its active behavior", a
   monitoring.assertClean();
 
   await page.reload({ waitUntil: "domcontentloaded" });
-  await expect(page.getByRole("heading", { name: "Neutral, typed behavior contracts", level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Methods", level: 1 })).toBeVisible();
   await page.getByLabel("Search behaviors").fill(BEHAVIOR_ID);
-  await expect(page.getByRole("listitem").filter({ hasText: BEHAVIOR_ID }).first()).toBeVisible();
+  await expect(page.getByRole("listitem").first()).toBeVisible();
   await navigation.getByRole("link", { name: "Research Sources" }).click();
   const persistedSource = page.locator(".source-card").filter({ hasText: SOURCE_PROJECT }).first();
   await expect(dataValue(persistedSource, "Immutable pin").locator("code")).toHaveAttribute("title", SOURCE_PIN);

@@ -47,7 +47,7 @@ test("all major workspaces are reachable", async ({ page }) => {
     ["Build", demoScenario.title],
     ["Runs", "Runs"],
     ["Compare", "Compare runs"],
-    ["Behaviors", "Neutral, typed behavior contracts"],
+    ["Behaviors", "Methods"],
     ["Detection Lab", "Detection Lab"],
     ["Runner Profiles", "Runner profiles"],
     ["Runners", "Runners"],

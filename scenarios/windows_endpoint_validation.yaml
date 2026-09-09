@@ -1,7 +1,7 @@
 schema_version: bluefire.scenario.v1
 id: scenario.windows.endpoint.validation.v1
-title: Windows Endpoint Safe Validation
-purpose: Validate the Windows runner action architecture with fixed, harmless system and process discovery plus runner-owned filesystem discovery, deterministic staging, independent observation hints, and complete cleanup.
+title: Inspect a Windows lab runner
+purpose: Inspect system and process facts, discover sample files and collect them before cleanup.
 start: create_fixture
 steps:
   - id: create_fixture

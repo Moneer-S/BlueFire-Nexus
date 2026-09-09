@@ -227,3 +227,43 @@ it("does not replace a newer replacement dialog with a delayed file result", asy
   expect(screen.getByRole("button", { name: "Replace draft and duplicate" })).toBeVisible();
   expect(documentNow()).toEqual(draft);
 });
+
+it("groups saved revisions under one identity and opens the exact linked historical version", async () => {
+  const older = { ...saved, title: "Earlier collection design" };
+  const versions = Promise.resolve({ schema_version: "bluefire.scenario-version-list.v1", scenarios: [{ ...version(older), version: 2 }, version()] });
+  const { draft } = setup({ versions, url: `/scenarios?selected=${saved.id}&version=2` });
+  const oldRow = await screen.findByRole("article", { name: "Earlier collection design - Saved v2" });
+  await waitFor(() => expect(oldRow).toHaveFocus());
+  expect(oldRow).toBeVisible();
+  expect(oldRow).toHaveAttribute("aria-current", "true");
+  expect(screen.getByText("3 experiments")).toBeVisible();
+  expect(screen.getByText("Latest saved · v3")).toBeVisible();
+  expect(within(oldRow).getByRole("link", { name: "Link to v2" })).toHaveAttribute("href", `/scenarios?selected=${saved.id}&version=2`);
+  expect(documentNow()).toEqual(draft);
+  const user = userEvent.setup();
+  await user.click(within(oldRow).getByRole("button", { name: "Open" }));
+  expect(screen.getByRole("dialog")).toHaveTextContent("Earlier collection design");
+  expect(documentNow()).toEqual(draft);
+});
+
+it("does not label a filtered older revision latest or count it separately", async () => {
+  const older = { ...saved, title: "Older only search" };
+  setup({ versions: Promise.resolve({ schema_version: "v1", scenarios: [{ ...version(older), version: 2 }, version()] }), url: "/scenarios?q=Older+only" });
+  expect(await savedRow()).toBeVisible();
+  expect(screen.getByText("1 experiment")).toBeVisible();
+  expect(screen.getByText("Latest saved · v3")).toBeVisible();
+});
+
+it("retains an honest empty draft through browser restoration", async () => {
+  const empty = { ...saved, purpose: "", start: "", steps: [], edges: [], limitations: [] };
+  setup({ draft: empty }); await savedRow();
+  expect(documentNow()).toEqual(empty);
+  expect(screen.getByRole("button", { name: "Add first step" })).toBeVisible();
+  expect(screen.queryByText(/Validate observable outcomes for/)).not.toBeInTheDocument();
+});
+
+it("restores added steps while the operator has not yet written a purpose", async () => {
+  const drafting = { ...saved, purpose: "" };
+  setup({ draft: drafting }); await savedRow();
+  expect(documentNow()).toEqual(drafting);
+});

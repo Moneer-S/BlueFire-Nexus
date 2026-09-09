@@ -354,9 +354,10 @@ test("production operator UI completes authoring, management, run, replay, and c
   await expect(page.getByRole("heading", { name: "Runner profiles", level: 1 })).toBeVisible();
   await page.getByRole("button", { name: "New profile" }).click();
   await page.getByLabel("Profile ID").fill(PROFILE_ID);
-  await page.getByLabel("Mode").selectOption("execute");
+  await page.getByLabel("Configuration template").selectOption("sandbox-execute.v1");
+  await page.getByLabel("Platform", { exact: true }).selectOption("windows");
   const profileResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith(`/resources/runner-profiles/${PROFILE_ID}`) && response.request().method() === "POST");
-  await page.getByRole("button", { name: "Save durable draft" }).click();
+  await page.getByRole("button", { name: "Save profile draft" }).click();
   expect((await profileResponse).ok()).toBe(true);
   await expect(page.getByText(`${PROFILE_ID} saved as a durable draft.`)).toBeVisible();
   completed.push("manage_runner_profile");

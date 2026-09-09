@@ -1,7 +1,7 @@
 schema_version: bluefire.scenario.v1
 id: scenario.operator.representative-validation.v1
-title: Representative Operator Validation Loop
-purpose: Exercise five narrow representative actions alongside the canonical fixture pipeline, credential-bound movement between authorized disposable lab peers, and receipt-bound cleanup.
+title: Inspect and transfer lab samples
+purpose: Inspect the runner and public samples, then test an authenticated local transfer and cleanup.
 start: run_native_canary
 steps:
   - id: run_native_canary

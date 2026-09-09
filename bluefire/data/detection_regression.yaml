@@ -1,7 +1,7 @@
 schema_version: bluefire.scenario.v1
 id: scenario.detection.regression.v1
-title: Detection Regression Replay
-purpose: Produce a stable synthetic telemetry baseline, record an intentional loopback control outcome, replay after a declared detection or policy change, and compare evidence, field coverage, and candidate lifecycle without changing executable content.
+title: Retest a lab receiver control
+purpose: Record the lab receiver response, repeat after a declared control change and compare the observations.
 start: create_fixture
 steps:
   - id: create_fixture

@@ -1,7 +1,7 @@
 schema_version: bluefire.scenario.v1
 id: scenario.ai-adaptive.safe-chain.v1
-title: Containment-Aware Evidence Collection
-purpose: Given a disposable endpoint fixture, collect enough bounded system, process, and file evidence to validate detections; prefer approved internal transport, automatically choose the registered local-preservation path when policy blocks transport, and leave no runner-owned residue.
+title: Collect samples with a local fallback
+purpose: Collect sample records, try the lab receiver and use a temporary local copy if the transfer is blocked.
 start: create_fixture
 steps:
   - id: create_fixture
@@ -129,5 +129,5 @@ provenance:
   notes: Natural-language objective and graph are sanitized BlueFire content; AI providers may only propose registered graph objects and never executable commands.
 limitations:
   - Autonomy off ignores model proposals; assist requires operator review; auto still passes every proposal through schema, registry, profile, scope, and policy validation.
-  - The deterministic provider is used whenever the configured model provider is unavailable or returns invalid output.
+  - Model assistance is optional and requires a configured provider; an offline result is not live model evidence.
   - Simulation and counterfactual evidence are never relabeled as observed execution.

@@ -2,8 +2,8 @@ schema_version: bluefire.behavior-catalog.v1
 items:
   - schema_version: bluefire.behavior.v1
     id: sandbox.fixture.create.v1
-    title: Create deterministic fixture
-    purpose: Prepare 1..100 exact deterministic JSONL records at the fixed runner-owned fixtures/input.jsonl path.
+    title: Create sample records
+    purpose: Create 1 to 100 synthetic JSONL records in the experiment workspace.
     execution_state: action
     safety_tier: safe
     platforms: [windows, linux, macos]
@@ -35,8 +35,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.fixture.transform.v1
-    title: Transform deterministic fixture
-    purpose: Validate and canonicalize the exact synthetic fixture schema, optionally replacing every value with the public synthetic-redacted placeholder.
+    title: Prepare sample records
+    purpose: Validate the sample records and optionally redact their values before collection.
     execution_state: action
     safety_tier: safe
     platforms: [windows, linux, macos]
@@ -62,8 +62,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.discovery.list.v1
-    title: List exact fixture artifact
-    purpose: Verify and describe the exact typed sandbox fixture without enumerating siblings or contents.
+    title: Inspect sample file
+    purpose: Describe the selected sample file without reading its contents or listing neighboring files.
     execution_state: action
     safety_tier: safe
     platforms: [windows, linux, macos]
@@ -86,8 +86,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.discovery.metadata.v1
-    title: Inspect exact fixture metadata
-    purpose: Produce the same exact-file discovery record through a compatible metadata-oriented strategy.
+    title: Inspect sample file metadata
+    purpose: Read the selected sample file metadata for collection.
     execution_state: action
     safety_tier: safe
     platforms: [windows, linux, macos]
@@ -110,8 +110,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: endpoint.discovery.system.v1
-    title: Discover bounded system identity
-    purpose: Observe operating-system and architecture facts through compiled cross-platform APIs.
+    title: Inspect operating system
+    purpose: Report the runner operating system and processor architecture.
     execution_state: action
     safety_tier: safe
     platforms: [windows, linux, macos]
@@ -136,8 +136,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: endpoint.discovery.processes.v1
-    title: Discover bounded process identities
-    purpose: Observe a bounded list of process IDs and names through a fixed platform adapter.
+    title: List running processes
+    purpose: Return process IDs and names from the runner, up to the selected record limit.
     execution_state: action
     safety_tier: safe
     platforms: [windows, linux, macos]
@@ -163,8 +163,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.discovery.recursive.v1
-    title: Recursively discover sandbox files
-    purpose: Enumerate files and directories only below a bound runner-owned workspace.
+    title: List sample files
+    purpose: List files and directories in the experiment workspace within the selected depth and record limits.
     execution_state: action
     safety_tier: safe
     platforms: [windows, linux, macos]
@@ -199,12 +199,13 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.archive.tar.v1
-    title: Create deterministic sandbox archive
-    purpose: Stage selected runner-owned files into a bounded deterministic ustar archive.
+    title: Archive sample files — native TAR
+    purpose: Write selected workspace files to an uncompressed TAR archive using the built-in runner.
     execution_state: action
     safety_tier: controlled
     platforms: [windows, linux, macos]
-    techniques: [T1560.001]
+    # Native archive creation uses no external utility; T1560.001 is reserved for gzip.
+    techniques: [T1560]
     capabilities: [sandbox.archive, filesystem.read, filesystem.write]
     inputs:
       - name: records
@@ -223,8 +224,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.collection.stage.v1
-    title: Stage selected fixture records
-    purpose: Validate exactly one typed discovery record and create one deterministic JSON or JSONL bundle, failing before any write on input error.
+    title: Stage sample records — JSON or JSONL
+    purpose: Write the selected sample records to a JSON or JSONL bundle in the experiment workspace.
     execution_state: action
     safety_tier: controlled
     platforms: [windows, linux, macos]
@@ -252,8 +253,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.collection.records.v1
-    title: Canonical record collection
-    purpose: Validate and canonicalize the exact bound transformed fixture into a staged JSONL collection.
+    title: Collect selected records — native JSONL
+    purpose: Validate the selected transformed sample records and write them as a JSONL collection.
     execution_state: action
     safety_tier: controlled
     capabilities: [sandbox.collection, filesystem.read, filesystem.write]
@@ -281,8 +282,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.collection.archive.v1
-    title: Whole-file collection
-    purpose: Preserve the identical bound transformed fixture as one deterministic uncompressed ustar member.
+    title: Archive selected records — native TAR
+    purpose: Preserve the selected transformed sample file inside one uncompressed TAR archive.
     execution_state: action
     safety_tier: controlled
     capabilities: [sandbox.archive, filesystem.read, filesystem.write]
@@ -310,8 +311,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.collection.atomic-gzip.v1
-    title: Atomic gzip collection
-    purpose: Compress the digest-bound synthetic fixture through one fixed Linux system gzip adapter adapted from Atomic Red Team.
+    title: Compress selected records — Atomic gzip
+    purpose: Compress the selected sample file with the installed Linux gzip utility using the reviewed Atomic Red Team adaptation.
     execution_state: action
     safety_tier: controlled
     capabilities: [sandbox.archive, filesystem.read, filesystem.write, process.spawn]
@@ -344,12 +345,12 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.network.loopback.v1
-    title: Exercise loopback transport
-    purpose: Send a synthetic bundle only to a runner-enforced loopback sink.
+    title: Send to the lab receiver
+    purpose: Send the sample bundle to the local receiver at 127.0.0.1 and report its response.
     execution_state: action
     safety_tier: controlled
     platforms: [windows, linux, macos]
-    techniques: [T1041]
+    techniques: []
     capabilities: [sandbox.network, filesystem.read, network.loopback]
     inputs:
       - name: bundle
@@ -373,8 +374,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.export.local.v1
-    title: Create a temporary policy-labelled local copy
-    purpose: Create a temporary synthetic bundle copy at a fixed runner-owned ephemeral or review path; normal cleanup removes both labels.
+    title: Copy sample bundle locally
+    purpose: Create a temporary copy in the experiment workspace; cleanup removes it after the run.
     execution_state: action
     safety_tier: controlled
     platforms: [windows, linux, macos]
@@ -401,8 +402,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.execution.native-canary.v1
-    title: Run bounded native execution canary
-    purpose: Run a deterministic, bounded in-process numeric canary in compiled Rust without launching a process or producing filesystem or network effects.
+    title: Check native computation
+    purpose: Run a repeatable numeric calculation inside the runner and return its result.
     execution_state: action
     safety_tier: safe
     platforms: [windows, linux, macos]
@@ -429,8 +430,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.execution.process-tree-cancellation-witness.v1
-    title: Witness cooperative and forced process-tree cancellation
-    purpose: Prove that the packaged Rust runner acknowledges a request-bound private cancellation signal and that Windows Job containment removes its fixed descendant tree.
+    title: Test process cancellation
+    purpose: Start the packaged runner test process tree on Windows to verify cooperative and forced cancellation.
     execution_state: action
     safety_tier: safe
     platforms: [windows]
@@ -448,8 +449,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.identity-material.seed.v1
-    title: Seed public identity material canary
-    purpose: Write one fixed public, non-secret canary document at identity-material/public-canary.json inside the runner-owned workspace.
+    title: Create public canary file
+    purpose: Write a fixed public sample document in the experiment workspace for the inspection test.
     execution_state: action
     safety_tier: safe
     platforms: [windows, linux, macos]
@@ -470,8 +471,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.identity-material.inspect.v1
-    title: Inspect public identity material canary
-    purpose: Read only the exact bound public canary and report its digest and bounded field count without returning document contents.
+    title: Inspect public canary file
+    purpose: Read the selected public sample document and report its checksum and field count.
     execution_state: action
     safety_tier: safe
     platforms: [windows, linux, macos]
@@ -494,8 +495,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.credential.peer-challenge.v1
-    title: Exercise an authorized disposable peer credential
-    purpose: Prove possession of one managed one-task HMAC capability to a distinct one-shot authorized receiver process while transferring only the fixed public staged bundle and retaining no raw credential value.
+    title: Test receiver authentication
+    purpose: Prove possession of a one-task capability while sending the sample bundle to the local receiver.
     execution_state: action
     safety_tier: controlled
     platforms: [windows, linux, macos]
@@ -524,8 +525,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.peer.handoff.v1
-    title: Move staged bundle between authorized disposable lab peers
-    purpose: Exercise credential-bound movement between a Rust runner process and a distinct one-shot managed receiver process by authenticating one managed one-task capability and sending exactly one bound staged bundle to literal 127.0.0.1, with no caller-selectable host or path.
+    title: Send to the authenticated lab receiver
+    purpose: Send the sample bundle to a one-shot receiver on 127.0.0.1 using a managed one-task capability.
     execution_state: action
     safety_tier: controlled
     platforms: [windows, linux, macos]
@@ -550,12 +551,12 @@ items:
     telemetry: [sandbox.peer.handoff_attempted]
     detection_hints: [A successful lab handoff must bind the exact artifact, opaque one-task credential handle, distinct runner and receiver process identities, one-shot memory-only lifecycle, and authenticated receiver acknowledgement; a blocked-network profile refusal is never a successful handoff.]
     provenance: *authored
-    limitations: [This is lateral-movement control research only between explicitly authorized same-host disposable lab roles; it never compromises or authorizes a remote host, accepts only a typed staged bundle, and exposes no raw credential value.]
+    limitations: [This tests authenticated same-host transfer between disposable lab roles; it never compromises or authorizes a remote host, accepts only a typed staged bundle, and exposes no raw credential value.]
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.observability.variant.v1
-    title: Create reversible observability variant
-    purpose: Create one reversible canonical or chunked hexadecimal representation of a bound staged bundle at observability/variant.bin for comparison, never for bypass or control impairment.
+    title: Create a sample encoding variation
+    purpose: Copy the sample bundle as original bytes or reversible hexadecimal chunks for comparison.
     execution_state: action
     safety_tier: safe
     platforms: [windows, linux, macos]
@@ -583,8 +584,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.cleanup.v1
-    title: Clean runner-owned workspace
-    purpose: Quarantine, revalidate, and remove receipt-bound temporary artifacts, then emit an authoritative verification report.
+    title: Clean up experiment files
+    purpose: Remove files created by the run and report which removals were verified.
     execution_state: action
     safety_tier: safe
     platforms: [windows, linux, macos]
@@ -611,12 +612,12 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.restricted.persistence-marker.v1
-    title: Validate persistence detection with a restricted sandbox canary
-    purpose: Create one fixed, non-executable marker under the runner-owned restricted directory so operators can exercise restricted-tier approvals, observation, and cleanup without modifying host persistence.
+    title: Test restricted approval and cleanup
+    purpose: Write a non-executable workspace marker to test restricted approval, observation and cleanup.
     execution_state: action
     safety_tier: restricted
     platforms: [windows, linux, macos]
-    techniques: [T1547]
+    techniques: []
     capabilities: [sandbox.restricted, filesystem.write]
     inputs: []
     outputs:
@@ -625,7 +626,7 @@ items:
         description: Opaque runner-owned restricted canary workspace reference.
       - name: marker
         type: artifact.sandbox.restricted-marker.v1
-        description: Fixed-path non-executable marker used only for detection validation.
+        description: Non-executable marker for the approval and cleanup test.
     parameters:
       - name: label
         type: string

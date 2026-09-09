@@ -1,7 +1,7 @@
 schema_version: bluefire.scenario.v1
 id: scenario.sandbox.research.chain.v1
-title: Neutral sandbox research chain
-purpose: Exercise typed planning, an interchangeable discovery step, a blocked-network fallback, and cleanup.
+title: Collect samples and test a transfer
+purpose: Create sample records, collect them and test the lab receiver with a temporary local fallback.
 start: create_fixture
 steps:
   - id: create_fixture
