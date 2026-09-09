@@ -132,10 +132,16 @@ def test_manual_execute_waits_for_its_own_approval_without_effects(setup, tmp_pa
 
 
 @pytest.mark.parametrize("kind", [[], {}])
-def test_malformed_saved_kind_has_a_structured_refusal(setup, kind):
-    service, access, _ = setup
+@pytest.mark.parametrize("endpoint", ["context", "turn"])
+def test_malformed_saved_kind_has_a_structured_refusal(setup, kind, endpoint):
+    service, access, body = setup
     before = list(access.calls)
     with pytest.raises(APIError) as caught:
-        service.assistance_run_context({"selection": {"kind": kind}})
-    assert caught.value.code == "assistance_run_context_invalid"
+        if endpoint == "context":
+            service.assistance_run_context({"selection": {"kind": kind}})
+        else:
+            service.submit_assistance_turn({**body, "selection": {"kind": kind}})
+    assert caught.value.code == (
+        "assistance_run_context_invalid" if endpoint == "context" else "assistance_turn_refused"
+    )
     assert access.calls == before and not service.store.list_runs()

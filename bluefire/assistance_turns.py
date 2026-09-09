@@ -135,7 +135,7 @@ class ExperimentAssistance:
                 context="assistance turn",
             )
             chosen = request["selection"]
-            if not isinstance(chosen, Mapping):
+            if not isinstance(chosen, Mapping) or not isinstance(chosen.get("kind"), str):
                 raise fail("Select a typed graph or detector context.")
             if chosen.get("kind") in {
                 "graph",
