@@ -23,7 +23,11 @@ LIMITATIONS = [
 
 
 def selection(value: Any) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or value.get("kind") not in {"saved_graph", "saved_scenario"}:
+    if (
+        not isinstance(value, Mapping)
+        or not isinstance(value.get("kind"), str)
+        or value["kind"] not in {"saved_graph", "saved_scenario"}
+    ):
         raise ProductStoreError(
             "Select an exact saved experiment and explicit native run settings."
         )

@@ -129,3 +129,13 @@ def test_manual_execute_waits_for_its_own_approval_without_effects(setup, tmp_pa
     service.cancel_job(run["job_id"])
     service.job_controller.wait(run["job_id"], timeout=10)
     assert not service.store.list_runs() and not list(sandbox.iterdir())
+
+
+@pytest.mark.parametrize("kind", [[], {}])
+def test_malformed_saved_kind_has_a_structured_refusal(setup, kind):
+    service, access, _ = setup
+    before = list(access.calls)
+    with pytest.raises(APIError) as caught:
+        service.assistance_run_context({"selection": {"kind": kind}})
+    assert caught.value.code == "assistance_run_context_invalid"
+    assert access.calls == before and not service.store.list_runs()
