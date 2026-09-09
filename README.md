@@ -23,18 +23,10 @@ Start with the [minimal local demo](#minimal-local-demo), then follow the
 
 ## Minimal local demo
 
-Python 3.10 or newer is required. This checkout is an unreleased candidate; the example below
-assumes you already have a reviewed wheel for your platform, not a published download. Replace
-the wheel placeholder with that file and the workspace placeholder with an **absolute directory**
-outside the source checkout and virtual environment. See [Installation](docs/INSTALLATION.md).
-
-```bash
-python -m venv .venv
-# Linux/macOS: source .venv/bin/activate
-# Windows PowerShell: .venv\Scripts\Activate.ps1
-python -m pip install "path/to/the-reviewed-bluefire-nexus-wheel.whl"
-bluefire --runs-dir "path/to/your/bluefire-workspace" ui
-```
+Python 3.10 or newer is required. V3 is an unreleased candidate. First
+[download the matching PR build and install it](docs/INSTALLATION.md#download-the-candidate).
+That guide links the real Windows, Linux and Intel macOS wheel artifacts and gives the exact
+commands for a fresh directory. No source checkout or developer dependencies are needed.
 
 BlueFire attempts to open the browser after the local listener is ready. If it cannot, open the
 complete one-use URL printed in the terminal; it connects to the same running process. Add

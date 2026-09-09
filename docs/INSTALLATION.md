@@ -1,21 +1,50 @@
 # Installation
 
-BlueFire Nexus is a local-first application requiring Python 3.10 or newer. This checkout is an
-unreleased candidate; these instructions do not identify a published release or package-index
-entry. Use a reviewed wheel matching your platform. It contains the Python control plane,
-packaged web UI, canonical data and the platform's manifest-bound native runner.
+BlueFire Nexus requires Python 3.10 or newer. Its platform wheel includes the application,
+web interface, example experiments and native runner. V3 is currently an unreleased PR
+candidate; obtain its wheel from the actual PR build below.
 
-Replace the wheel placeholder below with that file. Replace the workspace placeholder with one
-**absolute directory** outside the source checkout and virtual environment; keep that path for
-future launches and upgrades.
+## Download the candidate
+
+Open the [candidate build](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/34306390632)
+for [PR #200](https://github.com/Moneer-S/BlueFire-Nexus/pull/200). This build contains
+`d40c024`; GitHub's PR merge revision is `71bf3f3`, with an identical source tree.
+Check the native-wheel job for your platform, then download its artifact from the run's
+**Artifacts** section. GitHub may require you to sign in to download an Actions artifact.
+
+| Computer | Artifact | Wheel inside the ZIP |
+|---|---|---|
+| Windows x86-64 | [bluefire-native-wheel-windows-x86_64](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/34306390632/artifacts/10086826406) | `bluefire_nexus-3.0.0-py3-none-win_amd64.whl` |
+| Linux x86-64 | [bluefire-native-wheel-linux-x86_64](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/34306390632/artifacts/10086805381) | `bluefire_nexus-3.0.0-py3-none-linux_x86_64.whl` |
+| macOS Intel | [bluefire-native-wheel-macos-x86_64](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/34306390632/artifacts/10086839885) | `bluefire_nexus-3.0.0-py3-none-macosx_11_0_x86_64.whl` |
+
+Choose the **native-wheel** artifact, not a standalone runner executable. Create a fresh
+`bluefire-v3` directory, extract the ZIP, and put its `.whl` file in a `wheels` subdirectory.
+Keep the wheel intact. These builds target the architectures listed above; an incompatible
+wheel cannot be installed on another architecture.
+
+## Install and open
+
+Open a terminal in that `bluefire-v3` directory. On Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install .\wheels\bluefire_nexus-3.0.0-py3-none-win_amd64.whl
+.\.venv\Scripts\bluefire.exe --runs-dir (Join-Path $PWD 'workspace') ui
+```
+
+On Linux:
 
 ```bash
-python -m venv .venv
-# Linux/macOS: source .venv/bin/activate
-# Windows PowerShell: .venv\Scripts\Activate.ps1
-python -m pip install "path/to/the-reviewed-bluefire-nexus-wheel.whl"
-bluefire --runs-dir "path/to/your/bluefire-workspace" ui
+python3 -m venv .venv
+.venv/bin/python -m pip install ./wheels/bluefire_nexus-3.0.0-py3-none-linux_x86_64.whl
+.venv/bin/bluefire --runs-dir "$PWD/workspace" ui
 ```
+
+On Intel macOS, use the same commands with
+`bluefire_nexus-3.0.0-py3-none-macosx_11_0_x86_64.whl` in the install command.
+The commands keep the virtual environment and saved workspace separate. Reuse this workspace
+path when restarting or upgrading.
 
 Normal operation does not require a source checkout or developer dependencies. Package installation
 resolves runtime dependencies; the `[dev]` extra is for source development only, as described in
@@ -60,10 +89,11 @@ per-user BlueFire root, and creates local trust. It does not install an administ
 
 ## Platform packages
 
-Use only a wheel whose platform and architecture match the host. Windows and Linux x86-64
-artifacts receive dynamic release proof. macOS metadata and contracts remain structural until a
-macOS release host builds and exercises that package. A missing compatible artifact must remain
-an unavailable readiness result; never substitute an unverified binary.
+Use only a wheel whose platform and architecture match the host. The linked candidate build
+checks wheel installation and packaged runner identity on Windows, Linux and Intel macOS.
+Individual actions still declare their supported platforms; installing a wheel does not make
+every action available on that computer. Consult the PR's current checks for full test results.
+A missing compatible artifact remains an unavailable readiness result.
 
 ## Upgrade or remove
 
