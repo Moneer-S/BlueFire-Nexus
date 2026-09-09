@@ -279,16 +279,19 @@ function DetectionRegistryPage() {
     onError: (error) => setNotice(error instanceof Error ? error.message : "The lifecycle action was refused."),
   });
   const revisionMutation = useMutation({
-    mutationFn: ({ id, kind, body }: { id: string; kind: RevisionKind; body: DetectionCloneRequest | DetectionTuneRequest }) => kind === "clone"
+    mutationFn: ({ id, kind, body }: { id: string; kind: RevisionKind; body: DetectionCloneRequest | DetectionTuneRequest; navigation: typeof manualNavigation }) => kind === "clone"
       ? api.cloneDetection(id, body as DetectionCloneRequest)
       : api.tuneDetection(id, body as DetectionTuneRequest),
-    onSuccess: ({ candidate }) => {
+    onSuccess: ({ candidate }, submitted) => {
+      refreshDetections();
+      if (!manualMounted.current || manualNavigationRef.current !== submitted.navigation) return;
       setSelectedId(candidate.id);
       setNotice(`${candidate.id} saved as a new immutable detection revision. Its parent candidate was not changed.`);
       comparisonMutation.reset();
-      refreshDetections();
     },
-    onError: (error) => setNotice(error instanceof Error ? error.message : "The immutable revision was refused."),
+    onError: (error, submitted) => {
+      if (manualMounted.current && manualNavigationRef.current === submitted.navigation) setNotice(error instanceof Error ? error.message : "The immutable revision was refused.");
+    },
   });
   const sourceRevisionMutation = useMutation({
     mutationFn: ({ id, body }: { id: string; selection: string; body: DetectionSourceRevisionRequest }) => api.reviseDetectionSource(id, body),
@@ -416,7 +419,7 @@ function DetectionRegistryPage() {
         comparisonPending={comparisonMutation.isPending}
         comparison={comparisonMutation.data}
         onAction={(action, body) => selected.resourceId && actionMutation.mutate({ id: selected.resourceId, action, body })}
-        onRevision={(kind, body) => selected.resourceId && revisionMutation.mutate({ id: selected.resourceId, kind, body })}
+        onRevision={(kind, body) => selected.resourceId && revisionMutation.mutate({ id: selected.resourceId, kind, body, navigation: manualNavigationRef.current })}
         onSourceRevision={(body) => selected.resourceId && sourceRevisionMutation.mutate({ id: selected.resourceId, selection: activeSelection.current, body })}
         onCompare={(candidateId) => selected.resourceId && comparisonMutation.mutate({ baselineId: selected.resourceId, candidateId })}
       /> : <Panel><DetectionAIRevision sourceRun={sourceRun} providers={catalogQuery.data.ai.providers ?? []} defaultProvider={catalogQuery.data.ai.active_provider} manualEdits={false} /><EmptyState icon={<FlaskConical />} title={selectedId ? "Detector unavailable" : "Select a candidate"} description={selectedId ? "The requested detector is not available in this registry or source run. Select an available detector from the list." : "Inspect lifecycle evidence, fixtures, fields, immutable revisions, and reviewed public baselines."} /></Panel>}

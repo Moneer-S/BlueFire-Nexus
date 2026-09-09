@@ -148,3 +148,48 @@ it("preserves the edited source and selected parent after validation is refused"
   expect(candidates).toHaveLength(2);
   expect(candidates[0]).toEqual(parent);
 });
+
+it.each(["clone", "tune"] as const)("keeps newer navigation when a pending %s finishes", async (kind) => {
+  let resolve!: (value: DetectionResourceEnvelope) => void;
+  const pending = new Promise<DetectionResourceEnvelope>((yes) => { resolve = yes; });
+  const { user, candidates } = setup();
+  const submit = vi.spyOn(api, kind === "clone" ? "cloneDetection" : "tuneDetection").mockReturnValue(pending);
+  await screen.findByRole("heading", { name: "Baseline SQL" });
+  await user.click(screen.getByRole("tab", { name: "Revisions" }));
+  if (kind === "tune") {
+    await user.click(screen.getByRole("radio", { name: /Tune rule behavior/i }));
+    await user.clear(screen.getByRole("textbox", { name: /Tuned selection JSON/ }));
+    await user.paste('{"observation_kind":"collection_semantics"}');
+  }
+  await user.type(screen.getByRole("textbox", { name: /Required research reason/ }), "Review this immutable alternative.");
+  await user.click(screen.getByRole("button", { name: `Create immutable ${kind}` }));
+  await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+  await user.click(screen.getByRole("button", { name: /Other SQL/ }));
+  await act(async () => { candidates.push(child); resolve({ schema_version: "v1", candidate: child }); });
+  expect(screen.getByRole("heading", { name: "Other SQL" })).toBeVisible();
+  expect(new URLSearchParams(screen.getByTestId("location").textContent!).get("candidate")).toBe(otherId);
+  expect(screen.queryByText(/saved as a new immutable detection revision/)).not.toBeInTheDocument();
+  await waitFor(() => expect(api.detections).toHaveBeenCalledTimes(2));
+});
+
+it.each(["success", "error"])("does not restore an old clone request after navigating away and back: %s", async (outcome) => {
+  let resolve!: (value: DetectionResourceEnvelope) => void;
+  let reject!: (reason: Error) => void;
+  const pending = new Promise<DetectionResourceEnvelope>((yes, no) => { resolve = yes; reject = no; });
+  const { user, candidates } = setup();
+  vi.spyOn(api, "cloneDetection").mockReturnValue(pending);
+  await screen.findByRole("heading", { name: "Baseline SQL" });
+  await user.click(screen.getByRole("tab", { name: "Revisions" }));
+  await user.type(screen.getByRole("textbox", { name: /Required research reason/ }), "Review this immutable alternative.");
+  await user.click(screen.getByRole("button", { name: "Create immutable clone" }));
+  await waitFor(() => expect(api.cloneDetection).toHaveBeenCalledTimes(1));
+  await user.click(screen.getByRole("button", { name: /Other SQL/ }));
+  await user.click(screen.getByRole("button", { name: /Baseline SQL/ }));
+  await act(async () => {
+    if (outcome === "success") { candidates.push(child); resolve({ schema_version: "v1", candidate: child }); }
+    else reject(new Error("Earlier clone refused"));
+  });
+  expect(screen.getByRole("heading", { name: "Baseline SQL" })).toBeVisible();
+  expect(new URLSearchParams(screen.getByTestId("location").textContent!).get("candidate")).toBe(id);
+  expect(screen.queryByText(/saved as a new immutable detection revision|Earlier clone refused/)).not.toBeInTheDocument();
+});
