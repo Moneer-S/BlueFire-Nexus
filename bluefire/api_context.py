@@ -45,6 +45,9 @@ class PlatformService(Protocol):
     def scenario_versions(self) -> JsonResult:
         """List active saved scenario versions."""
 
+    def scenario_version_history(self, scenario_id: str) -> JsonResult:
+        """Read all retained versions of one experiment without changing its active head."""
+
     def save_scenario_version(self, request: JsonObject) -> JsonResult:
         """Validate and save one content-addressed scenario version."""
 

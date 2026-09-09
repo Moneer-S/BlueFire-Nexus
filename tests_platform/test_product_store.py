@@ -218,6 +218,29 @@ def test_scenario_versions_are_content_addressed_and_retrievable(tmp_path: Path)
     assert len(store.list_scenarios()) == 1
 
 
+def test_complete_history_preserves_active_head_when_old_content_is_saved_again(
+    tmp_path: Path,
+) -> None:
+    store = ProductStore(tmp_path / "history.db")
+    original = load_scenario(SCENARIO).to_dict()
+    first = store.save_scenario(original)
+    second = store.save_scenario(dict(original, title="Revised procedure"))
+    history = store.list_scenario_versions(original["id"])
+    assert [(item["version"], item["digest"]) for item in history] == [
+        (2, second["digest"]),
+        (1, first["digest"]),
+    ]
+    assert history[1]["document"] == original
+    assert store.list_scenarios()[0]["version"] == 2
+    store.save_scenario(original)
+    assert store.list_scenarios()[0]["version"] == 1
+    assert store.list_scenario_versions(original["id"]) == history
+    assert store.get_scenario(original["id"], 1) == history[1]
+    with pytest.raises(ProductStoreError, match="not found"):
+        store.get_scenario(original["id"], 3)
+    assert store.list_scenario_versions("missing.v1") == []
+
+
 def test_resources_round_trip_and_reject_plaintext_credentials(tmp_path: Path) -> None:
     store = ProductStore(tmp_path / "bluefire.db")
     saved = store.save_resource(

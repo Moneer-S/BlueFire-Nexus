@@ -1159,6 +1159,16 @@ class ProductStore:
                 """).fetchall()
         return [self._scenario_row(row) for row in rows]
 
+    def list_scenario_versions(self, scenario_id: str) -> list[Mapping[str, Any]]:
+        """Read the complete retained history of one experiment without changing its head."""
+        stable_id = _identifier(scenario_id, "scenario ID")
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM scenario_versions WHERE scenario_id = ? ORDER BY version DESC",
+                (stable_id,),
+            ).fetchall()
+        return [self._scenario_row(row) for row in rows]
+
     @staticmethod
     def _scenario_row(row: sqlite3.Row) -> Mapping[str, Any]:
         return {

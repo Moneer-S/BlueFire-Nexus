@@ -172,6 +172,10 @@ class StubService:
         self.calls.append(("scenario_versions",))
         return {"scenarios": []}
 
+    def scenario_version_history(self, scenario_id: str):
+        self.calls.append(("scenario_version_history", scenario_id))
+        return {"scenarios": []}
+
     def save_scenario_version(self, request: Mapping[str, Any]):
         self.calls.append(("save_scenario_version", request))
         return {"scenario": request.get("scenario", {})}
@@ -1036,6 +1040,7 @@ def test_get_routes_dispatch_to_the_injected_service() -> None:
             ("/api/v1/scenarios", "scenarios"),
             ("/api/v1/settings", "settings"),
             ("/api/v1/scenario-versions", "scenario_versions"),
+            (f"/api/v1/scenario-versions/{SCENARIO_ID}/versions", "scenario_version_history"),
             (f"/api/v1/scenario-versions/{SCENARIO_ID}", "scenario_version"),
             (
                 f"/api/v1/scenario-versions/{SCENARIO_ID}/versions/7",
@@ -2175,3 +2180,43 @@ def test_build_info_requires_browser_session_and_has_no_mutation_route() -> None
         assert status == 405
         assert headers["Allow"] == "GET"
         assert not service.calls
+
+
+@pytest.mark.parametrize("suffix", ["?version=1", "?history=true", "/7/versions", "/versions"])
+def test_scenario_history_refuses_query_or_nested_authority(suffix: str) -> None:
+    with running_server() as (server, service):
+        status, _, _ = request(
+            server, "GET", f"/api/v1/scenario-versions/{SCENARIO_ID}/versions{suffix}"
+        )
+    assert status == 400
+    assert not service.calls
+
+
+def test_scenario_history_is_read_only() -> None:
+    with running_server() as (server, service):
+        status, headers, _ = request(
+            server, "POST", f"/api/v1/scenario-versions/{SCENARIO_ID}/versions", body=b"{}"
+        )
+    assert status == 405
+    assert headers["Allow"] == "GET"
+    assert not service.calls
+
+
+@pytest.mark.parametrize(
+    "method,authenticated,origin,expected",
+    [("GET", False, "same", 401), ("POST", True, "https://unrelated.invalid", 403)],
+)
+def test_scenario_history_preserves_browser_session_and_origin_guards(
+    method: str, authenticated: bool, origin: str, expected: int
+) -> None:
+    with running_server() as (server, service):
+        status, _, _ = request(
+            server,
+            method,
+            f"/api/v1/scenario-versions/{SCENARIO_ID}/versions",
+            body={} if method == "POST" else None,
+            authenticated=authenticated,
+            origin=origin,
+        )
+    assert status == expected
+    assert not service.calls

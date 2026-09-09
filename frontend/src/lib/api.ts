@@ -515,6 +515,10 @@ export const api = {
   async scenarioVersions(): Promise<{ schema_version: string; scenarios: ScenarioVersion[] }> {
     return DEMO_MODE ? { schema_version: "bluefire.scenario-version-list.v1", scenarios: structuredClone([...demoScenarioVersions.values()]) } : request("/scenario-versions");
   },
+  async scenarioVersionHistory(id: string): Promise<{ schema_version: string; scenarios: ScenarioVersion[] }> {
+    if (DEMO_MODE) throw new ApiError("Complete saved history requires the connected local service.", "demo_history_unavailable", undefined, 409);
+    return request(`/scenario-versions/${encodeURIComponent(id)}/versions`);
+  },
   async saveScenarioVersion(scenario: Scenario): Promise<{ schema_version: string; scenario: ScenarioVersion }> {
     const { layout: _layout, ...canonicalScenario } = scenario;
     void _layout;

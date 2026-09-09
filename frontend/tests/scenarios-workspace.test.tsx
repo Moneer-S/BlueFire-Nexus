@@ -18,12 +18,18 @@ function Context() {
   const { scenario, setScenario, dirty } = useProduct(); const location = useLocation(); const navigate = useNavigate();
   return <><output aria-label="Current document">{JSON.stringify(scenario)}</output><output aria-label="Dirty">{String(dirty)}</output><output aria-label="Location">{location.pathname}{location.search}</output><button onClick={() => setScenario({ ...scenario, title: "Later edit" })}>Edit elsewhere</button><button onClick={() => navigate(-1)}>Back</button></>;
 }
-function setup(options: { draft?: Scenario; clean?: boolean; url?: string; unavailable?: boolean; versions?: ReturnType<typeof api.scenarioVersions> } = {}) {
+function setup(options: { draft?: Scenario; clean?: boolean; url?: string; unavailable?: boolean; versions?: ReturnType<typeof api.scenarioVersions>; history?: ScenarioVersion[]; exact?: ScenarioVersion } = {}) {
   const draft = options.draft ?? { ...structuredClone(demoScenario), title: "My working procedure" };
   localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(draft));
   if (options.clean) localStorage.setItem("bluefire.local.scenario-saved.v1", JSON.stringify(draft));
   vi.spyOn(api, "scenarios").mockImplementation(() => options.unavailable ? Promise.reject(new Error("Packaged request unavailable")) : Promise.resolve({ scenarios: [packaged] }));
   vi.spyOn(api, "scenarioVersions").mockImplementation(() => options.versions ?? (options.unavailable ? Promise.reject(new Error("Version request unavailable")) : Promise.resolve({ schema_version: "bluefire.scenario-version-list.v1", scenarios: [version()] })));
+  vi.spyOn(api, "scenarioVersionHistory").mockImplementation(async (id) => ({ schema_version: "v1", scenarios: (options.history ?? (await (options.versions ?? Promise.resolve({ scenarios: [version()] }))).scenarios).filter(item => item.scenario_id === id) }));
+  vi.spyOn(api, "immutableScenarioVersion").mockImplementation(async (id, number) => {
+    const item = options.exact ?? (await (options.versions ?? Promise.resolve({ scenarios: [version()] }))).scenarios.find(item => item.scenario_id === id && item.version === number);
+    if (!item) throw new Error("Version not found");
+    return { schema_version: "v1", scenario: item };
+  });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } }); clients.push(client);
   const view = render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={[options.url ?? "/scenarios"]}><Context/><Routes><Route path="/scenarios" element={<ScenariosPage/>}/><Route path="/builder" element={<h1>Experiment editor</h1>}/></Routes></MemoryRouter></ProductProvider></QueryClientProvider>);
   return { ...view, client, draft };
@@ -230,14 +236,14 @@ it("does not replace a newer replacement dialog with a delayed file result", asy
 
 it("groups saved revisions under one identity and opens the exact linked historical version", async () => {
   const older = { ...saved, title: "Earlier collection design" };
-  const versions = Promise.resolve({ schema_version: "bluefire.scenario-version-list.v1", scenarios: [{ ...version(older), version: 2 }, version()] });
-  const { draft } = setup({ versions, url: `/scenarios?selected=${saved.id}&version=2` });
+  const versions = Promise.resolve({ schema_version: "bluefire.scenario-version-list.v1", scenarios: [version()] });
+  const { draft } = setup({ versions, history: [version(), { ...version(older), version: 2 }], exact: { ...version(older), version: 2 }, url: `/scenarios?selected=${saved.id}&version=2` });
   const oldRow = await screen.findByRole("article", { name: "Earlier collection design - Saved v2" });
   await waitFor(() => expect(oldRow).toHaveFocus());
   expect(oldRow).toBeVisible();
   expect(oldRow).toHaveAttribute("aria-current", "true");
   expect(screen.getByText("3 experiments")).toBeVisible();
-  expect(screen.getByText("Latest saved · v3")).toBeVisible();
+  expect(screen.getByText("Current saved · v3")).toBeVisible();
   expect(within(oldRow).getByRole("link", { name: "Link to v2" })).toHaveAttribute("href", `/scenarios?selected=${saved.id}&version=2`);
   expect(documentNow()).toEqual(draft);
   const user = userEvent.setup();
@@ -248,10 +254,13 @@ it("groups saved revisions under one identity and opens the exact linked histori
 
 it("does not label a filtered older revision latest or count it separately", async () => {
   const older = { ...saved, title: "Older only search" };
-  setup({ versions: Promise.resolve({ schema_version: "v1", scenarios: [{ ...version(older), version: 2 }, version()] }), url: "/scenarios?q=Older+only" });
+  setup({ history: [version(), { ...version(older), version: 2 }] });
+  await savedRow(); await userEvent.click(screen.getByText("Version history"));
+  await screen.findByRole("article", { name: "Older only search - Saved v2" });
+  await userEvent.type(screen.getByRole("searchbox"), "Older only");
   expect(await savedRow()).toBeVisible();
   expect(screen.getByText("1 experiment")).toBeVisible();
-  expect(screen.getByText("Latest saved · v3")).toBeVisible();
+  expect(screen.getByText("Current saved · v3")).toBeVisible();
 });
 
 it("retains an honest empty draft through browser restoration", async () => {
@@ -266,4 +275,101 @@ it("restores added steps while the operator has not yet written a purpose", asyn
   const drafting = { ...saved, purpose: "" };
   setup({ draft: drafting }); await savedRow();
   expect(documentNow()).toEqual(drafting);
+});
+
+
+const historical = () => {
+  const first = { ...version({ ...saved, title: "Original procedure" }), version: 1 };
+  const second = { ...version({ ...saved, title: "Revised procedure" }), version: 2 };
+  return { first, second, history: [second, first], heads: Promise.resolve({ schema_version: "v1", scenarios: [second] }) };
+};
+it("loads complete history only on expansion while the active inventory contains just v2", async () => {
+  const data = historical(); setup({ versions: data.heads, history: data.history }); const user = userEvent.setup();
+  await screen.findByRole("article", { name: "Revised procedure - Saved v2" });
+  expect(api.scenarioVersionHistory).not.toHaveBeenCalled();
+  expect(screen.queryByText("Version history · 0 other versions")).not.toBeInTheDocument();
+  await user.click(screen.getByText("Version history"));
+  expect(await screen.findByRole("article", { name: "Original procedure - Saved v1" })).toBeVisible();
+  expect(api.scenarioVersionHistory).toHaveBeenCalledExactlyOnceWith(saved.id);
+  expect(screen.getByText("Current saved · v2")).toBeVisible();
+  expect(screen.getByText("Version history · 1 other version")).toBeVisible();
+});
+it("reloads an exact v1 link independently of heads and protects the dirty draft before opening", async () => {
+  const data = historical(); const url = `/scenarios?selected=${saved.id}&version=1`;
+  const first = setup({ versions: data.heads, history: data.history, exact: data.first, url });
+  const original = first.draft;
+  let row = await screen.findByRole("article", { name: "Original procedure - Saved v1" });
+  await waitFor(() => expect(row).toHaveAttribute("aria-current", "true"));
+  expect(documentNow()).toEqual(original);
+  first.unmount(); vi.restoreAllMocks();
+  setup({ draft: original, versions: data.heads, history: data.history, exact: data.first, url });
+  row = await screen.findByRole("article", { name: "Original procedure - Saved v1" });
+  await waitFor(() => expect(row).toHaveAttribute("aria-current", "true"));
+  expect(api.immutableScenarioVersion).toHaveBeenCalledExactlyOnceWith(saved.id, 1);
+  const user = userEvent.setup(); await user.click(within(row).getByRole("button", { name: "Open" }));
+  expect(documentNow()).toEqual(original);
+  await user.click(screen.getByRole("button", { name: "Keep working draft" }));
+  expect(documentNow()).toEqual(original);
+  await user.click(within(row).getByRole("button", { name: "Open" }));
+  await user.click(screen.getByRole("button", { name: "Replace draft and open" }));
+  expect(documentNow()).toEqual(data.first.document);
+  expect(screen.getByLabelText("Dirty")).toHaveTextContent("false");
+});
+it("shows exact historical content when the active inventory is unavailable", async () => {
+  const data = historical(); setup({ unavailable: true, history: data.history, exact: data.first, url: `/scenarios?selected=${saved.id}&version=1` });
+  const row = await screen.findByRole("article", { name: "Original procedure - Saved v1" });
+  await waitFor(() => expect(row).toHaveAttribute("aria-current", "true"));
+  expect(row).toBeVisible(); expect(screen.queryByText(/Current saved/)).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Retry saved versions" })).toBeVisible();
+});
+it.each(["missing", "mismatched"])("never substitutes the current head for a %s exact version", async (kind) => {
+  const data = historical(); const number = kind === "missing" ? 9 : 1;
+  const { draft } = setup({ versions: data.heads, history: data.history, exact: kind === "mismatched" ? data.second : undefined, url: `/scenarios?selected=${saved.id}&version=${number}` });
+  expect(await screen.findByRole("button", { name: "Retry linked version" })).toBeVisible();
+  expect(document.querySelector('[aria-current="true"]')).toBeNull();
+  expect(documentNow()).toEqual(draft);
+  expect(screen.getByText(/No other version was selected; your working draft is preserved/)).toBeVisible();
+});
+it("retains v1 as current after its content is reactivated without calling v2 current", async () => {
+  const data = historical(); setup({ versions: Promise.resolve({ schema_version: "v1", scenarios: [data.first] }), history: data.history });
+  await screen.findByRole("article", { name: "Original procedure - Saved v1" });
+  await userEvent.click(screen.getByText("Version history"));
+  expect(await screen.findByRole("article", { name: "Revised procedure - Saved v2" })).toBeVisible();
+  expect(screen.getByText("Current saved · v1")).toBeVisible();
+  expect(screen.queryByText("Current saved · v2")).not.toBeInTheDocument();
+});
+it("keeps unavailable history distinct from an empty history and retries the same experiment", async () => {
+  const data = historical(); const { draft } = setup({ versions: data.heads, history: data.history });
+  vi.mocked(api.scenarioVersionHistory).mockRejectedValueOnce(new Error("Connection lost"));
+  await screen.findByRole("article", { name: "Revised procedure - Saved v2" });
+  await userEvent.click(screen.getByText("Version history"));
+  await userEvent.click(await screen.findByRole("button", { name: "Retry version history" }));
+  expect(await screen.findByRole("article", { name: "Original procedure - Saved v1" })).toBeVisible();
+  expect(documentNow()).toEqual(draft);
+});
+
+it("counts a retained v1 already open as the working copy while v2 remains current saved", async () => {
+  const data = historical(); setup({ draft: data.first.document, clean: true, versions: data.heads, history: data.history });
+  await screen.findByRole("article", { name: "Revised procedure - Saved v2" });
+  await userEvent.click(screen.getByText("Version history"));
+  expect(await screen.findByText("Saved v1 is already open as the current working copy.")).toBeVisible();
+  expect(screen.getByText("Version history · 1 other version")).toBeVisible();
+  expect(screen.queryByText("No other retained versions.")).not.toBeInTheDocument();
+  expect(screen.getAllByRole("article", { name: "Original procedure - Saved v1" })).toHaveLength(1);
+  expect(screen.getByText("Current saved · v2")).toBeVisible();
+});
+
+it("refreshes expanded history with the normal Save version invalidation prefix", async () => {
+  const data = historical(); const { client } = setup({ versions: data.heads, history: data.history });
+  await screen.findByRole("article", { name: "Revised procedure - Saved v2" });
+  await userEvent.click(screen.getByText("Version history"));
+  await screen.findByRole("article", { name: "Original procedure - Saved v1" });
+  const third = { ...version({ ...saved, title: "Third saved procedure" }), version: 3 };
+  vi.mocked(api.scenarioVersions).mockResolvedValue({ schema_version: "v1", scenarios: [third] });
+  vi.mocked(api.scenarioVersionHistory).mockResolvedValue({ schema_version: "v1", scenarios: [third, ...data.history] });
+  await act(async () => { await client.invalidateQueries({ queryKey: ["scenario-versions"] }); });
+  expect(await screen.findByText("Current saved · v3")).toBeVisible();
+  expect(screen.getByText("Version history · 2 other versions")).toBeVisible();
+  expect(screen.getByRole("article", { name: "Original procedure - Saved v1" })).toBeVisible();
+  expect(screen.getByRole("article", { name: "Revised procedure - Saved v2" })).toBeVisible();
 });

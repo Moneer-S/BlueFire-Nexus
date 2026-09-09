@@ -669,6 +669,18 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             "scenarios": self.product_store.list_scenarios(),
         }
 
+    def scenario_version_history(self, scenario_id: str) -> Mapping[str, Any]:
+        """Read all retained versions for one experiment; active inventory stays separate."""
+        stable_id = _management_identifier(scenario_id, "scenario ID")
+        versions = self.product_store.list_scenario_versions(stable_id)
+        if not versions:
+            raise APIError(
+                HTTPStatus.NOT_FOUND,
+                "scenario_version_not_found",
+                "Scenario version history was not found.",
+            )
+        return {"schema_version": "bluefire.scenario-version-list.v1", "scenarios": versions}
+
     def save_scenario_version(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         """Validate and save one content-addressed scenario version."""
 

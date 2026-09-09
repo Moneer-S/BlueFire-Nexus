@@ -357,6 +357,21 @@ class APIRoutes:
             return ""
         return key
 
+    def _scenario_history_request(self, path: str) -> str | None:
+        if not path.startswith(f"{API_PREFIX}/scenario-versions/") or not path.endswith(
+            "/versions"
+        ):
+            return None
+        parsed = self._scenario_version_request(path[: -len("/versions")])
+        if parsed is not None and parsed[1] is not None:
+            self._error(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_scenario_version_path",
+                "Scenario history path is invalid.",
+            )
+            return ""
+        return parsed[0] if parsed is not None else ""
+
     def _scenario_version_request(self, path: str) -> tuple[str, int | None] | None:
         prefix = f"{API_PREFIX}/scenario-versions/"
         if not path.startswith(prefix):

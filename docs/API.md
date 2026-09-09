@@ -27,6 +27,7 @@ Do not expose this API through a reverse proxy, tunnel, port forward, or contain
 | POST | `/api/v1/settings/{setting_key}` | Upsert one setting |
 | GET, POST | `/api/v1/scenario-versions` | List active saved versions or save a scenario version |
 | GET | `/api/v1/scenario-versions/{scenario_id}` | Active saved scenario version |
+| GET | `/api/v1/scenario-versions/{scenario_id}/versions` | Complete retained history for one saved experiment |
 | GET | `/api/v1/scenario-versions/{scenario_id}/versions/{version}` | Exact saved scenario version |
 | GET | `/api/v1/resources/{kind}` | List one allowlisted resource kind |
 | GET, POST | `/api/v1/resources/{kind}/{resource_id}` | Get or upsert one resource |
@@ -331,7 +332,11 @@ record does not dynamically activate code.
 
 ### Saved scenario versions
 
-`GET /api/v1/scenario-versions` lists the active durable version of each saved scenario. Save a validated registered scenario with:
+`GET /api/v1/scenario-versions` lists the active durable version of each saved scenario. `GET /api/v1/scenario-versions/{scenario_id}/versions` returns the complete retained history of one experiment, newest version number first, in the same `{schema_version,scenarios}` envelope. It does not change the active head and accepts no query parameters or writes. A missing history returns 404. Re-saving previously stored content may select an older version as active; the largest version number is not necessarily the active head.
+
+The Experiments page loads history on demand. Exact version links read `/api/v1/scenario-versions/{scenario_id}/versions/{version}` separately; an unavailable or mismatched exact version never substitutes the active head. Selecting a version does not replace unsaved work; opening it still uses the working-draft review.
+
+Save a validated registered scenario with:
 
 ```json
 {"scenario": {"schema_version": "bluefire.scenario.v1"}}

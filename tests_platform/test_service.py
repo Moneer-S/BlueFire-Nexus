@@ -2248,3 +2248,40 @@ def test_remote_provider_selection_persists_only_the_credential_reference(
     assert persisted["ai_provider"]["credential_reference"] == "OPENAI_API_KEY"
     assert persisted["ai_provider"]["health"]["credential_available"] is True
     assert persisted["ai_proposals"] == []
+
+
+def test_saved_history_reads_two_versions_without_changing_active_inventory(tmp_path: Path) -> None:
+    from bluefire.contracts import load_scenario
+
+    service = BlueFireService(
+        project_root=ROOT, runs_dir=tmp_path / "runs", product_db_path=tmp_path / "history.db"
+    )
+    try:
+        original = load_scenario(ROOT / "scenarios" / "sandbox_research_chain.yaml").to_dict()
+        original["id"] = "scenario.history-regression.v1"
+        first = service.save_scenario_version({"scenario": original})["scenario"]
+        second = service.save_scenario_version(
+            {"scenario": dict(original, title="Revised history procedure")}
+        )["scenario"]
+        history = service.scenario_version_history(original["id"])["scenarios"]
+        assert [row["version"] for row in history] == [2, 1]
+        assert history[1]["digest"] == first["digest"]
+        assert service.scenario_version(original["id"], version=1)["scenario"] == history[1]
+        assert [
+            row["version"]
+            for row in service.scenario_versions()["scenarios"]
+            if row["scenario_id"] == original["id"]
+        ] == [2]
+        service.save_scenario_version({"scenario": original})
+        assert service.scenario_version(original["id"])["scenario"]["version"] == 1
+        assert service.scenario_version_history(original["id"])["scenarios"] == history
+        assert second["version"] == 2
+        for read in [
+            lambda: service.scenario_version_history("missing.v1"),
+            lambda: service.scenario_version(original["id"], version=3),
+        ]:
+            with pytest.raises(APIError) as failure:
+                read()
+            assert failure.value.status == 404
+    finally:
+        service.close()

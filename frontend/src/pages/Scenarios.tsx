@@ -1,13 +1,13 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { Copy, Download, FilePlus2, Upload } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { sameJson } from "../lib/replay-review";
 import { parseScenarioDocument } from "../lib/scenario";
 import { useProduct } from "../state/ProductContext";
-import type { Scenario } from "../types";
+import type { Scenario, ScenarioVersion } from "../types";
 import { Button, Field, PageHeader } from "../components/Primitives";
 import "./Scenarios.css";
 
@@ -28,6 +28,12 @@ function readScenarioFile(file: File): Promise<string> {
 }
 
 type Replacement = { document: Scenario; action: "Open" | "Import" | "Duplicate" | "Create"; clean: boolean; navigate: boolean; previous: Scenario };
+
+function verifiedVersion(value: ScenarioVersion, id: string, version?: number): ScenarioVersion {
+  if (value.scenario_id !== id || value.document?.id !== id || !Number.isInteger(value.version) || value.version < 1 || value.version > 2 ** 31 - 1 || (version !== undefined && value.version !== version)) throw new Error("The saved version response did not match the requested experiment and version.");
+  parseScenarioDocument(value.document);
+  return value;
+}
 
 export function ScenariosPage() {
   const query = useQuery({ queryKey: ["scenarios"], queryFn: api.scenarios });
@@ -55,6 +61,17 @@ export function ScenariosPage() {
   const selected = params.get("selected");
   const selectedView = params.get("view");
   const selectedVersion = params.get("version");
+  const [requestedHistory, setRequestedHistory] = useState<string[]>([]);
+  const exactVersion = selectedVersion && /^[1-9][0-9]{0,9}$/.test(selectedVersion) && Number(selectedVersion) <= 2 ** 31 - 1 ? Number(selectedVersion) : undefined;
+  const exactQuery = useQuery({ queryKey: ["scenario-exact-version", selected, selectedVersion], enabled: Boolean(selected && exactVersion), retry: false,
+    queryFn: async () => verifiedVersion((await api.immutableScenarioVersion(selected!, exactVersion!)).scenario, selected!, exactVersion) });
+  const historyIds = [...new Set([...requestedHistory, ...(selected && exactVersion ? [selected] : [])])];
+  const histories = useQueries({ queries: historyIds.map(id => ({ queryKey: ["scenario-versions", "history", id], retry: false, queryFn: async () => {
+    const result = await api.scenarioVersionHistory(id);
+    const versions = result.scenarios.map(value => verifiedVersion(value, id));
+    if (new Set(versions.map(value => value.version)).size !== versions.length) throw new Error("Version history contained duplicate versions.");
+    return versions;
+  } })) });
   const [selectionRequest, setSelectionRequest] = useState(0);
   const arrivalFocus = useRef(true);
   useEffect(() => {
@@ -64,8 +81,10 @@ export function ScenariosPage() {
     document.addEventListener("pointerdown", yieldFocus);
     return () => { document.removeEventListener("focusin", yieldFocus); document.removeEventListener("pointerdown", yieldFocus); };
   }, [selected, selectedView, selectedVersion, selectionRequest]);
-  const records = useMemo(() => {
-    const saved = [...(versionsQuery.data?.scenarios ?? [])].sort((left, right) => right.version - left.version);
+  const records = (() => {
+    const inventory = new Map<string, ScenarioVersion>();
+    for (const item of [...histories.flatMap(query => query.data ?? []), ...(versionsQuery.data?.scenarios ?? []), ...(exactQuery.isSuccess ? [exactQuery.data] : [])]) inventory.set(`${item.scenario_id}:${item.version}`, item);
+    const saved = [...inventory.values()].sort((left, right) => right.version - left.version);
     const match = saved.find((item) => item.scenario_id === scenario.id && sameJson(item.document, scenario));
     const packagedMatch = (query.data?.scenarios ?? []).some((item) => sameJson(item, scenario));
     return [
@@ -73,13 +92,13 @@ export function ScenariosPage() {
       ...saved.filter((item) => item !== match).map((item) => ({ key: `saved:${item.scenario_id}:${item.version}`, document: item.document, label: `Saved v${item.version}`, working: false, version: item.version })),
       ...(query.data?.scenarios ?? []).filter((item) => !sameJson(item, scenario)).map((item) => ({ key: `packaged:${item.id}`, document: item, label: "Packaged", working: false, version: undefined })),
     ];
-  }, [scenario, query.data, versionsQuery.data]);
+  })();
   const selectedKey = selectedView === "draft" && scenario.id === selected ? "working"
-    : selectedVersion ? records.find((item) => item.document.id === selected && String(item.version) === selectedVersion)?.key
+    : selectedVersion ? exactQuery.isSuccess && exactQuery.data.version === exactVersion ? records.find((item) => item.document.id === selected && item.version === exactVersion)?.key : undefined
     : selectedView === "packaged" ? records.find((item) => item.document.id === selected && item.label === "Packaged")?.key
     : records.find((item) => item.document.id === selected && item.version !== undefined)?.key
       ?? records.find((item) => item.document.id === selected)?.key;
-  const selectionReady = !query.isPending && !versionsQuery.isPending;
+  const selectionReady = !query.isPending && !versionsQuery.isPending && !(selected && exactVersion && exactQuery.isPending);
   useEffect(() => {
     if (arrivalFocus.current && selected && selectedKey && selectionReady) {
       arrivalFocus.current = false;
@@ -146,20 +165,25 @@ export function ScenariosPage() {
     {notice ? <p role="status" className="experiments-notice">{notice}</p> : null}
     <div className="experiments-search"><label htmlFor="experiment-search">Find an experiment</label><input id="experiment-search" type="search" value={search} placeholder="Search by name or ID" onChange={(event) => { const next = new URLSearchParams(params); if (event.target.value) next.set("q", event.target.value); else next.delete("q"); setParams(next, { replace: true }); }}/><span>{groups.length} {groups.length === 1 ? "experiment" : "experiments"}</span></div>
     {([{ query, label: "Packaged experiments" }, { query: versionsQuery, label: "Saved versions" }]).map(({ query: resource, label }) => resource.isPending ? <p role="status" key={label}>{label} loading. Your working draft remains available.</p> : resource.isError ? <div role="alert" className="experiments-unavailable" key={label}><div><strong>{label} unavailable</strong><p>{resource.data ? "Showing previously loaded records." : "The list could not be loaded."} Your working draft is preserved.</p><details><summary>Technical details</summary>{resource.error instanceof Error ? resource.error.message : "Request failed"}</details></div><Button variant="secondary" onClick={() => void resource.refetch()}>Retry {label.toLowerCase()}</Button></div> : null)}
+    {selected && selectedVersion ? exactVersion === undefined ? <p role="alert">The linked version number is invalid. No other version was selected.</p> : exactQuery.isPending ? <p role="status">Loading the exact saved version. Your working draft remains available.</p> : exactQuery.isError ? <div role="alert"><p>The linked saved version could not be loaded. No other version was selected; your working draft is preserved.</p><Button onClick={() => void exactQuery.refetch()}>Retry linked version</Button></div> : null : null}
     {selected && !selectedKey && selectionReady ? <p role="status">The selected experiment is not in the available records. Search or retry the unavailable list.</p> : null}
     <section className="experiments-list" aria-label="Experiments">
       {groups.map((group) => {
         const current = group.records.filter((item) => item.working);
         const saved = group.records.filter((item) => !item.working && item.version !== undefined);
         const examples = group.records.filter((item) => !item.working && item.version === undefined);
-        const latestVersion = Math.max(...group.records.map((item) => item.version ?? 0));
-        const latest = saved.find((item) => item.version === latestVersion);
+        const head = versionsQuery.data?.scenarios.find(item => item.scenario_id === group.id);
+        const latest = saved.find((item) => item.version === head?.version);
+        const historyQuery = histories[historyIds.indexOf(group.id)];
         const history = saved.filter((item) => item !== latest);
+        const retainedOthers = historyQuery?.data?.filter(item => item.version !== head?.version) ?? [];
+        const openRetained = current.filter(item => retainedOthers.some(version => version.version === item.version));
         const showHistory = history.some((item) => item.key === selectedKey || (search.trim() && matches(item)));
-        return <section className="experiment-identity" aria-label={`Versions of ${(latest ?? current[0] ?? examples[0])!.document.title}`} key={group.id}>
+        return <section className="experiment-identity" aria-label={`Versions of ${(latest ?? current[0] ?? examples[0] ?? group.records[0])!.document.title}`} key={group.id}>
+          {head && current.some(item => item.version === head.version) ? <p className="experiment-version-label">Current saved · v{head.version}</p> : null}
           {current.map(renderRecord)}
-          {latest ? <><p className="experiment-version-label">Latest saved · v{latest.version}</p>{renderRecord(latest)}</> : null}
-          {history.length ? <details className="experiment-history" open={showHistory || undefined}><summary>Version history · {history.length} earlier {history.length === 1 ? "version" : "versions"}</summary>{history.map(renderRecord)}</details> : null}
+          {latest ? <><p className="experiment-version-label">Current saved · v{latest.version}</p>{renderRecord(latest)}</> : null}
+          {head || history.length ? <details className="experiment-history" open={showHistory || undefined} onToggle={event => { if (event.currentTarget.open) setRequestedHistory(ids => ids.includes(group.id) ? ids : [...ids, group.id]); }}><summary>Version history{historyQuery?.isSuccess ? ` · ${retainedOthers.length} ${head ? "other" : "retained"} ${retainedOthers.length === 1 ? "version" : "versions"}` : ""}</summary>{!historyQuery || historyQuery.isPending ? <p role="status">Loading saved history…</p> : historyQuery.isError ? <div role="alert"><p>Version history unavailable. Loaded records and your working draft remain available.</p><Button onClick={() => void historyQuery.refetch()}>Retry version history</Button></div> : !retainedOthers.length ? <p>No other retained versions.</p> : null}{openRetained.map(item => <p key={item.key}>Saved v{item.version} is already open as the current working copy.</p>)}{history.map(renderRecord)}</details> : null}
           {examples.length && (current.length || saved.length) ? <details className="experiment-history" open={examples.some((item) => item.key === selectedKey) || undefined}><summary>Packaged example</summary>{examples.map(renderRecord)}</details> : examples.map(renderRecord)}
         </section>;
       })}

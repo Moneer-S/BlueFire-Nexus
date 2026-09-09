@@ -337,6 +337,13 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             if setting_key:
                 self._method_not_allowed("POST")
             return
+        scenario_history = self._routes._scenario_history_request(path)
+        if scenario_history is not None:
+            if scenario_history:
+                self._dispatch(
+                    lambda: self.platform_server.service.scenario_version_history(scenario_history)
+                )
+            return
         scenario_version = self._routes._scenario_version_request(path)
         if scenario_version is not None:
             scenario_id, version = scenario_version
@@ -734,6 +741,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 self._dispatch(
                     lambda: self.platform_server.service.upsert_setting(setting_key, body)
                 )
+            return
+        scenario_history = self._routes._scenario_history_request(path)
+        if scenario_history is not None:
+            if scenario_history:
+                self._method_not_allowed("GET")
             return
         scenario_version = self._routes._scenario_version_request(path)
         if scenario_version is not None:
