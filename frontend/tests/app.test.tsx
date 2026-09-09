@@ -1171,6 +1171,67 @@ describe("product application", () => {
     expect(screen.queryByText(/New preflight and submission remain disabled/)).not.toBeInTheDocument();
   });
 
+  it.each([false, true])("stops polling a definitively missing job while its inventory reconciliation is delayed (later owned=%s)", async (laterOwned) => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const staleJobId = "job-cccccccccccccccccccccccccccccccc";
+      window.localStorage.setItem(activeJobStorageKey, staleJobId);
+      const fetchMock = vi.mocked(fetch);
+      const fallback = fetchMock.getMockImplementation()!;
+      let resolveInventory!: (response: Response) => void;
+      fetchMock.mockImplementation((input, init) => {
+        if (String(input).endsWith("/jobs") && !init?.method) return new Promise<Response>((resolve) => { resolveInventory = resolve; });
+        if (String(input).endsWith(`/jobs/${staleJobId}`) && !init?.method) return Promise.resolve(new Response(JSON.stringify({ error: { code: "job_not_found", message: "Job was not found." } }), { status: 404, headers: { "Content-Type": "application/json" } }));
+        return fallback(input, init);
+      });
+      renderApp("/runs?prepare=1");
+      await screen.findByText("Job was not found.");
+      expect(window.localStorage.getItem(activeJobStorageKey)).toBe(staleJobId);
+      expect(screen.getByRole("button", { name: "Run preflight" })).toBeDisabled();
+      // Keep the component mounted for three real polling periods after the 404.
+      // Inventory is deliberately unresolved, so its clearing effect cannot hide a retry.
+      await act(async () => { await vi.advanceTimersByTimeAsync(2250); });
+      expect(fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith(`/jobs/${staleJobId}`) && !init?.method)).toHaveLength(1);
+      const jobs = laterOwned ? [{ ...executeJob, job_id: staleJobId, state: "running", progress: { phase: "running" }, request: {} }] : [];
+      await act(async () => resolveInventory(json({ schema_version: "bluefire.active-job-list.v1", jobs })));
+      if (laterOwned) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(750); });
+        await waitFor(() => expect(fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith(`/jobs/${staleJobId}`) && !init?.method)).toHaveLength(2));
+        expect(window.localStorage.getItem(activeJobStorageKey)).toBe(staleJobId);
+      } else {
+        await waitFor(() => expect(screen.getByRole("button", { name: "Run preflight" })).toBeEnabled());
+        expect(window.localStorage.getItem(activeJobStorageKey)).toBeNull();
+      }
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each([true, false])("keeps detail reconciliation polling for controller ownership or a transport failure (owned=%s)", async (owned) => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const job: RunJob = { ...executeJob, state: "running", progress: { phase: "running" }, request: {} };
+      window.localStorage.setItem(activeJobStorageKey, job.job_id);
+      activeJobInventory = owned ? [job] : [];
+      const fetchMock = vi.mocked(fetch);
+      const fallback = fetchMock.getMockImplementation()!;
+      let details = 0;
+      fetchMock.mockImplementation((input, init) => {
+        if (String(input).endsWith(`/jobs/${job.job_id}`) && !init?.method) {
+          details++;
+          if (details === 1) return Promise.resolve(new Response(JSON.stringify({ error: { code: owned ? "job_not_found" : "service_unavailable", message: "Detail temporarily unavailable." } }), { status: owned ? 404 : 503, headers: { "Content-Type": "application/json" } }));
+          return Promise.resolve(json({ ...job, state: owned ? "running" : "completed" }));
+        }
+        return fallback(input, init);
+      });
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+      renderApp("/runs?prepare=1", client);
+      await waitFor(() => expect(client.getQueryState(["job", job.job_id])?.status).toBe("error"));
+      await act(async () => { await vi.advanceTimersByTimeAsync(750); });
+      await waitFor(() => expect(details).toBe(2));
+      if (owned) expect(window.localStorage.getItem(activeJobStorageKey)).toBe(job.job_id);
+      else await waitFor(() => expect(window.localStorage.getItem(activeJobStorageKey)).toBeNull());
+    } finally { vi.useRealTimers(); }
+  });
+
   it("clears a stored job only after fresh detail confirms it is missing", async () => {
     const staleJobId = "job-cccccccccccccccccccccccccccccccc";
     window.localStorage.setItem(activeJobStorageKey, staleJobId);

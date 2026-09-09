@@ -34,6 +34,10 @@ const activeJobStorageKey = "bluefire.local.active-job-id.v1";
 const activeJobInventoryUnavailableNotice = "Active-job inventory is unavailable. New preflight and submission remain disabled until it is restored.";
 const durableJobId = /^job-[0-9a-f]{32}$/;
 
+function isMissingJobError(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404 && error.code === "job_not_found";
+}
+
 function isRetryableInterruptedJob(job: RunJob | null | undefined): boolean {
   return job?.schema_version === "bluefire.job.v1" && ["scenario.run", "scenario.replay"].includes(job.kind) && job.state === "interrupted" && !job.request?.method_comparison && !job.request?.assistance_run && !job.request?.receiver_defense;
 }
@@ -210,7 +214,14 @@ export function RunWorkspace({ embedded }: { embedded?: { job: RunJob; releaseEn
     void queryClient.invalidateQueries({ queryKey: ["job", job.job_id], exact: true });
     return snapshot;
   }, [matchesSelection, queryClient, rememberTerminalJob]);
-  const jobQuery = useQuery({ queryKey: ["job", activeJobId], queryFn: async () => { const requestedJobId = activeJobId!; const receivedJob = await api.job(requestedJobId); if (receivedJob.job_id !== requestedJobId || !matchesSelection(receivedJob)) throw new ApiError("The job detail response did not match the requested job.", "job_identity_mismatch", undefined, 502); settlePendingReplay(receivedJob); let job = preferNewerJobSnapshot(queryClient.getQueryData<RunJob>(["job", requestedJobId]), receivedJob); if (activeJobRef.current?.job_id === requestedJobId) job = preferNewerJobSnapshot(activeJobRef.current, job); if (!matchesSelection(job)) throw new ApiError("The cached job no longer matches this phase’s immutable execution request.", "job_identity_mismatch", undefined, 502); rememberTerminalJob(job); return job; }, enabled: Boolean(activeJobId && (!activeJob || (activeJob.job_id === activeJobId && !terminalJobStates.has(activeJob.state)))), refetchInterval: (query) => { const state = (query.state.data as RunJob | undefined)?.state; return state && terminalJobStates.has(state) ? false : 750; }, staleTime: 0 });
+  const jobQuery = useQuery({ queryKey: ["job", activeJobId], queryFn: async () => { const requestedJobId = activeJobId!; const receivedJob = await api.job(requestedJobId); if (receivedJob.job_id !== requestedJobId || !matchesSelection(receivedJob)) throw new ApiError("The job detail response did not match the requested job.", "job_identity_mismatch", undefined, 502); settlePendingReplay(receivedJob); let job = preferNewerJobSnapshot(queryClient.getQueryData<RunJob>(["job", requestedJobId]), receivedJob); if (activeJobRef.current?.job_id === requestedJobId) job = preferNewerJobSnapshot(activeJobRef.current, job); if (!matchesSelection(job)) throw new ApiError("The cached job no longer matches this phase’s immutable execution request.", "job_identity_mismatch", undefined, 502); rememberTerminalJob(job); return job; }, enabled: Boolean(activeJobId && (!activeJob || (activeJob.job_id === activeJobId && !terminalJobStates.has(activeJob.state)))), refetchInterval: (query) => {
+    const state = (query.state.data as RunJob | undefined)?.state;
+    if (state && terminalJobStates.has(state)) return false;
+    // A definitive missing detail must not race the later React clearing effect.
+    // Inventory continues polling; confirmed ownership can resume reconciliation.
+    const inventoryOwnsJob = inventoryAuthoritative && inventoryJobs.some((job) => job.job_id === activeJobId);
+    return isMissingJobError(query.state.error) && !inventoryOwnsJob ? false : 750;
+  }, staleTime: 0 });
   const controllerOwnsActiveJob = Boolean(activeJob && matchesSelection(activeJob) && (!jobQuery.data || matchesSelection(jobQuery.data)) && inventoryAuthoritative && inventoryJobs.some((job) => job.job_id === activeJob.job_id));
   useEffect(() => {
     if (consumedSetupArrival.current === location.key || (setupMode !== "simulate" && setupMode !== "execute")) return;
@@ -304,7 +315,7 @@ export function RunWorkspace({ embedded }: { embedded?: { job: RunJob; releaseEn
     trackActiveJob(snapshot);
     if (snapshot.approval_request !== undefined) setApprovalRequest(snapshot.approval_request);
   }, [activeJobId, linkedJobId, inventoryAuthoritative, inventoryJobs, jobQuery.data, jobQuery.isFetchedAfterMount, jobQuery.isSuccess, matchesSelection, rememberTerminalJob, trackActiveJob]);
-  useEffect(() => { if (activeJobIdRef.current === activeJobId && jobQuery.isFetchedAfterMount && jobQuery.error) { const definitivelyMissing = jobQuery.error instanceof ApiError && jobQuery.error.status === 404 && jobQuery.error.code === "job_not_found"; const inventoryStillOwnsJob = Boolean(activeJobId && inventoryJobs.some((job) => job.job_id === activeJobId)); if (definitivelyMissing && activeJobId && inventoryAuthoritative && !inventoryStillOwnsJob) { clearSelection(activeJobId); setActiveJobId(null); if (activeJob?.job_id === activeJobId) setActiveJob(null); } setNotice(jobQuery.error instanceof Error ? jobQuery.error.message : "Job status could not be refreshed."); } }, [activeJob?.job_id, activeJobId, clearSelection, inventoryAuthoritative, inventoryJobs, jobQuery.error, jobQuery.isFetchedAfterMount]);
+  useEffect(() => { if (activeJobIdRef.current === activeJobId && jobQuery.isFetchedAfterMount && jobQuery.error) { const definitivelyMissing = isMissingJobError(jobQuery.error); const inventoryStillOwnsJob = Boolean(activeJobId && inventoryJobs.some((job) => job.job_id === activeJobId)); if (definitivelyMissing && activeJobId && inventoryAuthoritative && !inventoryStillOwnsJob) { clearSelection(activeJobId); setActiveJobId(null); if (activeJob?.job_id === activeJobId) setActiveJob(null); } setNotice(jobQuery.error instanceof Error ? jobQuery.error.message : "Job status could not be refreshed."); } }, [activeJob?.job_id, activeJobId, clearSelection, inventoryAuthoritative, inventoryJobs, jobQuery.error, jobQuery.isFetchedAfterMount]);
   useEffect(() => { if (storedJobPreflightQuery.isFetchedAfterMount && storedJobPreflightQuery.data && storedJobPreflightQuery.data.jobId === activeJob?.job_id) setJobPreflight(hasUsableStoredApprovalReview(storedJobPreflightQuery.data.report) ? storedJobPreflightQuery.data.report : undefined); }, [activeJob?.job_id, storedJobPreflightQuery.data, storedJobPreflightQuery.isFetchedAfterMount]);
   useEffect(() => { if (storedJobPreflightQuery.isFetchedAfterMount && storedJobPreflightQuery.error) setNotice(storedJobPreflightQuery.error instanceof Error ? storedJobPreflightQuery.error.message : "The durable job approval review could not be restored."); }, [storedJobPreflightQuery.error, storedJobPreflightQuery.isFetchedAfterMount]);
   useEffect(() => { setLiveEvents([]); }, [activeJob?.job_id]);
