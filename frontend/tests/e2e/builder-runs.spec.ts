@@ -90,7 +90,7 @@ test("builder workspace exposes commands, layout, focus, legend, panels, and con
 
   await page.reload();
   await expect(page.getByRole("heading", { name: "Endpoint control validation", level: 1 })).toBeVisible();
-  await page.getByRole("button", { name: "Show all branches", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Focus on success path", exact: true })).toBeVisible();
   await expect(nodes).toHaveCount(initial - 1);
   await expect(page.locator('.react-flow__node[data-id="place_fixture"]')).toHaveCount(0);
 });
@@ -155,6 +155,8 @@ test("laptop canvas and step details fit the viewport without losing the experim
   }
   await page.setViewportSize({ width: 683, height: 384 });
   await page.reload();
+  await expect(page.getByRole("button", { name: "Canvas", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Steps", exact: true }).click();
   await expect(page.getByRole("list", { name: "Experiment steps" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Review run" })).toBeVisible();
   await expect(page.locator(".inspector-panel")).toBeHidden();
@@ -183,9 +185,16 @@ test("large branched experiments keep complete data while focusing readable sect
   await expect(page.getByRole("list", { name: "Experiment steps" }).locator(":scope > li")).toHaveCount(complete.steps.length);
   expect(await page.evaluate(() => localStorage.getItem("bluefire.local.scenario.v1"))).toBe(serialized);
   await page.reload();
+  await expect(page.getByRole("list", { name: "Experiment steps" }).locator(":scope > li")).toHaveCount(complete.steps.length);
+  await expect(section).toHaveCount(0);
+  await page.getByRole("button", { name: "Canvas", exact: true }).click();
   await expect(section).toBeVisible();
+  await expect(section).toHaveValue("all");
+  await section.selectOption("0");
+  await page.reload();
+  await expect(section).toHaveValue("0");
   expect(await page.evaluate(() => localStorage.getItem("bluefire.local.scenario.v1"))).toBe(serialized);
-  expect(await page.locator(".react-flow__node").count()).toBeLessThanOrEqual(8);
+  await expect(page.locator(".react-flow__node")).toHaveCount(8);
 });
 
 test("Execute approval cannot bypass canonical review and legacy authority is scrubbed after reload", async ({ page }) => {
@@ -196,16 +205,18 @@ test("Execute approval cannot bypass canonical review and legacy authority is sc
   await page.getByText("Policy, approval & budgets").click();
   const approval = page.getByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ });
   const operator = page.getByRole("textbox", { name: "Prepared operator label" });
-  await expect(approval).toBeDisabled();
-  await expect(operator).toBeDisabled();
+  await expect(approval).toHaveCount(0);
+  await expect(operator).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Create approval-gated job" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Approve and release job" })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Run preflight" }).click();
   await expect(page.getByText("Demo mode previews Execute configuration but never dispatches runner effects.")).toBeVisible();
-  await expect(approval).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Create approval-gated job" })).toBeDisabled();
 
   await page.evaluate(() => window.localStorage.setItem("bluefire.local.run-config.v1", JSON.stringify({ mode: "execute", approved: true, approvedBy: "persisted-e2e" })));
   await page.reload();
-  await expect(page.getByRole("radio", { name: "Simulate Synthetic evidence" })).toBeChecked();
+  await expect(page.getByRole("radio", { name: "Simulate Synthetic evidence only" })).toBeChecked();
   await expect(page.getByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ })).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => JSON.parse(window.localStorage.getItem("bluefire.local.run-config.v1") ?? "{}"))).toEqual({
     schema_version: "bluefire.ui-preferences.v1",

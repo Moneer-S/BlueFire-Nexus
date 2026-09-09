@@ -54,7 +54,7 @@ test("all major workspaces are reachable", async ({ page }) => {
     ["Actions & Plugins", "Actions & plugins"],
     ["Action Packages", "Action packages"],
     ["Research Sources", "Research sources"],
-    ["AI Planner", "AI Planner"],
+    ["Proposal audit", "Runtime proposal audit"],
     ["Settings", "Settings"],
     ["Help & Docs", "Help center"],
   ] as const;

@@ -70,7 +70,8 @@ def test_collection_scenarios_preserve_compatible_method_contract_and_cleanup(as
 def test_benign_case_changes_actual_transformation_without_removing_collection():
     attack, _ = _plan()
     benign, _ = _plan(ASSETS[1])
-    assert attack.purpose == benign.purpose
+    assert attack.start == benign.start
+    assert attack.edges == benign.edges
     for step in attack.steps:
         if step.id == "transform_fixture":
             assert step.parameters == {"redact_values": False}

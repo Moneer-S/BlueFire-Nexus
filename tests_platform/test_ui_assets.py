@@ -91,7 +91,8 @@ def test_modes_and_autonomy_are_exact_and_independent(source: str) -> None:
     assert "ai_provider_id: config.provider" in api
     assert "autonomy_level: config.autonomy" not in api
     assert "ai_enabled: config.autonomy" not in api
-    assert "Independent from Simulate or Execute mode" in source
+    assert 'label="AI autonomy"' in source
+    assert 'label="Effect mode"' in source
 
 
 def test_execute_approval_is_ephemeral_and_operator_bound() -> None:
@@ -111,8 +112,9 @@ def test_execute_approval_is_ephemeral_and_operator_bound() -> None:
     assert "I approve this exact immutable" in runs
     assert '"job envelope"' in runs
     local_review = (SOURCE_ROOT / "components" / "RunConfiguration.tsx").read_text(encoding="utf-8")
-    assert "<LocalExecuteReview" in runs
-    assert "never sent as an execution capability" in local_review
+    assert "<LocalExecuteReview" not in runs
+    assert "hasExecutePlanReview(preflight)" in runs
+    assert 'config.scopeRefs.includes(reference)' in local_review
     assert "Operator identity" in runs
 
 
@@ -150,7 +152,8 @@ def test_management_ui_uses_durable_secret_safe_routes() -> None:
         assert route in api
     assert "api.saveScenarioVersion(submitted)" in builder
     assert 'api.saveSetting("ui.preferences"' in settings
-    assert "buildUiPreferenceDocument(theme, runConfig.mode, runConfig.autonomy)" in settings
+    assert "buildUiPreferenceDocument(theme, newRunDefaults.mode, newRunDefaults.autonomy)" in settings
+    assert "setNewRunDefaults" in settings
     assert "parseUiPreferenceDocument" in settings
     assert "No authority fields were accepted" in settings
     for kind in ('"runner-profiles"', '"runners"', '"plugins"', '"research-sources"'):
@@ -197,12 +200,12 @@ def test_graph_editor_exposes_typed_contract_controls(source: str) -> None:
         "undo",
         "redo",
         "Validate",
-        "How this step runs",
+        "Run method override",
     ):
         assert capability in builder
     for outcome in ("success", "partial", "blocked", "failed"):
         assert outcome in builder
-    assert "This step requires" in builder
+    assert "guaranteedInputSources(scenario, step.id)" in builder
     assert "output.type !== input.type" in builder
     assert "Boolean(output.multiple) !== Boolean(input.multiple)" in builder
 
@@ -260,19 +263,19 @@ def test_run_ui_separates_preview_preferences_from_canonical_preflight() -> None
     assert "[...config.collectors]" in api
     assert "action_implementations" in api
     builder = (SOURCE_ROOT / "pages" / "Builder.tsx").read_text(encoding="utf-8")
-    assert "Simulate previews this step without running it" in builder
-    assert 'selectedAction={runConfig.mode === "execute" ?' in builder
-    assert "disabled={!executeMode || !behavior.action_ids.length}" in builder
-    assert 'executeMode={runConfig.mode === "execute"}' in builder
+    assert 'selectedAction={runConfig.actionImplementations?.[selected.id] ?? ""}' in builder
+    assert "allowRunOverride={!review}" in builder
+    assert "disabled={!allowRunOverride || !behavior.action_ids.length}" in builder
 
 
 def test_replay_compare_requires_fresh_execute_approval_and_strict_parameters() -> None:
     compare = (SOURCE_ROOT / "pages" / "Compare.tsx").read_text(encoding="utf-8")
     api = (SOURCE_ROOT / "lib" / "api.ts").read_text(encoding="utf-8")
     assert "parseParameterOverrides" in compare
-    assert "Run prospective base-plan check" in compare
-    assert "I approve this reviewed Execute replay request once" in compare
-    assert "Not the replay binding" in compare
+    assert "Review Execute replay" in compare
+    assert "api.prepareReplay" in compare
+    assert "Boolean(execute && !reviewReady)" in compare
+    assert "I approve this reviewed Execute replay request once" not in compare
     assert "Original run and replay identity" in compare
     assert "Replay Variant" in compare
     assert "formatReplayLineage" in compare
@@ -301,17 +304,15 @@ def test_durable_proposal_review_and_retry_stay_separate_from_execute_approval()
     assert "Fresh Execute approval after proposal acceptance" in runs
     assert "Retry as replacement" in runs
     onboarding = (SOURCE_ROOT / "components" / "ExecuteOnboarding.tsx").read_text(encoding="utf-8")
-    assert "creating a durable request still does not approve execution" in onboarding
-    assert "Separate one-time approval releases that request" in onboarding
-    for capability in (
-        "exact observed next edge",
-        "compatible registered behavior",
-        "typed primitive parameters",
-        "exact active profile",
-        "one bounded retry",
-        "every Execute mutation stops for fresh one-time approval",
-    ):
-        assert capability in planner
+    assert "Creating a saved request does not approve execution" in onboarding
+    assert "One exact, current approval releases that request" in onboarding
+    # Ordinary drafting uses Assistant; the advanced route retains the guarded
+    # runtime review, rather than a second capability-advertising front door.
+    assert 'search.get("view") === "audit"' in planner
+    assert '<Navigate to="/builder" replace />' in planner
+    assert "continuationApprovalPreflight(job, review, request" in planner
+    assert "useApprovalDeadline(request.expires_at)" in planner
+    assert "disabled={!ready || !confirmed || !operator.trim() || pending}" in planner
     configuration = (SOURCE_ROOT / "components" / "RunConfiguration.tsx").read_text(
         encoding="utf-8"
     )
@@ -324,14 +325,10 @@ def test_durable_proposal_review_and_retry_stay_separate_from_execute_approval()
         "Execute proposals still require durable review plus a fresh one-time approval before runner effects",
     ):
         assert journey_copy in runs
-    for boundary in (
-        "arbitrary commands",
-        "widen scope",
-        "change profile, tier, or policy",
-        "edge for another outcome",
-        "runtime-apply detection or replay proposals",
-    ):
-        assert boundary in planner
+    approval = (SOURCE_ROOT / "lib" / "approvalReview.ts").read_text(encoding="utf-8")
+    assert 'review?.status !== "accepted" || review.job_id !== job.job_id' in approval
+    assert "originalId === approvalId" in approval
+    assert "request[field] === binding[field]" in approval
 
 
 def test_browser_has_no_direct_runner_or_shell_surface(source: str) -> None:

@@ -15,9 +15,13 @@ test("Runs fits laptop and narrow screens while idle history stays ahead of live
   for (const width of [1366, 390]) {
     await page.setViewportSize({ width, height: 844 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
-    await expect(page.getByRole("combobox", { name: "Runner profile" })).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "Target scope" })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Environment profile" })).toBeVisible();
+    await expect(page.getByRole("group", { name: "Requested access" })).toBeVisible();
+    await expect(page.getByRole("checkbox", { name: "Files in the selected workspace" })).toBeVisible();
   }
+  await expect(page.getByRole("textbox", { name: "Target scope" })).toBeHidden();
+  await page.getByText("Environment and scope references", { exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Target scope" })).toBeVisible();
   await page.getByRole("radio", { name: /^Simulate/ }).check();
   await expect(page.getByRole("region", { name: "Guided local Execute" })).toHaveCount(0);
   await expect(page.locator(".live-console")).toHaveCount(0);
