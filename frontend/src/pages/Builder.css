@@ -9,7 +9,11 @@
 .workbench-builder .builder-actions { flex-wrap: wrap; gap: 7px; }
 .workbench-builder .button { font-size: .72rem; }
 .workbench-builder .experiment-summary { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-width: 0; }
-.workbench-builder .experiment-summary > details { min-width: 0; font-size: .8rem; color: var(--muted-strong); }
+.workbench-builder .experiment-summary > details { flex: 1; min-width: 0; font-size: .8rem; color: var(--muted-strong); }
+.workbench-builder .experiment-summary .field { margin-top: 8px; }
+.workbench-builder .experiment-summary textarea { resize: vertical; min-height: 56px; max-height: 140px; width: 100%; }
+.workbench-builder .builder-assistance-actions { display: flex; flex-wrap: wrap; gap: 6px; align-self: flex-start; }
+.workbench-builder .graph-empty-overlay .button { pointer-events: auto; margin-top: 12px; }
 .workbench-builder .experiment-summary summary { cursor: pointer; }
 .workbench-builder .experiment-summary p { max-width: 88ch; margin: 8px 0 0; line-height: 1.5; }
 .workbench-builder .experiment-summary > button { flex-shrink: 0; }
@@ -78,9 +82,9 @@
 .workbench-builder .inspector-body input, .workbench-builder .inspector-body select { font-size: .76rem; }
 .workbench-builder .step-technical-details { padding-top: 16px; color: var(--muted); font-size: .72rem; }
 .workbench-builder .step-technical-details summary { cursor: pointer; margin-bottom: 10px; }
-.workbench-builder .flow-node { width: 252px; min-height: 126px; padding: 14px 16px; }
+.workbench-builder .flow-node { width: 252px; min-height: 112px; padding: 14px 16px; }
 .workbench-builder .flow-node > strong { font-size: .92rem; line-height: 1.35; margin: 10px 0 6px; }
-.workbench-builder .flow-node .node-context { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin: 0; font-size: .72rem; line-height: 1.4; color: var(--muted); }
+.workbench-builder .flow-node .node-context { overflow-wrap: anywhere; margin: 3px 0 0; font-size: .75rem; line-height: 1.4; color: var(--muted); }
 .workbench-builder .flow-node > footer { font-size: .67rem; margin-top: 10px; }
 .workbench-builder.graph-summary-zoom .flow-node .node-context, .workbench-builder.graph-summary-zoom .flow-node > footer { display: none; }
 .workbench-builder.graph-summary-zoom .flow-node > strong { font-size: 1.12rem; }
@@ -122,6 +126,8 @@
   .workbench-builder .builder-routes footer small, .workbench-builder .builder-routes .route-help { display: none; }
   .workbench-builder .page-header { flex-direction: column; }
   .workbench-builder .experiment-summary { align-items: flex-start; }
+  .workbench-builder .experiment-summary { flex-direction: column; }
+  .workbench-builder .experiment-summary > details { width: 100%; }
   .workbench-builder .graph-topbar { display: flex; flex-wrap: wrap; }
   .workbench-builder .graph-title-controls { width: 100%; }
   .workbench-builder .graph-title-controls .field { display: block; }

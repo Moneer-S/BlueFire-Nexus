@@ -223,7 +223,6 @@ export function ProductProvider({ children }: PropsWithChildren) {
   };
   const setRunConfig = (next: RunConfiguration) => setRunConfigState((current) => {
     const normalized = normalizeRunConfig(next);
-    if (current.mode !== normalized.mode) normalized.actionImplementations = {};
     const currentIntent = { ...current, approved: false, approvedBy: "" };
     const nextIntent = { ...normalized, approved: false, approvedBy: "" };
     return JSON.stringify(currentIntent) === JSON.stringify(nextIntent) ? normalized : nextIntent;
