@@ -12,6 +12,18 @@ const storageKey = "bluefire.replay.pending-submission.v1";
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const maxCharacters = 1_048_576;
 
+export function hasReplayExtent(prepared: ReplayPreparation | undefined): boolean {
+  if (!prepared) return false;
+  const step = prepared.replay_request?.from_step_id;
+  if (step == null) return prepared.replay_extent === "full" && (prepared.binding?.replay_extent == null || prepared.binding.replay_extent === "full") && prepared.lineage?.from_step_id == null;
+  if (typeof step !== "string" || !step || prepared.replay_extent !== "from_step" || prepared.binding?.replay_extent !== "from_step" || prepared.lineage?.from_step_id !== step) return false;
+  if (prepared.preflight?.plan?.mode !== "execute") return prepared.preflight?.plan?.mode === "simulate";
+  const resolution = prepared.binding.resolution as { restoration_plan?: Record<string, unknown> } | undefined;
+  const restoration = resolution?.restoration_plan;
+  return Boolean(restoration && restoration.checkpoint_before_step_id === step && typeof prepared.binding.source?.run_id === "string" && restoration.source_run_id === prepared.binding.source.run_id &&
+    typeof restoration.plan_hash === "string" && restoration.plan_hash.length > 0 && typeof restoration.checkpoint_id === "string" && restoration.checkpoint_id.length > 0 && restoration.plan_hash === prepared.lineage.restoration_plan_hash && restoration.checkpoint_id === prepared.lineage.checkpoint_id);
+}
+
 export function readPendingReplay(): PendingReplaySubmission | undefined {
   try {
     const text = sessionStorage.getItem(storageKey);
@@ -19,7 +31,7 @@ export function readPendingReplay(): PendingReplaySubmission | undefined {
     const value = JSON.parse(text) as PendingReplaySubmission;
     if (!value || typeof value.sourceId !== "string" || !value.sourceId || value.sourceId.length > 200 || [...value.sourceId].some((character) => character.charCodeAt(0) < 32) || !uuid.test(value.submissionId)) return undefined;
     const prepared = value.preparation;
-    if (prepared?.schema_version !== "bluefire.replay-preparation.v1" || prepared.replay_extent !== "full" || prepared.binding?.source?.run_id !== value.sourceId ||
+    if (prepared?.schema_version !== "bluefire.replay-preparation.v1" || !hasReplayExtent(prepared) || prepared.binding?.source?.run_id !== value.sourceId ||
       typeof prepared.preparation_id !== "string" || !prepared.preparation_id || !prepared.preparation_context || prepared.effects_started !== false || prepared.approval_created !== false ||
       !value.payload || typeof value.payload !== "object" || Array.isArray(value.payload) ||
       !sameJson(prepared.replay_request, value.payload) || !sameJson(prepared.binding.replay_request, value.payload) || Object.hasOwn(value.payload, "approval")) return undefined;

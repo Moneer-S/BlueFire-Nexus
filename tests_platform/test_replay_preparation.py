@@ -270,12 +270,12 @@ def test_preparation_drift_is_refused_before_approval_or_effects(
         {"preparation_id": "caller"},
         {"source": {}},
         {"scenario": {}},
-        {"from_step_id": "discover_records"},
+        {"from_step_id": []},
         {"exact": "true"},
         {"swap_step_id": 4},
     ],
 )
-def test_preparation_rejects_authority_and_unsupported_checkpoint_before_resolution(
+def test_preparation_rejects_authority_and_malformed_options_before_resolution(
     service: BlueFireService, monkeypatch: pytest.MonkeyPatch, payload: Mapping[str, Any]
 ) -> None:
     monkeypatch.setattr(service, "_resolve_replay_source_locked", forbid)

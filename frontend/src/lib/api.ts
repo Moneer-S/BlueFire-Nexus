@@ -227,7 +227,7 @@ export interface ReplayPreparation {
   preparation_context: Record<string, unknown>;
   binding: { source: { run_id: string }; replay_request: Record<string, unknown>; [key: string]: unknown };
   replay_request: Record<string, unknown>;
-  replay_extent: "full";
+  replay_extent: "full" | "from_step";
   scenario: Scenario;
   lineage: Record<string, unknown>;
   preflight: PreflightReport;

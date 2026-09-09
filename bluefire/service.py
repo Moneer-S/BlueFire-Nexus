@@ -116,7 +116,6 @@ from .receiver_defense_jobs import ReceiverDefenseJobs
 from .receiver_defense_service import ReceiverDefenseServiceMixin
 from .registry import BehaviorRegistry, RegistryError, load_builtin_registry
 from .replay import ReplayError, ReplayRequest, prepare_replay
-from .replay_checkpoint import CheckpointError, build_restoration_plan
 from .replay_preparation import (
     bind_replay_preparation,
     replay_job_submission,
@@ -124,6 +123,7 @@ from .replay_preparation import (
     replay_review_payload,
     reviewed_replay_readiness,
 )
+from .replay_restoration import resolved_restoration_plan
 from .research import ResearchSource, ResearchSourceError
 from .reviewed_source_intake import ReviewedSourceIntake
 from .run_bundle_export import export_run_bundle
@@ -4364,6 +4364,7 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         runner_readiness: Mapping[str, Any] | None,
         collector_authority: Mapping[str, Any] | None,
         _receiver_defense=None,
+        restoration_plan: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         prepared = resolved["prepared"]
         profile = resolved["profile"]
@@ -4373,6 +4374,11 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             resolution={
                 **receiver_defense_native.authority(self, _receiver_defense),
                 "scenario": prepared.scenario.to_dict(),
+                **(
+                    {"restoration_plan": dict(restoration_plan)}
+                    if restoration_plan is not None
+                    else {}
+                ),
                 "plan": dict(plan),
                 "profile": profile.to_dict() if profile is not None else None,
                 "ai_provider": resolved["provider"],
@@ -4388,7 +4394,7 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
     def prepare_replay(
         self, run_id: str, request: Mapping[str, Any], *, _receiver_defense=None
     ) -> Mapping[str, Any]:
-        """Resolve a full replay review without approval, persistence or effects."""
+        """Resolve an exact replay review without approval, persistence or effects."""
         admission_deadline = monotonic() + _REPLAY_ADMISSION_SECONDS
         with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
             try:
@@ -4491,6 +4497,15 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             if step.get("action_id") is not None
         }
         lineage = self._resolved_replay_lineage(resolved, actions, collector_authority)
+        restoration_plan = resolved_restoration_plan(
+            resolved,
+            report["plan"],
+            actions,
+            target_scope,
+            readiness,
+        )
+        if restoration_plan is not None:
+            lineage["restoration_plan_hash"] = restoration_plan["plan_hash"]
         report.update(
             {
                 "runner_profile": profile.id if profile else None,
@@ -4527,7 +4542,12 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
                 context={
                     **receiver_defense_native.authority(self, _receiver_defense),
                     "replay": lineage,
-                    "resume_from_step_id": None,
+                    "resume_from_step_id": prepared.resume_from_step_id,
+                    **(
+                        {"restoration_plan": restoration_plan}
+                        if restoration_plan is not None
+                        else {}
+                    ),
                     "collector_binding": resolved["collector_binding"],
                     **(
                         {"collector_registry_authority": collector_authority}
@@ -4552,13 +4572,14 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             readiness,
             collector_authority,
             _receiver_defense=_receiver_defense,
+            restoration_plan=restoration_plan,
         )
         return {
             "schema_version": "bluefire.replay-preparation.v1",
             **binding,
             "preparation_context": replay_preparation_context(readiness),
             "replay_request": dict(request),
-            "replay_extent": "full",
+            "replay_extent": "from_step" if prepared.resume_from_step_id else "full",
             "scenario": prepared.scenario.to_dict(),
             "lineage": lineage,
             "preflight": report,
@@ -4735,7 +4756,7 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         _method_comparison: Mapping[str, Any] | None = None,
         _receiver_defense=None,
     ) -> Mapping[str, Any]:
-        """Persist one reviewed full replay intent; approval remains a separate gate."""
+        """Persist one reviewed replay intent; approval remains a separate gate."""
         deadline = monotonic() + _REPLAY_ADMISSION_SECONDS
         try:
             submission_id, intent_digest, submitted = replay_job_submission(run_id, request)
@@ -5027,66 +5048,14 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             replay_record = self._resolved_replay_lineage(
                 resolved, resolved_replay_actions, collector_authority
             )
-            restoration_plan: Mapping[str, Any] | None = None
-            if prepared.checkpoint is not None:
-                if mode is not ExecutionMode.EXECUTE or profile is None:
-                    raise ReplayError("materialized checkpoint replay requires Execute mode")
-                if not isinstance(replay_catalog_authority, Mapping):
-                    raise ReplayError("checkpoint replay requires catalog authority")
-                source_authority = prepared.checkpoint.get("source_authority")
-                if not isinstance(source_authority, Mapping):
-                    raise ReplayError("checkpoint source authority is absent")
-                source_scope = source_authority.get("target_scope")
-                if exact and (
-                    not isinstance(source_scope, Mapping)
-                    or source_scope.get("scope_hash")
-                    != content_hash({"scope_refs": sorted(target_scope.get("scope_refs", []))})
-                ):
-                    raise ReplayError("exact checkpoint replay requires the source target scope")
-                original_actions = prepared.lineage.get("action_implementations_from")
-                changed_action_steps = sorted(
-                    step_id
-                    for step_id, action_id in resolved_replay_actions.items()
-                    if not isinstance(original_actions, Mapping)
-                    or original_actions.get(step_id) != action_id
-                )
-                source_plan = prepared.checkpoint.get("source_plan")
-                source_autonomy = (
-                    source_plan.get("autonomy") if isinstance(source_plan, Mapping) else None
-                )
-                source_profile = source_authority.get("profile")
-                source_profile_id = (
-                    source_profile.get("profile_id")
-                    if isinstance(source_profile, Mapping)
-                    else None
-                )
-                variant_impact = {
-                    "parameter_steps": sorted(
-                        (prepared.lineage.get("parameter_overrides") or {}).keys()
-                    ),
-                    "behavior_steps": (
-                        [prepared.lineage["swap_step_id"]]
-                        if isinstance(prepared.lineage.get("swap_step_id"), str)
-                        else []
-                    ),
-                    "action_steps": changed_action_steps,
-                    "autonomy_changed": resolved_replay_plan.autonomy.value != source_autonomy,
-                    "profile_changed": profile.id != source_profile_id,
-                    "defense_change": prepared.lineage.get("defense_change"),
-                }
-                try:
-                    restoration_plan = build_restoration_plan(
-                        prepared.checkpoint,
-                        target_scenario=prepared.scenario.to_dict(),
-                        target_plan=resolved_replay_plan.to_dict(),
-                        target_profile=profile.to_dict(),
-                        target_scope=target_scope,
-                        target_catalog_authority=replay_catalog_authority,
-                        target_runner_readiness=dict(runner_readiness or {}),
-                        variant_impact=variant_impact,
-                    )
-                except CheckpointError as exc:
-                    raise ReplayError(str(exc)) from exc
+            restoration_plan = resolved_restoration_plan(
+                resolved,
+                resolved_replay_plan.to_dict(),
+                resolved_replay_actions,
+                target_scope,
+                runner_readiness,
+            )
+            if restoration_plan is not None:
                 replay_record["restoration_plan_hash"] = restoration_plan["plan_hash"]
             if "preparation_id" in request:
                 expected_preparation = request["preparation_id"]
@@ -5106,6 +5075,7 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
                     runner_readiness,
                     collector_authority,
                     _receiver_defense=_receiver_defense,
+                    restoration_plan=restoration_plan,
                 )
                 if current_preparation["preparation_id"] != expected_preparation:
                     raise ReplayError(

@@ -10,7 +10,7 @@ Replay answers “what happens if I repeat or declare one controlled change?” 
 - Execute replay still requires current runner availability, target scope, policy, and approval.
 - A defense-change note is metadata; BlueFire does not deploy the defense change.
 
-## Prepare a full replay for review
+## Prepare a replay for review
 
 `POST /api/v1/runs/{run_id}/replay-preparations` accepts the existing exact or
 variant replay options, without `approval`. It returns the actual prospective
@@ -19,9 +19,11 @@ Execute approval binding and envelope when applicable. It does not create a run,
 job, approval, execution workspace, or effect. Execute preparation probes current
 runner readiness; it does not claim readiness when that probe is unavailable.
 
-The response explicitly declares `replay_extent: "full"`. Non-null
-`from_step_id` is refused by this preparation version. Checkpoint replay keeps
-its existing separate restoration review and submission path.
+The response declares `replay_extent: "full"` or `"from_step"` to match the
+requested restart position. Execute from-step review includes the validated
+restoration plan in `binding.resolution.restoration_plan`, with its hash in the
+lineage. Both restoration and restart position are bound into fresh approval.
+Simulate from-step replay retains only validated synthetic prefix artifacts.
 
 After review, submit the returned `replay_request` unchanged to
 `POST /api/v1/runs/{run_id}/replays`, adding the returned `preparation_id` and
@@ -42,7 +44,7 @@ explicit approval flow.
 
 ### Durable replay jobs
 
-`POST /api/v1/runs/{run_id}/replay-jobs` accepts the same prepared full replay
+`POST /api/v1/runs/{run_id}/replay-jobs` accepts the same prepared replay
 submission plus a canonical UUID `submission_id`. Inline `approval` is refused.
 Keep that UUID for retries of the same HTTP submission: the same bound intent
 returns the existing job; reusing it with changed source, options or preparation
@@ -72,8 +74,13 @@ AI proposal review can pause a job with a saved intermediate run. After a
 service restart, unfinished jobs become interrupted and are never automatically
 re-executed. The existing retry operation first requires settled Execute
 workspace cleanup, then creates a fresh preparation, submission UUID and
-approval. Full replay lineage is retained. Checkpoint replay remains on its
-existing synchronous path in this version.
+approval. Replay lineage is retained. From-step replay uses this same saved-job
+path: its preparation reports `replay_extent: "from_step"`, and Execute binds
+the validated checkpoint restoration plan and restart step into both the review
+identity and fresh approval. The runner recreates the earlier steps in a new
+workspace, verifies their material against the checkpoint, then continues.
+Source receipts are never reused. The legacy synchronous endpoint remains
+available for existing clients.
 
 ## Exact replay
 

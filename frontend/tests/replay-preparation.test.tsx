@@ -261,3 +261,41 @@ it("retains the active method operation when the manual replay source is cleared
   expect(route).toContain(`method_job=${jobId}`);
   expect(route).toContain(`source=${source.run_id}`);
 });
+
+
+it("keeps a from-step checkpoint submission frozen across reload and uses the same durable job identity", async () => {
+  const user = userEvent.setup();
+  vi.spyOn(api, "prepareReplay").mockImplementation(async (_id, request) => {
+    const result = prepared(request);
+    result.replay_extent = "from_step";
+    result.binding.replay_extent = "from_step";
+    result.lineage = { from_step_id: request.from_step_id, checkpoint_id: "checkpoint-reviewed", restoration_plan_hash: "sha256:reviewed" };
+    result.binding.resolution = { restoration_plan: { checkpoint_before_step_id: request.from_step_id, source_run_id: source.run_id, checkpoint_id: "checkpoint-reviewed", plan_hash: "sha256:reviewed" } };
+    return result;
+  });
+  mount();
+  vi.mocked(api.submitReplay).mockRejectedValueOnce(new Error("Checkpoint submission response lost"));
+  await user.selectOptions(await screen.findByRole("combobox", { name: "What will change?" }), "from_node");
+  const restart = screen.getByRole("combobox", { name: "Restart node" });
+  const step = source.steps[0]!.step_id;
+  await user.selectOptions(restart, step);
+  await user.click(screen.getByRole("button", { name: "Review Execute replay" }));
+  await screen.findByText("Restore and continue");
+  expect(api.preflight).not.toHaveBeenCalled();
+  expect(screen.queryByRole("checkbox", { name: /I approve/ })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Continue to approval" }));
+  await screen.findByText("Check this submission before starting another replay");
+  const original = vi.mocked(api.submitReplay).mock.calls[0]!;
+  expect(original[1].replay_request.from_step_id).toBe(step);
+  expect(original[1].replay_request).not.toHaveProperty("approval");
+  expect(original[1].replay_request).not.toHaveProperty("action_implementations");
+  cleanup();
+  vi.clearAllMocks();
+  mount();
+  await screen.findByText("Check this submission before starting another replay");
+  await user.click(screen.getByRole("button", { name: "Retry same submission" }));
+  await screen.findByRole("heading", { name: "Saved job status" });
+  expect(vi.mocked(api.submitReplay).mock.calls[0]).toEqual(original);
+  expect(api.prepareReplay).not.toHaveBeenCalled();
+  expect(api.replay).not.toHaveBeenCalled();
+});

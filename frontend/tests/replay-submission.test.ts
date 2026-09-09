@@ -14,7 +14,7 @@ function closedResolution(original: ReturnType<typeof receipt>): ReplaySubmissio
   };
 }
 function receipt() {
-  const payload = { mode: "simulate", strategy: "exact" };
+  const payload: Record<string, unknown> = { mode: "simulate", strategy: "exact" };
   const preparation: ReplayPreparation = {
     schema_version: "bluefire.replay-preparation.v1", preparation_id: "replay-preparation-test",
     preparation_context: { schema_version: "bluefire.replay-preparation-context.v1", runner_readiness: null },
@@ -124,4 +124,32 @@ it("restores the saved replay review without recompiling a different plan", asyn
   await expect(api.preflightStoredJobRequest({ ...job, request: { ...job.request, source_run_id: "changed-source" } })).rejects.toMatchObject({ code: "job_preflight_unavailable" });
   await expect(api.preflightStoredJobRequest({ ...job, request: { ...job.request, replay_request: { changed: true } } })).rejects.toMatchObject({ code: "job_preflight_unavailable" });
   expect(fetchMock).not.toHaveBeenCalled();
+});
+
+
+it.each(["extent", "step", "restoration", "checkpoint"])("refuses a from-step receipt with mismatched %s", (change) => {
+  const original = receipt();
+  const payload = { from_step_id: "inspect" };
+  original.payload = payload;
+  Object.assign(original.preparation, { replay_extent: "from_step", replay_request: payload,
+    lineage: { from_step_id: "inspect", checkpoint_id: "checkpoint-saved", restoration_plan_hash: "sha256:saved" },
+    preflight: { ready: false, status: "approval_required", plan: { mode: "execute" } },
+    binding: { source: { run_id: original.sourceId }, replay_extent: "from_step", replay_request: payload,
+      resolution: { restoration_plan: { source_run_id: original.sourceId, checkpoint_before_step_id: "inspect", checkpoint_id: "checkpoint-saved", plan_hash: "sha256:saved" } } },
+  });
+  expect(storePendingReplay(original)).toBe(true);
+  const changed = structuredClone(original);
+  if (change === "extent") changed.preparation.replay_extent = "full";
+  else if (change === "step") changed.preparation.lineage.from_step_id = "different";
+  else if (change === "checkpoint") changed.preparation.lineage.checkpoint_id = "different";
+  else changed.preparation.lineage.restoration_plan_hash = "sha256:different";
+  sessionStorage.setItem(key, JSON.stringify(changed));
+  expect(readPendingReplay()).toBeUndefined();
+});
+
+it.each([undefined, null])("keeps existing full replay receipts when from_step_id is %s", (from_step_id) => {
+  const original = receipt();
+  Object.assign(original.payload, from_step_id === undefined ? {} : { from_step_id });
+  expect(storePendingReplay(original)).toBe(true);
+  expect(readPendingReplay()).toEqual(original);
 });

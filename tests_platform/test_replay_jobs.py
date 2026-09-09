@@ -37,11 +37,16 @@ def awaiting(service, job_id):
     return service.job_controller.wait_for_state(job_id, {JobState.AWAITING_APPROVAL}, timeout=10)
 
 
-def test_simulate_replay_job_returns_finalized_result_with_original_lineage(service):
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"parameter_overrides": {"create_fixture": {"record_count": 3}}},
+        {"from_step_id": "discover_records"},
+    ],
+)
+def test_simulate_replay_job_returns_finalized_result_with_original_lineage(service, options):
     source = source_run(service)
-    payload = submission(
-        service, source, options={"parameter_overrides": {"create_fixture": {"record_count": 3}}}
-    )
+    payload = submission(service, source, options=options)
     created = service.submit_replay(source["run_id"], payload)
     job_id = created["job"]["job_id"]
     assert created["job"]["kind"] == "scenario.replay"

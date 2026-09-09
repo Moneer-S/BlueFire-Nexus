@@ -1,4 +1,4 @@
-"""Exact, non-authorizing review bindings for full replay preparation."""
+"""Exact, non-authorizing review bindings for replay preparation."""
 
 from __future__ import annotations
 
@@ -94,11 +94,8 @@ def replay_review_payload(request: Mapping[str, Any]) -> dict[str, Any]:
     """Keep the exact JSON options reviewed; approval is a separate operation."""
     if set(request) - _FIELDS:
         raise ReplayError("replay preparation contains unknown or authority-bearing fields")
-    if request.get("from_step_id") is not None:
-        raise ReplayError(
-            "replay preparation currently supports full replay only; checkpoints require their existing separate review"
-        )
     for name in (
+        "from_step_id",
         "swap_step_id",
         "swap_behavior_id",
         "autonomy",
@@ -136,7 +133,7 @@ def bind_replay_preparation(
         "replay_request": payload,
         "request_digest": content_hash(payload),
         "resolution": dict(resolution),
-        "replay_extent": "full",
+        "replay_extent": "from_step" if payload.get("from_step_id") is not None else "full",
     }
     return {
         "preparation_id": "replay-preparation-" + content_hash(binding)[7:],

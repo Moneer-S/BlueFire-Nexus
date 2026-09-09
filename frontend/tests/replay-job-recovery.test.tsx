@@ -70,7 +70,7 @@ it("shows a cancelled job's retained events without claiming it is awaiting a ru
   vi.spyOn(api, "runEvents").mockImplementation(async (_id, cursor = 0) => ({ schema_version: "bluefire.event-page.v1", run_id: "run-partial", after_sequence: cursor, next_sequence: 3, has_more: false, items: cursor ? [] : [1, 2, 3].map((sequence) => ({ sequence, event_type: "step.completed", payload: { step_id: `partial-${sequence}` } })) }));
   mount();
   expect(await screen.findByText("Job cancelled")).toBeVisible();
-  expect(await screen.findByText(/3 incremental events/)).toBeVisible();
+  expect(await screen.findAllByText("Step.completed")).toHaveLength(3);
   expect(screen.getByText(/no finalized run record is linked/)).toBeVisible();
   expect(screen.queryByText("Awaiting a run")).not.toBeInTheDocument();
   expect(screen.queryByText(/ownership is reconciled/)).not.toBeInTheDocument();
@@ -235,4 +235,40 @@ it.each(["404", "job", "source", "request", "preparation", "context"])("retains 
   await waitFor(() => expect(view.client.getQueryState(["job", firstId])?.fetchStatus).toBe("idle"));
   expect(detail).toHaveBeenCalledWith(firstId);
   expect(readPendingReplay()).toEqual(pendingReceipt);
+});
+
+
+it.each([false, true])("restores checkpoint review at approval and blocks mismatched restoration: %s", async (mismatch) => {
+  const job = replayJob();
+  const prepared = structuredClone(preparation);
+  const checkpointRequest = { from_step_id: "inspect" };
+  Object.assign(prepared, { replay_extent: "from_step", replay_request: checkpointRequest,
+    lineage: { from_step_id: "inspect", checkpoint_id: "checkpoint-saved", restoration_plan_hash: "sha256:saved" },
+    binding: { source: { run_id: sourceId }, replay_extent: "from_step", replay_request: checkpointRequest,
+      resolution: { restoration_plan: { source_run_id: sourceId, checkpoint_before_step_id: "inspect", checkpoint_id: "checkpoint-saved", plan_hash: "sha256:saved" } } },
+  });
+  if (mismatch) prepared.lineage.restoration_plan_hash = "sha256:changed";
+  job.request = { ...job.request, replay_request: checkpointRequest, replay_preparation: prepared };
+  inventory([job]);
+  vi.spyOn(api, "job").mockResolvedValue(job);
+  const approve = vi.spyOn(api, "approveJob");
+  const user = userEvent.setup();
+  const view = mount();
+  if (mismatch) {
+    await screen.findByText("Checkpoint review unavailable");
+    expect(screen.getByRole("checkbox", { name: /I approve this exact/ })).toBeDisabled();
+    expect(approve).not.toHaveBeenCalled();
+    return;
+  }
+  await screen.findByText("Restore and continue");
+  const checkbox = screen.getByRole("checkbox", { name: /I approve this exact/ });
+  await waitFor(() => expect(checkbox).toBeEnabled());
+  await user.click(screen.getByText("Checkpoint and restoration details"));
+  expect(screen.getByText(/"checkpoint_id": "checkpoint-saved"/)).toBeVisible();
+  await user.click(checkbox);
+  view.unmount(); view.client.clear();
+  mount();
+  await screen.findByText("Restore and continue");
+  expect(screen.getByRole("checkbox", { name: /I approve this exact/ })).not.toBeChecked();
+  expect(approve).not.toHaveBeenCalled();
 });

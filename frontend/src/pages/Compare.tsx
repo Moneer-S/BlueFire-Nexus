@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, buildReplayPayload, DEMO_MODE, type ReplayPreparation } from "../lib/api";
 import { hasMaterialDelta } from "../lib/comparison-materiality";
-import { readPendingReplay, storePendingReplay, clearPendingReplay, settleReplayResolution } from "../lib/replay-submission";
+import { hasReplayExtent, readPendingReplay, storePendingReplay, clearPendingReplay, settleReplayResolution } from "../lib/replay-submission";
 import { sameJson } from "../lib/replay-review";
 import { comparisonReport } from "../lib/comparison-report";
 import { sourceRunParam } from "../lib/run-handoffs";
@@ -53,7 +53,7 @@ function ComparisonWorkspace() {
   const runsQuery = useQuery({ queryKey: ["runs"], queryFn: api.runs }); const catalogQuery = useQuery({ queryKey: ["catalog"], queryFn: api.catalog }); const client = useQueryClient();
   const [selected, setSelected] = useState<string[]>(() => [...new Set([linkedSource, linkedReplay].filter(Boolean))]); const [search, setSearch] = useState(""); const [comparison, setComparison] = useState<ComparisonResponse>(); const [sourceId, setSourceId] = useState(linkedSource); const [strategy, setStrategy] = useState<ReplayStrategy>("exact");
   const [fromStep, setFromStep] = useState(""); const [swapStep, setSwapStep] = useState(""); const [swapBehavior, setSwapBehavior] = useState(""); const [profile, setProfile] = useState(""); const [autonomy, setAutonomy] = useState<"preserve" | AutonomyLevel>("preserve"); const [provider, setProvider] = useState(""); const [defenseChange, setDefenseChange] = useState(""); const [parameterJson, setParameterJson] = useState(defaultParameterJson); const [targetScope, setTargetScope] = useState("");
-  const [replayPreflight, setReplayPreflight] = useState<PreflightReport>(); const [replayConfirmed, setReplayConfirmed] = useState(false); const [approvedBy, setApprovedBy] = useState(""); const [localError, setLocalError] = useState<string>();
+  const [replayPreflight, setReplayPreflight] = useState<PreflightReport>(); const [localError, setLocalError] = useState<string>();
   const [preparation, setPreparation] = useState<ReplayPreparation>();
   const [parameterDraftValid, setParameterDraftValid] = useState(true);
   const parameterDraftValidRef = useRef(true);
@@ -81,7 +81,7 @@ function ComparisonWorkspace() {
     setSelected((items) => checked ? [...new Set([...items, runId])] : items.filter((id) => id !== runId));
   };
   const reviewedSource = useRef<RunRecord | undefined>(undefined);
-  const resetReview = () => { preflightGeneration.current += 1; setReplayPreflight(undefined); setPreparation(undefined); setReplayConfirmed(false); setApprovedBy(""); setLocalError(undefined); };
+  const resetReview = () => { preflightGeneration.current += 1; setReplayPreflight(undefined); setPreparation(undefined); setLocalError(undefined); };
   useEffect(() => {
     navigationGeneration.current += 1;
     comparisonGeneration.current += 1;
@@ -91,7 +91,7 @@ function ComparisonWorkspace() {
     setSelected([...new Set([linkedSource, linkedReplay].filter(Boolean))]);
     setComparison(undefined);
     preflightGeneration.current += 1;
-    setReplayPreflight(undefined); setPreparation(undefined); setReplayConfirmed(false); setApprovedBy("");
+    setReplayPreflight(undefined); setPreparation(undefined);
   }, [linkedSource, linkedReplay]);
   useEffect(() => {
     setStrategy("exact"); setFromStep(""); setSwapStep(""); setSwapBehavior("");
@@ -125,20 +125,19 @@ function ComparisonWorkspace() {
   const currentReplayPayload = () => buildReplayPayload({ strategy, fromStep, swapStep, swapBehavior, profile, autonomy, provider, defenseChange,
     parameterOverrides: strategy === "parameters" ? parseParameterOverrides(parameterJson, source?.scenario) : undefined,
     targetScope: source?.mode === "execute" ? scopeRefs : undefined,
-    actionImplementations: source?.mode === "execute" && strategy !== "exact" ? actionImplementations : undefined });
+    actionImplementations: source?.mode === "execute" && strategy !== "exact" && strategy !== "from_node" ? actionImplementations : undefined });
   const preflightMutation = useMutation({ mutationFn: async (attempt: ReplayPreflightAttempt) => {
     assertReplayVariant(attempt.strategy, attempt.fromStep, attempt.swapStep, attempt.swapBehavior);
     if (!attempt.scopeRefs.length) throw new Error("Execute replay requires an exact target scope.");
     if (attempt.strategy === "parameters") parseParameterOverrides(attempt.parameterJson, attempt.sourceScenario);
-    if (attempt.strategy === "from_node") return { generation: attempt.generation, report: await api.preflight(attempt.scenario, attempt.config), preparation: undefined };
     const prepared = await api.prepareReplay(attempt.sourceId, attempt.payload);
-    if (prepared.schema_version !== "bluefire.replay-preparation.v1" || prepared.replay_extent !== "full" || prepared.binding.source.run_id !== attempt.sourceId ||
+    if (prepared.schema_version !== "bluefire.replay-preparation.v1" || !hasReplayExtent(prepared) || prepared.binding.source.run_id !== attempt.sourceId ||
       !sameJson(prepared.replay_request, attempt.payload) || !sameJson(prepared.binding.replay_request, attempt.payload) || prepared.effects_started !== false || prepared.approval_created !== false)
       throw new Error("The returned review does not match this replay request. Prepare it again.");
     return { generation: attempt.generation, report: prepared.preflight, preparation: prepared };
   }, onSuccess: ({ generation, report, preparation: prepared }) => {
     if (generation !== preflightGeneration.current) return;
-    setReplayPreflight(report); setPreparation(prepared); setReplayConfirmed(false); setApprovedBy(""); setLocalError(undefined);
+    setReplayPreflight(report); setPreparation(prepared); setLocalError(undefined);
   }, onError: (error, attempt) => {
     if (attempt.generation !== preflightGeneration.current) return;
     setReplayPreflight(undefined); setPreparation(undefined); setLocalError(error instanceof Error ? error.message : "Replay preparation failed.");
@@ -154,7 +153,7 @@ function ComparisonWorkspace() {
     mutationFn: async (attempt: ReplayAttempt) => {
       if (attempt.legacy) return { kind: "legacy" as const, run: await api.replay(attempt.sourceId, attempt.payload) };
       const prepared = attempt.preparation ?? await api.prepareReplay(attempt.sourceId, attempt.payload);
-      if (prepared.schema_version !== "bluefire.replay-preparation.v1" || prepared.replay_extent !== "full" || prepared.binding?.source?.run_id !== attempt.sourceId || !sameJson(prepared.replay_request, attempt.payload) || !sameJson(prepared.binding.replay_request, attempt.payload) || prepared.effects_started !== false || prepared.approval_created !== false) throw new Error("The prepared replay does not match this submission.");
+      if (prepared.schema_version !== "bluefire.replay-preparation.v1" || !hasReplayExtent(prepared) || prepared.binding?.source?.run_id !== attempt.sourceId || !sameJson(prepared.replay_request, attempt.payload) || !sameJson(prepared.binding.replay_request, attempt.payload) || prepared.effects_started !== false || prepared.approval_created !== false) throw new Error("The prepared replay does not match this submission.");
       attempt.preparation = prepared;
       if (!storePendingReplay({ sourceId: attempt.sourceId, payload: attempt.payload, preparation: prepared, submissionId: attempt.submissionId })) throw new Error("The replay retry receipt could not be saved. Enable browser session storage before submitting this replay.");
       attempt.publicationStarted = true;
@@ -177,7 +176,7 @@ function ComparisonWorkspace() {
       if (attempt.navigationGeneration !== navigationGeneration.current) return;
       setSelected([attempt.sourceId, run.run_id]); setComparison(undefined);
       setSearchParams((current) => { const next = new URLSearchParams(current); next.set("source", attempt.sourceId); next.set("replay", run.run_id); return next; });
-      setLocalError(undefined); setReplayPreflight(undefined); setPreparation(undefined); setReplayConfirmed(false); setApprovedBy("");
+      setLocalError(undefined); setReplayPreflight(undefined); setPreparation(undefined);
     },
     onError: (error, attempt) => {
       if (attempt.publicationStarted) setRestoredSubmission(readPendingReplay());
@@ -185,7 +184,6 @@ function ComparisonWorkspace() {
       setLocalError(error instanceof Error ? error.message : "Replay submission could not be confirmed.");
       if (!attempt.publicationStarted) { clearPendingReplay(attempt.submissionId); setRestoredSubmission(undefined); setReplayPreflight(undefined); setPreparation(undefined); submissionRef.current = undefined; }
     },
-    onSettled: (_run, _error, attempt) => { if (attempt.navigationGeneration === navigationGeneration.current) { setReplayConfirmed(false); setApprovedBy(""); } },
   });
   const uncertainSubmission = replayMutation.isError && replayMutation.variables?.publicationStarted && replayMutation.variables.navigationGeneration === navigationGeneration.current ? replayMutation.variables : restoredSubmission ? { ...restoredSubmission, navigationGeneration: navigationGeneration.current, legacy: false, publicationStarted: true } : undefined;
   const resolutionMutation = useMutation({
@@ -219,17 +217,13 @@ function ComparisonWorkspace() {
       assertReplayVariant(strategy, fromStep, swapStep, swapBehavior);
       if (!variantReady || (strategy === "parameters" && !parameterDraftValidRef.current)) throw new Error("Finish the parameter change before running the replay.");
       const execute = source.mode === "execute";
-      if (execute && (!scopeRefs.length || !executeReviewReady(replayPreflight) || (strategy === "from_node" && (!replayConfirmed || !approvedBy.trim())))) throw new Error("Execute replay requires the displayed prospective review and a fresh explicit approval.");
+      if (execute && (!scopeRefs.length || !executeReviewReady(replayPreflight))) throw new Error("Execute replay requires its exact prepared review before creating a job.");
       const current = currentReplayPayload();
-      if (execute && strategy !== "from_node" && (!preparation || preparation.binding.source.run_id !== sourceId || !sameJson(preparation.replay_request, current))) throw new Error("Prepare the exact replay before approving it.");
-      const payload = execute && strategy === "from_node" ? {
-        ...(preparation ? preparation.replay_request : current),
-        ...(preparation ? { preparation_id: preparation.preparation_id, preparation_context: preparation.preparation_context } : {}),
-        approval: { confirmed: true, approved_by: approvedBy.trim() },
-      } : current;
+      if (execute && (!preparation || preparation.binding.source.run_id !== sourceId || !sameJson(preparation.replay_request, current))) throw new Error("Prepare the exact replay before approving it.");
+      const payload = current;
       const previous = submissionRef.current;
       const attempt = previous && previous.sourceId === sourceId && previous.navigationGeneration === navigationGeneration.current && sameJson(previous.payload, payload) && previous.preparation?.preparation_id === preparation?.preparation_id
-        ? previous : { sourceId, navigationGeneration: navigationGeneration.current, payload: structuredClone(payload), preparation, submissionId: crypto.randomUUID(), legacy: strategy === "from_node" || DEMO_MODE };
+        ? previous : { sourceId, navigationGeneration: navigationGeneration.current, payload: structuredClone(payload), preparation, submissionId: crypto.randomUUID(), legacy: DEMO_MODE };
       submissionRef.current = attempt;
       replayMutation.mutate(attempt);
     } catch (error) { setLocalError(error instanceof Error ? error.message : "Replay was refused."); }
@@ -238,7 +232,7 @@ function ComparisonWorkspace() {
   if (runsQuery.isError) return <ErrorState error={runsQuery.error} retry={() => runsQuery.refetch()} />;
   if (catalogQuery.isError) return <ErrorState error={catalogQuery.error} retry={() => catalogQuery.refetch()} />;
   const runs = runsQuery.data.runs.filter((run) => `${run.run_id} ${runLabel(run)} ${run.objective ?? ""} ${run.scenario_id ?? ""}`.toLowerCase().includes(search.toLowerCase())); const sourceSteps = source?.steps ?? []; const selectedSwapBehavior = sourceSteps.find((step) => step.step_id === swapStep)?.behavior_id; const sourceBehavior = catalogQuery.data.behaviors.find((item) => item.id === selectedSwapBehavior); const compatible = catalogQuery.data.behaviors.filter((candidate) => sourceBehavior && candidate.id !== sourceBehavior.id && JSON.stringify(candidate.inputs.map((item) => [item.type, item.required, item.multiple])) === JSON.stringify(sourceBehavior.inputs.map((item) => [item.type, item.required, item.multiple])) && JSON.stringify(candidate.outputs.map((item) => [item.type, item.multiple])) === JSON.stringify(sourceBehavior.outputs.map((item) => [item.type, item.multiple])));
-  const execute = source?.mode === "execute"; const reviewReady = executeReviewReady(replayPreflight) && (strategy === "from_node" || Boolean(preparation)) && variantReady;
+  const execute = source?.mode === "execute"; const reviewReady = executeReviewReady(replayPreflight) && Boolean(preparation) && variantReady;
   return <div className="page compare-page"><PageHeader title="Compare runs" actions={<><Link className="button button-ghost button-medium" to="/compare?receiver=1">Test a lab receiver control</Link><Button variant="secondary" onClick={() => runsQuery.refetch()}><RotateCcw/>Refresh history</Button></>} />
     {runsQuery.data.unavailable_run_count ? <Callout tone="warning" title="Unavailable run records excluded">{runsQuery.data.unavailable_run_count} in-flight, interrupted, or integrity-failed run record{runsQuery.data.unavailable_run_count === 1 ? " is" : "s are"} unavailable for replay and comparison. Refresh after finalization or recovery completes.</Callout> : null}
     {compareMutation.isError && compareMutation.variables?.generation === comparisonGeneration.current ? <ErrorState title="Comparison unavailable" error={compareMutation.error} /> : comparison ? <div className="comparison-workspace" ref={resultsRef} tabIndex={-1} role="region" aria-label="Comparison results"><ComparisonResult comparison={comparison} names={Object.fromEntries(runsQuery.data.runs.map(run => [run.run_id, runLabel(run)]))} /><DetectorEvaluationComparison runIds={comparison.summaries.map((run) => run.run_id)} /></div> : null}
@@ -255,8 +249,8 @@ function ComparisonWorkspace() {
           <details className="replay-settings"><summary>Advanced parameter JSON</summary><Field label="Parameter overrides JSON" hint='Object keyed by step, then parameter. All values are validated before a replay.'><textarea rows={8} value={parameterJson} onChange={(event) => { setParameterJson(event.target.value); resetReview(); }} disabled={replayMutation.isPending} spellCheck={false}/></Field></details>
           {parameterError ? <Callout tone="danger" title="Parameter changes need attention">{parameterError}</Callout> : null}
         </> : null}{strategy !== "exact" ? <details className="replay-settings"><summary>Record a defense change</summary><Field label="Declared defense change" hint="Describe a change already applied in your lab. This note does not change a defense."><textarea rows={3} maxLength={500} value={defenseChange} onChange={(event) => { setDefenseChange(event.target.value); resetReview(); }} placeholder="For example: revised the receiver policy to require redacted records"/></Field></details> : null}
-        {execute ? <><Callout tone="warning" title="Execute replay is a new effect authorization">{strategy === "from_node" ? "Resuming from a step currently uses a prospective base-plan check. The server resolves the replay lineage and restored inputs again before it accepts a fresh approval." : "Review the complete replay, including the original run, your changes, allowed effects, and cleanup. Preparing a replay does not approve it or start any effects."}</Callout><Field label="Exact target scope"><input value={targetScope} onChange={(event) => { setTargetScope(event.target.value); resetReview(); }} placeholder="sandbox.workspace"/></Field><Button variant="secondary" onClick={requestPreflight} disabled={!replayScenario || !variantReady || preflightMutation.isPending || !scopeRefs.length}><ShieldCheck/>{preflightMutation.isPending ? "Preparing review" : strategy === "from_node" ? "Run prospective base-plan check" : "Review Execute replay"}</Button>{replayPreflight ? <ReplayPreflight report={replayPreflight} preparation={preparation}/> : null}{strategy === "from_node" ? <><label className="check-row"><input type="checkbox" checked={replayConfirmed} onChange={(event) => setReplayConfirmed(event.target.checked)} disabled={!reviewReady}/><span><strong>I approve this reviewed Execute replay request once</strong><small>{preparation ? "Approval applies only to this prepared replay. Changed inputs or stale readiness require a new review." : "Unchecked by default; the server derives the exact replay binding and refuses any mismatch."}</small></span></label><Field label="Fresh replay operator identity"><input value={approvedBy} onChange={(event) => setApprovedBy(event.target.value)} disabled={!reviewReady} autoComplete="off" maxLength={128}/></Field></> : <p className="field-note">Continue to Runs to approve this exact review and follow the saved job. No effects start before approval.</p>}</> : null}
-        {!variantReady && sourceId ? <Callout tone="warning" title="Replay variant incomplete">{strategy === "from_node" ? "Choose a restart step." : strategy === "swap" ? "Choose a step and its replacement method." : strategy === "setup" ? "Change an environment or AI setting, or record the defense change made in your lab." : "Change at least one step parameter."}</Callout> : null}{localError ? <Callout tone="danger" title="Replay refused">{localError}</Callout> : replayMutation.isSuccess && replayMutation.data.kind === "legacy" ? <Callout tone="success" title="Replay created"><code>{replayMutation.data.run.run_id}</code> is lineage-linked to <code>{replayMutation.variables?.sourceId}</code>.{linkedSource === replayMutation.variables?.sourceId && linkedReplay === replayMutation.data.run.run_id ? " The source and replay are selected for comparison." : " Your current source selection was preserved."}</Callout> : null}<Button variant="primary" className="button-full" onClick={requestReplay} disabled={!sourceId || !detailQuery.isSuccess || !variantReady || replayMutation.isPending || Boolean(execute && (!reviewReady || (strategy === "from_node" && (!replayConfirmed || !approvedBy.trim()))))}>{replayMutation.isPending ? "Submitting replay" : execute ? strategy === "from_node" ? "Create approved Execute replay" : "Continue to approval" : "Create Simulate replay"}</Button></fieldset>{uncertainSubmission ? <Callout tone="warning" title="Check this submission before starting another replay"><p>The response for original run <code>{uncertainSubmission.sourceId}</code> could not be confirmed. Retrying uses the same saved job identity and reviewed request, including after a reload.</p><details><summary>Saved replay request</summary><pre>{JSON.stringify(uncertainSubmission.payload, null, 2)}</pre></details><Button disabled={replayMutation.isPending || resolutionMutation.isPending} onClick={() => replayMutation.mutate(uncertainSubmission)}>Retry same submission</Button><Link className="button button-secondary button-medium" to={`/runs?job=job-${uncertainSubmission.submissionId.replaceAll("-", "")}`}>View submission status</Link><p>If no job was created, close this request to edit and prepare again. If a job already exists, BlueFire opens that saved job and leaves it unchanged.</p><Button disabled={replayMutation.isPending || resolutionMutation.isPending} onClick={() => resolutionMutation.mutate(uncertainSubmission)}>{resolutionMutation.isPending ? "Checking and closing request" : "Close request and start again"}</Button></Callout> : null}</div></Panel>
+        {execute ? <><Callout tone="warning" title="Execute replay is a new effect authorization">Review the complete replay, including the original run, your changes, restored inputs, allowed effects, and cleanup. Preparing a replay does not approve it or start any effects.</Callout><Field label="Exact target scope"><input value={targetScope} onChange={(event) => { setTargetScope(event.target.value); resetReview(); }} placeholder="sandbox.workspace"/></Field><Button variant="secondary" onClick={requestPreflight} disabled={!replayScenario || !variantReady || preflightMutation.isPending || !scopeRefs.length}><ShieldCheck/>{preflightMutation.isPending ? "Preparing review" : "Review Execute replay"}</Button>{replayPreflight ? <ReplayPreflight report={replayPreflight} preparation={preparation}/> : null}<p className="field-note">Continue to Runs to approve this exact review and follow the saved job. No effects start before approval.</p></> : null}
+        {!variantReady && sourceId ? <Callout tone="warning" title="Replay variant incomplete">{strategy === "from_node" ? "Choose a restart step." : strategy === "swap" ? "Choose a step and its replacement method." : strategy === "setup" ? "Change an environment or AI setting, or record the defense change made in your lab." : "Change at least one step parameter."}</Callout> : null}{localError ? <Callout tone="danger" title="Replay refused">{localError}</Callout> : replayMutation.isSuccess && replayMutation.data.kind === "legacy" ? <Callout tone="success" title="Replay created"><code>{replayMutation.data.run.run_id}</code> is lineage-linked to <code>{replayMutation.variables?.sourceId}</code>.{linkedSource === replayMutation.variables?.sourceId && linkedReplay === replayMutation.data.run.run_id ? " The source and replay are selected for comparison." : " Your current source selection was preserved."}</Callout> : null}<Button variant="primary" className="button-full" onClick={requestReplay} disabled={!sourceId || !detailQuery.isSuccess || !variantReady || replayMutation.isPending || Boolean(execute && !reviewReady)}>{replayMutation.isPending ? "Submitting replay" : execute ? "Continue to approval" : "Create Simulate replay"}</Button></fieldset>{uncertainSubmission ? <Callout tone="warning" title="Check this submission before starting another replay"><p>The response for original run <code>{uncertainSubmission.sourceId}</code> could not be confirmed. Retrying uses the same saved job identity and reviewed request, including after a reload.</p><details><summary>Saved replay request</summary><pre>{JSON.stringify(uncertainSubmission.payload, null, 2)}</pre></details><Button disabled={replayMutation.isPending || resolutionMutation.isPending} onClick={() => replayMutation.mutate(uncertainSubmission)}>Retry same submission</Button><Link className="button button-secondary button-medium" to={`/runs?job=job-${uncertainSubmission.submissionId.replaceAll("-", "")}`}>View submission status</Link><p>If no job was created, close this request to edit and prepare again. If a job already exists, BlueFire opens that saved job and leaves it unchanged.</p><Button disabled={replayMutation.isPending || resolutionMutation.isPending} onClick={() => resolutionMutation.mutate(uncertainSubmission)}>{resolutionMutation.isPending ? "Checking and closing request" : "Close request and start again"}</Button></Callout> : null}</div></Panel>
     </div>
     </details>
     <MethodComparison sourceId={sourceId} runs={runsQuery.data.runs} catalog={catalogQuery.data} />
@@ -265,13 +259,13 @@ function ComparisonWorkspace() {
 
 function ReplayPreflight({ report, preparation }: { report: PreflightReport; preparation?: ReplayPreparation }) {
   if (preparation) return <section aria-label="Prepared Execute replay">
+    {preparation.replay_extent === "from_step" ? <Callout title="Restore and continue"><p>The runner recreates the earlier steps in a fresh workspace, verifies their files against the saved checkpoint, then continues from <strong>{String(preparation.replay_request.from_step_id)}</strong>. Earlier effects and cleanup are part of this new approval.</p></Callout> : null}
     {report.plan ? <CanonicalPlanReview plan={report.plan} cleanup={report.cleanup} scope={report.scope} binding={report.approval_binding} envelope={report.approval_envelope}/> : null}
     <DataList items={[{ label: "Independent observers", value: report.collectors?.length ? report.collectors.join(", ") : "None reported" }]} />
     {report.findings?.length ? <Callout tone={executeReviewReady(report) ? "warning" : "danger"} title={executeReviewReady(report) ? "Review findings" : "Replay is blocked"}><ul>{report.findings.map((item, index) => <li key={index}>{typeof item === "string" ? item : item.message ?? item.code ?? "Finding"}</li>)}</ul></Callout> : null}
     <details><summary>Original run and replay identity</summary><p>Original run: <code>{preparation.binding.source.run_id}</code></p><pre>{JSON.stringify({ preparation_id: preparation.preparation_id, binding: preparation.binding, lineage: preparation.lineage, preflight: report }, null, 2)}</pre></details>
   </section>;
-  const binding = report.approval_binding; const envelope = report.approval_envelope; const steps = Array.isArray(report.plan?.steps) ? report.plan.steps.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object") : [];
-  return <section className={`preflight-result ${executeReviewReady(report) ? "approval-required" : "blocked"}`} aria-label="Prospective Execute replay check"><header><strong>{executeReviewReady(report) ? "Prospective base plan ready for review" : "Prospective check blocked"}</strong><Badge tone={executeReviewReady(report) ? "warning" : "danger"}>{sentence(report.status)}</Badge></header><Callout title="Not the replay binding">These digests cover this prospective base-plan compilation. Replay lineage, restart position, and source identity are bound only inside the replay request and may change or refuse the final authorization.</Callout><DataList items={[{ label: "Prospective state digest", value: binding ? <code>{binding.state_digest}</code> : "Not reported" }, { label: "Prospective plan digest", value: binding ? <code>{binding.plan_digest}</code> : "Not reported" }, { label: "Prospective scope digest", value: binding ? <code>{binding.target_scope_digest}</code> : "Not reported" }, { label: "Prospective envelope digest", value: envelope ? <code>{envelope.envelope_digest}</code> : "Not reported" }, { label: "Profile / tier", value: binding ? `${binding.profile_id} / ${sentence(binding.maximum_tier)}` : "Not reported" }, { label: "Cleanup", value: JSON.stringify(report.cleanup ?? {}) }]} />{steps.map((step) => <article className="replay-plan-step" key={String(step.step_id)}><strong>{String(step.step_id)}</strong><code>{String(step.behavior_id)}</code><Badge tone={step.action_id ? "warning" : "info"}>{String(step.action_id ?? step.simulation_id ?? "Unresolved")}</Badge><pre>{JSON.stringify(step.parameters ?? {}, null, 2)}</pre></article>)}{envelope ? <p className="field-note">{envelope.steps.reduce((count, step) => count + step.options.length, 0)} primary/alternate contract options appear in this prospective compilation.</p> : null}{report.findings?.length ? <ul>{report.findings.map((item, index) => <li key={index}>{typeof item === "string" ? item : item.message ?? item.code ?? "Finding"}</li>)}</ul> : null}</section>;
+  return <Callout tone="warning" title="Replay review unavailable">Prepare this replay again to review its exact source and restart settings.</Callout>;
 }
 
 function executeReviewReady(report?: PreflightReport) { return Boolean(report && report.status === "approval_required" && report.plan && report.approval_binding && report.approval_envelope); }

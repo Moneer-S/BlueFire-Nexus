@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, AlertTriangle, CircleStop, Clock3, FileSearch, Gauge, ListTree, Pause, Play, RotateCcw, ShieldCheck, Sparkles, TerminalSquare } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, ApiError, DEMO_MODE } from "../lib/api";
+import { api, ApiError, DEMO_MODE, type ReplayPreparation } from "../lib/api";
 import { comparisonLink, detectionLink } from "../lib/run-handoffs";
 import { methodComparisonLink } from "../lib/method-comparison";
 import { receiverControlLink } from "../lib/receiver-navigation";
@@ -19,7 +19,7 @@ import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState, Page
 
 import { CanonicalPlanReview } from "../components/CanonicalPlanReview";
 import { continuationApprovalPreflight, hasUsableStoredApprovalReview } from "../lib/approvalReview";
-import { settlePendingReplay } from "../lib/replay-submission";
+import { hasReplayExtent, settlePendingReplay } from "../lib/replay-submission";
 
 import { cleanupSummary, recordedTargetScope, objectiveLabel, runLabel, runLimitationGroups, stepOutcomeLabel } from "../lib/run-presentation";
 
@@ -517,13 +517,17 @@ function JobApprovalGate({ job, preflight: ordinaryPreflight, approvalRequest, p
   const proposalRequestReady = Boolean(approvalRequestId && progressApprovalRequestId === approvalRequestId && originalApprovalRequestId && originalApprovalRequestId !== approvalRequestId && resolutionRecord?.approval_request_id === approvalRequestId);
   const pendingRequestReady = approvalRequest?.status === "pending" && (proposalExecute ? proposalRequestReady : ordinaryRequestReady);
   const exactBindingMatches = Boolean(binding && approvalBindingFields.every((field) => typeof approvalRequest?.[field] === "string" && approvalRequest[field] === binding[field]));
-  const exactEnvelopeReady = releaseEnabled && Boolean(hasUsableStoredApprovalReview(preflight) && pendingRequestReady && exactBindingMatches && deadline.current);
+  const replayPreparation = job.kind === "scenario.replay" ? job.request?.replay_preparation as ReplayPreparation | undefined : undefined;
+  const fromStep = replayPreparation?.replay_request?.from_step_id;
+  const restorationReady = fromStep == null || hasReplayExtent(replayPreparation);
+  const exactEnvelopeReady = releaseEnabled && restorationReady && Boolean(hasUsableStoredApprovalReview(preflight) && pendingRequestReady && exactBindingMatches && deadline.current);
   return <section className="job-approval-gate" id="durable-execute-approval" tabIndex={-1} aria-label="Durable Execute job approval">
     <header><div><AlertTriangle/><span><strong>{proposalExecute ? "Fresh Execute approval after proposal acceptance" : "Approve this run"}</strong><small>Review the actions, lab scope and cleanup below before releasing this run.</small></span></div><Badge tone="warning" dot>Awaiting approval</Badge></header>
     <p className="job-approval-expiry">Review and approve before {formatDate(typeof approvalRequest?.expires_at === "string" ? approvalRequest.expires_at : undefined)}. The pending actions have not started.</p>
     <details className="job-approval-identities"><summary>Approval record and bound state</summary>
       <DataList items={[{ label: "Durable job", value: <code>{job.job_id}</code> }, { label: "Approval request", value: <code>{String(approvalRequest?.approval_id ?? "Not reported")}</code> }, { label: "Expires", value: formatDate(typeof approvalRequest?.expires_at === "string" ? approvalRequest.expires_at : undefined) }, { label: "Profile / tier", value: proposalExecute ? `${String(approvalRequest?.profile_id ?? "Not reported")} / ${sentence(String(approvalRequest?.maximum_tier ?? "not reported"))}` : binding ? `${binding.profile_id} / ${sentence(binding.maximum_tier)}` : "Not reported" }, { label: "State digest", value: <code>{String(proposalExecute ? approvalRequest?.state_digest ?? "Not reported" : binding?.state_digest ?? "Not reported")}</code> }, { label: "Plan digest", value: <code>{String(proposalExecute ? approvalRequest?.plan_digest ?? "Not reported" : binding?.plan_digest ?? "Not reported")}</code> }, { label: "Scope digest", value: <code>{String(proposalExecute ? approvalRequest?.target_scope_digest ?? "Not reported" : binding?.target_scope_digest ?? "Not reported")}</code> }, { label: proposalExecute ? "Continuation binding digest" : "Envelope digest", value: <code>{String(proposalExecute ? continuationRecord?.execute_approval_binding_digest ?? "Not reported" : envelope?.envelope_digest ?? "Not reported")}</code> }]} />
     </details>
+    {fromStep != null ? restorationReady ? <Callout title="Restore and continue"><p>This approval includes recreating the earlier steps in a fresh workspace, verifying their files against the saved checkpoint, and then continuing from <strong>{sentence(String(fromStep))}</strong>. Cleanup applies to the new workspace.</p><details><summary>Checkpoint and restoration details</summary><pre>{JSON.stringify(replayPreparation?.binding.resolution, null, 2)}</pre></details></Callout> : <Callout tone="danger" title="Checkpoint review unavailable">Approval remains disabled because the saved restart position and restoration binding do not match.</Callout> : null}
     {!pendingRequestReady ? <Callout tone="danger" title="Pending approval binding unavailable">Approval remains disabled until this job reports the same pending approval request ID returned with its immutable envelope.</Callout> : null}
     {!deadline.current ? <Callout tone="warning" title={deadline.valid ? "Approval review expired" : "Approval deadline unavailable"}>{deadline.valid ? "This one-time approval has expired." : "This approval has no valid expiry time."} The saved review remains available, but this job cannot be released. {receiverLink ? <>Cancelling it also stops the entire receiver control test. <Link to={receiverLink}>Open the saved control test</Link> to check retained results and cleanup. Once cleanup is confirmed, choose Set up another control test; the stopped phase cannot resume.</> : <>Cancel it and return to its setup page for a fresh review and approval.</>} No approval is renewed automatically.</Callout> : null}
     {proposalExecute && proposalReview && continuationRecord ? <DataList items={[{ label: "Proposal record", value: <code>{proposalReview.proposal_record_id}</code> }, { label: "Selected behavior", value: <code>{String(continuationRecord.selected_behavior_id ?? "Not reported")}</code> }, { label: "Resume step", value: <code>{String(continuationRecord.resume_from_step_id ?? "Full replay")}</code> }, { label: "Proposal digest", value: <code>{proposalReview.proposal_digest}</code> }]} /> : null}

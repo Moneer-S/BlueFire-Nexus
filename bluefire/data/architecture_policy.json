@@ -310,6 +310,7 @@
         "bluefire.orchestrator",
         "bluefire.replay",
         "bluefire.replay_preparation",
+        "bluefire.replay_restoration",
         "bluefire.runner_management_service",
         "bluefire.receiver_defense_context",
         "bluefire.receiver_defense_jobs",
