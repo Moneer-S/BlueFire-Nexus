@@ -953,7 +953,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 self._method_not_allowed("GET")
             return
         if path == f"{API_PREFIX}/assistance/graph-context":
-            self._method_not_allowed("GET")
+            if self._routes._management_query_free():
+                self._dispatch(
+                    lambda: self.platform_server.service.assistance_graph_context(selected=body)
+                )
             return
         if path == f"{API_PREFIX}/assistance/receiver-context":
             if self._routes._management_query_free():

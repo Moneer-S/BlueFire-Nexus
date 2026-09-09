@@ -393,6 +393,10 @@ export const api = {
     const query = base ? `?${new URLSearchParams({ scenario_id: base.scenario_id, version: String(base.version), digest: base.digest })}` : "";
     return request(`/assistance/graph-context${query}`);
   },
+  async assistanceGraphEditContext(selection: GraphSelection): Promise<AssistanceContext> {
+    if (DEMO_MODE) throw new ApiError("Graph assistance requires the connected local service.", "demo_assistance_refused", undefined, 409);
+    return request("/assistance/graph-context", { method: "POST", body: JSON.stringify(selection) });
+  },
   async graphProposal(jobId: string): Promise<GraphEnvelope> {
     if (DEMO_MODE) throw new ApiError("Saved graph proposals require the connected local service.", "demo_assistance_refused", undefined, 409);
     return request(`/ai/graph-jobs/${encodeURIComponent(jobId)}`);

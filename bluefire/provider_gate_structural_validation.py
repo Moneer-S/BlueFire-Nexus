@@ -98,6 +98,7 @@ _SOURCE_AUDIT_PATHS = (
     "bluefire/source_intake_publication.py",
     "bluefire/ai.py",
     "bluefire/ai_drafts.py",
+    "bluefire/graph_ai_edit.py",
     "bluefire/ai_detection_create.py",
     "bluefire/detection_create_candidate.py",
     "bluefire/detection_create_context.py",

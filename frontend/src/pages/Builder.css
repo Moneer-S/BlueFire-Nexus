@@ -146,3 +146,18 @@
   .workbench-builder .builder-layout:not(.inspector-hidden) .graph-stage { margin-right: calc(var(--inspector-width, 330px) + 12px); }
   .workbench-builder .builder-layout:not(.inspector-hidden) .inspector-panel { right: 0; box-shadow: none; border-radius: 0; border-width: 0 0 0 1px; }
 }
+
+/* Use the available workspace width, including a docked Assistant. */
+.workbench-shell #main-content { container: builder-workspace / inline-size; }
+@container builder-workspace (max-width: 900px) {
+  .page.workbench-builder { height: auto; min-height: 100%; }
+  .workbench-builder .builder-layout { flex: none; height: auto; min-height: 0; }
+  .workbench-builder .graph-panel { height: auto; }
+  .workbench-builder .builder-layout:not(.inspector-hidden) .graph-stage { margin-right: 0; }
+  .workbench-builder .graph-stage { flex: none; height: clamp(340px, 55dvh, 620px); }
+  .workbench-builder .builder-layout:not(.inspector-hidden) .inspector-panel { position: static; width: 100%; max-width: none; height: auto; margin-top: 12px; border: 1px solid var(--line); }
+  .workbench-builder .inspector-body { overflow: visible; }
+  .workbench-builder .graph-topbar { display: flex; flex-wrap: wrap; }
+  .workbench-builder .graph-view-actions { width: 100%; flex-wrap: wrap; }
+}
+.workbench-shell #main-content:has(.workbench-builder) { overflow: auto; }

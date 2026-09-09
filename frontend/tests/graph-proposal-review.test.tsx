@@ -6,7 +6,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { expect, it, vi } from "vitest";
 import { GraphProposalReview } from "../src/components/GraphProposalReview";
 import { api } from "../src/lib/api";
-import { graphDocument, type GraphDecision, type GraphEditorDraft, type GraphEnvelope, type GraphValidation } from "../src/lib/graph-assistance";
+import { graphDocument, graphEditDocument, type GraphDecision, type GraphEditorDraft, type GraphEnvelope, type GraphValidation } from "../src/lib/graph-assistance";
 import { ProductProvider, useProduct } from "../src/state/ProductContext";
 import type { Scenario } from "../src/types";
 
@@ -49,6 +49,7 @@ function Workspace() {
   const [reviewing, setReviewing] = useState(true);
   return <><output aria-label="Active name">{product.scenario.title}</output><output aria-label="Active dirty">{String(product.dirty)}</output><output aria-label="Current route">{useLocation().pathname}</output>
     <button onClick={() => product.setScenario({ ...product.scenario, title: "New manual work" }, true)}>Edit active graph</button>
+    <button onClick={() => product.setScenario({ ...product.scenario, title: "" }, true)}>Clear active name</button>
     <button onClick={() => setReviewing(false)}>Leave proposal review</button>
     {reviewing ? <GraphProposalReview jobId={jobId} behaviors={[]} renderEditor={(draft) => <Editor draft={draft}/>}/> : <p>Current editor</p>}</>;
 }
@@ -273,5 +274,57 @@ it("keeps a retained running proposal read-only until review readiness is durabl
   expect(screen.getByText(/proposal is still being finalized/)).toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: "Save experiment" }));
   expect(mocks.validate).not.toHaveBeenCalled();
+  expect(mocks.review).not.toHaveBeenCalled();
+});
+
+function readyStepEdit(): GraphEnvelope {
+  const envelope = ready();
+  const source = graphEditDocument({ ...scenario(), id: "scenario.manual.v1", title: "Current manual experiment" });
+  envelope.proposal!.edit_source = { scenario: source, step_id: "inspect", dirty: true, digest: digest("f") };
+  envelope.proposal!.scenario = { ...source, id: "scenario.proposed.v1", steps: [{ ...source.steps[0]!, parameters: { path: "changed.txt" } }] };
+  envelope.job.request = { submitted_request: { selection: { kind: "graph", base_scenario: null, edit_step: { scenario: source, step_id: "inspect", dirty: true } } } };
+  return envelope;
+}
+it("reviews exact step values and refuses changed working source across reload", async () => {
+  const mocks = mockReady(readyStepEdit());
+  const first = mount();
+  const changes = await screen.findByRole("region", { name: "Selected step changes" });
+  expect(changes).toHaveTextContent('"fixture.txt"'); expect(changes).toHaveTextContent('"changed.txt"');
+  expect(screen.getByRole("button", { name: "Save experiment" })).toBeEnabled();
+  await userEvent.click(screen.getByRole("button", { name: "Edit active graph" }));
+  expect(screen.getByRole("alert")).toHaveTextContent("working graph changed");
+  expect(screen.getByRole("button", { name: "Save experiment" })).toBeDisabled();
+  first.unmount(); mount();
+  expect(await screen.findByRole("button", { name: "Save experiment" })).toBeDisabled();
+  expect(mocks.validate).not.toHaveBeenCalled(); expect(mocks.review).not.toHaveBeenCalled();
+});
+it("refuses a step save if working source changes during validation", async () => {
+  const envelope = readyStepEdit(); const mocks = mockReady(envelope);
+  const pending = deferred<GraphValidation>(); mocks.validate.mockReturnValue(pending.promise); mount();
+  await userEvent.click(await screen.findByRole("button", { name: "Save experiment" }));
+  await waitFor(() => expect(mocks.validate).toHaveBeenCalledOnce());
+  await userEvent.click(screen.getByRole("button", { name: "Edit active graph" }));
+  await act(async () => pending.resolve({ scenario: envelope.proposal!.scenario, proposal_digest: digest("a"), reviewed_digest: digest("d"), validation: { valid: true } }));
+  expect(mocks.review).not.toHaveBeenCalled(); expect(screen.getByLabelText("Active name")).toHaveTextContent("New manual work");
+});
+it("refuses opening saved step work changed during the version read", async () => {
+  const envelope = readyStepEdit(); const saved = accepted(envelope.proposal!.scenario);
+  envelope.application = saved.envelope.application; envelope.job.progress.decision = saved.decision;
+  const mocks = mockReady(envelope); mocks.immutable.mockResolvedValue(saved.saved); mount();
+  await screen.findByRole("button", { name: "Open saved experiment" });
+  const pending = deferred<typeof saved.saved>(); mocks.immutable.mockReturnValue(pending.promise);
+  await userEvent.click(screen.getByRole("button", { name: "Open saved experiment" }));
+  await userEvent.click(screen.getByRole("button", { name: "Edit active graph" }));
+  await act(async () => pending.resolve(saved.saved));
+  expect(screen.getByLabelText("Active name")).toHaveTextContent("New manual work");
+  expect(screen.getByLabelText("Current route")).toHaveTextContent("/builder/proposal");
+});
+
+it("keeps native review usable when the working graph becomes incomplete", async () => {
+  const mocks = mockReady(readyStepEdit()); mount();
+  await screen.findByRole("button", { name: "Save experiment" });
+  await userEvent.click(screen.getByRole("button", { name: "Clear active name" }));
+  expect(screen.getByRole("button", { name: "Save experiment" })).toBeDisabled();
+  expect(screen.getByRole("alert")).toHaveTextContent("working graph changed");
   expect(mocks.review).not.toHaveBeenCalled();
 });

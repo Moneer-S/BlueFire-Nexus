@@ -7,19 +7,22 @@ import pytest
 
 from bluefire.ai_assistance import PURPOSE
 from bluefire.config import AIProviderKind
+from bluefire.graph_ai_edit import PURPOSE as EDIT_PURPOSE
 from bluefire.prepared_lab_enrollment import product_config
 from bluefire.runner_lifecycle import ManagedRunnerLifecycle
 from bluefire.service import BlueFireService
 from tests_platform import test_ai_broker_channel as support
 from tests_platform.test_graph_ai_jobs import Access, proposed
+from tests_platform.test_graph_ai_step_edit import configure
 
 pair = support.pair
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("operation", ["new", "edit"])
 @pytest.mark.parametrize("kind", [AIProviderKind.CHAT_COMPLETIONS, AIProviderKind.OPENAI_RESPONSES])
 def test_enrolled_graph_turn_and_proposal_retain_native_review_boundary(
-    tmp_path, pair, kind, monkeypatch
+    tmp_path, pair, kind, monkeypatch, operation
 ):
     provider, enrollment, access, transport, worker, errors = support.start(pair, kind)
     fixture = Access()
@@ -48,11 +51,16 @@ def test_enrolled_graph_turn_and_proposal_retain_native_review_boundary(
             "autonomy": "auto",
             "provider_id": provider.id,
         }
+        if operation == "edit":
+            configure(service, fixture, body, monkeypatch)
         parent, child, proposal = proposed(service, body)
         assert service.assistance_turn(parent["job_id"])["turn"]["status"] == "awaiting_review"
         assert service.graph_ai_job(child["job_id"])["application"] is None
         assert proposal["provider"]["used_fallback"] is False
-        assert fixture.calls == [PURPOSE, "bluefire_ai_graph_draft"]
+        assert fixture.calls == [
+            PURPOSE,
+            EDIT_PURPOSE if operation == "edit" else "bluefire_ai_graph_draft",
+        ]
         assert service.store.list_runs() == []
     finally:
         service.close()

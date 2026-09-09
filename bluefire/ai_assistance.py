@@ -140,7 +140,14 @@ def suggest_plan(
         raise AIProviderError("Selected provider is unavailable.")
     supplied = {
         "message": redact_for_model(message, config.redaction),
-        "selected": redact_for_model(context["selected"], config.redaction),
+        "selected": redact_for_model(
+            (
+                {"kind": "graph", "operation": "edit_step", **context["edit_model_context"]}
+                if context.get("edit_model_context")
+                else context["selected"]
+            ),
+            config.redaction,
+        ),
         "capabilities": context["capabilities"],
         "reference_summary": redact_for_model(context.get("reference_summary"), config.redaction),
         "limitations": context["limitations"],

@@ -82,7 +82,7 @@ export function parseScenarioDocument(value: unknown): Scenario {
   if (typeof value.provenance.derived !== "boolean") throw new Error("Scenario document.provenance.derived must be a boolean.");
   const provenance = { ...value.provenance };
   if (provenance.notes == null) delete provenance.notes;
-  else if (typeof provenance.notes !== "string" || !provenance.notes.trim()) throw new Error("Scenario document.provenance.notes must be a non-empty string when provided.");
+  else if (typeof provenance.notes !== "string" || (provenance.notes !== "" && !provenance.notes.trim())) throw new Error("Scenario document.provenance.notes must be a non-empty string when provided.");
   const limitations = value.limitations == null ? [] : value.limitations;
   requireStringArray(limitations, "document.limitations");
   if (value.layout !== undefined) {

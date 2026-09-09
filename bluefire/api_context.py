@@ -167,7 +167,9 @@ class PlatformService(Protocol):
     def assistance_context(self, run_id: str, candidate_id: str) -> JsonResult:
         """Read authoritative saved-object capability context."""
 
-    def assistance_graph_context(self, base_scenario: JsonObject | None = None) -> JsonResult:
+    def assistance_graph_context(
+        self, base_scenario: JsonObject | None = None, *, selected: JsonObject | None = None
+    ) -> JsonResult:
         """Read an immutable optional graph reference and capability catalog."""
 
     def assistance_receiver_context(self, request: JsonObject) -> JsonResult:

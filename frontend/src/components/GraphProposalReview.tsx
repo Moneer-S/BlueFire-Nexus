@@ -4,11 +4,11 @@ import { ArrowLeft, ArrowRight, Check, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
-import { checkedGraphEnvelope, graphDocument, readGraphReviewDraft, storeGraphReviewDraft, validGraphJob, type GraphDecision, type GraphEditorDraft, type GraphEnvelope, type GraphProposal } from "../lib/graph-assistance";
+import { checkedGraphEnvelope, graphDocument, matchesGraphEditSource, readGraphReviewDraft, storeGraphReviewDraft, validGraphJob, type GraphDecision, type GraphEditorDraft, type GraphEnvelope, type GraphProposal } from "../lib/graph-assistance";
 import { sameJson } from "../lib/replay-review";
 import { useProduct } from "../state/ProductContext";
 import type { Behavior, Scenario } from "../types";
-import { Button, ErrorState, LoadingState, PageHeader } from "./Primitives";
+import { Button, ErrorState, LoadingState, PageHeader, sentence } from "./Primitives";
 import "./GraphProposalReview.css";
 
 type Props = { jobId: string; behaviors: Behavior[]; renderEditor: (draft: GraphEditorDraft) => ReactNode };
@@ -33,6 +33,11 @@ function GraphReviewEditor({ jobId, proposal, envelope, unavailable, behaviors, 
   const product = useProduct();
   const latestProduct = useRef(product); latestProduct.current = product;
   const navigate = useNavigate();
+  const sourceChanged = Boolean(proposal.edit_source && !matchesGraphEditSource(product.scenario, proposal.edit_source.scenario));
+  const requireCurrentSource = () => {
+    if (proposal.edit_source && !matchesGraphEditSource(latestProduct.current.scenario, proposal.edit_source.scenario)) throw new Error("Your working graph changed after this proposal was prepared. Return to the current experiment and request a new step edit. This proposal cannot replace newer work.");
+  };
+
   const live = useRef(true);
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
   const [retained] = useState(() => readGraphReviewDraft(jobId, proposal));
@@ -69,10 +74,12 @@ function GraphReviewEditor({ jobId, proposal, envelope, unavailable, behaviors, 
         if (intent === "retry") throw new Error("There is no retained save decision to retry.");
         if (intent === "reject") body = { decision: "reject", proposal_digest: proposal.proposal_digest };
         else {
+          requireCurrentSource();
           const submitted = graphDocument(structuredClone(scenario));
           const validation = await api.validateGraphProposal(jobId, { proposal_digest: proposal.proposal_digest, scenario: submitted });
           if (validation.proposal_digest !== proposal.proposal_digest || validation.validation?.valid !== true || !/^sha256:[0-9a-f]{64}$/.test(validation.reviewed_digest)
             || !sameJson(validation.scenario, submitted)) throw new Error("Validation returned a different graph. Your edits remain available; no save was requested.");
+          requireCurrentSource();
           body = { decision: "accept", proposal_digest: proposal.proposal_digest, reviewed_digest: validation.reviewed_digest, scenario: submitted };
         }
         if (!storeGraphReviewDraft(jobId, { proposal_digest: proposal.proposal_digest, scenario, decision: body })) throw new Error("The save decision could not be retained. Enable browser session storage before saving.");
@@ -89,24 +96,28 @@ function GraphReviewEditor({ jobId, proposal, envelope, unavailable, behaviors, 
   } });
   const openSaved = useMutation({ mutationFn: async () => {
     if (!application) throw new Error("Save the reviewed experiment first.");
+    requireCurrentSource();
     const { scenario: saved } = await api.immutableScenarioVersion(application.scenario_id, application.version);
     if (!live.current) return false;
     if (saved.scenario_id !== application.scenario_id || saved.version !== application.version || saved.digest !== application.digest || saved.document.id !== application.scenario_id) throw new Error("The saved version does not match this review. Your active experiment is unchanged.");
     // Check current manual work after the request, including changes made while it was in flight.
+    requireCurrentSource();
     const current = latestProduct.current;
-    if (current.dirty && !window.confirm("Open the saved experiment and replace your current unsaved graph? Export or save your current graph first if you want to keep those edits.")) return false;
+    if (!proposal.edit_source && current.dirty && !window.confirm("Open the saved experiment and replace your current unsaved graph? Export or save your current graph first if you want to keep those edits.")) return false;
     current.setScenario(structuredClone(saved.document), false);
     return true;
   }, onSuccess: (didOpen) => { if (didOpen && live.current) { setOpened(true); navigate("/builder"); } } });
   const disabled = apply.isPending || Boolean(decision) || Boolean(application) || Boolean(rejected) || stopped || unavailable || !envelope.review_ready;
   const names = new Map(behaviors.map((item) => [item.id, item.title]));
   const changes = graphChanges(proposal.scenario, displayed, names);
-  const controls = application ? <Button variant="primary" disabled={openSaved.isPending || opened} onClick={() => openSaved.mutate()}>Open saved experiment<ArrowRight /></Button>
+  const controls = application ? <Button variant="primary" disabled={openSaved.isPending || opened || sourceChanged} onClick={() => openSaved.mutate()}>Open saved experiment<ArrowRight /></Button>
     : rejected || stopped ? <Link className="button button-secondary button-medium" to="/builder">Return to your experiment</Link>
     : decision ? <Button variant="primary" disabled={apply.isPending || unavailable} onClick={() => apply.mutate("retry")}>{apply.isPending ? "Checking saved decision…" : "Retry saved decision"}</Button>
-    : <Button variant="primary" disabled={disabled} onClick={() => apply.mutate("accept")}><Check />{apply.isPending ? "Validating and saving…" : "Save experiment"}</Button>;
+    : <Button variant="primary" disabled={disabled || sourceChanged} onClick={() => apply.mutate("accept")}><Check />{apply.isPending ? "Validating and saving…" : "Save experiment"}</Button>;
   const details = <section className="graph-proposal-review" aria-label="Graph proposal review">
     <div className="graph-review-heading"><div><h2 ref={title} tabIndex={-1}>{application ? "Experiment saved" : rejected ? "Proposal declined" : stopped ? "Proposal stopped" : `Proposed by ${proposal.provider.model}`}</h2>{application ? <p>Version {application.version} is saved. <Link to={`/runs?graph_job=${encodeURIComponent(jobId)}`}>Run with Assistant</Link>, or open it in your workspace. No execution has started.</p> : null}</div><Link to="/builder"><ArrowLeft />Current experiment</Link></div>
+    {sourceChanged ? <p role="alert">Your working graph changed after preparation. This proposal cannot replace newer work. Return to the current experiment and request a new step edit.</p> : null}
+    {proposal.edit_source ? <SelectedStepChanges proposal={proposal} displayed={displayed} /> : null}
     {unavailable ? <ErrorState title="Saved proposal status is unavailable" error={new Error("Reconnect and check the proposal before saving.")} retry={() => { void client.invalidateQueries({ queryKey: ["graph-proposal", jobId] }); }} /> : null}
     <Dialog.Root><Dialog.Trigger asChild><button className="graph-plan-review">Plan, assumptions, and your changes{changed ? ` · ${changes.length} change${changes.length === 1 ? "" : "s"}` : ""}</button></Dialog.Trigger>
       <Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content graph-plan-dialog"><Dialog.Title>Review plan and changes</Dialog.Title><Dialog.Description>Compare your edits with the retained proposal before saving.</Dialog.Description><Dialog.Close asChild><button className="dialog-close" aria-label="Close plan review"><X /></button></Dialog.Close><p>{proposal.rationale}</p><p>{proposal.scenario.steps.length} proposed steps · {proposal.scenario.edges.length} routes · {proposal.provider.model}</p>
@@ -145,4 +156,16 @@ function graphChanges(before: Scenario, after: Scenario, names: Map<string, stri
   if (before.start !== after.start) changes.push("Changed the starting step.");
   if (!sameJson(before.edges, after.edges)) changes.push(`Changed routes: ${before.edges.length} before, ${after.edges.length} now. Inspect all branches in the editor.`);
   return changes;
+}
+
+function SelectedStepChanges({ proposal, displayed }: { proposal: GraphProposal; displayed: Scenario }) {
+  const source = proposal.edit_source!;
+  const before = source.scenario.steps.find(step => step.id === source.step_id)!.parameters;
+  const after = displayed.steps.find(step => step.id === source.step_id)?.parameters ?? {};
+  const names = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter(name => !sameJson(before[name], after[name]));
+  return <section className="graph-step-changes" aria-label="Selected step changes"><h3>Review selected step parameters</h3>
+    <p>Purpose: {source.scenario.purpose}</p><p>{source.dirty ? "Unsaved working graph" : "Current working graph"} · {source.scenario.title}. Only this step’s parameters may change; all other graph content remains fixed. Saving creates a separate experiment and does not run it.</p>
+    {names.length ? <table><thead><tr><th>Parameter</th><th>Before</th><th>Proposed</th></tr></thead><tbody>{names.map(name => <tr key={name}><th>{sentence(name)}</th><td>{JSON.stringify(before[name]) ?? "Not set"}</td><td>{JSON.stringify(after[name]) ?? "Not set"}</td></tr>)}</tbody></table> : <p>No parameter values changed.</p>}
+    <p>{proposal.rationale}</p><details><summary>Model data boundary and limitations</summary><p>The model received the reviewed objective, selected step and parameter schema. The complete source graph stayed in this product.</p>{proposal.limitations.map((item, index) => <p key={index}>{item}</p>)}</details>
+  </section>;
 }

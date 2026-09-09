@@ -85,8 +85,15 @@ class StubService:
         self.calls.append(("assistance_context", run_id, candidate_id))
         return {"selected": {"run_id": run_id, "candidate_id": candidate_id}}
 
-    def assistance_graph_context(self, base_scenario: Mapping[str, Any] | None = None):
-        self.calls.append(("assistance_graph_context", base_scenario))
+    def assistance_graph_context(
+        self,
+        base_scenario: Mapping[str, Any] | None = None,
+        *,
+        selected: Mapping[str, Any] | None = None,
+    ):
+        self.calls.append(
+            ("assistance_graph_context", selected if selected is not None else base_scenario)
+        )
         return {"selected": {"kind": "graph", "base_scenario": base_scenario}}
 
     def assistance_receiver_context(self, request):

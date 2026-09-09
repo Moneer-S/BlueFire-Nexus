@@ -797,9 +797,14 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         return self.assistance.context(run_id, candidate_id)
 
     def assistance_graph_context(
-        self, base_scenario: Mapping[str, Any] | None = None
+        self,
+        base_scenario: Mapping[str, Any] | None = None,
+        *,
+        selected: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
-        return self.graph_ai.context({"kind": "graph", "base_scenario": base_scenario})
+        return self.graph_ai.context(
+            selected if selected is not None else {"kind": "graph", "base_scenario": base_scenario}
+        )
 
     def assistance_receiver_context(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         if set(request) != {"selection"}:

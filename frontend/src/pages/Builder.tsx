@@ -22,7 +22,7 @@ import { initialParameterValue, shouldInitializeParameter } from "../lib/paramet
 import { deleteScenarioGraphElements, selectScenarioAlternative } from "../lib/scenario";
 import { useProduct } from "../state/ProductContext";
 import { useAssistancePanel, usePublishGraphAssistanceSelection } from "../state/AssistanceContext";
-import type { GraphEditorDraft } from "../lib/graph-assistance";
+import { graphEditDocument, type GraphEditorDraft } from "../lib/graph-assistance";
 import { GraphProposalReview } from "../components/GraphProposalReview";
 import { SavedExperimentReview } from "../components/SavedExperimentReview";
 import { BuilderRouteEdge } from "../components/BuilderRouteEdge";
@@ -95,7 +95,6 @@ export function BuilderPage() {
   const graphJob = params.get("graph_job");
   const savedScenario = params.get("saved_scenario");
   const query = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
-  usePublishGraphAssistanceSelection(!graphJob && !savedScenario);
   if (query.isPending) return <LoadingState label="Opening graph editor" />;
   if (query.isError) return <ErrorState error={query.error} retry={() => query.refetch()} />;
   if (savedScenario) return <ReactFlowProvider><SavedExperimentReview key={`${savedScenario}:${params.get("version")}:${params.get("digest")}`} id={savedScenario} version={Number(params.get("version"))} digest={params.get("digest") ?? ""} receiverJob={params.get("receiver_job") ?? undefined} renderEditor={(review) => <GraphWorkspace behaviors={query.data.behaviors} actions={query.data.actions} review={review} />} /></ReactFlowProvider>;
@@ -119,6 +118,13 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
   const [nodes, setNodes] = useState<BehaviorFlowNode[]>(() => makeNodes(graph).map((node) => ({ ...node, selected: node.id === initialView.selected?.id })));
   const [edges, setEdges] = useState<FlowEdge[]>(() => flowEdges(graph, behaviorMap));
   const [selectedId, setSelectedId] = useState(initialView.selected?.id ?? "");
+  const editContext = useMemo(() => {
+    if (!selectedId || !scenario.steps.some(step => step.id === selectedId)) return {};
+    try { return { selection: { scenario: graphEditDocument(scenario), step_id: selectedId, dirty } }; }
+    catch { return { unavailable: "Complete the current graph fields before requesting a step edit. Your manual draft remains editable." }; }
+  }, [scenario, selectedId, dirty]);
+  const editTitle = selectedId ? behaviorMap.get(scenario.steps.find(step => step.id === selectedId)?.behavior_id ?? "")?.title ?? selectedId : undefined;
+  usePublishGraphAssistanceSelection(!review, editContext.selection, editTitle, editContext.unavailable);
   const [search, setSearch] = useState(""); const [platform, setPlatform] = useState("all"); const [tier, setTier] = useState("all");
   const [compatibility, setCompatibility] = useState<string>();
   const [purposeOpen, setPurposeOpen] = useState(!scenario.purpose.trim());

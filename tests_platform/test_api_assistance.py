@@ -20,6 +20,7 @@ CANDIDATE = "detection-" + "a" * 20
         ),
         ("POST", "/assistance/turns", ("submit_assistance_turn", {}), 202),
         ("POST", "/assistance/receiver-context", ("assistance_receiver_context", {}), 200),
+        ("POST", "/assistance/graph-context", ("assistance_graph_context", {}), 200),
         ("GET", "/assistance/graph-context", ("assistance_graph_context", None), 200),
         ("GET", "/assistance/graph-context?", ("assistance_graph_context", None), 200),
         ("GET", f"/ai/graph-jobs/{JOB_ID}", ("graph_ai_job", JOB_ID), 200),
@@ -102,3 +103,29 @@ def test_graph_context_refuses_nonempty_malformed_selection(query):
         assert actual == 400
         assert json.loads(body)["error"]["code"] == "graph_context_invalid"
         assert not service.calls
+
+
+@pytest.mark.parametrize(
+    "violation,status",
+    [("query", 400), ("session", 401), ("origin", 403), ("body", 400), ("size", 413)],
+)
+def test_graph_edit_context_keeps_native_http_guards(violation, status):
+    with running_server() as (server, service):
+        actual, _, _ = request(
+            server,
+            "POST",
+            "/api/v1/assistance/graph-context"
+            + ("?scenario_id=other" if violation == "query" else ""),
+            body=(
+                []
+                if violation == "body"
+                else (
+                    {"oversized": "x" * 1024}
+                    if violation == "size"
+                    else {"kind": "graph", "base_scenario": None}
+                )
+            ),
+            authenticated=violation != "session",
+            origin="https://untrusted.example" if violation == "origin" else "same",
+        )
+        assert actual == status and not service.calls

@@ -44,11 +44,11 @@ describe("scenario document parsing", () => {
     expect(parsed.provenance).not.toHaveProperty("notes");
   });
 
-  it("rejects an explicitly empty provenance note", () => {
+  it("retains the backend canonical empty optional provenance note", () => {
     const document = structuredClone(demoScenario);
     document.provenance.notes = "";
 
-    expect(() => parseScenarioDocument(document)).toThrow(/provenance\.notes must be a non-empty string/);
+    expect(parseScenarioDocument(document).provenance.notes).toBe("");
   });
 
   it.each(["parameters", "inputs"])("continues to reject an explicit null %s field", (field) => {

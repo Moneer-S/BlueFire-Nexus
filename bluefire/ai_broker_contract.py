@@ -28,6 +28,7 @@ _PURPOSES = {
     "bluefire_connection_check",
     "bluefire_ai_proposal",
     "bluefire_ai_graph_draft",
+    "bluefire_graph_step_edit",
     "bluefire_detection_source_revision",
     "bluefire_detection_source_creation",
     "bluefire_method_comparison",

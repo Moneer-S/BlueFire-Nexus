@@ -18,3 +18,8 @@ div.graph-review-editor { display: contents; }
 .builder-assistance-actions { display: flex; gap: 5px; flex-wrap: wrap; }
 .graph-review-editor:disabled { opacity: .8; }
 @media (max-width: 760px) { .graph-review-heading { flex-direction: column; gap: 8px; } }
+
+.graph-step-changes { margin: 12px 0; }
+.graph-step-changes h3 { margin: 0; font-size: .9rem; }
+.graph-step-changes table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.graph-step-changes th, .graph-step-changes td { padding: 7px 10px; border-bottom: 1px solid var(--line); text-align: left; overflow-wrap: anywhere; }

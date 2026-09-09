@@ -2,7 +2,7 @@ import { validReceiverAssistanceSelection, type ReceiverAssistanceSelection } fr
 import { validSavedRunSelection, savedRunSource, type SavedRunSelection } from "../lib/run-assistance";
 import { validRunDetectionSelection, type RunDetectionSelection } from "../lib/detection-creation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type PropsWithChildren } from "react";
-import type { GraphSelection } from "../lib/assistance";
+import { validGraphSelection, type GraphStepSelection, type GraphSelection } from "../lib/assistance";
 
 export interface AssistanceSelection {
   runId: string;
@@ -22,7 +22,7 @@ interface SelectionContext {
   setOpen: (value: boolean) => void;
 }
 export interface SavedGraphWorkspaceSelection { kind: "saved_graph"; selected: SavedRunSelection; title: string; manualEdits: false }
-export interface GraphWorkspaceSelection { kind: "graph"; baseScenario: GraphSelection["base_scenario"]; title: string; manualEdits: boolean }
+export interface GraphWorkspaceSelection { kind: "graph"; editStep?: GraphStepSelection; editUnavailable?: string; baseScenario: GraphSelection["base_scenario"]; title: string; manualEdits: boolean }
 export interface RunDetectionWorkspaceSelection { kind: "run_detection"; selected: RunDetectionSelection; title: string; manualEdits: false }
 export interface ReceiverWorkspaceSelection { kind: "receiver"; selected: ReceiverAssistanceSelection; title: string; manualEdits: false }
 export type WorkspaceSelection = ReceiverWorkspaceSelection | AssistanceSelection | GraphWorkspaceSelection | SavedGraphWorkspaceSelection | RunDetectionWorkspaceSelection;
@@ -30,14 +30,14 @@ const selectionKey = "bluefire.assistance.selection.v1";
 function readSelection(): WorkspaceSelection | undefined {
   try {
     const raw = sessionStorage.getItem(selectionKey);
-    if (!raw || raw.length > 16384) return;
+    if (!raw || raw.length > 100000) return;
     const value = JSON.parse(raw) as WorkspaceSelection;
     if (!value || typeof value.title !== "string" || value.title.length > 1000 || typeof value.manualEdits !== "boolean") return;
     if (!("kind" in value)) return [value.runId, value.candidateId, value.resourceDigest].every(item => typeof item === "string" && item.length > 0 && item.length <= 200) ? value : undefined;
     if (value.kind === "saved_graph") return validSavedRunSelection(value.selected) ? value : undefined;
     if (value.kind === "run_detection") return validRunDetectionSelection(value.selected) ? value : undefined;
     if (value.kind === "receiver") return validReceiverAssistanceSelection(value.selected) ? value : undefined;
-    if (value.kind === "graph" && (value.baseScenario === null || (typeof value.baseScenario?.scenario_id === "string" && Number.isSafeInteger(value.baseScenario.version) && value.baseScenario.version > 0 && /^sha256:[0-9a-f]{64}$/.test(value.baseScenario.digest)))) return value;
+    if (value.kind === "graph" && (value.editUnavailable === undefined || (typeof value.editUnavailable === "string" && value.editUnavailable.length <= 1000)) && validGraphSelection({ kind: "graph", base_scenario: value.baseScenario, ...(value.editStep ? { edit_step: value.editStep } : {}) })) return value;
   } catch { /* Context is rechecked by the service before submission. */ }
 }
 const Context = createContext<SelectionContext | null>(null);
@@ -64,14 +64,14 @@ export function AssistanceProvider({ children }: PropsWithChildren) {
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
 
-export function usePublishGraphAssistanceSelection(enabled: boolean) {
+export function usePublishGraphAssistanceSelection(enabled: boolean, editStep?: GraphStepSelection, title?: string, editUnavailable?: string) {
   const publish = useContext(Context)?.publish;
   useEffect(() => {
     if (!publish || !enabled) return;
     const owner = Symbol("graph-selection");
-    publish(owner, { kind: "graph", baseScenario: null, title: "New experiment", manualEdits: false });
+    publish(owner, { kind: "graph", baseScenario: null, ...(editStep ? { editStep } : {}), ...(editUnavailable ? { editUnavailable } : {}), title: title ?? "New experiment", manualEdits: false });
     return () => publish(owner);
-  }, [enabled, publish]);
+  }, [enabled, publish, editStep, title, editUnavailable]);
 }
 
 export function useAssistanceSelection() { return useContext(Context)?.selection; }

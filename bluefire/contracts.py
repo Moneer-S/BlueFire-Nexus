@@ -178,7 +178,11 @@ class SourceProvenance:
             reference=_string(data["reference"], f"{context}.reference"),
             license=_string(data["license"], f"{context}.license"),
             derived=_bool(data["derived"], f"{context}.derived"),
-            notes=_optional_string(data.get("notes"), f"{context}.notes") or "",
+            notes=(
+                ""
+                if data.get("notes") == ""
+                else _optional_string(data.get("notes"), f"{context}.notes") or ""
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:

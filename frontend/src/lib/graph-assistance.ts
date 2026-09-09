@@ -1,10 +1,11 @@
 import type { ReactNode } from "react";
 import type { RunJob, Scenario } from "../types";
-import type { GraphSelection } from "./assistance";
+import type { GraphSelection, GraphStepSelection } from "./assistance";
 import { parseScenarioDocument } from "./scenario";
 import { sameJson } from "./replay-review";
 
 export interface GraphProposal {
+  edit_source?: GraphStepSelection & { digest: string };
   schema_version: "bluefire.graph-ai-proposal.v1"; proposal_job_id: string; proposal_digest: string;
   context_digest: string; catalog_digest: string; base_scenario: GraphSelection["base_scenario"];
   scenario: Scenario; validation: { valid: true }; rationale: string; assumptions: string[]; limitations: string[];
@@ -26,11 +27,26 @@ export function graphDocument(value: Scenario): Scenario {
   void _layout;
   return document;
 }
+/** Canonical semantic snapshot, including the contract's empty provenance note default. */
+export function graphEditDocument(value: Scenario): Scenario {
+  const document = graphDocument(parseScenarioDocument(value));
+  return { ...document, provenance: { ...document.provenance, notes: document.provenance.notes ?? "" } };
+}
+export function matchesGraphEditSource(current: Scenario, source: Scenario): boolean {
+  try { return sameJson(graphEditDocument(current), source); } catch { return false; }
+}
 export function checkedGraphEnvelope(value: GraphEnvelope, jobId: string): GraphEnvelope {
   if (value.job?.job_id !== jobId || value.job.kind !== "graph.ai.propose") throw new Error("This saved work is not the requested graph proposal.");
   if (typeof value.review_ready !== "boolean") throw new Error("The proposal's review readiness could not be checked.");
   if (value.proposal && (value.proposal.schema_version !== "bluefire.graph-ai-proposal.v1" || value.proposal.proposal_job_id !== jobId || !digest(value.proposal.proposal_digest))) throw new Error("The graph proposal could not be verified.");
-  if (value.proposal) parseScenarioDocument(value.proposal.scenario);
+  if (value.proposal) {
+    parseScenarioDocument(value.proposal.scenario);
+    const submitted = value.job.request?.submitted_request as { selection?: GraphSelection } | undefined;
+    const edit = submitted?.selection?.edit_step;
+    const source = value.proposal.edit_source;
+    if (Boolean(edit) !== Boolean(source) || (source && (!digest(source.digest) || !sameJson({ scenario: source.scenario, step_id: source.step_id, dirty: source.dirty }, edit)))) throw new Error("The step proposal does not match its original working graph.");
+    if (source) parseScenarioDocument(source.scenario);
+  }
   if (value.application && (!value.proposal || value.application.proposal_job_id !== jobId || value.application.proposal_digest !== value.proposal.proposal_digest
     || !digest(value.application.reviewed_digest) || !digest(value.application.digest) || !Number.isSafeInteger(value.application.version) || value.application.version < 1)) throw new Error("The saved experiment does not match its proposal.");
   return value;

@@ -19,6 +19,7 @@ from .ai_probe import _SCHEMA as CONNECTION_SCHEMA
 from .ai_receiver_inspection import OUTPUT_SCHEMA as RECEIVER_INSPECTION_SCHEMA
 from .ai_run_inspection import OUTPUT_SCHEMA as RUN_INSPECTION_SCHEMA
 from .config import AIProviderConfig, BlueFireConfig, load_config
+from .graph_ai_edit import OUTPUT_SCHEMA as GRAPH_STEP_EDIT_SCHEMA
 from .registry import load_builtin_registry
 from .util import canonical_json_bytes, content_hash
 
@@ -38,6 +39,7 @@ def enroll(
         expires_at_ms=time.time_ns() // 1_000_000 + 900_000,
         destination_policy=destination_policy,
         schemas=(
+            ("bluefire_graph_step_edit", content_hash(GRAPH_STEP_EDIT_SCHEMA)),
             ("bluefire_connection_check", content_hash(CONNECTION_SCHEMA)),
             ("bluefire_ai_proposal", content_hash(PROPOSAL_JSON_SCHEMA)),
             ("bluefire_ai_graph_draft", content_hash(graph_draft_json_schema(request))),

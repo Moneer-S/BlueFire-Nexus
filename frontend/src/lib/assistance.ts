@@ -1,12 +1,14 @@
 import { validSavedRunSelection, type SavedRunSelection, type RunInspectedResult } from "./run-assistance";
 import { validRunDetectionSelection, type RunDetectionSelection, type DetectionCreatedResult } from "./detection-creation";
-import type { DetectionCaseRole, RunJob } from "../types";
+import { parseScenarioDocument } from "./scenario";
+import type { DetectionCaseRole, RunJob, Scenario } from "../types";
 import type { MethodSource } from "./method-comparison";
 import { sameJson } from "./replay-review";
 import { checkedReceiverAssistance, isReceiverSelection, validReceiverAssistanceSelection, type ReceiverAssistanceSelection, type ReceiverAssistanceProgress, type ReceiverAssistanceResult } from "./receiver-assistance";
 
 export type AssistanceCapability = "detection.create_and_evaluate" | "detection.revise_and_evaluate" | "method.compare_same_detector" | "graph.propose_and_validate" | "run.saved_graph_and_inspect" | "receiver.test_and_compare" | "receiver.inspect_and_plan_next";
-export interface GraphSelection { kind: "graph"; base_scenario: null | { scenario_id: string; version: number; digest: string } }
+export interface GraphStepSelection { scenario: Scenario; step_id: string; dirty: boolean }
+export interface GraphSelection { edit_step?: GraphStepSelection; kind: "graph"; base_scenario: null | { scenario_id: string; version: number; digest: string } }
 export interface AssistanceContext {
   schema_version: "bluefire.assistance-context.v1";
   context_digest: string;
@@ -73,7 +75,7 @@ const bounded = (value: unknown, limit = 200): value is string => typeof value =
 function readStoredRequest(key: string): AssistanceRequest | undefined {
   try {
     const raw = sessionStorage.getItem(key);
-    if (!raw || raw.length > 16384) return;
+    if (!raw || raw.length > 100000) return;
     const value = JSON.parse(raw) as AssistanceRequest;
     if (!value || !uuid.test(value.submission_id) || !digest.test(value.context_digest) || !bounded(value.message, 1000)
       || !["off", "assist", "auto"].includes(value.autonomy)
@@ -85,8 +87,7 @@ function readStoredRequest(key: string): AssistanceRequest | undefined {
     } else if (isSavedGraphRequest(value)) {
       if (!validSavedRunSelection(value.selection)) return;
     } else if (isGraphRequest(value)) {
-      const base = value.selection.base_scenario;
-      if (base !== null && (!base || !bounded(base.scenario_id) || !Number.isSafeInteger(base.version) || base.version < 1 || !digest.test(base.digest))) return;
+      if (!validGraphSelection(value.selection)) return;
     } else if ("selection" in value || !digest.test(value.candidate_resource_digest) || !bounded(value.run_id) || !bounded(value.candidate_id)
       || !["attack", "benign", "replay", "heldout"].includes(value.case_role)) return;
     return value;
@@ -175,5 +176,20 @@ export function clearAssistanceRecovery(value: AssistanceRecovery): boolean {
     if (!sameJson(readAssistanceRecovery(), value)) return false;
     sessionStorage.removeItem(recoveryKey);
     return sessionStorage.getItem(recoveryKey) === null;
+  } catch { return false; }
+}
+
+export function validGraphSelection(value: GraphSelection): boolean {
+  try {
+    if (!value || value.kind !== "graph") return false;
+    const base = value.base_scenario;
+    if (base !== null && (!base || !bounded(base.scenario_id) || !Number.isSafeInteger(base.version) || base.version < 1 || !digest.test(base.digest))) return false;
+    if (value.edit_step !== undefined) {
+      const edit = value.edit_step;
+      if (!edit || typeof edit.dirty !== "boolean" || !bounded(edit.step_id) || (edit.dirty && base !== null) || JSON.stringify(edit.scenario).length > 65536) return false;
+      const scenario = parseScenarioDocument(edit.scenario);
+      if (scenario.steps.length > 128 || scenario.edges.length > 256 || !scenario.steps.some(step => step.id === edit.step_id)) return false;
+    }
+    return true;
   } catch { return false; }
 }
