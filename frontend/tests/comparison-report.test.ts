@@ -8,9 +8,10 @@ it("exports unmet objectives, unknown evidence and failed cleanup without substi
   run.objective_reached = false;
   run.evidence_details = undefined;
   run.cleanup_success = false;
-  const report = comparisonReport(comparison, { [run.run_id]: "Compare retained records" });
+  const report = comparisonReport(comparison, { [run.run_id]: "Compare retained records" }, { [run.run_id]: "2026-09-09T07:00:00Z" });
   expect(report).toContain(`| Baseline | Compare retained records | ${run.mode} | Not achieved | Not reported | Not reported | Needs attention |`);
   expect(report).toContain(`Run ID: ${run.run_id}`);
+  expect(report).toContain("Created: 2026-09-09T07:00:00Z");
   expect(report).toContain("Simulate outcomes are synthetic");
   expect(report).toContain("Missing observations do not establish defense success");
   expect(report).toContain(comparison.comparison_id);
