@@ -299,3 +299,23 @@ it("opens history first and reopens the same new-review link without changing Ex
   expect(config()).toEqual(before);
   expect(nonReads()).toEqual([]);
 });
+
+
+it.each(["/runs?prepare=1", "/runs?setup=simulate"])("leads %s with the requested setup before a populated history, and keeps history reachable", async (path) => {
+  const { user, client, config, nonReads } = mount(path, "simulate");
+  await screen.findByRole("heading", { name: "Run history" });
+  const history = Array.from({ length: 11 }, (_, index) => ({ ...demoRuns[0]!, run_id: `run-history-${index}` }));
+  await act(async () => { client.setQueryData(["runs"], { runs: history, unavailable_run_count: 0 }); });
+  const setup = screen.getByText("Review a new run · " + demoScenario.title).closest("details")!;
+  const historyHeading = screen.getByRole("heading", { name: "Run history" });
+  expect(setup).toHaveAttribute("open");
+  expect(screen.getByRole("heading", { name: "Run setup" })).toBeVisible();
+  expect(setup.compareDocumentPosition(historyHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(await screen.findAllByRole("row")).toHaveLength(12);
+  const before = config();
+  await user.click(screen.getByRole("link", { name: "Run history" }));
+  await waitFor(() => expect(window.location.hash).toBe("#/runs"));
+  expect(screen.getByRole("heading", { name: "Run history" }).compareDocumentPosition(setup) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(config()).toEqual(before);
+  expect(nonReads()).toEqual([]);
+});
