@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { Link, MemoryRouter } from "react-router-dom";
 import { expect, it, vi } from "vitest";
 import { api, ApiError } from "../src/lib/api";
 import { demoCatalog } from "../src/lib/demo";
@@ -84,4 +84,25 @@ it("offers profile-bound recovery for an actual missing-inventory finding withou
   expect(screen.getByRole("link", { name: "Review runner update for this profile" })).toHaveAttribute("href", `/runners?profile=${profile}`);
   expect(screen.getByText(/Keep this experiment unstarted/)).toBeVisible();
   expect(start).not.toHaveBeenCalled(); expect(submit).not.toHaveBeenCalled();
+});
+
+
+it("keeps a pending upgrade refusal bound to the submitted profile after navigation", async () => {
+  const otherProfile = "sandbox-observe-only.v1";
+  vi.spyOn(api, "runnerStatus").mockImplementation(async (selected) => ({ ...stopped, profile_id: selected ?? profile }));
+  let rejectUpgrade!: (error: Error) => void;
+  const upgrade = vi.spyOn(api, "bootstrapRunner").mockImplementation(() => new Promise((_resolve, reject) => { rejectUpgrade = reject; }));
+  const user = userEvent.setup();
+  mount(`/runners?profile=${profile}`, <><Link to={`/runners?profile=${otherProfile}`}>Other profile</Link><Link to={`/runners?profile=${profile}`}>Original profile</Link><RunnersPage /></>);
+  await user.click(await screen.findByRole("button", { name: "Upgrade managed runner" }));
+  await user.click(screen.getByRole("button", { name: "Confirm verified upgrade" }));
+  await waitFor(() => expect(upgrade).toHaveBeenCalledExactlyOnceWith(profile, true));
+  await user.click(screen.getByRole("link", { name: "Other profile" }));
+  const reason = "Runner upgrade is blocked by prior execution recovery history.";
+  await act(async () => rejectUpgrade(new ApiError("Managed runner bootstrap was refused.", "runner_bootstrap_refused", [reason], 409)));
+  expect(screen.getByRole("combobox", { name: "Experiment runner profile" })).toHaveValue(otherProfile);
+  expect(screen.queryByText(reason)).not.toBeInTheDocument();
+  await user.click(screen.getByRole("link", { name: "Original profile" }));
+  expect(await screen.findByText(reason)).toBeVisible();
+  expect(upgrade).toHaveBeenCalledTimes(1);
 });
