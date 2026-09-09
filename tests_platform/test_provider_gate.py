@@ -112,6 +112,7 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/source_intake_publication.py",
         "bluefire/ai.py",
         "bluefire/ai_drafts.py",
+        "bluefire/graph_ai_edit.py",
         "bluefire/ai_detection_create.py",
         "bluefire/detection_create_candidate.py",
         "bluefire/detection_create_context.py",
@@ -494,6 +495,7 @@ def test_live_source_audit_round_trips_locked_structural_validator() -> None:
 @pytest.mark.parametrize(
     "relative",
     [
+        "bluefire/graph_ai_edit.py",
         "bluefire/browser_launch.py",
         "bluefire/ai_receiver_inspection.py",
         "bluefire/assistance_receiver_context.py",

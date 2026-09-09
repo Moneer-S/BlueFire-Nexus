@@ -149,6 +149,7 @@ def test_detection_enrollment_does_not_admit_modified_schema_or_arbitrary_operat
             "bluefire_detection_source_creation",
             "bluefire_detection_source_revision",
             "bluefire_experiment_assistance",
+            "bluefire_graph_step_edit",
             "bluefire_method_comparison",
             "bluefire_receiver_defense_inspection",
             "bluefire_run_evidence_inspection",
