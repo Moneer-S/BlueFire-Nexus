@@ -106,22 +106,26 @@ export class ApiError extends Error {
   }
 }
 
-function consumeBrowserBootstrapFragment(): string | null {
+export function hasBrowserBootstrapFragment(): boolean {
+  return window.location.hash.startsWith(`#${BROWSER_BOOTSTRAP_FRAGMENT_KEY}=`);
+}
+
+function consumeBrowserBootstrapFragment(returnHash: string): string | null {
   const prefix = `#${BROWSER_BOOTSTRAP_FRAGMENT_KEY}=`;
   if (!window.location.hash.startsWith(prefix)) return null;
 
   const capability = window.location.hash.slice(prefix.length);
   // A fragment is browser-local and is never sent in an HTTP request. Remove it
   // before the first fetch, including malformed and failed bootstrap attempts.
-  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}${returnHash.startsWith("#/") ? returnHash : ""}`);
   if (!BROWSER_CAPABILITY.test(capability)) throw new Error("invalid browser bootstrap fragment");
   return capability;
 }
 
-export async function establishBrowserSession(): Promise<void> {
+export async function establishBrowserSession(returnHash = ""): Promise<void> {
   if (DEMO_MODE) return;
   try {
-    const capability = consumeBrowserBootstrapFragment();
+    const capability = consumeBrowserBootstrapFragment(returnHash);
     let response = await fetch(`${API_ROOT}/session`, {
       method: capability === null ? "GET" : "POST",
       credentials: "same-origin",
