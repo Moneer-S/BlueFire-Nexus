@@ -2856,7 +2856,16 @@ fn inventory_and_execute_cli_emit_the_versioned_json_contract() {
         inventory_json["receipt_protocol"],
         "bluefire.runner-receipt-wal.v2"
     );
-    assert_eq!(inventory_json["actions"].as_array().unwrap().len(), 22);
+    let actions = inventory_json["actions"].as_array().unwrap();
+    assert_eq!(actions.len(), 23);
+    let gzip = actions
+        .iter()
+        .find(|action| action["action_id"] == "sandbox.collection.atomic-gzip.v1")
+        .expect("the reviewed gzip adapter must be present in the static inventory");
+    assert_eq!(gzip["platforms"], json!(["linux"]));
+    assert_eq!(gzip["filesystem_effect"], true);
+    assert_eq!(gzip["process_effect"], true);
+    assert_eq!(gzip["network_effect"], false);
 
     let root = TempDir::new().unwrap();
     let profile = profile(&root, Vec::new());
