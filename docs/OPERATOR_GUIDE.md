@@ -22,9 +22,11 @@ opening it from another browser connected to the same workspace.
 
 ## 2. Review and run Simulate
 
-Choose **Review run**, select **Simulate**, set AI autonomy to **Off**, and choose the
-`sandbox-simulate.v1` runner profile. A profile contains permissions and limits; it is not the
-lab itself. Simulate does not start a runner or perform external behavior effects.
+Choose **Review run**, select **Simulate**, set **AI autonomy** to **Off**, and choose
+**Local simulation** under **Environment profile**. Its supported platforms appear beside
+the name. A profile contains permissions and limits; it is not the lab itself. Simulate does
+not start a runner or perform external behavior effects. The profile's technical ID is
+available under **Environment and scope references**.
 
 Choose **Run preflight**. Check the resolved steps, profile, scope, and cleanup. When the plan
 is ready, choose **Submit Simulate job** and follow its progress to the saved result. A job
@@ -53,7 +55,8 @@ Prepare a disposable environment you are authorized to test; the
 In Runs, select **Execute** and follow the actual runner readiness state. Preparing or starting
 the runner does not approve an experiment.
 
-Select the appropriate runner profile, exact scope, and collectors, then run preflight. Review
+Select the authorized **Environment profile**, review **Requested access** and required
+**Observations**, then run preflight. Review
 the full procedure, allowed effects, limits, observations, and cleanup before creating the
 approval-gated job. Approve that particular request only when its scope is correct. A changed
 or expired request needs a fresh review; reopening a result never grants approval or reruns it.
@@ -69,16 +72,24 @@ independent observations and an available configured provider. The AI-Off synthe
 alone does not supply those prerequisites.
 
 For SQLite or Sigma, validate the source using the installed backend, then open
-**Run evaluations**. Select an existing source run by name, enter the experiment question and
-case role, and choose **Evaluate full observed run**. Inspect the evaluated and matched records
-and any missing evidence. Repeat against separate relevant attack, benign, and replay inputs;
-choosing a role does not create those inputs or determine the outcome.
+**Run evaluations**. Choose **Evaluation source run** by name and creation time. The
+**Experiment question** is optional; leaving it blank uses the selected rule and run.
+Set **Activity label** to describe attack or benign activity, or leave it unknown. Separately,
+set **Use of this data**: development data was used to write or tune the rule; independent
+test data must not have been used for that development. Recorded development use takes
+precedence over a later independent label. Replay lineage comes from the saved run.
+
+Choose **Evaluate full observed run**, then inspect matched records, missing fields and
+evidence gaps. Repeat with separate relevant attack and benign inputs and compare the
+retest. Choosing a label does not create test data or determine the result.
 
 **Validate and save new revision** preserves the selected rule and its previous evaluations.
 Local rule and evaluation inputs can be retained across navigation and reload in the same
 browser tab; they are not saved rule revisions. **Export local inputs** preserves the rule's
 local draft fields; use **Export evaluation inputs** separately for the question, source run,
-role, and related revision. See [Detection Lab](DETECTION_LAB.md) for backend prerequisites and
+activity label, data use, and related revision. **Revisions** lets you compare saved source
+text and results before opening the advanced clone/tune controls. See
+[Detection Lab](DETECTION_LAB.md) for backend prerequisites and
 limitations.
 YARA evaluates supplied file content; metadata alone cannot establish a file-content match.
 

@@ -33,6 +33,7 @@ export function SettingsPage() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [notice, setNotice] = useState<string>();
   const hydrated = useRef(false);
+  const edited = useRef({ theme: false, mode: false, autonomy: false });
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: api.settings });
 
   useEffect(() => {
@@ -42,8 +43,8 @@ export function SettingsPage() {
     if (!value) return;
     try {
       const preferences = parseUiPreferenceDocument(value);
-      setTheme(preferences.theme);
-      setNewRunDefaults({ mode: preferences.effect_mode, autonomy: preferences.autonomy });
+      if (!edited.current.theme) setTheme(preferences.theme);
+      setNewRunDefaults({ mode: edited.current.mode ? newRunDefaults.mode : preferences.effect_mode, autonomy: edited.current.autonomy ? newRunDefaults.autonomy : preferences.autonomy });
     } catch (error) {
       setNotice(`Durable preferences were ignored. ${error instanceof Error ? error.message : "The preference document was invalid."}`);
     }
@@ -67,6 +68,7 @@ export function SettingsPage() {
     if (!file) return;
     try {
       const preferences = parseUiPreferenceDocument(JSON.parse(await readTextFile(file)) as unknown);
+      edited.current = { theme: true, mode: true, autonomy: true };
       setTheme(preferences.theme);
       setNewRunDefaults({ mode: preferences.effect_mode, autonomy: preferences.autonomy });
       setNotice("Theme and future run defaults were imported into this form. No authority fields were accepted; review and save these preferences.");
@@ -84,20 +86,20 @@ export function SettingsPage() {
         <input aria-label="Import UI preferences file" className="sr-only" ref={fileRef} type="file" accept="application/json" onChange={(event) => importSettings(event.target.files?.[0])} />
         <Button variant="secondary" onClick={() => fileRef.current?.click()}><Upload />Import</Button>
         <Button variant="secondary" onClick={exportSettings}><Download />Export</Button>
-        <Button variant="primary" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}><Save />{saveMutation.isPending ? "Saving" : "Save settings"}</Button>
+        <Button variant="primary" onClick={() => { edited.current = { theme: true, mode: true, autonomy: true }; saveMutation.mutate(); }} disabled={saveMutation.isPending}><Save />{saveMutation.isPending ? "Saving" : "Save settings"}</Button>
       </>}
     />
     {notice ? <Callout title="Settings">{notice}</Callout> : settingsQuery.isError ? <Callout tone="warning" title="Durable settings unavailable">The form is using browser preferences. Save after the local service is ready.</Callout> : null}
     <div className="settings-grid">
       <Panel>
         <PanelHeader title="Appearance" />
-        <div className="detail-body"><div className="theme-picker">{(["dark", "light", "system"] as UiTheme[]).map((item) => <button key={item} className={theme === item ? "selected" : ""} onClick={() => setTheme(item)}>{item === "dark" ? <Moon /> : item === "light" ? <Sun /> : <RotateCcw />}<span><strong>{item[0]!.toUpperCase() + item.slice(1)}</strong><small>{item === "system" ? "Follow operating system" : `${item} interface`}</small></span></button>)}</div></div>
+        <div className="detail-body"><div className="theme-picker">{(["dark", "light", "system"] as UiTheme[]).map((item) => <button key={item} className={theme === item ? "selected" : ""} onClick={() => { edited.current.theme = true; setTheme(item); }}>{item === "dark" ? <Moon /> : item === "light" ? <Sun /> : <RotateCcw />}<span><strong>{item[0]!.toUpperCase() + item.slice(1)}</strong><small>{item === "system" ? "Follow operating system" : `${item} interface`}</small></span></button>)}</div></div>
       </Panel>
       <Panel>
         <PanelHeader title="New run defaults" />
         <div className="detail-body">
-          <Field label="Effect mode"><select value={newRunDefaults.mode} onChange={(event) => setNewRunDefaults({ ...newRunDefaults, mode: event.target.value as "simulate" | "execute" })}><option value="simulate">Simulate</option><option value="execute">Execute</option></select></Field>
-          <Field label="AI autonomy"><select value={newRunDefaults.autonomy} onChange={(event) => setNewRunDefaults({ ...newRunDefaults, autonomy: event.target.value as typeof newRunDefaults.autonomy })}><option value="off">Off</option><option value="assist">Assist</option><option value="auto">Auto</option></select></Field>
+          <Field label="Effect mode"><select value={newRunDefaults.mode} onChange={(event) => { edited.current.mode = true; setNewRunDefaults({ ...newRunDefaults, mode: event.target.value as "simulate" | "execute" }); }}><option value="simulate">Simulate</option><option value="execute">Execute</option></select></Field>
+          <Field label="AI autonomy"><select value={newRunDefaults.autonomy} onChange={(event) => { edited.current.autonomy = true; setNewRunDefaults({ ...newRunDefaults, autonomy: event.target.value as typeof newRunDefaults.autonomy }); }}><option value="off">Off</option><option value="assist">Assist</option><option value="auto">Auto</option></select></Field>
           <p>These defaults apply when opening a fresh workspace. Current run settings and prepared requests stay unchanged. Execute approval and operator identity are never saved as preferences.</p>
         </div>
       </Panel>
