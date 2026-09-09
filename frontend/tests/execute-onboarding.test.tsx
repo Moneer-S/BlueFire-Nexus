@@ -84,12 +84,13 @@ describe("guided local Execute onboarding", () => {
     let jobSubmitted = false;
     const calls: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = String(input);
+      const url = new URL(String(input), "http://localhost");
+      const path = url.pathname;
       if (path.endsWith("/catalog")) return json(catalog);
       if (path.endsWith("/scenarios")) return json({ scenarios: [guidedScenario] });
-      if (path.endsWith("/runner/bootstrap") && init?.method === "POST") { calls.push("bootstrap"); runner = stopped; return json(runner); }
-      if (path.endsWith("/runner/start") && init?.method === "POST") { calls.push("start"); runner = ready; return json(runner); }
-      if (path.endsWith("/runner")) return json(runner);
+      if (path.endsWith("/runner/bootstrap") && init?.method === "POST") { calls.push("bootstrap"); expect(JSON.parse(String(init.body))).toEqual({ profile_id: "sandbox-execute.v1" }); runner = { ...stopped, profile_id: "sandbox-execute.v1" }; return json(runner); }
+      if (path.endsWith("/runner/start") && init?.method === "POST") { calls.push("start"); expect(JSON.parse(String(init.body))).toEqual({ profile_id: "sandbox-execute.v1" }); runner = { ...ready, profile_id: "sandbox-execute.v1" }; return json(runner); }
+      if (path.endsWith("/runner")) { expect(catalog.runner_profiles.some(profile => profile.id === url.searchParams.get("profile_id"))).toBe(true); return json({ ...runner, profile_id: runner.state === "unbootstrapped" ? null : url.searchParams.get("profile_id") }); }
       if (path.endsWith("/runs/preflight")) { calls.push("preflight"); return json(preflight); }
       if (path.endsWith("/runs") && init?.method === "POST") { calls.push("submit"); jobSubmitted = true; return json({ schema_version: "bluefire.run-job-submission.v1", job, approval_request: approvalRequest, preflight }); }
       if (path.endsWith("/jobs")) return json({ schema_version: "bluefire.active-job-list.v1", jobs: jobSubmitted && !["cancelled", "completed", "failed", "interrupted"].includes(job.state) ? [job] : [] });
@@ -111,7 +112,7 @@ describe("guided local Execute onboarding", () => {
     expect(screen.getByRole("combobox", { name: "Environment profile" })).toHaveValue("sandbox-execute.v1");
     const guide = await screen.findByRole("region", { name: "Guided local Execute" });
     expect(guide).toBeVisible();
-    expect(within(guide).getByRole("button", { name: "Prepare runner" })).toBeEnabled();
+    expect(await within(guide).findByRole("button", { name: "Prepare runner" })).toBeEnabled();
     expect(within(guide).queryByRole("button", { name: "Load starter example" })).not.toBeInTheDocument();
 
     await user.click(within(guide).getByRole("button", { name: "Prepare runner" }));
@@ -171,10 +172,11 @@ describe("guided local Execute onboarding", () => {
   ])("keeps durable approval controls disabled for %s", async (_case, mismatchedJob, mismatchedApproval) => {
     let submitted = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = String(input);
+      const url = new URL(String(input), "http://localhost");
+      const path = url.pathname;
       if (path.endsWith("/catalog")) return json(catalog);
       if (path.endsWith("/scenarios")) return json({ scenarios: [guidedScenario] });
-      if (path.endsWith("/runner")) return json(ready);
+      if (path.endsWith("/runner")) { expect(catalog.runner_profiles.some(profile => profile.id === url.searchParams.get("profile_id"))).toBe(true); return json({ ...ready, profile_id: url.searchParams.get("profile_id") }); }
       if (path.endsWith("/runs/preflight")) return json(preflight);
       if (path.endsWith("/runs") && init?.method === "POST") { submitted = true; return json({ schema_version: "bluefire.run-job-submission.v1", job: mismatchedJob, approval_request: mismatchedApproval, preflight }); }
       if (path.endsWith("/jobs")) return json({ schema_version: "bluefire.active-job-list.v1", jobs: submitted ? [mismatchedJob] : [] });
@@ -203,10 +205,11 @@ describe("guided local Execute onboarding", () => {
     let resolvePreflight!: (response: Response) => void;
     const pendingPreflight = new Promise<Response>((resolve) => { resolvePreflight = resolve; });
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const path = String(input);
+      const url = new URL(String(input), "http://localhost");
+      const path = url.pathname;
       if (path.endsWith("/catalog")) return json(catalog);
       if (path.endsWith("/scenarios")) return json({ scenarios: [guidedScenario] });
-      if (path.endsWith("/runner")) return json(ready);
+      if (path.endsWith("/runner")) { expect(catalog.runner_profiles.some(profile => profile.id === url.searchParams.get("profile_id"))).toBe(true); return json({ ...ready, profile_id: url.searchParams.get("profile_id") }); }
       if (path.endsWith("/runs/preflight")) return pendingPreflight;
       if (path.endsWith("/jobs")) return json({ schema_version: "bluefire.active-job-list.v1", jobs: [] });
       if (path.endsWith("/runs")) return json({ runs: [] });

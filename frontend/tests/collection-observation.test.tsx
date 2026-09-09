@@ -23,7 +23,7 @@ it.each([
 ])("selects and visibly binds %s collection contents through the ordinary Execute preflight request", async (method, extension) => {
   const requests: Record<string, unknown>[] = [];
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const path = String(input);
+    const path = new URL(String(input), "http://localhost").pathname;
     if (path.endsWith("/catalog")) return json(demoCatalog);
     if (path.endsWith("/scenarios")) return json({ scenarios: [] });
     if (path.endsWith("/runs")) return json({ runs: [] });

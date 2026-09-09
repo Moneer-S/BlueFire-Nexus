@@ -274,13 +274,14 @@ function DetectionRegistryPage() {
     onError: (error) => { if (manualMounted.current) setNotice(error instanceof Error ? error.message : "The hypothesis could not be saved."); },
   });
   const saveLinkedMutation = useMutation({
-    mutationFn: ({ candidate, run }: { candidate: DetectionCandidate; run: RunRecord }) => api.detectionFromRun(run.run_id, candidate.candidate_id ?? candidate.id ?? ""),
-    onSuccess: ({ candidate, operation }) => {
+    mutationFn: ({ candidate, run }: { candidate: DetectionCandidate; run: RunRecord; navigation: typeof manualNavigation }) => api.detectionFromRun(run.run_id, candidate.candidate_id ?? candidate.id ?? ""),
+    onSuccess: ({ candidate, operation }, submitted) => {
+      refreshDetections();
+      if (!manualMounted.current || manualNavigationRef.current !== submitted.navigation) return;
       setSelectedId(candidate.id);
       setNotice(operation === "reused" ? `${candidate.id} already exists and was reused at its earned ${sentence(candidate.status)} state. Its lifecycle was not reset.` : `${candidate.id} ${operation === "cloned" ? "cloned as a new immutable revision" : "created"} in hypothesis state. The source run's lifecycle and match results were not copied.`);
-      refreshDetections();
     },
-    onError: (error) => setNotice(error instanceof Error ? error.message : "The run-linked definition could not be saved."),
+    onError: (error, submitted) => { if (manualMounted.current && manualNavigationRef.current === submitted.navigation) setNotice(error instanceof Error ? error.message : "The run-linked definition could not be saved."); },
   });
   const actionMutation = useMutation({
     mutationFn: ({ id, action, body }: { id: string; action: LifecycleAction; body: Record<string, unknown> }) => api.detectionAction(id, action, body),
@@ -423,7 +424,7 @@ function DetectionRegistryPage() {
         sourceRun={sourceRun}
         ai={catalogQuery.data.ai}
         saveLinkedPending={saveLinkedMutation.isPending}
-        onSaveLinked={() => sourceRun && selected.runId === sourceRun.run_id && saveLinkedMutation.mutate({ candidate: selected, run: sourceRun })}
+        onSaveLinked={() => sourceRun && selected.runId === sourceRun.run_id && saveLinkedMutation.mutate({ candidate: selected, run: sourceRun, navigation: manualNavigation })}
         lineage={lineage}
         researchSources={sources}
         researchSourcesUnavailable={researchSourcesQuery.isError}
