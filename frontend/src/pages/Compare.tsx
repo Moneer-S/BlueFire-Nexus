@@ -294,16 +294,18 @@ function resolvedActions(source?: RunRecord, omittedStep?: string) { const steps
 export function ComparisonResult({ comparison, names = {} }: { comparison: ComparisonResponse; names?: Record<string, string> }) {
   const baseline = comparison.summaries.find((item) => item.run_id === comparison.baseline_run_id) ?? comparison.summaries[0];
   const changed = comparison.deltas.filter(hasMaterialDelta).length;
+  const comparedRunLabel = (runId: string) => `${runId === comparison.baseline_run_id ? "Baseline" : `Variant ${comparison.summaries.findIndex(item => item.run_id === runId)}`} · ${names[runId] ?? "Run"}`;
   const [reportUrl, setReportUrl] = useState<string>();
+  const reportContent = useMemo(() => comparisonReport(comparison, names), [comparison, names]);
   useEffect(() => {
-    const url = URL.createObjectURL(new Blob([comparisonReport(comparison)], { type: "text/markdown;charset=utf-8" }));
+    const url = URL.createObjectURL(new Blob([reportContent], { type: "text/markdown;charset=utf-8" }));
     setReportUrl(url);
     return () => URL.revokeObjectURL(url);
-  }, [comparison]);
+  }, [reportContent]);
   return <div className="comparison-results">
     <Panel className="comparison-outcomes">
       <PanelHeader title="Run outcomes" detail="Objective, observation, and cleanup are separate results. A stopped step alone does not establish target prevention." actions={reportUrl ? <a className="button button-secondary button-medium" href={reportUrl} download="bluefire-comparison.md">Download report</a> : null} />
-      <div className="comparison-context"><span>{comparison.run_ids.length} runs</span><span className="comparison-changes">Material deltas <strong>{changed}</strong></span><span>{changed ? "Review the changes below" : "No material change reported"}</span></div>
+      <div className="comparison-context"><span>{comparison.run_ids.length} runs</span><span className="comparison-changes">Runs with meaningful changes <strong>{changed}</strong></span><span>{changed ? "Compared with the baseline; inspect the recorded differences below." : "No meaningful change reported against the baseline."}</span></div>
       <div className="table-scroll" role="region" aria-label="Compared run outcomes" tabIndex={0}>
         <table><thead><tr><th scope="col">Run</th><th scope="col">Mode</th><th scope="col">Objective</th><th scope="col">Independent evidence</th><th scope="col">First stopped step</th><th scope="col">Cleanup</th></tr></thead>
           <tbody>{comparison.summaries.map((summary, index) => <tr key={summary.run_id}>
@@ -351,7 +353,7 @@ export function ComparisonResult({ comparison, names = {} }: { comparison: Compa
     <div className="delta-grid">{comparison.deltas.map((delta) => {
       const assessment = delta.assessment ?? (hasMaterialDelta(delta) ? "material_change" : "no_material_change");
       const noPathDivergence = delta.first_path_divergence === null || delta.first_path_divergence === undefined || delta.first_path_divergence < 0;
-      return <Panel key={delta.to_run_id}><PanelHeader eyebrow="Delta assessment" title={`${shortId(delta.from_run_id)} → ${shortId(delta.to_run_id)}`} detail={`${sentence(assessment)} · ${formatList(delta.signals, "No assessment signals")}`} actions={<Badge tone={assessmentTone(assessment)}>{sentence(assessment)}</Badge>} />
+      return <Panel key={delta.to_run_id}><PanelHeader title={`${comparedRunLabel(delta.from_run_id)} → ${comparedRunLabel(delta.to_run_id)}`} detail={`${sentence(assessment)} · ${formatList(delta.signals, "No assessment signals")}`} actions={<Badge tone={assessmentTone(assessment)}>{sentence(assessment)}</Badge>} />
         <div className="delta-summary"><div><span>{noPathDivergence ? <CheckCircle2/> : <ShieldAlert/>}</span><strong>Path divergence</strong><small>{noPathDivergence ? "No divergence" : `Node index ${delta.first_path_divergence! + 1}`}</small></div><div><span>{delta.objective_changed ? <ShieldAlert/> : <CheckCircle2/>}</span><strong>Objective</strong><small>{formatChanged(delta.objective_changed)}</small></div><div><span>{delta.first_blocked_changed ? <ShieldAlert/> : <CheckCircle2/>}</span><strong>First stopped step</strong><small>{formatChanged(delta.first_blocked_changed)}</small></div><div><span>{delta.cleanup_changed ? <ShieldAlert/> : <CheckCircle2/>}</span><strong>Cleanup</strong><small>{formatChanged(delta.cleanup_changed)}</small></div></div>
         <div className="delta-columns">
           <div><h3>Evidence, detections & outcomes</h3><DataList items={[

@@ -5,13 +5,13 @@ function cell(value: unknown): string {
 }
 
 /** A readable export of actual comparison fields, with no inferred defense success. */
-export function comparisonReport(comparison: ComparisonResponse): string {
+export function comparisonReport(comparison: ComparisonResponse, names: Record<string, string> = {}): string {
   const rows = comparison.summaries.map((run) => {
     const observed = run.evidence_details?.observed_artifacts;
     const gaps = run.evidence_details?.evidence_gaps;
     return [
       run.run_id === comparison.baseline_run_id ? "Baseline" : "Variant",
-      run.run_id,
+      names[run.run_id] ?? run.run_id,
       run.mode,
       run.objective_reached === true ? (run.mode === "simulate" ? "Achieved (synthetic)" : "Achieved") : run.objective_reached === false ? "Not achieved" : "Not established",
       Array.isArray(observed) ? observed.length : "Not reported",
@@ -20,7 +20,9 @@ export function comparisonReport(comparison: ComparisonResponse): string {
     ].map(cell).join(" | ");
   });
   const details = comparison.summaries.flatMap((run) => [
-    `## ${cell(run.run_id)}`,
+    `## ${cell(names[run.run_id] ?? run.run_id)}`,
+    "",
+    `Run ID: ${cell(run.run_id)}`,
     "",
     `Profile: ${cell(run.profile_id)}. First stopped step: ${cell(run.first_blocked_step ?? "None recorded")}.`,
     "",

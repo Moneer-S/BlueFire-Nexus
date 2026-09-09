@@ -630,7 +630,7 @@ describe("product application", () => {
     await user.click(runSelectors[1]!);
     await user.click(screen.getByRole("button", { name: "Compare selected" }));
 
-    expect(await screen.findByText("Material deltas")).toBeVisible();
+    expect(await screen.findByText("Runs with meaningful changes")).toBeVisible();
     expect(screen.getByRole("link", { name: "Review baseline run summary" })).toHaveAttribute("href", `/runs/${encodeURIComponent(demoRuns[0]!.run_id)}`);
     expect(screen.getByRole("region", { name: "Compared run outcomes" })).toBeVisible();
     expect(screen.getByText("Observed: 3, Synthetic: 1")).not.toBeVisible();
