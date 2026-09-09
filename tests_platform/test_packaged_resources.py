@@ -24,14 +24,15 @@ def test_packaged_defaults_match_checkout_examples() -> None:
         assert packaged.read_bytes() == checkout.read_bytes()
 
 
-def test_product_ships_twelve_scenarios_in_both_resource_trees() -> None:
+def test_product_ships_thirteen_scenarios_in_both_resource_trees() -> None:
     checkout_names = {path.name for path in SCENARIO_ROOT.glob("*.yaml")}
     packaged_names = {
         path.name for path in PACKAGED_SCENARIO_ROOT.glob("*.yaml") if path.name in checkout_names
     }
 
-    assert len(checkout_names) == 12
+    assert len(checkout_names) == 13
     assert packaged_names == checkout_names
+    assert "atomic_gzip_collection.yaml" in checkout_names
     assert "operator_representative_validation.yaml" in checkout_names
     assert "endpoint_deep_behavior_lab.yaml" in checkout_names
     assert "endpoint_lab_archive_collection.yaml" in checkout_names

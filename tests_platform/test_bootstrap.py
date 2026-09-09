@@ -32,11 +32,17 @@ def test_bootstrap_seeds_versioned_secret_safe_product_metadata(tmp_path: Path) 
     )
 
     assert first == second
-    assert first["scenario"] == 12
-    assert first["action"] == 22
+    assert first["scenario"] == 13
+    assert first["action"] == 23
     assert first["collector"] >= 6
-    assert len(store.list_scenarios()) == 12
-    assert len(store.list_resources("action")) == 22
+    assert len(store.list_scenarios()) == 13
+    assert len(store.list_resources("action")) == 23
+    assert "scenario.atomic.gzip-collection.v1" in {
+        item["scenario_id"] for item in store.list_scenarios()
+    }
+    assert "sandbox.collection.atomic-gzip.v1" in {
+        item["id"] for item in store.list_resources("action")
+    }
     providers = store.list_resources("model_provider")
     serialized = json.dumps(providers, sort_keys=True)
     assert "OPENAI_API_KEY" in serialized

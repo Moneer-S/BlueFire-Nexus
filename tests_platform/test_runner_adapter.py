@@ -23,6 +23,7 @@ ACTION_IDS = {
     "sandbox.collection.stage.v1",
     "sandbox.collection.records.v1",
     "sandbox.collection.archive.v1",
+    "sandbox.collection.atomic-gzip.v1",
     "sandbox.identity-material.seed.v1",
     "sandbox.identity-material.inspect.v1",
     "sandbox.network.loopback.v1",
@@ -37,6 +38,7 @@ CONTROLLED_ACTIONS = {
     "sandbox.collection.stage.v1",
     "sandbox.collection.records.v1",
     "sandbox.collection.archive.v1",
+    "sandbox.collection.atomic-gzip.v1",
     "sandbox.network.loopback.v1",
     "sandbox.export.local.v1",
 }
@@ -206,6 +208,58 @@ def _step(action_id: str, parameters: Mapping[str, Any] | None = None) -> PlanSt
                 observable_paths=("staged/bundle.jsonl",),
             ),
             id="collection-stage",
+        ),
+        pytest.param(
+            "sandbox.collection.atomic-gzip.v1",
+            {"stage_variant": "primary"},
+            {
+                "records": [
+                    {
+                        "type": "artifact.sandbox.discovery.records.v1",
+                        "kind": "file",
+                        "path": "fixtures/transformed.jsonl",
+                        "record_count": 8,
+                        "sha256": "a" * 64,
+                    }
+                ]
+            },
+            (),
+            AdaptedAction(
+                params={
+                    "input": "fixtures/transformed.jsonl",
+                    "expected_sha256": "a" * 64,
+                    "stage_variant": "primary",
+                },
+                filesystem_scope=("fixtures/transformed.jsonl", "staged/collection"),
+                observable_paths=("staged/collection/bundle.jsonl.gz",),
+            ),
+            id="atomic-gzip-primary",
+        ),
+        pytest.param(
+            "sandbox.collection.atomic-gzip.v1",
+            {"stage_variant": "heldout"},
+            {
+                "records": [
+                    {
+                        "type": "artifact.sandbox.discovery.records.v1",
+                        "kind": "file",
+                        "path": "fixtures/transformed.jsonl",
+                        "record_count": 8,
+                        "sha256": "a" * 64,
+                    }
+                ]
+            },
+            (),
+            AdaptedAction(
+                params={
+                    "input": "fixtures/transformed.jsonl",
+                    "expected_sha256": "a" * 64,
+                    "stage_variant": "heldout",
+                },
+                filesystem_scope=("fixtures/transformed.jsonl", "staged/variation"),
+                observable_paths=("staged/variation/bundle.jsonl.gz",),
+            ),
+            id="atomic-gzip-heldout",
         ),
         pytest.param(
             "sandbox.network.loopback.v1",

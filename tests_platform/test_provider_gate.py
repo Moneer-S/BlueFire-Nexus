@@ -771,7 +771,10 @@ def _journey_report() -> dict[str, Any]:
                 "receipt_protocol": "bluefire.runner-receipt-wal.v2",
                 "platform": "windows",
                 "provider_runtime_count": 1,
-                "core_action_count": len(BUILTIN_RUNNER_ACTION_IDS),
+                # This receipt binds the Windows runner; gzip is Linux-only.
+                "core_action_count": len(
+                    BUILTIN_RUNNER_ACTION_IDS - {"sandbox.collection.atomic-gzip.v1"}
+                ),
             },
             "provider_runtime": {
                 **runtime_contract,
@@ -941,10 +944,14 @@ def _install_passing_fakes(
 def test_gate_02_emits_exact_unique_proofs_and_bundle_attachments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    drifted_inventory = _journey_report()
-    drifted_inventory["packaged_runner"]["inventory_contract"]["core_action_count"] -= 1
-    with pytest.raises(ValueError, match="runner inventory contract is invalid"):
-        provider_gate._validate_journey(drifted_inventory)
+    assert _journey_report()["packaged_runner"]["inventory_contract"]["core_action_count"] == 22
+    for invalid_count in (21, 23):
+        drifted_inventory = _journey_report()
+        drifted_inventory["packaged_runner"]["inventory_contract"][
+            "core_action_count"
+        ] = invalid_count
+        with pytest.raises(ValueError, match="runner inventory contract is invalid"):
+            provider_gate._validate_journey(drifted_inventory)
 
     evidence_dir = tmp_path / "gate-02"
     evidence_dir.mkdir()
@@ -1479,7 +1486,22 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
     (command_inventory / "runner" / "src" / "cancellation_witness.rs").write_bytes(
         cancellation_source
     )
+    gzip_source = (REPOSITORY / "runner" / "src" / "atomic_gzip.rs").read_bytes()
+    gzip_copy = command_inventory / "runner" / "src" / "atomic_gzip.rs"
+    # An omitted reviewed boundary must fail before testing added hidden launchers.
+    assert not provider_gate_source_audit._native_command_source_inventory_is_fixed(
+        command_inventory
+    )
+    gzip_copy.write_bytes(gzip_source)
     assert provider_gate_source_audit._native_command_source_inventory_is_fixed(command_inventory)
+    gzip_copy.write_bytes(
+        gzip_source + b'\nfn unreviewed() { let _ = std::process::Command::new("unreviewed"); }\n'
+    )
+    assert not provider_gate_source_audit._native_command_source_inventory_is_fixed(
+        command_inventory
+    )
+    gzip_copy.write_bytes(gzip_source)
+
     (nested_source / "hidden.rs").write_text(
         "use std :: process :: Command as Hidden;\n"
         'fn hidden() { let _ = Hidden :: new("/bin/sh"); }\n',

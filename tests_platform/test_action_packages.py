@@ -697,6 +697,7 @@ def test_runner_contract_versions_fail_closed_across_breaking_semantic_schemas()
         "sandbox.collection.stage.v1": "2.0.0",
         "sandbox.collection.records.v1": "1.0.0",
         "sandbox.collection.archive.v1": "1.0.0",
+        "sandbox.collection.atomic-gzip.v1": "1.0.0",
         "sandbox.discovery.list.v1": "2.0.0",
         "sandbox.discovery.metadata.v1": "2.0.0",
         "sandbox.discovery.recursive.v1": "1.0.0",

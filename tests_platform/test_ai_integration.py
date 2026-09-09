@@ -36,6 +36,7 @@ from bluefire.util import canonical_json_bytes, content_hash
 ROOT = Path(__file__).resolve().parents[1]
 EXECUTE_ACTIONS = {
     "sandbox.collection.archive.v1",
+    "sandbox.collection.atomic-gzip.v1",
     "sandbox.collection.records.v1",
     "endpoint.discovery.processes.v1",
     "endpoint.discovery.system.v1",
