@@ -17,6 +17,7 @@ import { guaranteedInputSources, stepParameterSummary } from "../lib/graph-autho
 import { ParameterField } from "../components/ParameterField";
 import { branchLabels, GRAPH_SECTION_SIZE, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, type ScenarioGraph } from "../lib/graph-view";
 import { api } from "../lib/api";
+import { defaultGraphView, readWorkingGraphView, writeWorkingGraphView } from "../lib/graph-view-retention";
 import { initialParameterValue, shouldInitializeParameter } from "../lib/parameters";
 import { deleteScenarioGraphElements, selectScenarioAlternative } from "../lib/scenario";
 import { useProduct } from "../state/ProductContext";
@@ -89,6 +90,7 @@ const connectionLineStyle = { stroke: "#38a8ff", strokeWidth: 2 };
 const proOptions = { hideAttribution: true };
 
 export function BuilderPage() {
+  const { scenario } = useProduct();
   const [params] = useSearchParams();
   const graphJob = params.get("graph_job");
   const savedScenario = params.get("saved_scenario");
@@ -97,7 +99,7 @@ export function BuilderPage() {
   if (query.isPending) return <LoadingState label="Opening graph editor" />;
   if (query.isError) return <ErrorState error={query.error} retry={() => query.refetch()} />;
   if (savedScenario) return <ReactFlowProvider><SavedExperimentReview key={`${savedScenario}:${params.get("version")}:${params.get("digest")}`} id={savedScenario} version={Number(params.get("version"))} digest={params.get("digest") ?? ""} receiverJob={params.get("receiver_job") ?? undefined} renderEditor={(review) => <GraphWorkspace behaviors={query.data.behaviors} actions={query.data.actions} review={review} />} /></ReactFlowProvider>;
-  return <ReactFlowProvider>{graphJob ? <GraphProposalReview key={graphJob} jobId={graphJob} behaviors={query.data.behaviors} renderEditor={(review) => <GraphWorkspace behaviors={query.data.behaviors} actions={query.data.actions} review={review} />} /> : <GraphWorkspace behaviors={query.data.behaviors} actions={query.data.actions} />}</ReactFlowProvider>;
+  return <ReactFlowProvider>{graphJob ? <GraphProposalReview key={graphJob} jobId={graphJob} behaviors={query.data.behaviors} renderEditor={(review) => <GraphWorkspace behaviors={query.data.behaviors} actions={query.data.actions} review={review} />} /> : <GraphWorkspace key={`working:${scenario.id}`} behaviors={query.data.behaviors} actions={query.data.actions} />}</ReactFlowProvider>;
 }
 
 function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[]; actions: ActionDefinition[]; review?: GraphEditorDraft }) {
@@ -113,9 +115,10 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
   const actionMap = useMemo(() => new Map(actions.map((item) => [item.id, item])), [actions]);
   const [invalidNodes, setInvalidNodes] = useState<Set<string>>(new Set());
   const makeNodes = useCallback((value: ScenarioGraph) => value.steps.map((step, index) => behaviorNode(step, behaviorMap.get(step.behavior_id), index, value, invalidNodes.has(step.id))), [behaviorMap, invalidNodes]);
-  const [nodes, setNodes] = useState<BehaviorFlowNode[]>(() => makeNodes(graph).map((node, index) => ({ ...node, selected: index === 0 })));
+  const [initialView] = useState(() => review ? defaultGraphView(scenario) : readWorkingGraphView(scenario));
+  const [nodes, setNodes] = useState<BehaviorFlowNode[]>(() => makeNodes(graph).map((node) => ({ ...node, selected: node.id === initialView.selected?.id })));
   const [edges, setEdges] = useState<FlowEdge[]>(() => flowEdges(graph, behaviorMap));
-  const [selectedId, setSelectedId] = useState(scenario.steps[0]?.id ?? "");
+  const [selectedId, setSelectedId] = useState(initialView.selected?.id ?? "");
   const [search, setSearch] = useState(""); const [platform, setPlatform] = useState("all"); const [tier, setTier] = useState("all");
   const [compatibility, setCompatibility] = useState<string>();
   const [purposeOpen, setPurposeOpen] = useState(!scenario.purpose.trim());
@@ -135,14 +138,29 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
     }
     setValidationState("idle"); setValidationIssues((current) => current.length ? [] : current); setInvalidNodes((current) => current.size ? new Set() : current);
   }, [scenario]);
-  const [focusMode, setFocusMode] = useState(false); const [paletteOpen, setPaletteOpen] = useState(false); const [inspectorOpen, setInspectorOpen] = useState(false); const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
-  const [viewMode, setViewMode] = useState<"graph" | "steps">(() => window.matchMedia?.("(max-width: 760px)")?.matches ? "steps" : "graph");
-  const [allBranches, setAllBranches] = useState(false);
-  const [routesOpen, setRoutesOpen] = useState(false);
-  const [showInputs, setShowInputs] = useState(false);
-  const [expandedBranches, setExpandedBranches] = useState<Set<string>>(new Set());
+  const [focusMode, setFocusMode] = useState(false); const [paletteOpen, setPaletteOpen] = useState(false); const [inspectorOpen, setInspectorOpen] = useState(initialView.inspector); const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [viewMode, setViewMode] = useState(initialView.mode);
+  const [allBranches, setAllBranches] = useState(initialView.allBranches);
+  const [routesOpen, setRoutesOpen] = useState(initialView.routes);
+  const [showInputs, setShowInputs] = useState(initialView.inputs);
+  const [expandedBranches, setExpandedBranches] = useState<Set<string>>(new Set(initialView.expanded.map(step => step.id)));
   const visibleGraph = useMemo(() => graphView(graph, allBranches, expandedBranches), [graph, allBranches, expandedBranches]);
-  const [focusedSection, setFocusedSection] = useState<number | null>(0);
+  const [focusedSection, setFocusedSection] = useState<number | null>(initialView.section);
+  // Store only presentation after a view change. Loading a malformed record does
+  // not replace its bytes merely by mounting the editor.
+  const viewInteracted = useRef(false);
+  const lastView = useRef(JSON.stringify(initialView));
+  useEffect(() => {
+    if (review || !viewInteracted.current) return;
+    const selected = scenario.steps.find(step => step.id === selectedId);
+    const view = { selected: selected ? { id: selected.id, behavior: selected.behavior_id } : null,
+      mode: viewMode, allBranches, expanded: scenario.steps.filter(step => expandedBranches.has(step.id)).map(step => ({ id: step.id, behavior: step.behavior_id })),
+      section: focusedSection, inspector: inspectorOpen, routes: routesOpen, inputs: showInputs };
+    const serialized = JSON.stringify(view);
+    if (serialized === lastView.current) return;
+    lastView.current = serialized;
+    writeWorkingGraphView(scenario, view);
+  }, [review, scenario, selectedId, viewMode, allBranches, expandedBranches, focusedSection, inspectorOpen, routesOpen, showInputs]);
   const [summaryZoom, setSummaryZoom] = useState(false);
   const sections = useMemo(() => graphSections(visibleGraph.ordered), [visibleGraph]);
   const sectionIndex = Math.min(focusedSection ?? 0, sections.length - 1);
@@ -350,7 +368,7 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
   };
 
   const displayedValidation = validationState === "idle" && review?.validated ? "valid" : validationState;
-  return <div className={`page builder-page workbench-builder ${focusMode ? "builder-focus" : ""} ${showInputs ? "show-inputs" : ""} ${summaryZoom ? "graph-summary-zoom" : ""}`} onKeyDownCapture={keyboard}>
+  return <div className={`page builder-page workbench-builder ${focusMode ? "builder-focus" : ""} ${showInputs ? "show-inputs" : ""} ${summaryZoom ? "graph-summary-zoom" : ""}`} onPointerDownCapture={() => { viewInteracted.current = true; }} onClickCapture={() => { viewInteracted.current = true; }} onKeyDownCapture={(event) => { viewInteracted.current = true; keyboard(event); }}>
     <PageHeader title={scenario.title} description={review ? review.description : undefined} actions={<div className="builder-actions"><Badge tone={review?.readOnly ? "neutral" : dirty ? "warning" : "neutral"} dot>{review?.statusLabel ?? (dirty ? "Unsaved changes" : "Working copy")}</Badge><IconButton label="Undo" onClick={undo} disabled={review?.readOnly || historyIndex <= 0}><Undo2/></IconButton><IconButton label="Redo" onClick={redo} disabled={review?.readOnly || historyIndex >= history.length - 1}><Redo2/></IconButton><Button variant="secondary" onClick={() => { const url = URL.createObjectURL(new Blob([JSON.stringify(scenario, null, 2)], { type: "application/json" })); const link = document.createElement("a"); link.href = url; link.download = `${scenario.id}.json`; link.click(); URL.revokeObjectURL(url); }}><Download/>Export</Button><Button variant="secondary" onClick={() => validateMutation.mutate(structuredClone(scenario))} disabled={validateMutation.isPending}><Check/>Validate</Button>{review ? review.controls : <><Button variant="secondary" onClick={saveVersion} disabled={saveMutation.isPending}>{saveMutation.isPending ? "Saving version" : "Save version"}</Button><Link className="button button-primary button-medium" to="/runs?prepare=1">Review run<ArrowRight/></Link></>}</div>} />
     {review?.details}
     <div className="experiment-summary"><details open={purposeOpen} onToggle={(event) => setPurposeOpen(event.currentTarget.open)}><summary>{scenario.purpose.trim() ? "Experiment purpose" : "Describe the experiment question"}</summary><Field label="Experiment question" hint="What do you want to learn or verify? Required before saving."><textarea aria-label="Experiment question" ref={purposeInput} rows={2} disabled={review?.readOnly} value={scenario.purpose} required aria-invalid={purposeMissing && !scenario.purpose.trim()} onChange={(event) => { setPurposeMissing(false); applyScenario({ ...scenario, purpose: event.target.value }, false); }} placeholder="Describe the behavior, observation or detection you want to test." /></Field></details>{!review ? <div className="builder-assistance-actions"><Button variant="ghost" size="small" onClick={() => assistant?.setOpen(true)} disabled={!assistant}>Plan with Assistant</Button><Link className="button button-ghost button-small" to="/scenarios">Browse examples</Link></div> : null}</div>
