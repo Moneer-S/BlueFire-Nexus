@@ -113,6 +113,8 @@ it.each([false, true])("keeps the saved durable approval review ahead of setup (
   const identity = within(gate).getByRole("textbox", { name: "Operator identity for this job" });
   await waitFor(() => expect(identity).toBeEnabled());
   expect(config().mode).toBe("simulate");
+  expect(within(gate).getByText("Saved job scope")).toBeVisible();
+  await user.click(within(gate).getByText("Run identities and full plan"));
   expect(within(gate).getByText("saved.job.scope")).toBeVisible();
   expect(within(gate).getByRole("checkbox")).not.toBeChecked();
   await user.type(identity, "operator");
@@ -159,6 +161,7 @@ it.each(["mode", "scope"] as const)("honors a manual %s edit made while setup aw
     await user.click(screen.getByRole("radio", { name: /^Execute/ }));
     await user.click(simulate);
   } else {
+    await user.click(screen.getByText("Environment and scope references"));
     const scope = screen.getByRole("textbox", { name: /^Target scope/ });
     await user.clear(scope);
     await user.type(scope, "operator.new.scope");
@@ -216,6 +219,7 @@ it.each(["mode", "scope"] as const)("preserves a manual %s choice while the stal
     await user.click(screen.getByRole("radio", { name: /^Execute/ }));
     await user.click(screen.getByRole("radio", { name: /^Simulate/ }));
   } else {
+    await user.click(screen.getByText("Environment and scope references"));
     const scope = screen.getByRole("textbox", { name: /^Target scope/ });
     await user.clear(scope);
     await user.type(scope, "chosen.scope");

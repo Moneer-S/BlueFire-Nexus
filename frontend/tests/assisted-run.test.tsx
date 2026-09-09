@@ -96,6 +96,7 @@ it("retains separate settings across remount without replacing the active graph 
   stubGraph();
   localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(demoScenario));
   const first = mount();
+  await first.user.click(await screen.findByText("Environment and scope references"));
   const scope = await screen.findByLabelText(/^Target scope/);
   const globalBefore = screen.getByLabelText("Global run settings").textContent;
   await first.user.clear(scope); await first.user.type(scope, "owned.reviewed.scope");

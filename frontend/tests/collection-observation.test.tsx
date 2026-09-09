@@ -53,8 +53,7 @@ it.each([
   await waitFor(() => expect(requests).toHaveLength(2));
   expect(requests[1]?.collectors).toEqual(["collector.filesystem.sandbox.v1"]);
   await user.click(screen.getByRole("button", { name: "Choose package collection" }));
-  const summary = screen.getByText("Observation & detection");
-  if (!summary.closest("details")?.open) await user.click(summary);
+  expect(screen.getByRole("region", { name: "Required observations" })).toBeVisible();
   expect(collector).toBeVisible();
   expect(collector).toBeEnabled();
   await user.click(collector);

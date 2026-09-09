@@ -264,8 +264,8 @@ describe("product application", () => {
     expect(await screen.findByRole("heading", { name: "Run history" })).toBeVisible();
     expect(screen.getByText(`Review a new run \u00b7 ${demoScenario.title}`).closest("details")).not.toHaveAttribute("open");
     await user.click(screen.getByRole("link", { name: "Review new run" }));
-    expect(screen.getByRole("combobox", { name: "Runner profile" })).toBeVisible();
-    expect(screen.getByRole("textbox", { name: /Target scope/ })).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "Environment profile" })).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: /Files in the selected workspace/ })).toBeVisible();
     expect(screen.getByRole("button", { name: "Run preflight" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Submit Simulate job" })).toBeDisabled();
     const providerDetails = screen.getByText("AI provider & environment details");
@@ -304,9 +304,9 @@ describe("product application", () => {
     expect(within(canonical).getByText("What this run will do")).toBeVisible();
     expect(screen.getByText("Browser draft & configuration details").closest("details")).not.toHaveAttribute("open");
     expect(screen.getByText("Resolved preflight details").closest("details")).not.toHaveAttribute("open");
-    expect(screen.getByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ })).toBeEnabled();
-    expect(screen.getByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ })).not.toBeChecked();
-    expect(screen.getByRole("button", { name: "Create approval-gated job" })).toBeDisabled();
+    expect(screen.queryByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create approval-gated job" })).toBeEnabled();
+    await user.click(screen.getByText("Environment and scope references"));
     await user.clear(screen.getByRole("textbox", { name: /Target scope/ }));
     await user.type(screen.getByRole("textbox", { name: /Target scope/ }), "sandbox.changed");
     expect(screen.queryByRole("region", { name: "Canonical preflight plan" })).not.toBeInTheDocument();
@@ -804,16 +804,32 @@ describe("product application", () => {
     expect(screen.queryByText("Planning request submitted")).not.toBeInTheDocument();
   });
 
-  it("locks Execute approval until the complete bound envelope is rendered", async () => {
+  it.each(["plan", "binding", "envelope", "refused"])("keeps Execute request creation disabled when preflight has missing or refused %s", async (missing) => {
+    const incomplete = structuredClone(executePreflight);
+    if (missing === "plan") delete incomplete.plan;
+    if (missing === "binding") incomplete.approval_binding = null;
+    if (missing === "envelope") incomplete.approval_envelope = null;
+    if (missing === "refused") { incomplete.ready = false; incomplete.status = "refused"; }
+    const original = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input, init) => String(input).endsWith("/runs/preflight") ? Promise.resolve(json(incomplete)) : original(input, init));
+    const user = userEvent.setup(); renderApp("/runs?prepare=1");
+    await user.click(await screen.findByRole("radio", { name: /^Execute/ }));
+    await user.click(screen.getByRole("button", { name: "Run preflight" }));
+    await screen.findByText(/The service has not returned a complete, usable Execute plan/);
+    expect(screen.getByRole("button", { name: "Create approval-gated job" })).toBeDisabled();
+    expect(screen.queryByRole("textbox", { name: /Prepared operator label/ })).not.toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(([input, init]) => (String(input).endsWith("/runs") || String(input).endsWith("/approval")) && init?.method === "POST")).toBe(false);
+  });
+
+  it("creates a reviewed request without duplicate acknowledgement and keeps actual approval unchecked", async () => {
     const user = userEvent.setup();
     renderApp("/runs?prepare=1");
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeVisible();
     await user.click(screen.getByRole("radio", { name: /Execute/ }));
     await user.click(screen.getByText("Policy, approval & budgets"));
-    let approval = screen.getByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ });
-    let operator = screen.getByRole("textbox", { name: /Prepared operator label/ });
-    expect(approval).toBeDisabled();
-    expect(operator).toBeDisabled();
+    expect(screen.queryByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /Prepared operator label/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create approval-gated job" })).toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: "Run preflight" }));
     expect(await screen.findByRole("region", { name: "Complete Execute approval envelope" })).toBeVisible();
@@ -828,13 +844,8 @@ describe("product application", () => {
     expect(screen.getAllByText("scope-digest-test").length).toBeGreaterThan(0);
     expect(screen.getAllByText("envelope-digest-test").length).toBeGreaterThan(0);
     expect(screen.getByText("Full deterministic action contract")).toBeVisible();
-    approval = screen.getByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ });
-    operator = screen.getByRole("textbox", { name: /Prepared operator label/ });
-    expect(approval).toBeEnabled();
-    expect(operator).toBeEnabled();
-
-    await user.click(approval);
-    await user.type(operator, "prepared-operator");
+    expect(screen.getByRole("button", { name: "Create approval-gated job" })).toBeEnabled();
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).endsWith("/approval"))).toBe(false);
     await user.click(screen.getByRole("button", { name: "Create approval-gated job" }));
     expect(await screen.findByRole("region", { name: "Durable Execute job approval" })).toBeVisible();
     const durableApproval = screen.getByRole("checkbox", { name: /I approve this exact immutable job envelope once/ });
@@ -1684,6 +1695,8 @@ describe("product application", () => {
     if (path === "/ai-planner?view=audit") await user.type(await screen.findByRole("textbox", { name: "Job ID" }), accepted.job.job_id);
     const canonical = await screen.findByRole("region", { name: "Canonical preflight plan" });
     expect(canonical).toBeVisible();
+    expect(within(canonical).getByText("Files in the selected workspace")).toBeVisible();
+    await user.click(within(canonical).getByText("Run identities and full plan"));
     expect(within(canonical).getByText("sandbox.workspace")).toBeVisible();
     expect(within(canonical).getByText("Remove created lab files after the run")).toBeVisible();
     await user.click(within(canonical).getByText("All permitted methods, effects and parameters"));

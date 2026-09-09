@@ -30,7 +30,7 @@ it("starts the receiver form's selected profile without changing the Builder's r
   const user = userEvent.setup();
   await user.selectOptions(await screen.findByLabelText("Saved experiment", { exact: false }), `${demoScenario.id}:1:${receiverFixtureDigest}`);
   await user.click(screen.getByRole("radio", { name: /Execute/ }));
-  await user.selectOptions(screen.getByLabelText("Runner profile"), "alternate-execute.v1");
+  await user.selectOptions(screen.getByLabelText("Environment profile"), "alternate-execute.v1");
   await waitFor(() => expect(status).toHaveBeenCalledWith("alternate-execute.v1"));
   await user.click(await screen.findByRole("button", { name: "Start runner" }));
   await waitFor(() => expect(start).toHaveBeenCalledWith("alternate-execute.v1"));

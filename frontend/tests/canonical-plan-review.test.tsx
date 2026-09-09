@@ -54,9 +54,9 @@ it.each(["plan", "scope", "cleanup", "binding", "envelope"] as const)("renders a
   view.rerender(<CanonicalPlanReview {...next} />);
   expect(reviewRenders.length).toBeGreaterThan(0);
   if (part === "plan") expect(screen.getByText("Replacement step")).toBeVisible();
-  if (part === "scope") expect(screen.getByText("replacement.workspace")).toBeVisible();
+  if (part === "scope") expect(screen.getByText("Replacement workspace")).toBeVisible();
   if (part === "cleanup") expect(screen.getByText("Manual")).toBeVisible();
-  if (part === "binding") expect(screen.getByText("profile-replacement")).toBeVisible();
+  if (part === "binding") expect(screen.getByText("Profile replacement")).toBeVisible();
   if (part === "envelope") {
     expect(screen.getByText("0 methods")).toBeVisible();
     expect(screen.queryByText("Original fixture method")).not.toBeInTheDocument();
@@ -65,15 +65,15 @@ it.each(["plan", "scope", "cleanup", "binding", "envelope"] as const)("renders a
 
 it.each(["simulate", "execute"] as const)("names the bound runner profile without inventing an environment for %s", (mode) => {
   render(<CanonicalPlanReview {...initial} plan={{ ...initial.plan, mode, runner_profile_id: "plan-profile" }} />);
-  const term = screen.getByText("Runner profile", { selector: "dt" });
-  expect(term.nextElementSibling).toHaveTextContent("profile-original");
+  const term = screen.getByText("Environment profile", { selector: "dt" });
+  expect(term.nextElementSibling).toHaveTextContent("Profile original");
   expect(screen.queryByText("Environment", { selector: "dt" })).not.toBeInTheDocument();
 });
 
 it("uses the recorded plan profile when Simulate has no Execute binding", () => {
   render(<CanonicalPlanReview plan={{ mode: "simulate", runner_profile_id: "sandbox-simulate.v1", steps: [], edges: [] }} cleanup={{ policy: "always" }} />);
-  const term = screen.getByText("Runner profile", { selector: "dt" });
-  expect(term.nextElementSibling).toHaveTextContent("sandbox-simulate.v1");
+  const term = screen.getByText("Environment profile", { selector: "dt" });
+  expect(term.nextElementSibling).toHaveTextContent("Local simulation");
   expect(screen.getByText("Simulated cleanup; no external files are removed. Policy: Always.")).toBeVisible();
   expect(screen.queryByText("Remove created lab files after the run")).not.toBeInTheDocument();
 });

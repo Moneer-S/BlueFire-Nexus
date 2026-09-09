@@ -38,7 +38,7 @@ it("publishes the native setup's exact immutable version and private settings wi
   const user = userEvent.setup();
   await user.selectOptions(await screen.findByLabelText("Saved experiment", { exact: false }), `${saved.scenario_id}:1:${saved.digest}`);
   await user.click(screen.getByRole("radio", { name: /Execute/ }));
-  await user.selectOptions(screen.getByLabelText("Runner profile"), profile.id);
+  await user.selectOptions(screen.getByLabelText("Environment profile"), profile.id);
   await waitFor(() => expect(screen.getByLabelText("Published receiver selection").textContent).toContain('"receiver_scenario"'));
   const published = JSON.parse(screen.getByLabelText("Published receiver selection").textContent!);
   expect(published.selected).toMatchObject({ selection: native.context.selection, run_intent: { runner_profile_id: profile.id, mode: "execute", autonomy: "off", ai_provider_id: null } });
