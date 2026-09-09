@@ -32,7 +32,7 @@ it("requires an authored question before saving and retains it across navigation
   const question = screen.getByRole("textbox", { name: "Experiment question" });
   await waitFor(() => expect(question).toHaveFocus());
   expect(question).toHaveAttribute("aria-invalid", "true");
-  await user.type(question, "Does redaction prevent retained records from reaching staging?");
+  await user.paste("Does redaction prevent retained records from reaching staging?");
   await user.click(screen.getByRole("button", { name: "Save version" }));
   await waitFor(() => expect(save).toHaveBeenCalledOnce());
   expect(save.mock.calls[0]![0].purpose).toBe("Does redaction prevent retained records from reaching staging?");
