@@ -575,16 +575,18 @@ describe("product application", () => {
     });
   });
 
-  it("guides first-run users through honest local readiness and Simulate", async () => {
+  it("offers a direct experiment workflow with optional Simulate and checked availability", async () => {
     const user = userEvent.setup();
     renderApp("/getting-started");
 
-    expect(await screen.findByRole("heading", { name: "Prove the safe path first" })).toBeVisible();
-    expect(screen.getByText("A canonical first run exists")).toBeVisible();
-    expect(screen.getByText("Control plane")).toBeVisible();
-    expect(screen.getByText("Deterministic Simulate")).toBeVisible();
-    expect(screen.getByText("Not proven")).toBeVisible();
-    expect(screen.getByText(/fresh identity\/inventory\/sandbox probe/i)).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Start an experiment" })).toBeVisible();
+    expect(screen.getByText("Continue your work")).toBeVisible();
+    expect(screen.getByRole("link", { name: "Choose an experiment" })).toHaveAttribute("href", "/scenarios");
+    expect(screen.getByRole("link", { name: "Prepare Execute" })).toBeVisible();
+    await user.click(screen.getByText("Workspace availability"));
+    expect(screen.getByText("Local service")).toBeVisible();
+    expect(screen.getByText("Not checked")).toBeVisible();
+    expect(screen.getByText(/Compatibility and access are checked for the selected run/)).toBeVisible();
 
     await user.click(screen.getByRole("link", { name: /Configure Simulate/i }));
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeVisible();

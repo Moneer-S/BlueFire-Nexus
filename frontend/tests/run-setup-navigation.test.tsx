@@ -72,7 +72,7 @@ afterEach(() => vi.unstubAllGlobals());
 it.each(["simulate", "execute"] as const)("the Getting Started %s link selects setup without changing the operator's graph, scope, or provider", async (mode) => {
   const opposite = mode === "execute" ? "simulate" : "execute";
   const { user, config, nonReads, client } = mount("/getting-started", opposite);
-  const link = await screen.findByRole("link", { name: mode === "execute" ? "Prepare guided Execute" : "Configure Simulate" });
+  const link = await screen.findByRole("link", { name: mode === "execute" ? "Prepare Execute" : "Configure Simulate" });
   expect(link.getAttribute("href")).toBe(`#/runs?setup=${mode}${mode === "execute" ? "#guided-execute" : ""}`);
   await user.click(screen.getByRole("button", { name: "Acknowledge current draft in test" }));
   expect(config().approvedBy).toBe("draft-reviewer");
