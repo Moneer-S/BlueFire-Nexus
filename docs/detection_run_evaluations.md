@@ -2,25 +2,33 @@
 
 Detection Lab's **Run evaluations** tab evaluates a parsed SQLite or Sigma candidate against the complete observed evidence in a finalized run. The same service is available through `POST /api/v1/detections/{candidate_id}/evaluate-run` and `bluefire detections evaluate-run CANDIDATE_ID request.json`.
 
-The request contains exactly:
+The API requires `run_id`, `question` and the compatibility field `case_role`; it also accepts `activity_label` and `evaluation_use`. For example:
 
 ```json
 {
   "run_id": "run-20260906T120000Z-0123456789abcdef",
   "question": "Does this detector identify collection staging without matching observed benign activity?",
-  "case_role": "attack"
+  "case_role": "attack",
+  "activity_label": "attack",
+  "evaluation_use": "development"
 }
 ```
 
-Replace the example run ID with a real retained run. Case roles are `attack`, `benign`, `replay`, and `heldout`. They are operator-assigned context. They neither prove intent nor specify an expected match. A match in a declared benign case remains a measured match and is shown as a potential false positive.
+Replace the example run ID with a real retained run. In **Run evaluations**, choose **Evaluation source run**, optionally enter an **Experiment question**, then set **Activity label** and **Use of this data** independently before choosing **Evaluate full observed run**. An empty question uses the selected rule's default question.
 
-The service verifies the immutable run manifest and every evidence identity before selecting all `observed` records. Callers cannot supply raw evidence, a subset of evidence IDs, or expected results. Synthetic, executed, and counterfactual records cannot supply missing observations. Unknown evidence, failed file postconditions, missing query fields, or an input beyond the existing 128-record executor limit produce `insufficient_evidence` with no supported match count. A refused backend execution produces `backend_error`.
+Activity labels are `attack`, `benign` or `unknown`; they describe operator-assigned context, not observed intent or an expected match. Data use is `development`, `independent` or `unspecified`. The compatibility `case_role` still accepts `attack`, `benign`, `replay`, `heldout` and `unknown`; only attack/benign provide a default activity label, and neither replay nor heldout implies independent data use.
+
+The report's `classification` records these dimensions separately. Replay lineage comes from the verified immutable run. Recorded development use in the candidate or its inspected ancestors overrides a later independent label, including known development source use for a replay. Incomplete development history prevents a claim of independent use from being retained as such. `independence_verified` remains false: an operator label is not proof that the data was unseen. Historical reports without these fields remain unchanged and do not gain an independence guarantee.
+
+The service verifies the immutable run manifest and every evidence identity before selecting all `observed` records. Callers cannot supply raw evidence, a subset of evidence IDs, or expected results. Synthetic, executed, and counterfactual records cannot supply missing observations. Unknown evidence, failed file postconditions or missing query fields produce `insufficient_evidence` with no supported match count. A source collection above 10,000 total evidence records is refused before evaluation. Backend or execution-budget refusal produces `backend_error`, without a partial match result.
 
 SQLite queries run in the existing bounded in-memory executor. Sigma uses the installed, pinned pySigma SQLite adapter and that same executor. Reports preserve actual backend version, limits, query digest, evidence IDs, field names, and sanitized diagnostics. They do not copy the raw evidence rows, deploy a detector, or establish prevention on a host. Internal matcher and YARA metadata candidates are not supported by this query-evaluation path.
 
-Each report has a content-derived ID and binds the detector definition/query, source manifest/evidence, experiment question, and case role. Storage is append-only. `GET /api/v1/detections/{candidate_id}/evaluations` and `bluefire detections evaluations CANDIDATE_ID` revalidate those bindings. Lifecycle promotion, tuning, and run replay remain separate operations. Related-revision reports can be viewed together in the UI without changing either revision.
+Full-run evaluation uses the complete observed dataset within the limits in [the query budget](../bluefire/detection_query_limits.py): up to 10,000 input records and 16 MiB of normalized input, 32 KiB of query text, 10,000 result rows, 64 result fields, 16 MiB of results, 5,000,000 SQLite VM steps and a 2,000 ms execution deadline. It executes one query over the dataset, not separate per-batch queries that could change aggregate semantics. All limits apply; the record ceiling alone does not guarantee execution. Gap detail display is capped at 128 IDs, but every gap still prevents a supported evaluation. The separate 128-observation model-context cap remains unchanged and does not truncate this detector query.
 
-For a detector-revision experiment, first evaluate the baseline against the actual attack run. Create and parse a new immutable revision, then evaluate it against that same run, relevant observed benign activity, the actual replay, and a held-out variation. A deliberately archive-only baseline may miss JSONL staging; broadening its path predicate may recover that case but also match benign staging. Report both measured effects. A path-only rule cannot establish whether collected material was retained or redacted; that requires independent semantic observations of the staged bytes.
+Each new report has a content-derived ID and binds the detector definition/query, source manifest/evidence, experiment question, compatibility case role and classification. Storage is append-only. `GET /api/v1/detections/{candidate_id}/evaluations` and `bluefire detections evaluations CANDIDATE_ID` revalidate those bindings. Lifecycle promotion, tuning, and run replay remain separate operations. Related-revision reports can be viewed together in the UI without changing either revision.
+
+For a detector-revision experiment, first evaluate the baseline against the actual attack run. Create and parse a new immutable revision, then evaluate it against that same run, relevant observed benign activity, the actual replay, and a separately prepared variation not used to develop the rule. Record its actual data use; a heldout label alone is insufficient. A deliberately archive-only baseline may miss JSONL staging; broadening its path predicate may recover that case but also match benign staging. Report both measured effects. A path-only rule cannot establish whether collected material was retained or redacted; that requires independent semantic observations of the staged bytes.
 
 To revise SQLite or Sigma directly, edit the **Rule** tab, enter a reason, and choose **Validate and save new revision**. The parent and its evaluation reports remain unchanged. **Evaluate actual runs** opens the current run selection; synthetic fixture exercise is optional for this per-run path. Structured selection and log-source JSON remain available under **Revisions** for the existing internal matcher and advanced metadata workflows. Those fields do not need to change when editing SQL or Sigma source.
 

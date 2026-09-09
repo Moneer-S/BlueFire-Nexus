@@ -16,8 +16,9 @@ Execute never applies a runtime mutation directly, including under Auto. It paus
 
 ## Runtime decision loop
 
-The native workspaces also support two bounded operations outside the runtime decision loop:
+The native workspaces also support bounded operations outside the runtime decision loop:
 
+- Builder Assistant proposes a separate new graph or a selected-step parameter patch over the current valid working graph. Native review must accept the proposal before a separate version is saved; other steps and branches cannot change in a selected-step request. See [Contextual graph assistance](contextual-graph-assistance.md).
 - Detection Lab Assist proposes a saved SQLite or Sigma source revision from verified observed evidence. Review the original and proposed source, then accept to save one immutable child and evaluate its development case. This operation does not deploy a rule.
 - Compare's guided method test chooses a registered alternative, prepares a full replay, evaluates the same saved detector on both runs, and retains their comparison. Assist reviews the proposed method; Auto may accept the bounded choice. Execute still stops for fresh approval. The replay uses the original scope, profile and observers with runtime AI Off. Recovery after a finalized replay performs analysis only.
 
@@ -66,23 +67,26 @@ for its current tested scope and the isolation work required before prepared-lab
 
 `deterministic-offline.v1` is the default and test provider. It makes no network call and chooses only from request allowlists. It lets demos/tests exercise proposal records and autonomy semantics without credentials.
 
-### Configured Responses HTTP provider
+### Configured structured-output providers
 
-`openai-responses.v1` is the provider ID in the shipped example configuration. Its implementation sends bounded HTTPS requests (or loopback HTTP) using the OpenAI Responses request/response shape and strict Structured Outputs. It:
+`openai-responses.v1` is the provider ID in the shipped example configuration. The two network kinds are `openai_responses` and `chat_completions`. Both send bounded HTTPS requests (or literal-loopback HTTP) to the configured endpoint using its explicitly selected wire format and strict JSON-schema output. The runtime adapters:
 
-- sends no tools and sets tool choice to none;
-- disables parallel tool calls;
-- requests a strict JSON schema with no additional properties;
-- enforces endpoint syntax and forbids embedded credentials/query strings;
-- uses a configured timeout and bounded retry count;
-- retries only transport/rate-limit/server failures;
-- caps response bytes and output tokens;
-- rejects incomplete, malformed, over-budget, or schema-invalid output;
-- falls back deterministically.
+- offer no tools; Responses explicitly sends an empty tools list, disables parallel tool calls and sets tool choice to none;
+- request a strict JSON schema with no additional properties;
+- enforce endpoint syntax and forbid embedded credentials/query strings;
+- use a configured timeout and bounded retry count;
+- retry only transport/rate-limit/server failures;
+- cap response bytes and output tokens;
+- reject incomplete, malformed, over-budget, or schema-invalid output;
+- fall back deterministically on the legacy runtime decision path; durable contextual proposal jobs instead retain failure without substituting a provider.
 
-Provider-neutral behavior is defined by the `AIProvider` protocol, but the shipped network implementation is specifically the Responses implementation above. A configurable endpoint does not imply compatibility with arbitrary providers: the endpoint must accept this exact request and return the expected Responses envelope. Offline CI uses an injected deterministic fake transport and does not certify a third-party endpoint.
+Responses uses `input`, `text.format` and `max_output_tokens`; Chat Completions uses `messages`, `response_format` and `max_completion_tokens`, with one non-streaming choice. Both request `store: false`. The endpoint must implement the selected strict schema format and response envelope. Native vendor protocols and text-only endpoints are not supported merely because their URL is configurable. Offline CI exercises both dialects with injected transport; it does not certify a live third-party endpoint.
 
 ## Configuration
+
+In the UI, use **Settings > Connect a model**. Set the key in the environment of the process that launches BlueFire, restart the service, and enter only the environment-variable name. Select the API style, endpoint, model and request limits; save the secret-free draft, check it and activate the saved configuration before choosing it in Assistant.
+
+**Check configuration** validates local configuration and credential availability without contacting the endpoint. **Send live connection test** is separate: it sends one synthetic structured-output request, at most 256 output tokens and a 10-second timeout, without retry or fallback. It may incur API cost and sends no experiment or evidence. A successful connection test is not evidence of model quality or completion of an assisted workflow.
 
 ```yaml
 ai:
@@ -145,15 +149,15 @@ Use Auto only after the same scenario/provider has been reviewed in Assist and t
 
 Redaction replaces values whose keys match configured secret terms, truncates strings, and excludes evidence content by default. The current runtime proposal context contains mode, current step/outcome, completed step IDs/behaviors/statuses, and the deterministic decision—not raw evidence bodies.
 
-If evidence forwarding is enabled in future integrations, classify the data and provider terms before sending it. A redaction list reduces accidental disclosure; it is not a complete data-loss-prevention system.
+Detection assistance can include a bounded, redacted projection of eligible observed content when the selected provider configuration permits it; otherwise it uses permitted field metadata. Its 128-observation model-context bound is separate from the full-run detector execution budget. Inspect the actual operation's data boundary and classify the data and provider terms before sending it. A redaction list reduces accidental disclosure; it is not a complete data-loss-prevention system.
 
 ## Failure and fallback
 
-Credential unavailable, transport failure, timeout, retry exhaustion, invalid content type/JSON, incomplete response, schema mismatch, unregistered selection, or token-budget excess produces a deterministic fallback or explicit rejected proposal record. BlueFire does not silently apply partially parsed model text.
+On the legacy runtime decision and synchronous draft paths, unavailable credentials, transport failure, timeout, retry exhaustion, invalid content type/JSON, incomplete response, schema mismatch, unregistered selection or token-budget excess produces an explicit deterministic fallback or rejected proposal record. Durable contextual graph, detection and method jobs retain failure and do not silently substitute an offline draft or alternate model. BlueFire does not silently apply partially parsed model text.
 
-Provider health checks only whether the configured credential reference currently resolves; it does not contact the endpoint or measure model quality. Service startup persists secret-safe provider configuration plus that readiness snapshot in the local product store. The catalog returns bundle-safe runtime metadata and a freshly computed readiness view, without returning the configured endpoint.
+Catalog provider readiness checks whether the configuration and required credential reference are available locally; it does not contact the endpoint or measure model quality. Service startup persists secret-safe provider configuration plus that readiness snapshot in the local product store. The catalog returns bundle-safe runtime metadata and a freshly computed readiness view, without returning the configured endpoint.
 
-## Objective-to-graph drafting
+## Legacy synchronous objective-to-graph drafting
 
 `POST /api/v1/ai/drafts` provides a backend objective-to-graph boundary separate
 from the runtime decision loop. It accepts a natural-language objective, an
@@ -178,8 +182,8 @@ result must parse through `ScenarioDefinition` and pass the same registry graph
 validation as an operator-authored scenario before it is returned.
 
 The deterministic offline provider performs this drafting locally and is the
-fallback for unavailable credentials, bounded transport failures, incomplete
-responses, or invalid model output. The OpenAI Responses implementation uses
+fallback on the legacy synchronous path for unavailable credentials, bounded transport failures, incomplete
+responses, or invalid model output. The selected Responses or Chat Completions implementation uses
 the configured provider endpoint/model and credential environment reference,
 requests strict Structured Outputs, disables storage and tools, caps request,
 response, and output-token sizes, and never includes the credential in the
@@ -196,9 +200,9 @@ Each proposal record retains run/current-step/outcome, autonomy, exact state/pla
 - Registered next-node selection cannot choose across outcome branches because `bluefire.scenario.v1` permits only one edge for each source-node/outcome pair.
 - Runtime action choice is meaningful only when a behavior has more than one contract-compatible registered action enabled by the exact Execute profile. It never grants new runner authority or loads executable code.
 - Adaptive retry is a single lineage-wide retry, not a configurable recovery workflow.
-- Runtime AI cannot propose detections or arbitrary replay edits. Objective drafting remains an unsaved, separately validated contract.
+- Runtime AI cannot propose detections or arbitrary replay edits. The separate contextual Assistant operations use their own bounded proposal/review contracts; the legacy synchronous objective draft remains unsaved.
 - No monetary cost calculation/budget is implemented; output tokens, attempts, response bytes, and time are bounded.
-- The Responses HTTP path is tested with deterministic fake transport; a real account/network call requires operator credentials and infrastructure and is not part of offline tests.
+- Both structured-output dialects are tested with deterministic fake transport; a real account/network call requires operator credentials and infrastructure and is not part of offline tests.
 - No single dynamically verified product journey currently proves a real-provider Auto mutation followed by replay and comparison; those mechanisms have separate deterministic tests.
 
 These limits keep product claims aligned with the current implementation while preserving a safe path for future expansion.

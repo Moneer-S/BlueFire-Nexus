@@ -17,8 +17,9 @@ available; it does not grant authorization.
 
 - Packaged native Execute depends on a matching platform artifact and current local enrollment.
 - Linux/container Execute needs an explicitly prepared disposable distribution and locked wheel
-  set. Native audit, Sysmon/Event Log, SIEM/EDR, and cloud audit adapters need their platforms and
-  operator configuration.
+  set. Available independent collectors cover bounded sandbox files and collection contents,
+  an exactly authorized child process on Windows/Linux, and the managed loopback receiver.
+  Their exact bindings and readiness must be established for each run.
 - pySigma/SQLite and YARA require their pinned optional packages. Real OpenAI-compatible and AWS
   provider smoke paths require operator-supplied authorized credentials through references or
   opaque handles; offline acceptance uses deterministic providers.
@@ -27,8 +28,11 @@ available; it does not grant authorization.
 
 - macOS package metadata, contracts, and error classification are checked when no macOS host is
   present; that is not dynamic macOS execution proof.
-- Unconfigured collector and external-provider interfaces report readiness and limitations rather
-  than claiming observation or provider success.
+- Sysmon/Event Log, Linux audit/journal, packet capture, SIEM, EDR and cloud identity audit
+  entries are unavailable collector contracts in the shipped registry, not functioning adapters
+  enabled by configuration alone. Their readiness and gap records do not establish observation.
+  JSONL fixture logs likewise do not prove live host, network or cloud collection.
+- Unconfigured external providers report readiness and limitations rather than provider success.
 
 ## Restricted
 
