@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 from .ai_assistance import COMPARE, REVISE
 from .ai_provider_access import AIProviderAccess
 from .assistance_runs import AssistanceRunJobs
+from .collection_methods import COLLECTION_METHODS
 from .config import AIConfig
 from .contracts import ScenarioDefinition
 from .detection_ai_jobs import DetectionAIJobs
@@ -70,8 +71,7 @@ def context(service: AssistanceContext, run_id: str, candidate_id: str) -> Mappi
                 alternate in service.registry.compatible_behaviors(step.behavior_id)
                 for alternate in step.alternates
             )
-            or step.behavior_id
-            in {"sandbox.collection.records.v1", "sandbox.collection.archive.v1"}
+            or step.behavior_id in COLLECTION_METHODS
             for step in scenario.steps
         )
         selected = {

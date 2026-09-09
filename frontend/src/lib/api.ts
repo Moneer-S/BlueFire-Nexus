@@ -1,4 +1,4 @@
-import type { AssistanceRunEnvelope, RunPreparationDecision, SavedGraphSelection } from "./run-assistance";
+import type { AssistanceRunEnvelope, RunPreparationDecision, SavedRunSelection } from "./run-assistance";
 import type { ReceiverContext, ReceiverContextRequest, ReceiverDecision, ReceiverDefenseEnvelope, ReceiverPhase, ReceiverTestList } from "./receiver-defense-types";
 import type { RunDetectionSelection, DetectionCreationSource, DetectionCreationEnvelope, DetectionCreationDecision, DetectionCreationValidation } from "./detection-creation";
 import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionRunEvaluation, DetectionCaseRole, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunPresentation, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
@@ -376,7 +376,7 @@ export const api = {
     if (DEMO_MODE) throw new ApiError("Receiver assistance requires the connected local service.", "demo_assistance_refused", undefined, 409);
     return request("/assistance/receiver-context", { method: "POST", body: JSON.stringify({ selection }) });
   },
-  async assistanceRunContext(selection: SavedGraphSelection): Promise<AssistanceContext> {
+  async assistanceRunContext(selection: SavedRunSelection): Promise<AssistanceContext> {
     if (DEMO_MODE) throw new ApiError("Run assistance requires the connected local service.", "demo_assistance_refused", undefined, 409);
     return request("/assistance/run-context", { method: "POST", body: JSON.stringify({ selection }) });
   },

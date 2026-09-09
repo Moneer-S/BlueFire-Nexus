@@ -1,9 +1,10 @@
-"""Authoritative immutable saved-graph and operator-selected run policy context."""
+"""Authoritative immutable saved experiment and operator-selected run policy context."""
 
 from __future__ import annotations
 
 import re
 from typing import Any, Mapping
+from urllib.parse import urlencode
 
 from .assistance_run_protocol import AssistanceRunService
 from .contracts import ScenarioDefinition
@@ -14,7 +15,7 @@ CAPABILITY = "run.saved_graph_and_inspect"
 KIND = "run.assistance.prepare"
 INSPECT_KIND = "run.evidence.inspect"
 LIMITATIONS = [
-    "Runs only the exact accepted saved graph with the operator-selected run settings.",
+    "Runs only the exact saved experiment version with the operator-selected run settings.",
     "Assist requires native preparation review. Auto may submit that frozen policy; Execute always requires a separate fresh native approval.",
     "Inspection describes retained evidence and cleanup. Simulated, missing or unobserved results do not establish real execution or deployed defense effectiveness.",
     "Recovery may retry evidence inspection against the same run, never repeat an uncertain execution.",
@@ -22,18 +23,35 @@ LIMITATIONS = [
 
 
 def selection(value: Any) -> Mapping[str, Any]:
-    if (
-        not isinstance(value, Mapping)
-        or set(value) != {"kind", "proposal_job_id", "application", "run_intent"}
-        or value["kind"] != "saved_graph"
-    ):
-        raise ProductStoreError("Select an exact accepted graph and explicit native run settings.")
-    if not isinstance(value["proposal_job_id"], str) or not re.fullmatch(
-        r"job-[0-9a-f]{32}", value["proposal_job_id"]
-    ):
-        raise ProductStoreError("The selected graph proposal identity is invalid.")
-    if not isinstance(value["application"], Mapping):
-        raise ProductStoreError("The selected graph has no exact application receipt.")
+    if not isinstance(value, Mapping) or value.get("kind") not in {"saved_graph", "saved_scenario"}:
+        raise ProductStoreError(
+            "Select an exact saved experiment and explicit native run settings."
+        )
+    if value["kind"] == "saved_graph":
+        if set(value) != {"kind", "proposal_job_id", "application", "run_intent"}:
+            raise ProductStoreError("The saved graph selection fields are invalid.")
+        if not isinstance(value["proposal_job_id"], str) or not re.fullmatch(
+            r"job-[0-9a-f]{32}", value["proposal_job_id"]
+        ):
+            raise ProductStoreError("The selected graph proposal identity is invalid.")
+        if not isinstance(value["application"], Mapping):
+            raise ProductStoreError("The selected graph has no exact application receipt.")
+    else:
+        if set(value) != {"kind", "scenario", "run_intent"}:
+            raise ProductStoreError("The saved experiment selection fields are invalid.")
+        source = value["scenario"]
+        if (
+            not isinstance(source, Mapping)
+            or set(source) != {"scenario_id", "version", "digest"}
+            or not isinstance(source["scenario_id"], str)
+            or len(source["scenario_id"]) > 200
+            or re.fullmatch(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*", source["scenario_id"]) is None
+            or type(source["version"]) is not int
+            or not 1 <= source["version"] <= 2**31 - 1
+            or not isinstance(source["digest"], str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", source["digest"]) is None
+        ):
+            raise ProductStoreError("Select an exact saved experiment version and digest.")
     intent = value["run_intent"]
     required = {"mode", "autonomy", "ai_provider_id", "runner_profile_id", "target_scope"}
     if (
@@ -91,17 +109,50 @@ def selection(value: Any) -> Mapping[str, Any]:
     return dict(value)
 
 
-def context(service: AssistanceRunService, value: Any) -> Mapping[str, Any]:
-    selected = selection(value)
-    native = service.graph_ai_job(selected["proposal_job_id"])
-    if native["application"] is None or native["application"] != selected["application"]:
-        raise ProductStoreError(
-            "The graph application differs from the selected immutable receipt."
-        )
-    application = native["application"]
+def source_ref(selected: Mapping[str, Any]) -> Mapping[str, Any]:
+    return dict(
+        selected["application"] if selected["kind"] == "saved_graph" else selected["scenario"]
+    )
+
+
+def setup_path(selected: Mapping[str, Any]) -> str:
+    if selected["kind"] == "saved_graph":
+        return "/runs?" + urlencode({"graph_job": selected["proposal_job_id"]})
+    source = source_ref(selected)
+    return "/runs?" + urlencode(
+        {
+            "saved_scenario": source["scenario_id"],
+            "version": source["version"],
+            "digest": source["digest"],
+        }
+    )
+
+
+def saved_source(service: AssistanceRunService, selected: Mapping[str, Any]) -> Mapping[str, Any]:
+    if selected["kind"] == "saved_graph":
+        native = service.graph_ai_job(selected["proposal_job_id"])
+        if native["application"] is None or native["application"] != selected["application"]:
+            raise ProductStoreError(
+                "The graph application differs from the selected immutable receipt."
+            )
+    application = source_ref(selected)
     saved = service.scenario_version(application["scenario_id"], version=application["version"])[
         "scenario"
     ]
+    if (
+        any(saved[key] != application[key] for key in ("scenario_id", "version", "digest"))
+        or saved["document"]["id"] != application["scenario_id"]
+        or content_hash(saved["document"]) != application["digest"]
+    ):
+        raise ProductStoreError(
+            "The saved experiment differs from the selected version and digest."
+        )
+    return dict(saved)
+
+
+def context(service: AssistanceRunService, value: Any) -> Mapping[str, Any]:
+    selected = selection(value)
+    saved = saved_source(service, selected)
     scenario = ScenarioDefinition.from_mapping(saved["document"])
     catalog = service._action_catalog_boundary()
     catalog.registry.validate_scenario(scenario)

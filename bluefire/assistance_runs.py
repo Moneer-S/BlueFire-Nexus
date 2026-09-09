@@ -9,7 +9,7 @@ from . import product_store_assistance_run as records
 from .ai_run_inspection import inspect
 from .ai_wire import AIProviderCancelled
 from .application_errors import APIError
-from .assistance_run_context import INSPECT_KIND, KIND, context, selection
+from .assistance_run_context import INSPECT_KIND, KIND, context, saved_source, selection, source_ref
 from .assistance_run_inspection import source, verify_lineage
 from .assistance_run_protocol import AssistanceRunService
 from .config import AIProviderConfig, AIProviderKind, ConfigError
@@ -162,10 +162,7 @@ class AssistanceRunJobs:
         ctx.checkpoint()
         self._fresh(self._job(ctx.job_id))
         selected = request["submitted_request"]["selection"]
-        application = selected["application"]
-        scenario = self.service.scenario_version(
-            application["scenario_id"], version=application["version"]
-        )["scenario"]["document"]
+        scenario = saved_source(self.service, selected)["document"]
         run_request = {"scenario": scenario, **selected["run_intent"]}
         report = self.service.preflight(run_request)
         problems = [
@@ -425,7 +422,7 @@ class AssistanceRunJobs:
                 and run_job["state"] in TERMINAL
                 and inspection_job["state"] in {"completed", "interrupted"}
             ):
-                app = prepared["selection"]["application"]
+                app = source_ref(prepared["selection"])
                 result = {
                     "kind": "run_inspected",
                     "run_id": inspection["run_id"],

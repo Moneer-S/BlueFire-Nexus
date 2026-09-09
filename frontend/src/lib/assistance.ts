@@ -1,4 +1,4 @@
-import { validSavedGraphSelection, type SavedGraphSelection, type RunInspectedResult } from "./run-assistance";
+import { validSavedRunSelection, type SavedRunSelection, type RunInspectedResult } from "./run-assistance";
 import { validRunDetectionSelection, type RunDetectionSelection, type DetectionCreatedResult } from "./detection-creation";
 import type { DetectionCaseRole, RunJob } from "../types";
 import type { MethodSource } from "./method-comparison";
@@ -10,7 +10,7 @@ export interface GraphSelection { kind: "graph"; base_scenario: null | { scenari
 export interface AssistanceContext {
   schema_version: "bluefire.assistance-context.v1";
   context_digest: string;
-  selected: GraphSelection | SavedGraphSelection | RunDetectionSelection | ReceiverAssistanceSelection | {
+  selected: GraphSelection | SavedRunSelection | RunDetectionSelection | ReceiverAssistanceSelection | {
     run_id: string; candidate_id: string; candidate_resource_digest: string;
     title: string; definition_digest: string; target_language: string; source_binding: MethodSource;
   };
@@ -26,15 +26,15 @@ export interface GraphAssistanceRequest {
   submission_id: string; context_digest: string; selection: GraphSelection; message: string;
   autonomy: "off" | "assist" | "auto"; provider_id?: string;
 }
-export interface SavedGraphAssistanceRequest extends Omit<GraphAssistanceRequest, "selection"> { selection: SavedGraphSelection }
+export interface SavedGraphAssistanceRequest extends Omit<GraphAssistanceRequest, "selection"> { selection: SavedRunSelection }
 export interface RunDetectionAssistanceRequest extends Omit<GraphAssistanceRequest, "selection"> { selection: RunDetectionSelection }
 export interface ReceiverAssistanceRequest extends Omit<GraphAssistanceRequest, "selection"> { selection: ReceiverAssistanceSelection }
 export type AssistanceRequest = DetectionAssistanceRequest | GraphAssistanceRequest | SavedGraphAssistanceRequest | RunDetectionAssistanceRequest | ReceiverAssistanceRequest;
 export const isReceiverRequest = (value: AssistanceRequest): value is ReceiverAssistanceRequest => "selection" in value && isReceiverSelection(value.selection);
 export const isRunDetectionRequest = (value: AssistanceRequest): value is RunDetectionAssistanceRequest => "selection" in value && value.selection?.kind === "run_detection";
 export const isRunDetectionSelection = (value: AssistanceContext["selected"]): value is RunDetectionSelection => "kind" in value && value.kind === "run_detection";
-export const isSavedGraphRequest = (value: AssistanceRequest): value is SavedGraphAssistanceRequest => "selection" in value && value.selection?.kind === "saved_graph";
-export const isSavedGraphSelection = (value: AssistanceContext["selected"]): value is SavedGraphSelection => "kind" in value && value.kind === "saved_graph";
+export const isSavedGraphRequest = (value: AssistanceRequest): value is SavedGraphAssistanceRequest => "selection" in value && (value.selection?.kind === "saved_graph" || value.selection?.kind === "saved_scenario");
+export const isSavedRunSelection = (value: AssistanceContext["selected"]): value is SavedRunSelection => "kind" in value && (value.kind === "saved_graph" || value.kind === "saved_scenario");
 export const isGraphRequest = (value: AssistanceRequest): value is GraphAssistanceRequest => "selection" in value && value.selection?.kind === "graph";
 export const isGraphSelection = (value: AssistanceContext["selected"]): value is GraphSelection => "kind" in value && value.kind === "graph";
 export type AssistanceStatus = "planning" | "off" | "working" | "awaiting_review" | "awaiting_execute_approval" | "ready_to_continue" | "completed" | "blocked" | "cancelling" | "cancelled";
@@ -43,7 +43,7 @@ export interface AssistanceEnvelope {
   turn: {
     schema_version: "bluefire.assistance-turn.v1"; status: AssistanceStatus; message: string; context_digest: string;
     can_start_new_turn: boolean;
-    selected: GraphSelection | SavedGraphSelection | RunDetectionSelection | ReceiverAssistanceSelection | Pick<DetectionAssistanceRequest, "run_id" | "candidate_id" | "candidate_resource_digest">;
+    selected: GraphSelection | SavedRunSelection | RunDetectionSelection | ReceiverAssistanceSelection | Pick<DetectionAssistanceRequest, "run_id" | "candidate_id" | "candidate_resource_digest">;
     plan: Array<{ step_id: string; capability_id: AssistanceCapability; title: string; detector_ref: "selected" | "revised" | "none"; reason: string }>;
     active_child: null | { job_id: string; kind: string; state: string; step_id: string; native_path: string };
     receiver_test?: ReceiverAssistanceProgress;
@@ -83,7 +83,7 @@ export function readAssistanceReceipt(): AssistanceRequest | undefined {
     } else if (isRunDetectionRequest(value)) {
       if (!validRunDetectionSelection(value.selection)) return;
     } else if (isSavedGraphRequest(value)) {
-      if (!validSavedGraphSelection(value.selection)) return;
+      if (!validSavedRunSelection(value.selection)) return;
     } else if (isGraphRequest(value)) {
       const base = value.selection.base_scenario;
       if (base !== null && (!base || !bounded(base.scenario_id) || !Number.isSafeInteger(base.version) || base.version < 1 || !digest.test(base.digest))) return;

@@ -17,9 +17,9 @@ function Witness() {
   const product = useProduct();
   return <><output aria-label="Working graph">{JSON.stringify(product.scenario)}</output><button onClick={() => product.setScenario({ ...product.scenario, title: "Unrelated manual edits" })}>Edit current graph</button></>;
 }
-function mount(digest = receiverFixtureDigest) {
+function mount(digest = receiverFixtureDigest, fromRun = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter><Witness /><SavedExperimentReview id={demoScenario.id} version={2} digest={digest} receiverJob={receiverFixtureId} renderEditor={(review) => <><output aria-label="Reviewed graph">{JSON.stringify(review.scenario)}</output><output aria-label="Read only">{String(review.readOnly)}</output>{review.details}{review.controls}</>} /></MemoryRouter></ProductProvider></QueryClientProvider>);
+  return render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={[fromRun ? "/builder?from_run=1" : "/builder"]}><Witness /><SavedExperimentReview id={demoScenario.id} version={2} digest={digest} receiverJob={receiverFixtureId} renderEditor={(review) => <><output aria-label="Reviewed graph">{JSON.stringify(review.scenario)}</output><output aria-label="Read only">{String(review.readOnly)}</output>{review.details}{review.controls}</>} /></MemoryRouter></ProductProvider></QueryClientProvider>);
 }
 it("previews the exact saved version without replacing the current graph and retains the control-test return link", async () => {
   const request = vi.spyOn(api, "immutableScenarioVersion").mockResolvedValue(response());
@@ -58,4 +58,12 @@ it("does not fetch an incomplete saved-version link", () => {
   const request = vi.spyOn(api, "immutableScenarioVersion"); mount("");
   expect(screen.getByText("This saved-version link is incomplete.")).toBeVisible();
   expect(request).not.toHaveBeenCalled();
+});
+
+it("returns a saved experiment review to its exact Assistant run settings", async () => {
+  vi.spyOn(api, "immutableScenarioVersion").mockResolvedValue(response());
+  mount(receiverFixtureDigest, true);
+  const link = await screen.findByRole("link", { name: "Return to run settings" });
+  expect(link).toHaveAttribute("href", `/runs?${new URLSearchParams({ saved_scenario: demoScenario.id, version: "2", digest: receiverFixtureDigest })}`);
+  expect(screen.queryByRole("link", { name: "Return to control test" })).not.toBeInTheDocument();
 });

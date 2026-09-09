@@ -18,6 +18,7 @@ from .assistance_receiver_context import selection as receiver_selection
 from .assistance_results import TERMINAL, active, child_job, child_path, result
 from .assistance_run_context import CAPABILITY as RUN
 from .assistance_run_context import selection as run_selection
+from .assistance_run_context import setup_path as run_setup_path
 from .config import AIProviderConfig, AIProviderKind, ConfigError
 from .detection_ai_jobs import _text
 from .detection_create_context import selection as create_selection
@@ -40,6 +41,7 @@ def submitted(request: Mapping[str, Any]) -> Mapping[str, Any]:
     if chosen is None or chosen.get("kind") in {
         "graph",
         "saved_graph",
+        "saved_scenario",
         "run_detection",
         *RECEIVER_KINDS,
     }:
@@ -53,7 +55,7 @@ def submitted(request: Mapping[str, Any]) -> Mapping[str, Any]:
 def is_graph(request: Mapping[str, Any]) -> bool:
     return bool(
         request.get("selection", {}).get("kind")
-        in {"graph", "saved_graph", "run_detection", *RECEIVER_KINDS}
+        in {"graph", "saved_graph", "saved_scenario", "run_detection", *RECEIVER_KINDS}
     )
 
 
@@ -66,7 +68,7 @@ def is_creation(request: Mapping[str, Any]) -> bool:
 
 
 def is_saved_run(request: Mapping[str, Any]) -> bool:
-    return bool(request.get("selection", {}).get("kind") == "saved_graph")
+    return bool(request.get("selection", {}).get("kind") in {"saved_graph", "saved_scenario"})
 
 
 class ExperimentAssistance:
@@ -135,7 +137,13 @@ class ExperimentAssistance:
             chosen = request["selection"]
             if not isinstance(chosen, Mapping):
                 raise fail("Select a typed graph or detector context.")
-            if chosen.get("kind") in {"graph", "saved_graph", "run_detection", *RECEIVER_KINDS}:
+            if chosen.get("kind") in {
+                "graph",
+                "saved_graph",
+                "saved_scenario",
+                "run_detection",
+                *RECEIVER_KINDS,
+            }:
                 try:
                     (
                         receiver_selection
@@ -494,7 +502,7 @@ class ExperimentAssistance:
                 "profile_id": chosen["selection"]["run_intent"]["runner_profile_id"],
                 "action": {
                     "label": "Review run setup",
-                    "native_path": "/runs?graph_job=" + chosen["selection"]["proposal_job_id"],
+                    "native_path": run_setup_path(chosen["selection"]),
                 },
             }
         if is_receiver(chosen):

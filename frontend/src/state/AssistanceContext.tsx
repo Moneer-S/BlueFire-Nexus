@@ -1,5 +1,5 @@
 import type { ReceiverAssistanceSelection } from "../lib/receiver-assistance";
-import type { SavedGraphSelection } from "../lib/run-assistance";
+import { savedRunSource, type SavedRunSelection } from "../lib/run-assistance";
 import type { RunDetectionSelection } from "../lib/detection-creation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type PropsWithChildren } from "react";
 import type { GraphSelection } from "../lib/assistance";
@@ -21,7 +21,7 @@ interface SelectionContext {
   open: boolean;
   setOpen: (value: boolean) => void;
 }
-export interface SavedGraphWorkspaceSelection { kind: "saved_graph"; selected: SavedGraphSelection; title: string; manualEdits: false }
+export interface SavedGraphWorkspaceSelection { kind: "saved_graph"; selected: SavedRunSelection; title: string; manualEdits: false }
 export interface GraphWorkspaceSelection { kind: "graph"; baseScenario: GraphSelection["base_scenario"]; title: string; manualEdits: boolean }
 export interface RunDetectionWorkspaceSelection { kind: "run_detection"; selected: RunDetectionSelection; title: string; manualEdits: false }
 export interface ReceiverWorkspaceSelection { kind: "receiver"; selected: ReceiverAssistanceSelection; title: string; manualEdits: false }
@@ -67,12 +67,12 @@ export function usePublishAssistanceSelection(selection?: AssistanceSelection) {
   }, [publish, runId, candidateId, resourceDigest, title, manualEdits]);
 }
 
-export function usePublishSavedGraphSelection(selection?: SavedGraphSelection, title?: string) {
+export function usePublishSavedGraphSelection(selection?: SavedRunSelection, title?: string) {
   const publish = useContext(Context)?.publish;
   useEffect(() => {
     if (!publish || !selection) return;
     const owner = Symbol("saved-graph-run");
-    publish(owner, { kind: "saved_graph", selected: selection, title: title ?? selection.application.scenario_id, manualEdits: false });
+    publish(owner, { kind: "saved_graph", selected: selection, title: title ?? savedRunSource(selection).scenario_id, manualEdits: false });
     return () => publish(owner);
   }, [publish, selection, title]);
 }
