@@ -1,4 +1,5 @@
 import type { Behavior, Scenario, ScenarioStep } from "../types";
+import { parameterValueLabel } from "./parameters";
 import { inputLabel } from "./graph-view";
 
 /** Producers must run before this step on every incoming path, including hidden branches. */
@@ -25,7 +26,7 @@ export function stepParameterSummary(step: ScenarioStep, behavior?: Behavior): s
   return (behavior?.parameters ?? []).flatMap((spec) => {
     const value = step.parameters[spec.name];
     if (value === undefined || value === null || value === "" || typeof value === "object") return [];
-    const display = typeof value === "boolean" ? value ? "Yes" : "No" : String(value);
+    const display = parameterValueLabel(step.behavior_id, spec.name, value) ?? (typeof value === "boolean" ? value ? "Yes" : "No" : String(value));
     return [`${inputLabel(spec.name)}: ${display.length > 48 ? `${display.slice(0, 45)}…` : display}`];
   }).slice(0, 2).join(" · ");
 }

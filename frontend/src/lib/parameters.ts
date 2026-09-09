@@ -31,3 +31,9 @@ export function parameterValuesEqual(left: unknown, right: unknown): boolean {
   }
   return Object.is(left, right);
 }
+
+/** Presentation only: these collection values select folders, not independent test data. */
+export function parameterValueLabel(behaviorId: string | undefined, name: string, value: unknown): string | undefined {
+  if (name !== "stage_variant" || !["sandbox.collection.records.v1", "sandbox.collection.archive.v1", "sandbox.collection.atomic-gzip.v1"].includes(behaviorId ?? "")) return undefined;
+  return value === "primary" ? "Main staging folder" : value === "heldout" ? "Alternate staging folder" : undefined;
+}

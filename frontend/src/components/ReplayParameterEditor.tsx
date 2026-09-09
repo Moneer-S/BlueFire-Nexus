@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { parameterValuesEqual } from "../lib/parameters";
+import { parameterValueLabel, parameterValuesEqual } from "../lib/parameters";
 import type { Behavior, ParameterSpec, Scenario } from "../types";
 import { ParameterField } from "./ParameterField";
 import { Button, Callout, sentence } from "./Primitives";
@@ -162,8 +162,8 @@ function ParameterChanges({ scenario, behaviors, value, onChange, onValidityChan
           const current = owns(drafts, key) ? drafts[key] : overridden ? value[step.id]![spec.name] : original;
           const errorId = `replay-parameter-error-${step.id}-${spec.name}`;
           return <div key={spec.name} data-parameter-key={key} className="replay-parameter-row" role="group" aria-label={label(spec.name)} aria-invalid={Boolean(errors[key])} aria-describedby={errors[key] ? errorId : undefined} onChangeCapture={(event) => captureDraft(event, step.id, spec)}>
-            <p><strong>{label(spec.name)}</strong><span> · Original: {displayValue(original)}</span></p>
-            {active ? <><ParameterField spec={{ ...spec, name: label(spec.name) }} value={current} onChange={(next) => change(step.id, spec, next)} /><p className="field-note">{errors[key] ? "Unfinished change · review is unavailable" : changed ? "Override changed" : overridden ? "Override matches original" : "Original value retained"}</p><Button size="small" disabled={disabled} onClick={() => reset(step.id, spec.name)} aria-label={`Reset ${label(spec.name)} to original`}>Use original</Button></> : <Button size="small" disabled={disabled} onClick={() => start(step.id, spec.name)} aria-label={`Change ${label(spec.name)}`}>Change value</Button>}
+            <p><strong>{label(spec.name)}</strong><span> · Original: {parameterValueLabel(step.behavior_id, spec.name, original) ?? displayValue(original)}</span></p>
+            {active ? <><ParameterField behaviorId={step.behavior_id} spec={spec} value={current} onChange={(next) => change(step.id, spec, next)} /><p className="field-note">{errors[key] ? "Unfinished change · review is unavailable" : changed ? "Override changed" : overridden ? "Override matches original" : "Original value retained"}</p><Button size="small" disabled={disabled} onClick={() => reset(step.id, spec.name)} aria-label={`Reset ${label(spec.name)} to original`}>Use original</Button></> : <Button size="small" disabled={disabled} onClick={() => start(step.id, spec.name)} aria-label={`Change ${label(spec.name)}`}>Change value</Button>}
             {errors[key] ? <p className="field-error" role="alert" id={errorId}>{errors[key]}</p> : null}
           </div>;
         })}

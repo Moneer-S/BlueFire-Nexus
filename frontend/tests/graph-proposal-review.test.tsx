@@ -328,3 +328,25 @@ it("keeps native review usable when the working graph becomes incomplete", async
   expect(screen.getByRole("alert")).toHaveTextContent("working graph changed");
   expect(mocks.review).not.toHaveBeenCalled();
 });
+
+
+it("shows staging folder labels in selected-step review while retaining exact proposal values", async () => {
+  const envelope = readyStepEdit();
+  const source = envelope.proposal!.edit_source!.scenario;
+  source.steps[0]!.behavior_id = "sandbox.collection.atomic-gzip.v1";
+  source.steps[0]!.parameters = { stage_variant: "primary" };
+  envelope.proposal!.scenario = { ...structuredClone(source), id: "scenario.proposed.v1" };
+  envelope.proposal!.scenario.steps[0]!.parameters = { stage_variant: "heldout" };
+  localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(source));
+  const retained = JSON.stringify(envelope);
+  const mocks = mockReady(envelope); mount();
+  const changes = await screen.findByRole("region", { name: "Selected step changes" });
+  expect(changes).toHaveTextContent("Main staging folder");
+  expect(changes).toHaveTextContent("Alternate staging folder");
+  await userEvent.click(screen.getByText("Exact parameter values"));
+  expect(changes).toHaveTextContent('"stage_variant": "primary"');
+  expect(changes).toHaveTextContent('"stage_variant": "heldout"');
+  expect(JSON.stringify(envelope)).toBe(retained);
+  expect(JSON.parse(screen.getByLabelText("Review document").textContent!).steps[0].parameters.stage_variant).toBe("heldout");
+  expect(mocks.validate).not.toHaveBeenCalled(); expect(mocks.review).not.toHaveBeenCalled();
+});

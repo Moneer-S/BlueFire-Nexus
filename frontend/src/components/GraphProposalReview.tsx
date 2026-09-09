@@ -3,6 +3,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { ArrowLeft, ArrowRight, Check, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { parameterValueLabel } from "../lib/parameters";
 import { api } from "../lib/api";
 import { checkedGraphEnvelope, graphDocument, matchesGraphEditSource, readGraphReviewDraft, storeGraphReviewDraft, validGraphJob, type GraphDecision, type GraphEditorDraft, type GraphEnvelope, type GraphProposal } from "../lib/graph-assistance";
 import { sameJson } from "../lib/replay-review";
@@ -160,12 +161,14 @@ function graphChanges(before: Scenario, after: Scenario, names: Map<string, stri
 
 function SelectedStepChanges({ proposal, displayed }: { proposal: GraphProposal; displayed: Scenario }) {
   const source = proposal.edit_source!;
-  const before = source.scenario.steps.find(step => step.id === source.step_id)!.parameters;
+  const sourceStep = source.scenario.steps.find(step => step.id === source.step_id)!;
+  const before = sourceStep.parameters;
   const after = displayed.steps.find(step => step.id === source.step_id)?.parameters ?? {};
   const names = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter(name => !sameJson(before[name], after[name]));
   return <section className="graph-step-changes" aria-label="Selected step changes"><h3>Review selected step parameters</h3>
     <p>Purpose: {source.scenario.purpose}</p><p>{source.dirty ? "Unsaved working graph" : "Current working graph"} · {source.scenario.title}. Only this step’s parameters may change; all other graph content remains fixed. Saving creates a separate experiment and does not run it.</p>
-    {names.length ? <table><thead><tr><th>Parameter</th><th>Before</th><th>Proposed</th></tr></thead><tbody>{names.map(name => <tr key={name}><th>{sentence(name)}</th><td>{JSON.stringify(before[name]) ?? "Not set"}</td><td>{JSON.stringify(after[name]) ?? "Not set"}</td></tr>)}</tbody></table> : <p>No parameter values changed.</p>}
+    {names.length ? <table><thead><tr><th>Parameter</th><th>Before</th><th>Proposed</th></tr></thead><tbody>{names.map(name => <tr key={name}><th>{sentence(name)}</th><td>{parameterValueLabel(sourceStep.behavior_id, name, before[name]) ?? JSON.stringify(before[name]) ?? "Not set"}</td><td>{parameterValueLabel(sourceStep.behavior_id, name, after[name]) ?? JSON.stringify(after[name]) ?? "Not set"}</td></tr>)}</tbody></table> : <p>No parameter values changed.</p>}
+    {names.some(name => parameterValueLabel(sourceStep.behavior_id, name, before[name]) || parameterValueLabel(sourceStep.behavior_id, name, after[name])) ? <details><summary>Exact parameter values</summary><pre>{JSON.stringify({ before, proposed: after }, null, 2)}</pre></details> : null}
     <p>{proposal.rationale}</p><details><summary>Model data boundary and limitations</summary><p>The model received the reviewed objective, selected step and parameter schema. The complete source graph stayed in this product.</p>{proposal.limitations.map((item, index) => <p key={index}>{item}</p>)}</details>
   </section>;
 }
