@@ -341,7 +341,7 @@ describe("product application", () => {
     await user.click(screen.getByRole("button", { name: "Create draft" }));
 
     expect(await screen.findByRole("heading", { name: "Gate 08 local draft" })).toBeVisible();
-    expect(screen.getByText("Start with one useful step")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Add first step" })).toBeVisible();
     expect(screen.getByDisplayValue("Gate 08 local draft")).toBeVisible();
   });
 

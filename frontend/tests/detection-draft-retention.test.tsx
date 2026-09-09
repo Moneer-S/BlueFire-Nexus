@@ -59,10 +59,12 @@ it("retains source, reasons, tuning and fixtures across candidate changes and ro
   await user.clear(selection); await user.paste('{"custom":"draft"}');
   const logsource = screen.getByRole("textbox", { name: /^Tuned log source JSON/ });
   await user.clear(logsource); await user.paste('{"category":"custom"}');
-  await user.type(screen.getByRole("textbox", { name: "Revision title" }), " edited");
+  await user.click(screen.getByRole("textbox", { name: "Revision title" }));
+  await user.keyboard("{End}");
+  await user.paste(" edited");
   await user.click(screen.getByRole("tab", { name: "Fixtures" }));
   const fixtures = screen.getByRole("textbox", { name: /^Malicious fixtures JSON/ });
-  await user.type(fixtures, "draft fixture text");
+  await user.click(fixtures); await user.paste("draft fixture text");
   await user.click(screen.getByRole("button", { name: /Other SQL/ }));
   expect(screen.getByRole("textbox", { name: /sqlite source/i })).toHaveValue(source);
   await user.click(screen.getByRole("button", { name: /Baseline SQL/ }));

@@ -72,6 +72,8 @@ it("keeps profile-scope refusal in settings without offering an unrelated runner
   const { onStart } = mount([{ code: "scope_required", message: "target scope is outside the selected profile: network.loopback" }]);
   await user.selectOptions(await screen.findByLabelText(/Saved experiment/), `${demoScenario.id}:1:${receiverFixtureDigest}`);
   expect(await screen.findByText(/target scope is outside the selected profile/)).toBeVisible();
+  expect(screen.getByRole("group", { name: "Requested access" })).toBeVisible();
+  await user.click(screen.getByText("Environment and scope references"));
   expect(screen.getByLabelText(/Target scope/)).toBeVisible();
   expect(screen.getByRole("button", { name: "Save control test" })).toBeDisabled();
   expect(screen.queryByRole("link", { name: "Review the experiment in Build" })).not.toBeInTheDocument();
