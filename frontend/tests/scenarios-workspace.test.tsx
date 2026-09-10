@@ -373,3 +373,18 @@ it("refreshes expanded history with the normal Save version invalidation prefix"
   expect(screen.getByRole("article", { name: "Original procedure - Saved v1" })).toBeVisible();
   expect(screen.getByRole("article", { name: "Revised procedure - Saved v2" })).toBeVisible();
 });
+
+it("finds a retained historical version by its own title before its history is expanded", async () => {
+  const historical: ScenarioVersion = {
+    scenario_id: saved.id,
+    title: "Original procedure",
+    version: 1,
+    digest: "sha256:test-v1",
+    created_at: "2026-08-01T12:00:00Z",
+    document: { ...structuredClone(saved), title: "Original procedure" },
+  };
+  setup({ history: [historical, version()], url: "/scenarios?q=Original procedure" });
+  // The active head is named "Saved collection procedure", so this term matches only the
+  // retained v1. A fresh page must still surface it without the operator expanding history.
+  expect(await screen.findByRole("article", { name: "Original procedure - Saved v1" })).toBeVisible();
+});

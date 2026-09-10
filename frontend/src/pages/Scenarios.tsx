@@ -65,7 +65,12 @@ export function ScenariosPage() {
   const exactVersion = selectedVersion && /^[1-9][0-9]{0,9}$/.test(selectedVersion) && Number(selectedVersion) <= 2 ** 31 - 1 ? Number(selectedVersion) : undefined;
   const exactQuery = useQuery({ queryKey: ["scenario-exact-version", selected, selectedVersion], enabled: Boolean(selected && exactVersion), retry: false,
     queryFn: async () => verifiedVersion((await api.immutableScenarioVersion(selected!, exactVersion!)).scenario, selected!, exactVersion) });
-  const historyIds = [...new Set([...requestedHistory, ...(selected && exactVersion ? [selected] : [])])];
+  // A search term must also reach retained non-head versions. Without this, a fresh page
+  // only holds active heads, so searching a historical title or purpose reports no match
+  // until the operator expands that experiment. Load history for every known identity
+  // while a search is active so the filter sees those versions.
+  const searchingHistoryIds = search.trim() ? (versionsQuery.data?.scenarios ?? []).map(item => item.scenario_id) : [];
+  const historyIds = [...new Set([...requestedHistory, ...searchingHistoryIds, ...(selected && exactVersion ? [selected] : [])])];
   const histories = useQueries({ queries: historyIds.map(id => ({ queryKey: ["scenario-versions", "history", id], retry: false, queryFn: async () => {
     const result = await api.scenarioVersionHistory(id);
     const versions = result.scenarios.map(value => verifiedVersion(value, id));
