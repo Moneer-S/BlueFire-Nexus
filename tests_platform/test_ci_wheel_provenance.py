@@ -18,6 +18,8 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_IDS
+
 REPOSITORY = Path(__file__).resolve().parents[1]
 
 
@@ -237,4 +239,47 @@ def test_workflow_checks_actual_wheel_metadata_before_upload(tmp_path, recorded,
     )
     assert (result.returncode == 0) is (
         recorded == "exact" and layout not in {"duplicate", "unrelated"}
+    )
+
+
+COMMITTED_NATIVE_RUNNERS = (
+    ("bluefire/native/bluefire-runner.exe", "bluefire/native/runner-manifest.json"),
+    (
+        "bluefire/native/linux-x86_64/bluefire-runner",
+        "bluefire/native/linux-x86_64/runner-manifest.json",
+    ),
+)
+
+
+@pytest.mark.parametrize(("binary", "manifest"), COMMITTED_NATIVE_RUNNERS)
+def test_committed_native_runner_is_not_stale_against_the_builtin_catalog(binary, manifest):
+    """Fail when a committed runner predates an action added to the registry.
+
+    The Windows artifact was staged two days before
+    ``sandbox.collection.atomic-gzip.v1`` joined ``BUILTIN_RUNNER_ACTION_VERSIONS``
+    and was never restaged. ``bootstrap_runner`` validates with
+    ``require_exact_catalog=True``, so both Windows CI jobs failed while Linux and
+    macOS stayed green, because the gate modules that consume the packaged runner
+    skip when ``os.name != "nt"``.
+
+    This reads the committed artifacts instead of executing them, so a host of
+    either platform detects a stale artifact for both.
+    """
+
+    artifact = REPOSITORY / binary
+    recorded = json.loads((REPOSITORY / manifest).read_text(encoding="utf-8"))
+    blob = artifact.read_bytes()
+
+    assert recorded["artifact"]["filename"] == artifact.name
+    assert len(blob) == recorded["artifact"]["size"]
+    assert hashlib.sha256(blob).hexdigest() == recorded["artifact"]["sha256"]
+
+    missing = sorted(
+        action_id
+        for action_id in BUILTIN_RUNNER_ACTION_IDS
+        if action_id.encode("ascii") not in blob
+    )
+    assert not missing, (
+        f"{binary} does not advertise {missing}; rebuild the runner at this revision "
+        "and restage it with tools/stage_native_runner.py"
     )
