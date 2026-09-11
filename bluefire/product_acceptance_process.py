@@ -199,6 +199,15 @@ def _isolated_workflow_environment(
     cargo_home = runtime_home / "cargo"
     cargo_home.mkdir()
     cargo_target.mkdir()
+    # Redirecting USERPROFILE moves the whole known-folder tree with it, so the
+    # isolated profile has to be well formed before a gate resolves anything from
+    # it. SHGetKnownFolderPath refuses FOLDERID_LocalAppData when the directory
+    # does not exist, which is what "the process-token temp root is unavailable"
+    # reports. Materialize it here so every gate resolves temp deterministically
+    # to this profile instead of depending on whatever happened to create the
+    # directory first. The resolved root stays inside the gate directory, so
+    # per-gate temp cleanup assertions still bind to it.
+    (runtime_home / "AppData" / "Local" / "Temp").mkdir(parents=True)
     environment = _workflow_environment()
     environment.update(
         {
