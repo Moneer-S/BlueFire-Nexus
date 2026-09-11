@@ -18,6 +18,12 @@ turning a model proposal or runner report into stronger evidence than it is.
 
 ![BlueFire Nexus Scenario Builder showing a typed behavior graph](docs/assets/screenshots/builder.png)
 
+![Walkthrough: the behavior graph, the saved run history, and a completed run's evidence](docs/assets/screenshots/walkthrough.gif)
+
+Recorded from the running product in a disposable WSL2 lab: the typed graph for *Compare record
+collection methods*, its saved run history, and a completed Execute run's evidence. Nothing in it
+is staged or re-enacted.
+
 Start with the [minimal local demo](#minimal-local-demo), then follow the
 [operator guide](docs/OPERATOR_GUIDE.md) before using Execute.
 
