@@ -403,7 +403,8 @@
         "docs/assets/screenshots/execute-review.png",
         "docs/assets/screenshots/live-run.png",
         "docs/assets/screenshots/overview.png",
-        "docs/assets/screenshots/runners.png"
+        "docs/assets/screenshots/runners.png",
+        "docs/assets/screenshots/walkthrough.gif"
       ],
       "third-party-adapted-test-license-mit": [
         "bluefire/data/atomic_red_team_LICENSE.txt"
