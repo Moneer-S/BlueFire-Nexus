@@ -519,12 +519,11 @@ def test_residual_check_rejects_a_path_outside_the_lifecycle_runtime(tmp_path: P
 def test_runtime_dom_probe_rejects_static_or_disconnected_assets() -> None:
     rendered = " ".join(
         (
-            "Mission control",
-            "Design the path. Observe the defense.",
-            "Local service ready",
+            "Open experiments",
+            "Recent runs",
+            "Local service connected",
             'href="#/runs"',
-            "Behavior contracts",
-            "Registered actions",
+            "Detection Lab",
         )
     )
     support.validate_rendered_dom(rendered)

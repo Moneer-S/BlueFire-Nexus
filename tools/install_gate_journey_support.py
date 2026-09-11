@@ -38,13 +38,16 @@ _SEEDED_STEPS = (
     ),
     ("cleanup_workspace", "sandbox.cleanup.v1", {"verify_removal": True}),
 )
+# Strings the packaged UI only produces after React mounts and the service
+# answers. The static shell is an empty root div, so any of these proves a real
+# render, and "Local service connected" is written solely by the connection
+# state, which keeps this an API-backed check rather than a markup check.
 _DOM_MARKERS = (
-    "Mission control",
-    "Design the path. Observe the defense.",
-    "Local service ready",
+    "Open experiments",
+    "Recent runs",
+    "Local service connected",
     'href="#/runs"',
-    "Behavior contracts",
-    "Registered actions",
+    "Detection Lab",
 )
 _MAX_DOM_BYTES = 16 * 1024 * 1024
 
