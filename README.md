@@ -140,6 +140,14 @@ administration, identity, or enterprise-network agent.
 Anything unavailable or structural stays labeled that way; the
 [release capability classification](docs/RELEASE_CAPABILITIES.md) is authoritative.
 
+One third-party source is vendored, and it is worth knowing exactly what it is: the MITRE
+ATT&CK Enterprise T1082 metadata record, `bluefire/data/mitre_attack_t1082_v19_2.json`,
+pinned to `mitre/cti` commit `8543c5b05bd9bbcace9fc37f30bba96b675b6f33`. Intake verifies that
+exact source and keeps only neutral metadata — descriptions, procedures, citations, command
+examples and unrelated references are discarded. The runner action mapped to it is
+independently implemented, and no MITRE endorsement is implied. See
+[source intake](docs/SOURCE_INTAKE.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
+
 | Surface | Current boundary |
 |---|---|
 | Python control plane | Python 3.10+ on Windows, Linux and macOS-compatible environments |
