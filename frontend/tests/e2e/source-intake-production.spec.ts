@@ -152,6 +152,9 @@ test("production UI exposes pinned intake provenance and its active behavior", a
   completedOperations.push("bootstrap_production_session");
   monitoring.assertClean();
 
+  // Research Sources sits in the More tools group, which the shell keeps collapsed.
+  // Open it the way an operator does rather than reaching past the disclosure.
+  await navigation.getByRole("button", { name: "Show more tools" }).click();
   await navigation.getByRole("link", { name: "Research Sources" }).click();
   await expect(page.getByRole("heading", { name: "Research sources", level: 1 })).toBeVisible();
   await expect(page.getByText("Immutable references, no blind imports")).toBeVisible();
