@@ -1202,6 +1202,26 @@ class ManagedRunnerLifecycle:
                 _unlock_file(handle)
                 handle.close()
 
+    def _reject_redirected_root(self) -> None:
+        """Refuse a managed root whose real location differs from its stated path."""
+
+        if not self.root.exists():
+            return
+        try:
+            resolved = self.root.resolve(strict=True)
+        except OSError:
+            return
+        if _same_path(self.root, resolved):
+            return
+        raise RunnerLifecycleError(
+            "Managed runner storage is redirected: "
+            f"{self.root} actually resolves to {resolved}. "
+            "The runner requires storage whose real location matches the path it was "
+            "given, so a virtualised or redirected application-data directory cannot be "
+            "used. Point the local application-data location at a real directory you own "
+            "and start the product again."
+        )
+
     def _prepare_operation_root(self, *, adopt: bool) -> None:
         try:
             _reject_linked_ancestors(self.root)
@@ -1230,6 +1250,11 @@ class ManagedRunnerLifecycle:
                 raise RunnerLifecycleError(
                     "Managed runner storage is unavailable or unsafe."
                 ) from None
+        # A redirected application-data directory resolves the managed root somewhere
+        # other than the path it was given. Refusing that is correct, but the generic
+        # storage message below cannot say why, so name the redirect while both paths
+        # are still in hand.
+        self._reject_redirected_root()
         try:
             resolved = self.root.resolve(strict=True)
             if (

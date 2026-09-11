@@ -2541,3 +2541,37 @@ def test_lifecycle_private_publication_uses_a_fixed_short_temporary_basename(
     assert len(temporary) == 45
     assert all(character in "0123456789abcdef" for character in temporary[9:-4])
     assert "destination" not in temporary
+
+
+def test_redirected_managed_root_is_refused_with_both_paths_named(tmp_path: Path) -> None:
+    """A virtualised application-data directory must say so, not just "unsafe".
+
+    Inside a container that redirects the local application-data directory, the
+    managed root resolves somewhere other than the path it was given. Refusing it
+    is correct, but the generic storage message never said why, so an operator saw
+    only "Managed runner storage is unavailable or unsafe" with nothing to act on.
+    """
+
+    real = tmp_path / "real-storage"
+    real.mkdir()
+    link = tmp_path / "redirected"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):  # pragma: no cover - needs link privilege
+        pytest.skip("this platform does not allow creating a directory link here")
+
+    lifecycle = ManagedRunnerLifecycle(link)
+    with pytest.raises(RunnerLifecycleError) as failure:
+        lifecycle._reject_redirected_root()
+
+    message = str(failure.value)
+    assert "redirected" in message
+    assert str(link) in message
+    assert str(real.resolve()) in message
+    assert "start the product again" in message
+
+
+def test_a_managed_root_at_its_real_location_is_accepted(tmp_path: Path) -> None:
+    root = tmp_path / "plain-storage"
+    root.mkdir()
+    ManagedRunnerLifecycle(root)._reject_redirected_root()
