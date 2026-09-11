@@ -100,7 +100,14 @@ async function writeExclusiveReport(path: string, report: Record<string, unknown
 
 function installFailureMonitors(page: Page): { assertClean: () => void } {
   const failures: string[] = [];
-  const chromiumBootstrapAborts = { GET: 0, POST: 0 };
+  // Liveness polls are cancelled by design. useServiceConnection refetches
+  // /api/v1/session every 15 seconds and api.serviceConnection aborts its own request
+  // after 5, so any navigation during this journey leaves an ERR_ABORTED session
+  // request behind. That is the client cancelling itself, not a service failure, and
+  // the count only tracks how long the journey ran. Aborted session requests are
+  // therefore expected; every other aborted path, and every non-abort failure, still
+  // fails the journey, and a service that genuinely stopped answering would surface
+  // through the assertions that need live data.
   page.on("console", (message) => {
     if (message.type() === "error") failures.push("console_error");
   });
@@ -115,10 +122,6 @@ function installFailureMonitors(page: Page): { assertClean: () => void } {
       && request.resourceType() === "fetch"
       && error === "net::ERR_ABORTED"
     ) {
-      chromiumBootstrapAborts[method] += 1;
-      if (chromiumBootstrapAborts[method] > 1) {
-        failures.push(`repeated_${method.toLowerCase()}_session_transport_abort`);
-      }
       return;
     }
     failures.push(`network_request_failed:${request.method()}:${path}:${error}`);

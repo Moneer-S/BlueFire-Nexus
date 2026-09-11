@@ -54,6 +54,17 @@ function validatedReportPath(): string {
   return value;
 }
 
+async function openDisclosure(workspace: Locator, summary: string): Promise<void> {
+  // Candidate identity is split across disclosures, and each lifecycle step remounts
+  // them closed. Open the named one through its own summary, idempotently, the way an
+  // operator would. "Rule identity and parser details" holds the candidate ID and the
+  // executed flag; "Query source and identity" holds the converted query digest.
+  const details = workspace.locator("details").filter({ hasText: summary }).first();
+  if (await details.evaluate((node) => !(node as HTMLDetailsElement).open)) {
+    await details.locator("summary").click();
+  }
+}
+
 function dataValue(workspace: Locator, label: string): Locator {
   // Lineage repeats several of these labels inside a collapsed <details>, whose
   // innerText is empty. Read the row the operator can actually see.
@@ -95,7 +106,14 @@ async function writeExclusiveReport(path: string, report: Record<string, unknown
 
 function installFailureMonitors(page: Page): { assertClean: () => void } {
   const failures: string[] = [];
-  const chromiumBootstrapAborts = { GET: 0, POST: 0 };
+  // Liveness polls are cancelled by design. useServiceConnection refetches
+  // /api/v1/session every 15 seconds and api.serviceConnection aborts its own request
+  // after 5, so any navigation during this journey leaves an ERR_ABORTED session
+  // request behind. That is the client cancelling itself, not a service failure, and
+  // the count only tracks how long the journey ran. Aborted session requests are
+  // therefore expected; every other aborted path, and every non-abort failure, still
+  // fails the journey, and a service that genuinely stopped answering would surface
+  // through the assertions that need live data.
   page.on("console", (message) => {
     if (message.type() === "error") failures.push("console_error");
   });
@@ -113,10 +131,6 @@ function installFailureMonitors(page: Page): { assertClean: () => void } {
       && request.resourceType() === "fetch"
       && error === "net::ERR_ABORTED"
     ) {
-      chromiumBootstrapAborts[method] += 1;
-      if (chromiumBootstrapAborts[method] > 1) {
-        failures.push(`repeated_${method.toLowerCase()}_session_transport_abort`);
-      }
       return;
     }
     failures.push(`network_request_failed:${request.method()}:${path}:${error}`);
@@ -185,6 +199,7 @@ test("production Detection Lab executes and persists a native SQLite candidate",
   await expect(page.getByText(/saved as a strict hypothesis\. It has not been parsed or exercised\./)).toBeVisible();
   const workspace = page.locator("section.candidate-workspace");
   await expect(workspace.getByRole("heading", { name: title })).toBeVisible();
+  await openDisclosure(workspace, "Rule identity and parser details");
   const candidateId = (await dataValue(workspace, "Candidate ID").innerText()).trim();
   expect(candidateId).toMatch(CANDIDATE_ID);
   await expect(workspace.locator(".panel-header .badge")).toHaveText("Hypothesis");
@@ -195,7 +210,9 @@ test("production Detection Lab executes and persists a native SQLite candidate",
   await workspace.getByRole("button", { name: "Parse / compile honestly" }).click();
   await expect(page.getByText(new RegExp(`${candidateId} advanced honestly to parsed\\.`, "i"))).toBeVisible();
   await expect(workspace.locator(".panel-header .badge")).toHaveText("Parsed");
+  await openDisclosure(workspace, "Query source and identity");
   await expect(dataValue(workspace, "Converted query digest")).toHaveText(SHA256);
+  await openDisclosure(workspace, "Rule identity and parser details");
   await expect(dataValue(workspace, "Source query executed")).toHaveText("No");
   completedOperations.push("parse_sqlite_query");
   monitoring.assertClean();
@@ -209,6 +226,8 @@ test("production Detection Lab executes and persists a native SQLite candidate",
   await workspace.getByRole("button", { name: "Exercise malicious fixtures" }).click();
   await expect(page.getByText(new RegExp(`${candidateId} advanced honestly to fixture exercised\\.`, "i"))).toBeVisible();
   await expect(workspace.locator(".panel-header .badge")).toHaveText("Fixture exercised");
+  // Advancing the lifecycle remounts the workspace on its default tab.
+  await workspace.getByRole("tab", { name: "Fixtures" }).click();
   await expect(workspace.getByText("1 retained", { exact: true })).toBeVisible();
   completedOperations.push("execute_malicious_fixture");
   monitoring.assertClean();
@@ -219,11 +238,14 @@ test("production Detection Lab executes and persists a native SQLite candidate",
   await expect(page.locator("section.candidate-workspace").getByRole("heading", { name: title })).toBeVisible();
   const persistedWorkspace = page.locator("section.candidate-workspace");
   await persistedWorkspace.getByRole("tab", { name: "Rule" }).click();
+  await openDisclosure(persistedWorkspace, "Rule identity and parser details");
   await expect(dataValue(persistedWorkspace, "Candidate ID")).toHaveText(candidateId);
   const visibleState = normalizedState(await persistedWorkspace.locator(".panel-header .badge").innerText());
   expect(visibleState).toBe("fixture_exercised");
+  await openDisclosure(persistedWorkspace, "Query source and identity");
   const queryDigest = (await dataValue(persistedWorkspace, "Converted query digest").innerText()).trim();
   expect(queryDigest).toMatch(SHA256);
+  await openDisclosure(persistedWorkspace, "Rule identity and parser details");
   await expect(dataValue(persistedWorkspace, "Source query executed")).toHaveText("Yes");
   await expect(dataValue(persistedWorkspace, "Evaluated records")).toHaveText(fixtureId);
   await expect(dataValue(persistedWorkspace, "Matched records")).toHaveText(fixtureId);
