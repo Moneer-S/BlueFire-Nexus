@@ -535,8 +535,8 @@ def test_runtime_dom_probe_rejects_static_or_disconnected_assets() -> None:
 
     runs = (
         '<section aria-label="Guided local Execute">'
-        "Review and run "
-        "Runner ready to approved run Verify &amp; enroll local runner"
+        "Prepare, review, and run "
+        "Make the local runner ready Run, observe, and clean up"
         "</section>"
     )
     support.validate_runs_dom(runs)

@@ -285,11 +285,14 @@ def validate_rendered_dom(dom: str) -> None:
 def validate_runs_dom(dom: str) -> None:
     """Require the packaged guided Execute route to render through React."""
 
+    # The guided Execute panel's own landmark plus three of its stage headings.
+    # Together they prove the route mounted and laid out its full sequence rather
+    # than returning a shell or a partial render.
     _require(
         'aria-label="Guided local Execute"' in dom
-        and "Review and run" in dom
-        and "Runner ready to approved run" in dom
-        and ("Verify &amp; enroll local runner" in dom or "Verify & enroll local runner" in dom)
+        and "Prepare, review, and run" in dom
+        and "Make the local runner ready" in dom
+        and "Run, observe, and clean up" in dom
         and "Unexpected Application Error" not in dom
         and "Service unavailable" not in dom,
         "ui_runs_route_invalid",
