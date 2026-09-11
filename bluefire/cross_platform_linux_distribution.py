@@ -157,10 +157,25 @@ def _stream_clone(
             import_output_size = import_output.tell()
             import_error.seek(0, os.SEEK_END)
             import_error_size = import_error.tell()
+            if export.returncode != 0 or imported.returncode != 0:
+                # WSL explains itself on these streams and the reason was being
+                # discarded, leaving only "could not be cloned" for every cause -
+                # a busy source distribution, a refused target, an exhausted disk.
+                # Report a bounded excerpt of WSL's own words. The streams are
+                # UTF-16 from a fixed management command and carry no operator data,
+                # and control characters are stripped before they are reported.
+                _require(
+                    export_error_size <= _MAX_MANAGEMENT_OUTPUT
+                    and import_output_size <= _MAX_MANAGEMENT_OUTPUT
+                    and import_error_size <= _MAX_MANAGEMENT_OUTPUT,
+                    "the disposable WSL2 distribution could not be cloned",
+                )
+                raise DisposableWslDistributionError(
+                    "the disposable WSL2 distribution could not be cloned: "
+                    + _management_detail(import_output, import_error, export_error)
+                )
             _require(
-                export.returncode == 0
-                and imported.returncode == 0
-                and export_error_size <= _MAX_MANAGEMENT_OUTPUT
+                export_error_size <= _MAX_MANAGEMENT_OUTPUT
                 and import_output_size <= _MAX_MANAGEMENT_OUTPUT
                 and import_error_size <= _MAX_MANAGEMENT_OUTPUT,
                 "the disposable WSL2 distribution could not be cloned",
@@ -189,6 +204,24 @@ def _root_identity(path: Path) -> tuple[int, int]:
         "the disposable WSL2 storage root is unsafe",
     )
     return int(details.st_dev), int(details.st_ino)
+
+
+def _management_detail(*streams: Any) -> str:
+    """One bounded, printable line from WSL's own management output."""
+
+    parts: list[str] = []
+    for stream in streams:
+        try:
+            stream.seek(0)
+            blob = stream.read()
+        except (OSError, ValueError):
+            continue
+        text = blob.decode("utf-16-le", "replace") if blob else ""
+        cleaned = " ".join(text.split())
+        printable = "".join(character for character in cleaned if character.isprintable())
+        if printable:
+            parts.append(printable)
+    return (" | ".join(parts) or "no diagnostic output")[:240]
 
 
 def _remove_empty_storage(path: Path, identity: tuple[int, int]) -> bool:

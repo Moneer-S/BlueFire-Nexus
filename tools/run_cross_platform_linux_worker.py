@@ -969,44 +969,28 @@ def run() -> Mapping[str, Any]:
     return result
 
 
+WORKER_ERROR_SCHEMA = "bluefire.cross-platform-linux-worker-error.v1"
+
+
+def _write_worker_error(**fields: Any) -> None:
+    """Emit one bounded worker-error line on stdout."""
+
+    payload = {"schema_version": WORKER_ERROR_SCHEMA, **fields}
+    sys.stdout.write(json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n")
+
+
 def main() -> int:
     if len(sys.argv) != 1:
         return 2
     try:
         summary = run()
     except DependencyError as exc:
-        sys.stdout.write(
-            json.dumps(
-                {
-                    "schema_version": "bluefire.cross-platform-linux-worker-error.v1",
-                    "code": "linux_dependencies_unavailable",
-                    "dependencies": exc.facts,
-                },
-                separators=(",", ":"),
-                sort_keys=True,
-            )
-            + "\n"
-        )
+        _write_worker_error(code="linux_dependencies_unavailable", dependencies=exc.facts)
         return 1
     except BaseException as exc:
-        # Returning 1 with no output made every failure in here indistinguishable,
-        # which is why a Linux gate could only report "the worker failed". Emit one
-        # bounded line naming the exception type and nothing else - no message, no
-        # path, no argument, since this crosses out of the guest. The dependency
-        # payload above stays the only three-field error, so its exact-shape
-        # detection is unchanged and this still falls through to the generic failure.
-        sys.stdout.write(
-            json.dumps(
-                {
-                    "schema_version": "bluefire.cross-platform-linux-worker-error.v1",
-                    "code": "linux_worker_failed",
-                    "error_type": type(exc).__name__[:64],
-                },
-                separators=(",", ":"),
-                sort_keys=True,
-            )
-            + "\n"
-        )
+        # A bare `return 1` here made every failure inside the guest look identical.
+        # Only the exception type leaves: no message, no path, no argument.
+        _write_worker_error(code="linux_worker_failed", error_type=type(exc).__name__[:64])
         return 1
     sys.stdout.write(json.dumps(summary, separators=(",", ":"), sort_keys=True) + "\n")
     return 0
