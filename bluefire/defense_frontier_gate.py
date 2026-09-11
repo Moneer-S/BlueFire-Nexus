@@ -61,7 +61,7 @@ _CONTRACT_TEST_SELECTION = (
     *_CONTRACT_TESTS,
     *(f"--deselect={test_id}" for test_id in _WINDOWS_INAPPLICABLE_CONTRACT_TESTS),
 )
-_EXPECTED_CONTRACT_TEST_COUNT = 60
+_EXPECTED_CONTRACT_TEST_COUNT = 75
 _EXPECTED_ASSERTIONS: Mapping[str, tuple[str, str, tuple[str, ...], str, bool]] = {
     "GATE-04-CANONICAL-BLOCK": (
         "dynamic",

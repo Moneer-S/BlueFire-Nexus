@@ -62,6 +62,9 @@ _PROVIDER_BEHAVIOR_ID = "fixture.provider-upgrade.behavior.v1"
 _PYTEST_SUITE_SCHEMA = "bluefire.architecture-dynamic-check.v1"
 _FRONTEND_SUITE_SCHEMA = "bluefire.provider-frontend-check.v1"
 _MINIMUM_PROVIDER_CONTRACT_TESTS = 79
+# 175 accounted for against the 108 this replaced: no test was removed from any of the
+# nine modules, and only test_provider_gate.py changed. Its four added functions carry
+# 21 + 43 + 2 parametrised cases plus one plain case, which is the +67 exactly.
 _EXPECTED_PROVIDER_CONTRACT_TESTS = 175
 _EXPECTED_PROVIDER_CONTRACT_TESTS_SHA256 = (
     "sha256:208a8baa858e7faafbd62ddc0871891c63cb5893920b079a9acc65554eaf3a5a"
