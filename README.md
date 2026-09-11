@@ -1,271 +1,197 @@
 # BlueFire Nexus
 
-**A local-first workspace for designing, executing, observing, and comparing bounded purple-team experiments.**
+BlueFire Nexus runs a security test against a lab you own, collects the evidence separately from
+whatever the tool itself claims happened, lets you change a defense, then runs the same test again
+and shows you what actually differs.
 
-**Design -> execute -> observe -> change defense -> replay -> compare.** BlueFire preserves the
-graph, authorization, execution, observation, and lineage needed to examine what changed without
-turning a model proposal or runner report into stronger evidence than it is.
-
-> BlueFire Nexus is a local-first security experiment workbench for systems, accounts, networks, and labs you own
-> or are explicitly authorized to test. It is not a production endpoint-management, cloud-
-> administration, identity, or enterprise-network agent. Read the [current limitations](#current-limitations)
-> before using Execute.
-
-- Build typed behavior graphs whose success, partial, blocked, and failed paths remain explicit.
-- Run safely in Simulate or cross an approval-gated boundary to registered Rust runner actions.
-- Keep predicted, executed, observed, blocked, and counterfactual evidence distinct through replay
-  and comparison.
-
-![BlueFire Nexus Scenario Builder showing a typed behavior graph](docs/assets/screenshots/builder.png)
+Everything runs on your own machine: a local loopback service you start yourself, bound to
+127.0.0.1. No cloud service, no account, no telemetry.
 
 ![Walkthrough: the behavior graph, the saved run history, and a completed run's evidence](docs/assets/screenshots/walkthrough.gif)
 
 Recorded from the running product in a disposable WSL2 lab: the typed graph for *Compare record
-collection methods*, its saved run history, and a completed Execute run's evidence. Nothing in it
-is staged or re-enacted.
+collection methods*, its saved run history, and a completed Execute run's evidence. Nothing in it is
+staged or re-enacted.
 
-Start with the [minimal local demo](#minimal-local-demo), then follow the
-[operator guide](docs/OPERATOR_GUIDE.md) before using Execute.
+Use it only on systems, accounts, networks, and labs you own or are explicitly authorized to test.
+V3 is an unreleased candidate.
 
-## Minimal local demo
+## Run it locally
 
-Python 3.10 or newer is required. V3 is an unreleased candidate. First
-[download the matching PR build and install it](docs/INSTALLATION.md#download-the-candidate).
-That guide links the real Windows, Linux and Intel macOS wheel artifacts and gives the exact
-commands for a fresh directory. No source checkout or developer dependencies are needed.
+Python 3.10 or newer. [Download the matching PR build and install it](docs/INSTALLATION.md#download-the-candidate) —
+that guide links the real Windows, Linux and Intel macOS wheel artifacts and gives exact commands for
+a fresh directory. No source checkout or developer dependencies are needed.
 
-BlueFire attempts to open the browser after the local listener is ready. If it cannot, open the
-complete one-use URL printed in the terminal; it connects to the same running process. Add
-`--no-browser` after `ui` to choose manual opening. Keep this terminal running while using the UI.
-Reuse the same absolute `--runs-dir` on every restart and upgrade to retain saved experiments,
-rules, jobs and run bundles. For source development and its optional developer dependencies,
-see [Development](docs/DEVELOPMENT.md).
+    bluefire ui --runs-dir <an absolute path you keep>
 
-In **Experiments**, open a packaged experiment or create a new one. Review it in **Build** and
-save a version when you change it. In **Runs**, choose **Review new run**, select **Simulate**
-and AI **Off**, then run preflight and submit the Simulate job. Open its result to inspect the
-path and evidence. Docker, a runner and a model account are not needed for this first simulation.
-The [operator guide](docs/OPERATOR_GUIDE.md) walks through the visible controls and saved results.
+BlueFire opens your browser once the local listener is ready. If it does not, use the one-use URL
+printed in the terminal; `--no-browser` skips the attempt. Keep the terminal running, and reuse the
+same absolute `--runs-dir` on every restart so saved experiments, rules, jobs and run bundles stay
+with you.
 
-The UI is a same-user loopback service; do not expose it through a proxy, tunnel, or port forward.
-A Simulate result records a preview, not evidence that a runner action or defensive control executed.
+Then, for a first pass that needs no runner, no Docker and no model account: open a packaged
+experiment in **Experiments**, review it in **Build**, and in **Runs** choose **Review new run** with
+mode **Simulate** and AI **Off**. Run preflight, submit, and open the result. The
+[operator guide](docs/OPERATOR_GUIDE.md) walks the visible controls.
 
-## Product loop
+A Simulate result records a preview. It is not evidence that a runner action or a defensive control
+executed.
 
-1. **Design** a versioned graph from registered behaviors, typed artifacts, and explicit outcome
-   edges.
-2. **Execute** the experiment safely in Simulate, or select Execute mode with an exact profile, scope, budgets,
-   readiness record, and one-time approval.
-3. **Observe** through separately attributed collectors; action output remains `executed`, while
-   independent collection is `observed`.
-4. **Change defense** by recording the control or detection change rather than rewriting the
-   baseline result.
-5. **Replay** the immutable scenario exactly or as a declared, lineage-linked variant.
-6. **Compare** paths, controls, detections, evidence, cleanup, budgets, and implementation identity
-   without claiming that a difference proves causality.
+## What you do with it
+
+1. **Design** a versioned graph from registered behaviors and typed artifacts, where the success,
+   partial, blocked and failed paths are all explicit rather than implied.
+2. **Run** it in Simulate, or cross an approval-gated boundary into Execute with an exact profile,
+   scope, budgets and a one-time approval.
+3. **Observe** through collectors that are attributed separately: what the action reported is
+   `executed`, what a collector independently found is `observed`. The two never merge.
+4. **Change a defense** by recording the control or detection change, instead of editing the
+   baseline result to match the new belief.
+5. **Replay** the immutable scenario exactly, or as a declared variant that stays linked to its
+   lineage.
+6. **Compare** paths, controls, detections, evidence, cleanup and budgets. Compare reports what
+   differs; it does not claim the difference proves the defense caused it.
+
+![Build: the nine-step "Compare record collection methods" graph, each step typed with its parameters and outcome branches](docs/assets/screenshots/builder.png)
+
+## A measured example
+
+A real staging run in the disposable Linux lab produced five collector observations. Two revisions of
+one detection rule, both executed through the Detection Lab with pinned pySigma 1.5.0 and its SQLite
+backend, were measured against three separate sample sets.
+
+Revision 1 keys on the staging path prefix. Revision 2 keys on the semantics collector's own
+assertion that it parsed a retained-record collection bundle, which does not depend on the directory:
+
+    -- revision 1
+    WHERE observation_kind='filesystem' AND path LIKE 'staged/%'
+
+    -- revision 2
+    WHERE observation_kind LIKE 'collection\_semantics'
+      AND collector_id='collector.collection-semantics.sandbox.v1'
+      AND container='jsonl'
+
+| Sample set | Revision 1 | Revision 2 |
+|---|---|---|
+| The observed run's 5 collected evidence records | 1 match | 1 match, on a different record |
+| 4 benign fixtures, one an operator note that happens to sit under `staged/` | 1 match — a false positive | 0 matches |
+| 2 attack fixtures staging the identical bundle to another directory | 0 matches — missed | 1 match |
+
+Read those rows precisely. The third row is **two fixtures**, authored to vary the staging path; it is
+not a second observed run, and one fixture matching is not a detection rate. The first row is the
+only observed-run result here, and both revisions find the same single staging event in it — revision
+1 through the filesystem record, revision 2 through the collection-semantics record.
+
+Both rules are narrow by construction. Revision 1 is path-specific and revision 2 is
+collector-specific; neither is general attack detection, and neither was evaluated against anything
+outside these three sets. What the comparison does show is a false positive removed and a missed
+variation caught, with the true positive kept — and `detections compare` reports the rule source
+digest actually changed, so this is a different rule rather than a re-labelled copy.
 
 ## Modes and authority
 
-BlueFire has two effect modes. AI autonomy is a separate choice and never widens runner authority.
+Two effect modes. AI autonomy is a separate choice and never widens runner authority.
 
 | | Simulate | Execute |
 |---|---|---|
 | External effects | None | Registered and approved effects only |
-| Runner | Not used | Required and independently enforcing the selected profile |
-| Scope | Modeled | Explicit operator scope bounded by policy and profile |
-| Evidence | Synthetic or counterfactual | Executed, blocked, or unknown; observed only from a collector |
+| Runner | Not used | Required, and independently enforcing the selected profile |
+| Scope | Modeled | Explicit operator scope, bounded by policy and profile |
+| Evidence | Synthetic or counterfactual | Executed, blocked, or unknown; `observed` only from a collector |
 | Approval and cleanup | Modeled | Exact approval and receipt-bound cleanup |
 
 | AI level | What it can do | What it cannot do |
 |---|---|---|
-| `off` | Use the deterministic planner only | No model call |
-| `assist` | Draft a typed graph or registered choice for review | Apply an actionable runtime mutation without exact-digest review |
+| `off` | Use the deterministic planner only | No model call at all |
+| `assist` | Draft a typed graph or registered choice for review | Apply a runtime mutation without exact-digest review |
 | `auto` | Apply a policy-valid registered choice where mode and policy permit | Invent actions, expand scope, raise a tier, change the runner profile, or bypass Execute approval |
 
-The included offline provider makes planner behavior reproducible without a live model account. A
-configured OpenAI-compatible provider remains only a proposal boundary: schema validation,
-allowlists, policy, runner enforcement, and approval still apply. See [AI Planner](docs/AI_PLANNER.md).
+The bundled offline provider makes planner behavior reproducible with no model account, and it is
+what release acceptance uses. Connecting an OpenAI-compatible provider changes nothing about
+authority: schema validation, allowlists, policy, runner enforcement and approval all still apply.
+Model quality is not something this project measures. See [AI Planner](docs/AI_PLANNER.md).
 
-For reviewed experiment planning, open **Build > Plan with Assistant**. Describe an objective,
-review and edit its proposed graph in Builder, then save and open the separate experiment.
-[Graph assistance](docs/contextual-graph-assistance.md) explains saving, recovery, and current
-Assist/Auto limits. Run Review provides [readable reports and verified run bundles](docs/RUN_EXPORTS.md).
+To plan an experiment, open **Build > Plan with Assistant**, describe an objective, review and edit
+the proposed graph in Builder, then save it as its own experiment.
+[Graph assistance](docs/contextual-graph-assistance.md) covers saving, recovery and the current
+Assist/Auto limits.
 
-## A concrete defense-frontier workflow
+## Scope and limits
 
-The bounded defense-frontier journey exercises the full product loop against disposable,
-runner-owned fixtures:
+BlueFire is a local workbench for labs you control. It is not an endpoint-management, cloud
+administration, identity, or enterprise-network agent.
 
-1. Builder defines an objective with a primary behavior and a semantically compatible registered
-   alternate.
-2. The baseline reaches a declared block and records that block as evidence instead of converting
-   it to success or a generic error.
-3. Auto selects only the registered alternate permitted by the typed graph and current policy.
-4. Execute pauses for fresh authorization, dispatches the approved action through the Rust runner,
-   and reconciles receipt-owned cleanup.
-5. Independent collection is stored separately from the runner's own result.
-6. The operator records the defense change and starts a controlled, lineage-linked replay.
-7. Compare explains path, prevention and detection state, telemetry, objective, cleanup, budgets,
-   and improvement or regression signals. It does not label a delta as causal proof.
+- The browser API has same-user loopback session protection, not remote or multi-user
+  authentication. Do not expose it through a proxy, tunnel or port forward.
+- The managed runner is a per-user process, not an operating-system service. Remote and cross-host
+  runner transport and enrollment are not shipped.
+- The native action boundary is deliberately narrow: no generic shell, no arbitrary program
+  execution.
+- Independent observation covers declared sandbox files, one exactly authorized child process on
+  Windows and Linux, and authenticated bindings from a managed loopback receiver. Host audit, cloud
+  audit, packet capture, EDR and SIEM adapters are declared readiness contracts, not integrations.
+- The AWS surface is one reversible disposable-role tagging lab with a deterministic backend.
+  Real-account smoke needs an operator-supplied named profile and manual confirmation.
+- Detection Lab is a bounded local evaluator, not a SIEM connector. SPL is structural only, and
+  public rules are provenance-retaining baselines.
+- Bundle and event hashes detect modification. They are not signatures and do not prove who produced
+  a bundle.
 
-This journey is exercised by offline release acceptance without a live provider key. It proves the
-bounded registered-choice workflow, not model quality, production detector coverage, or arbitrary
-adaptive execution.
-
-## Product proof
-
-### Run review
-
-Run review exposes the canonical plan, completed graph path, event timeline, profile and scope,
-evidence provenance, detections, approval state, and cleanup result. Synthetic expected evidence
-does not become observed evidence merely because it appears in the same run.
-
-![BlueFire Nexus Run Review showing the completed graph path and evidence timeline](docs/assets/screenshots/live-run.png)
-
-### Replay and compare
-
-Exact replay retains the source scenario snapshot. A declared variant records changes such as a
-restart node, compatible behavior, typed parameters, action implementation, profile, autonomy, or
-defense note while preserving lineage.
-
-```bash
-bluefire --runs-dir .bluefire-runs replay RUN_ID --exact
-bluefire --runs-dir .bluefire-runs compare BASELINE_RUN_ID CANDIDATE_RUN_ID
-```
-
-Comparison reports supported differences across graph path, objective state, evidence provenance,
-observed artifacts, detections, controls, cleanup, telemetry, budgets, planner decisions, and
-implementation identity. See [Replay and compare](docs/REPLAY_COMPARE.md).
-
-![BlueFire Nexus Compare showing baseline and lineage-linked replay lanes](docs/assets/screenshots/compare.png)
-
-### Evidence and Detection Lab
-
-Every evidence record has a producer and a provenance class:
-
-| Class | Meaning |
-|---|---|
-| `synthetic` | Modeled or fixture-generated |
-| `executed` | Reported by a runner after an action started |
-| `observed` | Independently collected by a declared collector |
-| `control_blocked` | A policy or defensive control prevented the action |
-| `counterfactual` | Modeled continuation after a real path stopped |
-| `unknown` | The requested observation could not be established |
-
-Detection candidates progress through evidence-backed hypothesis, parse, fixture, observed, and
-benign-evaluation stages, or are rejected. BlueFire supports pinned pySigma-to-SQLite conversion,
-bounded evaluation for converted Sigma and native SQLite candidates, and YARA compilation and
-fixture execution when the optional pinned packages are installed. SPL remains structural only.
-See the [evidence model](docs/EVIDENCE_MODEL.md) and [Detection Lab](docs/DETECTION_LAB.md).
-
-### Bounded execution
-
-The Python control plane resolves only registered behaviors and action implementations. Execute
-crosses a strict adapter into a separately built Rust runner, which revalidates inventory, profile,
-request, platform, capabilities, tier, scope, limits, approval lifetime, and cleanup binding.
-
-The runner exposes bounded compiled operations for runner-owned fixture work, platform discovery,
-staging and archive, authenticated loopback transfer, reversible comparison canaries, and cleanup.
-It does not expose a generic command, shell, script, arbitrary program, dynamic library, URL, proxy,
-redirect, or caller-selected hostname. Consult the [action SDK](docs/ACTION_SDK.md),
-[execution model](docs/EXECUTION_MODEL.md), and [runner deployment and protocol](docs/RUNNER_DEPLOYMENT.md)
-for the detailed boundary.
-
-Execute is opt-in. Before using it, prepare a disposable authorized target, verify the compatible
-runner artifact, select an Execute profile, bind exact scope and collectors, inspect preflight, and
-issue the one-time approval. The [operator guide](docs/OPERATOR_GUIDE.md) and
-[runner profiles](docs/RUNNER_PROFILES.md) contain the focused procedure.
-
-### Reviewed source intake
-
-One reviewed declarative source is vendored: the MITRE ATT&CK Enterprise T1082 metadata record
-`bluefire/data/mitre_attack_t1082_v19_2.json`, pinned to `mitre/cti` commit
-`8543c5b05bd9bbcace9fc37f30bba96b675b6f33`. Intake verifies the exact source and projects only
-neutral metadata; descriptions, procedures, citations, command examples, and unrelated references
-are discarded. The mapped runner action is independently implemented, and no MITRE endorsement is
-implied. See [source intake](docs/SOURCE_INTAKE.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
-
-### Machine-verifiable release evidence
-
-The release authority runs the committed, ordered acceptance contract against a clean checkout and
-persists hashed gate receipts. Documentation is never accepted as gate proof, and an incomplete or
-failed receipt remains a failed gate.
-
-```bash
-bluefire acceptance run --release
-bluefire acceptance verify --result path/to/acceptance-result.json
-```
-
-The verifier rechecks the locked contract, canonical run bundles, and referenced evidence bytes.
-See [development and complete testing](docs/DEVELOPMENT.md) for the full local verification matrix;
-the [pre-release baseline](docs/PRE_RELEASE_BASELINE.md) records historical scope and non-claims but
-does not satisfy a release gate.
-
-## Supported platforms
+Anything unavailable or structural stays labeled that way; the
+[release capability classification](docs/RELEASE_CAPABILITIES.md) is authoritative.
 
 | Surface | Current boundary |
 |---|---|
-| Python control plane | Python 3.10+ on Windows, Linux, and macOS-compatible environments |
-| Rust runner | Verified native Windows x86_64 wheel; commit-bound Linux x86_64 musl artifact for disposable validation; source builds for development |
+| Python control plane | Python 3.10+ on Windows, Linux and macOS-compatible environments |
+| Rust runner | Native Windows x86_64 wheel, and a commit-bound Linux x86_64 musl artifact whose 23 built-in actions are verified by execution on Linux; source builds for development |
 | Linux proof | Native dynamic execution in a fresh disposable WSL2 environment during release acceptance |
-| macOS proof | Structural when no macOS host is available |
+| macOS proof | Structural only; dynamic macOS execution has not been validated |
 | Network actions | Literal loopback addresses in shipped actions and profiles |
-| Managed runner | Separate same-user loopback process with local enrollment; no cross-host runner is shipped |
-| Cloud identity | One reversible AWS identity lab with deterministic local proof; real-account smoke is manual and separately confirmed |
+| Managed runner | Separate same-user loopback process with local enrollment |
+| Cloud identity | One reversible AWS identity lab with deterministic local proof |
 
-## Current limitations
+## How the product proves itself
 
-- BlueFire is local-first. Its browser API has same-user loopback session protection,
-  not remote or multi-user authentication.
-- The managed runner is a per-user process, not an operating-system service. Linux acceptance proves
-  the commit-bound artifact in a disposable WSL2 environment, not a general Linux installer;
-  dynamic macOS execution has not been validated.
-- Remote and cross-host runner transport, enrollment, and validation are not shipped.
-- The native action boundary is intentionally narrow and has no generic shell or arbitrary program
-  execution.
-- Built-in independent observation covers declared sandbox files, one exactly authorized child
-  process on Windows/Linux, and authenticated bindings from a managed loopback receiver. Host audit,
-  cloud audit, packet capture, EDR, and SIEM adapters remain unavailable readiness contracts.
-- The AWS identity surface is one reversible disposable-role tagging lab. Automated proof uses a
-  deterministic backend; real-account smoke requires an operator-supplied named profile and exact
-  manual confirmation. It is not general cloud administration.
-- Detection Lab is a bounded local evaluator, not a production SIEM connector. SPL is structural
-  only, and public rules are provenance-retaining baselines rather than automatic evasion targets.
-- Live model endpoint connectivity and model quality are outside offline acceptance. The
-  deterministic provider proves orchestration and authority boundaries only.
-- Bundle and event hashes detect modification but are not digital signatures or proof of who
-  produced a bundle.
-- Comparison reports supported deltas and coarse signals; it does not prove that a declared defense
-  change caused them or that a detector was bypassed.
+Run review exposes the canonical plan, the completed graph path, the event timeline, profile and
+scope, evidence provenance, detections, approval state and cleanup result. Every evidence record
+carries a producer and one provenance class — `synthetic`, `executed`, `observed`, `control_blocked`,
+`counterfactual` or `unknown` — and those classes are never collapsed into each other.
 
-Unavailable or structural integrations stay labeled that way. See the
-[release capability classification](docs/RELEASE_CAPABILITIES.md) for the authoritative shipped,
-fixture-only, structural, and unavailable boundaries.
+![Detection Lab listing two revisions of one candidate, its rule source, and its validation stage](docs/assets/screenshots/detection-lab.png)
 
-## Focused documentation
+![Run Review for an Execute run, keeping 9 runner-reported records separate from 5 independent observations](docs/assets/screenshots/live-run.png)
 
-- **Architecture:** [system architecture](docs/ARCHITECTURE.md) and
+Replay reruns an immutable scenario exactly or as a declared variant, and Compare reports path,
+prevention and detection state, telemetry, objective, cleanup and budget deltas.
+
+![Compare: selecting two completed Execute runs of one experiment, and preparing a replay with a deliberate change](docs/assets/screenshots/compare.png)
+
+A locked 12-gate release contract checks all of this on a candidate build, with machine-readable
+receipts per gate. See [evidence model](docs/EVIDENCE_MODEL.md),
+[replay and compare](docs/REPLAY_COMPARE.md) and [Detection Lab](docs/DETECTION_LAB.md).
+
+## Documentation
+
+- **Start here:** [installation](docs/INSTALLATION.md), [operator guide](docs/OPERATOR_GUIDE.md),
+  [configuration](docs/CONFIGURATION.md), [troubleshooting](docs/TROUBLESHOOTING.md)
+- **Architecture:** [system architecture](docs/ARCHITECTURE.md),
   [execution model](docs/EXECUTION_MODEL.md)
-- **API:** [local API](docs/API.md) and [CLI reference](docs/CLI.md)
-- **Runner protocol:** [deployment, enrollment, transport, receipts, and cleanup](docs/RUNNER_DEPLOYMENT.md)
-- **Security internals:** [security policy](SECURITY.md), [threat model](docs/THREAT_MODEL.md), and
+- **Interfaces:** [local API](docs/API.md), [CLI reference](docs/CLI.md),
+  [runner protocol](docs/RUNNER_DEPLOYMENT.md)
+- **Security:** [security policy](SECURITY.md), [threat model](docs/THREAT_MODEL.md),
   [responsible use](docs/RESPONSIBLE_USE.md)
-- **Complete testing:** [development and verification](docs/DEVELOPMENT.md) and
+- **Reference:** [evidence model](docs/EVIDENCE_MODEL.md),
+  [behavior authoring](docs/BEHAVIOR_AUTHORING.md), [source intake](docs/SOURCE_INTAKE.md),
+  [AI planner](docs/AI_PLANNER.md), [replay and compare](docs/REPLAY_COMPARE.md),
+  [run exports](docs/RUN_EXPORTS.md), [third-party notices](THIRD_PARTY_NOTICES.md)
+- **Contributing:** [development and verification](docs/DEVELOPMENT.md),
   [contributing](CONTRIBUTING.md)
-- **Deep reference:** [operator guide](docs/OPERATOR_GUIDE.md),
-  [evidence model](docs/EVIDENCE_MODEL.md), [behavior authoring](docs/BEHAVIOR_AUTHORING.md),
-  [source intake](docs/SOURCE_INTAKE.md), and [third-party notices](THIRD_PARTY_NOTICES.md)
-
-Additional focused guides cover [installation](docs/INSTALLATION.md),
-[configuration](docs/CONFIGURATION.md), [troubleshooting](docs/TROUBLESHOOTING.md),
-[AI planning](docs/AI_PLANNER.md), [Detection Lab](docs/DETECTION_LAB.md), and
-[replay and compare](docs/REPLAY_COMPARE.md).
 
 ## Responsible use and license
 
-Use BlueFire Nexus only on systems, accounts, networks, and labs you own or are explicitly
-authorized to test. Start in Simulate, use least-privilege runner profiles, prefer disposable
-targets, review every Execute plan, and verify cleanup.
+Use BlueFire Nexus only on systems, accounts, networks and labs you own or are explicitly authorized
+to test. Start in Simulate, use least-privilege runner profiles, prefer disposable targets, review
+every Execute plan, and verify cleanup.
 
 Report security issues privately as described in the [security policy](SECURITY.md). BlueFire Nexus
 is licensed under the [MIT License](LICENSE).
