@@ -85,6 +85,19 @@ jobs:
           python -m pip install --upgrade pip "setuptools==83.0.0"
           python -m pip install -e ".[dev,detections]"
 
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          # The hosted images ship a cargo-clippy binary that rustup's own manifest does
+          # not record. The implicit sync from rust-toolchain.toml then stops with
+          # "detected conflict: bin/cargo-clippy" and rolls the whole toolchain back,
+          # failing before any project code compiles. Installing the pinned channel
+          # explicitly makes this step depend on the pin rather than on image state.
+          channel="$(grep -E '^channel' rust-toolchain.toml | cut -d'"' -f2)"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal --component clippy --component rustfmt --force
+          rustup show
+
       - name: Build bounded Rust runner for Python Execute tests
         run: cargo build --locked --manifest-path runner/Cargo.toml --bin bluefire-runner
 
