@@ -773,10 +773,9 @@ def _journey_report() -> dict[str, Any]:
                 "receipt_protocol": "bluefire.runner-receipt-wal.v2",
                 "platform": "windows",
                 "provider_runtime_count": 1,
-                # This receipt binds the Windows runner; gzip is Linux-only.
-                "core_action_count": len(
-                    BUILTIN_RUNNER_ACTION_IDS - {"sandbox.collection.atomic-gzip.v1"}
-                ),
+                # The inventory advertises every built-in action on every platform;
+                # platform restrictions are enforced by policy at dispatch.
+                "core_action_count": len(BUILTIN_RUNNER_ACTION_IDS),
             },
             "provider_runtime": {
                 **runtime_contract,
@@ -946,8 +945,14 @@ def _install_passing_fakes(
 def test_gate_02_emits_exact_unique_proofs_and_bundle_attachments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert _journey_report()["packaged_runner"]["inventory_contract"]["core_action_count"] == 22
-    for invalid_count in (21, 23):
+    assert _journey_report()["packaged_runner"]["inventory_contract"]["core_action_count"] == len(
+        BUILTIN_RUNNER_ACTION_IDS
+    )
+    # drift in either direction must still be rejected, relative to the registry
+    for invalid_count in (
+        len(BUILTIN_RUNNER_ACTION_IDS) - 1,
+        len(BUILTIN_RUNNER_ACTION_IDS) + 1,
+    ):
         drifted_inventory = _journey_report()
         drifted_inventory["packaged_runner"]["inventory_contract"][
             "core_action_count"

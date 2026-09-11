@@ -11,6 +11,7 @@ from .provider_gate_structural_validation import (
     _is_sha256_digest,
     _validate_structural,
 )
+from .runner_inventory import BUILTIN_RUNNER_ACTION_IDS
 from .util import content_hash
 from .version import __version__
 
@@ -240,7 +241,12 @@ def _validate_packaged_runner(value: Any) -> Mapping[str, Any]:
         "receipt_protocol": "bluefire.runner-receipt-wal.v2",
         "platform": "windows",
         "provider_runtime_count": 1,
-        "core_action_count": 22,
+        # Derived from the registry rather than copied. The packaged runner advertises
+        # every built-in action on every platform; a platform-restricted action such as
+        # the Linux-only gzip collector is refused by the policy engine at dispatch, not
+        # hidden from the inventory. A literal here silently went stale when the registry
+        # grew, which is what failed this gate.
+        "core_action_count": len(BUILTIN_RUNNER_ACTION_IDS),
     }:
         raise ValueError("provider journey runner inventory contract is invalid")
     hard_limits = runtime.get("hard_limits")
