@@ -80,7 +80,9 @@ def test_gate03_returns_only_the_validated_typed_linux_blocker(
     monkeypatch: Any,
 ) -> None:
     monkeypatch.setattr(
-        gate_module, "_run_helper", lambda *_args: _helper(blocking_check="linux_primary")
+        gate_module,
+        "_run_helper",
+        lambda *_args: (_helper(blocking_check="linux_primary"), ""),
     )
     monkeypatch.setattr(
         gate_module,
@@ -108,7 +110,7 @@ def test_gate03_success_requires_all_checks_five_bundles_and_unique_proofs(
     monkeypatch.setenv("BLUEFIRE_ACCEPTANCE_REPOSITORY_COMMIT", "4" * 40)
     monkeypatch.setenv("BLUEFIRE_ACCEPTANCE_REPOSITORY_TREE", "5" * 40)
     monkeypatch.setenv("BLUEFIRE_ACCEPTANCE_RELEASE", "true")
-    monkeypatch.setattr(gate_module, "_run_helper", lambda *_args: _helper())
+    monkeypatch.setattr(gate_module, "_run_helper", lambda *_args: (_helper(), ""))
     monkeypatch.setattr(gate_module, "_run_pytest_suite", lambda *_args, **_kwargs: _suite())
     monkeypatch.setattr(gate_module, "_suite_is_exact", lambda _value: True)
 

@@ -126,7 +126,18 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
-def _run_helper(repository: Path, evidence_dir: Path) -> Mapping[str, Any]:
+def _helper_detail(summary: Any) -> str:
+    """One bounded, fixed-vocabulary reason from the helper, or the empty string."""
+
+    if not isinstance(summary, Mapping):
+        return ""
+    code = summary.get("error_code")
+    if isinstance(code, str) and code.replace("_", "").isalnum() and len(code) <= 64:
+        return code
+    return ""
+
+
+def _run_helper(repository: Path, evidence_dir: Path) -> tuple[Mapping[str, Any], str]:
     command = [
         sys.executable,
         "-I",
@@ -204,7 +215,7 @@ def _run_helper(repository: Path, evidence_dir: Path) -> Mapping[str, Any]:
             "command": reported,
             "protocol_valid": valid,
             "passed": passed,
-        }
+        }, _helper_detail(summary)
     except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError, ValueError):
         return {
             "schema_version": None,
@@ -216,7 +227,7 @@ def _run_helper(repository: Path, evidence_dir: Path) -> Mapping[str, Any]:
             "command": reported,
             "protocol_valid": False,
             "passed": False,
-        }
+        }, ""
 
 
 def _acceptance_binding() -> Mapping[str, str]:
@@ -348,7 +359,7 @@ def run_gate_03(
         return _failure(("GATE-03 evidence directory contains stale owned artifacts",))
 
     started = datetime.now(timezone.utc)
-    helper = _run_helper(repository, destination)
+    helper, helper_detail = _run_helper(repository, destination)
     finished = datetime.now(timezone.utc)
     if helper.get("blocking_check") == "linux_primary":
         try:
@@ -359,7 +370,8 @@ def run_gate_03(
             reason = "GATE-03 " + reason.removeprefix("GATE-11 ")
         return Gate03Outcome(status="failed", proofs=(), failure_reason=reason)
     if helper.get("passed") is not True:
-        return _failure(("deep-behavior helper failed or returned an invalid protocol",))
+        issue = "deep-behavior helper failed or returned an invalid protocol"
+        return _failure((f"{issue}: {helper_detail}" if helper_detail else issue,))
 
     suite = _run_pytest_suite(
         repository,
