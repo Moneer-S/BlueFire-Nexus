@@ -7,7 +7,6 @@ import os
 import stat
 import sys
 import tempfile
-import uuid
 from collections.abc import Mapping, Sequence
 from ctypes import wintypes
 from pathlib import Path
@@ -110,10 +109,16 @@ def runtime_temp_parent() -> Path:
 
     if sys.platform != "win32":
         return Path(tempfile.gettempdir()).resolve(strict=True)
+    # userenv!GetUserProfileDirectoryW answers from the token's own profile
+    # record. SHGetKnownFolderPath cannot be used for this: the known-folder
+    # values are REG_EXPAND_SZ and are expanded against the calling process
+    # environment block, so a caller that redirects USERPROFILE silently moves
+    # every known folder with it. That is precisely the aliasing this function
+    # exists to refuse, and it also made the resolved root depend on whether
+    # the redirected profile happened to have AppData\Local yet.
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
-    ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+    userenv = ctypes.WinDLL("userenv", use_last_error=True)
     kernel32.GetCurrentProcess.argtypes = ()
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
     kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
@@ -124,17 +129,13 @@ def runtime_temp_parent() -> Path:
         ctypes.POINTER(wintypes.HANDLE),
     )
     advapi32.OpenProcessToken.restype = wintypes.BOOL
-    shell32.SHGetKnownFolderPath.argtypes = (
-        ctypes.c_void_p,
-        wintypes.DWORD,
+    userenv.GetUserProfileDirectoryW.argtypes = (
         wintypes.HANDLE,
-        ctypes.POINTER(wintypes.LPWSTR),
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
     )
-    shell32.SHGetKnownFolderPath.restype = ctypes.c_long
-    ole32.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
-    ole32.CoTaskMemFree.restype = None
+    userenv.GetUserProfileDirectoryW.restype = wintypes.BOOL
     token = wintypes.HANDLE()
-    value = wintypes.LPWSTR()
     try:
         if not advapi32.OpenProcessToken(
             kernel32.GetCurrentProcess(),
@@ -142,27 +143,21 @@ def runtime_temp_parent() -> Path:
             ctypes.byref(token),
         ):
             raise OSError("the process token is unavailable")
-        local_app_data = ctypes.create_string_buffer(
-            uuid.UUID("f1b32785-6fba-4fcf-9d55-7b8e7f157091").bytes_le
-        )
-        if (
-            shell32.SHGetKnownFolderPath(
-                ctypes.byref(local_app_data),
-                0,
-                token,
-                ctypes.byref(value),
-            )
-            != 0
-            or not value.value
-        ):
+        size = wintypes.DWORD(0)
+        userenv.GetUserProfileDirectoryW(token, None, ctypes.byref(size))
+        if not 0 < size.value <= 32_768:
             raise OSError("the process-token temp root is unavailable")
-        parent = (Path(value.value) / "Temp").resolve(strict=True)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        if not userenv.GetUserProfileDirectoryW(token, buffer, ctypes.byref(size)):
+            raise OSError("the process-token temp root is unavailable")
+        profile = buffer.value
+        if not profile:
+            raise OSError("the process-token temp root is unavailable")
+        parent = (Path(profile) / "AppData" / "Local" / "Temp").resolve(strict=True)
         if not parent.is_dir():
             raise OSError("the process-token temp root is invalid")
         return parent
     finally:
-        if value:
-            ole32.CoTaskMemFree(value)
         if token:
             kernel32.CloseHandle(token)
 
