@@ -12,6 +12,7 @@ import pytest
 
 import bluefire.product_gates as product_gates
 import bluefire.provider_gate as provider_gate
+import bluefire.provider_gate_validation as provider_gate_validation
 import tools.run_provider_gate_journey as provider_gate_helper
 from bluefire.product_acceptance import load_release_contract
 from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_IDS
@@ -940,6 +941,18 @@ def _install_passing_fakes(
     monkeypatch.setattr(provider_gate, "_run_pytest_suite", fake_suite)
     monkeypatch.setattr(provider_gate, "_run_vitest", lambda _repository: _frontend_report())
     return suite_calls
+
+
+def test_provider_gate_core_action_count_is_pinned_to_the_runner_registry() -> None:
+    """The release gate cannot import the domain-layer registry, so pin it here instead.
+
+    ``bluefire.provider_gate_validation`` sits in the release layer, which GATE-10
+    forbids from depending on ``bluefire.runner_inventory`` (domain). Its action count
+    is therefore a literal, and a literal is exactly what went stale when the registry
+    last grew. This test is the guard: if you add or remove a built-in runner action,
+    update ``_CORE_ACTION_COUNT`` to match.
+    """
+    assert provider_gate_validation._CORE_ACTION_COUNT == len(BUILTIN_RUNNER_ACTION_IDS)
 
 
 def test_gate_02_emits_exact_unique_proofs_and_bundle_attachments(

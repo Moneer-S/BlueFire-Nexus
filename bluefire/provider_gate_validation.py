@@ -11,9 +11,13 @@ from .provider_gate_structural_validation import (
     _is_sha256_digest,
     _validate_structural,
 )
-from .runner_inventory import BUILTIN_RUNNER_ACTION_IDS
 from .util import content_hash
 from .version import __version__
+
+# Pinned, not imported: this release-layer module may not depend on the domain-layer
+# runner registry (GATE-10 dependency direction). tests_platform/test_provider_gate.py
+# pins this to len(BUILTIN_RUNNER_ACTION_IDS) and fails if the registry moves again.
+_CORE_ACTION_COUNT = 23
 
 JOURNEY_SCHEMA = "bluefire.provider-journey-evidence.v1"
 VERIFICATION_SCHEMA = "bluefire.provider-verification-evidence.v1"
@@ -241,12 +245,12 @@ def _validate_packaged_runner(value: Any) -> Mapping[str, Any]:
         "receipt_protocol": "bluefire.runner-receipt-wal.v2",
         "platform": "windows",
         "provider_runtime_count": 1,
-        # Derived from the registry rather than copied. The packaged runner advertises
-        # every built-in action on every platform; a platform-restricted action such as
-        # the Linux-only gzip collector is refused by the policy engine at dispatch, not
-        # hidden from the inventory. A literal here silently went stale when the registry
-        # grew, which is what failed this gate.
-        "core_action_count": len(BUILTIN_RUNNER_ACTION_IDS),
+        # The packaged runner advertises every built-in action on every platform; a
+        # platform-restricted action such as the Linux-only gzip collector is refused by
+        # the policy engine at dispatch, not hidden from the inventory. This count went
+        # stale when the registry grew, which is what failed this gate; see
+        # _CORE_ACTION_COUNT for how it is now held to the registry.
+        "core_action_count": _CORE_ACTION_COUNT,
     }:
         raise ValueError("provider journey runner inventory contract is invalid")
     hard_limits = runtime.get("hard_limits")
