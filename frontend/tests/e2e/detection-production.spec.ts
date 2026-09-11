@@ -55,9 +55,12 @@ function validatedReportPath(): string {
 }
 
 function dataValue(workspace: Locator, label: string): Locator {
+  // Lineage repeats several of these labels inside a collapsed <details>, whose
+  // innerText is empty. Read the row the operator can actually see.
   return workspace.locator("dt", { hasText: new RegExp(`^${label}$`) })
     .locator("..")
     .locator("dd")
+    .filter({ visible: true })
     .first();
 }
 
@@ -162,7 +165,7 @@ test("production Detection Lab executes and persists a native SQLite candidate",
 
   await page.getByText("Detection backends", { exact: true }).click();
   const sqliteHealth = page.locator("article.secret-row").filter({
-    has: page.getByText("Sqlite", { exact: true }),
+    has: page.getByText("SQLite", { exact: true }),
   }).first();
   await expect(sqliteHealth).toBeVisible();
   await expect(sqliteHealth).toContainText("SQLite bounded executor");
