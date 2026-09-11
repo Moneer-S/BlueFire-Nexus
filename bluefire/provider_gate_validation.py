@@ -62,9 +62,9 @@ _PROVIDER_BEHAVIOR_ID = "fixture.provider-upgrade.behavior.v1"
 _PYTEST_SUITE_SCHEMA = "bluefire.architecture-dynamic-check.v1"
 _FRONTEND_SUITE_SCHEMA = "bluefire.provider-frontend-check.v1"
 _MINIMUM_PROVIDER_CONTRACT_TESTS = 79
-_EXPECTED_PROVIDER_CONTRACT_TESTS = 108
+_EXPECTED_PROVIDER_CONTRACT_TESTS = 175
 _EXPECTED_PROVIDER_CONTRACT_TESTS_SHA256 = (
-    "sha256:ebadab8d27b6ed8cfb4cfd4d796955be583628caace092a42bdd5c8965ec223f"
+    "sha256:208a8baa858e7faafbd62ddc0871891c63cb5893920b079a9acc65554eaf3a5a"
 )
 _REQUIRED_PROVIDER_CONTRACT_TESTS = frozenset(
     {
