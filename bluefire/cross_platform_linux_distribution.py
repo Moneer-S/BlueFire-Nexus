@@ -345,7 +345,15 @@ def _distribution_storage_parent() -> Path:
     with an environment alias.
     """
 
-    parent = runtime_temp_parent().parent / "BlueFire" / "wsl-distributions"
+    root = runtime_temp_parent()
+    # Only Windows hosts WSL. Elsewhere this path exists so the lifecycle stays
+    # testable, and the temp root's parent is the filesystem root, which is neither
+    # writable nor a sensible place for it.
+    parent = (
+        root.parent / "BlueFire" / "wsl-distributions"
+        if os.name == "nt"
+        else root / "bluefire-wsl-distributions"
+    )
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     return parent
 
