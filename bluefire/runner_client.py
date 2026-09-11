@@ -1428,7 +1428,14 @@ class SubprocessRustRunner:
         ).expanduser()
         if not runtime.is_absolute() or not runtime.is_file():
             raise RunnerTransportError("Runner watchdog runtime is unavailable.")
-        runtime = runtime.resolve(strict=True)
+        try:
+            # A Microsoft Store interpreter reports an app-execution alias here,
+            # and resolving one raises WinError 1920 rather than answering. Report
+            # that the way every other runtime failure in this constructor is
+            # reported instead of letting a bare OSError escape the transport.
+            runtime = runtime.resolve(strict=True)
+        except OSError:
+            raise RunnerTransportError("Runner watchdog runtime is unavailable.") from None
         try:
             if sys.platform == "darwin" and _watchdog_interpreter is None:
                 runtime, runtime_digest = stage_watchdog_interpreter(runtime, self.work_root)
