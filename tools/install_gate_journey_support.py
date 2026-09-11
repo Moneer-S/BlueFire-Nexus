@@ -467,7 +467,10 @@ def probe_packaged_ui(port: int, capability: str, profile_root: Path) -> dict[st
             f"http://127.0.0.1:{port}/#bluefire-session={capability}",
         )
         validate_rendered_dom(root_dom)
-        runs_dom = _edge_dom(edge, profile_root, f"http://127.0.0.1:{port}/#/runs")
+        # The guided Execute panel renders only in Execute mode, which "setup=execute"
+        # selects. Asking for the plain route would leave the probe on the Simulate
+        # default and assert a panel the page was never told to show.
+        runs_dom = _edge_dom(edge, profile_root, f"http://127.0.0.1:{port}/#/runs?setup=execute")
         validate_runs_dom(runs_dom)
         return {
             "engine": "edge-headless",
