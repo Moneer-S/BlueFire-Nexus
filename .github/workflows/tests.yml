@@ -95,7 +95,11 @@ jobs:
           # explicitly makes this step depend on the pin rather than on image state.
           channel="$(grep -E '^channel' rust-toolchain.toml | cut -d'"' -f2)"
           test -n "$channel"
-          rustup toolchain install "$channel" --profile minimal --component clippy --component rustfmt --force
+          # Name cargo explicitly. A forced install that lists only clippy and rustfmt
+          # can leave the toolchain without cargo, which then fails as
+          # "'cargo' is not installed for the toolchain".
+          rustup toolchain install "$channel" --profile minimal --component cargo --component clippy --component rustfmt --force
+          rustup run "$channel" cargo --version
           rustup show
 
       - name: Build bounded Rust runner for Python Execute tests
