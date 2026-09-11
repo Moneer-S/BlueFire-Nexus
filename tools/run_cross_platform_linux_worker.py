@@ -988,7 +988,25 @@ def main() -> int:
             + "\n"
         )
         return 1
-    except BaseException:
+    except BaseException as exc:
+        # Returning 1 with no output made every failure in here indistinguishable,
+        # which is why a Linux gate could only report "the worker failed". Emit one
+        # bounded line naming the exception type and nothing else - no message, no
+        # path, no argument, since this crosses out of the guest. The dependency
+        # payload above stays the only three-field error, so its exact-shape
+        # detection is unchanged and this still falls through to the generic failure.
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "schema_version": "bluefire.cross-platform-linux-worker-error.v1",
+                    "code": "linux_worker_failed",
+                    "error_type": type(exc).__name__[:64],
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n"
+        )
         return 1
     sys.stdout.write(json.dumps(summary, separators=(",", ":"), sort_keys=True) + "\n")
     return 0

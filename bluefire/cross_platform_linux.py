@@ -857,6 +857,7 @@ def run_linux_journey(
         worker_result
     )
     if returncode != 0:
+        failure: Mapping[str, Any] = {}
         if worker_stderr == b"":
             failure = _worker_summary(worker_stdout) if worker_stdout else {}
             if (
@@ -868,6 +869,10 @@ def run_linux_journey(
                 raise LinuxDependenciesUnavailableError(
                     "the fixed Linux product dependencies are unavailable"
                 )
+        reported = failure.get("error_type") if isinstance(failure, Mapping) else None
+        if isinstance(reported, str) and reported.isidentifier() and len(reported) <= 64:
+            # The worker reports only an exception type name, never a message or a path.
+            raise LinuxJourneyError(f"the fixed Linux product worker failed: {reported}")
         raise LinuxJourneyError("the fixed Linux product worker failed")
     _require(worker_stderr == b"", "the fixed Linux product worker emitted diagnostics")
     summary = _worker_summary(worker_stdout)

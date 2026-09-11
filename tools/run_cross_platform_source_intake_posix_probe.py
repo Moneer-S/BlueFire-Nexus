@@ -85,8 +85,11 @@ def run_probes(workspace: Path) -> Mapping[str, Any]:
         "source-intake POSIX probe inventory changed",
     )
 
-    import bluefire.service as service_module
+    # Both helpers used to hang off bluefire.service and were moved out when the
+    # source-intake surface was decomposed. Import them from where they live now.
     import bluefire.source_intake as source_intake_module
+    import bluefire.source_intake_publication as publication_module
+    import bluefire.source_intake_workspace as workspace_module
     from bluefire.source_intake import SourceIntakeError
 
     probe_root = workspace / "source-intake-posix-probes"
@@ -101,10 +104,10 @@ def run_probes(workspace: Path) -> Mapping[str, Any]:
     retained_file.write_bytes(b"retained-owned-state")
     destination_before = retained_destination.lstat()
     retained_before = retained_file.lstat()
-    release = service_module._release_failed_source_intake_destination(
+    release = workspace_module._release_failed_source_intake_destination(
         retained_destination,
-        destination_identity=service_module._filesystem_identity(destination_before),
-        intake_root_identity=service_module._filesystem_identity(quarantine_root.lstat()),
+        destination_identity=publication_module._filesystem_identity(destination_before),
+        intake_root_identity=publication_module._filesystem_identity(quarantine_root.lstat()),
         destination_created=True,
         published_artifact=None,
         published_receipt=None,
