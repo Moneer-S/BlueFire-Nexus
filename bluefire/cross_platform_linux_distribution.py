@@ -17,6 +17,7 @@ from .cross_platform_readiness import (
     WSL_DISTRIBUTION_ID,
     probe_wsl_distribution,
 )
+from .runtime_paths import runtime_temp_parent
 
 EXECUTION_DISTRIBUTION_PREFIX = "BlueFire-Gate11-Run-"
 ABSENCE_DELAYS_MS = (0, 100, 250)
@@ -300,6 +301,22 @@ class DisposableWslDistribution:
         }
 
 
+def _distribution_storage_parent() -> Path:
+    """Owner-private storage for a disposable distribution, never the temp directory.
+
+    WSL refuses to import a distribution under the user's Temp directory - it answers
+    Wsl/Service/ERROR_UNHANDLED_EXCEPTION - while the same clone succeeds under a sibling
+    of Temp. Placing a multi-gigabyte VHDX in a directory that temp cleaners sweep is
+    wrong on its own terms, so the store lives beside Temp rather than inside it. The
+    parent is still derived from the process token, so it moves with the account and not
+    with an environment alias.
+    """
+
+    parent = runtime_temp_parent().parent / "BlueFire" / "wsl-distributions"
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return parent
+
+
 def create_disposable_wsl_distribution(
     executable: Path,
     runtime: Path,
@@ -323,7 +340,7 @@ def create_disposable_wsl_distribution(
         probe_wsl_distribution(distribution_name).get("probe_state") == "absent",
         "the disposable WSL2 distribution name is already registered",
     )
-    install_root = runtime / f"wsl-distribution-{token}"
+    install_root = _distribution_storage_parent() / f"wsl-distribution-{token}"
     install_root.mkdir(mode=0o700)
     lease = DisposableWslDistribution(
         executable=executable,
@@ -353,6 +370,12 @@ def create_disposable_wsl_distribution(
         try:
             lease.cleanup()
         except BaseException as cleanup_error:
+            # The store no longer sits inside the caller's runtime directory, so nothing
+            # else will sweep it. A clone that failed before writing anything leaves an
+            # empty directory; remove it here, under the same identity check, rather than
+            # leaving it beside Temp. Anything non-empty is left for the original error to
+            # be reported against.
+            _remove_empty_storage(install_root, lease.install_identity)
             raise DisposableWslDistributionError(
                 "the failed disposable WSL2 clone could not be cleaned"
             ) from cleanup_error
