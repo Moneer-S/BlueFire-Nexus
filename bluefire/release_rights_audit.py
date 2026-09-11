@@ -81,14 +81,6 @@ def _read_policy(repository: Path) -> dict[str, Any]:
     return dict(value)
 
 
-def _sha256(path: Path) -> str:
-    try:
-        payload = path.read_bytes()
-    except OSError as exc:
-        raise RightsAuditError(f"reviewed file is missing: {path.name}") from exc
-    return hashlib.sha256(payload).hexdigest()
-
-
 def _reviewed_text_sha256(path: Path) -> str:
     """Hash reviewed UTF-8 text with Git's LF/CRLF normalization removed."""
 
@@ -206,7 +198,8 @@ def _verify_project_license(repository: Path, policy: Mapping[str, Any], pyproje
         _require((repository / relative).is_file(), f"required license file is missing: {relative}")
     license_path = repository / str(expected.get("primary_file"))
     _require(
-        _sha256(license_path) == expected.get("sha256"), "project LICENSE changed after review"
+        _reviewed_text_sha256(license_path) == expected.get("sha256"),
+        "project LICENSE changed after review",
     )
     license_text = license_path.read_text(encoding="utf-8")
     _require(
