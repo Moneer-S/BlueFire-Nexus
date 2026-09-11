@@ -222,7 +222,8 @@ test("production operator UI completes authoring, management, run, replay, and c
   await page.getByLabel("Experiment name").fill("Gate 08 authoring draft");
   await page.getByRole("button", { name: "Create draft" }).click();
   await expect(page.getByRole("heading", { name: "Gate 08 authoring draft" })).toBeVisible();
-  await expect(page.getByText("Start with one useful step")).toBeVisible();
+  // The empty graph overlay is what confirms the draft opened with no steps.
+  await expect(page.getByText("Add the first step")).toBeVisible();
   completed.push("create_scenario_draft");
 
   await navigation.getByRole("link", { name: "Experiments" }).click();
