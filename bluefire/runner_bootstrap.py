@@ -691,7 +691,8 @@ def _private_directory(raw: str | Path) -> Path:
                 raise RunnerBootstrapError(
                     "The managed runner directory is not owned by this user."
                 )
-            os.chmod(resolved, 0o700)
+            if stat.S_IMODE(details.st_mode) != 0o700:
+                os.chmod(resolved, 0o700)
             if stat.S_IMODE(resolved.stat().st_mode) & 0o077:
                 raise RunnerBootstrapError("The managed runner directory permissions are unsafe.")
         return resolved
@@ -744,7 +745,8 @@ def _set_executable_mode(path: Path) -> None:
             # this exact verified binary before the staging name is removed.
             apply_owner_private_acl_path(path, directory=False, allow_hardlinks=True)
         else:
-            os.chmod(path, 0o700)
+            if stat.S_IMODE(path.stat().st_mode) != 0o700:
+                os.chmod(path, 0o700)
             if stat.S_IMODE(path.stat().st_mode) != 0o700:
                 raise OSError("unsafe executable permissions")
     except (OSError, WindowsOwnerAclError) as exc:

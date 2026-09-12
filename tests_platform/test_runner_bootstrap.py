@@ -248,6 +248,75 @@ def test_packaged_runner_bootstrap_is_atomic_private_and_path_safe(tmp_path: Pat
     }
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission and change-time behavior")
+def test_repeated_bootstrap_preserves_verified_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    resources = _resource_root(tmp_path)
+    options = {
+        "environ": {},
+        "resource_root": resources,
+        "managed_root": tmp_path / "managed",
+        "product_version": PRODUCT_VERSION,
+        "platform_name": PLATFORM,
+        "architecture": ARCHITECTURE,
+        "inventory_probe": lambda _binary: _inventory(),
+    }
+    first = bootstrap_runner(**options)
+
+    def metadata(path: Path) -> tuple[int, ...]:
+        details = path.stat()
+        return (
+            details.st_dev,
+            details.st_ino,
+            details.st_mode,
+            details.st_uid,
+            details.st_gid,
+            details.st_size,
+            details.st_mtime_ns,
+            details.st_ctime_ns,
+        )
+
+    paths = (first.binary_path, first.sandbox_path, tmp_path / "managed")
+    before = [metadata(path) for path in paths]
+    chmod = os.chmod
+    calls = []
+
+    def traced_chmod(path: Any, mode: int, *args: Any, **kwargs: Any) -> None:
+        calls.append((path, mode))
+        chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "chmod", traced_chmod)
+    repeated = bootstrap_runner(**options)
+    assert repeated == first
+    assert [metadata(path) for path in paths] == before
+    assert calls == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission repair")
+@pytest.mark.parametrize("mode", [0o600, 0o755, 0o4700])
+def test_repeated_bootstrap_still_repairs_changed_permissions(tmp_path: Path, mode: int) -> None:
+    resources = _resource_root(tmp_path)
+    options = {
+        "environ": {},
+        "resource_root": resources,
+        "managed_root": tmp_path / "managed",
+        "product_version": PRODUCT_VERSION,
+        "platform_name": PLATFORM,
+        "architecture": ARCHITECTURE,
+        "inventory_probe": lambda _binary: _inventory(),
+    }
+    first = bootstrap_runner(**options)
+    paths = (first.binary_path, first.sandbox_path, tmp_path / "managed")
+    identities = [(path.stat().st_dev, path.stat().st_ino) for path in paths]
+    for path in paths:
+        path.chmod(mode)
+    repeated = bootstrap_runner(**options)
+    assert repeated == first
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o700 for path in paths)
+    assert [(path.stat().st_dev, path.stat().st_ino) for path in paths] == identities
+
+
 def test_bootstrap_refuses_tampered_source_without_installing_it(tmp_path: Path) -> None:
     resources = _resource_root(tmp_path)
     (resources / FILENAME).write_bytes(b"tampered")

@@ -106,8 +106,11 @@ check that you are in the intended workspace.
 
 Before the next Execute session, open **Runners** and select the intended profile. With the
 runner stopped, choose **Review runner upgrade**, inspect the current and candidate artifacts
-and retained-history summary, then choose **Apply reviewed runner upgrade**. Complete review
-and application in the same lab session. The upgrade preserves enrollment, the sandbox,
+and retained-history summary, then choose **Apply reviewed runner upgrade**. The review also
+shows **Recovery after restart**. If it is **Not verified**, finish the upgrade before restarting
+the lab or computer. If recovery is verified and an upgrade is interrupted, reopen **Runners**
+and request a fresh review of the retained state before applying recovery.
+The upgrade preserves enrollment, the sandbox,
 completed execution history and durable results; it does not approve an experiment.
 
 If review is refused, keep the runner stopped and address the reported blocker before requesting

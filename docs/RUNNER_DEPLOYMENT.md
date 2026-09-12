@@ -57,8 +57,19 @@ historical execution workspace. Ordinary runs have an isolated workspace for the
 older runs may use the original sandbox directly. Both retain their original evidence and
 approval timestamps. An old approval is never renewed by upgrading the runner.
 
-Finish review and application in the same lab session. A changed artifact, workspace identity,
-pending result or cleanup obligation prevents activation. A refused or interrupted transition
+**Recovery after restart** reports what this review could verify. When verified, an interrupted
+upgrade can receive a fresh review only if the same artifacts, workspace objects, retained bytes
+and metadata, enrollment and cleanup state still match. The operator must apply the new exact
+review. The original approved record and continuation records are retained; recovery does not
+reuse an earlier experiment approval.
+
+Durable recovery uses native Windows volume/file identities or supported Linux ext4 UUID and
+inode-generation getters. Unsupported storage and older upgrade records retain exact-session
+behavior: **Not verified** means finish before restarting the lab or computer. A filesystem
+identifier alone does not establish ownership or integrity; the other checks remain required.
+
+A changed artifact, workspace object, pending result or cleanup obligation prevents activation.
+A refused or interrupted transition
 must retain its history and recovery records; the error identifies the check that needs
 attention. Do not remove those records or re-enroll over them to bypass the refusal.
 
