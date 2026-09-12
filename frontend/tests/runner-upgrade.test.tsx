@@ -53,6 +53,25 @@ it("retains review blockers and never offers apply or an automatic retry", async
   expect(review).toHaveBeenCalledTimes(1); expect(apply).not.toHaveBeenCalled();
 });
 
+it.each([
+  ["durable_objects", "Verified, with a fresh review", "Recovery after a restart requires a fresh review of the same artifacts and retained history."],
+  ["current_filesystem_session", "Not verified", "Finish this upgrade before restarting the lab or computer. Recovery after a restart has not been verified for this review."],
+  [undefined, "Not verified", "Finish this upgrade before restarting the lab or computer. Recovery after a restart has not been verified for this review."],
+] as const)("shows the reviewed recovery scope %s without activating the runner", async (scope, label, explanation) => {
+  vi.spyOn(api, "reviewRunnerUpgrade").mockResolvedValue({ ...runnerUpgradeReview(), recovery_scope: scope });
+  const apply = vi.spyOn(api, "bootstrapRunner").mockResolvedValue(stopped);
+  const start = vi.spyOn(api, "startRunner"); const submit = vi.spyOn(api, "submitRun");
+  const user = userEvent.setup(); mount();
+  await user.click(screen.getByRole("button", { name: "Review runner upgrade" }));
+  const confirm = await screen.findByRole("button", { name: "Apply reviewed runner upgrade" });
+  expect(screen.getByText("Recovery after restart").nextElementSibling).toHaveTextContent(label);
+  expect(screen.getByText(explanation)).toBeVisible();
+  expect(apply).not.toHaveBeenCalled();
+  await user.click(confirm);
+  await waitFor(() => expect(apply).toHaveBeenCalledExactlyOnceWith(profile, true, upgradeDigest));
+  expect(start).not.toHaveBeenCalled(); expect(submit).not.toHaveBeenCalled();
+});
+
 it("consumes a stale review locally and requires a new explicit review before another apply", async () => {
   const review = vi.spyOn(api, "reviewRunnerUpgrade").mockResolvedValue(runnerUpgradeReview());
   const apply = vi.spyOn(api, "bootstrapRunner").mockRejectedValue(new ApiError("The review is stale.", "runner_bootstrap_refused", ["Runner history changed after review."], 409));
@@ -73,6 +92,7 @@ it.each([
   ["preservation", (review: Review) => { Object.assign(review.preservation, { ledger: false }); }],
   ["activation", (review: Review) => { Object.assign(review.staging, { activated: true }); }],
   ["history count", (review: Review) => { review.history.durable_results = -1; }],
+  ["recovery scope", (review: Review) => { Object.assign(review, { recovery_scope: "any_restart" }); }],
   ["review digest", (review: Review) => { review.review_digest = "unbound"; }],
   ["protocol identity", (review: Review) => { review.candidate.receipt_protocol = "another-protocol"; }],
   ["current artifact digest", (review: Review) => { review.current.binary_digest = "not-a-digest"; }],

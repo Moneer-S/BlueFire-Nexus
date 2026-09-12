@@ -16,6 +16,7 @@ export interface RunnerUpgradeReview {
   schema_version: "bluefire.runner-upgrade-review.v1";
   review_digest: string;
   recovery_required?: true;
+  recovery_scope?: "durable_objects" | "current_filesystem_session";
   current: RunnerUpgradeIdentity;
   candidate: RunnerUpgradeIdentity;
   compatibility: { same_sandbox: true; same_enrollment: true; same_profiles: true; same_protocols: true };
@@ -33,6 +34,7 @@ export function isReviewedRunnerUpgrade(review: RunnerUpgradeReview, runnerId: s
   const identities = [review?.current, review?.candidate];
   return review?.schema_version === "bluefire.runner-upgrade-review.v1"
     && (review.recovery_required === undefined || review.recovery_required === true)
+    && (review.recovery_scope === undefined || review.recovery_scope === "durable_objects" || review.recovery_scope === "current_filesystem_session")
     && /^sha256:[0-9a-f]{64}$/.test(review.review_digest)
     && identities.every(identity => identity?.runner_id === runnerId && [identity.runner_version, identity.product_version, identity.binary_digest, identity.platform, identity.architecture, identity.inventory_schema, identity.action_sdk_version, identity.receipt_protocol].every(value => typeof value === "string" && value.length > 0))
     && identities.every(identity => /^sha256:[0-9a-f]{64}$/.test(identity.binary_digest))

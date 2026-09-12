@@ -52,7 +52,9 @@ export function RunnerUpgradeReview({ profileId, status, disabled = false, onBus
         { label: "Completed executions retained", value: reviewed.history.completed_executions },
         { label: "Undispatched executions retained", value: reviewed.history.undispatched_executions },
         { label: "Durable results retained", value: reviewed.history.durable_results },
+        { label: "Recovery after restart", value: reviewed.recovery_scope === "durable_objects" ? "Verified, with a fresh review" : "Not verified" },
       ]}/>
+      <p>{reviewed.recovery_scope === "durable_objects" ? "Recovery after a restart requires a fresh review of the same artifacts and retained history." : "Finish this upgrade before restarting the lab or computer. Recovery after a restart has not been verified for this review."}</p>
       <div className="table-scroll"><table><thead><tr><th>Runner</th><th>Version</th><th>Platform</th></tr></thead><tbody>{[[currentLabel, reviewed.current], ["Verified candidate", reviewed.candidate]].map(([label, value]) => {
         const identity = value as RunnerUpgradeIdentity;
         return <tr key={String(label)}><th scope="row">{String(label)}</th><td>{identity.runner_version}{label === "Verified candidate" ? <div className="field-note">{reviewed.current.binary_digest === identity.binary_digest ? "Same artifact" : "Different verified artifact"}</div> : null}</td><td>{identity.platform} · {identity.architecture}</td></tr>;
