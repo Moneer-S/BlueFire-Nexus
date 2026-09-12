@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Mapping, Protocol
 
+from .adaptive_execution import AdaptiveAuthorizationError, validate_authorization_binding
 from .config import AutonomyLevel, RunnerProfile
 from .contracts import ScenarioDefinition
 from .registry import BehaviorRegistry
@@ -50,6 +51,7 @@ def execution_approval_binding(
     context: Mapping[str, Any] | None = None,
     runner_readiness: Mapping[str, Any] | None = None,
     catalog_authority: Mapping[str, Any] | None = None,
+    adaptive_authorization: Mapping[str, Any] | None = None,
 ) -> Mapping[str, str]:
     """Hash every operator-reviewed input that may affect an Execute plan."""
 
@@ -77,6 +79,22 @@ def execution_approval_binding(
             catalog_authority=catalog_authority,
         ),
     }
+    if scenario.adaptive_execution is not None or adaptive_authorization is not None:
+        if adaptive_authorization is None:
+            raise ApprovalError("adaptive execution requires its resolved reviewed authorization")
+        try:
+            validate_authorization_binding(
+                authorization=adaptive_authorization,
+                registry=registry,
+                scenario=scenario,
+                plan=plan,
+                profile=profile,
+                target_scope=target_scope,
+                catalog_authority=catalog_authority,
+            )
+        except AdaptiveAuthorizationError as exc:
+            raise ApprovalError(str(exc)) from exc
+        state["adaptive_authorization"] = dict(adaptive_authorization)
     if runner_readiness is not None:
         state["runner_readiness"] = dict(runner_readiness)
     if catalog_authority is not None:

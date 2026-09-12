@@ -13,6 +13,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable, Mapping, TypeVar
 
+from .adaptive_execution_contract import AdaptiveContractError, AdaptiveExecution
+
 
 class ContractError(ValueError):
     """Raised when a serialized control-plane contract is invalid."""
@@ -721,6 +723,7 @@ class ScenarioDefinition:
     edges: tuple[OutcomeEdge, ...]
     provenance: SourceProvenance
     limitations: tuple[str, ...] = ()
+    adaptive_execution: AdaptiveExecution | None = None
 
     @classmethod
     def from_mapping(cls, value: Any, context: str = "scenario") -> "ScenarioDefinition":
@@ -737,6 +740,7 @@ class ScenarioDefinition:
                 "edges",
                 "provenance",
                 "limitations",
+                "adaptive_execution",
             },
             required={
                 "schema_version",
@@ -770,6 +774,25 @@ class ScenarioDefinition:
         edge_keys = [(edge.from_step, edge.outcome) for edge in edges]
         if len(edge_keys) != len(set(edge_keys)):
             raise ContractError(f"{context}.edges contains duplicate outcome routes")
+        adaptive_execution = None
+        if "adaptive_execution" in data:
+            try:
+                adaptive_execution = AdaptiveExecution.from_mapping(data["adaptive_execution"])
+            except AdaptiveContractError as exc:
+                raise ContractError(f"{context}.adaptive_execution: {exc}") from exc
+            for adaptive_step in adaptive_execution.steps:
+                owned_step = next(
+                    (step for step in steps if step.id == adaptive_step.step_id), None
+                )
+                if owned_step is None:
+                    raise ContractError(f"{context}.adaptive_execution references an unknown step")
+                owned_behaviors = {owned_step.behavior_id, *owned_step.alternates}
+                if any(
+                    method.behavior_id not in owned_behaviors for method in adaptive_step.methods
+                ):
+                    raise ContractError(
+                        f"{context}.adaptive_execution method is not registered on its step"
+                    )
         return cls(
             schema_version="bluefire.scenario.v1",
             id=_stable_id(data["id"], f"{context}.id"),
@@ -780,6 +803,7 @@ class ScenarioDefinition:
             edges=edges,
             provenance=SourceProvenance.from_mapping(data["provenance"], f"{context}.provenance"),
             limitations=_strings(data.get("limitations", []), f"{context}.limitations"),
+            adaptive_execution=adaptive_execution,
         )
 
     def step(self, step_id: str) -> ScenarioStep:
@@ -789,7 +813,7 @@ class ScenarioDefinition:
         raise KeyError(step_id)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        document = {
             "schema_version": self.schema_version,
             "id": self.id,
             "title": self.title,
@@ -800,6 +824,9 @@ class ScenarioDefinition:
             "provenance": self.provenance.to_dict(),
             "limitations": list(self.limitations),
         }
+        if self.adaptive_execution is not None:
+            document["adaptive_execution"] = self.adaptive_execution.to_dict()
+        return document
 
 
 def _load_yaml_mapping(path: str | Path, context: str) -> Mapping[str, Any]:

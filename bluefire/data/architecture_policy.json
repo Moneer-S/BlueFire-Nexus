@@ -403,6 +403,8 @@
         "bluefire.ai_broker_worker",
         "bluefire._ai_transport_worker",
         "bluefire.approvals",
+        "bluefire.adaptive_execution",
+        "bluefire.adaptive_execution_contract",
         "bluefire.collector_comparison",
         "bluefire.collector_schedule",
         "bluefire.continuation_review",
