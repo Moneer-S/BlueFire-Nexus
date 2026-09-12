@@ -12,12 +12,12 @@ function respond(value: unknown) {
 }
 function envelope(observations: unknown) {
   return { schema_version: "bluefire.retained-run-observations.v1", run_id: runId,
-    record_state: "unsealed", display_only: true, canonical: false, replay_available: false, observations };
+    record_state: "unsealed", display_only: true, canonical: false, replay_available: false, events_complete: true, observations };
 }
 
 it("reads unfinished observations with GET while keeping finalized result reads strict", async () => {
   const fetch = respond(retained);
-  expect(await api.retainedRunDetail(runId)).toEqual(retained);
+  expect(await api.retainedRunDetail(runId)).toEqual({ ...retained, retained_events_complete: true });
   await expect(api.runDetail(runId)).rejects.toMatchObject({ code: "run_not_finalized" });
   expect(fetch).toHaveBeenCalledTimes(2);
   expect(fetch.mock.calls.map(([url]) => url)).toEqual([
@@ -38,6 +38,7 @@ it.each([
   ["missing display boundary", { ...envelope(retained), display_only: undefined }],
   ["canonical claim", { ...envelope(retained), canonical: true }],
   ["replay claim", { ...envelope(retained), replay_available: true }],
+  ["missing event completeness", { ...envelope(retained), events_complete: undefined }],
 ])("refuses an invalid retained observation envelope: %s", async (_case, value) => {
   vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify(value), { status: 200 }));
   await expect(api.retainedRunDetail(runId)).rejects.toMatchObject({ code: "invalid_retained_run" });
@@ -51,6 +52,7 @@ it.each([
   { ...retained, evidence: { records: [{ provenance: "observed", limitations: "reason" }] } },
   { ...retained, evidence: { records: [{ provenance: "observed", limitations: [{}] }] } },
   { ...retained, detections: { candidates: [{}] } },
+  { ...retained, events: "not an event list" },
 ])("refuses a mismatched or malformed retained record (%j)", async value => {
   respond(value);
   await expect(api.retainedRunDetail(runId)).rejects.toMatchObject({ code: "invalid_retained_run" });
@@ -60,7 +62,7 @@ it.each(["created", "interrupted"])("reads the actual unfinished %s shape using 
   const { mode, ...progress } = retained;
   const stored = { ...progress, status, plan: { mode } };
   respond(stored);
-  expect(await api.retainedRunDetail(runId)).toEqual({ ...stored, mode });
+  expect(await api.retainedRunDetail(runId)).toEqual({ ...stored, mode, retained_events_complete: true });
   expect(stored).not.toHaveProperty("mode");
   expect(stored).not.toHaveProperty("finalized_at");
   await expect(api.runDetail(runId)).rejects.toMatchObject({ code: "run_not_finalized" });

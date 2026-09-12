@@ -1,4 +1,4 @@
-import { retainedObservations } from "./retained-run-record";
+import { retainedObservations, type RetainedRunRecord } from "./retained-run-record";
 import type { AssistanceRunEnvelope, RunPreparationDecision, SavedRunSelection } from "./run-assistance";
 import type { AILiveAuthorization, AILiveAuthorizationList, AILiveAuthorizationRequest, PublicAIProviderConfig } from "../types";
 import type { RunnerUpgradeReview } from "./runner-upgrade";
@@ -715,7 +715,7 @@ export const api = {
     }
     return result;
   },
-  async retainedRunDetail(runId: string): Promise<RunRecord> {
+  async retainedRunDetail(runId: string): Promise<RetainedRunRecord> {
     if (DEMO_MODE) throw new ApiError("Retained observations require the local service.", "demo_only");
     const response = await request<unknown>(`/runs/${encodeURIComponent(runId)}/retained-observations`);
     const observations = retainedObservations(response, runId);

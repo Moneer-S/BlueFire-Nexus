@@ -6,7 +6,8 @@ import { api } from "../src/lib/api";
 import { demoCatalog, demoScenario } from "../src/lib/demo";
 import { RunsPage } from "../src/pages/Runs";
 import { ProductProvider } from "../src/state/ProductContext";
-import type { RunJob, RunRecord } from "../src/types";
+import type { RunJob } from "../src/types";
+import type { RetainedRunRecord } from "../src/lib/retained-run-record";
 
 const firstId = "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const secondId = "job-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -15,14 +16,14 @@ function job(jobId = firstId): RunJob {
     request: { mode: "execute", scenario: demoScenario }, progress: { run_id: `run-${jobId}` }, result_ref: null,
     error: { code: "execution_callback_failed", message: "execution callback failed" } };
 }
-function record(value = job()): RunRecord {
-  return { run_id: String(value.progress.run_id), mode: "execute", status: "interrupted", steps: [],
+function record(value = job()): RetainedRunRecord {
+  return { run_id: String(value.progress.run_id), mode: "execute", status: "interrupted", steps: [], retained_events_complete: true,
     evidence: { records: [{ evidence_id: "evidence-retained", step_id: "collect", provenance: "observed",
       content: { retained_measurement: 8 }, limitations: ["This record does not establish final cleanup."] }] } };
 }
 function envelope(observations: unknown) {
   return { schema_version: "bluefire.retained-run-observations.v1", run_id: job().progress.run_id,
-    record_state: "unsealed", display_only: true, canonical: false, replay_available: false, observations };
+    record_state: "unsealed", display_only: true, canonical: false, replay_available: false, events_complete: true, observations };
 }
 const clients: QueryClient[] = [];
 afterEach(() => { for (const client of clients.splice(0)) client.clear(); });
@@ -41,8 +42,10 @@ function mount(first = job()) {
 
 it("shows retained observations in the failed job without promoting a final result or releasing effects", async () => {
   const detail = vi.spyOn(api, "retainedRunDetail");
-  const { mode, ...progress } = record();
-  vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify(envelope({ ...progress, plan: { mode } })), { status: 200 }));
+  const observed = record();
+  const stored = { run_id: observed.run_id, status: observed.status, steps: observed.steps,
+    evidence: observed.evidence, plan: { mode: observed.mode } };
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify(envelope(stored)), { status: 200 }));
   const approve = vi.spyOn(api, "approveJob");
   const submit = vi.spyOn(api, "submitRun");
   const control = vi.spyOn(api, "controlJob");
@@ -68,6 +71,8 @@ it("keeps an unsealed completed record subordinate to the failed job outcome", a
   mount();
   expect(await screen.findByText("Execute · Job failed · Retained observations")).toBeVisible();
   expect(screen.queryByText(/Completed · canonical local record/)).not.toBeInTheDocument();
+  expect(screen.queryByText("Run completed")).not.toBeInTheDocument();
+  expect(screen.getByText("No retained step records")).toBeVisible();
   expect(screen.queryByRole("button", { name: "Review" })).not.toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Review latest result" })).not.toBeInTheDocument();
   expect(screen.getByText("Final result unavailable")).toBeVisible();
@@ -89,6 +94,17 @@ it("offers a read-only retry after an unavailable record without claiming that e
   expect(screen.queryByText("Retained observations unavailable")).not.toBeInTheDocument();
 });
 
+it("shows incomplete event history from the envelope while retaining available evidence", async () => {
+  const response = { ...envelope(record()), events_complete: false };
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify(response), { status: 200 }));
+  mount();
+  expect(await screen.findByText(/The retained event history is incomplete/)).toBeVisible();
+  expect(screen.getByText("Final result unavailable")).toBeVisible();
+  fireEvent.click(screen.getByRole("tab", { name: "Evidence" }));
+  expect(await screen.findByLabelText("Evidence content evidence-retained")).toHaveTextContent('"retained_measurement": 8');
+  expect(screen.queryByRole("button", { name: "Review" })).not.toBeInTheDocument();
+});
+
 it("refuses a returned record with another run identity", async () => {
   vi.spyOn(api, "retainedRunDetail").mockResolvedValue(record(job(secondId)));
   mount();
@@ -107,8 +123,8 @@ it("does not read an in-progress record through the terminal recovery path", asy
 });
 
 it("does not attach a late observation response to another selected job", async () => {
-  let finish!: (value: RunRecord) => void;
-  const pending = new Promise<RunRecord>(resolve => { finish = resolve; });
+  let finish!: (value: RetainedRunRecord) => void;
+  const pending = new Promise<RetainedRunRecord>(resolve => { finish = resolve; });
   const other = record(job(secondId)); other.evidence = { records: [] };
   const detail = vi.spyOn(api, "retainedRunDetail").mockImplementation(id => id === job().progress.run_id ? pending : Promise.resolve(other));
   mount();

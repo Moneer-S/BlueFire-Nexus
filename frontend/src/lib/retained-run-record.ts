@@ -1,14 +1,18 @@
 import type { RunRecord } from "../types";
 
+export type RetainedRunRecord = RunRecord & { readonly retained_events_complete: boolean };
+
 function object(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-export function retainedObservations(value: unknown, runId: string): RunRecord | null {
+export function retainedObservations(value: unknown, runId: string): RetainedRunRecord | null {
   if (!object(value) || value.schema_version !== "bluefire.retained-run-observations.v1" ||
       value.run_id !== runId || value.record_state !== "unsealed" || value.display_only !== true ||
-      value.canonical !== false || value.replay_available !== false) return null;
-  return retainedRunRecord(value.observations, runId);
+      value.canonical !== false || value.replay_available !== false ||
+      typeof value.events_complete !== "boolean") return null;
+  const record = retainedRunRecord(value.observations, runId);
+  return record ? { ...record, retained_events_complete: value.events_complete } : null;
 }
 
 /** Display-only records may be unfinished; they confer no replay or approval authority. */
@@ -28,5 +32,6 @@ export function retainedRunRecord(value: unknown, runId: string): RunRecord | nu
         (record.limitations == null || (Array.isArray(record.limitations) && record.limitations.every(item => typeof item === "string")))))) return null;
   if (value.detections != null && (!object(value.detections) || !Array.isArray(value.detections.candidates) ||
       !value.detections.candidates.every(candidate => object(candidate) && typeof candidate.state === "string"))) return null;
+  if (value.events != null && !Array.isArray(value.events)) return null;
   return value as unknown as RunRecord;
 }
