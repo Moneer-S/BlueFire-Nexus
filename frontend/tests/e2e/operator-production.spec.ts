@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import process from "node:process";
 import { URL } from "node:url";
-import { expect, test, type Download, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Download, type Locator, type Page, type Request } from "@playwright/test";
 
 const CAPABILITY_FRAGMENT = /^#bluefire-session=[A-Za-z0-9_-]{64}$/;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "[::1]", "::1"]);
@@ -120,12 +120,19 @@ async function downloadBuffer(download: Download): Promise<Buffer> {
 function installFailureMonitors(page: Page): { assertClean: () => void } {
   const failures: string[] = [];
   const sessionAborts = { GET: 0, POST: 0 };
+  let documentEpoch = 0;
+  const sessionRequests = new Map<Request, { method: string; document: number; started: number; response?: number; elapsed_ms?: number; failed_in_document?: number }>();
   page.on("request", (request) => {
     if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      documentEpoch += 1;
       // React may replace one session fetch per document. A deliberate reload
       // starts a new document; repeated aborts within that document still fail.
       sessionAborts.GET = 0;
       sessionAborts.POST = 0;
+    }
+    if (new URL(request.url()).pathname === "/api/v1/session") {
+      if (sessionRequests.size < 32) sessionRequests.set(request, { method: request.method(), document: documentEpoch, started: Date.now() });
+      else failures.push("session_diagnostic_limit");
     }
     if (request.method() === "POST" && new URL(request.url()).pathname === "/api/v1/assistance/turns") {
       failures.push("assistant_started_without_configured_model");
@@ -139,6 +146,8 @@ function installFailureMonitors(page: Page): { assertClean: () => void } {
     const path = new URL(request.url()).pathname;
     const method = request.method() as "GET" | "POST";
     const error = request.failure()?.errorText ?? "unknown";
+    const session = sessionRequests.get(request);
+    if (session) { session.elapsed_ms = Date.now() - session.started; session.failed_in_document = documentEpoch; }
     if (
       (method === "GET" || method === "POST")
       && path === "/api/v1/session"
@@ -152,11 +161,13 @@ function installFailureMonitors(page: Page): { assertClean: () => void } {
     failures.push(`request_failed:${request.method()}:${path}:${error}`);
   });
   page.on("response", (response) => {
+    const session = sessionRequests.get(response.request());
+    if (session) session.response = response.status();
     if (response.status() >= 400) {
       failures.push(`http_error:${response.status()}:${new URL(response.url()).pathname}`);
     }
   });
-  return { assertClean: () => expect(failures, "Production UI emitted a browser or network failure.").toEqual([]) };
+  return { assertClean: () => expect(failures, `Production UI emitted a browser or network failure. Session diagnostics: ${JSON.stringify([...sessionRequests.values()].map(({ started: _started, ...record }) => record))}`).toEqual([]) };
 }
 
 function installRequestCapture(page: Page): Record<string, JsonObject> {
