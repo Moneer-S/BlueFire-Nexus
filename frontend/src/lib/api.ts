@@ -1,4 +1,5 @@
 import type { AssistanceRunEnvelope, RunPreparationDecision, SavedRunSelection } from "./run-assistance";
+import type { AILiveAuthorization, AILiveAuthorizationList, AILiveAuthorizationRequest, PublicAIProviderConfig } from "../types";
 import type { ReceiverContext, ReceiverContextRequest, ReceiverDecision, ReceiverDefenseEnvelope, ReceiverPhase, ReceiverTestList } from "./receiver-defense-types";
 import type { RunDetectionSelection, DetectionCreationSource, DetectionCreationEnvelope, DetectionCreationDecision, DetectionCreationValidation } from "./detection-creation";
 import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionRunEvaluation, DetectionCaseRole, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunPresentation, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
@@ -433,7 +434,19 @@ export const api = {
     if (DEMO_MODE) throw new ApiError("The demo cannot continue assistant work.", "demo_assistance_refused", undefined, 409);
     return request(`/assistance/turns/${encodeURIComponent(jobId)}/continue`, { method: "POST", body: JSON.stringify(body) });
   },
-  async checkAIProvider(provider: Record<string, unknown>, connect: boolean): Promise<AIProviderCheck> {
+  async aiAuthorizations(): Promise<AILiveAuthorizationList> {
+    if (DEMO_MODE) return { schema_version: "bluefire.ai-live-authorizations.v1", context: { kind: "direct", binding_digest: null, expires_at_ms: null, provider: null }, authorizations: [] };
+    return request("/ai/authorizations");
+  },
+  async authorizeAI(body: AILiveAuthorizationRequest): Promise<{ authorization: AILiveAuthorization }> {
+    if (DEMO_MODE) throw new ApiError("Live model authorization requires the installed local service.", "demo_authorization_refused", undefined, 409);
+    return request("/ai/authorizations", { method: "POST", body: JSON.stringify(body) });
+  },
+  async revokeAIAuthorization(id: string): Promise<{ authorization: AILiveAuthorization }> {
+    if (DEMO_MODE) throw new ApiError("Live model authorization requires the installed local service.", "demo_authorization_refused", undefined, 409);
+    return request(`/ai/authorizations/${encodeURIComponent(id)}/revoke`, { method: "POST", body: "{}" });
+  },
+  async checkAIProvider(provider: Record<string, unknown> | PublicAIProviderConfig, connect: boolean): Promise<AIProviderCheck> {
     if (DEMO_MODE) return { schema_version: "bluefire.ai-provider-check.v1", provider_id: String(provider.id), api_style: String(provider.kind), model: String(provider.model), credential_state: "unavailable", connectivity: "not_tested", structured_output: "not_tested", attempts: 0, used_fallback: false, code: "demo_no_network", message: "Demo mode cannot resolve server credentials or test provider connections. No request was sent." };
     return request("/ai/providers/check", { method: "POST", body: JSON.stringify({ provider, connect }) }, 12_000);
   },

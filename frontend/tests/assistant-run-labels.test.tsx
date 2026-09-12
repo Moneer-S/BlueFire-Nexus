@@ -101,9 +101,9 @@ it("does not label a new selection with an older delayed response or mismatched 
 const digest = `sha256:${"a".repeat(64)}`;
 const selection: AssistanceSelection = { runId: "run-current", candidateId: "rule", resourceDigest: digest, title: "Selected rule", manualEdits: false };
 function Selection({ value }: { value: AssistanceSelection }) { usePublishAssistanceSelection(value); return null; }
-function mountAssistant(value = selection) {
+function mountAssistant(value = selection, providers: Parameters<typeof ExperimentAssistant>[0]["providers"] = []) {
   const queryClient = client();
-  return render(<QueryClientProvider client={queryClient}><MemoryRouter><ProductProvider><AssistanceProvider><Selection value={value}/><ExperimentAssistant providers={[]}/></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>);
+  return render(<QueryClientProvider client={queryClient}><MemoryRouter><ProductProvider><AssistanceProvider><Selection value={value}/><ExperimentAssistant providers={providers}/></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>);
 }
 
 it("names the live selected evidence without making model requests while Off", async () => {
@@ -114,6 +114,17 @@ it("names the live selected evidence without making model requests while Off", a
   expect(detail).not.toHaveBeenCalled();
   await userEvent.setup().click(screen.getByRole("button", { name: "Assistant" }));
   expect(await screen.findByRole("link", { name: "Source observations: Selected observation run" })).toHaveAttribute("href", "/runs/run-current");
+  expect(screen.getByRole("button", { name: "Start work" })).toBeDisabled();
+  expect(submit).not.toHaveBeenCalled();
+});
+
+it("keeps contextual connection and usage recovery reachable when a configured model is unavailable", async () => {
+  vi.spyOn(api, "runDetail").mockResolvedValue(run(selection.runId, "Selected observation run"));
+  vi.spyOn(api, "assistanceContext").mockRejectedValue(new Error("Context temporarily unavailable"));
+  const submit = vi.spyOn(api, "submitAssistance");
+  mountAssistant(selection, [{ provider_id: "provider.local.v1", kind: "openai_responses", model: "configured-model", health: { state: "live_authorization_required" } }]);
+  await userEvent.setup().click(screen.getByRole("button", { name: "Assistant" }));
+  expect(await screen.findByRole("link", { name: "Review model connection and usage authorization" })).toHaveAttribute("href", "/settings#model-connection");
   expect(screen.getByRole("button", { name: "Start work" })).toBeDisabled();
   expect(submit).not.toHaveBeenCalled();
 });
@@ -135,6 +146,7 @@ it.each(["available", "unavailable"])("retains the saved operation's exact sourc
   mountAssistant();
   await userEvent.setup().click(screen.getByRole("button", { name: /^Assistant/ }));
   const saved = await screen.findByRole("region", { name: "Saved results" });
+  expect(screen.getByRole("link", { name: "Review model connection and usage authorization" })).toHaveAttribute("href", "/settings#model-connection");
   expect(await within(saved).findByRole("link", { name: "Compared run: Before control" })).toHaveAttribute("href", "/runs/run-a");
   if (metadata === "unavailable") await within(saved).findByText("Run details unavailable");
   expect(await within(saved).findByRole("link", { name: metadata === "available" ? "Compared run: After control" : "Compared run: Run" })).toHaveAttribute("href", "/runs/run-b");

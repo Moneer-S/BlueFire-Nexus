@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, buildReplayPayload, buildRunPayload } from "../src/lib/api";
 import { demoRuns, demoScenario } from "../src/lib/demo";
 import type { RunConfiguration } from "../src/types";
+import { authorization, provider, snapshot } from "./provider-authorization-fixtures";
 
 const configuration: RunConfiguration = {
   mode: "execute",
@@ -29,6 +30,17 @@ const configuration: RunConfiguration = {
 
 describe("control-plane request contracts", () => {
   afterEach(() => vi.unstubAllGlobals());
+  it("uses only explicit authenticated model-authorization endpoints and exact reviewed fields", async () => {
+    const row = authorization();
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => new Response(JSON.stringify(init?.method === "POST" ? { authorization: row } : snapshot([row])), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const body = { provider, purposes: row.purposes, data_scope: "reviewed_lab_context" as const, limits: row.limits, expires_in_seconds: 900, approved_by: "Lab owner", usage_authorized: true as const, local_endpoint_authorized: false };
+    await api.aiAuthorizations(); await api.authorizeAI(body); await api.revokeAIAuthorization(row.authorization_id);
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual(["/api/v1/ai/authorizations", "/api/v1/ai/authorizations", `/api/v1/ai/authorizations/${row.authorization_id}/revoke`]);
+    expect(JSON.parse(String(fetchMock.mock.calls[1]![1]!.body))).toEqual(body);
+    expect(fetchMock.mock.calls[1]![1]).toMatchObject({ method: "POST", credentials: "same-origin" });
+    expect(fetchMock.mock.calls[2]![1]).toMatchObject({ method: "POST", credentials: "same-origin", body: "{}" });
+  });
   it("sends exact autonomy and provider IDs without unsupported browser preferences", () => {
     const payload = buildRunPayload(demoScenario, configuration);
 

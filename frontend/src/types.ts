@@ -308,6 +308,53 @@ export interface ScenarioVersion {
 
 export type ManagedResourceRoute = "actions" | "collectors" | "comparisons" | "detections" | "detection-backends" | "model-providers" | "plugins" | "research-sources" | "runners" | "runner-profiles";
 
+export interface PublicAIProviderConfig {
+  id: string;
+  kind: "deterministic" | "openai_responses" | "chat_completions";
+  model: string;
+  endpoint: string | null;
+  api_key: { env: string } | null;
+  timeout_seconds: number;
+  max_retries: number;
+  max_output_tokens: number;
+  redaction: { enabled: boolean; redact_keys: string[]; max_string_chars: number; include_evidence_content: boolean };
+}
+export type AIModelPurpose = "bluefire_connection_check" | "bluefire_ai_proposal" | "bluefire_experiment_assistance" | "bluefire_detection_source_creation" | "bluefire_detection_source_revision" | "bluefire_run_evidence_inspection" | "bluefire_method_comparison" | "bluefire_ai_graph_draft" | "bluefire_graph_step_edit" | "bluefire_receiver_defense_inspection";
+export interface AIUsageLimits { max_requests: number; max_request_bytes: number; max_reserved_output_tokens: number }
+export interface AILiveAuthorization {
+  schema_version: "bluefire.ai-live-authorization.v1";
+  authorization_id: string;
+  authorization_digest: string;
+  configuration_digest: string;
+  provider: PublicAIProviderConfig;
+  purposes: AIModelPurpose[];
+  data_scope: "reviewed_lab_context";
+  limits: AIUsageLimits;
+  created_at_ms: number;
+  expires_at_ms: number;
+  approved_by: string;
+  usage_authorized: true;
+  local_endpoint_authorized: boolean;
+  context: { kind: "direct" | "broker"; binding_digest: string };
+  status: "active" | "revoked" | "expired" | "context_unavailable";
+  usage: { requests: number; request_bytes: number; reserved_output_tokens: number };
+}
+export interface AILiveAuthorizationList {
+  schema_version: "bluefire.ai-live-authorizations.v1";
+  context: { kind: "direct" | "broker"; binding_digest: string | null; expires_at_ms: number | null; provider: PublicAIProviderConfig | null };
+  authorizations: AILiveAuthorization[];
+}
+export interface AILiveAuthorizationRequest {
+  provider: PublicAIProviderConfig;
+  purposes: AIModelPurpose[];
+  data_scope: "reviewed_lab_context";
+  limits: AIUsageLimits;
+  expires_in_seconds: number;
+  approved_by: string;
+  usage_authorized: true;
+  local_endpoint_authorized: boolean;
+}
+
 export interface AIProviderCheck {
   schema_version: "bluefire.ai-provider-check.v1";
   provider_id: string;
