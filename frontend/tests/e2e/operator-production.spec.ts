@@ -359,18 +359,18 @@ test("production operator UI completes authoring, management, run, replay, and c
   const assistant = page.getByRole("complementary", { name: "Experiment assistant" });
   await expect(assistant).toBeVisible();
   await expect(page.getByRole("main")).not.toHaveAttribute("inert");
-  // Returning to Builder clears the selected step. The dock now starts in
+  // This return to Builder has no selected step. The dock starts in
   // objective authoring; the operation selector belongs to selected-step edits.
   await expect(assistant.getByRole("region", { name: "Current selection" })).toContainText("Build from an objective");
   await expect(assistant.getByLabel("Assistant operation")).toHaveCount(0);
-  await assistant.getByLabel("AI mode", { exact: true }).selectOption("off");
+  await assistant.getByRole("combobox", { name: "AI mode", exact: true }).selectOption("off");
   await expect(assistant.getByText("Off makes no new model requests. Manual tools remain available.")).toBeVisible();
-  await assistant.getByLabel("AI mode", { exact: true }).selectOption("assist");
+  await assistant.getByRole("combobox", { name: "AI mode", exact: true }).selectOption("assist");
   await assistant.getByLabel("What would you like to do?").fill("Compare a bounded evidence collection path and preserve replay lineage.");
   // The isolated gate has no authorized live provider. The current Assistant
   // must not present its deterministic runtime adapter as a model connection.
-  await expect(assistant.getByLabel("Provider", { exact: true })).toHaveValue("");
-  await expect(assistant.getByLabel("Provider", { exact: true }).locator("option")).toHaveCount(1);
+  await expect(assistant.getByRole("combobox", { name: "Provider", exact: true })).toHaveValue("");
+  await expect(assistant.getByRole("combobox", { name: "Provider", exact: true }).locator("option")).toHaveCount(1);
   await expect(assistant.getByRole("button", { name: "Start work" })).toBeDisabled();
   await assistant.getByRole("link", { name: "Configure a provider in Settings" }).click();
   await expect(page.getByRole("region", { name: "Model connection" })).toBeVisible();
@@ -391,7 +391,7 @@ test("production operator UI completes authoring, management, run, replay, and c
     await runtimeAutonomy.getByRole("radio", { name: new RegExp(`^${name} `) }).check();
   }
   await page.getByText("AI provider & environment details", { exact: true }).click();
-  const providerId = await page.getByLabel("Provider", { exact: true }).inputValue();
+  const providerId = await page.getByRole("combobox", { name: "Provider", exact: true }).inputValue();
   expect(providerId).toBe("deterministic-offline.v1");
   await navigation.getByRole("button", { name: "Show more tools" }).click();
   await navigation.getByRole("button", { name: "Show settings tools" }).click();
@@ -402,7 +402,7 @@ test("production operator UI completes authoring, management, run, replay, and c
   await page.getByRole("button", { name: "New profile" }).click();
   await page.getByLabel("Profile ID").fill(PROFILE_ID);
   await page.getByLabel("Configuration template").selectOption("sandbox-execute.v1");
-  await page.getByLabel("Platform", { exact: true }).selectOption("windows");
+  await page.getByRole("combobox", { name: "Platform", exact: true }).selectOption("windows");
   const profileResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith(`/resources/runner-profiles/${PROFILE_ID}`) && response.request().method() === "POST");
   await page.getByRole("button", { name: "Save profile draft" }).click();
   expect((await profileResponse).ok()).toBe(true);
@@ -458,7 +458,7 @@ test("production operator UI completes authoring, management, run, replay, and c
 
   await expect(runtimeAutonomy.getByRole("radio", { name: /^Auto / })).toBeChecked();
   await page.getByText("AI provider & environment details", { exact: true }).click();
-  await expect(page.getByLabel("Provider", { exact: true })).toHaveValue("deterministic-offline.v1");
+  await expect(page.getByRole("combobox", { name: "Provider", exact: true })).toHaveValue("deterministic-offline.v1");
   await expect(page.getByLabel("Environment profile")).toHaveValue("sandbox-simulate.v1");
   await expect(page.getByRole("group", { name: "Requested access" }).getByRole("checkbox")).toBeChecked();
   await expect(observations).toContainText("Simulate produces synthetic records. Independent file observations are available during Execute.");
