@@ -298,9 +298,12 @@ class RecordingRunnerLifecycle:
         *,
         allowed_profile_ids: tuple[str, ...],
         allow_upgrade: bool,
+        profile_id: str | None = None,
     ) -> Mapping[str, Any]:
         self.calls.append(("bootstrap", (allowed_profile_ids, allow_upgrade)))
-        return self.status(profile_id=allowed_profile_ids[0])
+        return self.status(
+            profile_id=profile_id if profile_id is not None else allowed_profile_ids[0]
+        )
 
     def start(
         self, *, profile_id: str | None = None, profile_budget_seconds: int | None = None

@@ -37,6 +37,7 @@ from .runner_bootstrap_record import (
     _bootstrap_record_payload,
     _BootstrapRecord,
     _record_authentication,
+    selected_profile_id,
     validated_profile_ids,
 )
 from .runner_bootstrap_record import (
@@ -326,6 +327,7 @@ class ManagedRunnerLifecycle:
         self,
         *,
         allowed_profile_ids: Sequence[str],
+        profile_id: str | None = None,
         environ: Mapping[str, str] | None = None,
         resource_root: Any | None = None,
         product_version: str = __version__,
@@ -336,16 +338,15 @@ class ManagedRunnerLifecycle:
         upgrade_review_digest: str | None = None,
         profile_binding: str | None = None,
     ) -> Mapping[str, Any]:
+        profiles = _profile_ids(allowed_profile_ids)
+        selected = selected_profile_id(profiles, profile_id, error=RunnerLifecycleError)
         with self._operation_guard(
             adopt=True,
             allow_upgrade_recovery=allow_upgrade is True and upgrade_review_digest is not None,
         ):
             if pending_upgrade(self):
                 try:
-                    if (
-                        _profile_ids(allowed_profile_ids)
-                        != self._load_enrollment(require_active=True).allowed_profile_ids
-                    ):
+                    if profiles != self._load_enrollment(require_active=True).allowed_profile_ids:
                         raise RunnerLifecycleError(
                             "Upgrade recovery profiles differ from enrollment."
                         )
@@ -357,9 +358,10 @@ class ManagedRunnerLifecycle:
                     )
                 except Exception as exc:
                     raise RunnerLifecycleError(str(upgrade_failure(exc))) from None
-                return self.status(profile_id=_profile_ids(allowed_profile_ids)[0])
+                return self.status(profile_id=selected)
             return self._bootstrap_locked(
-                allowed_profile_ids=allowed_profile_ids,
+                allowed_profile_ids=profiles,
+                profile_id=selected,
                 environ=environ,
                 resource_root=resource_root,
                 product_version=product_version,
@@ -375,6 +377,7 @@ class ManagedRunnerLifecycle:
         self,
         *,
         allowed_profile_ids: Sequence[str],
+        profile_id: str,
         environ: Mapping[str, str] | None = None,
         resource_root: Any | None = None,
         product_version: str = __version__,
@@ -523,7 +526,7 @@ class ManagedRunnerLifecycle:
                         )
                     except Exception as exc:
                         raise RunnerLifecycleError(str(upgrade_failure(exc))) from None
-                    return self.status(profile_id=profiles[0])
+                    return self.status(profile_id=profile_id)
                 self._require_upgrade_ready(previous, payload, enrollment)
             elif upgrade_review_digest is not None:
                 raise RunnerLifecycleError("Runner upgrade review no longer selects a replacement.")
@@ -556,7 +559,7 @@ class ManagedRunnerLifecycle:
             raise
         except (OSError, RunnerTrustError, RuntimeError):
             raise RunnerLifecycleError("Runner bootstrap state could not be persisted.") from None
-        return self.status(profile_id=profiles[0])
+        return self.status(profile_id=profile_id)
 
     def review_upgrade(
         self,
@@ -1522,14 +1525,9 @@ class ManagedRunnerLifecycle:
         )
 
     def _selected_profile(self, enrollment: RunnerEnrollment, requested: str | None) -> str:
-        selected = requested or enrollment.allowed_profile_ids[0]
-        if (
-            not isinstance(selected, str)
-            or _IDENTIFIER.fullmatch(selected) is None
-            or selected not in enrollment.allowed_profile_ids
-        ):
-            raise RunnerLifecycleError("Runner profile is not enrolled.")
-        return selected
+        return selected_profile_id(
+            enrollment.allowed_profile_ids, requested or None, error=RunnerLifecycleError
+        )
 
     def _authenticated_health(
         self,

@@ -77,7 +77,7 @@ class RunnerManagementServiceMixin:
                 "runner_bootstrap_invalid",
                 "Runner upgrade requires a boolean confirmation and an optional exact review digest.",
             )
-        self._runner_lifecycle_profile(profile_id)
+        selected = self._runner_lifecycle_profile(profile_id)
         profiles = tuple(
             profile for profile in self._runner_profiles() if profile.mode is ExecutionMode.EXECUTE
         )
@@ -97,6 +97,7 @@ class RunnerManagementServiceMixin:
                     )
                     return self.runner_lifecycle.bootstrap(
                         allowed_profile_ids=tuple(profile.id for profile in current_profiles),
+                        profile_id=selected.id if selected is not None else None,
                         allow_upgrade=True,
                         upgrade_review_digest=upgrade_review_digest,
                         profile_binding=content_hash(
@@ -105,6 +106,7 @@ class RunnerManagementServiceMixin:
                     )
             return self.runner_lifecycle.bootstrap(
                 allowed_profile_ids=tuple(profile.id for profile in profiles),
+                profile_id=selected.id if selected is not None else None,
                 allow_upgrade=allow_upgrade,
             )
         except RunnerLifecycleError as exc:

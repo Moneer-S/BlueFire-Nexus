@@ -38,6 +38,20 @@ def validated_profile_ids(values: Sequence[str], *, error: type[RuntimeError]) -
     return profiles
 
 
+def selected_profile_id(
+    profiles: Sequence[str], requested: str | None, *, error: type[RuntimeError]
+) -> str:
+    """Select diagnostics within the already validated, unchanged profile set."""
+    selected = profiles[0] if requested is None else requested
+    if (
+        not isinstance(selected, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}", selected) is None
+        or selected not in profiles
+    ):
+        raise error("Runner profile is not enrolled.")
+    return selected
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class _BootstrapRecord:
     binary_path: Path
