@@ -907,24 +907,15 @@ class OpenAIResponsesProvider:
 
     def health(self) -> AIProviderHealth:
         readiness = self.access.readiness(self.config)
-        credential_available = readiness.available
         return AIProviderHealth(
             provider_id=self.config.id,
             state=(
-                ProviderHealthState.READY if credential_available else ProviderHealthState.DEGRADED
+                ProviderHealthState.READY if readiness.available else ProviderHealthState.DEGRADED
             ),
-            credential_available=credential_available,
+            credential_available=readiness.credential_state in {"ready", "not_required"},
             lab_session_expires_at_ms=readiness.lab_session_expires_at_ms,
             fallback_provider_id=self.fallback.config.id,
-            message=(
-                readiness.message
-                if readiness.source == "broker"
-                else (
-                    "Provider credentials are ready; connectivity and structured output are untested."
-                    if credential_available
-                    else "Credential reference is unset; deterministic fallback will be used."
-                )
-            ),
+            message=readiness.message,
         )
 
     def build_request(self, request: AIProposalRequest) -> Mapping[str, Any]:

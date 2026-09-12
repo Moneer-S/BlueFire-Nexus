@@ -780,17 +780,9 @@ class OpenAIResponsesDraftProvider:
         return AIProviderHealth(
             provider_id=self.config.id,
             state=ProviderHealthState.READY if ready else ProviderHealthState.DEGRADED,
-            credential_available=ready,
+            credential_available=readiness.credential_state in {"ready", "not_required"},
             fallback_provider_id=self.fallback.config.id,
-            message=(
-                readiness.message
-                if readiness.source == "broker"
-                else (
-                    "Provider credentials are ready; connectivity and structured output are untested."
-                    if ready
-                    else "Credential reference is unset; deterministic graph drafting will be used."
-                )
-            ),
+            message=readiness.message,
         )
 
     def build_request(self, request: AIGraphDraftRequest) -> Mapping[str, Any]:
