@@ -22,8 +22,12 @@ class CollectionMethodError(ValueError):
 
 
 def _selection(action_id: str, parameters: Mapping[str, Any]) -> tuple[str, str, str]:
-    if action_id not in COLLECTION_METHODS or set(parameters) - {"stage_variant"}:
+    if action_id not in COLLECTION_METHODS or set(parameters) - {
+        "stage_variant",
+        "max_collection_bytes",
+    }:
         raise CollectionMethodError("collection requires a reviewed method and parameter set")
+    collection_byte_limit(parameters)
     variant = parameters.get("stage_variant", "primary")
     if variant not in ("primary", "heldout"):
         raise CollectionMethodError("stage_variant must be primary or heldout")
@@ -32,6 +36,13 @@ def _selection(action_id: str, parameters: Mapping[str, Any]) -> tuple[str, str,
     extension = {"ustar": "tar", "jsonl": "jsonl", "gzip": "jsonl.gz"}[container]
     path = f"{directory}/bundle.{extension}"
     return str(variant), directory, path
+
+
+def collection_byte_limit(parameters: Mapping[str, Any]) -> int:
+    limit = parameters.get("max_collection_bytes", _MAX_BYTES)
+    if type(limit) is not int or not 1 <= limit <= _MAX_BYTES:
+        raise CollectionMethodError("max_collection_bytes must be an integer from 1 to 1048576")
+    return limit
 
 
 def _record(bound_inputs: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -64,8 +75,15 @@ def collection_request(
         raise CollectionMethodError(
             "collection requires the exact transformed fixture and SHA-256 binding"
         )
+    request: dict[str, Any] = {
+        "input": _SOURCE_PATH,
+        "expected_sha256": digest,
+        "stage_variant": variant,
+    }
+    if "max_collection_bytes" in parameters:
+        request["max_collection_bytes"] = collection_byte_limit(parameters)
     return (
-        {"input": _SOURCE_PATH, "expected_sha256": digest, "stage_variant": variant},
+        request,
         (_SOURCE_PATH, directory),
         (path,),
     )
@@ -104,7 +122,7 @@ def collection_artifacts(
         or not isinstance(digest, str)
         or not _SHA256.fullmatch(digest)
         or type(size) is not int
-        or not 1 <= size <= _MAX_BYTES
+        or not 1 <= size <= collection_byte_limit(parameters)
     ):
         raise CollectionMethodError(
             "collection result differs from its exact source, method, or destination binding"

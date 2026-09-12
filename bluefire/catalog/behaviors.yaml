@@ -273,6 +273,12 @@ items:
         default: primary
         enum: [primary, heldout]
         description: Choose one of two fixed runner-owned staging directories.
+      - name: max_collection_bytes
+        type: integer
+        default: 1048576
+        minimum: 1
+        maximum: 1048576
+        description: Maximum output file size in bytes. All selected records must fit; oversized collections are refused before writing. Input and profile limits remain in force.
     simulation_id: simulation.sandbox.collection.records.v1
     action_ids: [sandbox.collection.records.v1]
     telemetry: [sandbox.collection.material_staged]
@@ -302,6 +308,12 @@ items:
         default: primary
         enum: [primary, heldout]
         description: Choose one of two fixed runner-owned staging directories.
+      - name: max_collection_bytes
+        type: integer
+        default: 1048576
+        minimum: 1
+        maximum: 1048576
+        description: Maximum output file size in bytes. All selected records must fit; oversized collections are refused before writing. Input and profile limits remain in force.
     simulation_id: simulation.sandbox.collection.archive.v1
     action_ids: [sandbox.collection.archive.v1]
     telemetry: [sandbox.collection.material_staged]
@@ -331,6 +343,12 @@ items:
         default: primary
         enum: [primary, heldout]
         description: Choose one of two fixed runner-owned staging directories.
+      - name: max_collection_bytes
+        type: integer
+        default: 1048576
+        minimum: 1
+        maximum: 1048576
+        description: Maximum output file size in bytes. All selected records must fit; oversized collections are refused before writing. Input and profile limits remain in force.
     simulation_id: simulation.sandbox.collection.atomic-gzip.v1
     action_ids: [sandbox.collection.atomic-gzip.v1]
     telemetry: [sandbox.collection.material_staged]

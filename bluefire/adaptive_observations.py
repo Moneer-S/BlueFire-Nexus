@@ -13,6 +13,7 @@ _COUNT_FIELDS = frozenset(
         "record_count",
         "retained_record_count",
         "redacted_record_count",
+        "empty_record_count",
         "size_bytes",
         "process_count",
         "file_count",
@@ -44,6 +45,9 @@ _KNOWN_ERRORS = _AUTHORIZATION_ERRORS | {
     "transport_error",
     "missing_input",
     "input_not_found",
+    "atomic_gzip_unavailable",
+    "collection_output_limit",
+    "artifact_limit_blocked",
 }
 
 
@@ -73,7 +77,9 @@ def _failure(row: Mapping[str, Any], records: Sequence[EvidenceRecord]) -> dict[
         classification = "bluefire_authorization_refusal"
     elif code == "action_control_blocked" or policy_status == "control_blocked":
         classification = "bluefire_control_refusal"
-    elif code in {"adapter_refused", "missing_input", "input_not_found"}:
+    elif code in {"collection_output_limit", "artifact_limit_blocked"}:
+        classification = "resource_limit"
+    elif code in {"adapter_refused", "missing_input", "input_not_found", "atomic_gzip_unavailable"}:
         classification = "prerequisite_failure"
     elif any(item.provenance is EvidenceProvenance.UNKNOWN for item in records):
         classification = "missing_telemetry"
@@ -119,9 +125,15 @@ def project_runtime_observations(
         for record in matching[-32:]:
             content = record.content
             facts = _facts(content)
+            observed = content.get("observed_fields")
+            if record.provenance is EvidenceProvenance.OBSERVED and isinstance(observed, Mapping):
+                facts.update(_facts(observed))
             output = content.get("output")
             if record.provenance is EvidenceProvenance.EXECUTED and isinstance(output, Mapping):
                 facts.update(_facts(output))
+                reported_size = output.get("size")
+                if type(reported_size) is int and 0 <= reported_size <= 2**53:
+                    facts["reported_size_bytes"] = reported_size
             evidence.append(
                 {
                     "evidence_id": record.evidence_id,

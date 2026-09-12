@@ -25,7 +25,7 @@ struct ArchiveTarParams {
     destination: String,
 }
 
-struct ArchiveTarPrepared(ArchiveTarParams, Option<String>);
+struct ArchiveTarPrepared(ArchiveTarParams, Option<String>, Option<u64>);
 
 fn write_tar_octal(field: &mut [u8], value: u64) -> Result<(), String> {
     let width = field
@@ -133,6 +133,7 @@ impl PreparedAction for ArchiveTarPrepared {
         }
         let archive = build_deterministic_tar(&files, artifact_limit)
             .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
+        check_collection_output(archive.len(), self.2)?;
         let target = context
             .root
             .prepare_new_file(&destination)
@@ -187,7 +188,11 @@ impl Action for ArchiveTarAction {
     }
 
     fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
-        Ok(Box::new(ArchiveTarPrepared(parse_params(params)?, None)))
+        Ok(Box::new(ArchiveTarPrepared(
+            parse_params(params)?,
+            None,
+            None,
+        )))
     }
 }
 
@@ -225,7 +230,7 @@ struct CollectionStageParams {
     bundle_format: BundleFormat,
 }
 
-struct CollectionStagePrepared(CollectionStageParams, Option<String>);
+struct CollectionStagePrepared(CollectionStageParams, Option<String>, Option<u64>);
 
 impl PreparedAction for CollectionStagePrepared {
     fn execute(
@@ -396,6 +401,7 @@ impl PreparedAction for CollectionStagePrepared {
             ));
         }
 
+        check_collection_output(bundle_bytes.len(), self.2)?;
         let target = context
             .root
             .prepare_new_file(&bundle_relative)
@@ -464,6 +470,7 @@ impl Action for CollectionStageAction {
         Ok(Box::new(CollectionStagePrepared(
             parse_params(params)?,
             None,
+            None,
         )))
     }
 }
@@ -523,6 +530,31 @@ pub(super) struct CollectionMethodParams {
     pub(super) input: String,
     pub(super) expected_sha256: String,
     pub(super) stage_variant: CollectionStageVariant,
+    #[serde(default = "default_collection_byte_limit")]
+    pub(super) max_collection_bytes: u64,
+}
+
+fn default_collection_byte_limit() -> u64 {
+    1_048_576
+}
+
+impl CollectionMethodParams {
+    pub(super) fn valid_output_limit(&self) -> bool {
+        (1..=1_048_576).contains(&self.max_collection_bytes)
+    }
+}
+
+pub(super) fn check_collection_output(
+    size: usize,
+    limit: Option<u64>,
+) -> Result<(), ActionFailure> {
+    if limit.is_some_and(|limit| size as u64 > limit) {
+        return Err(ActionFailure::blocked(
+            "collection_output_limit",
+            "The collection exceeds its reviewed output byte limit; no output file was written.",
+        ));
+    }
+    Ok(())
 }
 
 struct CollectionMethodPrepared {
@@ -546,6 +578,7 @@ impl PreparedAction for CollectionMethodPrepared {
                         destination: format!("{directory}/bundle.tar"),
                     },
                     expected,
+                    Some(params.max_collection_bytes),
                 ))
                 .execute(context)?,
                 "ustar",
@@ -559,6 +592,7 @@ impl PreparedAction for CollectionMethodPrepared {
                         bundle_format: BundleFormat::Jsonl,
                     },
                     expected,
+                    Some(params.max_collection_bytes),
                 ))
                 .execute(context)?,
                 "jsonl",
@@ -615,6 +649,7 @@ impl Action for CollectionMethodAction {
         let params: CollectionMethodParams = parse_params(value)?;
         if params.input != "fixtures/transformed.jsonl"
             || !valid_lower_hex_32(&params.expected_sha256)
+            || !params.valid_output_limit()
         {
             return Err(ActionFailure::refused(
                 "invalid_action_params",

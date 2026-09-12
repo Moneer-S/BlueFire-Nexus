@@ -7,13 +7,13 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 
 from .adaptive_observations import project_runtime_observations
-from .adaptive_record_validation import validate_v4_attempt_record
+from .adaptive_record_validation import ADAPTIVE_DECISION_CONTRACT, validate_v4_attempt_record
 from .ai import AIProposalRequest, AIProviderCancelled, AIProviderError, ProposalType
 from .config import AIProviderKind, AutonomyLevel
 from .contracts import SafetyTier
 from .evidence import EvidenceRecord
 from .planner import ExecutionPlan, PlannerDecision, PlanStep
-from .util import content_hash
+from .util import content_hash, json_clone
 
 
 @dataclass(frozen=True)
@@ -137,6 +137,7 @@ def propose_reviewed_method(
         "authorization_digest": authorization["authorization_digest"],
         "registered_options": options,
         "observations": projection,
+        "decision_contract": json_clone(ADAPTIVE_DECISION_CONTRACT),
         "deterministic_decision": decision.to_dict(),
     }
     request = AIProposalRequest(

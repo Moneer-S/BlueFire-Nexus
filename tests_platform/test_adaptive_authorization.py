@@ -336,14 +336,19 @@ def test_real_collection_choices_pin_exact_values_cleanup_and_linux_compatibilit
         policy=policy, scenario_name="atomic_gzip_collection.yaml", platform="linux"
     )
     for method in authorization["steps"][0]["methods"]:
-        assert method["plan_step"]["parameters"] == {"stage_variant": "primary"}
+        assert method["plan_step"]["parameters"] == {
+            "stage_variant": "primary",
+            "max_collection_bytes": 1048576,
+        }
         assert method["mutates"] is True
         assert method["cleanup_action_id"] == "sandbox.cleanup.v1"
     selected = selection_arguments(arguments, authorization)
     selected["platform"] = "linux"
-    selected["step"] = {**selected["step"], "parameters": {"stage_variant": "heldout"}}
-    with pytest.raises(AdaptiveAuthorizationError, match="were not reviewed"):
-        validate_selected_method(**selected)
+    reviewed_parameters = selected["step"]["parameters"]
+    for changed in ({"stage_variant": "heldout"}, {"max_collection_bytes": 2048}):
+        selected["step"] = {**selected["step"], "parameters": {**reviewed_parameters, **changed}}
+        with pytest.raises(AdaptiveAuthorizationError, match="were not reviewed"):
+            validate_selected_method(**selected)
     with pytest.raises(AdaptiveAuthorizationError, match="always policy"):
         compile_adaptive_authorization(
             **{

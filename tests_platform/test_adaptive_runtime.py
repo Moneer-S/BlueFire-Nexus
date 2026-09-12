@@ -141,6 +141,16 @@ def test_different_observed_failures_select_different_reviewed_methods(runtime):
         == "applied_reviewed_method"
     )
     assert not a.stop and not b.stop
+    for request, result in zip(provider.requests, (a, b), strict=True):
+        contract = request.context["decision_contract"]
+        assert contract["allowed_proposal_types"] == [
+            "select_registered_action",
+            "stop",
+            "request_approval",
+        ]
+        assert len(request.context["registered_options"]) == 2
+        assert result.record["planner_state"]["decision_contract"] == contract
+        validate_v4_attempt_record(result.record)
 
 
 def test_out_of_scope_choice_never_reaches_authority_callback(runtime):
@@ -322,13 +332,71 @@ def test_projection_preserves_observed_counts_without_logs_credentials_or_paths(
     assert b"private" not in encoded and b"stdout" not in encoded and b"credential" not in encoded
 
 
+@pytest.mark.parametrize("provenance", [EvidenceProvenance.OBSERVED, EvidenceProvenance.EXECUTED])
+def test_projection_separates_nested_observations_from_reported_output(runtime, provenance):
+    kwargs, _ = runtime
+    step = kwargs["current_step"]
+    record = EvidenceRecord.create(
+        run_id=kwargs["run_id"],
+        step_id=step.step_id,
+        behavior_id=step.behavior_id,
+        provenance=provenance,
+        producer="test",
+        target_scope_ref="sandbox.workspace",
+        content={
+            "artifact_type": "collector_observation",
+            "observed_fields": {
+                "size_bytes": 700,
+                "record_count": 8,
+                "retained_record_count": 8,
+                "empty_record_count": 0,
+                "container": "jsonl",
+                "path": "/private/file",
+            },
+            "output": {"size": 150, "stdout": "private-value", "credential": "private-value"},
+        },
+    )
+    projection = project_runtime_observations(
+        steps=[{**kwargs["steps"][0], "evidence_ids": [record.evidence_id]}],
+        records=[record],
+        alternatives=[step],
+        artifacts={},
+        platform="linux",
+        remaining_steps=3,
+        remaining_seconds=12.0,
+        retries_remaining=1,
+    )
+    projected = projection["attempts"][0]["evidence"][0]
+    assert projected["evidence_id"] == record.evidence_id
+    assert projected["record_hash"] == record.record_hash
+    assert projected["provenance"] == provenance.value
+    if provenance is EvidenceProvenance.OBSERVED:
+        assert projected["facts"] == {
+            "artifact_type": "collector_observation",
+            "size_bytes": 700,
+            "record_count": 8,
+            "retained_record_count": 8,
+            "empty_record_count": 0,
+            "container": "jsonl",
+        }
+    else:
+        assert projected["facts"] == {
+            "artifact_type": "collector_observation",
+            "reported_size_bytes": 150,
+        }
+    assert b"private" not in canonical_json_bytes(projection)
+
+
 @pytest.mark.parametrize(
     "code,policy,expected",
     [
         ("platform_blocked", "refused", "platform_mismatch"),
         ("target_scope_refused", "refused", "bluefire_authorization_refusal"),
         ("action_control_blocked", "control_blocked", "bluefire_control_refusal"),
+        ("collection_output_limit", "allowed", "resource_limit"),
+        ("artifact_limit_blocked", "allowed", "resource_limit"),
         ("adapter_refused", "allowed", "prerequisite_failure"),
+        ("atomic_gzip_unavailable", "allowed", "prerequisite_failure"),
         ("unrecognized_failure", "allowed", "execution_failure"),
     ],
 )

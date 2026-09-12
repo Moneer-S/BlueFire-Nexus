@@ -420,7 +420,8 @@ fn collection_method_schema() -> Value {
         "properties": {
             "input": {"type": "string", "const": "fixtures/transformed.jsonl"},
             "expected_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-            "stage_variant": {"type": "string", "enum": ["primary", "heldout"]}
+            "stage_variant": {"type": "string", "enum": ["primary", "heldout"]},
+            "max_collection_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576}
         }
     })
 }
@@ -594,8 +595,8 @@ macro_rules! reviewed_descriptor {
 
 mod collection;
 use collection::{
-    collection_artifact_limit, verify_collection_input, ArchiveTarAction, BundleFormat,
-    CollectionMethodAction, CollectionMethodParams, CollectionStageAction,
+    check_collection_output, collection_artifact_limit, verify_collection_input, ArchiveTarAction,
+    BundleFormat, CollectionMethodAction, CollectionMethodParams, CollectionStageAction,
 };
 
 // -------------------------------------------------------------------------
@@ -2068,6 +2069,8 @@ impl PreparedAction for AtomicGzipPrepared {
             remaining,
         )
         .map_err(atomic_gzip_failure)?;
+        check_collection_output(compressed.bytes.len(), Some(params.max_collection_bytes))
+            .map_err(|failure| ActionFailure::failed(failure.code, failure.message))?;
         publish_atomic_gzip(
             context,
             &destination,
@@ -2163,6 +2166,7 @@ impl Action for AtomicGzipAction {
         let params: CollectionMethodParams = parse_params(value)?;
         if params.input != "fixtures/transformed.jsonl"
             || !valid_lower_hex_32(&params.expected_sha256)
+            || !params.valid_output_limit()
         {
             return Err(ActionFailure::refused(
                 "invalid_action_params",

@@ -18,6 +18,51 @@ ASSETS = ("endpoint_lab_collection_methods.yaml", "endpoint_lab_benign_collectio
 DIGEST = "a" * 64
 
 
+@pytest.mark.parametrize("method", (*METHODS, "sandbox.collection.atomic-gzip.v1"))
+@pytest.mark.parametrize("limit", [1, 2048, 1048576])
+def test_collection_output_limit_binds_request_and_rejects_oversized_result(method, limit):
+    from bluefire.collection_methods import (
+        CollectionMethodError,
+        collection_artifacts,
+        collection_request,
+    )
+
+    parameters = {"stage_variant": "primary", "max_collection_bytes": limit}
+    request, scope, paths = collection_request(method, parameters, _source())
+    assert request["max_collection_bytes"] == limit
+    assert request["expected_sha256"] == DIGEST
+    assert scope == ("fixtures/transformed.jsonl", "staged/collection")
+    container = {METHODS[0]: "jsonl", METHODS[1]: "ustar"}.get(method, "gzip")
+    output = {
+        "artifact": paths[0],
+        "container": container,
+        "input_count": 1,
+        "source_sha256": DIGEST,
+        "sha256": "b" * 64,
+        "size": limit,
+    }
+    if container == "gzip":
+        output["tool"] = {
+            "executable": "/usr/bin/gzip",
+            "sha256": "c" * 64,
+            "arguments": ["-n", "-c"],
+            "source_test": "cde3c2af-3485-49eb-9c1f-0ed60e9cc0af",
+        }
+    assert (
+        collection_artifacts(method, parameters, _source(), output, ())["bundle"]["size"] == limit
+    )
+    with pytest.raises(CollectionMethodError, match="binding"):
+        collection_artifacts(method, parameters, _source(), {**output, "size": limit + 1}, ())
+
+
+@pytest.mark.parametrize("limit", [None, True, 0, -1, 1048577, 3.5, "2048"])
+def test_collection_output_limit_never_accepts_invalid_or_expanded_bound(limit):
+    from bluefire.collection_methods import CollectionMethodError, collection_request
+
+    with pytest.raises(CollectionMethodError, match="max_collection_bytes"):
+        collection_request(METHODS[0], {"max_collection_bytes": limit}, _source())
+
+
 def _plan(asset: str = ASSETS[0]):
     registry = load_builtin_registry()
     scenario = load_scenario(ROOT / "scenarios" / asset)
