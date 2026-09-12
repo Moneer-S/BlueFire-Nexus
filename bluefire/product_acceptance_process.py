@@ -53,6 +53,7 @@ _WORKFLOW_ENV_ALLOWLIST = frozenset(
     {
         "APPDATA",
         "BLUEFIRE_ACCEPTANCE_PRIVATE_DIAGNOSTICS",
+        "BLUEFIRE_ACCEPTANCE_RUST_LINKER",
         "CC",
         "CI",
         "COMSPEC",

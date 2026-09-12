@@ -17,6 +17,7 @@ from typing import Any, Mapping, Sequence
 from . import release_readiness_runtime as runtime_support
 from .product_acceptance_artifacts import public_text_contains_private_path
 from .product_acceptance_process import _playwright_browsers_path
+from .release_readiness_toolchain import rust_suite_environment
 from .release_readiness_validation import SBOM_REPORT, SUITE_SCHEMA
 
 _MAX_OUTPUT_BYTES = 16 * 1024 * 1024
@@ -353,7 +354,7 @@ def _rust_suites(
             ],
             toolchain,
         )
-    rust_environment = dict(environment)
+    rust_environment = rust_suite_environment(repository, environment)
     rust_environment.update(
         {
             "CARGO_TARGET_DIR": os.fspath(temporary / "cargo-target"),

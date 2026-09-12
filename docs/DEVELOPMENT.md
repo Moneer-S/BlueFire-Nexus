@@ -260,6 +260,18 @@ Do not push, merge, rewrite history, publish packages/releases, or change remote
 
 ## Release checklist
 
+For the full acceptance suite on Windows with the pinned GNU Rust toolchain,
+`BLUEFIRE_ACCEPTANCE_RUST_LINKER=windows-gnu-self-contained` selects its bundled
+`rust-lld.exe`. Put the real `bin` directory of the exact
+`<rust-toolchain.toml channel>-x86_64-pc-windows-gnu` installation first on `PATH`;
+rustup command shims and aliased toolchain paths are refused. This opt-in generates
+only the fixed GNU linker, self-contained linking, and static CRT arguments, with
+the matching `rustc.exe`. It neither installs a toolchain nor proves the Rust
+suites passed. Omit it for the existing default linker behavior. Arbitrary
+inherited `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, and compiler wrappers are not
+forwarded by acceptance. Keep the offline Cargo cache credential-free and select
+it with `BLUEFIRE_ACCEPTANCE_CARGO_CACHE_HOME` when needed.
+
 For local acceptance diagnosis, create a dedicated empty directory outside every Git
 checkout and outside the acceptance bundle, then set
 `BLUEFIRE_ACCEPTANCE_PRIVATE_DIAGNOSTICS` to its absolute path before invoking the
