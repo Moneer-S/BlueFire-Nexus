@@ -4,8 +4,10 @@ BlueFire Nexus runs a security test against a lab you own, collects the evidence
 whatever the tool itself claims happened, lets you change a defense, then runs the same test again
 and shows you what actually differs.
 
-Everything runs on your own machine: a local loopback service you start yourself, bound to
-127.0.0.1. No cloud service, no account, no telemetry.
+The workbench runs on your own machine as a local loopback service bound to 127.0.0.1.
+Manual and offline AI workflows require no model account. Optional external AI sends the request's
+context to the provider you explicitly configure; that provider may require an account and charge
+for usage.
 
 ![Walkthrough: the behavior graph, the saved run history, and a completed run's evidence](docs/assets/screenshots/walkthrough.gif)
 
@@ -22,7 +24,7 @@ Python 3.10 or newer. [Download the matching PR build and install it](docs/INSTA
 that guide links the real Windows, Linux and Intel macOS wheel artifacts and gives exact commands for
 a fresh directory. No source checkout or developer dependencies are needed.
 
-    bluefire ui --runs-dir <an absolute path you keep>
+    bluefire --runs-dir "<an absolute path you keep>" ui
 
 BlueFire opens your browser once the local listener is ready. If it does not, use the one-use URL
 printed in the terminal; `--no-browser` skips the attempt. Keep the terminal running, and reuse the
