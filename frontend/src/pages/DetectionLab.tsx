@@ -29,6 +29,7 @@ import type {
 import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, LoadingState, PageHeader, Panel, PanelHeader, sentence } from "../components/Primitives";
 
 const lifecycle = ["hypothesis", "parsed", "fixture_exercised", "observed_exercised", "benign_evaluated", "rejected"];
+const emptyAIProviders: NonNullable<CatalogResponse["ai"]["providers"]> = [];
 const manualRuleDefaults = { title: "", behaviorId: "sandbox.collection.stage.v1", language: "sqlite" };
 const manualLogsource = { category: "file_event", product: "generic" };
 const manualSelection = { artifact_type: "file_observation", "path|contains": "staged/" };
@@ -520,7 +521,7 @@ function DetectionRegistryPage() {
         onRevision={(kind, body) => selected.resourceId && revisionMutation.mutate({ id: selected.resourceId, kind, body, navigation: manualNavigationRef.current })}
         onSourceRevision={(body) => selected.resourceId && sourceRevisionMutation.mutate({ id: selected.resourceId, selection: activeSelection.current, body })}
         onCompare={(candidateId) => selected.resourceId && comparisonMutation.mutate({ baselineId: selected.resourceId, candidateId, sources: structuredClone(lineage.filter(item => item.resourceId === selected.resourceId || item.resourceId === candidateId)), navigation: manualNavigation })}
-      /> : <Panel><DetectionAIRevision sourceRun={sourceRun} providers={catalogQuery.data.ai.providers ?? []} defaultProvider={catalogQuery.data.ai.active_provider} manualEdits={false} /><EmptyState icon={<FlaskConical />} title={selectedId ? "Detector unavailable" : "Select a candidate"} description={selectedId ? "The requested detector is not available in this registry or source run. Select an available detector from the list." : "Inspect lifecycle evidence, fixtures, fields, immutable revisions, and reviewed public baselines."} /></Panel>}
+      /> : <Panel><DetectionAIRevision sourceRun={sourceRun} providers={catalogQuery.data.ai.providers ?? emptyAIProviders} defaultProvider={catalogQuery.data.ai.active_provider} manualEdits={false} /><EmptyState icon={<FlaskConical />} title={selectedId ? "Detector unavailable" : "Select a candidate"} description={selectedId ? "The requested detector is not available in this registry or source run. Select an available detector from the list." : "Inspect lifecycle evidence, fixtures, fields, immutable revisions, and reviewed public baselines."} /></Panel>}
     </div>
   </div>;
 }
@@ -591,15 +592,15 @@ function CandidateWorkspace({
   const [discardOpen, setDiscardOpen] = useState(false);
   const language = candidate.target_language ?? candidate.language ?? "internal";
   const querySource = ["sqlite", "sigma"].includes(language);
-  const comparisonChoices = lineage.filter(item => item.resourceId && item.resolvedId !== candidate.resolvedId);
+  const comparisonChoices = useMemo(() => lineage.filter(item => item.resourceId && item.resolvedId !== candidate.resolvedId), [lineage, candidate.resolvedId]);
   const binding = useMemo(() => candidateDraftBinding(candidate, resource), [candidate, resource]);
-  const defaults = {
+  const defaults = useMemo(() => ({
     tab: "candidate" as CandidateTab, source: candidate.rule_source ?? "",
     fixtures: syntheticSelectionExample(language, candidate.selection), benign: "", notes: "", reason: "",
     revisionKind: "clone" as RevisionKind, revisionReason: "", revisionTitle: candidate.title ?? "",
     selectionJson: JSON.stringify(candidate.selection ?? {}, null, 2), logsourceJson: JSON.stringify(candidate.logsource ?? {}, null, 2),
     selectedBaselineIds: candidate.public_baselines?.map(item => item.research_source_id) ?? [], compareId: comparisonChoices[0]?.resourceId ?? "",
-  };
+  }), [candidate, language, comparisonChoices]);
   const draft = useDetectionDraft(binding, defaults);
   const observed = useDetectionDraft(binding + ":observed:" + sourceRunId, { runId: sourceRunId, evidenceIds: "" });
   const { tab, source, fixtures, benign, notes, reason, revisionKind, revisionReason, revisionTitle, selectionJson, logsourceJson, selectedBaselineIds, compareId } = draft.value;
@@ -708,7 +709,7 @@ function CandidateWorkspace({
           <div className="dialog-actions"><Dialog.Close asChild><Button>Keep editing</Button></Dialog.Close><Button variant="danger" onClick={() => { draft.discard(); observed.discard(); setLocalError(undefined); setDiscardOpen(false); }}>Discard these inputs</Button></div>
         </Dialog.Content></Dialog.Portal>
       </Dialog.Root></div>
-      <DetectionAIRevision resource={resource} sourceRun={sourceRun} providers={ai.providers ?? []} defaultProvider={ai.active_provider} manualEdits={sourceChanged} />
+      <DetectionAIRevision resource={resource} sourceRun={sourceRun} providers={ai.providers ?? emptyAIProviders} defaultProvider={ai.active_provider} manualEdits={sourceChanged} />
       {!persisted ? <Callout title="Run-linked record">This candidate is part of an immutable run. Save its definition as a separate hypothesis to use lifecycle or revision actions.<Button size="small" onClick={onSaveLinked} disabled={saveLinkedPending || candidate.demo || !candidate.behavior_id || !candidate.selection || !candidate.logsource}>{saveLinkedPending ? "Saving hypothesis" : "Save hypothesis from run"}</Button></Callout> : null}
       {localError ? <Callout tone="danger" title="Input refused locally">{localError}</Callout> : null}
       {tab === "candidate" ? <>

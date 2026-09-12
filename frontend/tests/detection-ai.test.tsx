@@ -13,6 +13,7 @@ const digest = `sha256:${"a".repeat(64)}`;
 const resource: DetectionResource = { id: "rule-a", kind: "detection", status: "parsed", digest, created_at: "2030-01-01", updated_at: "2030-01-01", document: { title: "Collection rule", state: "parsed", target_language: "sqlite", rule_source: "SELECT evidence_id FROM observations WHERE retained_count > 9", revision: 1 } };
 const sourceRun: RunRecord = { ...structuredClone(demoRuns[0]!), run_id: "run-observed", finalized_at: "2030-01-01", mode: "execute", is_demo: false, manifest: { schema_version: "bluefire.run-manifest.v1" }, evidence: { records: [1, 2].map((id) => ({ evidence_id: `observation-${id}`, run_id: "run-observed", provenance: "observed", producer: "collector", content: { retained_count: 3 } })) } };
 const provider = { provider_id: "local-model", kind: "openai_chat_completions", model: "chosen-model" };
+const providers = [provider];
 function receipt(): DetectionAIReceipt { return { candidateId: resource.id, request: { submission_id: "01234567-89ab-4def-8123-456789abcdef", run_id: sourceRun.run_id, parent_resource_digest: digest, question: "Find the missed collection", case_role: "attack", provider_id: provider.provider_id, autonomy: "assist" } }; }
 function readyJob(saved = receipt()): RunJob {
   const parent = { candidate_id: resource.id, resource_digest: digest, definition_digest: digest, target_language: "sqlite", source: resource.document.rule_source! };
@@ -23,9 +24,9 @@ function readyJob(saved = receipt()): RunJob {
 function LocationProbe() { return <><label>Unrelated notes<input /></label><Link to={`/detection-lab?candidate=${resource.id}&candidate_scope=registry&run=${sourceRun.run_id}&ai_job=${readyJob().job_id}`}>Review rule revision</Link><output data-testid="location">{useLocation().search}</output><Link to="/detection-lab?ai_job=job-other">Open other work</Link></>; }
 function mount(options: { jobId?: string; manualEdits?: boolean; selected?: DetectionResource; source?: RunRecord; client?: QueryClient } = {}) {
   const client = options.client ?? new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  const view = (selected = options.selected ?? resource, source = options.source ?? sourceRun) => <QueryClientProvider client={client}><MemoryRouter initialEntries={[`/detection-lab${options.jobId ? `?ai_job=${options.jobId}` : ""}`]}><LocationProbe /><DetectionAIRevision resource={selected} sourceRun={source} providers={[provider]} defaultProvider={provider.provider_id} manualEdits={options.manualEdits ?? false} /></MemoryRouter></QueryClientProvider>;
+  const view = (selected = options.selected ?? resource, source = options.source ?? sourceRun, manualEdits = options.manualEdits ?? false) => <QueryClientProvider client={client}><MemoryRouter initialEntries={[`/detection-lab${options.jobId ? `?ai_job=${options.jobId}` : ""}`]}><LocationProbe /><DetectionAIRevision resource={selected} sourceRun={source} providers={providers} defaultProvider={provider.provider_id} manualEdits={manualEdits} /></MemoryRouter></QueryClientProvider>;
   const rendered = render(view());
-  return { ...rendered, select: (selected: DetectionResource, source: RunRecord) => rendered.rerender(view(selected, source)) };
+  return { ...rendered, select: (selected: DetectionResource, source: RunRecord, manualEdits = options.manualEdits ?? false) => rendered.rerender(view(selected, source, manualEdits)) };
 }
 
 it("restores an unsent question and case choice after remount without restoring AI authority", async () => {
@@ -205,9 +206,11 @@ it.each(["manual edits", "changed saved revision"])("blocks acceptance for %s wi
   const job = readyJob();
   vi.spyOn(api, "job").mockResolvedValue(job);
   const decide = vi.spyOn(api, "decideDetectionRevision");
-  mount({ jobId: job.job_id, manualEdits: change === "manual edits", selected: change === "changed saved revision" ? { ...resource, digest: `sha256:${"b".repeat(64)}` } : resource });
+  const view = mount({ jobId: job.job_id });
   await screen.findByRole("heading", { name: "Review the proposed rule" });
   await userEvent.setup().type(screen.getByLabelText("Reviewed by"), "reviewer");
+  expect(screen.getByRole("button", { name: "Accept, save and evaluate" })).toBeEnabled();
+  view.select(change === "changed saved revision" ? { ...resource, digest: `sha256:${"b".repeat(64)}` } : resource, sourceRun, change === "manual edits");
   expect(screen.getByRole("button", { name: "Accept, save and evaluate" })).toBeDisabled();
   expect(screen.getByLabelText("Original rule source")).toBeVisible();
   expect(decide).not.toHaveBeenCalled();

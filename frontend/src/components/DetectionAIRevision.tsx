@@ -1,6 +1,6 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { detectionApplication, detectionJobActive, detectionJobId, detectionProposal, matchesDetectionAIReceipt, matchesDetectionRetry, proposalIsCurrent, readDetectionAIReceipt, settleDetectionAIReceipt, storeDetectionAIReceipt, type DetectionAIDecision, type DetectionAIReceipt } from "../lib/detection-ai";
@@ -10,7 +10,7 @@ import { useDetectionDraft } from "../state/useDetectionDraft";
 import type { CatalogResponse, DetectionCaseRole, DetectionResource, RunJob, RunRecord } from "../types";
 import { Button, Callout, ErrorState, Field, LoadingState, sentence } from "./Primitives";
 
-export function DetectionAIRevision({ resource, sourceRun, providers, defaultProvider, manualEdits }: {
+export const DetectionAIRevision = memo(function DetectionAIRevision({ resource, sourceRun, providers, defaultProvider, manualEdits }: {
   resource?: DetectionResource;
   sourceRun?: RunRecord;
   providers: NonNullable<CatalogResponse["ai"]["providers"]>;
@@ -201,4 +201,4 @@ export function DetectionAIRevision({ resource, sourceRun, providers, defaultPro
       {retryApplication.isError ? <ErrorState title="Save retry not confirmed" error={retryApplication.error} /> : null}
     </div> : null}
   </section>;
-}
+});

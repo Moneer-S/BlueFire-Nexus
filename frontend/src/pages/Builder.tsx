@@ -133,7 +133,7 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
   const [purposeMissing, setPurposeMissing] = useState(false);
   const purposeInput = useRef<HTMLTextAreaElement>(null);
   const [validationIssues, setValidationIssues] = useState<string[]>([]); const [validationState, setValidationState] = useState<"idle" | "valid" | "invalid">("idle");
-  const [history, setHistory] = useState<Scenario[]>([structuredClone(scenario)]); const [historyIndex, setHistoryIndex] = useState(0);
+  const [history, setHistory] = useState<Scenario[]>(() => [structuredClone(scenario)]); const [historyIndex, setHistoryIndex] = useState(0);
   const currentScenario = useRef(scenario);
   // Local edits retain their history; a context replacement starts a new history.
   const locallyAppliedScenario = useRef(scenario);
