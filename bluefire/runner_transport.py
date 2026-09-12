@@ -951,6 +951,82 @@ def _client_context(enrollment: RunnerEnrollment):
     return _build_client_context(enrollment)
 
 
+def validate_stored_execute_result(
+    result: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    *,
+    maximum_bytes: int = DEFAULT_MAX_FRAME_BYTES,
+) -> dict[str, Any]:
+    """Validate historical and current results through the same transport contract."""
+
+    checked = dict(result)
+    expected = {
+        "schema_version": "bluefire.runner-result.v1",
+        "request_id": manifest.get("request_id"),
+        "run_id": manifest.get("run_id"),
+        "step_id": manifest.get("step_id"),
+        "behavior_id": manifest.get("behavior_id"),
+        "action_id": manifest.get("action_id"),
+        "runner_id": manifest.get("runner_id"),
+        "runner_profile_id": manifest.get("runner_profile_id"),
+        "platform": manifest.get("platform"),
+        "request_hash": manifest.get("request_hash"),
+        "policy_digest": profile.get("policy_digest"),
+    }
+    if set(checked) != _RESULT_FIELDS or any(
+        checked.get(field) != value for field, value in expected.items()
+    ):
+        raise RunnerTransportError("runner result identity does not match the request")
+    if checked.get("status") not in _RESULT_STATUSES:
+        raise RunnerTransportError("runner result status is invalid")
+    for field in ("started_at", "finished_at"):
+        value = checked.get(field)
+        if not isinstance(value, str) or not 1 <= len(value) <= 128:
+            raise RunnerTransportError("runner result timestamp is invalid")
+    for field in ("stdout", "stderr"):
+        value = checked.get(field)
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"text", "total_bytes", "truncated"}
+            or not isinstance(value.get("text"), str)
+            or isinstance(value.get("total_bytes"), bool)
+            or not isinstance(value.get("total_bytes"), int)
+            or not 0 <= int(value["total_bytes"]) <= maximum_bytes
+            or not isinstance(value.get("truncated"), bool)
+        ):
+            raise RunnerTransportError("runner result output metadata is invalid")
+    receipts = checked.get("receipt_ids")
+    if (
+        not isinstance(receipts, list)
+        or len(receipts) > _MAX_RECOVERY_RECEIPTS
+        or any(
+            not isinstance(item, str) or _HEX_DIGEST.fullmatch(item) is None for item in receipts
+        )
+        or len(receipts) != len(set(receipts))
+    ):
+        raise RunnerTransportError("runner result receipt identity is invalid")
+    evidence = checked.get("evidence")
+    limitations = checked.get("limitations")
+    if (
+        not isinstance(evidence, list)
+        or len(evidence) > 4096
+        or not isinstance(limitations, list)
+        or len(limitations) > 4096
+        or any(not isinstance(item, str) or len(item) > 4096 for item in limitations)
+        or (checked.get("cleanup") is not None and not isinstance(checked["cleanup"], dict))
+        or (checked.get("error") is not None and not isinstance(checked["error"], dict))
+    ):
+        raise RunnerTransportError("runner result schema is invalid")
+    try:
+        encoded = canonical_json_bytes({"result": checked})
+    except (RecursionError, TypeError, ValueError):
+        raise RunnerTransportError("runner result contains unsupported JSON") from None
+    if len(encoded) > maximum_bytes:
+        raise RunnerTransportError("runner result exceeds the transport limit")
+    return checked
+
+
 class AuthenticatedRunnerServer:
     """Mutually authenticated, durable loopback host for a runner transport."""
 
@@ -1201,72 +1277,9 @@ class AuthenticatedRunnerServer:
         manifest: Mapping[str, Any],
         profile: Mapping[str, Any],
     ) -> dict[str, Any]:
-        checked = dict(result)
-        expected = {
-            "schema_version": "bluefire.runner-result.v1",
-            "request_id": manifest.get("request_id"),
-            "run_id": manifest.get("run_id"),
-            "step_id": manifest.get("step_id"),
-            "behavior_id": manifest.get("behavior_id"),
-            "action_id": manifest.get("action_id"),
-            "runner_id": manifest.get("runner_id"),
-            "runner_profile_id": manifest.get("runner_profile_id"),
-            "platform": manifest.get("platform"),
-            "request_hash": manifest.get("request_hash"),
-            "policy_digest": profile.get("policy_digest"),
-        }
-        if set(checked) != _RESULT_FIELDS or any(
-            checked.get(field) != value for field, value in expected.items()
-        ):
-            raise RunnerTransportError("runner result identity does not match the request")
-        if checked.get("status") not in _RESULT_STATUSES:
-            raise RunnerTransportError("runner result status is invalid")
-        for field in ("started_at", "finished_at"):
-            value = checked.get(field)
-            if not isinstance(value, str) or not 1 <= len(value) <= 128:
-                raise RunnerTransportError("runner result timestamp is invalid")
-        for field in ("stdout", "stderr"):
-            value = checked.get(field)
-            if (
-                not isinstance(value, dict)
-                or set(value) != {"text", "total_bytes", "truncated"}
-                or not isinstance(value.get("text"), str)
-                or isinstance(value.get("total_bytes"), bool)
-                or not isinstance(value.get("total_bytes"), int)
-                or not 0 <= int(value["total_bytes"]) <= self.max_frame_bytes
-                or not isinstance(value.get("truncated"), bool)
-            ):
-                raise RunnerTransportError("runner result output metadata is invalid")
-        receipts = checked.get("receipt_ids")
-        if (
-            not isinstance(receipts, list)
-            or len(receipts) > _MAX_RECOVERY_RECEIPTS
-            or any(
-                not isinstance(item, str) or _HEX_DIGEST.fullmatch(item) is None
-                for item in receipts
-            )
-            or len(receipts) != len(set(receipts))
-        ):
-            raise RunnerTransportError("runner result receipt identity is invalid")
-        evidence = checked.get("evidence")
-        limitations = checked.get("limitations")
-        if (
-            not isinstance(evidence, list)
-            or len(evidence) > 4096
-            or not isinstance(limitations, list)
-            or len(limitations) > 4096
-            or any(not isinstance(item, str) or len(item) > 4096 for item in limitations)
-            or (checked.get("cleanup") is not None and not isinstance(checked["cleanup"], dict))
-            or (checked.get("error") is not None and not isinstance(checked["error"], dict))
-        ):
-            raise RunnerTransportError("runner result schema is invalid")
-        try:
-            encoded = canonical_json_bytes({"result": checked})
-        except (RecursionError, TypeError, ValueError):
-            raise RunnerTransportError("runner result contains unsupported JSON") from None
-        if len(encoded) > self.max_frame_bytes:
-            raise RunnerTransportError("runner result exceeds the transport limit")
-        return checked
+        return validate_stored_execute_result(
+            result, manifest, profile, maximum_bytes=self.max_frame_bytes
+        )
 
     def _read_private_result_entry(
         self,

@@ -142,6 +142,13 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Confirm a clean compatible runner upgrade",
     )
+    runner_bootstrap.add_argument(
+        "--upgrade-review-digest", help="Apply the exact reviewed settled-history upgrade"
+    )
+    runner_upgrade_review = runner_commands.add_parser(
+        "upgrade-review", help="Stage and review a stopped upgrade while preserving history"
+    )
+    runner_upgrade_review.add_argument("--profile")
     runner_start = runner_commands.add_parser(
         "start", help="Start the separately hosted authenticated runner"
     )
@@ -620,7 +627,14 @@ def _execute(
             return service.bootstrap_runner(
                 profile_id=args.profile,
                 allow_upgrade=args.allow_upgrade,
+                **(
+                    {"upgrade_review_digest": args.upgrade_review_digest}
+                    if args.upgrade_review_digest is not None
+                    else {}
+                ),
             )
+        if args.runner_command == "upgrade-review":
+            return service.review_runner_upgrade(profile_id=args.profile)
         if args.runner_command == "start":
             return service.start_runner(profile_id=args.profile)
         if args.runner_command == "stop":

@@ -281,8 +281,12 @@ class PlatformService(Protocol):
         *,
         profile_id: str | None = None,
         allow_upgrade: bool = False,
+        upgrade_review_digest: str | None = None,
     ) -> JsonResult:
         """Explicitly install, verify, and enroll the packaged runner."""
+
+    def review_runner_upgrade(self, *, profile_id: str | None = None) -> JsonResult:
+        """Stage and review an exact stopped history-preserving upgrade."""
 
     def start_runner(self, *, profile_id: str | None = None) -> JsonResult:
         """Explicitly start the authenticated runner host."""

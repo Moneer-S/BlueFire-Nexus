@@ -17,10 +17,11 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from types import TracebackType
-from typing import Any, Callable, Iterable, Mapping, Protocol, Type
+from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol, Type
 
 from .application_errors import public_job_failure
 
@@ -240,6 +241,7 @@ class RunJobController:
         self._capacity = threading.BoundedSemaphore(capacity)
         self._controls: dict[str, _JobControl] = {}
         self._closed = False
+        self._idle_maintenance_depth = 0
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers,
             thread_name_prefix=thread_name_prefix.strip(),
@@ -261,6 +263,23 @@ class RunJobController:
     def active_job_ids(self) -> tuple[str, ...]:
         with self._condition:
             return tuple(sorted(self._controls))
+
+    @contextmanager
+    def idle_guard(self) -> Iterator[None]:
+        """Serialize an idle maintenance operation with new job admission.
+
+        Callers acquire their configuration lock first, then this condition,
+        then lifecycle/transport locks. Active work is refused immediately so
+        its cooperative cancellation never waits for maintenance.
+        """
+        with self._condition:
+            if self._closed or self._controls:
+                raise JobRuntimeError("Product jobs must be idle before maintenance.")
+            self._idle_maintenance_depth += 1
+            try:
+                yield
+            finally:
+                self._idle_maintenance_depth -= 1
 
     def submit(
         self,
@@ -285,6 +304,8 @@ class RunJobController:
         with self._condition:
             if self._closed:
                 raise JobRuntimeClosed("job controller is shutting down")
+            if self._idle_maintenance_depth:
+                raise JobRuntimeError("Product job admission is paused for idle maintenance.")
             if submission_id is not None and intent_digest is not None:
                 existing = self._store.get_job_submission(
                     kind, submission_id=submission_id, intent_digest=intent_digest

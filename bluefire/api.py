@@ -329,6 +329,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         if path in {
             f"{API_PREFIX}/runner/bootstrap",
+            f"{API_PREFIX}/runner/upgrade-review",
             f"{API_PREFIX}/runner/start",
             f"{API_PREFIX}/runner/stop",
             f"{API_PREFIX}/runner/revoke",
@@ -629,29 +630,41 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             self._method_not_allowed("GET")
             return
         runner_action = path.removeprefix(f"{API_PREFIX}/runner/")
-        if runner_action in {"bootstrap", "start", "stop", "revoke", "remove"}:
+        if runner_action in {"bootstrap", "upgrade-review", "start", "stop", "revoke", "remove"}:
             profile_id = body.get("profile_id")
             if runner_action == "bootstrap":
-                if set(body) - {"profile_id", "allow_upgrade"}:
+                if set(body) - {"profile_id", "allow_upgrade", "upgrade_review_digest"}:
                     self._error(
                         HTTPStatus.BAD_REQUEST,
                         "runner_action_invalid",
-                        "Runner bootstrap accepts only profile_id and allow_upgrade.",
+                        "Runner bootstrap accepts only profile_id, allow_upgrade and upgrade_review_digest.",
                     )
                     return
                 self._dispatch(
                     lambda: self.platform_server.service.bootstrap_runner(
                         profile_id=profile_id,
                         allow_upgrade=body.get("allow_upgrade", False),
+                        **(
+                            {"upgrade_review_digest": body["upgrade_review_digest"]}
+                            if "upgrade_review_digest" in body
+                            else {}
+                        ),
                     )
                 )
                 return
-            if runner_action in {"start", "stop"}:
+            if runner_action in {"start", "stop", "upgrade-review"}:
                 if set(body) - {"profile_id"}:
                     self._error(
                         HTTPStatus.BAD_REQUEST,
                         "runner_action_invalid",
-                        "Runner start and stop accept only profile_id.",
+                        "Runner start, stop and upgrade review accept only profile_id.",
+                    )
+                    return
+                if runner_action == "upgrade-review":
+                    self._dispatch(
+                        lambda: self.platform_server.service.review_runner_upgrade(
+                            profile_id=profile_id
+                        )
                     )
                     return
                 runner_lifecycle_operation = (

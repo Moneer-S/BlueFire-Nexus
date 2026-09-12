@@ -7,8 +7,6 @@ accepted as evidence that a runner is alive.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import os
 import re
@@ -31,11 +29,18 @@ from .runner_bootstrap import (
     bootstrap_runner,
 )
 from .runner_bootstrap_record import (
+    _BOOTSTRAP_FIELDS as _BOOTSTRAP_FIELDS,
+)
+from .runner_bootstrap_record import (
     BOOTSTRAP_RECORD_SCHEMA_VERSION,
-    _bootstrap_payload,
+    BootstrapRecordValidator,
     _bootstrap_record_payload,
     _BootstrapRecord,
     _record_authentication,
+    validated_profile_ids,
+)
+from .runner_bootstrap_record import (
+    lifecycle_root_digest as _root_digest,
 )
 from .runner_client import _darwin_child_exited_without_reap
 from .runner_darwin_containment import (
@@ -43,6 +48,14 @@ from .runner_darwin_containment import (
 )
 from .runner_darwin_containment import (
     _private_session_members_for_leader as _darwin_private_session_members,
+)
+from .runner_history_upgrade import (
+    UpgradeIO,
+    apply_upgrade,
+    pending_upgrade,
+    recover_upgrade,
+    review_upgrade,
+    upgrade_failure,
 )
 from .runner_host import (
     LOOPBACK_HOST,
@@ -73,7 +86,7 @@ from .runner_trust import (
     revoke_local_enrollment,
 )
 from .secret_store import SecretProvider
-from .util import canonical_json_bytes, file_hash
+from .util import canonical_json_bytes
 from .version import __version__
 
 LIFECYCLE_STATUS_SCHEMA_VERSION = "bluefire.runner-lifecycle-status.v1"
@@ -121,26 +134,6 @@ _ENROLLMENT_MATERIAL_NAMES = frozenset(
         "client-key-password.secret",
         "hmac.secret",
         "trust.json",
-    }
-)
-_BOOTSTRAP_FIELDS = frozenset(
-    {
-        "schema_version",
-        "runner_id",
-        "source",
-        "managed_binary",
-        "managed_sandbox",
-        "binary_path",
-        "sandbox_path",
-        "binary_digest",
-        "product_version",
-        "runner_version",
-        "platform",
-        "architecture",
-        "inventory_schema",
-        "action_sdk_version",
-        "receipt_protocol",
-        "authentication",
     }
 )
 _UNRESOLVED_EXECUTE_STATES = frozenset({"running", "indeterminate", "recovery_required"})
@@ -340,8 +333,31 @@ class ManagedRunnerLifecycle:
         architecture: str | None = None,
         inventory_probe: InventoryProbe | None = None,
         allow_upgrade: bool = False,
+        upgrade_review_digest: str | None = None,
+        profile_binding: str | None = None,
     ) -> Mapping[str, Any]:
-        with self._operation_guard(adopt=True):
+        with self._operation_guard(
+            adopt=True,
+            allow_upgrade_recovery=allow_upgrade is True and upgrade_review_digest is not None,
+        ):
+            if pending_upgrade(self):
+                try:
+                    if (
+                        _profile_ids(allowed_profile_ids)
+                        != self._load_enrollment(require_active=True).allowed_profile_ids
+                    ):
+                        raise RunnerLifecycleError(
+                            "Upgrade recovery profiles differ from enrollment."
+                        )
+                    recover_upgrade(
+                        self,
+                        self._upgrade_io(),
+                        review_digest=cast(str, upgrade_review_digest),
+                        profile_binding=profile_binding,
+                    )
+                except Exception as exc:
+                    raise RunnerLifecycleError(str(upgrade_failure(exc))) from None
+                return self.status(profile_id=_profile_ids(allowed_profile_ids)[0])
             return self._bootstrap_locked(
                 allowed_profile_ids=allowed_profile_ids,
                 environ=environ,
@@ -351,6 +367,8 @@ class ManagedRunnerLifecycle:
                 architecture=architecture,
                 inventory_probe=inventory_probe,
                 allow_upgrade=allow_upgrade,
+                upgrade_review_digest=upgrade_review_digest,
+                profile_binding=profile_binding,
             )
 
     def _bootstrap_locked(
@@ -364,12 +382,16 @@ class ManagedRunnerLifecycle:
         architecture: str | None = None,
         inventory_probe: InventoryProbe | None = None,
         allow_upgrade: bool = False,
+        upgrade_review_digest: str | None = None,
+        profile_binding: str | None = None,
     ) -> Mapping[str, Any]:
         """Verify the native artifact and create or exactly reuse local trust."""
 
         profiles = _profile_ids(allowed_profile_ids)
         if type(allow_upgrade) is not bool:
             raise RunnerLifecycleError("Runner upgrade confirmation is invalid.")
+        if upgrade_review_digest is not None and not allow_upgrade:
+            raise RunnerLifecycleError("A reviewed upgrade requires explicit upgrade confirmation.")
         if (
             self.process_record_path.exists()
             or _is_link_or_reparse(self.process_record_path)
@@ -488,7 +510,23 @@ class ManagedRunnerLifecycle:
                     )
                 if enrollment is None:
                     raise RunnerLifecycleError("Runner enrollment identity is unavailable.")
+                if upgrade_review_digest is not None:
+                    try:
+                        apply_upgrade(
+                            self,
+                            self._upgrade_io(),
+                            enrollment,
+                            _bootstrap_record_payload(previous),
+                            payload,
+                            upgrade_review_digest,
+                            profile_binding=profile_binding,
+                        )
+                    except Exception as exc:
+                        raise RunnerLifecycleError(str(upgrade_failure(exc))) from None
+                    return self.status(profile_id=profiles[0])
                 self._require_upgrade_ready(previous, payload, enrollment)
+            elif upgrade_review_digest is not None:
+                raise RunnerLifecycleError("Runner upgrade review no longer selects a replacement.")
             if enrollment is None:
                 enrollment = create_local_enrollment(
                     self.enrollment_root,
@@ -520,6 +558,58 @@ class ManagedRunnerLifecycle:
             raise RunnerLifecycleError("Runner bootstrap state could not be persisted.") from None
         return self.status(profile_id=profiles[0])
 
+    def review_upgrade(
+        self,
+        *,
+        allowed_profile_ids: Sequence[str],
+        environ: Mapping[str, str] | None = None,
+        resource_root: Any | None = None,
+        product_version: str = __version__,
+        platform_name: str | None = None,
+        architecture: str | None = None,
+        inventory_probe: InventoryProbe | None = None,
+        profile_binding: str | None = None,
+    ) -> Mapping[str, Any]:
+        """Stage a verified candidate and review settled history without activating it."""
+        with self._operation_guard(adopt=False, allow_upgrade_recovery=True):
+            try:
+                return review_upgrade(
+                    self,
+                    self._upgrade_io(),
+                    {
+                        "allowed_profile_ids": _profile_ids(allowed_profile_ids),
+                        "environ": environ,
+                        "resource_root": resource_root,
+                        "product_version": product_version,
+                        "platform_name": platform_name,
+                        "architecture": architecture,
+                        "inventory_probe": inventory_probe,
+                    },
+                    profile_binding=profile_binding,
+                )
+            except Exception as exc:
+                raise RunnerLifecycleError(str(upgrade_failure(exc))) from None
+
+    def _upgrade_io(self) -> UpgradeIO:
+        return UpgradeIO(
+            read=_read_private_json,
+            write=_write_private_json,
+            unlink=_unlink_exact_regular,
+            ledger_lock=self._upgrade_ledger_guard,
+        )
+
+    @contextmanager
+    def _upgrade_ledger_guard(self) -> Any:
+        handle, identity = _open_private_lock_file(self.ledger_lock_path)
+        try:
+            _lock_file(
+                handle, path=self.ledger_lock_path, expected_identity=identity, timeout_seconds=0
+            )
+            yield
+        finally:
+            _unlock_file(handle)
+            handle.close()
+
     def status(
         self, *, profile_id: str | None = None, profile_budget_seconds: int | None = None
     ) -> Mapping[str, Any]:
@@ -548,6 +638,24 @@ class ManagedRunnerLifecycle:
                 process_state="unavailable",
             )
         enrollment, enrollment_state = self._enrollment_for_status()
+        if enrollment is not None and pending_upgrade(self):
+            try:
+                self._require_stopped("upgrade recovery review")
+            except RunnerLifecycleError:
+                return self._status_payload(
+                    state="unavailable",
+                    enrollment_state=enrollment_state,
+                    process_state="unavailable",
+                )
+            return {
+                **self._status_payload(
+                    state="unavailable",
+                    enrollment_state=enrollment_state,
+                    process_state="absent",
+                    profile_id=profile_id,
+                ),
+                "upgrade_recovery_required": True,
+            }
         if enrollment is None:
             lock_state = self._ledger_lock_state()
             process_present = self.process_record_path.exists() or _is_link_or_reparse(
@@ -1152,7 +1260,7 @@ class ManagedRunnerLifecycle:
         )
 
     @contextmanager
-    def _operation_guard(self, *, adopt: bool) -> Any:
+    def _operation_guard(self, *, adopt: bool, allow_upgrade_recovery: bool = False) -> Any:
         """Serialize lifecycle mutations in-process and across processes."""
 
         local = _local_operation_lock(self.root)
@@ -1179,6 +1287,10 @@ class ManagedRunnerLifecycle:
                 ):
                     raise RunnerLifecycleError(
                         "A previous runner launch remains contained but unresolved."
+                    )
+                if pending_upgrade(self) and not allow_upgrade_recovery:
+                    raise RunnerLifecycleError(
+                        "An interrupted runner upgrade requires an explicit exact review and apply."
                     )
                 yield
             finally:
@@ -1369,111 +1481,28 @@ class ManagedRunnerLifecycle:
         except (RunnerLifecycleError, RunnerTrustError, KeyError):
             return None, "unavailable"
 
-    def _parse_bootstrap_record(self, enrollment: RunnerEnrollment) -> _BootstrapRecord:
-        try:
-            value = _read_private_json(
-                self.bootstrap_record_path,
-                maximum=BOOTSTRAP_RECORD_MAX_BYTES,
-            )
-            if not isinstance(value, dict) or set(value) != _BOOTSTRAP_FIELDS:
-                raise ValueError("unsupported bootstrap record")
-            unsigned = {key: value[key] for key in value if key != "authentication"}
-            authentication = value.get("authentication")
-            if (
-                value.get("schema_version") != BOOTSTRAP_RECORD_SCHEMA_VERSION
-                or value.get("runner_id") != self.runner_id
-                or value.get("source") not in {"packaged", "environment_override"}
-                or type(value.get("managed_binary")) is not bool
-                or type(value.get("managed_sandbox")) is not bool
-                or not isinstance(value.get("binary_path"), str)
-                or not 1 <= len(value["binary_path"]) <= 32768
-                or not isinstance(value.get("sandbox_path"), str)
-                or not 1 <= len(value["sandbox_path"]) <= 32768
-                or not isinstance(value.get("binary_digest"), str)
-                or _DIGEST.fullmatch(value["binary_digest"]) is None
-                or not all(
-                    isinstance(value.get(field), str) and 1 <= len(value[field]) <= 200
-                    for field in (
-                        "product_version",
-                        "runner_version",
-                        "platform",
-                        "architecture",
-                        "inventory_schema",
-                        "action_sdk_version",
-                        "receipt_protocol",
-                    )
-                )
-                or not isinstance(authentication, str)
-                or _DIGEST.fullmatch(authentication) is None
-                or not hmac.compare_digest(
-                    authentication,
-                    _record_authentication(enrollment, unsigned),
-                )
-            ):
-                raise ValueError("invalid bootstrap record")
-            binary = _canonical_record_path(Path(value["binary_path"]))
-            sandbox = _canonical_record_path(Path(value["sandbox_path"]))
-            runtime = _canonical_record_path(self.runtime_root)
-            if value["managed_binary"] and not binary.is_relative_to(runtime):
-                raise OSError("managed binary escaped runtime root")
-            if value["managed_sandbox"] and not sandbox.is_relative_to(runtime):
-                raise OSError("managed sandbox escaped runtime root")
-        except (OSError, ValueError, KeyError, RunnerHostError, RunnerTrustError):
-            raise RunnerLifecycleError("Managed runner bootstrap state is unavailable.") from None
-        return _BootstrapRecord(
-            binary_path=binary,
-            sandbox_path=sandbox,
-            binary_digest=str(value["binary_digest"]),
-            source=str(value["source"]),
-            managed_binary=bool(value["managed_binary"]),
-            managed_sandbox=bool(value["managed_sandbox"]),
-            product_version=str(value["product_version"]),
-            runner_version=str(value["runner_version"]),
-            platform=str(value["platform"]),
-            architecture=str(value["architecture"]),
-            inventory_schema=str(value["inventory_schema"]),
-            action_sdk_version=str(value["action_sdk_version"]),
-            receipt_protocol=str(value["receipt_protocol"]),
+    def _bootstrap_record_validator(self) -> BootstrapRecordValidator:
+        return BootstrapRecordValidator(
+            self.runner_id,
+            self.runtime_root,
+            self.bootstrap_record_path,
+            _read_private_json,
+            _canonical_record_path,
+            RunnerLifecycleError,
         )
+
+    def _parse_bootstrap_record(self, enrollment: RunnerEnrollment) -> _BootstrapRecord:
+        return self._bootstrap_record_validator()._parse_bootstrap_record(enrollment)
 
     def _load_bootstrap(self, enrollment: RunnerEnrollment) -> _BootstrapRecord:
         record = self._parse_bootstrap_record(enrollment)
         return self._require_live_bootstrap(record)
 
     def _require_live_bootstrap(self, record: _BootstrapRecord) -> _BootstrapRecord:
-        try:
-            binary = _canonical_record_path(record.binary_path)
-            sandbox = _canonical_record_path(record.sandbox_path)
-            if (
-                not binary.is_file()
-                or not sandbox.is_dir()
-                or not os.access(sandbox, os.W_OK)
-                or file_hash(binary) != record.binary_digest
-            ):
-                raise OSError("bootstrap artifact changed")
-        except OSError:
-            raise RunnerLifecycleError("Managed runner artifacts are unavailable.") from None
-        return record
+        return self._bootstrap_record_validator()._require_live_bootstrap(record)
 
     def _validated_bootstrap_payload(self, bootstrapped: BootstrappedRunner) -> dict[str, Any]:
-        if bootstrapped.manifest.runner_id != self.runner_id:
-            raise RunnerLifecycleError("Bootstrapped runner identity is incompatible.")
-        try:
-            binary = _canonical_record_path(Path(bootstrapped.binary_path))
-            sandbox = _canonical_record_path(Path(bootstrapped.sandbox_path))
-            if (
-                not binary.is_file()
-                or not sandbox.is_dir()
-                or not os.access(sandbox, os.W_OK)
-                or file_hash(binary) != "sha256:" + bootstrapped.binary_sha256
-            ):
-                raise OSError("invalid bootstrap output")
-            payload = _bootstrap_payload(bootstrapped, self.runner_id)
-            if payload["binary_path"] != str(binary) or payload["sandbox_path"] != str(sandbox):
-                raise OSError("bootstrap path changed")
-            return payload
-        except OSError:
-            raise RunnerLifecycleError("Bootstrapped runner artifacts are invalid.") from None
+        return self._bootstrap_record_validator()._validated_bootstrap_payload(bootstrapped)
 
     def _require_upgrade_ready(
         self,
@@ -2027,20 +2056,7 @@ class ManagedRunnerLifecycle:
         return True
 
     def _public_runner(self, bootstrap: _BootstrapRecord) -> Mapping[str, Any]:
-        return {
-            "id": self.runner_id,
-            "source": bootstrap.source,
-            "product_version": bootstrap.product_version,
-            "runner_version": bootstrap.runner_version,
-            "platform": bootstrap.platform,
-            "architecture": bootstrap.architecture,
-            "binary_digest": bootstrap.binary_digest,
-            "managed_binary": bootstrap.managed_binary,
-            "managed_sandbox": bootstrap.managed_sandbox,
-            "inventory_schema": bootstrap.inventory_schema,
-            "action_sdk_version": bootstrap.action_sdk_version,
-            "receipt_protocol": bootstrap.receipt_protocol,
-        }
+        return self._bootstrap_record_validator()._public_runner(bootstrap)
 
     def _status_payload(
         self,
@@ -2774,13 +2790,6 @@ def _unlock_file(handle: Any) -> None:
         pass
 
 
-def _root_digest(root: Path) -> str:
-    return (
-        "sha256:"
-        + hashlib.sha256(os.path.normcase(os.path.normpath(str(root))).encode("utf-8")).hexdigest()
-    )
-
-
 def _valid_root_marker(value: Any, runner_id: str, resolved_root: Path) -> bool:
     return bool(
         isinstance(value, dict)
@@ -2819,14 +2828,7 @@ def _canonical_record_path(path: Path) -> Path:
 
 
 def _profile_ids(values: Sequence[str]) -> tuple[str, ...]:
-    if isinstance(values, (str, bytes)) or not values or len(values) > 128:
-        raise RunnerLifecycleError("Allowed runner profiles are invalid.")
-    profiles = tuple(values)
-    if len(set(profiles)) != len(profiles) or any(
-        not isinstance(value, str) or _IDENTIFIER.fullmatch(value) is None for value in profiles
-    ):
-        raise RunnerLifecycleError("Allowed runner profiles are invalid.")
-    return profiles
+    return validated_profile_ids(values, error=RunnerLifecycleError)
 
 
 def _validated_host_command(value: Sequence[str]) -> tuple[str, ...]:
