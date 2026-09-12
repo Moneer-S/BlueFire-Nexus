@@ -10,9 +10,13 @@ Autonomy is independent from Simulate/Execute.
 |---|---|---|
 | `off` | No | Deterministic planner only; no AI proposal record |
 | `assist` | Yes, at a bounded runtime decision point | Record default-preserving advice; pause every actual registered mutation for durable accept/reject review |
-| `auto` | Yes, at a bounded runtime decision point | In Simulate only, may apply a policy-permitted registered behavior, typed parameter, action-independent edge, or one-retry proposal; review-required proposals still pause |
+| `auto` | Yes, at a bounded runtime decision point | In Simulate, may apply a policy-permitted registered mutation. In Execute, may retry an eligible step using a different method explicitly included in its finite experiment authorization; review-required proposals still pause |
 
-Execute never applies a runtime mutation directly, including under Auto. It pauses before the mutation, persists the proposal for review, and requires a fresh exact one-time execution approval after acceptance. Runtime AI cannot create or reorder nodes, invent an outcome edge, select an unregistered behavior or action, change a profile/scope/tier/budget, or introduce commands, paths, plugins, providers, or executable content.
+Execute defaults to exact-plan authorization. Without an explicit `adaptive_execution` policy, runtime mutations pause for review and require a fresh exact one-time execution approval after acceptance. Legacy approvals never acquire adaptive authority.
+
+An operator can instead review a finite experiment containing two to four compatible methods for selected steps. Auto may choose an untried reviewed method after an eligible actual outcome and continue under that authorization. The authorization binds the objective, graph, exact compiled parameters and inputs, environment, target scope, action contracts, capabilities, effects, cleanup and resource limits. BlueFire rechecks the selected operation before its effects, and the sealed runner profile carries the finite operation identities. A different target, expanded effects or an unreviewed method requires a new decision. See [Adaptive execution authorization](ADAPTIVE_EXECUTION.md).
+
+Runtime AI cannot create or reorder nodes, invent an outcome edge, select an unregistered behavior or action, change a profile/scope/tier/budget, or introduce commands, paths, plugins, providers, or executable content. Finite Execute method selection does not authorize model-generated parameter changes.
 
 ## Runtime decision loop
 
@@ -24,7 +28,7 @@ The native workspaces also support bounded operations outside the runtime decisi
 
 These operations use the configured Responses or Chat Completions structured-output adapter. They retain explicit failures rather than silently substituting a different provider or a fabricated result. See [Detection Lab](DETECTION_LAB.md) and [Replay & Compare](REPLAY_COMPARE.md) for their evidence and recovery limits.
 
-After a step completes:
+The legacy exact-plan decision loop remains:
 
 1. the deterministic planner selects the registered edge for the observed outcome and records a state digest;
 2. if autonomy is not Off, BlueFire builds a bounded `bluefire.ai-request.v2`;
@@ -32,7 +36,7 @@ After a step completes:
 4. action IDs are omitted in Simulate, and only the current eligible node is exposed for retry;
 5. the provider returns strict `bluefire.ai-proposal.v2` JSON;
 6. BlueFire checks provider identity, schema, forbidden fields, request allowlists, registered ownership, exact profile enablement, parameter contracts, retry bounds, and autonomy semantics;
-7. policy-permitted Auto mutations apply only in Simulate; actual Assist mutations and every Execute mutation stop at a durable operator gate;
+7. policy-permitted Auto mutations apply only in Simulate; actual Assist mutations and exact-plan Execute mutations stop at a durable operator gate;
 8. acceptance revalidates the immutable run bundle, proposal, registered options, and state/plan/proposal/policy digests, then reconstructs only the accepted registered change;
 9. preflight is rerun against the exact scenario, profile, scope, policy, and resolved action plan;
 10. Execute acceptance creates a fresh exact one-time approval and performs a fresh-workspace replay from scenario start so prerequisite effects are recreated; the original approval can never be reused;
@@ -40,6 +44,10 @@ After a step completes:
 12. proposal and decision records retain the source digests, policy evaluation, evidence, limits, resolved plan, and continuation lineage.
 
 Application states include `recorded_for_review`, `awaiting_operator_approval`, `accepted_registered_default`, `accepted_registered_next_node`, `applied_registered_alternate`, `applied_typed_parameters`, `applied_registered_action`, `applied_registered_retry`, and explicit rejection/not-applied reasons. Durable reviews have one-time `pending`, `accepted`, or `rejected` states with operator/time metadata.
+
+For a finite Execute experiment, an eligible `blocked`, `failed` or `partial` outcome instead exposes compatible, untried reviewed methods for that same step. The provider receives relevant observations, prerequisites and remaining limits, then proposes an exact registered method, requests review or stops. Auto validates and records the choice, reserves the single lineage-wide retry and rechecks authorization immediately before dispatch. Both attempts retain their own results and evidence. The objective remains the one declared before execution; choosing an alternative does not establish that the objective succeeded.
+
+Assist records the proposed method and pauses. Accepting it prepares a fresh approval and a full replay with that method as the selected step's primary method, so prerequisites are recreated. The replay retains the consumed retry count and original authorization lineage. Interruption recovery reconciles owned cleanup; it does not resume an uncommitted adaptive operation or reuse a consumed approval.
 
 ## Proposal schema
 
@@ -147,13 +155,15 @@ Use Auto only after the same scenario/provider has been reviewed in Assist and t
 
 ## Redaction and data controls
 
-Redaction replaces values whose keys match configured secret terms, truncates strings, and excludes evidence content by default. The current runtime proposal context contains mode, current step/outcome, completed step IDs/behaviors/statuses, and the deterministic decision—not raw evidence bodies.
+Redaction replaces values whose keys match configured secret terms, truncates strings, and excludes evidence content by default. The legacy runtime context contains mode, current step/outcome, completed step IDs/behaviors/statuses and the deterministic decision. Finite Execute planning adds a bounded projection of verified observations: allowlisted counts and categories, evidence references and provenance, failure classifications, method prerequisites and remaining time, steps and retries. It does not send raw logs, commands, paths or credentials. Missing telemetry and unknown target prevention stay explicit; a BlueFire authorization or control refusal is not evidence that the target prevented an operation.
 
 Detection assistance can include a bounded, redacted projection of eligible observed content when the selected provider configuration permits it; otherwise it uses permitted field metadata. Its 128-observation model-context bound is separate from the full-run detector execution budget. Inspect the actual operation's data boundary and classify the data and provider terms before sending it. A redaction list reduces accidental disclosure; it is not a complete data-loss-prevention system.
 
 ## Failure and fallback
 
 On the legacy runtime decision and synchronous draft paths, unavailable credentials, transport failure, timeout, retry exhaustion, invalid content type/JSON, incomplete response, schema mismatch, unregistered selection or token-budget excess produces an explicit deterministic fallback or rejected proposal record. Durable contextual graph, detection and method jobs retain failure and do not silently substitute an offline draft or alternate model. BlueFire does not silently apply partially parsed model text.
+
+Finite Execute experiments explicitly configure either stop or deterministic graph continuation on provider failure. A fallback is labeled as such and never counted as live-model success. Requests share the remaining experiment deadline across transport attempts and retry delays; no proposal call starts after the retry or execution budget is exhausted. Cancellation remains available while planning. Rejected typed proposals and provider attempt metadata are retained, including attempts that produced no usable response.
 
 Catalog provider readiness checks whether the configuration and required credential reference are available locally; it does not contact the endpoint or measure model quality. Service startup persists secret-safe provider configuration plus that readiness snapshot in the local product store. The catalog returns bundle-safe runtime metadata and a freshly computed readiness view, without returning the configured endpoint.
 
@@ -194,11 +204,13 @@ credential or network call.
 
 Each proposal record retains run/current-step/outcome, autonomy, exact state/plan/proposal/policy digests, deterministic decision ID, correlated registered options, exact allowlists and limits, provider/result metadata, proposal content, policy evaluation, application state/reason, and a registered step when applicable. Durable decision records add job/source identity, operator, timestamp, resolution, fresh Execute approval reference when required, and deterministic continuation lineage. Execute continuation lineage also records the fresh preflight, target-scope, retry-count, full-replay, and resolved-action context used by the new exact approval. Comparison reports provider/autonomy changes, proposal counts, and application-state counts.
 
+Finite Execute attempts use `bluefire.ai-proposal-record.v4`, with the authorization digest, observation projection, selected operation and explicit decision source. A failed attempt may have no response or proposal; it remains inspectable evidence and cannot be accepted as a replay proposal. Deterministic provider responses exercise the software contract and are labeled separately from live-provider decisions.
+
 ## Current limitations
 
-- Runtime behavior, parameter, and action changes are limited to the deterministic successor; a retry is limited to the eligible current node.
+- Legacy runtime mutations are limited to the deterministic successor or an eligible current-node retry. Finite Execute selection is limited to a different reviewed method for the eligible current node, with exact precompiled parameters and inputs.
 - Registered next-node selection cannot choose across outcome branches because `bluefire.scenario.v1` permits only one edge for each source-node/outcome pair.
-- Runtime action choice is meaningful only when a behavior has more than one contract-compatible registered action enabled by the exact Execute profile. It never grants new runner authority or loads executable code.
+- A finite method may use a different registered behavior and action only when compatible with the same declared objective and reviewed graph inputs. It never grants new runner authority or loads executable code.
 - Adaptive retry is a single lineage-wide retry, not a configurable recovery workflow.
 - Runtime AI cannot propose detections or arbitrary replay edits. The separate contextual Assistant operations use their own bounded proposal/review contracts; the legacy synchronous objective draft remains unsaved.
 - No monetary cost calculation/budget is implemented; output tokens, attempts, response bytes, and time are bounded.

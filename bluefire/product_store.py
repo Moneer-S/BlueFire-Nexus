@@ -28,7 +28,6 @@ from . import product_store_detection_evaluations as detection_evaluation_store
 from .ai import (
     MUTATING_PROPOSAL_TYPES,
     AIProviderError,
-    ProposalType,
     validate_persisted_proposal_record,
 )
 from .contracts import ScenarioDefinition
@@ -61,6 +60,7 @@ from .product_store_errors import (
     ProductStoreError,
     ResearchSourceIntegrityError,
 )
+from .product_store_proposal_validation import validate_reviewed_option
 from .product_store_serialization import canonical_json as _canonical_json
 from .product_store_serialization import utc_now
 from .util import canonical_json_bytes, content_hash, json_clone
@@ -4474,46 +4474,10 @@ class ProductStore:
             raise ProductStoreError("proposal content identity is invalid")
         if validated_proposal.proposal_type not in MUTATING_PROPOSAL_TYPES:
             raise ProductStoreError("only registered runtime proposals can be reviewed")
-        role = (
-            "retry" if validated_proposal.proposal_type is ProposalType.RETRY_REGISTERED else "next"
-        )
-        options = document.get("registered_options")
-        option = (
-            next(
-                (
-                    item
-                    for item in options
-                    if isinstance(item, Mapping)
-                    and item.get("role") == role
-                    and item.get("step_id") == validated_proposal.selected_step_id
-                ),
-                None,
-            )
-            if isinstance(options, list)
-            else None
-        )
-        if option is None or validated_proposal.selected_behavior_id not in option.get(
-            "behavior_ids", []
-        ):
-            raise ProductStoreError("proposal tuple is outside its registered option envelope")
-        if validated_proposal.selected_action_id is not None:
-            action_map = option.get("action_ids_by_behavior")
-            allowed_actions = (
-                action_map.get(validated_proposal.selected_behavior_id, [])
-                if isinstance(action_map, Mapping)
-                else []
-            )
-            if validated_proposal.selected_action_id not in allowed_actions:
-                raise ProductStoreError(
-                    "proposal action is outside its behavior/profile option envelope"
-                )
-        evaluation = document.get("proposal_policy_evaluation")
-        if (
-            not isinstance(evaluation, Mapping)
-            or evaluation.get("status") != "permitted"
-            or evaluation.get("policy_digest") != document.get("proposal_policy_digest")
-        ):
-            raise ProductStoreError("proposal was not permitted by its recorded policy")
+        try:
+            validate_reviewed_option(document, validated_proposal)
+        except ValueError as exc:
+            raise ProductStoreError(str(exc)) from exc
         state_digest = document.get("state_digest")
         plan_digest = document.get("plan_digest")
         proposal_digest = document.get("proposal_digest")

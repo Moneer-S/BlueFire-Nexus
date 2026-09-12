@@ -14,7 +14,16 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
-from .ai import AIProposalRequest, AIProvider, AIProviderError, ProposalType
+from .adaptive_dispatch import (
+    execution_steps,
+    operation_identity,
+    reviewed_operation,
+    runner_authorization,
+    validate_dispatch,
+)
+from .adaptive_execution import compile_adaptive_authorization, validate_selected_method
+from .adaptive_runtime import propose_reviewed_method
+from .ai import AIProvider, ProposalType
 from .ai_wire import AIProviderCancelled
 from .approvals import (
     ApprovalError,
@@ -55,6 +64,7 @@ from .evidence import (
     EvidenceRecord,
     SandboxObserver,
 )
+from .execution_progress import emergency_cleanup, persist_progress, record_interrupted_dispatch
 from .job_runtime import JobCancelled
 from .observation_integrity import evaluate_observation_integrity
 from .planner import (
@@ -62,7 +72,6 @@ from .planner import (
     ExecutionDisposition,
     ExecutionPlan,
     PlannerDecision,
-    PlannerError,
     PlanStep,
 )
 from .policy import ApprovalState, PolicyDecision, PolicyEngine, PolicyStatus
@@ -73,7 +82,7 @@ from .provider_runner_contracts import (
     canonical_provider_binding,
     canonical_provider_bindings,
 )
-from .registry import BehaviorRegistry, RegistryError
+from .registry import BehaviorRegistry
 from .replay_checkpoint import (
     CheckpointError,
     build_checkpoint,
@@ -99,6 +108,12 @@ from .runner_contracts import build_execution_manifest, build_runner_profile, cu
 from .runner_inventory import (
     RunnerInventoryAuthorityError,
     validate_builtin_action_inventory,
+)
+from .runtime_proposals import (
+    RuntimeProposalError,
+    RuntimeProposals,
+    adaptive_retry_count,
+    approved_replay_transition,
 )
 from .simulation import SimulationError, SimulationRegistry
 from .util import content_hash, parse_iso8601_datetime
@@ -624,6 +639,7 @@ class Orchestrator:
         runner_profile_doc: Mapping[str, Any] | None = None
         observer: SandboxObserver | None = None
         authorized_target_scope: Mapping[str, Any] = {"scope_refs": []}
+        adaptive_authorization: Mapping[str, Any] | None = None
         validated_approval: Mapping[str, Any] | None = None
         approval_binding: Mapping[str, str] | None = None
         approval_context: dict[str, Any] = dict(self.receiver_authority)
@@ -633,6 +649,16 @@ class Orchestrator:
                     "Execute requires an explicit profile, sandbox root, and Rust runner"
                 )
             authorized_target_scope = self._validated_target_scope(target_scope, profile)
+            adaptive_authorization = compile_adaptive_authorization(
+                registry=self.registry,
+                scenario=scenario,
+                plan=plan,
+                profile=profile,
+                target_scope=authorized_target_scope,
+                platform=current_platform(),
+                planner=self.planner,
+                catalog_authority=self.catalog_authority,
+            )
             if collector_runtime_settings is not None:
                 if self.collector_registry is None:
                     raise OrchestrationError("Execute collector runtime has no configured registry")
@@ -680,6 +706,7 @@ class Orchestrator:
                 context=approval_context or None,
                 runner_readiness=runner_readiness,
                 catalog_authority=self.catalog_authority,
+                adaptive_authorization=adaptive_authorization,
             )
             if self.approval_store is None:
                 raise OrchestrationError("Execute requires a durable approval verifier")
@@ -705,19 +732,32 @@ class Orchestrator:
                 )
             except (ApprovalError, ValueError) as exc:
                 raise OrchestrationError(str(exc)) from exc
-            network_destinations = self._network_destinations(plan)
-            provider_bindings = self._runner_profile_provider_bindings(profile)
+            native_plan = replace(plan, steps=execution_steps(plan, adaptive_authorization))
+            network_destinations = self._network_destinations(native_plan)
+            reviewed_actions = {step.action_id for step in native_plan.steps}
+            provider_bindings = tuple(
+                binding
+                for binding in self._runner_profile_provider_bindings(profile)
+                if adaptive_authorization is None
+                or binding["logical_action_id"] in reviewed_actions
+            )
             runner_profile_doc = build_runner_profile(
                 profile,
                 sandbox_root=sandbox_root,
-                filesystem_scope=self._filesystem_scope(plan),
+                filesystem_scope=self._filesystem_scope(native_plan),
                 network_destinations=network_destinations,
-                action_bindings=self._runner_profile_action_bindings(profile),
+                action_bindings=tuple(
+                    binding
+                    for binding in self._runner_profile_action_bindings(profile)
+                    if adaptive_authorization is None
+                    or binding["logical_action_id"] in reviewed_actions
+                ),
                 provider_bindings=provider_bindings,
                 provider_artifacts=self._runner_profile_provider_artifacts(
                     profile,
                     provider_bindings=provider_bindings,
                 ),
+                reviewed_execution=runner_authorization(plan, adaptive_authorization),
             )
             observer = SandboxObserver(sandbox_root)
             if self.collector_registry is None:
@@ -728,7 +768,7 @@ class Orchestrator:
                         JsonLinesFixtureCollector(sandbox_root),
                     )
                 )
-            self._validate_inventory(plan, self.runner.inventory())
+            self._validate_inventory(native_plan, self.runner.inventory())
         elif approval_record is not None:
             raise OrchestrationError("Simulate does not accept an Execute approval capability")
 
@@ -748,6 +788,11 @@ class Orchestrator:
                     dict(approval_binding) if approval_binding is not None else None
                 ),
                 "approval_context": dict(approval_context),
+                **(
+                    {"adaptive_authorization": adaptive_authorization}
+                    if adaptive_authorization is not None
+                    else {}
+                ),
                 "runner_readiness": (
                     dict(runner_readiness) if runner_readiness is not None else None
                 ),
@@ -799,6 +844,7 @@ class Orchestrator:
                 collector_registry_authority=collector_registry_authority,
                 collector_sandbox_root=(Path(sandbox_root) if sandbox_root is not None else None),
                 simulation=simulation,
+                adaptive_authorization=adaptive_authorization,
             )
         except BaseException as exc:
             if simulation is not None and isinstance(
@@ -895,6 +941,7 @@ class Orchestrator:
         collector_registry_authority: Mapping[str, Any] | None = None,
         collector_sandbox_root: Path | None = None,
         simulation: _SimulationProgress | None = None,
+        adaptive_authorization: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         evidence = simulation.evidence if simulation is not None else EvidenceGraph()
         artifacts: dict[str, Any] = dict(seed_artifacts or {})
@@ -908,12 +955,31 @@ class Orchestrator:
         step_overrides: dict[str, PlanStep] = {}
         visited: set[str] = set()
         retries_used = self._adaptive_retry_count(replay)
+
+        def persist_execution_progress(reserved_retry: bool = False) -> None:
+            if mode is ExecutionMode.EXECUTE:
+                persist_progress(
+                    self.store,
+                    handle.run_id,
+                    steps=step_rows,
+                    decisions=decisions,
+                    proposals=ai_proposals,
+                    evidence=evidence.records(),
+                    retries_used=retries_used + int(reserved_retry),
+                )
+
         current_step_id: str | None = resume_from_step_id or scenario.start
         forced_cleanup = False
         cleanup_forced = False
         counterfactual_step: str | None = None
         cleanup_attempted = False
         approval_pause: dict[str, Any] | None = None
+        planning_stopped = False
+        adaptive_digest = (
+            str(adaptive_authorization["authorization_digest"])
+            if adaptive_authorization is not None
+            else None
+        )
         max_steps = profile.budgets.max_steps if profile else max(len(plan.steps) * 2, 1)
         total_seconds = float(profile.budgets.max_seconds) if profile else None
         deadline = execution_started + total_seconds if total_seconds is not None else None
@@ -1090,6 +1156,31 @@ class Orchestrator:
                 action_timeout_ms = int(available * 1000)
                 step_budget_exhausted = action_timeout_ms < 1
                 budget_exhausted = budget_exhausted or step_budget_exhausted
+
+                def recheck_reviewed_step(
+                    selected: PlanStep = plan_step, reserved_retries: int = retries_used
+                ) -> None:
+                    if adaptive_authorization is None:
+                        return
+                    assert adaptive_digest is not None and approval_record is not None
+                    validate_dispatch(
+                        step=selected,
+                        plan=plan,
+                        authorization=adaptive_authorization,
+                        expected_digest=adaptive_digest,
+                        registry=self.registry,
+                        profile=profile,
+                        target_scope=authorized_target_scope,
+                        platform=current_platform(),
+                        catalog_authority=self.catalog_authority,
+                        remaining_steps=max_steps - len(step_rows) - len(materialization_rows),
+                        remaining_seconds=max(
+                            (deadline or time.monotonic()) - time.monotonic() - cleanup_reserve, 0.0
+                        ),
+                        retries_used=reserved_retries,
+                        approval_expires_at=str(approval_record["expires_at"]),
+                    )
+
                 row, records, decision, _returned_receipts = self._execute_step(
                     run_id=handle.run_id,
                     step=plan_step,
@@ -1106,6 +1197,7 @@ class Orchestrator:
                     cancel_event=cancel_event,
                     collector_ids=collector_ids,
                     collector_runtime_active=collector_runtime_settings is not None,
+                    reviewed_step_check=recheck_reviewed_step,
                 )
                 policy_rows.append(decision.to_dict())
                 if self._runner_opcode(plan_step) == "sandbox.cleanup.v1":
@@ -1216,6 +1308,7 @@ class Orchestrator:
             evidence.extend(records)
             artifacts[current_step_id] = row.get("artifacts", {})
             step_rows.append(row)
+            persist_execution_progress()
             self.store.append_event(handle.run_id, "step.completed", row)
 
             if checkpoint is not None:
@@ -1306,28 +1399,107 @@ class Orchestrator:
                     },
                 )
             else:
-                (
-                    proposal_record,
-                    alternate_step,
-                    adaptive_next_step_id,
-                    retry_applied,
-                ) = self._propose_next_step(
-                    run_id=handle.run_id,
-                    scenario=scenario,
-                    plan=plan,
-                    profile=profile,
-                    mode=mode,
-                    current_step_id=current_step_id,
-                    current_plan_step=plan_step,
-                    outcome=outcome,
-                    state=state,
-                    planner_decision=planner_decision,
-                    retries_used=retries_used,
-                    remaining_steps=max_steps - len(step_rows) - len(materialization_rows),
-                )
+                adaptive_policy = scenario.adaptive_execution
+                if (
+                    adaptive_authorization is not None
+                    and adaptive_policy is not None
+                    and plan.autonomy is not AutonomyLevel.OFF
+                    and self.proposal_provider is not None
+                    and outcome.value in adaptive_policy.eligible_outcomes
+                    and retries_used < adaptive_policy.max_retries
+                    and any(group.step_id == current_step_id for group in adaptive_policy.steps)
+                    and not forced_cleanup
+                ):
+                    assert (
+                        profile is not None
+                        and approval_record is not None
+                        and adaptive_digest is not None
+                    )
+
+                    def check_planning_cancelled() -> None:
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise AIProviderCancelled()
+
+                    def validate_choice(
+                        selected: PlanStep, reserved_retries: int = retries_used
+                    ) -> None:
+                        validate_selected_method(
+                            authorization=adaptive_authorization,
+                            expected_authorization_digest=adaptive_digest,
+                            step=selected,
+                            profile=profile,
+                            target_scope=authorized_target_scope,
+                            platform=current_platform(),
+                            registry=self.registry,
+                            remaining_steps=max_steps - len(step_rows) - len(materialization_rows),
+                            remaining_seconds=max(
+                                (deadline or time.monotonic()) - time.monotonic() - cleanup_reserve,
+                                0.0,
+                            ),
+                            retries_used=reserved_retries,
+                            approval_expires_at=str(approval_record["expires_at"]),
+                            is_retry=True,
+                            catalog_authority=self.catalog_authority,
+                        )
+
+                    adaptive = propose_reviewed_method(
+                        run_id=handle.run_id,
+                        plan=plan,
+                        current_step=plan_step,
+                        outcome=outcome.value,
+                        decision=planner_decision,
+                        authorization=adaptive_authorization,
+                        policy=adaptive_policy.to_dict(),
+                        provider=self.proposal_provider,
+                        steps=step_rows,
+                        evidence=evidence.records(),
+                        artifacts=artifacts,
+                        platform=current_platform(),
+                        remaining_steps=max_steps - len(step_rows) - len(materialization_rows),
+                        remaining_seconds=max(
+                            (deadline or time.monotonic()) - time.monotonic() - cleanup_reserve, 0.0
+                        ),
+                        retries_used=retries_used,
+                        validate_choice=validate_choice,
+                        check_cancelled=check_planning_cancelled,
+                    )
+                    proposal_record, alternate_step = adaptive.record, adaptive.selected_step
+                    retry_applied = alternate_step is not None
+                    adaptive_next_step_id = (
+                        alternate_step.step_id if alternate_step is not None else None
+                    )
+                else:
+                    proposal_record, alternate_step, adaptive_next_step_id, retry_applied = (
+                        self._propose_next_step(
+                            run_id=handle.run_id,
+                            scenario=scenario,
+                            plan=plan,
+                            profile=profile,
+                            mode=mode,
+                            current_step_id=current_step_id,
+                            current_plan_step=plan_step,
+                            outcome=outcome,
+                            state=state,
+                            planner_decision=planner_decision,
+                            retries_used=retries_used,
+                            remaining_steps=max_steps - len(step_rows) - len(materialization_rows),
+                        )
+                    )
             if proposal_record is not None:
                 ai_proposals.append(proposal_record)
+                persist_execution_progress(reserved_retry=retry_applied)
                 self.store.append_event(handle.run_id, "ai.proposal", proposal_record)
+                planning_stopped = (
+                    planning_stopped
+                    or proposal_record.get("stop_requested") is True
+                    or (
+                        proposal_record.get("application_status") == "stopped_by_proposal"
+                        and (
+                            planner_decision.selected_step_id is not None
+                            or outcome is not StepOutcome.SUCCESS
+                        )
+                    )
+                )
                 if proposal_record.get("application_status") == "awaiting_operator_approval":
                     pending_proposal = proposal_record.get("proposal")
                     approval_pause = {
@@ -1361,7 +1533,7 @@ class Orchestrator:
                 visited.discard(current_step_id)
             current_step_id = (
                 None
-                if approval_pause is not None
+                if approval_pause is not None or planning_stopped
                 else (adaptive_next_step_id or planner_decision.selected_step_id)
             )
             forced_cleanup = False
@@ -1400,6 +1572,7 @@ class Orchestrator:
             and any(row["enabled"] for row in scheduled_runtime.collectors.values())
             and collection_session is None
             and approval_pause is None
+            and not planning_stopped
         ):
             raise OrchestrationError("configured collector schedule was not reached")
         if (
@@ -1414,7 +1587,7 @@ class Orchestrator:
                     collection_session,
                     producer_session,
                     self.collector_registry,
-                    allow_partial=approval_pause is not None,
+                    allow_partial=approval_pause is not None or planning_stopped,
                 )
             except CollectorError as exc:
                 raise OrchestrationError(str(exc)) from exc
@@ -1477,6 +1650,7 @@ class Orchestrator:
         objective_reached = (
             terminal_satisfied
             and not budget_exhausted
+            and not planning_stopped
             and not cleanup_forced
             and (cleanup_success if cleanup_required else True)
             and (observation_integrity is None or observation_integrity["satisfied"] is True)
@@ -1548,6 +1722,7 @@ class Orchestrator:
             "objective": scenario.purpose,
             "objective_reached": objective_reached,
             "approval_pause": approval_pause,
+            **({"planning_stopped": True} if planning_stopped else {}),
             "objective_evaluation": {
                 "terminal_step_id": (
                     terminal_business.get("step_id") if terminal_business else None
@@ -1598,6 +1773,11 @@ class Orchestrator:
                 "preflight": preflight.to_dict(),
                 "decisions": policy_rows,
                 "ai_proposals": ai_proposals,
+                **(
+                    {"adaptive_authorization": adaptive_authorization}
+                    if adaptive_authorization is not None
+                    else {}
+                ),
                 "authorized_target_scope": dict(authorized_target_scope),
                 "autonomy": plan.autonomy.value,
                 "ai_provider": dict(plan.ai_provider),
@@ -1651,6 +1831,16 @@ class Orchestrator:
             action_implementations=action_implementations,
         )
         authorized_scope = self._validated_target_scope(target_scope, profile)
+        adaptive_authorization = compile_adaptive_authorization(
+            registry=self.registry,
+            scenario=scenario,
+            plan=plan,
+            profile=profile,
+            target_scope=authorized_scope,
+            platform=current_platform(),
+            planner=self.planner,
+            catalog_authority=self.catalog_authority,
+        )
         binding = execution_approval_binding(
             registry=self.registry,
             scenario=scenario,
@@ -1662,6 +1852,7 @@ class Orchestrator:
             context=approval_context,
             runner_readiness=runner_readiness,
             catalog_authority=self.catalog_authority,
+            adaptive_authorization=adaptive_authorization,
         )
         approved_by = approval_record.get("approved_by")
         validate_claimed_approval(
@@ -1695,12 +1886,20 @@ class Orchestrator:
                 if action_id in cleanup_allowed_actions
             ),
         )
+        cleanup_authority = None
+        if adaptive_authorization is not None:
+            cleanup_authority = {
+                "schema_version": "bluefire.reviewed-execution.v1",
+                "authorization_digest": adaptive_authorization["authorization_digest"],
+                "operations": [operation_identity(cleanup_step)],
+            }
         runner_profile = build_runner_profile(
             cleanup_profile,
             sandbox_root=sandbox_root,
             filesystem_scope=self._filesystem_scope(plan),
             network_destinations=self._network_destinations(plan),
             action_bindings=cleanup_bindings,
+            reviewed_execution=cleanup_authority,
         )
         self._validate_cleanup_inventory(self.runner.inventory())
         row, records, decision, _returned = self._execute_step(
@@ -2043,417 +2242,37 @@ class Orchestrator:
         retries_used: int,
         remaining_steps: int,
     ) -> tuple[dict[str, Any] | None, PlanStep | None, str | None, bool]:
-        if plan.autonomy is AutonomyLevel.OFF or self.proposal_provider is None:
-            return None, None, None, False
-
-        registered_edges = tuple(
-            edge.to_dict()
-            for edge in scenario.edges
-            if edge.from_step == current_step_id and edge.outcome is outcome
+        coordinator = RuntimeProposals(
+            self.registry,
+            self.planner,
+            self.proposal_provider,
+            self._runner_opcode,
+            self._plan_step,
         )
-        next_step = scenario.step(str(registered_edges[0]["to_step"])) if registered_edges else None
-        if next_step is not None and planner_decision.selected_step_id != next_step.id:
-            raise OrchestrationError("deterministic next-node decision is inconsistent")
-        retryable = bool(
-            outcome in {StepOutcome.PARTIAL, StepOutcome.BLOCKED, StepOutcome.FAILED}
-            and retries_used < 1
-            and remaining_steps > 0
-            and self._runner_opcode(current_plan_step) != "sandbox.cleanup.v1"
-        )
-        allowed_step_ids = tuple(
-            dict.fromkeys(
-                (
-                    *((next_step.id,) if next_step is not None else ()),
-                    *((current_step_id,) if retryable else ()),
-                )
-            )
-        )
-        behavior_ids: list[str] = []
-        for step in (next_step, scenario.step(current_step_id) if retryable else None):
-            if step is None:
-                continue
-            behavior_ids.extend((step.behavior_id, *step.alternates))
-        if retryable and current_plan_step.behavior_id not in behavior_ids:
-            behavior_ids.append(current_plan_step.behavior_id)
-        allowed_behavior_ids = tuple(dict.fromkeys(behavior_ids))
-        allowed_action_ids: tuple[str, ...] = ()
-        if mode is ExecutionMode.EXECUTE and profile is not None and next_step is not None:
-            action_ids: list[str] = []
-            for behavior_id in (next_step.behavior_id, *next_step.alternates):
-                behavior = self.registry.get_behavior(behavior_id)
-                action_ids.extend(
-                    action_id
-                    for action_id in behavior.action_ids
-                    if action_id in profile.enabled_actions
-                    and action_id not in profile.blocked_actions
-                )
-            allowed_action_ids = tuple(dict.fromkeys(action_ids))
-        allowed_parameter_schemas = (
-            {next_step.id: self._primitive_parameter_schemas(next_step.behavior_id)}
-            if next_step is not None
-            else {}
-        )
-        retryable_step_ids = (current_step_id,) if retryable else ()
-        registered_options: list[dict[str, Any]] = []
-        if next_step is not None:
-            registered_options.append(
-                {
-                    "role": "next",
-                    "step_id": next_step.id,
-                    "behavior_ids": [next_step.behavior_id, *next_step.alternates],
-                    "action_ids_by_behavior": {
-                        behavior_id: [
-                            action_id
-                            for action_id in self.registry.get_behavior(behavior_id).action_ids
-                            if action_id in allowed_action_ids
-                        ]
-                        for behavior_id in (next_step.behavior_id, *next_step.alternates)
-                    },
-                    "parameter_schemas": allowed_parameter_schemas.get(next_step.id, {}),
-                    "edge": dict(registered_edges[0]),
-                }
-            )
-        if retryable:
-            registered_options.append(
-                {
-                    "role": "retry",
-                    "step_id": current_step_id,
-                    "behavior_ids": [current_plan_step.behavior_id],
-                    "action_ids_by_behavior": {},
-                    "parameter_schemas": {},
-                    "edge": None,
-                }
-            )
-        proposal_policy = {
-            "schema_version": "bluefire.ai-proposal-policy.v1",
-            "mode": mode.value,
-            "autonomy": plan.autonomy.value,
-            "observed_outcome": outcome.value,
-            "registered_options": registered_options,
-            "maximum_adaptive_retries": 1,
-            "adaptive_retries_used": retries_used,
-            "remaining_steps": remaining_steps,
-            "execute_mutations_require_fresh_approval": True,
-            "runner_profile_id": profile.id if profile is not None else None,
-        }
-        planner_state = {
-            "schema_version": "bluefire.planner-state.v1",
-            "source_state_digest": planner_decision.current_state_digest,
-            "mode": mode.value,
-            "current_step_id": current_step_id,
-            "outcome": outcome.value,
-            "completed_steps": [
-                {
-                    "step_id": row.get("step_id"),
-                    "behavior_id": row.get("behavior_id"),
-                    "status": row.get("status"),
-                }
-                for row in state.get("steps", [])
-                if isinstance(row, Mapping)
-            ],
-            "deterministic_decision": {
-                "decision_id": planner_decision.decision_id,
-                "selected_step_id": planner_decision.selected_step_id,
-                "selected_behavior_id": planner_decision.selected_behavior_id,
-                "execution_disposition": planner_decision.execution_disposition.value,
-            },
-            "registered_options": registered_options,
-            "remaining_budgets": {
-                "steps": remaining_steps,
-                "retries": max(1 - retries_used, 0),
-            },
-        }
-        planner_state_digest = content_hash(planner_state)
-        request = AIProposalRequest(
-            objective=plan.objective,
-            current_state_digest=planner_decision.current_state_digest,
-            autonomy=plan.autonomy,
-            allowed_step_ids=allowed_step_ids,
-            allowed_behavior_ids=allowed_behavior_ids,
-            allowed_action_ids=allowed_action_ids,
-            allowed_edges=registered_edges,
-            allowed_parameter_schemas=allowed_parameter_schemas,
-            retryable_step_ids=retryable_step_ids,
-            context=planner_state,
-        )
-        base_record: dict[str, Any] = {
-            "schema_version": "bluefire.ai-proposal-record.v3",
-            "run_id": run_id,
-            "current_step_id": current_step_id,
-            "outcome": outcome.value,
-            "autonomy": plan.autonomy.value,
-            "state_digest": planner_decision.current_state_digest,
-            "plan_digest": content_hash(plan.to_dict()),
-            "deterministic_decision_id": planner_decision.decision_id,
-            "allowed_step_ids": list(allowed_step_ids),
-            "allowed_behavior_ids": list(allowed_behavior_ids),
-            "allowed_action_ids": list(allowed_action_ids),
-            "allowed_edges": [dict(edge) for edge in registered_edges],
-            "allowed_parameter_schemas": allowed_parameter_schemas,
-            "retryable_step_ids": list(retryable_step_ids),
-            "registered_options": registered_options,
-            "planner_state": planner_state,
-            "planner_state_digest": planner_state_digest,
-            "proposal_policy": proposal_policy,
-            "proposal_policy_digest": content_hash(proposal_policy),
-        }
         try:
-            result = self.proposal_provider.propose(request)
-            if result.requested_provider_id != self.proposal_provider.config.id:
-                raise AIProviderError("provider result identity does not match the runtime")
-            configured_provider_id = plan.ai_provider.get("provider_id")
-            if (
-                isinstance(configured_provider_id, str)
-                and result.requested_provider_id != configured_provider_id
-            ):
-                raise AIProviderError("provider result identity does not match the plan")
-            request.validate_proposal(result.proposal)
-        except AIProviderCancelled:
-            # Unwind through run() receipt cleanup without recording or applying
-            # a proposal and without advancing the deterministic graph.
-            raise
-        except AIProviderError as exc:
-            return (
-                {
-                    **base_record,
-                    "provider": self.proposal_provider.config.runtime_metadata(),
-                    "proposal": None,
-                    "application_status": "rejected_invalid",
-                    "application_reason": str(exc),
-                },
-                None,
-                None,
-                False,
+            return coordinator.propose(
+                run_id=run_id,
+                scenario=scenario,
+                plan=plan,
+                profile=profile,
+                mode=mode,
+                current_step_id=current_step_id,
+                current_plan_step=current_plan_step,
+                outcome=outcome,
+                state=state,
+                planner_decision=planner_decision,
+                retries_used=retries_used,
+                remaining_steps=remaining_steps,
             )
-
-        proposal = result.proposal
-        record = {
-            **base_record,
-            "provider": result.metadata(),
-            "proposal": proposal.to_dict(),
-            "proposal_digest": content_hash(proposal.to_dict()),
-            "application_status": "recorded",
-            "application_reason": "Proposal was recorded without changing the graph.",
-            "proposal_policy_evaluation": {
-                "status": "pending",
-                "policy_digest": content_hash(proposal_policy),
-            },
-        }
-        if proposal.proposal_type not in {
-            ProposalType.SELECT_REGISTERED,
-            ProposalType.SELECT_NEXT_NODE,
-            ProposalType.CHANGE_PARAMETERS,
-            ProposalType.SELECT_REGISTERED_ACTION,
-            ProposalType.RETRY_REGISTERED,
-        }:
-            record["application_status"] = "not_applied_non_selection"
-            record["application_reason"] = "The proposal requested no registered runtime mutation."
-            record["proposal_policy_evaluation"] = {
-                "status": "not_applicable",
-                "policy_digest": content_hash(proposal_policy),
-            }
-            return record, None, None, False
-
-        alternate_step: PlanStep | None = None
-        adaptive_next_step_id: str | None = None
-        retry_applied = False
-        application_status = "accepted_registered_default"
-        mutation = False
-        try:
-            assert proposal.selected_step_id is not None
-            assert proposal.selected_behavior_id is not None
-            proposed_scenario_step = scenario.step(proposal.selected_step_id)
-            registered_behaviors = (
-                proposed_scenario_step.behavior_id,
-                *proposed_scenario_step.alternates,
-            )
-            if proposal.selected_behavior_id not in registered_behaviors:
-                raise AIProviderError(
-                    "proposal selected a behavior not owned by the registered node"
-                )
-            base_step = self._plan_step(plan, proposal.selected_step_id)
-            if proposal.proposal_type is ProposalType.SELECT_REGISTERED:
-                if next_step is None or proposal.selected_step_id != next_step.id:
-                    raise AIProviderError(
-                        "behavior selection is limited to the observed registered successor"
-                    )
-                adaptive_next_step_id = next_step.id
-                if proposal.selected_behavior_id != base_step.behavior_id:
-                    alternate_step = self.planner.compile_registered_alternate(
-                        next_step,
-                        behavior_id=proposal.selected_behavior_id,
-                        mode=mode,
-                        profile=profile,
-                    )
-                    mutation = True
-                    application_status = "applied_registered_alternate"
-            elif proposal.proposal_type is ProposalType.SELECT_NEXT_NODE:
-                if (
-                    next_step is None
-                    or proposal.selected_step_id != next_step.id
-                    or proposal.selected_behavior_id != base_step.behavior_id
-                    or proposal.selected_edge not in registered_edges
-                ):
-                    raise AIProviderError(
-                        "next-node selection is not the exact observed registered edge"
-                    )
-                adaptive_next_step_id = next_step.id
-                application_status = "accepted_registered_next_node"
-            elif proposal.proposal_type is ProposalType.CHANGE_PARAMETERS:
-                if (
-                    next_step is None
-                    or proposal.selected_step_id != next_step.id
-                    or proposal.selected_behavior_id != base_step.behavior_id
-                ):
-                    raise AIProviderError(
-                        "parameter changes are limited to the observed registered successor"
-                    )
-                parameters = {
-                    **dict(base_step.parameters),
-                    **dict(proposal.parameter_change_map),
-                }
-                self.registry.get_behavior(base_step.behavior_id).validate_parameters(
-                    parameters,
-                    f"AI proposal parameters for {base_step.step_id}",
-                )
-                alternate_step = replace(base_step, parameters=parameters)
-                adaptive_next_step_id = next_step.id
-                mutation = parameters != dict(base_step.parameters)
-                application_status = "applied_typed_parameters"
-            elif proposal.proposal_type is ProposalType.SELECT_REGISTERED_ACTION:
-                if (
-                    mode is not ExecutionMode.EXECUTE
-                    or profile is None
-                    or next_step is None
-                    or proposal.selected_step_id != next_step.id
-                    or proposal.selected_behavior_id != base_step.behavior_id
-                ):
-                    raise AIProviderError(
-                        "action selection requires the exact Execute successor and profile"
-                    )
-                action_id = proposal.selected_action_id
-                behavior = self.registry.get_behavior(base_step.behavior_id)
-                if (
-                    action_id is None
-                    or action_id not in behavior.action_ids
-                    or action_id not in profile.enabled_actions
-                    or action_id in profile.blocked_actions
-                ):
-                    raise AIProviderError(
-                        "action is not owned by the behavior and enabled by the exact profile"
-                    )
-                self.registry.get_action(action_id)
-                alternate_step = replace(base_step, action_id=action_id)
-                adaptive_next_step_id = next_step.id
-                mutation = action_id != base_step.action_id
-                application_status = "applied_registered_action"
-            else:
-                if (
-                    not retryable
-                    or proposal.selected_step_id != current_step_id
-                    or proposal.selected_behavior_id != current_plan_step.behavior_id
-                ):
-                    raise AIProviderError("retry selected a node outside the bounded retry policy")
-                alternate_step = current_plan_step
-                adaptive_next_step_id = current_step_id
-                mutation = True
-                retry_applied = True
-                application_status = "applied_registered_retry"
-        except (AIProviderError, KeyError, PlannerError, RegistryError, ValueError) as exc:
-            record["application_status"] = "rejected_policy"
-            record["application_reason"] = str(exc)
-            record["proposal_policy_evaluation"] = {
-                "status": "refused",
-                "policy_digest": content_hash(proposal_policy),
-                "reason": str(exc),
-            }
-            return record, None, None, False
-
-        record["proposal_policy_evaluation"] = {
-            "status": "permitted",
-            "policy_digest": content_hash(proposal_policy),
-            "mutation": mutation,
-            "execute_requires_fresh_approval": mode is ExecutionMode.EXECUTE and mutation,
-        }
-        requires_gate = bool(
-            (
-                mutation
-                and (
-                    proposal.requires_operator_review
-                    or plan.autonomy is AutonomyLevel.ASSIST
-                    or mode is ExecutionMode.EXECUTE
-                )
-            )
-            or (
-                not mutation
-                and proposal.requires_operator_review
-                and plan.autonomy is AutonomyLevel.AUTO
-            )
-        )
-        if requires_gate:
-            record["application_status"] = "awaiting_operator_approval"
-            record["application_reason"] = (
-                "The registered proposal is paused for an operator decision. Acceptance "
-                "will reconstruct it deterministically; Execute will require a fresh exact "
-                "approval and a fresh-workspace replay from scenario start."
-            )
-            record["registered_step"] = (
-                alternate_step.to_dict() if alternate_step is not None else base_step.to_dict()
-            )
-            return record, None, None, False
-        if not mutation:
-            record["application_status"] = (
-                "recorded_for_review"
-                if plan.autonomy is AutonomyLevel.ASSIST
-                else application_status
-            )
-            record["application_reason"] = (
-                "Assist recorded a default-preserving proposal without pausing."
-                if plan.autonomy is AutonomyLevel.ASSIST
-                else "The proposal preserved the deterministic registered plan."
-            )
-            return record, None, adaptive_next_step_id, False
-        if mode is not ExecutionMode.SIMULATE or plan.autonomy is not AutonomyLevel.AUTO:
-            record["application_status"] = "recorded_for_review"
-            record["application_reason"] = "The mutation was recorded but not applied."
-            return record, None, None, False
-        record["application_status"] = application_status
-        record["application_reason"] = (
-            "Auto applied the policy-permitted registered Simulate mutation."
-        )
-        record["applied_step"] = (
-            alternate_step.to_dict() if alternate_step is not None else base_step.to_dict()
-        )
-        record["applied_next_step_id"] = adaptive_next_step_id
-        return record, alternate_step, adaptive_next_step_id, retry_applied
+        except RuntimeProposalError as exc:
+            raise OrchestrationError(str(exc)) from exc
 
     @staticmethod
     def _adaptive_retry_count(replay: Mapping[str, Any] | None) -> int:
-        if replay is None:
-            return 0
-        value = replay.get("adaptive_retry_count", 0)
-        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 1:
-            raise OrchestrationError("adaptive retry lineage exceeds the one-retry bound")
-        return int(value)
-
-    def _primitive_parameter_schemas(
-        self,
-        behavior_id: str,
-    ) -> dict[str, dict[str, Any]]:
-        schemas: dict[str, dict[str, Any]] = {}
-        for spec in self.registry.get_behavior(behavior_id).parameters:
-            parameter_type = spec.type.value
-            if parameter_type not in {"string", "integer", "number", "boolean"}:
-                continue
-            if parameter_type == "string" and not spec.enum:
-                continue
-            schemas[spec.name] = {
-                "type": parameter_type,
-                "enum": list(spec.enum),
-                "minimum": spec.minimum,
-                "maximum": spec.maximum,
-            }
-        return schemas
+        try:
+            return adaptive_retry_count(replay)
+        except RuntimeProposalError as exc:
+            raise OrchestrationError(str(exc)) from exc
 
     def _approved_replay_transition(
         self,
@@ -2464,53 +2283,16 @@ class Orchestrator:
         outcome: StepOutcome,
         planner_decision: PlannerDecision,
     ) -> tuple[bool, str | None]:
-        if replay is None:
-            return False, None
-        resolution = replay.get("proposal_resolution")
-        if (
-            not isinstance(resolution, Mapping)
-            or resolution.get("apply_after_step_id") != current_step_id
-        ):
-            return False, None
-        proposal_type = resolution.get("proposal_type")
-        selected_step_id = resolution.get("selected_step_id")
-        if resolution.get("schema_version") != "bluefire.ai-proposal-resolution-lineage.v3":
-            raise OrchestrationError("approved proposal lineage version is invalid")
-        if resolution.get("observed_outcome") != outcome.value:
-            raise OrchestrationError("approved proposal lineage is stale for the replayed outcome")
-        if proposal_type == ProposalType.RETRY_REGISTERED.value:
-            if outcome not in {
-                StepOutcome.PARTIAL,
-                StepOutcome.BLOCKED,
-                StepOutcome.FAILED,
-            }:
-                raise OrchestrationError(
-                    "approved retry lineage is not eligible for the replayed outcome"
-                )
-            if selected_step_id != current_step_id:
-                raise OrchestrationError("approved retry lineage selected a different node")
-            return True, current_step_id
-        if not isinstance(selected_step_id, str):
-            raise OrchestrationError("approved proposal lineage has no selected node")
-        if proposal_type == ProposalType.SELECT_NEXT_NODE.value:
-            selected_edge = resolution.get("selected_edge")
-            exact_edges = [
-                edge.to_dict()
-                for edge in scenario.edges
-                if edge.from_step == current_step_id and edge.outcome is outcome
-            ]
-            if (
-                not isinstance(selected_edge, Mapping)
-                or dict(selected_edge) not in exact_edges
-                or selected_edge.get("to_step") != selected_step_id
-            ):
-                raise OrchestrationError(
-                    "approved next-node lineage is stale for the observed outcome"
-                )
-            return True, selected_step_id
-        if planner_decision.selected_step_id != selected_step_id:
-            raise OrchestrationError("approved proposal target is stale for the replayed outcome")
-        return True, selected_step_id
+        try:
+            return approved_replay_transition(
+                replay=replay,
+                scenario=scenario,
+                current_step_id=current_step_id,
+                outcome=outcome,
+                planner_decision=planner_decision,
+            )
+        except RuntimeProposalError as exc:
+            raise OrchestrationError(str(exc)) from exc
 
     def _attempt_emergency_cleanup(
         self,
@@ -2525,44 +2307,22 @@ class Orchestrator:
         authorized_target_scope: Mapping[str, Any],
         receipt_ids: list[str],
     ) -> None:
-        cleanup_step = next(
-            (item for item in plan.steps if self._runner_opcode(item) == "sandbox.cleanup.v1"),
-            None,
+        emergency_cleanup(
+            store=self.store,
+            run_id=run_id,
+            plan=plan,
+            runner_opcode=self._runner_opcode,
+            execute_step=self._execute_step,
+            receipt_ids=receipt_ids,
+            execution_arguments={
+                "profile": profile,
+                "runner_profile": runner_profile,
+                "observer": observer,
+                "approved_by": approved_by,
+                "approval_record": approval_record,
+                "authorized_target_scope": authorized_target_scope,
+            },
         )
-        if cleanup_step is None or not receipt_ids:
-            return
-        status = "failed"
-        try:
-            row, _records, _decision, _returned_receipts = self._execute_step(
-                run_id=run_id,
-                step=cleanup_step,
-                bound_inputs={},
-                parent_ids=(),
-                profile=profile,
-                runner_profile=runner_profile,
-                observer=observer,
-                approved_by=approved_by,
-                approval_record=approval_record,
-                authorized_target_scope=authorized_target_scope,
-                receipt_ids=receipt_ids,
-            )
-            status = str(row["status"])
-            if status == StepOutcome.SUCCESS.value:
-                receipt_ids.clear()
-        except BaseException:
-            status = "failed"
-        try:
-            self.store.append_event(
-                run_id,
-                "cleanup.emergency",
-                {
-                    "schema_version": "bluefire.cleanup-event.v1",
-                    "status": status,
-                    "outstanding_receipt_count": len(receipt_ids),
-                },
-            )
-        except BaseException:
-            pass
 
     def _cleanup_preflight_problems(
         self,
@@ -2785,8 +2545,11 @@ class Orchestrator:
         cancel_event: threading.Event | None = None,
         collector_ids: Sequence[str] = (),
         collector_runtime_active: bool = False,
+        reviewed_step_check: Callable[[], None] | None = None,
     ) -> tuple[dict[str, Any], tuple[EvidenceRecord, ...], PolicyDecision, tuple[str, ...]]:
         action = self.registry.get_action(str(step.action_id))
+        if reviewed_step_check is not None:
+            reviewed_step_check()
         provider_binding = self._provider_execution_binding(step)
         runner_step = (
             replace(
@@ -2877,6 +2640,7 @@ class Orchestrator:
             timeout_ms=action_timeout_ms,
             execution_binding=(step.execution_binding if provider_binding is None else None),
             provider_binding=provider_binding,
+            reviewed_operation=reviewed_operation(step, runner_profile),
         )
         approval = self._approval_state(
             manifest,
@@ -2937,6 +2701,7 @@ class Orchestrator:
         pre_dispatch_receipts = discover_current_receipts()
         pre_dispatch_committed_receipts = discover_current_receipts(require_commit=True)
         runner_task_id: str | None = None
+        dispatch_requested = False
         try:
             execute_task = getattr(self.runner, "execute_task", None)
             wrapped_runner = getattr(self.runner, "runner", None)
@@ -2955,6 +2720,9 @@ class Orchestrator:
                         raise RunnerTransportError(
                             "Receiver-bound execution was cancelled before dispatch."
                         )
+                if reviewed_step_check is not None:
+                    reviewed_step_check()
+                dispatch_requested = True
                 runner_result = execute_task(
                     manifest,
                     runner_profile,
@@ -2969,6 +2737,9 @@ class Orchestrator:
                     raise RunnerTransportError(
                         "Receiver-bound execution requires the native single-task transport."
                     )
+                if reviewed_step_check is not None:
+                    reviewed_step_check()
+                dispatch_requested = True
                 runner_result = self.runner.execute(manifest, runner_profile)
             self._validate_runner_result(manifest, runner_profile, runner_result)
             returned_receipts = self._validated_receipt_ids(runner_result.get("receipt_ids", []))
@@ -2999,7 +2770,18 @@ class Orchestrator:
                 raise RunnerTransportError(
                     "runner reported a mutating outcome without a committed cleanup receipt"
                 )
-        except RunnerTaskCancelled:
+        except RunnerTaskCancelled as exc:
+            record_interrupted_dispatch(
+                store=self.store,
+                run_id=run_id,
+                step=step,
+                manifest=manifest,
+                runner_task_id=runner_task_id,
+                parent_ids=parent_ids,
+                dispatch_requested=dispatch_requested,
+                cancellation=exc,
+                row_factory=self._row,
+            )
             for receipt_id in discover_current_receipts():
                 if receipt_id not in receipt_ids:
                     receipt_ids.append(receipt_id)

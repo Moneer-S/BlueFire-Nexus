@@ -27,6 +27,9 @@ from .action_catalog import (
     ActionCatalogSnapshot,
     ActivatedActionPackage,
 )
+from .adaptive_approval_binding import reviewed_execution_approval_binding
+from .adaptive_execution import compile_adaptive_authorization
+from .adaptive_replay import validate_review_source
 from .ai import (
     AIProposal,
     AIProvider,
@@ -48,7 +51,6 @@ from .ai_transport import ManagedAIJSONTransport
 from .ai_wire import AIProviderCancelled
 from .application_errors import APIError
 from .approvals import (
-    execution_approval_binding,
     execution_approval_envelope,
     execution_intent_id,
     public_approval_record,
@@ -139,7 +141,7 @@ from .runner_client import (
     canonical_runner_inventory,
     runner_transport_identity,
 )
-from .runner_contracts import RunnerContractError
+from .runner_contracts import RunnerContractError, current_platform
 from .runner_lifecycle import ManagedRunnerLifecycle, RunnerLifecycleError, RunnerProfileBudgetError
 from .runner_management_service import RunnerManagementServiceMixin
 from .util import content_hash, file_hash
@@ -1458,7 +1460,23 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             and runner_readiness is not None
         ):
             target_scope = self._target_scope(request)
-            report["approval_binding"] = execution_approval_binding(
+            try:
+                report["adaptive_authorization"] = compile_adaptive_authorization(
+                    registry=self.registry,
+                    scenario=scenario,
+                    plan=report["plan"],
+                    profile=profile,
+                    target_scope=target_scope,
+                    platform=current_platform(),
+                    planner=orchestrator.planner,
+                    catalog_authority=self._catalog_snapshot.to_dict(),
+                )
+            except ValueError as exc:
+                raise APIError(
+                    HTTPStatus.BAD_REQUEST, "adaptive_authorization_invalid", str(exc)
+                ) from exc
+            report["approval_binding"] = reviewed_execution_approval_binding(
+                planner=orchestrator.planner,
                 registry=self.registry,
                 scenario=scenario,
                 plan=report["plan"],
@@ -1486,6 +1504,7 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         else:
             report["approval_binding"] = None
             report["approval_envelope"] = None
+            report["adaptive_authorization"] = None
         return report
 
     def run(
@@ -1712,21 +1731,32 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
                 )
             self._index_run(result)
             return result
-        except AIProviderCancelled as exc:
-            if cancel_event is not None:
-                raise JobCancelled("job provider request cancellation was confirmed") from exc
-            raise APIError(
-                HTTPStatus.CONFLICT,
-                "provider_request_cancelled",
-                "The provider request was cancelled before a proposal could be applied.",
-            ) from exc
-        except RunnerTaskCancelled as exc:
+        except (AIProviderCancelled, RunnerTaskCancelled, JobCancelled) as exc:
+            if execution_approval_id is not None and execution_workspace is not None:
+                recovery = self._recover_interrupted_cleanup(
+                    requested_approval_id=execution_approval_id
+                )
+                settled = self.product_store.get_execution_workspace(execution_approval_id)
+                if recovery["deferred"] or settled["state"] not in {
+                    "completed",
+                    "recovered",
+                    "not_required",
+                }:
+                    raise APIError(
+                        HTTPStatus.CONFLICT,
+                        "run_cleanup_deferred",
+                        "The run stopped, but its cleanup could not be reconciled.",
+                    ) from exc
             if cancel_event is not None and cancel_event.is_set():
-                raise JobCancelled("job runner task cancellation was confirmed") from exc
+                raise JobCancelled("run cancellation and cleanup were reconciled") from exc
             raise APIError(
                 HTTPStatus.CONFLICT,
-                "runner_task_cancelled",
-                "The runner task was cancelled after its process tree stopped.",
+                (
+                    "provider_request_cancelled"
+                    if isinstance(exc, AIProviderCancelled)
+                    else "runner_task_cancelled"
+                ),
+                "The run was interrupted; inspect its retained result and cleanup status.",
             ) from exc
         except (
             OrchestrationError,
@@ -2926,6 +2956,21 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         if not isinstance(source_scenario, Mapping):
             raise ProductStoreError("proposal source scenario is unavailable")
         scenario = ScenarioDefinition.from_mapping(source_scenario)
+        if record.get("schema_version") == "bluefire.ai-proposal-record.v4":
+            original_approval = source.get("approval")
+            if not isinstance(original_approval, Mapping):
+                raise ProductStoreError("adaptive review has no consumed source approval")
+            try:
+                validate_review_source(
+                    source=source,
+                    record=record,
+                    registry=self.registry,
+                    consumed_approval=self.product_store.get_approval_request(
+                        str(original_approval.get("approval_id"))
+                    ),
+                )
+            except ValueError as exc:
+                raise ProductStoreError(str(exc)) from exc
         try:
             selected_step = scenario.step(str(validated.selected_step_id))
         except KeyError as exc:
@@ -3012,8 +3057,9 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         selected_step_id = validated.selected_step_id
         selected_behavior_id = validated.selected_behavior_id
         original_step = immutable_scenario.step(selected_step_id)
+        reviewed_method = record.get("schema_version") == "bluefire.ai-proposal-record.v4"
         changes_behavior = bool(
-            validated.proposal_type is ProposalType.SELECT_REGISTERED
+            (validated.proposal_type is ProposalType.SELECT_REGISTERED or reviewed_method)
             and selected_behavior_id != original_step.behavior_id
         )
         mode = ExecutionMode(str(source.get("mode")))
@@ -3041,7 +3087,7 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         source_retry = source.get("adaptive_retry")
         retries_used = int(source_retry.get("used", 0)) if isinstance(source_retry, Mapping) else 0
         adaptive_retry_count = retries_used + (
-            1 if validated.proposal_type is ProposalType.RETRY_REGISTERED else 0
+            1 if validated.proposal_type is ProposalType.RETRY_REGISTERED or reviewed_method else 0
         )
         if not 0 <= adaptive_retry_count <= 1:
             raise ReplayError("adaptive proposal exceeds the one-retry lineage bound")
@@ -3133,7 +3179,19 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             and isinstance(step.get("action_id"), str)
         }
         proposal_resolution = {
-            "schema_version": "bluefire.ai-proposal-resolution-lineage.v3",
+            "schema_version": (
+                "bluefire.ai-proposal-resolution-lineage.v4"
+                if reviewed_method
+                else "bluefire.ai-proposal-resolution-lineage.v3"
+            ),
+            **(
+                {
+                    "method_replay_from_start": True,
+                    "source_authorization_digest": record["authorization_digest"],
+                }
+                if reviewed_method
+                else {}
+            ),
             "proposal_record_id": review["proposal_record_id"],
             "source_proposal_id": review["source_proposal_id"],
             "state_digest": review["state_digest"],
@@ -3189,7 +3247,8 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             ),
         }
         binding = (
-            execution_approval_binding(
+            reviewed_execution_approval_binding(
+                planner=orchestrator.planner,
                 registry=self.registry,
                 scenario=prepared.scenario,
                 plan=preflight.plan,
@@ -3659,7 +3718,8 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
                     ai_provider=provider,
                     action_implementations=recovery_action_implementations,
                 )
-                binding = execution_approval_binding(
+                binding = reviewed_execution_approval_binding(
+                    planner=orchestrator.planner,
                     registry=recovery_catalog.registry,
                     scenario=scenario,
                     plan=plan.to_dict(),
@@ -4114,7 +4174,7 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         recovery_limitation = (
             "The original Execute run was interrupted; cleanup was reconciled during restart."
             if after_restart
-            else "The Execute replay was cancelled; cleanup was reconciled before cancellation completed."
+            else "The Execute run was cancelled; cleanup was reconciled before cancellation completed."
         )
         if recovery_limitation not in limitation_rows:
             limitation_rows.append(recovery_limitation)
@@ -4548,7 +4608,23 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             }
         )
         if mode is ExecutionMode.EXECUTE and profile is not None:
-            report["approval_binding"] = execution_approval_binding(
+            try:
+                report["adaptive_authorization"] = compile_adaptive_authorization(
+                    registry=catalog.registry,
+                    scenario=prepared.scenario,
+                    plan=report["plan"],
+                    profile=profile,
+                    target_scope=target_scope,
+                    platform=current_platform(),
+                    planner=orchestrator.planner,
+                    catalog_authority=resolved["replay_catalog_authority"],
+                )
+            except ValueError as exc:
+                raise APIError(
+                    HTTPStatus.BAD_REQUEST, "adaptive_authorization_invalid", str(exc)
+                ) from exc
+            report["approval_binding"] = reviewed_execution_approval_binding(
+                planner=orchestrator.planner,
                 registry=catalog.registry,
                 scenario=prepared.scenario,
                 plan=report["plan"],
@@ -5303,7 +5379,8 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         )
         if not report.ready:
             raise OrchestrationError("; ".join(report.problems))
-        binding = execution_approval_binding(
+        binding = reviewed_execution_approval_binding(
+            planner=orchestrator.planner,
             registry=orchestrator.registry,
             scenario=scenario,
             plan=report.plan,

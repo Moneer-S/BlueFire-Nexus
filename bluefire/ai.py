@@ -490,8 +490,16 @@ class AIProposalRequest:
         default_factory=dict
     )
     retryable_step_ids: tuple[str, ...] = ()
+    deadline_monotonic: float | None = None
 
     def __post_init__(self) -> None:
+        if self.deadline_monotonic is not None and (
+            isinstance(self.deadline_monotonic, bool)
+            or not isinstance(self.deadline_monotonic, (int, float))
+            or not math.isfinite(self.deadline_monotonic)
+            or self.deadline_monotonic <= 0
+        ):
+            raise AIProviderError("AI planning deadline is invalid")
         objective = _nonempty_string(self.objective, "objective", maximum=4_000)
         object.__setattr__(self, "objective", objective)
         if not isinstance(self.current_state_digest, str) or not _DIGEST.fullmatch(
@@ -662,7 +670,14 @@ def validate_persisted_proposal_record(record: Mapping[str, Any]) -> AIProposal:
         if not isinstance(policy, Mapping) or policy_digest != content_hash(policy):
             raise AIProviderError("persisted AI proposal policy digest is mismatched")
         schema_version = record.get("schema_version")
-        if schema_version == "bluefire.ai-proposal-record.v3":
+        if schema_version == "bluefire.ai-proposal-record.v4":
+            from .adaptive_record_validation import validate_v4_proposal_record
+
+            try:
+                planner_context = validate_v4_proposal_record(record)
+            except DurableProposalRecordError as exc:
+                raise AIProviderError(str(exc)) from exc
+        elif schema_version == "bluefire.ai-proposal-record.v3":
             planner_context = _validate_persisted_planner_state(
                 record,
                 state_digest=state_digest,
@@ -675,7 +690,7 @@ def validate_persisted_proposal_record(record: Mapping[str, Any]) -> AIProposal:
         else:
             raise AIProviderError("persisted AI proposal record schema is unsupported")
         proposal = AIProposal.from_persisted_mapping(record.get("proposal"))
-        if schema_version == "bluefire.ai-proposal-record.v3":
+        if schema_version in {"bluefire.ai-proposal-record.v3", "bluefire.ai-proposal-record.v4"}:
             provider = record.get("provider")
             if (
                 not isinstance(provider, Mapping)
@@ -923,6 +938,7 @@ class OpenAIResponsesProvider:
 
     def propose(self, request: AIProposalRequest) -> AIProviderResult:
         self._check_cancelled()
+        self._remaining_request_seconds(request)
         readiness = self.access.readiness(self.config)
         if readiness.code == "request_cancelled":
             raise AIProviderCancelled()
@@ -938,11 +954,12 @@ class OpenAIResponsesProvider:
                 payload = self.access.post(
                     self.config,
                     body=body,
-                    timeout_seconds=float(self.config.timeout_seconds),
+                    timeout_seconds=self._remaining_request_seconds(request),
                     cancel_event=self.cancel_event,
                 )
                 result = self._parse_response(payload, request, attempts=attempts)
                 self._check_cancelled()
+                self._remaining_request_seconds(request)
                 return result
             except AIProviderTransportError as exc:
                 if exc.code == "request_cancelled":
@@ -951,6 +968,8 @@ class OpenAIResponsesProvider:
                 if not exc.retryable or attempt >= self.config.max_retries:
                     break
                 delay = min(0.25 * (2**attempt), 2.0)
+                if request.deadline_monotonic is not None:
+                    delay = min(delay, self._remaining_request_seconds(request))
                 if self.cancel_event is None:
                     self.sleeper(delay)
                 else:
@@ -965,6 +984,14 @@ class OpenAIResponsesProvider:
             else "response_invalid"
         )
         return self._fallback(request, attempts=attempts, reason=reason)
+
+    def _remaining_request_seconds(self, request: AIProposalRequest) -> float:
+        if request.deadline_monotonic is None:
+            return float(self.config.timeout_seconds)
+        remaining = request.deadline_monotonic - time.monotonic()
+        if remaining <= 0:
+            raise AIProviderError("The experiment planning deadline expired.")
+        return min(float(self.config.timeout_seconds), remaining)
 
     def _check_cancelled(self) -> None:
         if self.cancel_event is not None and self.cancel_event.is_set():
@@ -1009,6 +1036,7 @@ class OpenAIResponsesProvider:
         reason: str,
     ) -> AIProviderResult:
         self._check_cancelled()
+        self._remaining_request_seconds(request)
         result = self.fallback.propose(request)
         self._check_cancelled()
         return AIProviderResult(

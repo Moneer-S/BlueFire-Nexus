@@ -218,7 +218,23 @@ def prepare_replay(
         replacement = registry.get_behavior(request.swap_behavior_id)
         replacement.validate_parameters(step.parameters, "replay swap parameters")
         steps = tuple(
-            replace(item, behavior_id=replacement.id) if item.id == request.swap_step_id else item
+            (
+                replace(
+                    item,
+                    behavior_id=replacement.id,
+                    alternates=(
+                        tuple(
+                            behavior_id
+                            for behavior_id in dict.fromkeys((item.behavior_id, *item.alternates))
+                            if behavior_id != replacement.id
+                        )
+                        if scenario.adaptive_execution is not None
+                        else item.alternates
+                    ),
+                )
+                if item.id == request.swap_step_id
+                else item
+            )
             for item in scenario.steps
         )
         scenario = replace(scenario, steps=steps)

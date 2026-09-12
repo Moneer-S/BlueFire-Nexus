@@ -7,6 +7,8 @@ import json
 import multiprocessing
 import threading
 import time
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 
@@ -24,10 +26,11 @@ from tests_platform.test_service import CleanupOnlyRecoveryRunner
 
 
 @pytest.fixture
-def tmp_path(tmp_path_factory):
+def tmp_path():
     # Keep the owned workspace plus canonical 64-character receipt filename
     # below the Windows path limit without changing product path validation.
-    return tmp_path_factory.mktemp("r")
+    with TemporaryDirectory(prefix="bf-replay-cancel-") as owned:
+        yield Path(owned)
 
 
 @pytest.mark.parametrize("cancellation", ["runner", "provider", "checkpoint", "result_link"])

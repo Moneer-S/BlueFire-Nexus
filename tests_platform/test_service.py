@@ -14,7 +14,7 @@ import pytest
 
 from bluefire.ai import UrllibAIJSONTransport
 from bluefire.api import APIError
-from bluefire.approvals import execution_approval_binding, public_approval_record
+from bluefire.approvals import public_approval_record
 from bluefire.collectors import (
     CollectionRequest,
     CollectorError,
@@ -555,8 +555,10 @@ def test_service_recovers_inflight_product_jobs_after_restart(tmp_path: Path) ->
     assert restarted.product_store.get_job(job["job_id"])["state"] == "interrupted"
 
 
+@pytest.mark.parametrize("adaptive", [False, True])
 def test_restart_cleanup_uses_exact_bound_workspace_and_audits_run_bundle(
     request: pytest.FixtureRequest,
+    adaptive: bool,
 ) -> None:
     short_root = Path(tempfile.mkdtemp(prefix="bf-recovery-")).resolve(strict=True)
     request.addfinalizer(lambda: shutil.rmtree(short_root, ignore_errors=True))
@@ -574,6 +576,13 @@ def test_restart_cleanup_uses_exact_bound_workspace_and_audits_run_bundle(
         runner_factory=lambda _profile: (runner, original_root),
     )
     scenario = next(item for item in service._scenarios if item.id.endswith("research.chain.v1"))
+    if adaptive:
+        from bluefire.contracts import ScenarioDefinition
+        from tests_platform.test_adaptive_authorization import POLICY
+
+        scenario = ScenarioDefinition.from_mapping(
+            {**scenario.to_dict(), "adaptive_execution": POLICY}
+        )
     profile = next(
         item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
     )
@@ -601,7 +610,10 @@ def test_restart_cleanup_uses_exact_bound_workspace_and_audits_run_bundle(
         autonomy=autonomy,
         ai_provider=provider,
     )
-    approval_binding = execution_approval_binding(
+    from bluefire.adaptive_approval_binding import reviewed_execution_approval_binding
+
+    approval_binding = reviewed_execution_approval_binding(
+        planner=orchestrator.planner,
         registry=service.registry,
         scenario=scenario,
         plan=plan.to_dict(),
@@ -705,6 +717,16 @@ def test_restart_cleanup_uses_exact_bound_workspace_and_audits_run_bundle(
 
     assert restarted.cleanup_recovery["completed"] == 1
     assert runner.calls and [call["action_id"] for call in runner.calls] == ["sandbox.cleanup.v1"]
+    if adaptive:
+        operation = runner.calls[0]["reviewed_operation"]
+        assert operation["action_id"] == "sandbox.cleanup.v1"
+        assert operation["authorization_digest"].startswith("sha256:")
+        assert (
+            restarted.product_store.get_approval_request(claimed["approval_id"])["status"]
+            == "claimed"
+        )
+    else:
+        assert "reviewed_operation" not in runner.calls[0]
     assert not artifact.exists()
     assert not (receipt_root / f"{receipt_id}.json").exists()
     durable = restarted.product_store.get_execution_workspace(str(claimed["approval_id"]))

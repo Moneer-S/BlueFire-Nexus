@@ -7,7 +7,7 @@ from collections.abc import Collection
 from typing import Any
 
 from .product_store_errors import ProductStoreError
-from .util import json_clone
+from .util import content_hash, json_clone
 
 STABLE_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _MAX_ACTION_PACKAGE_ACTOR_CHARS = 128
@@ -130,6 +130,29 @@ def safe_document(value: Any, *, context: str = "document") -> Any:
             )
             if secret_shaped:
                 if child is None:
+                    continue
+                if key in {"authorization_digest", "source_authorization_digest"} and (
+                    isinstance(child, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", child)
+                ):
+                    continue
+                if (
+                    key == "adaptive_authorization"
+                    and isinstance(child, dict)
+                    and (
+                        child.get("schema_version") == "bluefire.adaptive-authorization.v1"
+                        and child.get("authorization_digest")
+                        == content_hash(
+                            {
+                                name: value
+                                for name, value in child.items()
+                                if name != "authorization_digest"
+                            }
+                        )
+                    )
+                ):
+                    # This is a public reviewed contract, not a bearer secret.
+                    # Inspect every nested value under the normal credential rules.
+                    inspect(child, f"{path}.{raw_key}")
                     continue
                 if key.endswith(("_available", "_configured", "_present")) and isinstance(
                     child, bool
