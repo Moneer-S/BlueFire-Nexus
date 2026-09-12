@@ -375,6 +375,9 @@ test("production operator UI completes authoring, management, run, replay, and c
   await expect(modelOptions.nth(0)).toHaveAttribute("value", "");
   await expect(modelOptions.nth(1)).toHaveAttribute("value", "openai-responses.v1");
   await expect(assistant.getByRole("button", { name: "Start work" })).toBeDisabled();
+  await assistant.getByRole("combobox", { name: "Provider", exact: true }).selectOption("openai-responses.v1");
+  await expect(assistant.getByRole("status", { name: "Model connection readiness" })).toContainText("Model connection needs attention.");
+  await expect(assistant.getByRole("button", { name: "Start work" })).toBeDisabled();
   await assistant.getByRole("link", { name: "Review model connection and usage authorization" }).click();
   await expect(page.getByRole("region", { name: "Model connection" })).toBeVisible();
   await expect(page.getByLabel("Secret environment reference")).toBeVisible();
@@ -463,7 +466,11 @@ test("production operator UI completes authoring, management, run, replay, and c
   await page.getByText("AI provider & environment details", { exact: true }).click();
   await expect(page.getByRole("combobox", { name: "Provider", exact: true })).toHaveValue("deterministic-offline.v1");
   await expect(page.getByLabel("Environment profile")).toHaveValue("sandbox-simulate.v1");
-  await expect(page.getByRole("group", { name: "Requested access" }).getByRole("checkbox")).toBeChecked();
+  const requestedAccess = page.getByRole("group", { name: "Requested access" });
+  await expect(requestedAccess.getByRole("checkbox")).toHaveCount(3);
+  await expect(requestedAccess.getByRole("checkbox", { name: "Files in the selected workspace", exact: true })).toBeChecked();
+  await expect(requestedAccess.getByRole("checkbox", { name: "Connections to the local lab receiver", exact: true })).not.toBeChecked();
+  await expect(requestedAccess.getByRole("checkbox", { name: "Export local", exact: true })).not.toBeChecked();
   await expect(observations).toContainText("Simulate produces synthetic records. Independent file observations are available during Execute.");
   const preflightResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/runs/preflight" && response.request().method() === "POST");
   await page.getByRole("button", { name: "Run preflight" }).click();
