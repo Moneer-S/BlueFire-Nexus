@@ -10,14 +10,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from .lab_ownership import descriptor_identity, identity_format
 from .runner_contracts import (
     EFFECT_CAPABILITIES,
     seal_manifest,
     seal_profile,
     validate_reviewed_manifest,
 )
-from .runner_descriptor_io import _descriptor_mount_identity
+from .runner_descriptor_io import _descriptor_mount_identity, descriptor_identity, identity_format
 from .util import canonical_json_bytes, parse_iso8601_datetime
 from .windows_owner_acl import _windows_open_descriptor
 

@@ -10,27 +10,43 @@ from types import SimpleNamespace
 import pytest
 
 from bluefire import lab_ownership as ownership
+from bluefire import runner_descriptor_io as descriptors
+
+
+def test_lab_ownership_exports_the_shared_identity_boundary():
+    assert ownership.descriptor_identity is descriptors.descriptor_identity
+    assert ownership.identity_format is descriptors.identity_format
+    assert ownership._windows_file_identity is descriptors._windows_file_identity
+
+
+@pytest.mark.parametrize(
+    ("platform", "expected"),
+    [("win32", "windows-file-id-info.v1"), ("linux", "posix-stat.v1")],
+)
+def test_identity_format_preserves_lease_format_names(monkeypatch, platform, expected):
+    monkeypatch.setattr(descriptors, "sys", SimpleNamespace(platform=platform))
+    assert ownership.identity_format() == expected
 
 
 @pytest.mark.parametrize("stat_volume", [0x12345678, 0xFEDCBA9812345678])
 def test_windows_identity_uses_full_native_volume_and_file_id(monkeypatch, stat_volume):
     full = (0xFEDCBA9812345678, 0xFEDCBA9812345678FEDCBA9812345678)
     details = SimpleNamespace(st_mode=stat.S_IFREG, st_nlink=1, st_dev=stat_volume, st_ino=9)
-    monkeypatch.setattr(ownership, "sys", SimpleNamespace(platform="win32"))
-    monkeypatch.setattr(ownership, "os", SimpleNamespace(fstat=lambda _fd: details))
-    monkeypatch.setattr(ownership, "_windows_file_identity", lambda _fd: full)
+    monkeypatch.setattr(descriptors, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(descriptors, "os", SimpleNamespace(fstat=lambda _fd: details))
+    monkeypatch.setattr(descriptors, "_windows_file_identity", lambda _fd: full)
     assert ownership.descriptor_identity(17) == full
 
 
 def test_native_identity_failure_never_falls_back_to_stat(monkeypatch):
     details = SimpleNamespace(st_mode=stat.S_IFREG, st_nlink=1, st_dev=1, st_ino=2)
-    monkeypatch.setattr(ownership, "sys", SimpleNamespace(platform="win32"))
-    monkeypatch.setattr(ownership, "os", SimpleNamespace(fstat=lambda _fd: details))
+    monkeypatch.setattr(descriptors, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(descriptors, "os", SimpleNamespace(fstat=lambda _fd: details))
 
     def unavailable(_descriptor):
         raise OSError("native identity unavailable")
 
-    monkeypatch.setattr(ownership, "_windows_file_identity", unavailable)
+    monkeypatch.setattr(descriptors, "_windows_file_identity", unavailable)
     with pytest.raises(OSError, match="native identity unavailable"):
         ownership.descriptor_identity(17)
 
@@ -56,7 +72,7 @@ def test_native_file_information_requires_full_id_and_ordinary_handle(monkeypatc
 
     monkeypatch.setitem(sys.modules, "msvcrt", SimpleNamespace(get_osfhandle=lambda _: 7))
     monkeypatch.setattr(
-        ownership.ctypes,
+        descriptors.ctypes,
         "WinDLL",
         lambda *_a, **_k: SimpleNamespace(GetFileInformationByHandleEx=Query()),
         raising=False,
@@ -70,6 +86,32 @@ def test_native_file_information_requires_full_id_and_ordinary_handle(monkeypatc
         with pytest.raises(OSError, match="identity is unavailable"):
             ownership._windows_file_identity(17)
     assert calls == ([18] if fault == "file_id" else [18, 9])
+
+
+@pytest.mark.parametrize(
+    ("mode", "links", "attributes", "directory"),
+    [
+        (stat.S_IFREG, 2, 0, False),
+        (stat.S_IFLNK, 1, 0, False),
+        (stat.S_IFREG, 1, 0x400, False),
+        (stat.S_IFDIR, 1, 0x400, True),
+        (stat.S_IFREG, 1, 0, True),
+        (stat.S_IFDIR, 1, 0, False),
+    ],
+)
+def test_shared_descriptor_refuses_nonordinary_objects_before_native_identity(
+    monkeypatch, mode, links, attributes, directory
+):
+    details = SimpleNamespace(st_mode=mode, st_nlink=links, st_file_attributes=attributes)
+    monkeypatch.setattr(descriptors, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(descriptors, "os", SimpleNamespace(fstat=lambda _fd: details))
+    monkeypatch.setattr(
+        descriptors,
+        "_windows_file_identity",
+        lambda _fd: pytest.fail("unsafe descriptor reached the identity query"),
+    )
+    with pytest.raises(ValueError, match="ordinary"):
+        ownership.descriptor_identity(17, directory=directory)
 
 
 def test_path_and_open_file_identity_agree_and_handle_stays_owned(tmp_path):
@@ -111,16 +153,17 @@ def test_dangling_link_is_not_absence(monkeypatch):
     assert ownership.path_absent(path) is False
 
 
-def test_lab_identity_source_is_required_by_existing_provider_audit():
+@pytest.mark.parametrize(
+    "source", ["bluefire/lab_ownership.py", "bluefire/runner_descriptor_io.py"]
+)
+def test_lab_identity_source_is_required_by_existing_provider_audit(source):
     from bluefire import provider_gate
     from tests_platform.test_provider_gate import _structural_report
 
     report = _structural_report()
     provider_gate._validate_structural(report)
     shell = report["checks"]["no_model_shell"]
-    shell["source_files"] = [
-        row for row in shell["source_files"] if row["path"] != "bluefire/lab_ownership.py"
-    ]
+    shell["source_files"] = [row for row in shell["source_files"] if row["path"] != source]
     with pytest.raises(ValueError, match="no-model-shell evidence is invalid"):
         provider_gate._validate_structural(report)
 
