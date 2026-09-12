@@ -867,6 +867,30 @@ def test_committed_source_archive_rejects_portable_namespace_collisions_before_w
     assert list(source.iterdir()) == []
 
 
+def test_committed_source_archive_preserves_caller_link_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_path = tmp_path / "source.tar"
+    with tarfile.open(archive_path, "w:") as archive:
+        member = tarfile.TarInfo("package/module.py")
+        member.size = 1
+        archive.addfile(member, io.BytesIO(b"x"))
+    source = tmp_path / "source"
+    source.mkdir()
+    checked: list[Path] = []
+
+    def reject_parent(path: Path) -> bool:
+        checked.append(path)
+        return path == source / "package"
+
+    monkeypatch.setattr(install_gate, "_is_link_or_reparse", reject_parent)
+    with tarfile.open(archive_path, "r:") as archive:
+        with pytest.raises(ValueError, match="unsafe member"):
+            install_gate._extract_validated_archive(archive, source)
+    assert source / "package" in checked
+    assert not (source / "package" / "module.py").exists()
+
+
 def test_ephemeral_cleanup_retries_and_refuses_paths_outside_destination(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

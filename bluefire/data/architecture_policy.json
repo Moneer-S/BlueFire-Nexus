@@ -241,6 +241,7 @@
       "patterns": [
       "bluefire.architecture_gate",
       "bluefire.install_gate",
+      "bluefire.install_gate_archive",
       "bluefire.install_gate_package_metadata",
       "bluefire.install_gate_validation",
       "bluefire.install_gate_workspace",
