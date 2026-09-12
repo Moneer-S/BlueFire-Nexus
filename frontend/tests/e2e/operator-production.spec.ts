@@ -282,6 +282,9 @@ test("production operator UI completes authoring, management, run, replay, and c
   await page.getByRole("button", { name: "Redo" }).click();
   await expect(nodes).toHaveCount(initialNodeCount + 1);
   await page.getByRole("button", { name: "Undo" }).click();
+  // Adding a step reveals it; Undo preserves that viewport. Frame the restored
+  // graph through the operator control before selecting its first node again.
+  await page.getByRole("button", { name: "Fit graph", exact: true }).click();
   await nodes.first().click();
   await expect(page.getByRole("button", { name: "Duplicate selected node" })).toBeEnabled();
   await page.getByRole("button", { name: "Copy selected node" }).click();

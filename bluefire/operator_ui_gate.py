@@ -21,7 +21,7 @@ from .defense_frontier_gate import (
     _isolated_python_environment,
     _run_bounded_helper_process,
 )
-from .gate_frontend_report import vitest_inventory
+from .gate_frontend_report import retain_vitest_failures, vitest_inventory
 from .gate_helper_diagnostics import (
     GateHelperFailure,
     helper_failure_detail,
@@ -49,6 +49,7 @@ from .operator_ui_journey import (
     _write_json,
 )
 from .product_acceptance_run_bundle import acceptance_run_binding, validated_run_bundle
+from .runner_transport_errors import RunnerTransportError
 from .util import content_hash
 
 VERIFICATION_REPORT = "gate08-verification-report.json"
@@ -389,7 +390,9 @@ def _run_frontend_suite(repository: Path, evidence_dir: Path) -> Mapping[str, An
         diagnostic["outputs"][stage] = {
             "stdout": output_diagnostic(result.stdout),
             "stderr": output_diagnostic(result.stderr),
-            "private_capture": retain_private_output(
+        }
+        try:
+            capture = retain_private_output(
                 repository=repository,
                 evidence_dir=evidence_dir,
                 stdout=result.stdout,
@@ -400,8 +403,11 @@ def _run_frontend_suite(repository: Path, evidence_dir: Path) -> Mapping[str, An
                     "exit_code": result.returncode,
                     "command": [str(node), str(scripts[stage]), *reported[stage][2:]],
                 },
-            ),
-        }
+            )
+        except (OSError, ValueError, TypeError, RunnerTransportError) as error:
+            # Optional diagnostic retention cannot erase the completed process result.
+            capture = {"status": "retention_failed", "error_type": type(error).__name__}
+        diagnostic["outputs"][stage]["private_capture"] = capture
 
     try:
         private_capture_root(repository, evidence_dir)
@@ -447,6 +453,18 @@ def _run_frontend_suite(repository: Path, evidence_dir: Path) -> Mapping[str, An
                 raise GateHelperFailure(classification)
             inventory = vitest_inventory(parsed, frontend)
             diagnostic["inventory_known"] = True
+            if unit.returncode != 0 or inventory["failed"] or parsed.get("numFailedTestSuites", 0):
+                diagnostic["unit_failures"] = retain_vitest_failures(
+                    parsed,
+                    frontend=frontend,
+                    evidence_dir=evidence_dir,
+                    source={
+                        "stage": "unit",
+                        "exit_code": unit.returncode,
+                        "command": [str(node), str(scripts["unit"]), *reported["unit"][2:]],
+                        "original_stdout": output_diagnostic(unit.stdout),
+                    },
+                )
             passed = (
                 typecheck.returncode == lint.returncode == unit.returncode == 0
                 and not inventory["failed"]
