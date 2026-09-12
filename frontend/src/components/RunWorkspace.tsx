@@ -128,7 +128,7 @@ export function RunWorkspace({ embedded }: { embedded?: { job: RunJob; releaseEn
   const product = useProduct();
   const { scenario, setScenario, dirty, runConfig, setRunConfig } = product;
   const selectedProfile = catalog.data?.runner_profiles.find((profile) => profile.id === runConfig.profileId);
-  const runnerProfileId = selectedProfile?.id;
+  const runnerProfileId = runConfig.mode === "execute" && selectedProfile?.mode === "execute" ? selectedProfile.id : undefined;
   const runnerSelection = useMemo(() => ({ profileId: runnerProfileId }), [runnerProfileId]);
   const runnerSelectionRef = useRef<typeof runnerSelection | null>(runnerSelection);
   runnerSelectionRef.current = runnerSelection;

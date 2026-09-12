@@ -90,7 +90,7 @@ describe("guided local Execute onboarding", () => {
       if (path.endsWith("/scenarios")) return json({ scenarios: [guidedScenario] });
       if (path.endsWith("/runner/bootstrap") && init?.method === "POST") { calls.push("bootstrap"); expect(JSON.parse(String(init.body))).toEqual({ profile_id: "sandbox-execute.v1" }); runner = { ...stopped, profile_id: "sandbox-execute.v1" }; return json(runner); }
       if (path.endsWith("/runner/start") && init?.method === "POST") { calls.push("start"); expect(JSON.parse(String(init.body))).toEqual({ profile_id: "sandbox-execute.v1" }); runner = { ...ready, profile_id: "sandbox-execute.v1" }; return json(runner); }
-      if (path.endsWith("/runner")) { expect(catalog.runner_profiles.some(profile => profile.id === url.searchParams.get("profile_id"))).toBe(true); return json({ ...runner, profile_id: runner.state === "unbootstrapped" ? null : url.searchParams.get("profile_id") }); }
+      if (path.endsWith("/runner")) { expect(catalog.runner_profiles.some(profile => profile.mode === "execute" && profile.id === url.searchParams.get("profile_id"))).toBe(true); return json({ ...runner, profile_id: runner.state === "unbootstrapped" ? null : url.searchParams.get("profile_id") }); }
       if (path.endsWith("/runs/preflight")) { calls.push("preflight"); return json(preflight); }
       if (path.endsWith("/runs") && init?.method === "POST") { calls.push("submit"); jobSubmitted = true; return json({ schema_version: "bluefire.run-job-submission.v1", job, approval_request: approvalRequest, preflight }); }
       if (path.endsWith("/jobs")) return json({ schema_version: "bluefire.active-job-list.v1", jobs: jobSubmitted && !["cancelled", "completed", "failed", "interrupted"].includes(job.state) ? [job] : [] });
@@ -151,6 +151,9 @@ describe("guided local Execute onboarding", () => {
     const submitCall = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith("/runs") && init?.method === "POST");
     const submitted = JSON.parse(String(submitCall?.[1]?.body));
     expect(submitted).toMatchObject({ scenario: { id: GUIDED_EXECUTE_SCENARIO_ID }, mode: "execute", autonomy: "off", runner_profile_id: GUIDED_EXECUTE_PROFILE_ID, target_scope: { scope_refs: ["sandbox.workspace"] }, collectors: ["collector.filesystem.sandbox.v1"] });
+    const runnerLookups = fetchMock.mock.calls.map(([input]) => new URL(String(input), "http://localhost")).filter(url => url.pathname.endsWith("/runner"));
+    expect(runnerLookups.length).toBeGreaterThan(0);
+    expect(runnerLookups.every(url => catalog.runner_profiles.some(profile => profile.mode === "execute" && profile.id === url.searchParams.get("profile_id")))).toBe(true);
   }, 15_000);
 
   it("does not mark a terminal job complete without canonical observation and cleanup proof", () => {
