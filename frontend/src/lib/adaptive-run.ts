@@ -23,6 +23,11 @@ export function selectedAttempt(run: RunRecord, record: RuntimeRecord): RunStep 
 
 export function dispatchDescription(step: RunStep, run: RunRecord): string {
   if (run.mode !== "execute" || step.execution_disposition === "counterfactual") return "Synthetic result; no execution established";
+  if (step.interruption?.schema_version === "bluefire.execution-interruption.v1") {
+    if (step.interruption.dispatch_requested === true) return "Dispatch interrupted; effects unknown";
+    if (step.interruption.dispatch_requested === false) return "Cancelled before dispatch; no runner result";
+    return "Interruption recorded; dispatch and effects unknown";
+  }
   if (step.runner_status && step.request_hash) return `Runner returned ${step.runner_status.replaceAll("_", " ")}`;
   if (step.policy?.allowed === false) return "Refused before dispatch";
   return "Dispatch or runner result not established";

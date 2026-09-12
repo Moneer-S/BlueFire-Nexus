@@ -60,6 +60,23 @@ describe("recorded adaptive path", () => {
     expect(within(screen.getByRole("region", { name: "Recorded adaptive decision" })).getByText("Refused before dispatch")).toBeVisible();
   });
 
+  it.each([true, false])("retains an interrupted selected attempt without claiming a runner result (dispatch requested=%s)", dispatched => {
+    const run = fixture();
+    Object.assign(run.steps[1]!, { status: "failed", runner_status: undefined, runner_task_id: "interrupted-task", interruption: {
+      schema_version: "bluefire.execution-interruption.v1", dispatch_requested: dispatched, effect_outcome: "unknown", runner_result_received: false,
+      process_tree_stopped: true, cooperative_requested: true, cooperative_acknowledged: false, forced_tree_termination: true, control_cleanup_verified: true,
+    } });
+    const label = dispatched ? "Dispatch interrupted; effects unknown" : "Cancelled before dispatch; no runner result";
+    expect(selectedAttempt(run, run.ai_proposals![0]!)).toBe(run.steps[1]);
+    render(<AdaptiveRunPath run={run} catalog={catalog}/>);
+    expect(screen.getByText("Attempt 2 · run position 2")).toBeVisible();
+    expect(screen.getByText(`${dispatched ? "Interrupted" : "Cancelled before dispatch"} · ${label}`)).toBeVisible();
+    const decision = screen.getByRole("region", { name: "Recorded adaptive decision" });
+    expect(within(decision).getByText("Chosen alternative: Inspect file metadata")).toBeVisible();
+    expect(within(decision).getByText(label)).toBeVisible();
+    expect(within(decision).queryByText(/Runner returned|Refused before dispatch/)).not.toBeInTheDocument();
+  });
+
   it("does not relink an unrelated run or an unmatched decision to these attempts", () => {
     const run = fixture(); run.ai_proposals![0]!.run_id = "other-run";
     expect(selectedAttempt(run, run.ai_proposals![0]!)).toBeUndefined();

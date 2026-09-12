@@ -664,6 +664,17 @@ export interface RunStep {
   runner_status?: string;
   request_hash?: string;
   runner_task_id?: string;
+  interruption?: {
+    schema_version: "bluefire.execution-interruption.v1";
+    dispatch_requested: boolean;
+    effect_outcome: "unknown";
+    runner_result_received: false;
+    process_tree_stopped: boolean;
+    cooperative_requested: boolean;
+    cooperative_acknowledged: boolean;
+    forced_tree_termination: boolean;
+    control_cleanup_verified: boolean;
+  };
   artifacts?: unknown[];
   evidence_ids?: string[];
   telemetry?: string[];

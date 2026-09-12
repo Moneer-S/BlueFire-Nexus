@@ -8,6 +8,7 @@ export function objectiveLabel(reached?: boolean, mode?: string): string {
 
 export function stepOutcomeLabel(step: RunStep, mode: string): string {
   if (step.execution_disposition === "counterfactual") return "Simulated continuation";
+  if (mode === "execute" && step.interruption?.schema_version === "bluefire.execution-interruption.v1") return step.interruption.dispatch_requested === false ? "Cancelled before dispatch" : "Interrupted";
   if (step.status === "blocked" || step.status === "control_blocked" || step.status === "refused") {
     if (mode === "simulate") return "Simulated stop";
     if (step.policy?.allowed === false || step.telemetry?.includes("policy.control_blocked")) return "Stopped by BlueFire policy";
