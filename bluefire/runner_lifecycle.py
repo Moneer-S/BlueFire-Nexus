@@ -30,6 +30,13 @@ from .runner_bootstrap import (
     InventoryProbe,
     bootstrap_runner,
 )
+from .runner_bootstrap_record import (
+    BOOTSTRAP_RECORD_SCHEMA_VERSION,
+    _bootstrap_payload,
+    _bootstrap_record_payload,
+    _BootstrapRecord,
+    _record_authentication,
+)
 from .runner_client import _darwin_child_exited_without_reap
 from .runner_darwin_containment import (
     _private_process_group_members as _darwin_private_process_group_members,
@@ -70,7 +77,6 @@ from .util import canonical_json_bytes, file_hash
 from .version import __version__
 
 LIFECYCLE_STATUS_SCHEMA_VERSION = "bluefire.runner-lifecycle-status.v1"
-BOOTSTRAP_RECORD_SCHEMA_VERSION = "bluefire.runner-lifecycle-bootstrap.v1"
 ROOT_MARKER_SCHEMA_VERSION = "bluefire.runner-lifecycle-root.v1"
 REMOVAL_JOURNAL_SCHEMA_VERSION = "bluefire.runner-enrollment-removal.v1"
 PENDING_LAUNCH_SCHEMA_VERSION = "bluefire.runner-pending-launch.v1"
@@ -176,29 +182,6 @@ class HostCommandFactory(Protocol):
 BootstrapFactory = Callable[..., BootstrappedRunner]
 ClientFactory = Callable[..., AuthenticatedRunnerClient]
 TrustRemoval = Callable[..., None]
-
-
-@dataclass(frozen=True, slots=True, repr=False)
-class _BootstrapRecord:
-    binary_path: Path
-    sandbox_path: Path
-    binary_digest: str
-    source: str
-    managed_binary: bool
-    managed_sandbox: bool
-    product_version: str
-    runner_version: str
-    platform: str
-    architecture: str
-    inventory_schema: str
-    action_sdk_version: str
-    receipt_protocol: str
-
-    def __repr__(self) -> str:
-        return (
-            "_BootstrapRecord(source="
-            f"{self.source!r}, platform={self.platform!r}, architecture={self.architecture!r})"
-        )
 
 
 @dataclass(slots=True, repr=False)
@@ -2825,47 +2808,6 @@ def _broad_root(root: Path) -> bool:
     return lexical in candidates
 
 
-def _bootstrap_payload(bootstrapped: BootstrappedRunner, runner_id: str) -> dict[str, Any]:
-    manifest = bootstrapped.manifest
-    return {
-        "schema_version": BOOTSTRAP_RECORD_SCHEMA_VERSION,
-        "runner_id": runner_id,
-        "source": bootstrapped.source,
-        "managed_binary": bootstrapped.managed_binary,
-        "managed_sandbox": bootstrapped.managed_sandbox,
-        "binary_path": str(bootstrapped.binary_path.resolve(strict=True)),
-        "sandbox_path": str(bootstrapped.sandbox_path.resolve(strict=True)),
-        "binary_digest": "sha256:" + bootstrapped.binary_sha256,
-        "product_version": manifest.product_version,
-        "runner_version": manifest.runner_version,
-        "platform": manifest.platform,
-        "architecture": manifest.architecture,
-        "inventory_schema": manifest.inventory_schema,
-        "action_sdk_version": manifest.action_sdk_version,
-        "receipt_protocol": manifest.receipt_protocol,
-    }
-
-
-def _bootstrap_record_payload(record: _BootstrapRecord) -> dict[str, Any]:
-    return {
-        "schema_version": BOOTSTRAP_RECORD_SCHEMA_VERSION,
-        "runner_id": RUNNER_ID,
-        "source": record.source,
-        "managed_binary": record.managed_binary,
-        "managed_sandbox": record.managed_sandbox,
-        "binary_path": str(record.binary_path),
-        "sandbox_path": str(record.sandbox_path),
-        "binary_digest": record.binary_digest,
-        "product_version": record.product_version,
-        "runner_version": record.runner_version,
-        "platform": record.platform,
-        "architecture": record.architecture,
-        "inventory_schema": record.inventory_schema,
-        "action_sdk_version": record.action_sdk_version,
-        "receipt_protocol": record.receipt_protocol,
-    }
-
-
 def _canonical_record_path(path: Path) -> Path:
     if not path.is_absolute() or str(path) in {"", ".", ".."}:
         raise OSError("state path is not absolute")
@@ -2874,15 +2816,6 @@ def _canonical_record_path(path: Path) -> Path:
     if not _same_path(path, resolved) or _is_link_or_reparse(path):
         raise OSError("state path is not canonical")
     return resolved
-
-
-def _record_authentication(enrollment: RunnerEnrollment, payload: Mapping[str, Any]) -> str:
-    return (
-        "sha256:"
-        + hmac.new(
-            enrollment.hmac_key(), canonical_json_bytes(dict(payload)), hashlib.sha256
-        ).hexdigest()
-    )
 
 
 def _profile_ids(values: Sequence[str]) -> tuple[str, ...]:

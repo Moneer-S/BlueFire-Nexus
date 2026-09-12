@@ -83,6 +83,8 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/action_catalog.py",
         "bluefire/provider_runner_contracts.py",
         "bluefire/runner_adapter.py",
+        "bluefire/runner_bootstrap_record.py",
+        "bluefire/runner_transport_framing.py",
         "bluefire/runner_durable_result.py",
         "bluefire/receiver.py",
         "bluefire/receiver_policy.py",
@@ -496,6 +498,8 @@ def test_live_source_audit_round_trips_locked_structural_validator() -> None:
 @pytest.mark.parametrize(
     "relative",
     [
+        "bluefire/runner_bootstrap_record.py",
+        "bluefire/runner_transport_framing.py",
         "bluefire/graph_ai_edit.py",
         "bluefire/browser_launch.py",
         "bluefire/ai_receiver_inspection.py",

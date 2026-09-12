@@ -68,6 +68,8 @@ _SOURCE_AUDIT_PATHS = (
     "bluefire/action_catalog.py",
     "bluefire/provider_runner_contracts.py",
     "bluefire/runner_adapter.py",
+    "bluefire/runner_bootstrap_record.py",
+    "bluefire/runner_transport_framing.py",
     "bluefire/runner_durable_result.py",
     "bluefire/receiver.py",
     "bluefire/receiver_policy.py",
