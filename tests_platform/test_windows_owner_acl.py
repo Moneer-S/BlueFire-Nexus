@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import subprocess  # nosec B404
 from pathlib import Path
@@ -302,3 +303,166 @@ def test_owner_bound_read_denies_named_replacement_while_handle_is_open(
     assert len(replacement_errors) == 1
     assert path.read_bytes() == b"owner-bound"
     assert replacement.read_bytes() == b"replacement"
+
+
+@pytest.mark.parametrize("directory", [False, True])
+@pytest.mark.parametrize("entrypoint", ["descriptor", "handle", "path"])
+def test_exact_owner_acl_reinspection_preserves_change_time_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    directory: bool,
+    entrypoint: str,
+) -> None:
+    import msvcrt
+
+    path = tmp_path / "private"
+    path.mkdir() if directory else path.write_bytes(b"unchanged history")
+    apply_owner_private_acl_path(path, directory=directory)
+    descriptor = _windows_open_descriptor(
+        path, directory=directory, write_dac=True, share_write=True
+    )
+    advapi32, kernel32 = owner_acl._configure_apis()
+
+    def unexpected_write(*args: object) -> int:
+        raise AssertionError("An exact private DACL must not be written again")
+
+    monkeypatch.setattr(advapi32, "SetSecurityInfo", unexpected_write)
+    monkeypatch.setattr(owner_acl, "_configure_apis", lambda: (advapi32, kernel32))
+    try:
+        before = os.fstat(descriptor)
+        if entrypoint == "descriptor":
+            apply_owner_private_acl(descriptor, directory=directory)
+        elif entrypoint == "handle":
+            apply_owner_private_acl_handle(msvcrt.get_osfhandle(descriptor), directory=directory)
+        else:
+            apply_owner_private_acl_path(path, directory=directory)
+        after = os.fstat(descriptor)
+        assert (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ) == (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+    finally:
+        os.close(descriptor)
+
+
+@pytest.mark.parametrize(
+    ("directory", "mismatch"),
+    [
+        (directory, mismatch)
+        for directory in (False, True)
+        for mismatch in ("unprotected", "multiple_aces", "access", "inheritance", "null_acl")
+        # Windows removes OI/CI flags when applying an ACL to a regular file.
+        if directory or mismatch != "inheritance"
+    ],
+)
+def test_owner_acl_mismatch_is_hardened_and_reverified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    directory: bool,
+    mismatch: str,
+) -> None:
+    import msvcrt
+
+    path = tmp_path / "private"
+    path.mkdir() if directory else path.write_bytes(b"permission repair")
+    descriptor = _windows_open_descriptor(path, directory=directory, write_dac=True)
+    advapi32, kernel32 = owner_acl._configure_apis()
+    sid = owner_acl.current_user_sid()
+    flags = "OICI" if directory else ""
+    if mismatch == "inheritance":
+        flags = "" if directory else "OICI"
+    protection = "" if mismatch == "unprotected" else "P"
+    access = "FR" if mismatch == "access" else "FA"
+    extra = f"(A;;FR;;;{_different_sid(sid)})" if mismatch == "multiple_aces" else ""
+    seed = owner_acl._converted_descriptor(
+        advapi32, f"D:{protection}(A;{flags};{access};;;{sid}){extra}"
+    )
+    writes: list[int] = []
+    original_set = advapi32.SetSecurityInfo
+
+    def record_write(*args: object) -> int:
+        status = original_set(*args)
+        writes.append(status)
+        return status
+
+    try:
+        status = original_set(
+            ctypes.c_void_p(msvcrt.get_osfhandle(descriptor)),
+            owner_acl._SE_FILE_OBJECT,
+            owner_acl._DACL_SECURITY_INFORMATION
+            | (
+                0x20000000
+                if mismatch == "unprotected"
+                else owner_acl._PROTECTED_DACL_SECURITY_INFORMATION
+            ),
+            None,
+            None,
+            None if mismatch == "null_acl" else owner_acl._descriptor_dacl(advapi32, seed),
+            None,
+        )
+        assert status == 0
+        monkeypatch.setattr(advapi32, "SetSecurityInfo", record_write)
+        monkeypatch.setattr(owner_acl, "_configure_apis", lambda: (advapi32, kernel32))
+        apply_owner_private_acl(descriptor, directory=directory)
+        assert writes == [0]
+        # A second call must pass the full real descriptor predicate with no write.
+        apply_owner_private_acl(descriptor, directory=directory)
+        assert writes == [0]
+    finally:
+        kernel32.LocalFree(seed)
+        os.close(descriptor)
+
+
+@pytest.mark.parametrize(
+    "failed_api",
+    [
+        "GetSecurityInfo",
+        "GetSecurityDescriptorDacl",
+        "GetSecurityDescriptorControl",
+        "IsValidAcl",
+        "IsValidSid",
+    ],
+)
+def test_owner_acl_inspection_failure_refuses_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_api: str,
+) -> None:
+    path = tmp_path / "private.bin"
+    path.write_bytes(b"unchanged history")
+    apply_owner_private_acl_path(path, directory=False)
+    descriptor = _windows_open_descriptor(path, directory=False, write_dac=True)
+    advapi32, kernel32 = owner_acl._configure_apis()
+
+    def unexpected_write(*args: object) -> int:
+        raise AssertionError("An unreadable or malformed DACL must not be rewritten")
+
+    monkeypatch.setattr(advapi32, "SetSecurityInfo", unexpected_write)
+    monkeypatch.setattr(
+        advapi32, failed_api, lambda *args: 5 if failed_api == "GetSecurityInfo" else 0
+    )
+    monkeypatch.setattr(owner_acl, "_configure_apis", lambda: (advapi32, kernel32))
+    try:
+        before = os.fstat(descriptor)
+        with pytest.raises(WindowsOwnerAclError):
+            apply_owner_private_acl(descriptor, directory=False)
+        after = os.fstat(descriptor)
+        assert (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_ctime_ns) == (
+            before.st_dev,
+            before.st_ino,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+    finally:
+        os.close(descriptor)

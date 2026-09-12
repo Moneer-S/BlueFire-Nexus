@@ -202,6 +202,10 @@ class WindowsOwnerAclError(RuntimeError):
     """A path-free failure to apply or verify an exact private DACL."""
 
 
+class _PrivateAclMismatch(WindowsOwnerAclError):
+    """A readable DACL requires the existing owner-private hardening operation."""
+
+
 class _Acl(ctypes.Structure):
     _fields_ = [
         ("revision", wintypes.BYTE),
@@ -425,6 +429,8 @@ def _configure_apis() -> tuple[ctypes.CDLL, ctypes.CDLL]:
     advapi32.EqualSid.restype = wintypes.BOOL
     advapi32.IsValidSid.argtypes = (ctypes.c_void_p,)
     advapi32.IsValidSid.restype = wintypes.BOOL
+    advapi32.IsValidAcl.argtypes = (ctypes.c_void_p,)
+    advapi32.IsValidAcl.restype = wintypes.BOOL
     kernel32.LocalFree.argtypes = (ctypes.c_void_p,)
     kernel32.LocalFree.restype = ctypes.c_void_p
     return advapi32, kernel32
@@ -531,7 +537,7 @@ def _verify_owner_private_acl(
         None,
         ctypes.byref(descriptor),
     )
-    if status != 0 or not descriptor.value or not owner.value or not dacl.value:
+    if status != 0 or not descriptor.value or not owner.value:
         if descriptor.value:
             kernel32.LocalFree(descriptor)
         raise WindowsOwnerAclError("Windows private DACL verification failed")
@@ -542,7 +548,6 @@ def _verify_owner_private_acl(
         verified_dacl = ctypes.c_void_p()
         control = wintypes.WORD()
         revision = wintypes.DWORD()
-        acl = ctypes.cast(dacl, ctypes.POINTER(_Acl)).contents
         ace_pointer = ctypes.c_void_p()
         if (
             not advapi32.EqualSid(owner, observed_owner_sid)
@@ -552,31 +557,39 @@ def _verify_owner_private_acl(
                 ctypes.byref(verified_dacl),
                 ctypes.byref(defaulted),
             )
-            or not present.value
-            or verified_dacl.value != dacl.value
             or not advapi32.GetSecurityDescriptorControl(
                 descriptor,
                 ctypes.byref(control),
                 ctypes.byref(revision),
             )
-            or not control.value & _SE_DACL_PROTECTED
-            or acl.ace_count != 1
-            or not advapi32.GetAce(dacl, 0, ctypes.byref(ace_pointer))
-            or not ace_pointer.value
         ):
+            raise WindowsOwnerAclError("Windows private DACL verification failed")
+        if verified_dacl.value != dacl.value:
+            raise WindowsOwnerAclError("Windows private DACL verification failed")
+        if not present.value or not dacl.value:
+            raise _PrivateAclMismatch("Windows private DACL verification failed")
+        if not advapi32.IsValidAcl(dacl):
+            raise WindowsOwnerAclError("Windows private DACL verification failed")
+        acl = ctypes.cast(dacl, ctypes.POINTER(_Acl)).contents
+        if not control.value & _SE_DACL_PROTECTED or acl.ace_count != 1:
+            raise _PrivateAclMismatch("Windows private DACL verification failed")
+        if not advapi32.GetAce(dacl, 0, ctypes.byref(ace_pointer)) or not ace_pointer.value:
             raise WindowsOwnerAclError("Windows private DACL verification failed")
         ace = ctypes.cast(ace_pointer, ctypes.POINTER(_AccessAllowedAce)).contents
         sid_pointer = ctypes.c_void_p(int(ace_pointer.value) + _AccessAllowedAce.sid_start.offset)
         expected_flags = _OBJECT_INHERIT_ACE | _CONTAINER_INHERIT_ACE if directory else 0
+        if ace.header.ace_size < ctypes.sizeof(_AccessAllowedAce):
+            raise WindowsOwnerAclError("Windows private DACL verification failed")
         if (
             ace.header.ace_type != _ACCESS_ALLOWED_ACE_TYPE
             or ace.header.ace_flags != expected_flags
-            or ace.header.ace_size < ctypes.sizeof(_AccessAllowedAce)
             or ace.mask != _FILE_ALL_ACCESS
-            or not advapi32.IsValidSid(sid_pointer)
-            or not advapi32.EqualSid(sid_pointer, access_sid)
         ):
+            raise _PrivateAclMismatch("Windows private DACL verification failed")
+        if not advapi32.IsValidSid(sid_pointer):
             raise WindowsOwnerAclError("Windows private DACL verification failed")
+        if not advapi32.EqualSid(sid_pointer, access_sid):
+            raise _PrivateAclMismatch("Windows private DACL verification failed")
         verified = True
     except (ValueError, OSError):
         raise WindowsOwnerAclError("Windows private DACL verification failed") from None
@@ -640,6 +653,21 @@ def _apply_owner_private_acl_to_handle(
             access_sid=access_sid_pointer,
             default_owner_sid=owner_sid_pointer,
         )
+        try:
+            verified_descriptor = _verify_owner_private_acl(
+                advapi32,
+                kernel32,
+                handle=handle,
+                observed_owner_sid=observed_owner_sid,
+                access_sid=access_sid_pointer,
+                directory=directory,
+            )
+        except _PrivateAclMismatch:
+            pass
+        else:
+            # Setting even an identical DACL advances Windows change time. Reads
+            # must preserve the exact metadata bound into an upgrade review.
+            return
         dacl = _descriptor_dacl(advapi32, input_descriptor)
         status = advapi32.SetSecurityInfo(
             wintypes.HANDLE(handle),
@@ -678,7 +706,7 @@ def _apply_owner_private_acl_to_handle(
 
 
 def apply_owner_private_acl(descriptor: int, *, directory: bool) -> None:
-    """Replace one pinned object's DACL and verify its token-private result."""
+    """Ensure one pinned object's DACL is exactly token-private without redundant writes."""
 
     if os.name != "nt" or not isinstance(directory, bool):
         raise WindowsOwnerAclError("Windows owner-private ACL input is invalid")
