@@ -388,3 +388,84 @@ it("finds a retained historical version by its own title before its history is e
   // retained v1. A fresh page must still surface it without the operator expanding history.
   expect(await screen.findByRole("article", { name: "Original procedure - Saved v1" })).toBeVisible();
 });
+
+it("reports incomplete historical search while pending or failed and retries without claiming no matches", async () => {
+  const data = historical(); const { draft } = setup({ versions: data.heads });
+  let reject!: (error: Error) => void;
+  vi.mocked(api.scenarioVersionHistory).mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }))
+    .mockResolvedValueOnce({ schema_version: "v1", scenarios: data.history });
+  await screen.findByRole("article", { name: "Revised procedure - Saved v2" });
+  fireEvent.change(screen.getByRole("searchbox"), { target: { value: "Original" } });
+  expect(await screen.findByText(/Searching experiments and saved version history/)).toBeVisible();
+  expect(screen.getByText("0 experiments shown so far")).toBeVisible();
+  expect(screen.queryByText(/No experiments match this search/)).not.toBeInTheDocument();
+  await act(async () => reject(new Error("History disconnected")));
+  expect(await screen.findByText("Saved version search incomplete")).toBeVisible();
+  expect(screen.queryByText(/No experiments match this search/)).not.toBeInTheDocument();
+  expect(documentNow()).toEqual(draft);
+  await userEvent.click(screen.getByRole("button", { name: "Retry saved history search" }));
+  expect(await screen.findByRole("article", { name: "Original procedure - Saved v1" })).toBeVisible();
+  expect(screen.queryByText("Saved version search incomplete")).not.toBeInTheDocument();
+  expect(screen.getByText("1 experiment")).toBeVisible();
+  expect(api.scenarioVersionHistory).toHaveBeenCalledTimes(2);
+  expect(documentNow()).toEqual(draft);
+});
+
+it.each(["unmatched", "clear"])("uses the current search after a pending history read when the search changes to %s", async change => {
+  const data = historical(); const { draft } = setup({ versions: data.heads });
+  let finish!: (value: Awaited<ReturnType<typeof api.scenarioVersionHistory>>) => void;
+  vi.mocked(api.scenarioVersionHistory).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  await screen.findByRole("article", { name: "Revised procedure - Saved v2" });
+  const search = screen.getByRole("searchbox"); search.focus();
+  fireEvent.change(search, { target: { value: "Original" } });
+  await screen.findByText(/Searching experiments and saved version history/);
+  const next = change === "clear" ? "" : "Unrelated missing search";
+  fireEvent.change(search, { target: { value: next } });
+  await act(async () => finish({ schema_version: "v1", scenarios: data.history }));
+  expect(search).toHaveValue(next); expect(search).toHaveFocus();
+  expect(screen.queryByRole("article", { name: "Original procedure - Saved v1" })).not.toBeInTheDocument();
+  if (change === "unmatched") expect(await screen.findByText(/No experiments match this search/)).toBeVisible();
+  else expect(screen.getByRole("article", { name: "Revised procedure - Saved v2" })).toBeVisible();
+  expect(documentNow()).toEqual(draft);
+  expect(api.scenarioVersionHistory).toHaveBeenCalledExactlyOnceWith(saved.id);
+});
+
+it("does not claim no search matches when the current saved identity list is unavailable", async () => {
+  setup({ unavailable: true, url: "/scenarios?q=Original" });
+  expect(await screen.findByRole("button", { name: "Retry saved versions" })).toBeVisible();
+  expect(screen.getByText("0 experiments shown so far")).toBeVisible();
+  expect(screen.queryByText(/No experiments match this search/)).not.toBeInTheDocument();
+  expect(api.scenarioVersionHistory).not.toHaveBeenCalled();
+});
+
+it("keeps search incomplete until the saved identity inventory and its history settle", async () => {
+  const data = historical();
+  let finish!: (value: Awaited<ReturnType<typeof api.scenarioVersions>>) => void;
+  const versions = new Promise<Awaited<ReturnType<typeof api.scenarioVersions>>>(resolve => { finish = resolve; });
+  const { draft } = setup({ versions, history: data.history, url: "/scenarios?q=Original" });
+  expect(await screen.findByText(/Searching experiments and saved version history/)).toBeVisible();
+  expect(screen.getByText("0 experiments shown so far")).toBeVisible();
+  expect(screen.queryByText(/No experiments match this search/)).not.toBeInTheDocument();
+  expect(api.scenarioVersionHistory).not.toHaveBeenCalled();
+  await act(async () => finish(await data.heads));
+  expect(await screen.findByRole("article", { name: "Original procedure - Saved v1" })).toBeVisible();
+  expect(screen.getByText("1 experiment")).toBeVisible();
+  expect(screen.queryByText(/Searching experiments and saved version history/)).not.toBeInTheDocument();
+  expect(documentNow()).toEqual(draft);
+});
+
+it("retains loaded matches and labels search incomplete when a history refresh fails", async () => {
+  const data = historical(); const { client, draft } = setup({ versions: data.heads, history: data.history, url: "/scenarios?q=Original" });
+  await screen.findByRole("article", { name: "Original procedure - Saved v1" });
+  let reject!: (error: Error) => void;
+  vi.mocked(api.scenarioVersionHistory).mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+  act(() => { void client.invalidateQueries({ queryKey: ["scenario-versions", "history", saved.id] }); });
+  expect(await screen.findByText(/Searching experiments and saved version history/)).toBeVisible();
+  expect(screen.getByText("1 experiment shown so far")).toBeVisible();
+  expect(screen.getByRole("article", { name: "Original procedure - Saved v1" })).toBeVisible();
+  await act(async () => reject(new Error("History refresh disconnected")));
+  expect(await screen.findByText("Saved version search incomplete")).toBeVisible();
+  expect(screen.getByRole("article", { name: "Original procedure - Saved v1" })).toBeVisible();
+  expect(screen.getByText("1 experiment shown so far")).toBeVisible();
+  expect(documentNow()).toEqual(draft);
+});
