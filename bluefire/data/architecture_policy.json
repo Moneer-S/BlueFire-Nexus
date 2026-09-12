@@ -163,6 +163,7 @@
         "bluefire.collector_gate_filesystem",
         "bluefire.collector_gate_validation",
         "bluefire.collector_journey",
+        "bluefire.collector_journey_diagnostics",
         "bluefire.prepared_lab",
         "bluefire.lab_ownership",
         "bluefire.prepared_lab_guest",

@@ -29,6 +29,11 @@ from .collector_interfaces import (
     SecurityQueryAdapter,
     WindowsEventLogAdapter,
 )
+from .collector_journey_diagnostics import (
+    CollectorJourneyDiagnostic,
+    DiagnosticSubprocessRustRunner,
+    observe,
+)
 from .collectors import (
     CollectionSession,
     CollectorError,
@@ -59,7 +64,6 @@ from .evidence import EvidenceProvenance, EvidenceRecord
 from .receiver import LoopbackArtifactReceiver, ReceiverConfig
 from .receiver_auth import derive_receiver_task_key
 from .runner_bootstrap import RunnerBootstrapError, bootstrap_runner, current_platform
-from .runner_client import SubprocessRustRunner
 from .runner_lifecycle import ManagedRunnerLifecycle
 from .runner_private_files import _PinnedPrivateDirectory
 from .service import BlueFireService
@@ -485,6 +489,11 @@ def produce_collector_evidence(
     journal_cleanup_attempted = False
     runtime_cleanup_attempted = False
     primary_failure: BaseException | None = None
+    diagnostic = CollectorJourneyDiagnostic(
+        step_ids=frozenset(),
+        action_ids=frozenset(),
+        profile_ids=frozenset({FRONTIER_PROFILE_ID, CANONICAL_PROFILE_ID}),
+    )
 
     def close_runtime_service() -> None:
         nonlocal service
@@ -532,7 +541,13 @@ def produce_collector_evidence(
                 "GATE-05 requires the packaged Windows runner on this host",
             )
             scenario = _scenario_with_bound_port(root, receiver.port)
-            runner = SubprocessRustRunner(
+            diagnostic.step_ids = frozenset(row["id"] for row in scenario["steps"])
+            diagnostic.action_ids = frozenset(
+                action
+                for row in scenario["steps"]
+                for action in (row["behavior_id"], *row.get("alternates", []))
+            )
+            runner = DiagnosticSubprocessRustRunner(
                 bootstrapped.binary_path,
                 runtime / "transport",
                 timeout_seconds=35.0,
@@ -540,6 +555,7 @@ def produce_collector_evidence(
                 receiver_task_key_factory=task_key,
                 durable_result_guard=journal_guard,
             )
+            runner.diagnostic = diagnostic
 
             def collector_registry_factory(sandbox: Path) -> CollectorRegistry:
                 return CollectorRegistry(
@@ -558,6 +574,7 @@ def produce_collector_evidence(
                 runner_lifecycle=ManagedRunnerLifecycle(runtime / "managed-lifecycle"),
                 collector_registry_factory=collector_registry_factory,
             )
+            diagnostic.phase = "baseline"
             baseline = service.run(
                 _execute_request(
                     scenario,
@@ -566,6 +583,7 @@ def produce_collector_evidence(
                     settings=baseline_settings,
                 )
             )
+            diagnostic.phase = "replay"
             replay = service.replay(
                 str(baseline["run_id"]),
                 _replay_request(settings=replay_settings),
@@ -746,6 +764,8 @@ def produce_collector_evidence(
             }
         except BaseException as exc:
             runtime_stage_failure = exc
+            if service is not None:
+                observe(diagnostic.capture_steps, service.store)
         finally:
             runtime_failures: list[BaseException] = []
             if runtime_stage_failure is not None:
@@ -753,6 +773,7 @@ def produce_collector_evidence(
             try:
                 _close_runtime_and_remove(runtime, runtime_guard, close_runtime_service)
             except BaseException as exc:
+                observe(diagnostic.cleanup_failed, "runtime_close_remove", exc)
                 _extend_cleanup_failures(runtime_failures, exc)
             finally:
                 runtime_cleanup_attempted = True
@@ -760,6 +781,9 @@ def produce_collector_evidence(
 
         try:
             _remove_runner_journal(run_root, journal_guard)
+        except BaseException as exc:
+            observe(diagnostic.cleanup_failed, "runner_journal_remove", exc)
+            raise
         finally:
             journal_cleanup_attempted = True
         for name, report in zip(
@@ -792,15 +816,18 @@ def produce_collector_evidence(
                         close_runtime_service,
                     )
             except BaseException as exc:
+                observe(diagnostic.cleanup_failed, "runtime_close_remove", exc)
                 _extend_cleanup_failures(final_failures, exc)
         if journal_guard is not None and not journal_cleanup_attempted:
             try:
                 _remove_runner_journal(run_root, journal_guard)
             except BaseException as exc:
+                observe(diagnostic.cleanup_failed, "runner_journal_remove", exc)
                 _extend_cleanup_failures(final_failures, exc)
         try:
             receiver.stop()
         except BaseException as exc:
+            observe(diagnostic.cleanup_failed, "receiver_stop", exc)
             _extend_cleanup_failures(final_failures, exc)
         try:
             if receiver_thread is not None and receiver_thread.is_alive():
@@ -808,18 +835,25 @@ def produce_collector_evidence(
             if receiver_thread is not None and receiver_thread.is_alive():
                 raise CollectorJourneyError("GATE-05 receiver did not stop")
         except BaseException as exc:
+            observe(diagnostic.cleanup_failed, "receiver_join", exc)
             _extend_cleanup_failures(final_failures, exc)
         try:
             receiver.close()
         except BaseException as exc:
+            observe(diagnostic.cleanup_failed, "receiver_close", exc)
             _extend_cleanup_failures(final_failures, exc)
         try:
             _stop_child(child)
         except BaseException as exc:
+            observe(diagnostic.cleanup_failed, "child_stop", exc)
             _extend_cleanup_failures(final_failures, exc)
         task_keys.clear()
         receiver_key = b""
-        _raise_cleanup_failures(final_failures)
+        try:
+            _raise_cleanup_failures(final_failures)
+        except BaseException as exc:
+            observe(diagnostic.attach, exc, destination, _write_json)
+            raise
     raise AssertionError("collector journey completed without a result")
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -195,6 +196,15 @@ def test_collector_finalizer_continues_after_runtime_cleanup_failure(
         collector_journey.produce_collector_evidence(REPOSITORY, evidence)
 
     assert caught.value.failures == (primary_failure, cleanup_failure)
+    assert caught.value.__cause__ is primary_failure
+    diagnostic = json.loads((evidence / "gate05-failure-diagnostic.json").read_bytes())
+    assert diagnostic["passed"] is False and diagnostic["diagnostic_only"] is True
+    assert diagnostic["attempt_count"] == 0 and diagnostic["last_attempt"] is None
+    assert diagnostic["cleanup_failures"] == [
+        {"stage": "runtime_close_remove", "exception_type": "OSError"}
+    ]
+    assert "bootstrap failed" not in json.dumps(diagnostic)
+    assert "runtime cleanup failed" not in json.dumps(diagnostic)
     assert events[-5:] == [
         "journal-cleanup",
         "receiver-stop",
