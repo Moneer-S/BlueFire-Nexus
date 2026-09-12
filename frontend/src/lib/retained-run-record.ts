@@ -4,6 +4,13 @@ function object(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
+export function retainedObservations(value: unknown, runId: string): RunRecord | null {
+  if (!object(value) || value.schema_version !== "bluefire.retained-run-observations.v1" ||
+      value.run_id !== runId || value.record_state !== "unsealed" || value.display_only !== true ||
+      value.canonical !== false || value.replay_available !== false) return null;
+  return retainedRunRecord(value.observations, runId);
+}
+
 /** Display-only records may be unfinished; they confer no replay or approval authority. */
 export function retainedRunRecord(value: unknown, runId: string): RunRecord | null {
   // create_run stores mode in the plan; finalization adds it to result.json.

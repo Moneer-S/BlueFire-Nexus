@@ -20,6 +20,10 @@ function record(value = job()): RunRecord {
     evidence: { records: [{ evidence_id: "evidence-retained", step_id: "collect", provenance: "observed",
       content: { retained_measurement: 8 }, limitations: ["This record does not establish final cleanup."] }] } };
 }
+function envelope(observations: unknown) {
+  return { schema_version: "bluefire.retained-run-observations.v1", run_id: job().progress.run_id,
+    record_state: "unsealed", display_only: true, canonical: false, replay_available: false, observations };
+}
 const clients: QueryClient[] = [];
 afterEach(() => { for (const client of clients.splice(0)) client.clear(); });
 function mount(first = job()) {
@@ -38,7 +42,7 @@ function mount(first = job()) {
 it("shows retained observations in the failed job without promoting a final result or releasing effects", async () => {
   const detail = vi.spyOn(api, "retainedRunDetail");
   const { mode, ...progress } = record();
-  vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ ...progress, plan: { mode } }), { status: 200 }));
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify(envelope({ ...progress, plan: { mode } })), { status: 200 }));
   const approve = vi.spyOn(api, "approveJob");
   const submit = vi.spyOn(api, "submitRun");
   const control = vi.spyOn(api, "controlJob");
@@ -48,10 +52,29 @@ it("shows retained observations in the failed job without promoting a final resu
   fireEvent.click(screen.getByRole("tab", { name: "Evidence" }));
   expect(await screen.findByLabelText("Evidence content evidence-retained")).toHaveTextContent('"retained_measurement": 8');
   expect(screen.getByText(/does not establish objective completion or verified cleanup/)).toBeVisible();
+  expect(screen.getByText("Execute · Job failed · Retained observations")).toBeVisible();
+  expect(screen.queryByText(/canonical local record/)).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Review" })).not.toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Review latest result" })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Resume" })).toBeDisabled();
   expect(approve).not.toHaveBeenCalled(); expect(submit).not.toHaveBeenCalled(); expect(control).not.toHaveBeenCalled();
+});
+
+it("keeps an unsealed completed record subordinate to the failed job outcome", async () => {
+  const unsealed = { ...record(), status: "completed", finalized_at: "2030-01-01T00:00:00Z" };
+  const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify(envelope(unsealed)), { status: 200 }));
+  const approve = vi.spyOn(api, "approveJob");
+  const submit = vi.spyOn(api, "submitRun");
+  mount();
+  expect(await screen.findByText("Execute · Job failed · Retained observations")).toBeVisible();
+  expect(screen.queryByText(/Completed · canonical local record/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Review" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Review latest result" })).not.toBeInTheDocument();
+  expect(screen.getByText("Final result unavailable")).toBeVisible();
+  fireEvent.click(screen.getByRole("tab", { name: "Evidence" }));
+  expect(await screen.findByLabelText("Evidence content evidence-retained")).toHaveTextContent('"retained_measurement": 8');
+  expect(approve).not.toHaveBeenCalled(); expect(submit).not.toHaveBeenCalled();
+  expect(fetch.mock.calls.map(([url]) => url)).toContain(`/api/v1/runs/${unsealed.run_id}/retained-observations`);
 });
 
 it("offers a read-only retry after an unavailable record without claiming that evidence is absent", async () => {

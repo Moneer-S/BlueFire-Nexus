@@ -6,7 +6,13 @@ const retained = { run_id: runId, mode: "execute", status: "interrupted",
   steps: [{ step_id: "collect", action_id: "sandbox.fixture.create.v1", status: "success" }],
   evidence: { records: [{ evidence_id: "evidence-one", provenance: "observed", content: { records: 8 } }] } };
 function respond(value: unknown) {
-  return vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify(value), { status: 200 }));
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async url => new Response(JSON.stringify(
+    String(url).endsWith("/retained-observations") ? envelope(value) : value,
+  ), { status: 200 }));
+}
+function envelope(observations: unknown) {
+  return { schema_version: "bluefire.retained-run-observations.v1", run_id: runId,
+    record_state: "unsealed", display_only: true, canonical: false, replay_available: false, observations };
 }
 
 it("reads unfinished observations with GET while keeping finalized result reads strict", async () => {
@@ -14,12 +20,27 @@ it("reads unfinished observations with GET while keeping finalized result reads 
   expect(await api.retainedRunDetail(runId)).toEqual(retained);
   await expect(api.runDetail(runId)).rejects.toMatchObject({ code: "run_not_finalized" });
   expect(fetch).toHaveBeenCalledTimes(2);
-  for (const [url, options] of fetch.mock.calls) {
-    expect(url).toBe(`/api/v1/runs/${runId}`);
+  expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+    `/api/v1/runs/${runId}/retained-observations`, `/api/v1/runs/${runId}`,
+  ]);
+  for (const [, options] of fetch.mock.calls) {
     expect(options?.method ?? "GET").toBe("GET");
     expect(options?.body).toBeUndefined();
     expect(options?.credentials).toBe("same-origin");
   }
+});
+
+it.each([
+  ["missing envelope", retained],
+  ["wrong schema", { ...envelope(retained), schema_version: "unknown" }],
+  ["foreign run", { ...envelope(retained), run_id: "run-other" }],
+  ["sealed claim", { ...envelope(retained), record_state: "sealed" }],
+  ["missing display boundary", { ...envelope(retained), display_only: undefined }],
+  ["canonical claim", { ...envelope(retained), canonical: true }],
+  ["replay claim", { ...envelope(retained), replay_available: true }],
+])("refuses an invalid retained observation envelope: %s", async (_case, value) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify(value), { status: 200 }));
+  await expect(api.retainedRunDetail(runId)).rejects.toMatchObject({ code: "invalid_retained_run" });
 });
 
 it.each([
