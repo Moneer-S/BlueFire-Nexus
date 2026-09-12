@@ -6,7 +6,12 @@ export function profileLabel(id: string) {
     "sandbox-restricted-owned.v1": "Workspace actions · restricted",
     "sandbox-observe-only.v1": "Read-only observation",
   };
-  return names[id] ?? readableReference(id);
+  return Object.hasOwn(names, id) ? names[id]! : readableReference(id);
+}
+
+export function profileChoiceLabel(id: string, profiles: readonly { id: string }[]) {
+  const label = profileLabel(id);
+  return profiles.filter(profile => profileLabel(profile.id) === label).length > 1 ? `${label} · ${id}` : label;
 }
 
 export function scopeLabel(reference: string) {
