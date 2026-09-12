@@ -4,11 +4,49 @@ import { expect, it } from "vitest";
 import { RunReview } from "../src/pages/Runs";
 import { demoCatalog, demoRuns, demoScenario } from "../src/lib/demo";
 import { runLabel } from "../src/lib/run-presentation";
+import { recordedStepLabels, runEventPresentation } from "../src/lib/run-progress-presentation";
 import type { RunRecord } from "../src/types";
 
 function run(overrides: Partial<RunRecord>): RunRecord {
   return { ...structuredClone(demoRuns[0]!), is_demo: false, mode: "execute", ...overrides };
 }
+
+it("uses the recorded attempt before the saved initial method and retains a catalog fallback", () => {
+  const original = demoCatalog.behaviors[0]!, alternate = demoCatalog.behaviors[1]!;
+  const saved = run({ scenario: { ...demoScenario, steps: [{ id: "reused_node", behavior_id: original.id, inputs: {}, parameters: {}, alternates: [alternate.id] }] } });
+  expect(recordedStepLabels({ step_id: "reused_node", behavior_id: alternate.id, status: "success" }, demoCatalog, saved).name).toBe(alternate.title);
+  expect(recordedStepLabels({ step_id: "reused_node", simulation_id: alternate.simulation_id, status: "success" }, demoCatalog, saved).name).toBe(alternate.title);
+  expect(recordedStepLabels({ step_id: "reused_node", behavior_id: original.id, action_id: alternate.action_ids[0], status: "success" }, demoCatalog, saved).method).toBe(demoCatalog.actions.find(item => item.id === alternate.action_ids[0])!.title);
+  expect(recordedStepLabels({ step_id: "reused_node", status: "success" }, demoCatalog, saved).name).toBe(original.title);
+  expect(recordedStepLabels({ step_id: "reused_node", behavior_id: "removed.behavior.v1", status: "success" }, demoCatalog, saved).name).toBe("Reused node");
+  expect(recordedStepLabels({ step_id: "reused_node", status: "success" })).toEqual({ name: "Reused node", method: "Method details unavailable" });
+});
+
+it("reads canonical event data without letting obsolete flat fields claim a different outcome", () => {
+  const behavior = demoCatalog.behaviors[0]!;
+  const event = { event_type: "step.completed", sequence: 4, step_id: "unrelated", status: "success", data: { step_id: "selected_step", behavior_id: behavior.id, action_id: behavior.action_ids[0], status: "blocked", policy: { allowed: false }, error: { message: "This capability is outside the reviewed scope." } } };
+  const before = structuredClone(event);
+  const result = runEventPresentation(event, demoCatalog, null, "execute");
+  expect(result).toMatchObject({ title: "Step result recorded", stepId: "selected_step", status: "blocked", sequence: 4, type: "step.completed" });
+  expect(result.detail).toBe(`${behavior.title} · Stopped by BlueFire policy · This capability is outside the reviewed scope.`);
+  expect(event).toEqual(before);
+});
+
+it("labels deterministic routing without claiming live model assistance", () => {
+  const behavior = demoCatalog.behaviors[0]!;
+  const result = runEventPresentation({ event_type: "planner.decision", data: { selected_step_id: "next", selected_behavior_id: behavior.id, proposed_by: "deterministic-planner.v1", reason: "Follow the registered route for this outcome." } }, demoCatalog);
+  expect(result.title).toBe("Plan decision");
+  expect(result.detail).toBe(`Deterministic routing · Next step: ${behavior.title} · Follow the registered route for this outcome.`);
+  expect(result.detail).not.toMatch(/AI|model|Assistant/);
+});
+
+it("keeps synthetic events qualified and unknown records readable", () => {
+  const behavior = demoCatalog.behaviors[0]!;
+  const result = runEventPresentation({ event_type: "step.completed", data: { step_id: "sample_step", simulation_id: behavior.simulation_id, status: "success" } }, demoCatalog, null, "simulate");
+  expect(result.detail).toBe(`${behavior.title} · Simulated success`);
+  expect(runEventPresentation({ type: "old.event_kind", message: "Retained message" }).title).toBe("Old event kind");
+  expect(runEventPresentation({ event_type: "step.completed", data: {} }).detail).toBe("Recorded step · Not reported");
+});
 
 it("separates original scenario notes from a partial run's unresolved limitations", () => {
   const sourceNote = "Draft only; run setup and approval are separate.";

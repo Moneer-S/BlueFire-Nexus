@@ -67,14 +67,45 @@ it("shows a cancelled job's retained events without claiming it is awaiting a ru
   const job = { ...replayJob(firstId, "cancelled"), request: { mode: "simulate" }, progress: { run_id: "run-partial" } };
   inventory([]);
   vi.spyOn(api, "job").mockResolvedValue(job);
-  vi.spyOn(api, "runEvents").mockImplementation(async (_id, cursor = 0) => ({ schema_version: "bluefire.event-page.v1", run_id: "run-partial", after_sequence: cursor, next_sequence: 3, has_more: false, items: cursor ? [] : [1, 2, 3].map((sequence) => ({ sequence, event_type: "step.completed", payload: { step_id: `partial-${sequence}` } })) }));
+  vi.spyOn(api, "runEvents").mockImplementation(async (_id, cursor = 0) => ({ schema_version: "bluefire.event-page.v1", run_id: "run-partial", after_sequence: cursor, next_sequence: 3, has_more: false, items: cursor ? [] : [1, 2, 3].map((sequence) => ({ sequence, event_type: "step.completed", data: { step_id: `partial-${sequence}`, behavior_id: demoCatalog.behaviors[0]!.id, simulation_id: demoCatalog.behaviors[0]!.simulation_id, status: "success" } })) }));
   mount();
   expect(await screen.findByText("Job cancelled")).toBeVisible();
-  expect(await screen.findAllByText("Step.completed")).toHaveLength(3);
+  expect(await screen.findAllByText("Step result recorded")).toHaveLength(3);
+  expect(screen.getAllByText(`${demoCatalog.behaviors[0]!.title} · Simulated success`)).toHaveLength(3);
+  const firstEvent = screen.getAllByText("Event details")[0]!.closest("details")!;
+  await userEvent.setup().click(firstEvent.querySelector("summary")!);
+  expect(within(firstEvent).getByText("partial-1", { exact: true })).toBeVisible();
+  expect(within(firstEvent).getByText("step.completed", { exact: true })).toBeVisible();
   expect(screen.getByText(/no finalized run record is linked/)).toBeVisible();
   expect(screen.queryByText("Awaiting a run")).not.toBeInTheDocument();
   expect(screen.queryByText(/ownership is reconciled/)).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+});
+
+it("shows each recorded adaptive attempt's method in the live path and runner details", async () => {
+  const first = demoCatalog.behaviors[0]!, alternate = demoCatalog.behaviors[1]!;
+  const firstAction = demoCatalog.actions.find(item => item.id === first.action_ids[0])!;
+  const nextAction = demoCatalog.actions.find(item => item.id === alternate.action_ids[0])!;
+  const record = { ...structuredClone(demoRuns[0]!), run_id: "run-two-attempts", mode: "execute" as const, is_demo: false, scenario: { ...demoScenario, steps: [{ id: "same_step", behavior_id: first.id, inputs: {}, parameters: {}, alternates: [alternate.id] }] }, steps: [
+    { step_id: "same_step", behavior_id: first.id, action_id: firstAction.id, status: "blocked" },
+    { step_id: "same_step", behavior_id: alternate.id, action_id: nextAction.id, status: "success" },
+  ] };
+  const job = { ...replayJob(firstId, "completed"), result_ref: record.run_id, progress: { run_id: record.run_id } };
+  inventory([]);
+  vi.spyOn(api, "job").mockResolvedValue(job);
+  vi.spyOn(api, "runDetail").mockResolvedValue(record);
+  vi.spyOn(api, "runEvents").mockResolvedValue({ schema_version: "bluefire.event-page.v1", run_id: record.run_id, after_sequence: 0, next_sequence: 0, has_more: false, items: [] });
+  const view = mount();
+  await waitFor(() => expect(view.container.querySelectorAll(".live-path article")).toHaveLength(2));
+  const attempts = view.container.querySelectorAll(".live-path article");
+  expect(within(attempts[0] as HTMLElement).getByText(first.title, { exact: true })).toBeVisible();
+  expect(within(attempts[1] as HTMLElement).getByText(alternate.title, { exact: true })).toBeVisible();
+  expect(within(attempts[1] as HTMLElement).getByText(nextAction.title, { exact: true })).toBeVisible();
+  expect(within(attempts[1] as HTMLElement).getByText("same_step", { exact: true })).not.toBeVisible();
+  await userEvent.setup().click(screen.getByRole("tab", { name: "Runner" }));
+  const runner = within(view.container.querySelector(".console-detail")! as HTMLElement);
+  expect(runner.getByText(firstAction.title, { exact: true })).toBeVisible();
+  expect(runner.getByText(nextAction.title, { exact: true })).toBeVisible();
 });
 
 it.each(["cancelled", "interrupted", "failed", "completed"] as const)("loads the linked %s record with its actual outcome and a concise result notice", async (state) => {
