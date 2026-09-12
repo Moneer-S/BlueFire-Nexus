@@ -55,9 +55,11 @@ _CONTRACT_TESTS = (
     "tests_platform/test_detection_lab_service.py",
     "tests_platform/test_detection_gate.py",
 )
-_EXPECTED_CONTRACT_TEST_COUNT = 56
+# All 56 previously pinned cases remain. The added service regression verifies
+# exact draft conflicts and explicit cloning without losing saved rules or evaluations.
+_EXPECTED_CONTRACT_TEST_COUNT = 57
 _EXPECTED_CONTRACT_TESTS_SHA256 = (
-    "sha256:d0107e6ab07e9873b65c7ad823eb606704acbc644a2a6f8db056b3308216cf6b"
+    "sha256:d47e75ccf4477166535d606b1297c68866f5e0328093cd578fcdcbf7a2d27b4b"
 )
 _EXPECTED_ASSERTIONS: Mapping[str, tuple[str, str, tuple[str, ...], str]] = {
     "GATE-07-SIGMA-BACKEND": (
