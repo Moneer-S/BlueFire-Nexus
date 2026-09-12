@@ -58,37 +58,34 @@ executed.
 
 ## A measured example
 
-A real staging run in the disposable Linux lab produced five collector observations. Two revisions of
-one detection rule, both executed through the Detection Lab with pinned pySigma 1.5.0 and its SQLite
-backend, were measured against three separate sample sets.
+Three fresh Linux runs executed the fixed system gzip integration through the graph, run review
+and approval controls, with AI Off. Each used eight synthetic records and a declared 512-byte
+collection limit. Independent collectors checked the produced bundle; all three runs finalized
+with complete cleanup.
 
-Revision 1 keys on the staging path prefix. Revision 2 keys on the semantics collector's own
-assertion that it parsed a retained-record collection bundle, which does not depend on the directory:
+| Observed run | Original values | Redacted values | Gzip size |
+|---|---:|---:|---:|
+| Baseline, main staging folder | 8 | 0 | 142 bytes |
+| Fresh variation, alternate staging folder | 8 | 0 | 142 bytes |
+| Benign control, alternate folder with redaction enabled | 0 | 8 | 130 bytes |
 
-    -- revision 1
-    WHERE observation_kind='filesystem' AND path LIKE 'staged/%'
+The benign run applied a real redaction transformation and declared its different objective before
+execution. It did not claim to retain the original values or demonstrate target-enforced prevention.
 
-    -- revision 2
-    WHERE observation_kind LIKE 'collection\_semantics'
-      AND collector_id='collector.collection-semantics.sandbox.v1'
-      AND container='jsonl'
+In Detection Lab, a saved rule revision replaced a check for nonempty staged files with a check for
+retained original values in the collection observations. Both revisions were fixed before the fresh
+variation and benign run. SQLite evaluated each saved rule against each observed run:
 
-| Sample set | Revision 1 | Revision 2 |
-|---|---|---|
-| The observed run's 5 collected evidence records | 1 match | 1 match, on a different record |
-| 4 benign fixtures, one an operator note that happens to sit under `staged/` | 1 match — a false positive | 0 matches |
-| 2 attack fixtures staging the identical bundle to another directory | 0 matches — missed | 1 match |
+| Evaluation source | Staged-file rule (R2) | Retained-value rule (R3) |
+|---|---:|---:|
+| Baseline, used for development | 1 match | 1 match |
+| Fresh original-value variation | 1 match | 1 match |
+| Fresh benign redacted run | 1 match — false positive | 0 matches |
 
-Read those rows precisely. The third row is **two fixtures**, authored to vary the staging path; it is
-not a second observed run, and one fixture matching is not a detection rate. The first row is the
-only observed-run result here, and both revisions find the same single staging event in it — revision
-1 through the filesystem record, revision 2 through the collection-semantics record.
-
-Both rules are narrow by construction. Revision 1 is path-specific and revision 2 is
-collector-specific; neither is general attack detection, and neither was evaluated against anything
-outside these three sets. What the comparison does show is a false positive removed and a missed
-variation caught, with the true positive kept — and `detections compare` reports the rule source
-digest actually changed, so this is a different rule rather than a re-labelled copy.
+Each run supplied four observation records. The revised rule kept the useful match and removed
+the benign false positive. This is a small, collector-specific evaluation using one synthetic
+generator and a staging-location variation. It does not establish general detection coverage,
+statistical performance or AI adaptation.
 
 ## Modes and authority
 
