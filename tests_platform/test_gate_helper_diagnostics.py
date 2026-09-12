@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from bluefire import defense_frontier_gate
+from bluefire.application_errors import APIError
 from bluefire.gate_helper_diagnostics import JOURNEY_SCHEMA, GateHelperFailure, exception_diagnostic
 from bluefire.product_acceptance_process import WorkflowOutcome
 from tools import run_cross_platform_gate_journey as cross_helper
@@ -134,6 +135,29 @@ def test_cross_platform_helper_reports_stage_without_exception_content(
         "schema_version": JOURNEY_SCHEMA,
         "stage": "process_tree_cancellation",
         "classification": "runtime_failure",
+    }
+    assert "private" not in captured.out + captured.err
+    assert "not-public" not in captured.out + captured.err
+
+    def produce_cross_platform_evidence(*_args: Any) -> Any:
+        raise APIError(409, "runner_start_refused", "private", ["not-public-example-value"])
+
+    monkeypatch.setattr(
+        cross_helper, "run_cross_platform_gate_journey", produce_cross_platform_evidence
+    )
+    assert cross_helper.main(["--repository", str(tmp_path), "--evidence-dir", str(tmp_path)]) == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
+        "schema_version": cross_helper.HELPER_SCHEMA,
+        "status": "failed",
+        "blocking_check": None,
+        "reports": list(cross_helper.REPORT_PATHS),
+        "run_count": 0,
+    }
+    assert json.loads(captured.err) == {
+        "schema_version": JOURNEY_SCHEMA,
+        "stage": "evidence_production",
+        "classification": "unexpected_failure",
     }
     assert "private" not in captured.out + captured.err
     assert "not-public" not in captured.out + captured.err

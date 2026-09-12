@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from bluefire import defense_frontier_gate, operator_ui_gate, product_acceptance_process
+from bluefire.application_errors import APIError
 from bluefire.gate_helper_diagnostics import GateHelperFailure
 from bluefire.gate_private_diagnostics import PRIVATE_DIAGNOSTICS_ENV, private_capture_root
 from bluefire.product_acceptance_process import WorkflowOutcome
@@ -118,6 +119,23 @@ def test_cross_platform_original_exception_is_retained_only_privately(
     captures = list(private.glob("capture-*/stderr.bin"))
     assert len(captures) == 1
     assert b"original-failure secret=not-public-example-value" in captures[0].read_bytes()
+
+    def api_failure(*_args: Any) -> Any:
+        raise APIError(409, "runner_start_refused", "private-api-failure", ["not-public-details"])
+
+    monkeypatch.setattr(cross_helper, "run_cross_platform_gate_journey", api_failure)
+    assert (
+        cross_helper.main(["--repository", str(repository), "--evidence-dir", str(evidence)]) == 1
+    )
+    public = capsys.readouterr()
+    assert json.loads(public.out)["status"] == "failed"
+    assert json.loads(public.err)["private_exception_capture"] == "retained"
+    assert "private-api-failure" not in public.out + public.err
+    assert "not-public-details" not in public.out + public.err
+    fresh = set(private.glob("capture-*/stderr.bin")) - set(captures)
+    assert len(fresh) == 1
+    assert b"private-api-failure" in next(iter(fresh)).read_bytes()
+    assert b"not-public-details" in next(iter(fresh)).read_bytes()
 
 
 def test_frontend_timeout_preserves_partial_output_before_tempfiles_close(

@@ -778,16 +778,16 @@ def produce_cross_platform_evidence(
             resource_root=resource_root,
         )
         lifecycle_bootstrapped = True
-        started = lifecycle.start(profile_id=PROFILE_ID)
-        _require(started.get("state") == "ready", "the packaged managed runner did not start")
-        enrollment = load_local_enrollment(lifecycle.enrollment_root)
-        trust_material = _private_trust_material(enrollment)
         service = BlueFireService(
             project_root=root,
             runs_dir=destination / "runs",
             product_db_path=runtime / "product.sqlite3",
             runner_lifecycle=lifecycle,
         )
+        started = service.start_runner(profile_id=PROFILE_ID)
+        _require(started.get("state") == "ready", "the packaged managed runner did not start")
+        enrollment = load_local_enrollment(lifecycle.enrollment_root)
+        trust_material = _private_trust_material(enrollment)
         receiver, ready = _start_receiver(root, state_parent)
         result = service.run(
             {

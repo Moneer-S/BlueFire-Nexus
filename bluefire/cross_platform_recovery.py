@@ -319,7 +319,9 @@ def transport_recovery(
     """Execute, interrupt, restart, recover, and reconcile one exact effect."""
 
     profile = next(item for item in service.config.runner_profiles if item.id == _PROFILE_ID)
-    client, sandbox = lifecycle.client_for_profile(_PROFILE_ID)
+    client, sandbox = lifecycle.client_for_profile(
+        _PROFILE_ID, profile_budget_seconds=profile.budgets.max_seconds
+    )
     profile_doc = build_runner_profile(
         profile,
         sandbox_root=sandbox,
@@ -418,9 +420,11 @@ def transport_recovery(
         "the managed host interruption was not identity-bound",
     )
     require_process_absent(before_witness.host_process_identity, "interrupted recovery host")
-    restarted = lifecycle.start(profile_id=_PROFILE_ID)
+    restarted = service.start_runner(profile_id=_PROFILE_ID)
     require(restarted.get("state") == "ready", "the managed host did not restart")
-    recovered_client, _ = lifecycle.client_for_profile(_PROFILE_ID)
+    recovered_client, _ = lifecycle.client_for_profile(
+        _PROFILE_ID, profile_budget_seconds=profile.budgets.max_seconds
+    )
     transport_after = _transport_identity(recovered_client.transport_identity(), require=require)
     host_after = _host_identity(lifecycle, transport_after)
     recovered_witness = inspect_live_recovery(
@@ -499,9 +503,11 @@ def transport_recovery(
         host_before_identity=before_witness.host_process_identity,
         host_after_identity=recovered_witness.host_process_identity,
     )
-    continued = lifecycle.start(profile_id=_PROFILE_ID)
+    continued = service.start_runner(profile_id=_PROFILE_ID)
     require(continued.get("state") == "ready", "the recovery continuation host did not start")
-    continuation_client, continuation_sandbox = lifecycle.client_for_profile(_PROFILE_ID)
+    continuation_client, continuation_sandbox = lifecycle.client_for_profile(
+        _PROFILE_ID, profile_budget_seconds=profile.budgets.max_seconds
+    )
     continuation_transport = _transport_identity(
         continuation_client.transport_identity(), require=require
     )

@@ -13,6 +13,7 @@ from typing import Mapping, Sequence
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from bluefire.application_errors import APIError
 from bluefire.cross_platform_journey import (
     HELPER_SCHEMA,
     LINUX_CHECK,
@@ -63,7 +64,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             if summary.get("status") == "passed" or summary.get("blocking_check") == LINUX_CHECK
             else 1
         )
-    except (CrossPlatformJourneyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+    except (
+        APIError,
+        CrossPlatformJourneyError,
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as exc:
         diagnostic = dict(exception_diagnostic(exc))
         if os.environ.get(PRIVATE_DIAGNOSTICS_ENV):
             try:

@@ -167,14 +167,21 @@ def test_authenticated_transport_recovery_is_full_and_independently_validated(
             environ={},
             resource_root=repository / "bluefire" / "native",
         )
-        assert lifecycle.start(profile_id="sandbox-endpoint-deep-lab.v1")["state"] == "ready"
         service = BlueFireService(
             project_root=repository,
             runs_dir=tmp_path / "runs",
             product_db_path=tmp_path / "product.sqlite3",
             runner_lifecycle=lifecycle,
         )
+        profile = next(
+            item for item in service.config.runner_profiles if item.id == journey.PROFILE_ID
+        )
+        assert service.start_runner(profile_id=profile.id)["state"] == "ready"
+        lifecycle.client_for_profile(profile.id, profile_budget_seconds=profile.budgets.max_seconds)
         report = transport_recovery(service, lifecycle, require=require)
+        # The continuation host must still admit the actual configured profile,
+        # not silently revert to the shorter lifecycle default after recovery.
+        lifecycle.client_for_profile(profile.id, profile_budget_seconds=profile.budgets.max_seconds)
         witness = report["witness_validation"]
         validate_witness_validation(witness)
         stages = witness["stages"]
