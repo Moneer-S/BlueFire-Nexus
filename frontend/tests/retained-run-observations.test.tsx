@@ -43,6 +43,8 @@ function mount(first = job()) {
 it("shows retained observations in the failed job without promoting a final result or releasing effects", async () => {
   const detail = vi.spyOn(api, "retainedRunDetail");
   const observed = record();
+  observed.evidence!.records![0]!.behavior_id = "sandbox.fixture.create.v1";
+  observed.evidence!.records![0]!.action_id = "sandbox.fixture.create.v1";
   const stored = { run_id: observed.run_id, status: observed.status, steps: observed.steps,
     evidence: observed.evidence, plan: { mode: observed.mode } };
   vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify(envelope(stored)), { status: 200 }));
@@ -54,6 +56,10 @@ it("shows retained observations in the failed job without promoting a final resu
   await waitFor(() => expect(detail).toHaveBeenCalledWith(job().progress.run_id));
   fireEvent.click(screen.getByRole("tab", { name: "Evidence" }));
   expect(await screen.findByLabelText("Evidence content evidence-retained")).toHaveTextContent('"retained_measurement": 8');
+  const evidenceCard = screen.getByLabelText("Evidence content evidence-retained").closest("article")!;
+  expect(evidenceCard.querySelector(".evidence-record-title")).toHaveTextContent(demoCatalog.actions.find(item => item.id === "sandbox.fixture.create.v1")!.title);
+  expect(evidenceCard.querySelector("header")).toHaveTextContent(demoCatalog.behaviors.find(item => item.id === "sandbox.fixture.create.v1")!.title);
+  expect(evidenceCard.querySelector("header")).not.toHaveTextContent("sandbox.fixture.create.v1");
   expect(screen.getByText(/does not establish objective completion or verified cleanup/)).toBeVisible();
   expect(screen.getByText("Execute · Job failed · Retained observations")).toBeVisible();
   expect(screen.queryByText(/canonical local record/)).not.toBeInTheDocument();

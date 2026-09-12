@@ -4,7 +4,7 @@ import { expect, it } from "vitest";
 import { RunReview } from "../src/pages/Runs";
 import { demoCatalog, demoRuns, demoScenario } from "../src/lib/demo";
 import { runLabel } from "../src/lib/run-presentation";
-import { recordedStepLabels, runEventPresentation } from "../src/lib/run-progress-presentation";
+import { recordedEvidenceLabels, recordedStepLabels, runEventPresentation } from "../src/lib/run-progress-presentation";
 import type { RunRecord } from "../src/types";
 
 function run(overrides: Partial<RunRecord>): RunRecord {
@@ -20,6 +20,15 @@ it("uses the recorded attempt before the saved initial method and retains a cata
   expect(recordedStepLabels({ step_id: "reused_node", status: "success" }, demoCatalog, saved).name).toBe(original.title);
   expect(recordedStepLabels({ step_id: "reused_node", behavior_id: "removed.behavior.v1", status: "success" }, demoCatalog, saved).name).toBe("Reused node");
   expect(recordedStepLabels({ step_id: "reused_node", status: "success" })).toEqual({ name: "Reused node", method: "Method details unavailable" });
+  saved.steps = [{ step_id: "reused_node", behavior_id: original.id, action_id: original.action_ids[0], status: "failed", evidence_ids: ["initial-evidence"] },
+    { step_id: "reused_node", behavior_id: alternate.id, action_id: alternate.action_ids[0], status: "success", evidence_ids: ["retry-evidence"] }];
+  const evidence = { evidence_id: "retry-evidence", step_id: "reused_node", provenance: "executed" };
+  expect(recordedEvidenceLabels(evidence, demoCatalog, saved)).toEqual({ name: alternate.title, method: demoCatalog.actions.find(item => item.id === alternate.action_ids[0])!.title });
+  expect(recordedEvidenceLabels({ ...evidence, behavior_id: original.id, action_id: original.action_ids[0] }, demoCatalog, saved).name).toBe(original.title);
+  expect(recordedEvidenceLabels({ ...evidence, run_id: "different-run" }, demoCatalog, saved)).toEqual({ name: "Reused node", method: undefined });
+  expect(recordedEvidenceLabels({ ...evidence, evidence_id: "unlinked" }, demoCatalog, saved)).toEqual({ name: "Reused node", method: undefined });
+  saved.steps[0]!.evidence_ids = ["retry-evidence"];
+  expect(recordedEvidenceLabels(evidence, demoCatalog, saved)).toEqual({ name: "Reused node", method: undefined });
 });
 
 it("reads canonical event data without letting obsolete flat fields claim a different outcome", () => {

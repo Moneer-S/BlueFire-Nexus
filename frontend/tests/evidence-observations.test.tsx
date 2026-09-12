@@ -85,7 +85,7 @@ it.each(["unknown producer", "executed", "missing counts", "inconsistent fields"
 it("retains legacy summaries and does not turn missing evidence or invalid confidence into positive observations", () => {
   render(<EvidenceRecords records={[{ id: "legacy", kind: "Custom measurement", provenance: "unknown", confidence: Number.NaN,
     fields: { summary: "The source did not provide a measurement.", other: 7 }, limitations: ["No independent collector was available."] }]} />);
-  expect(screen.getByText("Custom measurement")).toBeVisible();
+  expect(screen.getByText("Custom measurement", { selector: ".evidence-record-title" })).toBeVisible();
   expect(screen.getByText("The source did not provide a measurement.")).toBeVisible();
   expect(screen.getByText(/Reported confidence: Not reported/)).toBeVisible();
   expect(screen.queryByText("File metadata observed")).not.toBeInTheDocument();

@@ -1,4 +1,4 @@
-import type { CatalogResponse, RunRecord, RunStep } from "../types";
+import type { CatalogResponse, EvidenceRecord, RunRecord, RunStep } from "../types";
 import { recordedMethodName } from "./adaptive-run";
 import { stepOutcomeLabel } from "./run-presentation";
 
@@ -15,6 +15,24 @@ export function recordedStepLabels(step: RunStep, catalog?: CatalogResponse, run
   const name = behavior?.title ?? (step.step_id ? readable(step.step_id) : "Recorded step");
   const method = catalog ? recordedMethodName(catalog, behaviorId, step.action_id) : "Method details unavailable";
   return { name, method: step.simulation_id && !step.action_id ? `Simulation · ${behavior?.title ?? "recorded method"}` : method };
+}
+
+/** An evidence link can identify an attempt; a repeated step ID alone cannot. */
+export function recordedEvidenceLabels(record: EvidenceRecord, catalog?: CatalogResponse, run?: RunRecord | null) {
+  const evidenceId = record.evidence_id ?? record.id;
+  const linked = (!record.run_id || record.run_id === run?.run_id ? run?.steps : [])?.filter(step => evidenceId && step.evidence_ids?.includes(evidenceId)
+    && (!record.step_id || step.step_id === record.step_id)
+    && (!record.behavior_id || step.behavior_id === record.behavior_id)
+    && (record.action_id === undefined || step.action_id === record.action_id)) ?? [];
+  const attempt = linked.length === 1 ? linked[0] : undefined;
+  const step: RunStep = { step_id: record.step_id ?? attempt?.step_id ?? "", status: "not_reported",
+    behavior_id: record.behavior_id ?? attempt?.behavior_id,
+    action_id: record.action_id === undefined ? attempt?.action_id : record.action_id,
+    simulation_id: attempt?.simulation_id };
+  const labels = recordedStepLabels(step, catalog);
+  const knownMethod = catalog?.actions.some(item => item.id === step.action_id)
+    || catalog?.behaviors.some(item => item.id === step.behavior_id || Boolean(step.simulation_id) && item.simulation_id === step.simulation_id);
+  return { name: step.step_id ? labels.name : "Unattributed evidence", method: knownMethod ? labels.method : undefined };
 }
 
 export function runEventPresentation(value: unknown, catalog?: CatalogResponse, run?: RunRecord | null, requestedMode?: unknown) {

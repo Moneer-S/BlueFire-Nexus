@@ -534,7 +534,7 @@ function LiveConsole({ catalog, run: linkedRun, job, events, pending, approvalPr
       return <article key={`${step.step_id}-${index}`} data-status={normalizeStatus(step.status)}><header><span>{String(index + 1).padStart(2, "0")}</span><Badge tone={statusTone(step.status)} dot>{stepOutcomeLabel(step, run!.mode)}</Badge></header><strong>{labels.name}</strong>{labels.method !== labels.name ? <small>{labels.method}</small> : null}<details><summary>Step details</summary><DataList items={[{ label: "Step ID", value: <code>{step.step_id}</code> }, { label: "Method ID", value: <code>{step.action_id ?? step.simulation_id ?? "Not recorded"}</code> }, { label: "Disposition", value: sentence(step.execution_disposition ?? "not recorded") }]} /></details></article>;
     }) : <div className="console-empty"><Activity/><strong>{emptyTitle}</strong><span>{emptyDetail}</span></div>}</div>
     <div className="console-tabs" role="tablist" aria-label="Run detail views">{(["timeline", "planner", "policy", "runner", "evidence", "detections"] as const).map((item) => <button key={item} role="tab" aria-selected={tab === item} onClick={() => setTab(item)}>{sentence(item)}</button>)}</div>
-    <div className="console-detail">{tab !== "timeline" && retained.requested && !retained.record ? <p>{retained.isError ? "Observations could not be loaded. Try again above." : "Loading retained observations…"}</p> : tab === "timeline" ? <Timeline catalog={catalog} run={run} job={job} events={events} pending={pending} /> : tab === "planner" ? <StructuredPanel value={run?.planner_decisions?.length ? run.planner_decisions : run?.plan} empty="No planner decisions are available." /> : tab === "policy" ? <StructuredPanel value={run?.policy} empty="No policy decisions are available." /> : tab === "runner" ? <RunnerDetail catalog={catalog} run={run} /> : tab === "evidence" ? <EvidenceDetail run={run} /> : <DetectionDetail run={run} />}</div>
+    <div className="console-detail">{tab !== "timeline" && retained.requested && !retained.record ? <p>{retained.isError ? "Observations could not be loaded. Try again above." : "Loading retained observations…"}</p> : tab === "timeline" ? <Timeline catalog={catalog} run={run} job={job} events={events} pending={pending} /> : tab === "planner" ? <StructuredPanel value={run?.planner_decisions?.length ? run.planner_decisions : run?.plan} empty="No planner decisions are available." /> : tab === "policy" ? <StructuredPanel value={run?.policy} empty="No policy decisions are available." /> : tab === "runner" ? <RunnerDetail catalog={catalog} run={run} /> : tab === "evidence" ? <EvidenceDetail run={run} catalog={catalog} /> : <DetectionDetail run={run} />}</div>
   </Panel>;
 }
 
@@ -601,9 +601,9 @@ function RunnerDetail({ run, catalog }: { run: RunRecord | null; catalog?: Catal
   })}</div> : <Callout title="No runner dispatch reported">This run used simulation adapters or lacks runner records. Simulation is not execution.</Callout>}</div>;
 }
 
-export function EvidenceDetail({ run }: { run: RunRecord | null }) {
+export function EvidenceDetail({ run, catalog }: { run: RunRecord | null; catalog?: CatalogResponse }) {
   const records = run?.evidence?.records ?? []; if (!records.length) return <div className="console-empty compact"><FileSearch/><span>No evidence records are available.</span></div>;
-  return <EvidenceRecords records={records} />;
+  return <EvidenceRecords records={records} catalog={catalog} run={run} />;
 }
 
 export function DetectionDetail({ run }: { run: RunRecord | null }) {
@@ -656,7 +656,7 @@ export function RunReview({ run, catalog }: { run: RunRecord; catalog: CatalogRe
     <section className="run-path-section" aria-label="Recorded step outcomes"><header><h2>Path taken</h2><p>{steps.length} recorded steps · outcomes as reported by this run</p></header>
       {steps.length ? <ol className="run-path-list">{steps.map((step, index) => <li key={`${step.step_id}-${index}`}><span className="run-step-number" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span><div><strong>{stepName(step)}</strong><small>{stepOutcomeLabel(step, run.mode)}</small></div><details><summary>Step details</summary><DataList items={[{ label: "Step", value: step.step_id }, { label: "Method", value: step.action_id ?? step.simulation_id ?? "Not reported" }, { label: "Disposition", value: sentence(step.execution_disposition ?? "not reported") }, { label: "Evidence references", value: step.evidence_ids?.join(", ") || "None recorded" }]} />{step.error?.message ? <p>{step.error.message}</p> : null}</details></li>)}</ol> : <p className="field-note">No step outcomes are recorded.</p>}
     </section>
-    <details className="run-review-details"><summary>Inspect evidence records{evidence ? ` (${evidence.length})` : " · not reported"}</summary><EvidenceDetail run={run}/></details>
+    <details className="run-review-details"><summary>Inspect evidence records{evidence ? ` (${evidence.length})` : " · not reported"}</summary><EvidenceDetail run={run} catalog={catalog}/></details>
     <details className="run-review-details"><summary>Inspect detection candidates{detections ? ` (${detections.length})` : " · not reported"}</summary><DetectionDetail run={run}/></details>
     {aiProposals.length ? <details className="run-review-details"><summary>AI decisions ({aiProposals.length})</summary><AIProposalTrail run={run} catalog={catalog} proposals={aiProposals}/></details> : <p className="run-ai-note">No runtime AI proposal records are attached.</p>}
     {runLimitationGroups(run).map((group) => <section className="run-limitations" aria-label={group.title} key={group.title}><h2>{group.title}</h2>{group.description ? <p>{group.description}</p> : null}{group.items.length ? <ul>{group.items.map((item, index) => <li key={index}>{item}</li>)}</ul> : <p>No limitations were attached. This is incomplete metadata, not proof that there are none.</p>}</section>)}
