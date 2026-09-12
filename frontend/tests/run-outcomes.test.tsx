@@ -123,6 +123,11 @@ it.each([
   [{ status: "blocked", policy: { allowed: false } }, "Stopped by BlueFire policy"],
   [{ status: "blocked" }, "Blocked · inspect cause"],
   [{ status: "failed" }, "Execution error"],
+  [{ status: "blocked", error: { code: "collection_output_limit" } }, "Collection size limit reached"],
+  [{ status: "failed", error: { code: "collection_output_limit" } }, "Collection size limit reached"],
+  [{ status: "blocked", error: { code: "artifact_limit_blocked" } }, "Artifact size limit reached"],
+  [{ status: "blocked", error: { code: "atomic_gzip_unavailable" } }, "System gzip unavailable"],
+  [{ status: "blocked", policy: { allowed: false }, error: { code: "collection_output_limit" } }, "Stopped by BlueFire policy"],
 ])("does not infer target prevention from a stopped step %j", (step, label) => {
   render(<RunReview run={run({ objective_reached: false, steps: [{ step_id: "collect", ...step }] })} catalog={demoCatalog}/>);
   const outcome = within(screen.getByRole("region", { name: "Recorded run outcome" }));

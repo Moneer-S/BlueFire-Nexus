@@ -2,6 +2,12 @@ import type { RunRecord, RunStep } from "../types";
 
 export { runLabel, runMatchesSearch } from "./runPresentation";
 
+const executionFailureLabels: Record<string, string> = {
+  collection_output_limit: "Collection size limit reached",
+  artifact_limit_blocked: "Artifact size limit reached",
+  atomic_gzip_unavailable: "System gzip unavailable",
+};
+
 export function objectiveLabel(reached?: boolean, mode?: string): string {
   return reached === true ? (mode === "simulate" ? "Achieved (synthetic)" : "Achieved") : reached === false ? "Not achieved" : "Not established";
 }
@@ -9,12 +15,13 @@ export function objectiveLabel(reached?: boolean, mode?: string): string {
 export function stepOutcomeLabel(step: RunStep, mode: string): string {
   if (step.execution_disposition === "counterfactual") return "Simulated continuation";
   if (mode === "execute" && step.interruption?.schema_version === "bluefire.execution-interruption.v1") return step.interruption.dispatch_requested === false ? "Cancelled before dispatch" : "Interrupted";
+  const failureLabel = mode === "execute" ? executionFailureLabels[step.error?.code ?? ""] : undefined;
   if (step.status === "blocked" || step.status === "control_blocked" || step.status === "refused") {
     if (mode === "simulate") return "Simulated stop";
     if (step.policy?.allowed === false || step.telemetry?.includes("policy.control_blocked")) return "Stopped by BlueFire policy";
-    return step.status === "refused" ? "Refused · inspect cause" : "Blocked · inspect cause";
+    return failureLabel ?? (step.status === "refused" ? "Refused · inspect cause" : "Blocked · inspect cause");
   }
-  if (step.status === "failed" || step.status === "error") return mode === "simulate" ? "Simulated failure" : "Execution error";
+  if (step.status === "failed" || step.status === "error") return mode === "simulate" ? "Simulated failure" : failureLabel ?? "Execution error";
   if (step.status === "success" || step.status === "succeeded") return mode === "simulate" ? "Simulated success" : "Reported success";
   return step.status.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase()) || "Not reported";
 }
