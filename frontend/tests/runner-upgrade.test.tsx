@@ -53,6 +53,27 @@ it("retains review blockers and never offers apply or an automatic retry", async
   expect(review).toHaveBeenCalledTimes(1); expect(apply).not.toHaveBeenCalled();
 });
 
+it.each([false, true])("does not present an earlier review refusal as current after runner status changes (late response: %s)", async late => {
+  let rejectReview!: (error: ApiError) => void;
+  const detail = "A distinct verified managed native artifact is required.";
+  const review = vi.spyOn(api, "reviewRunnerUpgrade").mockReturnValue(new Promise((_resolve, reject) => { rejectReview = reject; }));
+  const apply = vi.spyOn(api, "bootstrapRunner");
+  const user = userEvent.setup(); const view = mount();
+  await user.click(screen.getByRole("button", { name: "Review runner upgrade" }));
+  const reject = async () => act(async () => rejectReview(new ApiError("Upgrade review refused.", "runner_upgrade_review_refused", [detail], 409)));
+  if (!late) {
+    await reject();
+    expect(await screen.findByText(detail)).toBeVisible();
+  }
+  view.rerender(<QueryClientProvider client={view.client}><RunnerUpgradeReview profileId={profile} status={{ ...stopped, state: "ready", process: "authenticated" }} onBusy={view.onBusy}/></QueryClientProvider>);
+  if (late) await reject();
+  expect(await screen.findByText(/Its result no longer describes the current runner/)).toBeVisible();
+  expect(screen.queryByText(detail)).not.toBeInTheDocument();
+  expect(screen.queryByText(/Keep the runner stopped when upgrade is refused/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Apply reviewed runner upgrade" })).not.toBeInTheDocument();
+  expect(review).toHaveBeenCalledTimes(1); expect(apply).not.toHaveBeenCalled();
+});
+
 it.each([
   ["durable_objects", "Verified, with a fresh review", "Recovery after a restart requires a fresh review of the same artifacts and retained history."],
   ["current_filesystem_session", "Not verified", "Finish this upgrade before restarting the lab or computer. Recovery after a restart has not been verified for this review."],

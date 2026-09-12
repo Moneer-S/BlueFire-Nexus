@@ -36,9 +36,9 @@ export function RunnerUpgradeReview({ profileId, status, disabled = false, onBus
   const reviewed = reviewMatches && review.data && status && isReviewedRunnerUpgrade(review.data, status.runner_id) ? review.data : undefined;
   const canReview = !DEMO_MODE && !disabled && !busy && canReviewRunnerUpgrade(profileId, status);
   const applyMatches = apply.variables?.profileId === profileId;
-  const failure = review.variables?.profileId === profileId && review.error || applyMatches && apply.error;
+  const failure = reviewMatches && review.error || applyMatches && apply.error;
   const invalidReview = Boolean(reviewMatches && review.data && !reviewed);
-  const staleReview = Boolean(review.data && !reviewMatches && review.variables?.profileId === profileId);
+  const staleReview = Boolean((review.data || review.error) && !reviewMatches && review.variables?.profileId === profileId);
   const currentLabel = reviewed?.recovery_required ? "Previously installed runner" : "Currently installed";
   if (!profileId || (!canReviewRunnerUpgrade(profileId, status) && !review.variables && !apply.variables)) return null;
   return <section className="detail-section" aria-label="Runner upgrade review">
@@ -66,7 +66,7 @@ export function RunnerUpgradeReview({ profileId, status, disabled = false, onBus
       <div className="button-row"><Button variant="primary" disabled={!canReview} onClick={() => { const digest = reviewed.review_digest; review.reset(); apply.mutate({ profileId, digest }); }}>Apply reviewed runner upgrade</Button><Button variant="ghost" disabled={busy} onClick={() => review.reset()}>Close review</Button></div>
     </> : null}
     {invalidReview ? <p role="alert">The upgrade review is incomplete or does not match this runner. Refresh the review before applying an upgrade.</p> : null}
-    {staleReview ? <p role="status">Runner status changed after this review. Request a fresh review before applying an upgrade.</p> : null}
+    {staleReview ? <p role="status">Runner status changed after this review. Its result no longer describes the current runner. A new upgrade requires a fresh review.</p> : null}
     {failure ? <><ErrorState title="Runner upgrade needs attention" error={failure}/>{runnerLifecycleFailure(failure).map((detail, index) => <p key={index}>{detail}</p>)}<p>Keep the runner stopped when upgrade is refused. Resolve the reported blocker, then request a fresh review. No automatic retry was made.</p></> : null}
     {apply.isSuccess && applyMatches ? apply.data.profile_id === profileId && apply.data.state === "stopped" && apply.data.enrollment === "active" ? <p role="status">Runner updated. History retained.</p> : <p role="alert">The upgrade returned an unexpected runner status. Check this profile's current status before continuing.</p> : null}
   </section>;
