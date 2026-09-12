@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { useState, type ComponentProps } from "react";
 import { expect, it, vi } from "vitest";
 import { CanonicalPlanReview } from "../src/components/CanonicalPlanReview";
+import { demoCatalog } from "../src/lib/demo";
 
 const reviewRenders = vi.hoisted(() => [] as number[]);
 vi.mock("../src/components/Primitives", async (importOriginal) => {
@@ -91,4 +92,18 @@ it("updates cleanup wording with the exact mode while retaining its policy and f
   expect(screen.queryByText(/no external files are removed/)).not.toBeInTheDocument();
   view.rerender(<CanonicalPlanReview plan={{ steps: [], edges: [] }} />);
   expect(screen.queryByText(/no external files are removed/)).not.toBeInTheDocument();
+});
+
+it("names simulated methods and settings while retaining exact reviewed values", async () => {
+  const behavior = { ...demoCatalog.behaviors[0]!, id: "sandbox.collection.atomic-gzip.v1", title: "Compress selected records — Atomic gzip" };
+  const plan = { mode: "simulate", steps: [{ step_id: "stage_collection", behavior_id: behavior.id, parameters: { stage_variant: "heldout", redact_values: false }, inputs: {} }], edges: [] };
+  render(<CanonicalPlanReview plan={plan} catalog={{ ...demoCatalog, behaviors: [behavior] }} />);
+  expect(screen.getByText(behavior.title)).toBeVisible();
+  expect(screen.getByText("Alternate staging folder")).toBeVisible();
+  expect(screen.getByText("No")).toBeVisible();
+  await userEvent.setup().click(screen.getByText("Step details"));
+  expect(screen.getByText("stage_collection", { selector: "code" })).toBeVisible();
+  const recordedParameters = screen.getByText("Parameters", { selector: "dt" }).nextElementSibling!.querySelector("pre")!;
+  expect(recordedParameters).toBeVisible();
+  expect(recordedParameters.textContent).toBe(JSON.stringify(plan.steps[0]!.parameters, null, 2));
 });

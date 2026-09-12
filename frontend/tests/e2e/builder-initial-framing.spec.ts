@@ -62,3 +62,25 @@ test("initially frames the complete visible demo path and preserves the operator
   expect(await viewport(page)).toEqual(chosen);
   await expect(name).toHaveValue("My manually framed experiment");
 });
+
+test("selecting a rightmost step keeps it visible beside its details without changing zoom", async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await page.goto("./#/builder");
+  const canvas = page.getByLabel("Scenario graph canvas");
+  await expect(page.locator(".react-flow__node:visible")).toHaveCount(6);
+  await finishLayout(page);
+  const before = await viewport(page);
+  const rightmost = await canvas.locator(".react-flow__node:visible").evaluateAll(elements => elements
+    .map(element => ({ id: (element as HTMLElement).dataset.id!, right: element.getBoundingClientRect().right }))
+    .sort((left, right) => right.right - left.right)[0]!.id);
+  // Use the observed data identity, rather than a fixture-specific step order.
+  const selected = canvas.locator(`.react-flow__node[data-id="${rightmost}"]`);
+  await selected.click();
+  await expect(page.locator(".inspector-panel")).toBeVisible();
+  await expect.poll(() => selected.evaluate(element => {
+    const box = element.getBoundingClientRect();
+    const boundary = element.closest(".graph-canvas")!.getBoundingClientRect();
+    return box.left >= boundary.left && box.right <= boundary.right && box.top >= boundary.top && box.bottom <= boundary.bottom;
+  })).toBe(true);
+  expect((await viewport(page)).zoom).toBeCloseTo(before.zoom, 5);
+});

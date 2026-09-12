@@ -192,7 +192,9 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
     const index = visibleGraph.ordered.findIndex((step) => step.id === selectedId);
     if (focusedSection !== null && sections.length > 1 && index >= 0) setFocusedSection(Math.floor(index / GRAPH_SECTION_SIZE));
   }, [focusedSection, sections.length, selectedId, visibleGraph]);
-  const selectStep = useCallback((id: string) => { setSelectedId(id); setNodes((items) => items.map((node) => ({ ...node, selected: node.id === id }))); setEdges((items) => items.map((edge) => ({ ...edge, selected: false }))); setInspectorOpen(true); setPaletteOpen(false); }, []);
+  const graphCanvas = useRef<HTMLDivElement>(null);
+  const [selectionToReveal, setSelectionToReveal] = useState("");
+  const selectStep = useCallback((id: string) => { setSelectedId(id); setSelectionToReveal(id); setNodes((items) => items.map((node) => ({ ...node, selected: node.id === id }))); setEdges((items) => items.map((edge) => ({ ...edge, selected: false }))); setInspectorOpen(true); setPaletteOpen(false); }, []);
   const selectRoute = useCallback((id: string) => { setRoutesOpen(true); setSelectedId(""); setNodes((items) => items.map((node) => ({ ...node, selected: false }))); setEdges((items) => items.map((edge) => ({ ...edge, selected: edge.id === id }))); setInspectorOpen(false); setPaletteOpen(false); }, []);
   const onEdgeClick = useCallback((_: unknown, edge: FlowEdge) => { if (edge.data?.kind === "route") selectRoute(edge.id); }, [selectRoute]);
   const onNodeClick = useCallback((_: unknown, node: BehaviorFlowNode) => selectStep(node.id), [selectStep]);
@@ -212,6 +214,32 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
     // and resizes preserve the operator's viewport and arranged positions.
     void flow.fitView({ ...fitViewOptions, duration: 0 });
   }, [flow, nodesInitialized, nodes.length, viewMode]);
+
+  useEffect(() => {
+    if (!selectionToReveal || selectionToReveal !== selectedId || !inspectorOpen || !nodesInitialized || viewMode !== "graph") return;
+    const frame = requestAnimationFrame(() => {
+      const canvas = graphCanvas.current;
+      const element = Array.from(canvas?.querySelectorAll<HTMLElement>(".react-flow__node") ?? []).find(node => node.dataset.id === selectionToReveal);
+      setSelectionToReveal("");
+      if (!canvas || !element) return;
+      const boundary = canvas.getBoundingClientRect();
+      const box = element.getBoundingClientRect();
+      if (!boundary.width || !boundary.height || !box.width || !box.height) return;
+      const shift = (start: number, end: number, lower: number, upper: number) => {
+        if (end - start > upper - lower) return (lower + upper - start - end) / 2;
+        return start < lower ? lower - start : end > upper ? upper - end : 0;
+      };
+      const x = shift(box.left, box.right, boundary.left + 16, boundary.right - 16);
+      const y = shift(box.top, box.bottom, boundary.top + 16, boundary.bottom - 16);
+      // Explicit selection may expose an inspector over the old framing. Reveal
+      // only the obscured distance; keep the operator's zoom and node positions.
+      if (x || y) {
+        const current = flow.getViewport();
+        void flow.setViewport({ ...current, x: current.x + x, y: current.y + y }, { duration: 180 });
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [flow, inspectorOpen, nodesInitialized, selectedId, selectionToReveal, viewMode]);
 
   useEffect(() => {
     setNodes((current) => makeNodes(graph).map((node) => {
@@ -414,7 +442,7 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
         <div className="graph-disclosure" role="status"><span>{shownIds.size} of {scenario.steps.length} steps shown{scenario.steps.length - shownIds.size ? ` · ${scenario.steps.length - shownIds.size} hidden` : ""} · {hiddenBranches} branches hidden. Review run includes the whole experiment.</span><button onClick={() => { setAllBranches((value) => !value); if (!allBranches) { setRoutesOpen(true); setInspectorOpen(false); setPaletteOpen(false); } }}>{allBranches ? "Focus on success path" : "Show all branches"}</button>{viewMode === "graph" ? <button id={routesToggleId} aria-expanded={routesOpen} onClick={() => { setRoutesOpen((value) => !value); if (!routesOpen) { setInspectorOpen(false); setPaletteOpen(false); } }}>{routesOpen ? "Hide route list" : "Show route list"}</button> : null}{selected && scenario.edges.some((edge) => edge.from_step === selected.id && edge.outcome !== "success") && !allBranches ? <button onClick={() => setExpandedBranches((previous) => { const next = new Set(previous); if (next.has(selected.id)) next.delete(selected.id); else next.add(selected.id); return next; })}>{expandedBranches.has(selected.id) ? "Collapse selected branches" : "Expand selected branches"}</button> : null}</div>
         {viewMode === "steps" ? <ol className="ordered-steps" aria-label="Experiment steps">{visibleGraph.ordered.map((step, index) => { const behavior = behaviorMap.get(step.behavior_id); return <li key={step.id}><button aria-pressed={selectedId === step.id} onClick={() => selectStep(step.id)}><span className="step-number">{index + 1}</span><span><strong>{behavior?.title ?? "Unavailable step"}</strong><small>{behavior?.purpose}</small><span className="step-routes">{scenario.edges.filter((edge) => edge.from_step === step.id).map((edge) => <em key={edge.outcome}>{branchLabels[edge.outcome]} → {behaviorMap.get(scenario.steps.find((item) => item.id === edge.to_step)?.behavior_id ?? "")?.title ?? edge.to_step}</em>)}</span></span><Badge>{behavior?.execution_state === "action" ? "Executable" : behavior?.execution_state === "simulation" ? "Simulated" : "Research"}</Badge></button></li>; })}</ol> : null}
         <div className={`graph-stage ${routesOpen ? "routes-open" : ""}`} hidden={viewMode !== "graph"}>
-        <div className="graph-canvas" tabIndex={0} aria-label="Scenario graph canvas" onKeyDown={(event) => {
+        <div ref={graphCanvas} className="graph-canvas" tabIndex={0} aria-label="Scenario graph canvas" onKeyDown={(event) => {
           if (event.key !== "Enter" && event.key !== " ") return;
           const id = event.target instanceof Element ? event.target.closest(".react-flow__edge")?.getAttribute("data-id") : null;
           if (id && visibleRoutes.some((edge) => edge.id === id)) { event.preventDefault(); selectRoute(id); }

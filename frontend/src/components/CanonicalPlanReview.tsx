@@ -1,12 +1,13 @@
 import { ShieldCheck } from "lucide-react";
 import { profileLabel, scopeLabel as accessLabel } from "../lib/run-review-labels";
 import { memo } from "react";
-import type { ApprovalBinding, ApprovalEnvelope } from "../types";
+import type { ApprovalBinding, ApprovalEnvelope, CatalogResponse } from "../types";
+import { parameterValueLabel } from "../lib/parameters";
 import type { AdaptiveAuthorization } from "../lib/adaptive-execution";
 import { AdaptiveAuthorizationReview } from "./AdaptiveAuthorizationReview";
 import { Badge, Callout, DataList, sentence } from "./Primitives";
 
-export const CanonicalPlanReview = memo(function CanonicalPlanReview({ plan, cleanup, scope, binding, envelope, adaptiveAuthorization }: { plan: Record<string, unknown>; cleanup?: unknown; scope?: unknown; binding?: ApprovalBinding | null; envelope?: ApprovalEnvelope | null; adaptiveAuthorization?: AdaptiveAuthorization | null }) {
+export const CanonicalPlanReview = memo(function CanonicalPlanReview({ plan, cleanup, scope, binding, envelope, adaptiveAuthorization, catalog }: { plan: Record<string, unknown>; cleanup?: unknown; scope?: unknown; binding?: ApprovalBinding | null; envelope?: ApprovalEnvelope | null; adaptiveAuthorization?: AdaptiveAuthorization | null; catalog?: CatalogResponse }) {
   const steps = Array.isArray(plan.steps) ? plan.steps.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object") : [];
   const edges = Array.isArray(plan.edges) ? plan.edges : [];
   const digest = binding?.plan_digest ?? plan.plan_digest ?? plan.digest ?? plan.scenario_digest;
@@ -31,14 +32,17 @@ export const CanonicalPlanReview = memo(function CanonicalPlanReview({ plan, cle
       const allowed = envelope?.steps.find((item) => item.step_id === step.step_id)?.options;
       const permittedCount = adaptiveAuthorization ? adaptiveAuthorization.steps.find(item => item.step_id === step.step_id)?.methods.length ?? 1 : allowed?.length;
       const selected = allowed?.find((option) => option.behavior_id === step.behavior_id);
+      const behaviorId = typeof step.behavior_id === "string" ? step.behavior_id : undefined;
+      const behavior = catalog?.behaviors.find(item => item.id === behaviorId);
       const settings = Object.entries(step.parameters && typeof step.parameters === "object" ? step.parameters as Record<string, unknown> : {}).filter(([name, value]) => !/(?:digest|sha256|_id)$/.test(name) && (typeof value === "string" || typeof value === "number" || typeof value === "boolean"));
-      const title = selected?.contract.title ?? sentence(String(step.step_id ?? "Unnamed step"));
+      const title = selected?.contract.title ?? behavior?.title ?? sentence(String(step.step_id ?? "Unnamed step"));
+      const purpose = selected?.contract.purpose ?? behavior?.purpose;
       return <article key={String(step.step_id ?? index)}>
         <span>{String(index + 1).padStart(2, "0")}</span>
-        <div><strong>{String(title)}</strong>{selected?.contract.purpose ? <p>{String(selected.contract.purpose)}</p> : null}
+        <div><strong>{String(title)}</strong>{purpose ? <p>{String(purpose)}</p> : null}
           <small>{step.action_id ? "Execute the selected method" : "Simulate this step"}{permittedCount && permittedCount > 1 ? ` · ${permittedCount} allowed methods` : ""}</small>
         </div>
-        {settings.length ? <div className="review-step-settings"><DataList items={settings.slice(0, 4).map(([name, value]) => ({ label: sentence(name), value: String(value) }))}/>{settings.length > 4 ? <small>{settings.length - 4} more settings in step details</small> : null}</div> : null}
+        {settings.length ? <div className="review-step-settings"><DataList items={settings.slice(0, 4).map(([name, value]) => ({ label: sentence(name), value: parameterValueLabel(behaviorId, name, value) ?? (typeof value === "boolean" ? value ? "Yes" : "No" : String(value)) }))}/>{settings.length > 4 ? <small>{settings.length - 4} more settings in step details</small> : null}</div> : null}
         <details><summary>Step details</summary><dl>
           <div><dt>Step / method</dt><dd><code>{String(step.step_id)}</code><code>{String(step.action_id ?? step.simulation_id ?? step.behavior_id ?? "Unresolved")}</code></dd></div>
           <div><dt>Parameters</dt><dd><pre>{JSON.stringify(step.parameters ?? {}, null, 2)}</pre></dd></div>
