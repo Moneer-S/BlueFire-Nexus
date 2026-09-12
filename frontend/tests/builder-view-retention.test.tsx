@@ -34,30 +34,34 @@ function setup(scenario: Scenario = structuredClone(demoScenario)) {
 function branchButton() {
   const branch = demoScenario.steps.find(step => step.id === "fallback")!;
   const title = demoCatalog.behaviors.find(behavior => behavior.id === branch.behavior_id)!.title;
-  return within(screen.getByRole("list", { name: "Experiment steps" })).getByRole("button", { name: new RegExp(`^\\d+ ${title}`) });
+  const list = screen.getByLabelText("Experiment steps", { selector: "ol" });
+  expect(list).toBeVisible();
+  return within(list).getByRole("button", { name: new RegExp(`^\\d+ ${title}`) });
 }
 function assertGraphUnchanged() { expect(JSON.parse(localStorage.getItem(graphKey)!)).toEqual(demoScenario); }
 
 it("restores a selected branch, Steps view and inspector on navigation and browser remount without changing the graph", async () => {
   const { user, remount, validate, save } = setup();
-  await user.click(screen.getByRole("button", { name: "Steps" }));
+  await user.click(within(screen.getByLabelText("Experiment view")).getByRole("button", { name: "Steps" }));
   await user.click(screen.getByRole("button", { name: "Show all branches" }));
   await user.click(branchButton());
   expect(branchButton()).toHaveAttribute("aria-pressed", "true");
   await user.click(screen.getByRole("link", { name: "Leave editor" }));
   await user.click(screen.getByRole("link", { name: "Return to editor" }));
   expect(branchButton()).toHaveAttribute("aria-pressed", "true");
-  expect(screen.getByRole("button", { name: "Close step details" })).toBeVisible();
+  expect(screen.getByLabelText("Close step details", { selector: "button" })).toBeVisible();
   remount();
   expect(branchButton()).toHaveAttribute("aria-pressed", "true");
-  expect(screen.getByRole("button", { name: "Close step details" })).toBeVisible();
+  expect(screen.getByLabelText("Close step details", { selector: "button" })).toBeVisible();
   assertGraphUnchanged();
   expect(validate).not.toHaveBeenCalled(); expect(save).not.toHaveBeenCalled();
   // Hiding a branch still clears selection and cannot make Delete act on it.
   const confirm = vi.spyOn(window, "confirm");
   await user.click(screen.getByRole("button", { name: "Focus on success path" }));
-  expect(screen.getByRole("button", { name: "Delete selected node" })).toBeDisabled();
-  await user.click(screen.getByRole("button", { name: "Delete selected node" }));
+  const deleteButton = screen.getByLabelText("Delete selected node", { selector: "button" });
+  expect(deleteButton).toBeVisible();
+  expect(deleteButton).toBeDisabled();
+  await user.click(deleteButton);
   expect(confirm).not.toHaveBeenCalled(); assertGraphUnchanged();
 });
 
