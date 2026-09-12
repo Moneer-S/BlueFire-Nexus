@@ -104,6 +104,13 @@ environment and launch with the **same absolute `--runs-dir`**; preserve the who
 including its product database and run bundles. Reopen saved experiments and run history to
 check that you are in the intended workspace.
 
-Re-run bootstrap before the next Execute session so the current manifest, binary digest,
-inventory and enrollment are reconciled. Remove disposable lab state only through its
-receipt-bound cleanup workflow. See [Runner deployment](RUNNER_DEPLOYMENT.md).
+Before the next Execute session, open **Runners** and select the intended profile. With the
+runner stopped, choose **Review runner upgrade**, inspect the current and candidate artifacts
+and retained-history summary, then choose **Apply reviewed runner upgrade**. Complete review
+and application in the same lab session. The upgrade preserves enrollment, the sandbox,
+completed execution history and durable results; it does not approve an experiment.
+
+If review is refused, keep the runner stopped and address the reported blocker before requesting
+a fresh review. Do not delete history or pending recovery records to make bootstrap succeed.
+Remove disposable lab state only through its receipt-bound cleanup workflow. See
+[Runner deployment](RUNNER_DEPLOYMENT.md).

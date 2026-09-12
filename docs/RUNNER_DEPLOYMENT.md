@@ -44,6 +44,24 @@ ELF64 architecture, size, and digest, and only then stages them into a disposabl
 environment. This layout does not claim that the Windows wheel is Linux-compatible or that a
 general Linux installer has been exercised.
 
+## Upgrade an enrolled runner
+
+After installing a reviewed product wheel, use **Runners → Review runner upgrade** while the
+managed runner is stopped. Review shows the installed and replacement native artifacts and
+the retained-history counts. **Apply reviewed runner upgrade** rechecks that exact transition
+before activating the replacement; starting the runner and approving an experiment remain
+separate controls.
+
+The review checks the ledger, historical manifests and results, and cleanup in each exact
+historical execution workspace. Ordinary runs have an isolated workspace for their approval;
+older runs may use the original sandbox directly. Both retain their original evidence and
+approval timestamps. An old approval is never renewed by upgrading the runner.
+
+Finish review and application in the same lab session. A changed artifact, workspace identity,
+pending result or cleanup obligation prevents activation. A refused or interrupted transition
+must retain its history and recovery records; the error identifies the check that needs
+attention. Do not remove those records or re-enroll over them to bypass the refusal.
+
 ## Build and verify from source
 
 ```bash
