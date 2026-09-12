@@ -99,5 +99,7 @@ describe("recorded adaptive path", () => {
     expect(decisionProvenance(record).label).toBe("Live provider response");
     record.provider!.used_fallback = true;
     expect(decisionProvenance(record).label).toBe("Configured fallback · not live model evidence");
+    Object.assign(record, { provider: null, proposal: null, decision_source: "none" });
+    expect(decisionProvenance(record).label).toBe("Provider request did not produce a permitted choice");
   });
 });

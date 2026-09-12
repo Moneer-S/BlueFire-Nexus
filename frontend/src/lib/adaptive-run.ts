@@ -41,7 +41,8 @@ export function decisionProvenance(record: RuntimeRecord): { label: string; prov
   if (record.provider_called === false) return { label: "No provider call", provider, model };
   if (record.decision_source === "deterministic_provider" || attempt.kind === "deterministic") return { label: "Deterministic provider · software evidence", provider, model };
   if (record.decision_source === "provider" && record.provider_called === true && record.provider && record.proposal) return { label: "Live provider response", provider, model };
-  return { label: record.provider_called === true ? "Provider called; no permitted choice established" : "Provider provenance not established", provider, model };
+  // provider_called records the planner invocation; it does not establish wire dispatch.
+  return { label: record.provider_called === true ? "Provider request did not produce a permitted choice" : "Provider provenance not established", provider, model };
 }
 
 export function decisionObservations(record: RuntimeRecord) {
