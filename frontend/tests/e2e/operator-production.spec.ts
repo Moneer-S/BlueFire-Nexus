@@ -120,6 +120,17 @@ async function downloadBuffer(download: Download): Promise<Buffer> {
 function installFailureMonitors(page: Page): { assertClean: () => void } {
   const failures: string[] = [];
   const sessionAborts = { GET: 0, POST: 0 };
+  page.on("request", (request) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      // React may replace one session fetch per document. A deliberate reload
+      // starts a new document; repeated aborts within that document still fail.
+      sessionAborts.GET = 0;
+      sessionAborts.POST = 0;
+    }
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/v1/assistance/turns") {
+      failures.push("assistant_started_without_configured_model");
+    }
+  });
   page.on("console", (message) => {
     if (message.type() === "error") failures.push(`console_error:${message.text().slice(0, 400)}`);
   });
@@ -338,17 +349,46 @@ test("production operator UI completes authoring, management, run, replay, and c
   expect(browserPreferences).toEqual({ schema_version: "bluefire.ui-preferences.v1", theme: "light", effect_mode: "simulate", autonomy: "auto" });
   completed.push("persist_strict_settings");
 
-  await navigation.getByRole("link", { name: "AI Planner" }).click();
-  await expect(page.getByRole("heading", { name: "AI Planner", level: 1 })).toBeVisible();
+  await navigation.getByRole("link", { name: "Build", exact: true }).click();
+  await expect(page.getByRole("heading", { name: versionedTitle, level: 1 })).toBeVisible();
+  const assistantTrigger = page.getByRole("button", { name: "Assistant", exact: true });
+  await assistantTrigger.click();
+  const assistant = page.getByRole("complementary", { name: "Experiment assistant" });
+  await expect(assistant).toBeVisible();
+  await expect(page.getByRole("main")).not.toHaveAttribute("inert");
+  await assistant.getByLabel("Assistant operation").selectOption("new");
+  await assistant.getByLabel("AI mode", { exact: true }).selectOption("off");
+  await expect(assistant.getByText("Off makes no new model requests. Manual tools remain available.")).toBeVisible();
+  await assistant.getByLabel("AI mode", { exact: true }).selectOption("assist");
+  await assistant.getByLabel("What would you like to do?").fill("Compare a bounded evidence collection path and preserve replay lineage.");
+  // The isolated gate has no authorized live provider. The current Assistant
+  // must not present its deterministic runtime adapter as a model connection.
+  await expect(assistant.getByLabel("Provider", { exact: true })).toHaveValue("");
+  await expect(assistant.getByLabel("Provider", { exact: true }).locator("option")).toHaveCount(1);
+  await expect(assistant.getByRole("button", { name: "Start work" })).toBeDisabled();
+  await assistant.getByRole("link", { name: "Configure a provider in Settings" }).click();
+  await expect(page.getByRole("region", { name: "Model connection" })).toBeVisible();
+  await expect(page.getByLabel("Secret environment reference")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Send live connection test" })).toBeDisabled();
+  await assistant.getByRole("button", { name: "Close assistant" }).click();
+  await expect(assistantTrigger).toBeFocused();
+
+  // Settings and Assistant preferences cannot mutate the prepared run. A
+  // fresh workspace adopts the saved defaults without carrying approval.
+  await navigation.getByRole("link", { name: "Runs", exact: true }).click();
+  await page.getByRole("link", { name: "Review new run", exact: true }).click();
+  const runtimeAutonomy = page.getByRole("group", { name: "AI autonomy", exact: true });
+  await expect(runtimeAutonomy.getByRole("radio", { name: /^Off / })).toBeChecked();
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(runtimeAutonomy.getByRole("radio", { name: /^Auto / })).toBeChecked();
   for (const name of ["Off", "Assist", "Auto"]) {
-    await page.locator(".autonomy-stack > button").filter({ hasText: name }).click();
+    await runtimeAutonomy.getByRole("radio", { name: new RegExp(`^${name} `) }).check();
   }
-  const providerId = await page.getByLabel("Provider adapter").inputValue();
+  await page.getByText("AI provider & environment details", { exact: true }).click();
+  const providerId = await page.getByLabel("Provider", { exact: true }).inputValue();
   expect(providerId).toBe("deterministic-offline.v1");
-  await page.getByLabel("Experiment objective").fill("Compare a bounded evidence collection path and preserve replay lineage.");
-  await page.getByRole("button", { name: "Generate registered draft" }).click();
-  await expect(page.getByText("Unsaved preview", { exact: true })).toBeVisible();
-  await expect(page.getByText("Not saved · not authorized")).toBeVisible();
+  await navigation.getByRole("button", { name: "Show more tools" }).click();
+  await navigation.getByRole("button", { name: "Show settings tools" }).click();
   completed.push("exercise_ai_modes_and_provider");
 
   await navigation.getByRole("link", { name: "Runner Profiles" }).click();
@@ -401,18 +441,21 @@ test("production operator UI completes authoring, management, run, replay, and c
   await page.getByRole("link", { name: "Review new run", exact: true }).click();
   await page.getByRole("radio", { name: /Execute Approved runner actions/ }).check();
   await page.getByText("Policy, approval & budgets").click();
-  await expect(page.getByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ })).toBeDisabled();
-  await expect(page.getByText("Run preflight first.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create approval-gated job", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Approve and release job", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("checkbox", { name: /I approve this exact immutable/ })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Complete Execute approval envelope" })).toHaveCount(0);
+  const observations = page.getByRole("region", { name: "Required observations" });
+  await expect(observations).toContainText("Created files and cleanup · Required");
   await page.getByRole("radio", { name: /Simulate Synthetic evidence only/ }).check();
   completed.push("review_execute_approval_boundary");
 
-  await expect(page.getByRole("radio", { name: /Auto Policy-valid Simulate choices/ })).toBeChecked();
+  await expect(runtimeAutonomy.getByRole("radio", { name: /^Auto / })).toBeChecked();
   await page.getByText("AI provider & environment details", { exact: true }).click();
-  await expect(page.getByLabel("Provider")).toHaveValue("deterministic-offline.v1");
-  await expect(page.getByLabel("Runner profile")).toHaveValue("sandbox-simulate.v1");
-  await page.getByLabel("Target scope").fill("sandbox.workspace");
-  await page.getByText("Observation & detection").click();
-  await expect(page.getByText("collector.filesystem.sandbox.v1", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Provider", { exact: true })).toHaveValue("deterministic-offline.v1");
+  await expect(page.getByLabel("Environment profile")).toHaveValue("sandbox-simulate.v1");
+  await expect(page.getByRole("group", { name: "Requested access" }).getByRole("checkbox")).toBeChecked();
+  await expect(observations).toContainText("Simulate produces synthetic records. Independent file observations are available during Execute.");
   const preflightResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/runs/preflight" && response.request().method() === "POST");
   await page.getByRole("button", { name: "Run preflight" }).click();
   const preflightReport = await (await preflightResponse).json() as JsonObject;

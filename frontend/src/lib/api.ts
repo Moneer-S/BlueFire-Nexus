@@ -2,7 +2,7 @@ import type { AssistanceRunEnvelope, RunPreparationDecision, SavedRunSelection }
 import type { ReceiverContext, ReceiverContextRequest, ReceiverDecision, ReceiverDefenseEnvelope, ReceiverPhase, ReceiverTestList } from "./receiver-defense-types";
 import type { RunDetectionSelection, DetectionCreationSource, DetectionCreationEnvelope, DetectionCreationDecision, DetectionCreationValidation } from "./detection-creation";
 import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionRunEvaluation, DetectionCaseRole, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunPresentation, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
-import { approvalDeadline, storedRunApprovalPreflight } from "./approvalReview";
+import { approvalDeadline, hasAdaptiveApprovalReview, requiresAdaptiveReview, storedRunApprovalPreflight } from "./approvalReview";
 import { isRunPresentation } from "./runPresentation";
 import { sameJson } from "./replay-review";
 import type { DetectionAIDecision, DetectionAIRequest } from "./detection-ai";
@@ -748,7 +748,8 @@ export const api = {
     }
     if (job.kind === "scenario.replay") {
       const prepared = job.request.replay_preparation as ReplayPreparation | undefined;
-      if (prepared?.schema_version !== "bluefire.replay-preparation.v1" || prepared.binding?.source?.run_id !== job.request.source_run_id || !sameJson(prepared.replay_request, job.request.replay_request) || !sameJson(prepared.binding?.replay_request, job.request.replay_request) || !prepared.preflight?.plan || !prepared.preflight.approval_binding || !prepared.preflight.approval_envelope)
+      if (prepared?.schema_version !== "bluefire.replay-preparation.v1" || prepared.binding?.source?.run_id !== job.request.source_run_id || !sameJson(prepared.replay_request, job.request.replay_request) || !sameJson(prepared.binding?.replay_request, job.request.replay_request) || !prepared.preflight?.plan || !prepared.preflight.approval_binding || !prepared.preflight.approval_envelope
+        || !hasAdaptiveApprovalReview(prepared.preflight, requiresAdaptiveReview(job)))
         throw new ApiError("The replay's exact saved review is unavailable.", "job_preflight_unavailable", undefined, 409);
       // This is the original review, not a newly compiled plan. Approval itself
       // revalidates the bound source, configuration and live runner readiness.

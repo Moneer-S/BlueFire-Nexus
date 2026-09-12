@@ -34,8 +34,8 @@ function StateWitness() {
   </>;
 }
 
-function renderBuilder() {
-  window.localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(scenario));
+function renderBuilder(initial = scenario) {
+  window.localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(initial));
   window.localStorage.setItem("bluefire.local.run-config.v1", JSON.stringify({ schema_version: UI_PREFERENCE_SCHEMA_VERSION, theme: "dark", effect_mode: "execute", autonomy: "off" }));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(["catalog"], catalog);
@@ -47,6 +47,45 @@ function draft() { return JSON.parse(screen.getByLabelText("Full scenario witnes
 function configuration() { return JSON.parse(screen.getByLabelText("Run configuration witness").textContent!); }
 
 describe("Builder alternative method selection", () => {
+  it("saves exact retry choices, reopens them in the graph, and requires repair after an alternative is removed", async () => {
+    const user = userEvent.setup();
+    const save = vi.spyOn(api, "saveScenarioVersion").mockImplementation(async document => ({
+      schema_version: "bluefire.scenario-version.v1", scenario: { scenario_id: document.id, title: document.title, version: 2,
+        digest: "saved-version", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", document: structuredClone(document) },
+    }));
+    const rendered = renderBuilder();
+    await user.click(screen.getByRole("button", { name: "Steps" }));
+    await user.click(within(screen.getByRole("list", { name: "Experiment steps" })).getByRole("button", { name: /^4 Selected-record collection/ }));
+    await user.click(screen.getByRole("button", { name: "Configure adaptive retry" }));
+    const methods = within(screen.getByRole("group", { name: "Permitted methods" })).getAllByRole("checkbox");
+    expect(methods[0]).toBeChecked();
+    await user.click(methods[1]!);
+    await user.click(screen.getByRole("button", { name: "Apply retry choices" }));
+    const expected = draft();
+    expect(expected.adaptive_execution.steps).toEqual([{ step_id: "stage", methods: [
+      { behavior_id: primary.id, action_id: primary.action_ids[0] },
+      { behavior_id: alternative.id, action_id: alternative.action_ids[0] },
+    ] }]);
+    expect(expected.steps).toEqual(scenario.steps);
+    await user.click(screen.getByRole("button", { name: "Save version" }));
+    expect(await screen.findByText("Version 2 saved.")).toBeVisible();
+    expect(save.mock.calls[0]![0]).toEqual(expected);
+    const reopened = (await save.mock.results[0]!.value).scenario.document;
+    rendered.unmount();
+    renderBuilder(reopened);
+    expect(draft()).toEqual(expected);
+    await user.click(screen.getByRole("button", { name: "Steps" }));
+    await user.click(within(screen.getByRole("list", { name: "Experiment steps" })).getByRole("button", { name: /^4 Selected-record collection/ }));
+    for (const choice of within(screen.getByRole("group", { name: "Permitted methods" })).getAllByRole("checkbox")) expect(choice).toBeChecked();
+    await user.click(screen.getByRole("checkbox", { name: "Whole-file collection" }));
+    expect(screen.getByRole("region", { name: "Retry choices need attention" })).toBeVisible();
+    expect(draft().adaptive_execution).toEqual(expected.adaptive_execution);
+    await user.click(screen.getByRole("button", { name: "Save version" }));
+    expect(save).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole("button", { name: "Apply retry choices" }));
+    expect(draft()).toEqual(expected);
+  }, 20000);
+
   it("changes the selected method, preserves the full draft and invalidates only affected authority across undo, redo and navigation", async () => {
     const user = userEvent.setup();
     const validate = vi.spyOn(api, "validate").mockResolvedValue({ valid: true, issues: [] });

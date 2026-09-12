@@ -211,6 +211,7 @@
         "bluefire.native_journey_runtime",
         "bluefire.operator_ui_gate",
         "bluefire.operator_ui_gate_validation",
+        "bluefire.operator_ui_source_validation",
         "bluefire.operator_ui_journey",
         "bluefire.gate_helper_diagnostics",
         "bluefire.gate_private_diagnostics",

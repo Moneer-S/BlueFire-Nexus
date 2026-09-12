@@ -1,4 +1,5 @@
 import type { Behavior, Outcome, Scenario } from "../types";
+import { parseAdaptiveExecution } from "./adaptive-execution";
 
 /** Change a declared method without rewriting its graph or silently dropping inputs. */
 export function selectScenarioAlternative(scenario: Scenario, stepId: string, behaviorId: string, behaviors: ReadonlyMap<string, Behavior>): Scenario {
@@ -41,6 +42,7 @@ function isParameterValue(value: unknown) {
 
 export function parseScenarioDocument(value: unknown): Scenario {
   if (!isRecord(value)) throw new Error("The document is not a BlueFire scenario object.");
+  if (Object.hasOwn(value, "adaptive_execution")) parseAdaptiveExecution(value.adaptive_execution);
   for (const field of ["schema_version", "id", "title"]) requireString(value, field, "document");
   // Draft restoration checks structure, not readiness to save or execute. A user
   // can add steps before writing a purpose without losing that work on reload.

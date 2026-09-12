@@ -161,3 +161,12 @@
   .workbench-builder .graph-view-actions { width: 100%; flex-wrap: wrap; }
 }
 .workbench-shell #main-content:has(.workbench-builder) { overflow: auto; }
+.workbench-builder .adaptive-method-options, .workbench-builder .adaptive-outcome-options { margin: 12px 0; padding: 0; border: 0; }
+.workbench-builder .adaptive-method-options legend, .workbench-builder .adaptive-outcome-options legend { margin-bottom: 8px; font-size: .8rem; font-weight: 600; }
+.workbench-builder .adaptive-method-options .check-row { align-items: flex-start; padding: 8px 0; }
+.workbench-builder .adaptive-method-options small { display: block; margin-top: 4px; color: var(--muted); }
+.workbench-builder .adaptive-editor-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.workbench-builder .adaptive-choice-status { font-size: .76rem; }
+.workbench-builder .adaptive-repair { padding: 12px 16px; border: 1px solid var(--warning); border-radius: 8px; margin-bottom: 12px; }
+.workbench-builder .adaptive-repair p { margin: 8px 0; font-size: .82rem; }
+.workbench-builder .adaptive-unavailable { padding: 8px 0; }

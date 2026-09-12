@@ -26,6 +26,7 @@ from bluefire.operator_ui_journey import (
     SCREENSHOT_ARTIFACTS,
     OperatorUIJourneyError,
 )
+from bluefire.operator_ui_source_validation import operator_source_review_is_human_first
 from bluefire.product_acceptance import load_release_contract
 from bluefire.util import content_hash
 
@@ -260,7 +261,7 @@ def test_production_browser_harness_is_separate_and_fail_closed() -> None:
     ) in spec
 
 
-def test_builder_exposes_resizable_panels_and_optional_graph_detail() -> None:
+def test_builder_exposes_resizable_panels_and_optional_graph_detail(tmp_path: Path) -> None:
     source = (ROOT / "frontend" / "src" / "pages" / "Builder.tsx").read_text(encoding="utf-8")
 
     assert 'aria-label="Behavior palette width"' in source
@@ -277,6 +278,30 @@ def test_builder_exposes_resizable_panels_and_optional_graph_detail() -> None:
     assert "<h3>Method</h3>" in source
     assert "<h3>Required input</h3>" in source
     assert "<h3>Next step</h3>" in source
+
+    assert operator_source_review_is_human_first(ROOT)
+    for relative in (
+        "pages/Builder.tsx",
+        "pages/ActionPackages.tsx",
+        "components/RunConfiguration.tsx",
+        "components/RunWorkspace.tsx",
+        "components/CanonicalPlanReview.tsx",
+    ):
+        target = tmp_path / "frontend" / "src" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            (ROOT / "frontend" / "src" / relative).read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    assert operator_source_review_is_human_first(tmp_path)
+    target = tmp_path / "frontend" / "src" / "components" / "RunWorkspace.tsx"
+    workspace = target.read_text(encoding="utf-8")
+    for unsafe in (
+        workspace.replace("<CanonicalPlanReview ", "<MissingReview "),
+        workspace.replace("if (deadline.recheck()) onApprove();", "onApprove();"),
+        workspace + '\n<input aria-label="Shell"/>',
+    ):
+        target.write_text(unsafe, encoding="utf-8")
+        assert not operator_source_review_is_human_first(tmp_path)
 
 
 def test_gate08_frontend_environment_scrubs_secrets_and_isolates_home(

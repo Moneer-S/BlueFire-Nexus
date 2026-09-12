@@ -1,3 +1,5 @@
+import type { AdaptiveAuthorization, AdaptiveExecution } from "./lib/adaptive-execution";
+
 export type RunMode = "simulate" | "execute";
 export type AutonomyLevel = "off" | "assist" | "auto";
 export type SafetyTier = "safe" | "controlled" | "restricted";
@@ -285,6 +287,7 @@ export interface Scenario {
   provenance: Provenance;
   limitations: string[];
   layout?: Record<string, { x: number; y: number }>;
+  adaptive_execution?: AdaptiveExecution;
 }
 
 export interface ManagedSetting<T = unknown> {
@@ -658,6 +661,9 @@ export interface RunStep {
   status: string;
   execution_disposition?: string;
   planner_decision_id?: string;
+  runner_status?: string;
+  request_hash?: string;
+  runner_task_id?: string;
   artifacts?: unknown[];
   evidence_ids?: string[];
   telemetry?: string[];
@@ -702,7 +708,7 @@ export interface RunRecord {
     application_status?: string;
     outcome?: string;
     proposal?: AIProposal | null;
-    provider?: Record<string, unknown>;
+    provider?: Record<string, unknown> | null;
     proposal_policy_evaluation?: Record<string, unknown>;
     selected_behavior_id?: string;
     allowed_edges?: Array<{ from_step: string; outcome: string; to_step: string }>;
@@ -792,6 +798,7 @@ export interface AIProposalReview {
   proposal_digest: string;
   status: "pending" | "accepted" | "rejected" | string;
   record: {
+    schema_version?: string;
     application_status?: string;
     allowed_step_ids?: string[];
     allowed_behavior_ids?: string[];
@@ -1027,6 +1034,7 @@ export interface PreflightReport {
   plan?: Record<string, unknown>;
   approval_binding?: ApprovalBinding | null;
   approval_envelope?: ApprovalEnvelope | null;
+  adaptive_authorization?: AdaptiveAuthorization | null;
 }
 
 export interface ApprovalBinding {

@@ -116,7 +116,7 @@ export function AssistedRunReview({ jobId }: { jobId: string }) {
   const envelope = work.data;
   const preparation = envelope?.preparation;
   const preparationDetails = preparation ? <>
-    {preparation.preflight.plan ? <CanonicalPlanReview plan={preparation.preflight.plan} cleanup={preparation.preflight.cleanup} scope={preparation.preflight.scope} binding={preparation.preflight.approval_binding} envelope={preparation.preflight.approval_envelope} /> : <Callout title="Plan unavailable">The saved preparation has no reviewable plan. Return to Assistant to check the operation.</Callout>}
+    {preparation.preflight.plan ? <CanonicalPlanReview plan={preparation.preflight.plan} cleanup={preparation.preflight.cleanup} scope={preparation.preflight.scope} binding={preparation.preflight.approval_binding} envelope={preparation.preflight.approval_envelope} adaptiveAuthorization={preparation.preflight.adaptive_authorization} /> : <Callout title="Plan unavailable">The saved preparation has no reviewable plan. Return to Assistant to check the operation.</Callout>}
     {preparation.preflight.findings?.length ? <section aria-label={envelope?.decision ? "Findings when this plan was prepared" : "Preparation findings"}><h3>{envelope?.decision ? "Findings when this plan was prepared" : "Preparation findings"}</h3><ul>{preparation.preflight.findings.map((item, index) => <li key={index}>{typeof item === "string" ? item : item.message ?? item.code}</li>)}</ul></section> : null}
   </> : null;
   const submitted = envelope?.job.request?.submitted_request;

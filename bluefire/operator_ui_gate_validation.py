@@ -22,6 +22,7 @@ from .operator_ui_journey import (
     RUNNER_ID,
     SCREENSHOT_ARTIFACTS,
 )
+from .operator_ui_source_validation import operator_source_review_is_human_first
 from .product_store import ProductStore
 from .run_store import RunStore
 
@@ -544,30 +545,7 @@ def _validate_persistence(
         for item in detections
     )
 
-    builder_source = (repository / "frontend" / "src" / "pages" / "Builder.tsx").read_text(
-        encoding="utf-8"
-    )
-    runs_source = (repository / "frontend" / "src" / "pages" / "Runs.tsx").read_text(
-        encoding="utf-8"
-    )
-    package_source = (repository / "frontend" / "src" / "pages" / "ActionPackages.tsx").read_text(
-        encoding="utf-8"
-    )
-    structural_ok = bool(
-        "Behavior palette width" in builder_source
-        and "Node inspector width" in builder_source
-        and "Environment <em>profile + scope</em>" in builder_source
-        and "Review before durable job creation" in runs_source
-        and "Raw complete approval envelope" in runs_source
-        and runs_source.index("Review before durable job creation")
-        < runs_source.index("Raw complete approval envelope")
-        and "raw editor" not in package_source.lower()
-        and not re.search(
-            r'(?:label|aria-label)=["\'](?:raw )?(?:shell|command)(?: input)?["\']',
-            "\n".join((builder_source, runs_source, package_source)),
-            re.IGNORECASE,
-        )
-    )
+    structural_ok = operator_source_review_is_human_first(repository)
     return {
         "ai": ai_ok,
         "comparison": compare_ok,

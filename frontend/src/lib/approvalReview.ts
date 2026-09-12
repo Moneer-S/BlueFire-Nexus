@@ -6,6 +6,29 @@ export function approvalDeadline(expiresAt: unknown): number {
   return typeof expiresAt === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(expiresAt) ? Date.parse(expiresAt) : NaN;
 }
 
+export function hasAdaptiveApprovalReview(report?: PreflightReport, required = false): boolean {
+  const authorization = report?.adaptive_authorization;
+  if (!authorization) return !required;
+  return authorization.schema_version === "bluefire.adaptive-authorization.v1"
+    && authorization.plan_digest === report?.approval_binding?.plan_digest
+    && /^sha256:[0-9a-f]{64}$/.test(authorization.authorization_digest)
+    && Array.isArray(authorization.steps) && authorization.steps.length > 0;
+}
+
+function object(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Derive review requirements from this job's saved intent, never workspace settings. */
+export function requiresAdaptiveReview(job?: RunJob | null): boolean {
+  const request = job?.request;
+  if (!object(request)) return false;
+  const submitted = object(request._run_submission_request) ? request._run_submission_request : undefined;
+  const replay = object(request.replay_preparation) ? request.replay_preparation : undefined;
+  return [request.scenario, submitted?.scenario, replay?.scenario].some(scenario =>
+    object(scenario) && Object.hasOwn(scenario, "adaptive_execution"));
+}
+
 export function hasUsableStoredApprovalReview(report?: PreflightReport): boolean {
   return Boolean(
     report?.status === "approval_required"
@@ -15,7 +38,8 @@ export function hasUsableStoredApprovalReview(report?: PreflightReport): boolean
     && report.approval_envelope
     && typeof report.approval_envelope.envelope_digest === "string"
     && report.approval_envelope.envelope_digest.length > 0
-    && Array.isArray(report.approval_envelope.steps),
+    && Array.isArray(report.approval_envelope.steps)
+    && hasAdaptiveApprovalReview(report),
   );
 }
 
@@ -33,6 +57,7 @@ export function storedRunApprovalPreflight(job: RunJob, options: { forDisplayOnl
     || job.request?.approval_request_id !== approvalId
     || (job.progress.approval_request_id !== undefined && job.progress.approval_request_id !== approvalId)
     || !hasUsableStoredApprovalReview(report) || !binding
+    || !hasAdaptiveApprovalReview(report, requiresAdaptiveReview(job))
     || report?.plan?.mode !== "execute" || !Array.isArray(report.plan.steps) || !report.plan.steps.length
     || !report.approval_envelope?.steps.length
     || !approvalBindingFields.every((field) => request[field] === binding[field])
@@ -60,6 +85,7 @@ export function continuationApprovalPreflight(job: RunJob, review?: AIProposalRe
     || canonical.job_id !== job.job_id || canonical.proposal_record_id !== review.proposal_record_id
     || canonical.approval_request_id !== approvalId
     || !hasUsableStoredApprovalReview(report) || !binding
+    || !hasAdaptiveApprovalReview(report, requiresAdaptiveReview(job) || review.record.schema_version === "bluefire.ai-proposal-record.v4")
     || !Array.isArray(report?.plan?.steps) || !report.plan.steps.length || report.plan.mode !== "execute"
     || !report.approval_envelope?.steps.length
     || audit?.continuation_plan_digest !== binding.plan_digest
