@@ -315,9 +315,8 @@ def request_reservation(
         raise refused("live_request_out_of_scope")
     try:
         purpose, schema_digest = schema_identity(body, config.kind)
-        if (
-            purpose not in authorization["purposes"]
-            or (purpose != "bluefire_ai_graph_draft" and _schemas().get(purpose) != schema_digest)
+        if purpose not in authorization["purposes"] or (
+            purpose != "bluefire_ai_graph_draft" and _schemas().get(purpose) != schema_digest
         ):
             raise ValueError
         wire = strict_object(body)
