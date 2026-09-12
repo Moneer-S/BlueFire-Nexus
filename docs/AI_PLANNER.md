@@ -92,9 +92,35 @@ Responses uses `input`, `text.format` and `max_output_tokens`; Chat Completions 
 
 ## Configuration
 
-In the UI, use **Settings > Connect a model**. Set the key in the environment of the process that launches BlueFire, restart the service, and enter only the environment-variable name. Select the API style, endpoint, model and request limits; save the secret-free draft, check it and activate the saved configuration before choosing it in Assistant.
+In the UI, use **Settings > Connect a model**. For a keyed provider, set the key in the environment
+of the process that launches BlueFire before starting the service, and enter only its
+environment-variable name under **Secret environment reference**. Select the API style, full request
+endpoint, exact model and per-attempt request limits. **Save secret-free draft** retains the
+configuration. **Check configuration** validates it and credential availability without contacting
+the endpoint. Saving or activating a configuration grants no permission for model requests.
 
-**Check configuration** validates local configuration and credential availability without contacting the endpoint. **Send live connection test** is separate: it sends one synthetic structured-output request, at most 256 output tokens and a 10-second timeout, without retry or fallback. It may incur API cost and sends no experiment or evidence. A successful connection test is not evidence of model quality or completion of an assisted workflow.
+In **Review model data and usage**, inspect the exact connection and credential reference, select
+the permitted model work, and review the lab data scope. Set total request attempts, request bytes,
+reserved output tokens and an authorization duration of at most 900 seconds. Enter your operator
+identity, confirm the data and usage limits, and choose **Authorize reviewed model usage**. A loopback
+endpoint needs its additional explicit confirmation. This action saves and activates a direct
+provider configuration when needed, then records the reviewed authorization; it sends no model
+request. An active configuration must be deactivated before editing. An enrolled broker connection
+is locked to its session; restore its authorized enrollment if it needs to change.
+
+The authorization applies only to the exact configuration, selected purposes and current service
+session. Requests reserve usage before each transport attempt; retries and failed or cancelled
+attempts consume those reservations. Reserved tokens are a conservative limit, not a bill or a
+measurement of actual tokens used. Expiry, revocation, exhausted limits or a service restart require
+a new review. **Saved model authorizations** retains their status and usage; remaining counters do
+not renew authority. Execute effects still require their separate experiment approval.
+
+**Send live connection test** is separate and requires current authorization for **Test the
+connection with synthetic data**. It sends one synthetic structured-output request, at most 256
+output tokens and a 10-second timeout, without retry or fallback. It may incur API cost and sends
+no experiment or evidence. A successful connection test establishes connection compatibility only.
+
+The following configuration example defines provider settings, not live usage authorization:
 
 ```yaml
 ai:
@@ -138,18 +164,21 @@ export OPENAI_API_KEY="..."          # Linux/macOS
 # Windows PowerShell: $env:OPENAI_API_KEY = "..."
 ```
 
-Then select autonomy/provider:
+Then start the UI with the workspace you intend to keep:
 
 ```bash
-bluefire --runs-dir .bluefire-runs scenario run scenarios/ai_adaptive_safe_chain.yaml \
-  --autonomy assist \
-  --ai-provider openai-responses.v1
+bluefire --runs-dir "<an absolute path you keep>" ui
 ```
 
-This Simulate run can construct the provider and request a bounded proposal after an observed step
-outcome. `scenario preview` only validates provider metadata during preflight; it does not construct
-the provider or contact its endpoint. A successful live call therefore requires operator-supplied
-credentials and network access and is not established by the offline fake-transport tests.
+Complete the model data and usage review in that running UI. For runtime proposals, select
+**Choose reviewed methods during a run** among the permitted work, then choose the same provider
+and the intended autonomy in the experiment's run review. For contextual Assistant work, authorize
+its intended purposes and select the provider there. Review the actual proposal and recorded
+outcome; offline fake-transport tests do not establish a successful live journey.
+
+Keep using the same service session. A separate `scenario run` CLI invocation starts a new service;
+it cannot inherit the UI's live authorization. `scenario preview` validates preflight metadata
+without contacting a provider. Neither a preview nor a saved provider setting grants live usage.
 
 Use Auto only after the same scenario/provider has been reviewed in Assist and the runner profile is appropriately narrow.
 
@@ -157,7 +186,12 @@ Use Auto only after the same scenario/provider has been reviewed in Assist and t
 
 Redaction replaces values whose keys match configured secret terms, truncates strings, and excludes evidence content by default. The legacy runtime context contains mode, current step/outcome, completed step IDs/behaviors/statuses and the deterministic decision. Finite Execute planning adds a bounded projection of verified observations: allowlisted counts and categories, evidence references and provenance, failure classifications, method prerequisites and remaining time, steps and retries. It does not send raw logs, commands, paths or credentials. Missing telemetry and unknown target prevention stay explicit; a BlueFire authorization or control refusal is not evidence that the target prevented an operation.
 
-Detection assistance can include a bounded, redacted projection of eligible observed content when the selected provider configuration permits it; otherwise it uses permitted field metadata. Its 128-observation model-context bound is separate from the full-run detector execution budget. Inspect the actual operation's data boundary and classify the data and provider terms before sending it. A redaction list reduces accidental disclosure; it is not a complete data-loss-prevention system.
+Live authorization requires credential redaction and excludes raw logs and evidence bodies.
+Depending on the authorized purpose, requests may contain reviewed lab objectives and parameters,
+bounded observation summaries, rule text and evidence references. Detection assistance uses permitted
+field metadata under this policy. Its 128-observation model-context bound is separate from the full-run
+detector execution budget. Keep prompts and selected material within the reviewed lab scope; a
+redaction list is not a complete data-loss-prevention system.
 
 ## Failure and fallback
 
@@ -165,7 +199,12 @@ On the legacy runtime decision and synchronous draft paths, unavailable credenti
 
 Finite Execute experiments explicitly configure either stop or deterministic graph continuation on provider failure. A fallback is labeled as such and never counted as live-model success. Requests share the remaining experiment deadline across transport attempts and retry delays; no proposal call starts after the retry or execution budget is exhausted. Cancellation remains available while planning. Rejected typed proposals and provider attempt metadata are retained, including attempts that produced no usable response.
 
-Catalog provider readiness checks whether the configuration and required credential reference are available locally; it does not contact the endpoint or measure model quality. Service startup persists secret-safe provider configuration plus that readiness snapshot in the local product store. The catalog returns bundle-safe runtime metadata and a freshly computed readiness view, without returning the configured endpoint.
+Catalog provider readiness checks local configuration, the required credential reference and current
+live authorization availability; it does not contact the endpoint or measure model quality. Each
+request separately checks its purpose and remaining usage before transport. Service startup persists
+secret-safe provider configuration plus a readiness snapshot in the local product store. The catalog
+returns bundle-safe runtime metadata and a freshly computed readiness view, without returning the
+configured endpoint.
 
 ## Legacy synchronous objective-to-graph drafting
 

@@ -6,14 +6,14 @@ and shows you what actually differs.
 
 The workbench runs on your own machine as a local loopback service bound to 127.0.0.1.
 Manual and offline AI workflows require no model account. Optional external AI sends the request's
-context to the provider you explicitly configure; that provider may require an account and charge
-for usage.
+context to the provider you explicitly configure and authorize; that provider may require an account
+and charge for usage.
 
 ![Walkthrough: the behavior graph, the saved run history, and a completed run's evidence](docs/assets/screenshots/walkthrough.gif)
 
 Recorded from the running product in a disposable WSL2 lab: the typed graph for *Compare record
-collection methods*, its saved run history, and a completed Execute run's evidence. Nothing in it is
-staged or re-enacted.
+collection methods*, its saved run history, and a completed Execute run's evidence. Captured
+September 10, 2026; condensed to 15 seconds with navigation timing edited.
 
 Use it only on systems, accounts, networks, and labs you own or are explicitly authorized to test.
 V3 is an unreleased candidate.
@@ -96,7 +96,7 @@ Two effect modes. AI autonomy is a separate choice and never widens runner autho
 
 | | Simulate | Execute |
 |---|---|---|
-| External effects | None | Registered and approved effects only |
+| Lab effects | None | Registered and approved effects only |
 | Runner | Not used | Required, and independently enforcing the selected profile |
 | Scope | Modeled | Explicit operator scope, bounded by policy and profile |
 | Evidence | Synthetic or counterfactual | Executed, blocked, or unknown; `observed` only from a collector |
@@ -117,6 +117,8 @@ Assist retains review; older exact-plan approvals do not gain this authority.
 The bundled offline provider makes planner behavior reproducible with no model account, and it is
 what release acceptance uses. Connecting an OpenAI-compatible provider changes nothing about
 authority: schema validation, allowlists, policy, runner enforcement and approval all still apply.
+Live model requests also need a separate review of the exact connection, permitted work and data,
+and finite usage limits for the current service session.
 Model quality is not something this project measures. See [AI Planner](docs/AI_PLANNER.md).
 
 To plan an experiment, open **Build > Plan with Assistant**, describe an objective, review and edit
@@ -159,7 +161,7 @@ not execute the complete Atomic Red Team framework or bundle GNU gzip. See
 | Python control plane | Python 3.10+ on Windows, Linux and macOS-compatible environments |
 | Rust runner | Native Windows x86_64 wheel and a commit-bound Linux x86_64 musl artifact; methods declare their supported platforms |
 | Linux proof | Native dynamic execution in a fresh disposable WSL2 environment during release acceptance |
-| macOS proof | Structural only; dynamic macOS execution has not been validated |
+| macOS validation scope | CI includes Intel macOS installed-wheel Execute and cleanup smoke checks; these do not establish full macOS lab acceptance |
 | Network actions | Literal loopback addresses in shipped actions and profiles |
 | Managed runner | Separate same-user loopback process with local enrollment |
 | Cloud identity | One reversible AWS identity lab with deterministic local proof |
@@ -178,7 +180,7 @@ carries a producer and one provenance class — `synthetic`, `executed`, `observ
 Replay reruns an immutable scenario exactly or as a declared variant, and Compare reports path,
 prevention and detection state, telemetry, objective, cleanup and budget deltas.
 
-![Compare: selecting two completed Execute runs of one experiment, and preparing a replay with a deliberate change](docs/assets/screenshots/compare.png)
+![Compare workspace listing two completed Execute runs, with controls to compare them or prepare a replay](docs/assets/screenshots/compare.png)
 
 A locked 12-gate release contract checks all of this on a candidate build, with machine-readable
 receipts per gate. See [evidence model](docs/EVIDENCE_MODEL.md),
