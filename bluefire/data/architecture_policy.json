@@ -231,6 +231,7 @@
         "bluefire.replay_journey",
         "bluefire.source_intake_gate",
         "bluefire.source_intake_gate_validation",
+        "bluefire.source_intake_documentation",
         "bluefire.source_intake_browser_validation",
         "bluefire.source_intake_journey",
         "bluefire.source_intake_receipt_validation",

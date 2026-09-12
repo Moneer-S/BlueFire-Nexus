@@ -10,6 +10,7 @@ from typing import Any, Mapping
 import pytest
 
 import bluefire.source_intake_gate as source_intake_gate
+import bluefire.source_intake_gate_validation as gate_validation
 import bluefire.source_intake_journey as source_intake_journey
 import tools.run_source_intake_gate_journey as journey_helper
 from bluefire.contracts import ScenarioDefinition
@@ -43,12 +44,15 @@ from bluefire.source_intake_package import (
     KEY_ID,
     LICENSE_ASSET,
     LICENSE_ID,
+    LICENSE_SHA256,
     PACKAGE_ID,
     PACKAGE_VERSION,
     PUBLISHER_ID,
+    REQUIRED_NOTICE,
     SOURCE_ASSET,
     SOURCE_COMMIT,
     SOURCE_ID,
+    SOURCE_SHA256,
     gate09_intake_request,
 )
 from bluefire.source_intake_receipt_validation import OPERATION_RECEIPT_SCHEMA
@@ -205,7 +209,9 @@ def test_gate09_locked_contract_matches_authoritative_workflow() -> None:
     assert len({row[3] for row in source_intake_gate._EXPECTED_ASSERTIONS.values()}) == 8
 
 
-def test_builtin_source_registry_is_exactly_pinned_and_reviewed() -> None:
+def test_builtin_source_registry_is_exactly_pinned_and_reviewed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     source = _validate_registry(ROOT)
 
     assert source["id"] == SOURCE_ID
@@ -216,6 +222,56 @@ def test_builtin_source_registry_is_exactly_pinned_and_reviewed() -> None:
         f"bluefire/data/{SOURCE_ASSET}",
         f"bluefire/data/{LICENSE_ASSET}",
     ]
+    gate_validation._validate_notices(ROOT)
+
+    documents = {
+        relative: " ".join((ROOT / relative).read_text(encoding="utf-8").split())
+        for relative in ("THIRD_PARTY_NOTICES.md", "docs/SOURCE_INTAKE.md", "README.md")
+    }
+    candidate = dict(documents)
+    monkeypatch.setattr(
+        gate_validation,
+        "_read_bytes",
+        lambda path, *_args: candidate[path.relative_to(ROOT).as_posix()].encode("utf-8"),
+    )
+    gate_validation._validate_notices(ROOT)
+    # Exact attribution stays mandatory in both referenced documents, even though
+    # the README no longer repeats their commit and asset inventory.
+    for relative in ("THIRD_PARTY_NOTICES.md", "docs/SOURCE_INTAKE.md"):
+        for required in (
+            REQUIRED_NOTICE,
+            LICENSE_ID,
+            SOURCE_COMMIT,
+            SOURCE_SHA256.removeprefix("sha256:"),
+            SOURCE_ASSET,
+            LICENSE_ASSET,
+            LICENSE_SHA256.removeprefix("sha256:"),
+            "T1082",
+        ):
+            assert required in documents[relative]
+            for replacement in ("", "unreviewed-replacement"):
+                candidate = dict(documents)
+                candidate[relative] = candidate[relative].replace(required, replacement)
+                with pytest.raises(SourceIntakeGateValidationError, match="notices are incomplete"):
+                    gate_validation._validate_notices(ROOT)
+    for reference in ("docs/SOURCE_INTAKE.md", "THIRD_PARTY_NOTICES.md"):
+        for replacement in ("", "missing.md", "https://example.invalid/" + reference):
+            candidate = dict(documents)
+            candidate["README.md"] = candidate["README.md"].replace(reference, replacement)
+            with pytest.raises(SourceIntakeGateValidationError, match="notices are incomplete"):
+                gate_validation._validate_notices(ROOT)
+    for readme in (
+        "T1082 docs/SOURCE_INTAKE.md THIRD_PARTY_NOTICES.md",
+        "T1082 ![intake](docs/SOURCE_INTAKE.md) [notices](THIRD_PARTY_NOTICES.md)",
+        "T1082 [intake](docs/SOURCE_INTAKE.md) ![notices](THIRD_PARTY_NOTICES.md)",
+    ):
+        candidate = {**documents, "README.md": readme}
+        with pytest.raises(SourceIntakeGateValidationError, match="notices are incomplete"):
+            gate_validation._validate_notices(ROOT)
+    candidate = dict(documents)
+    candidate["README.md"] = candidate["README.md"].replace("T1082", "unreviewed-technique")
+    with pytest.raises(SourceIntakeGateValidationError, match="notices are incomplete"):
+        gate_validation._validate_notices(ROOT)
 
 
 def test_gate09_asset_verification_refuses_replaced_oversize_before_read(

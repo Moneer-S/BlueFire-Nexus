@@ -25,6 +25,7 @@ from .source_intake_browser_validation import (
     validate_source_intake_browser_evidence,
 )
 from .source_intake_contracts import GATE_CHECK_NAMES as CHECK_NAMES
+from .source_intake_documentation import source_intake_documentation_complete
 from .source_intake_journey import (
     BROWSER_INTAKE_ARTIFACT,
     BROWSER_INTAKE_OPERATION_RECEIPT_ARTIFACT,
@@ -899,18 +900,8 @@ def _validate_notices(repository: Path) -> None:
         repository / "docs" / "SOURCE_INTAKE.md", 1024 * 1024, "SOURCE_INTAKE.md"
     ).decode("utf-8")
     readme = _read_bytes(repository / "README.md", 2 * 1024 * 1024, "README.md").decode("utf-8")
-    required = (
-        REQUIRED_NOTICE,
-        LICENSE_ID,
-        SOURCE_COMMIT,
-        SOURCE_SHA256.removeprefix("sha256:"),
-        SOURCE_ASSET,
-        LICENSE_ASSET,
-    )
     _require(
-        all(value in notices for value in required)
-        and all(value in guide for value in (LICENSE_ID, SOURCE_ASSET, "T1082"))
-        and all(value in readme for value in (SOURCE_COMMIT, SOURCE_ASSET, "T1082")),
+        source_intake_documentation_complete(notices, guide, readme),
         "public intake documentation or third-party notices are incomplete",
     )
 
