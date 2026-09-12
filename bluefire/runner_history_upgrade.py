@@ -21,6 +21,12 @@ from .runner_bootstrap_record import (
     _record_authentication,
 )
 from .runner_history_documents import validate_history_documents
+from .runner_history_preservation import (
+    durable_file_snapshot,
+    durable_workspace_snapshot,
+    enrolled_sandbox_snapshot,
+    optional_durable_identity,
+)
 from .runner_private_files import _PinnedPrivateDirectory
 from .runner_transport import (
     _MAX_LEDGER_INSPECTION_BYTES,
@@ -74,7 +80,8 @@ class UpgradeLifecycle(Protocol):
 
 
 REVIEW_SCHEMA = "bluefire.runner-upgrade-review.v1"
-JOURNAL_SCHEMA = "bluefire.runner-history-upgrade.v1"
+LEGACY_JOURNAL_SCHEMA = "bluefire.runner-history-upgrade.v1"
+JOURNAL_SCHEMA = "bluefire.runner-history-upgrade.v2"
 MAX_RECORD_BYTES = 64 * 1024
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _IDENTITY_FIELDS = (
@@ -140,12 +147,15 @@ class UpgradeIO:
     ledger_lock: Callable[[], ContextManager[None]]
 
 
-def _file_snapshot(directory: _PinnedPrivateDirectory, name: str, maximum: int) -> dict[str, Any]:
+def _file_snapshot(
+    directory: _PinnedPrivateDirectory, name: str, maximum: int, *, durable: bool = False
+) -> dict[str, Any]:
     descriptor = directory._open_existing(name, write_dac=False)
     try:
         before = directory._validate_file(
             name, descriptor, maximum=maximum, apply_permissions=False
         )
+        provenance = optional_durable_identity(descriptor) if durable else None
         digest = hashlib.sha256()
         count = 0
         while chunk := os.read(descriptor, 1024 * 1024):
@@ -166,13 +176,21 @@ def _file_snapshot(directory: _PinnedPrivateDirectory, name: str, maximum: int) 
             after.st_ctime_ns,
         ) or count != after.st_size:
             raise RunnerHistoryUpgradeError("Runner history changed during review.")
-        return {
+        snapshot: dict[str, Any] = {
             "digest": "sha256:" + digest.hexdigest(),
             "bytes": count,
             "identity": [after.st_dev, after.st_ino],
             "modified_ns": after.st_mtime_ns,
             "changed_ns": after.st_ctime_ns,
         }
+        if durable:
+            if optional_durable_identity(descriptor) != provenance:
+                raise RunnerHistoryUpgradeError("Runner retained object changed during review.")
+            snapshot.update(
+                durable_identity=provenance,
+                permissions=[after.st_mode, after.st_uid, after.st_gid],
+            )
+        return snapshot
     finally:
         os.close(descriptor)
 
@@ -182,6 +200,8 @@ def _validated_history(
     enrollment: RunnerEnrollment,
     platform: str,
     sandbox: Path,
+    *,
+    durable: bool = False,
 ) -> dict[str, Any]:
     """Audit all rows and the complete result namespace while the ledger is locked."""
     with _upgrade_stage("ledger_state"):
@@ -201,12 +221,22 @@ def _validated_history(
         "ledger_generation": generation,
     }
     if generation is None:
-        return {**empty, "history_digest": content_hash({"ledger": None, "results": []})}
+        return {
+            **empty,
+            "history_digest": content_hash({"ledger": None, "results": []}),
+            **(
+                {"preservation_digest": content_hash({"ledger": None, "results": []})}
+                if durable
+                else {}
+            ),
+        }
     with (
         _upgrade_stage("ledger_state"),
         _PinnedPrivateDirectory(lifecycle.ledger_path.parent) as parent,
     ):
-        before = _file_snapshot(parent, lifecycle.ledger_path.name, _MAX_LEDGER_INSPECTION_BYTES)
+        before = _file_snapshot(
+            parent, lifecycle.ledger_path.name, _MAX_LEDGER_INSPECTION_BYTES, durable=durable
+        )
         audit = audit_runner_ledger(lifecycle.ledger_path, enrollment)
         if audit is None or audit["ledger_generation"] != generation:
             raise RunnerHistoryUpgradeError("Runner history changed during review.")
@@ -261,6 +291,7 @@ def _validated_history(
                 ledger_generation=generation,
             )
             result_snapshots: dict[str, Any] = {}
+            durable_results: dict[str, Any] = {}
             if namespace.exists():
                 with _PinnedPrivateDirectory(namespace) as results:
                     if set(results.names(maximum=1_000_000)) != set(expected):
@@ -282,6 +313,24 @@ def _validated_history(
                             "identity": list(identity),
                             "metadata": list(metadata),
                         }
+                        if durable:
+                            snapshot = _file_snapshot(
+                                results, name, DEFAULT_MAX_FRAME_BYTES, durable=True
+                            )
+                            if (
+                                snapshot["digest"] != result_snapshots[name]["digest"]
+                                or snapshot["identity"] != list(identity)
+                                or [
+                                    snapshot["changed_ns"],
+                                    snapshot["modified_ns"],
+                                    snapshot["bytes"],
+                                ]
+                                != list(metadata)
+                            ):
+                                raise RunnerHistoryUpgradeError(
+                                    "Runner result changed during preservation review."
+                                )
+                            durable_results[name] = durable_file_snapshot(snapshot)
                     if set(results.names(maximum=1_000_000)) != set(expected):
                         raise RunnerHistoryUpgradeError(
                             "Runner result state changed during review."
@@ -300,13 +349,32 @@ def _validated_history(
                             raise RunnerHistoryUpgradeError("Runner result changed during review.")
             elif expected:
                 raise RunnerHistoryUpgradeError("Runner durable results are missing.")
-        for workspace in workspaces.values():
+        durable_workspaces = []
+        for path in sorted(workspaces):
+            workspace = workspaces[path]
             _require_settled_workspace(lifecycle, workspace)
-        after = _file_snapshot(parent, lifecycle.ledger_path.name, _MAX_LEDGER_INSPECTION_BYTES)
+            if durable:
+                durable_workspaces.append(durable_workspace_snapshot(workspace))
+        after = _file_snapshot(
+            parent, lifecycle.ledger_path.name, _MAX_LEDGER_INSPECTION_BYTES, durable=durable
+        )
         if after != before:
             raise RunnerHistoryUpgradeError("Runner history changed during review.")
+    preservation: dict[str, Any] = {}
+    if durable:
+        ledger = durable_file_snapshot(before)
+        preservation["preservation_digest"] = (
+            content_hash(
+                {"ledger": ledger, "results": durable_results, "workspaces": durable_workspaces}
+            )
+            if ledger is not None
+            and all(row is not None for row in durable_results.values())
+            and all(row is not None for row in durable_workspaces)
+            else None
+        )
     return {
         **empty,
+        **preservation,
         "total_rows": audit["total_rows"],
         "execute_rows": audit["execute_rows"],
         "completed_executions": completed,
@@ -338,7 +406,12 @@ def _bound_review(
     old: Mapping[str, Any],
     new: Mapping[str, Any],
     profile_binding: str | None,
+    *,
+    schema: str = JOURNAL_SCHEMA,
 ) -> dict[str, Any]:
+    if schema not in {LEGACY_JOURNAL_SCHEMA, JOURNAL_SCHEMA}:
+        raise RunnerHistoryUpgradeError("Runner upgrade schema is unsupported.")
+    durable = schema == JOURNAL_SCHEMA
     if profile_binding is not None and (
         not isinstance(profile_binding, str) or _DIGEST.fullmatch(profile_binding) is None
     ):
@@ -357,6 +430,7 @@ def _bound_review(
     ):
         raise RunnerHistoryUpgradeError("A distinct verified managed native artifact is required.")
     with _upgrade_stage("artifact_identity"):
+        artifacts = []
         for payload in (old, new):
             binary = Path(payload["binary_path"])
             if (
@@ -367,10 +441,26 @@ def _bound_review(
                 raise RunnerHistoryUpgradeError(
                     "Reviewed runner artifacts are unavailable or changed."
                 )
+            if durable:
+                from .runner_bootstrap import _MAX_RUNNER_BYTES
+
+                with _PinnedPrivateDirectory(binary.parent) as parent:
+                    snapshot = _file_snapshot(parent, binary.name, _MAX_RUNNER_BYTES, durable=True)
+                if snapshot["digest"] != payload["binary_digest"]:
+                    raise RunnerHistoryUpgradeError(
+                        "Reviewed runner artifact changed during review."
+                    )
+                artifacts.append(snapshot)
+    sandbox_snapshot = None
+    sandbox_preservation = None
+    if durable:
+        with _upgrade_stage("history_documents"):
+            sandbox_snapshot = enrolled_sandbox_snapshot(Path(old["sandbox_path"]))
+            sandbox_preservation = durable_workspace_snapshot(sandbox_snapshot)
     with _upgrade_stage("pending_cleanup"):
         lifecycle._require_no_receipt_obligations(Path(old["sandbox_path"]))
     history = _validated_history(
-        lifecycle, enrollment, str(old["platform"]), Path(old["sandbox_path"])
+        lifecycle, enrollment, str(old["platform"]), Path(old["sandbox_path"]), durable=durable
     )
     with _upgrade_stage("pending_cleanup"):
         lifecycle._require_no_receipt_obligations(Path(old["sandbox_path"]))
@@ -379,8 +469,11 @@ def _bound_review(
             ledger_generation=history["ledger_generation"],
             require_namespace_empty=False,
         )
+    if sandbox_snapshot is not None:
+        with _upgrade_stage("history_documents"):
+            sandbox_snapshot.recheck()
     return {
-        "schema_version": JOURNAL_SCHEMA,
+        "schema_version": schema,
         "old": dict(old),
         "new": dict(new),
         "enrollment": _enrollment_binding(
@@ -389,6 +482,26 @@ def _bound_review(
         "profiles": list(enrollment.allowed_profile_ids),
         "profile_binding": profile_binding,
         "history": history,
+        **(
+            {
+                "artifact_snapshot_digest": content_hash(artifacts),
+                "sandbox_snapshot_digest": (
+                    content_hash(sandbox_snapshot.binding())
+                    if sandbox_snapshot is not None
+                    else None
+                ),
+                "sandbox_preservation_digest": (
+                    content_hash(sandbox_preservation) if sandbox_preservation is not None else None
+                ),
+                "artifact_preservation_digest": (
+                    content_hash([durable_file_snapshot(row) for row in artifacts])
+                    if all(row["durable_identity"] is not None for row in artifacts)
+                    else None
+                ),
+            }
+            if durable
+            else {}
+        ),
     }
 
 
@@ -396,12 +509,17 @@ def _public_review(bound: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": REVIEW_SCHEMA,
         "review_digest": content_hash(bound),
+        "recovery_scope": (
+            "durable_objects" if _has_durable_proof(bound) else "current_filesystem_session"
+        ),
         "current": {key: bound["old"][key] for key in _IDENTITY_FIELDS},
         "candidate": {key: bound["new"][key] for key in _IDENTITY_FIELDS},
         "compatibility": dict.fromkeys(
             ("same_sandbox", "same_enrollment", "same_profiles", "same_protocols"), True
         ),
-        "history": dict(bound["history"]),
+        "history": {
+            key: value for key, value in bound["history"].items() if key != "preservation_digest"
+        },
         "preservation": dict.fromkeys(
             ("old_binary", "ledger", "durable_results", "product_history"), True
         ),
@@ -491,11 +609,46 @@ def _finish_upgrade(
 ) -> None:
     digest = content_hash(bound)
     old, new = _authenticated(enrollment, bound["old"]), _authenticated(enrollment, bound["new"])
-    if (
-        _bound_review(lifecycle, enrollment, bound["old"], bound["new"], bound["profile_binding"])
-        != bound
-    ):
+    pending = _load_pending(lifecycle, io, enrollment)
+    fresh = (
+        _pending_review(lifecycle, io, enrollment, bound["profile_binding"])
+        if "continuation" in bound
+        else _bound_review(
+            lifecycle,
+            enrollment,
+            bound["old"],
+            bound["new"],
+            bound["profile_binding"],
+            schema=bound["schema_version"],
+        )
+    )
+    if fresh != bound:
         raise RunnerHistoryUpgradeError("Runner upgrade state changed before activation.")
+    if bound["schema_version"] == JOURNAL_SCHEMA:
+        _retain_record(
+            io,
+            lifecycle.control_root
+            / ("history-upgrade-origin-" + content_hash(pending).removeprefix("sha256:") + ".json"),
+            pending,
+        )
+        if "continuation" in bound:
+            _retain_record(
+                io,
+                lifecycle.control_root
+                / ("history-upgrade-continuation-" + digest.removeprefix("sha256:") + ".json"),
+                _authenticated(
+                    enrollment,
+                    {
+                        "schema_version": JOURNAL_SCHEMA,
+                        "state": "approved-continuation",
+                        "original_pending_digest": content_hash(pending),
+                        "review_digest": digest,
+                        "review": dict(bound),
+                    },
+                ),
+            )
+        if _pending_review(lifecycle, io, enrollment, bound["profile_binding"]) != bound:
+            raise RunnerHistoryUpgradeError("Runner upgrade state changed before publication.")
     current = _optional_bootstrap(lifecycle.bootstrap_record_path)
     if current == old:
         _publish_bootstrap_switch(io, lifecycle.bootstrap_record_path, old, new)
@@ -509,7 +662,7 @@ def _finish_upgrade(
     receipt = _authenticated(
         enrollment,
         {
-            "schema_version": JOURNAL_SCHEMA,
+            "schema_version": bound["schema_version"],
             "state": "committed",
             "review_digest": digest,
             "review": dict(bound),
@@ -520,7 +673,41 @@ def _finish_upgrade(
             raise RunnerHistoryUpgradeError("Runner upgrade provenance is inconsistent.")
     else:
         io.write(archive, receipt, maximum=MAX_RECORD_BYTES, replace=False)
-    io.unlink(lifecycle.control_root / "upgrade-pending.json")
+    _remove_pending(lifecycle, pending)
+
+
+def _retain_record(io: UpgradeIO, path: Path, record: Mapping[str, Any]) -> None:
+    """Append exact authenticated provenance without replacing a raced entry."""
+    if path.exists() or path.is_symlink():
+        if io.read(path, maximum=MAX_RECORD_BYTES) != record:
+            raise RunnerHistoryUpgradeError("Runner upgrade provenance is inconsistent.")
+    else:
+        io.write(path, record, maximum=MAX_RECORD_BYTES, replace=False)
+    with _PinnedPrivateDirectory(path.parent) as directory:
+        if directory.read(
+            path.name, maximum=MAX_RECORD_BYTES, apply_permissions=False
+        ) != canonical_json_bytes(record):
+            raise RunnerHistoryUpgradeError("Runner upgrade provenance bytes changed.")
+
+
+def _remove_pending(lifecycle: UpgradeLifecycle, expected: Mapping[str, Any]) -> None:
+    with _PinnedPrivateDirectory(lifecycle.control_root) as directory:
+        before = directory.read_with_snapshot_identity(
+            "upgrade-pending.json", maximum=MAX_RECORD_BYTES, apply_permissions=False
+        )
+        if _decode_json_object(before[0]) != expected or (
+            expected["schema_version"] == JOURNAL_SCHEMA
+            and before[0] != canonical_json_bytes(expected)
+        ):
+            raise RunnerHistoryUpgradeError("Runner upgrade pending record changed.")
+        directory.unlink(
+            "upgrade-pending.json",
+            maximum=MAX_RECORD_BYTES,
+            expected=before[0],
+            expected_identity=before[1],
+            expected_snapshot=before[2],
+            apply_permissions=False,
+        )
 
 
 def apply_upgrade(
@@ -546,7 +733,7 @@ def apply_upgrade(
         pending = _authenticated(
             enrollment,
             {
-                "schema_version": JOURNAL_SCHEMA,
+                "schema_version": bound["schema_version"],
                 "state": "approved",
                 "review_digest": digest,
                 "review": bound,
@@ -566,11 +753,10 @@ def pending_upgrade(lifecycle: UpgradeLifecycle) -> bool:
     return path.exists() or path.is_symlink()
 
 
-def _pending_review(
+def _load_pending(
     lifecycle: UpgradeLifecycle,
     io: UpgradeIO,
     enrollment: RunnerEnrollment,
-    profile_binding: str | None,
 ) -> dict[str, Any]:
     path = lifecycle.control_root / "upgrade-pending.json"
     pending = io.read(path, maximum=MAX_RECORD_BYTES)
@@ -584,7 +770,7 @@ def _pending_review(
         raise RunnerHistoryUpgradeError("Runner upgrade recovery record is invalid.")
     payload = {key: value for key, value in pending.items() if key != "authentication"}
     if (
-        pending["schema_version"] != JOURNAL_SCHEMA
+        pending["schema_version"] not in {LEGACY_JOURNAL_SCHEMA, JOURNAL_SCHEMA}
         or pending["state"] != "approved"
         or not isinstance(pending["authentication"], str)
         or not hmac.compare_digest(
@@ -592,13 +778,35 @@ def _pending_review(
         )
         or not isinstance(pending["review"], dict)
         or content_hash(pending["review"]) != pending["review_digest"]
+        or pending["review"].get("schema_version") != pending["schema_version"]
     ):
         raise RunnerHistoryUpgradeError("Runner upgrade recovery authentication failed.")
+    if pending["schema_version"] == JOURNAL_SCHEMA:
+        with _PinnedPrivateDirectory(path.parent) as directory:
+            if directory.read(
+                path.name, maximum=MAX_RECORD_BYTES, apply_permissions=False
+            ) != canonical_json_bytes(pending):
+                raise RunnerHistoryUpgradeError("Runner upgrade pending bytes changed.")
+    return pending
+
+
+def _pending_review(
+    lifecycle: UpgradeLifecycle,
+    io: UpgradeIO,
+    enrollment: RunnerEnrollment,
+    profile_binding: str | None,
+) -> dict[str, Any]:
+    pending = _load_pending(lifecycle, io, enrollment)
     reviewed = pending["review"]
     current = _bound_review(
-        lifecycle, enrollment, reviewed["old"], reviewed["new"], profile_binding
+        lifecycle,
+        enrollment,
+        reviewed["old"],
+        reviewed["new"],
+        profile_binding,
+        schema=pending["schema_version"],
     )
-    if current != reviewed:
+    if current != reviewed and not _same_preserved_transition(reviewed, current):
         raise RunnerHistoryUpgradeError(
             "Runner upgrade recovery state changed; activation is blocked."
         )
@@ -610,7 +818,44 @@ def _pending_review(
         raise RunnerHistoryUpgradeError(
             "Runner upgrade recovery found an unexpected bootstrap record."
         )
+    if current != reviewed:
+        current["continuation"] = {
+            "original_pending_digest": content_hash(pending),
+            "previous_review_digest": pending["review_digest"],
+            "bootstrap_digest": content_hash(bootstrap) if bootstrap is not None else None,
+        }
     return current
+
+
+def _same_preserved_transition(previous: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
+    """Only a new explicit review can bind unchanged durable objects to a new session."""
+    if not _has_durable_proof(previous) or not _has_durable_proof(current):
+        return False
+
+    def preserved(value: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            **{
+                key: item
+                for key, item in value.items()
+                if key not in {"artifact_snapshot_digest", "sandbox_snapshot_digest", "history"}
+            },
+            "history": {
+                key: item for key, item in value["history"].items() if key != "history_digest"
+            },
+        }
+
+    return preserved(previous) == preserved(current)
+
+
+def _has_durable_proof(bound: Mapping[str, Any]) -> bool:
+    return bound.get("schema_version") == JOURNAL_SCHEMA and all(
+        isinstance(value, str) and _DIGEST.fullmatch(value) is not None
+        for value in (
+            bound.get("artifact_preservation_digest"),
+            bound.get("sandbox_preservation_digest"),
+            bound["history"].get("preservation_digest"),
+        )
+    )
 
 
 def recover_upgrade(

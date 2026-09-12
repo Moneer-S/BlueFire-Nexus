@@ -356,6 +356,8 @@
         "bluefire.runner_bootstrap",
         "bluefire.runner_bootstrap_record",
         "bluefire.runner_history_documents",
+        "bluefire.runner_history_identity",
+        "bluefire.runner_history_preservation",
         "bluefire.runner_history_upgrade",
         "bluefire.runner_client",
         "bluefire.runner_darwin_containment",
