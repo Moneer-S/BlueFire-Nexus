@@ -150,7 +150,7 @@ def test_invalid_or_private_display_data_is_refused(tmp_path, change):
         row = evidence(
             RUN_ID if change == "foreign_evidence" else handle.run_id,
             content=(
-                {"password": "private-fixture-value"}
+                {"password": "private-fixture-value"}  # pragma: allowlist secret
                 if change == "plaintext"
                 else {"fixture": True}
             ),
