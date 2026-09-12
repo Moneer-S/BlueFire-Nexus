@@ -367,12 +367,15 @@ test("production operator UI completes authoring, management, run, replay, and c
   await expect(assistant.getByText("Off makes no new model requests. Manual tools remain available.")).toBeVisible();
   await assistant.getByRole("combobox", { name: "AI mode", exact: true }).selectOption("assist");
   await assistant.getByLabel("What would you like to do?").fill("Compare a bounded evidence collection path and preserve replay lineage.");
-  // The isolated gate has no authorized live provider. The current Assistant
-  // must not present its deterministic runtime adapter as a model connection.
+  // The shipped example model configuration is present but not selected or
+  // authorized. The deterministic runtime adapter is never a model choice.
   await expect(assistant.getByRole("combobox", { name: "Provider", exact: true })).toHaveValue("");
-  await expect(assistant.getByRole("combobox", { name: "Provider", exact: true }).locator("option")).toHaveCount(1);
+  const modelOptions = assistant.getByRole("combobox", { name: "Provider", exact: true }).locator("option");
+  await expect(modelOptions).toHaveCount(2);
+  await expect(modelOptions.nth(0)).toHaveAttribute("value", "");
+  await expect(modelOptions.nth(1)).toHaveAttribute("value", "openai-responses.v1");
   await expect(assistant.getByRole("button", { name: "Start work" })).toBeDisabled();
-  await assistant.getByRole("link", { name: "Configure a provider in Settings" }).click();
+  await assistant.getByRole("link", { name: "Review model connection and usage authorization" }).click();
   await expect(page.getByRole("region", { name: "Model connection" })).toBeVisible();
   await expect(page.getByLabel("Secret environment reference")).toBeVisible();
   await expect(page.getByRole("button", { name: "Send live connection test" })).toBeDisabled();
