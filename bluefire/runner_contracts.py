@@ -24,6 +24,14 @@ from .provider_runner_contracts import (
     canonical_provider_binding,
     canonical_provider_bindings,
 )
+from .runner_reviewed_execution import (
+    ReviewedExecutionError,
+    canonical_reviewed_execution,
+    canonical_reviewed_operation,
+    reviewed_action_ids,
+    validate_reviewed_manifest,
+    validate_reviewed_profile,
+)
 from .util import content_hash, json_clone, parse_iso8601_datetime
 
 
@@ -351,6 +359,14 @@ def seal_profile(document: Mapping[str, Any]) -> dict[str, Any]:
     else:
         sealed.pop("provider_bindings", None)
         sealed.pop("provider_artifacts", None)
+    if "reviewed_execution" in sealed:
+        try:
+            sealed["reviewed_execution"] = canonical_reviewed_execution(
+                sealed["reviewed_execution"]
+            )
+            validate_reviewed_profile(sealed)
+        except ReviewedExecutionError as exc:
+            raise RunnerContractError(str(exc)) from exc
     sealed["policy_digest"] = ""
     sealed["policy_digest"] = content_hash(sealed)
     return sealed
@@ -366,6 +382,7 @@ def build_runner_profile(
     action_bindings: Sequence[Mapping[str, Any]] = (),
     provider_bindings: Sequence[Mapping[str, Any]] = (),
     provider_artifacts: Sequence[Mapping[str, Any]] = (),
+    reviewed_execution: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if profile.mode.value != "execute":
         raise RunnerContractError("only Execute profiles can be compiled for the Rust runner")
@@ -435,6 +452,17 @@ def build_runner_profile(
     if providers:
         profile_doc["provider_bindings"] = providers
         profile_doc["provider_artifacts"] = artifacts
+    if reviewed_execution is not None:
+        try:
+            profile_doc["reviewed_execution"] = canonical_reviewed_execution(reviewed_execution)
+            reviewed_actions = reviewed_action_ids(profile_doc)
+            if not reviewed_actions.issubset(allowed_actions):
+                raise ReviewedExecutionError(
+                    "reviewed execution includes a disabled action or opcode"
+                )
+            profile_doc["allowed_actions"] = sorted(reviewed_actions)
+        except ReviewedExecutionError as exc:
+            raise RunnerContractError(str(exc)) from exc
     return seal_profile(profile_doc)
 
 
@@ -463,6 +491,13 @@ def seal_manifest(document: Mapping[str, Any]) -> dict[str, Any]:
             raise RunnerContractError(str(exc)) from exc
     if "execution_binding" in sealed and "provider_binding" in sealed:
         raise RunnerContractError("runner manifest cannot select two package execution models")
+    if "reviewed_operation" in sealed:
+        try:
+            sealed["reviewed_operation"] = canonical_reviewed_operation(
+                sealed["reviewed_operation"], authorized=True
+            )
+        except ReviewedExecutionError as exc:
+            raise RunnerContractError(str(exc)) from exc
     approval = sealed.get("approval")
     if approval is not None:
         if not isinstance(approval, dict):
@@ -501,6 +536,7 @@ def build_execution_manifest(
     approval_record: Mapping[str, Any] | None,
     execution_binding: Mapping[str, Any] | None = None,
     provider_binding: Mapping[str, Any] | None = None,
+    reviewed_operation: Mapping[str, Any] | None = None,
     resolved_cleanup_action_id: str | None = None,
     timeout_ms: int | None = None,
     now: datetime | None = None,
@@ -711,6 +747,14 @@ def build_execution_manifest(
         document["execution_binding"] = binding
     if provider is not None:
         document["provider_binding"] = provider
+    try:
+        if reviewed_operation is not None:
+            document["reviewed_operation"] = canonical_reviewed_operation(
+                reviewed_operation, authorized=True
+            )
+        validate_reviewed_manifest(document, runner_profile)
+    except ReviewedExecutionError as exc:
+        raise RunnerContractError(str(exc)) from exc
     return seal_manifest(document)
 
 

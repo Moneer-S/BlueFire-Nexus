@@ -295,6 +295,49 @@ where
     ProviderExecutionBinding::deserialize(deserializer).map(Some)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewedOperationIdentity {
+    pub step_id: String,
+    pub behavior_id: String,
+    pub action_id: String,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub execution_binding_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewedExecution {
+    pub schema_version: String,
+    pub authorization_digest: String,
+    pub operations: Vec<ReviewedOperationIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewedOperation {
+    pub authorization_digest: String,
+    pub step_id: String,
+    pub behavior_id: String,
+    pub action_id: String,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub execution_binding_digest: Option<String>,
+}
+
+fn deserialize_reviewed_execution<'de, D>(deserializer: D) -> Result<Option<ReviewedExecution>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    ReviewedExecution::deserialize(deserializer).map(Some)
+}
+
+fn deserialize_reviewed_operation<'de, D>(deserializer: D) -> Result<Option<ReviewedOperation>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    ReviewedOperation::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionManifest {
@@ -316,6 +359,8 @@ pub struct ExecutionManifest {
         skip_serializing_if = "Option::is_none"
     )]
     pub provider_binding: Option<ProviderExecutionBinding>,
+    #[serde(default, deserialize_with = "deserialize_reviewed_operation", skip_serializing_if = "Option::is_none")]
+    pub reviewed_operation: Option<ReviewedOperation>,
     pub mode: RunMode,
     pub runner_id: String,
     pub runner_profile_id: String,
@@ -345,6 +390,8 @@ pub struct RunnerProfile {
     pub platform: Platform,
     pub sandbox_root: PathBuf,
     pub allowed_actions: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_reviewed_execution", skip_serializing_if = "Option::is_none")]
+    pub reviewed_execution: Option<ReviewedExecution>,
     #[serde(default)]
     pub control_blocked_actions: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -727,6 +774,10 @@ mod tests {
         .unwrap();
         let serialized_profile = serde_json::to_value(profile).unwrap();
         assert!(serialized_profile.get("action_bindings").is_none());
+        assert!(serialized_profile.get("reviewed_execution").is_none());
+        let mut null_authority = serialized_profile;
+        null_authority.as_object_mut().unwrap().insert("reviewed_execution".to_string(), Value::Null);
+        assert!(serde_json::from_value::<RunnerProfile>(null_authority).is_err());
 
         let manifest: ExecutionManifest = serde_json::from_value(serde_json::json!({
             "schema_version": MANIFEST_SCHEMA_VERSION,
@@ -761,6 +812,10 @@ mod tests {
         .unwrap();
         let serialized_manifest = serde_json::to_value(manifest).unwrap();
         assert!(serialized_manifest.get("execution_binding").is_none());
+        assert!(serialized_manifest.get("reviewed_operation").is_none());
+        let mut null_operation = serialized_manifest.clone();
+        null_operation.as_object_mut().unwrap().insert("reviewed_operation".to_string(), Value::Null);
+        assert!(serde_json::from_value::<ExecutionManifest>(null_operation).is_err());
 
         let mut explicit_null = serialized_manifest;
         explicit_null
@@ -768,5 +823,20 @@ mod tests {
             .unwrap()
             .insert("execution_binding".to_string(), Value::Null);
         assert!(serde_json::from_value::<ExecutionManifest>(explicit_null).is_err());
+    }
+
+    #[test]
+    fn reviewed_operation_requires_explicit_binding_digest_and_rejects_unknown_fields() {
+        let value = serde_json::json!({
+            "step_id": "first", "behavior_id": "sandbox.fixture.create.v1",
+            "action_id": "sandbox.fixture.create.v1", "execution_binding_digest": null
+        });
+        assert!(serde_json::from_value::<ReviewedOperationIdentity>(value.clone()).is_ok());
+        let mut missing = value.clone();
+        missing.as_object_mut().unwrap().remove("execution_binding_digest");
+        assert!(serde_json::from_value::<ReviewedOperationIdentity>(missing).is_err());
+        let mut extra = value;
+        extra.as_object_mut().unwrap().insert("parameters".to_string(), serde_json::json!({"arbitrary": true}));
+        assert!(serde_json::from_value::<ReviewedOperationIdentity>(extra).is_err());
     }
 }

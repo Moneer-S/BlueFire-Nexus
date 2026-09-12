@@ -141,6 +141,7 @@ fn profile(root: &TempDir, network: Vec<NetworkDestination>) -> RunnerProfile {
             .into_iter()
             .map(|descriptor| descriptor.action_id.to_string())
             .collect(),
+        reviewed_execution: None,
         control_blocked_actions: Vec::new(),
         action_bindings: Vec::new(),
         provider_bindings: Vec::new(),
@@ -184,6 +185,7 @@ fn manifest(profile: &RunnerProfile, action_id: &str, params: Value) -> Executio
         action_id: action_id.to_string(),
         execution_binding: None,
         provider_binding: None,
+        reviewed_operation: None,
         mode: RunMode::Execute,
         runner_id: profile.runner_id.clone(),
         runner_profile_id: profile.profile_id.clone(),

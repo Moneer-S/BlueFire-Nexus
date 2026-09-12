@@ -1,7 +1,8 @@
 use super::*;
 use crate::contract::{
     canonical_json, ProviderActionLimits, ProviderArtifact, ProviderArtifactSpec,
-    ProviderParameterSpec, ProviderParameterType, PROVIDER_EXECUTION_BINDING_SCHEMA_VERSION,
+    ProviderParameterSpec, ProviderParameterType, ReviewedExecution, ReviewedOperation,
+    ReviewedOperationIdentity, PROVIDER_EXECUTION_BINDING_SCHEMA_VERSION,
 };
 use crate::provider_action::{
     provider_action_contract_digest, provider_program_digest, runtime_action_contract_digest,
@@ -22,6 +23,124 @@ fn test_limits() -> ExecutionLimits {
         max_artifact_bytes: 1024 * 1024,
         max_files: 32,
     }
+}
+
+fn enroll_reviewed(profile: &mut RunnerProfile, manifest: &mut ExecutionManifest) {
+    let digest = manifest.execution_binding.as_ref()
+        .map(|binding| canonical_hash(&serde_json::to_value(binding).unwrap()))
+        .or_else(|| manifest.provider_binding.as_ref()
+            .map(|binding| canonical_hash(&serde_json::to_value(binding).unwrap())));
+    let authorization_digest = format!("sha256:{}", "a".repeat(64));
+    profile.reviewed_execution = Some(ReviewedExecution {
+        schema_version: "bluefire.reviewed-execution.v1".to_string(),
+        authorization_digest: authorization_digest.clone(),
+        operations: vec![ReviewedOperationIdentity {
+            step_id: manifest.step_id.clone(), behavior_id: manifest.behavior_id.clone(),
+            action_id: manifest.action_id.clone(), execution_binding_digest: digest.clone(),
+        }],
+    });
+    manifest.reviewed_operation = Some(ReviewedOperation {
+        authorization_digest, step_id: manifest.step_id.clone(),
+        behavior_id: manifest.behavior_id.clone(), action_id: manifest.action_id.clone(),
+        execution_binding_digest: digest,
+    });
+    profile.allowed_actions = vec![manifest.action_id.clone()];
+    if let Some(binding) = &manifest.execution_binding {
+        profile.allowed_actions.push(binding.runner_opcode.clone());
+    }
+    reseal_documents(profile, manifest);
+}
+
+#[test]
+fn reviewed_alias_identity_is_enforced_before_dispatch() {
+    let binding = alias_binding("acme.profile.v1", "acme.profile-action.v1", "endpoint.discovery.system.v1");
+    let (mut profile, mut manifest) = alias_documents(Path::new("."), binding, json!({}));
+    enroll_reviewed(&mut profile, &mut manifest);
+    assert!(validate_policy(&manifest, &profile).is_ok());
+    for field in ["step", "authority", "binding", "opcode"] {
+        let mut changed = manifest.clone();
+        match field {
+            "step" => {
+                changed.step_id = "unreviewed-step".to_string();
+                changed.reviewed_operation.as_mut().unwrap().step_id = changed.step_id.clone();
+            }
+            "authority" => changed.reviewed_operation.as_mut().unwrap().authorization_digest = format!("sha256:{}", "b".repeat(64)),
+            "binding" => changed.reviewed_operation.as_mut().unwrap().execution_binding_digest = None,
+            _ => {
+                changed.action_id = "endpoint.discovery.system.v1".to_string();
+                changed.behavior_id = find_action(&changed.action_id).unwrap().descriptor().behavior_ids[0].to_string();
+                changed.execution_binding = None;
+                let selected = changed.reviewed_operation.as_mut().unwrap();
+                selected.action_id = changed.action_id.clone();
+                selected.behavior_id = changed.behavior_id.clone();
+                selected.execution_binding_digest = None;
+            }
+        }
+        crate::contract::seal_manifest(&mut changed);
+        assert_eq!(validate_policy(&changed, &profile).err().unwrap().code, "reviewed_operation_blocked", "{field}");
+    }
+}
+
+#[test]
+fn reviewed_authority_cannot_be_omitted_or_attached_to_legacy_profile() {
+    let binding = alias_binding("acme.profile.v1", "acme.profile-action.v1", "endpoint.discovery.system.v1");
+    let (mut profile, mut manifest) = alias_documents(Path::new("."), binding, json!({}));
+    let mut legacy = profile.clone();
+    enroll_reviewed(&mut profile, &mut manifest);
+    let mut missing = manifest.clone();
+    missing.reviewed_operation = None;
+    crate::contract::seal_manifest(&mut missing);
+    assert_eq!(validate_policy(&missing, &profile).err().unwrap().code, "reviewed_operation_blocked");
+    reseal_documents(&mut legacy, &mut manifest);
+    assert_eq!(validate_policy(&manifest, &legacy).err().unwrap().code, "reviewed_operation_blocked");
+}
+
+#[test]
+fn reviewed_profile_rejects_widening_duplicates_and_preserves_approval_checks() {
+    let binding = alias_binding("acme.profile.v1", "acme.profile-action.v1", "endpoint.discovery.system.v1");
+    let (mut profile, mut manifest) = alias_documents(Path::new("."), binding, json!({}));
+    enroll_reviewed(&mut profile, &mut manifest);
+    let mut widened = profile.clone();
+    widened.allowed_actions.push("sandbox.cleanup.v1".to_string());
+    crate::contract::seal_profile(&mut widened);
+    assert_eq!(validate_profile(&widened).err().unwrap().code, "invalid_reviewed_execution");
+    let mut duplicated = profile.clone();
+    let authority = duplicated.reviewed_execution.as_mut().unwrap();
+    authority.operations.push(authority.operations[0].clone());
+    crate::contract::seal_profile(&mut duplicated);
+    assert_eq!(validate_profile(&duplicated).err().unwrap().code, "invalid_reviewed_execution");
+    profile.approval_required_at_or_above = Some(crate::contract::SafetyTier::Safe);
+    reseal_documents(&mut profile, &mut manifest);
+    assert_eq!(validate_policy(&manifest, &profile).err().unwrap().code, "approval_required");
+    manifest.approval = Some(crate::contract::Approval {
+        approved_by: "operator".to_string(), approved_at: utc_now() - ChronoDuration::minutes(10),
+        expires_at: utc_now() - ChronoDuration::minutes(1), request_hash: String::new(),
+    });
+    crate::contract::seal_manifest(&mut manifest);
+    assert_eq!(validate_policy(&manifest, &profile).err().unwrap().code, "approval_invalid");
+}
+
+#[test]
+fn reviewed_provider_uses_its_own_binding_and_builtin_uses_explicit_null() {
+    let output = provider_output("artifact.acme.provider-result.v1", 7);
+    let artifact = provider_module(&output, "");
+    let binding = provider_binding(&artifact);
+    let (mut profile, mut manifest) = provider_documents(&artifact, binding);
+    enroll_reviewed(&mut profile, &mut manifest);
+    assert!(validate_policy(&manifest, &profile).is_ok());
+    manifest.reviewed_operation.as_mut().unwrap().execution_binding_digest = None;
+    crate::contract::seal_manifest(&mut manifest);
+    assert_eq!(validate_policy(&manifest, &profile).err().unwrap().code, "reviewed_operation_blocked");
+
+    let binding = alias_binding("acme.profile.v1", "acme.profile-action.v1", "endpoint.discovery.system.v1");
+    let (mut profile, mut manifest) = alias_documents(Path::new("."), binding, json!({}));
+    manifest.execution_binding = None;
+    manifest.action_id = "endpoint.discovery.system.v1".to_string();
+    manifest.behavior_id = find_action(&manifest.action_id).unwrap().descriptor().behavior_ids[0].to_string();
+    profile.action_bindings.clear();
+    enroll_reviewed(&mut profile, &mut manifest);
+    assert!(manifest.reviewed_operation.as_ref().unwrap().execution_binding_digest.is_none());
+    assert!(validate_policy(&manifest, &profile).is_ok());
 }
 
 fn bytes_literal(value: &[u8]) -> String {
@@ -120,6 +239,7 @@ fn provider_documents(
         platform: crate::contract::Platform::current(),
         sandbox_root: Path::new(".").to_path_buf(),
         allowed_actions: vec![binding.logical_action_id.clone()],
+        reviewed_execution: None,
         control_blocked_actions: Vec::new(),
         action_bindings: Vec::new(),
         provider_bindings: vec![binding.clone()],
@@ -150,6 +270,7 @@ fn provider_documents(
         action_id: binding.logical_action_id.clone(),
         execution_binding: None,
         provider_binding: Some(binding),
+        reviewed_operation: None,
         mode: RunMode::Execute,
         runner_id: profile.runner_id.clone(),
         runner_profile_id: profile.profile_id.clone(),
@@ -220,6 +341,7 @@ fn alias_documents(
             binding.runner_opcode.clone(),
             binding.logical_action_id.clone(),
         ],
+        reviewed_execution: None,
         control_blocked_actions: Vec::new(),
         action_bindings: vec![binding.clone()],
         provider_bindings: Vec::new(),
@@ -245,6 +367,7 @@ fn alias_documents(
         action_id: binding.logical_action_id.clone(),
         execution_binding: Some(binding),
         provider_binding: None,
+        reviewed_operation: None,
         mode: RunMode::Execute,
         runner_id: profile.runner_id.clone(),
         runner_profile_id: profile.profile_id.clone(),
