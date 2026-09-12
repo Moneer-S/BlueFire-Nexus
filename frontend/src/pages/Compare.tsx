@@ -322,7 +322,7 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {} }: { c
             <td>{sentence(summary.mode ?? "not_reported")}</td>
             <td>{objectiveLabel(summary.objective_reached, summary.mode)}</td>
             <td>{Array.isArray(summary.evidence_details?.observed_artifacts) ? <>{summary.evidence_details.observed_artifacts.length} observed items<small>{Array.isArray(summary.evidence_details.evidence_gaps) ? `${summary.evidence_details.evidence_gaps.length} recorded evidence gaps` : "Evidence gaps not reported"}</small></> : "Not reported"}</td>
-            <td>{summary.first_blocked_step ?? "None recorded"}</td>
+            <td>{summary.first_blocked_step ? <span title={summary.first_blocked_step}>{sentence(summary.first_blocked_step)}</span> : "None recorded"}</td>
             <td>{summary.cleanup_success === false ? "Needs attention" : summary.cleanup_success === true ? (summary.mode === "simulate" ? "No real effects" : "Complete") : "Not reported"}</td>
           </tr>)}</tbody>
         </table>
@@ -332,13 +332,13 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {} }: { c
     <details className="comparison-detail"><summary>Step-by-step results and run details</summary>
     <Panel><PanelHeader eyebrow="Path overlay" title="Side-by-side execution lanes" detail="Human-readable outcomes come first; each run links back to its canonical review."/><div className="compare-lanes">{comparison.summaries.map((summary, laneIndex) => <article key={summary.run_id}>
       <header><Badge tone={laneIndex === 0 ? "info" : "neutral"}>{laneIndex === 0 ? "Baseline" : `Variant ${laneIndex}`}</Badge><Link to={runReviewPath(summary.run_id)} aria-label={`Review ${laneIndex === 0 ? "baseline" : `variant ${laneIndex}`} execution lane`}>{names[summary.run_id] ?? "Run"}</Link></header>
-      <ol>{summary.path.map((step, index) => <li key={`${step}-${index}`} data-status={summary.outcomes[step] === "success" ? "succeeded" : summary.outcomes[step]}><span>{String(index + 1).padStart(2, "0")}</span><strong>{step}</strong><small>{sentence(summary.outcomes[step] ?? "unknown")}</small></li>)}</ol>
+      <ol>{summary.path.map((step, index) => <li key={`${step}-${index}`} data-status={summary.outcomes[step] === "success" ? "succeeded" : summary.outcomes[step]}><span>{String(index + 1).padStart(2, "0")}</span><strong title={step}>{sentence(step)}</strong><small>{sentence(summary.outcomes[step] ?? "unknown")}</small></li>)}</ol>
       <DataList items={[
         { label: "Mode / profile", value: `${sentence(summary.mode ?? "not_reported")} / ${summary.profile_id ?? "Not reported"}` },
         { label: "Target scope", value: formatTargetScope(summary.target_scope) },
         { label: "Replay Variant", value: formatReplayLineage(summary.replay_lineage) },
         { label: "Objective", value: objectiveLabel(summary.objective_reached, summary.mode) },
-        { label: "First block", value: summary.first_blocked_step ?? "None recorded" },
+        { label: "First block", value: summary.first_blocked_step ? sentence(summary.first_blocked_step) : "None recorded" },
         { label: "Cleanup", value: summary.cleanup_success === false ? "Outstanding" : summary.cleanup_success === true ? (summary.mode === "simulate" ? "No real effects (Simulate)" : "Reconciled") : "Not reported" },
         { label: "Duration", value: formatDuration(summary.duration_ms) },
         { label: "Outcomes", value: formatCountMap(summary.outcome_counts ?? countValues(Object.values(summary.outcomes)), "None reported") },

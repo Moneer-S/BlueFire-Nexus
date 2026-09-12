@@ -705,7 +705,7 @@ pre { max-width: 100%; margin: 0; overflow: auto; color: var(--muted-strong); fo
 .replay-choices label > span { min-height: 77px; }
 .comparison-results { display: grid; gap: 14px; }
 .compare-lanes { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(260px, 1fr); gap: 10px; padding: 14px; overflow-x: auto; }
-.compare-lanes > article { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(3, 8, 16, 0.28); }
+.compare-lanes > article { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-strong); }
 .compare-lanes article > header { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
 .compare-lanes ol { list-style: none; margin: 12px 0; padding: 0; }
 .compare-lanes li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }
