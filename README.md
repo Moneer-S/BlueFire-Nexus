@@ -100,13 +100,19 @@ Two effect modes. AI autonomy is a separate choice and never widens runner autho
 | Runner | Not used | Required, and independently enforcing the selected profile |
 | Scope | Modeled | Explicit operator scope, bounded by policy and profile |
 | Evidence | Synthetic or counterfactual | Executed, blocked, or unknown; `observed` only from a collector |
-| Approval and cleanup | Modeled | Exact approval and receipt-bound cleanup |
+| Approval and cleanup | Modeled | Reviewed experiment authority and receipt-bound cleanup |
 
 | AI level | What it can do | What it cannot do |
 |---|---|---|
 | `off` | Use the deterministic planner only | No model call at all |
 | `assist` | Draft a typed graph or registered choice for review | Apply a runtime mutation without exact-digest review |
 | `auto` | Apply a policy-valid registered choice where mode and policy permit | Invent actions, expand scope, raise a tier, change the runner profile, or bypass Execute approval |
+
+An Execute experiment can include a finite set of alternative methods for a step. Review binds
+those methods, their exact inputs and parameters, the objective, scope, limits and cleanup. When
+an eligible attempt fails or is prevented, Auto can use the observed result to choose one reviewed
+alternative and continue within that authorization. The run retains both attempts and the choice.
+Assist retains review; older exact-plan approvals do not gain this authority.
 
 The bundled offline provider makes planner behavior reproducible with no model account, and it is
 what release acceptance uses. Connecting an OpenAI-compatible provider changes nothing about
@@ -142,18 +148,16 @@ administration, identity, or enterprise-network agent.
 Anything unavailable or structural stays labeled that way; the
 [release capability classification](docs/RELEASE_CAPABILITIES.md) is authoritative.
 
-One third-party source is vendored, and it is worth knowing exactly what it is: the MITRE
-ATT&CK Enterprise T1082 metadata record, `bluefire/data/mitre_attack_t1082_v19_2.json`,
-pinned to `mitre/cti` commit `8543c5b05bd9bbcace9fc37f30bba96b675b6f33`. Intake verifies that
-exact source and keeps only neutral metadata — descriptions, procedures, citations, command
-examples and unrelated references are discarded. The runner action mapped to it is
-independently implemented, and no MITRE endorsement is implied. See
+Integrations retain their source identity and license. The bundled MITRE ATT&CK T1082 record
+supplies verified neutral metadata for an independently implemented action. The
+[Atomic gzip adaptation](docs/ATOMIC_GZIP.md) uses a fixed system gzip process on Linux; it does
+not execute the complete Atomic Red Team framework or bundle GNU gzip. See
 [source intake](docs/SOURCE_INTAKE.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
 
 | Surface | Current boundary |
 |---|---|
 | Python control plane | Python 3.10+ on Windows, Linux and macOS-compatible environments |
-| Rust runner | Native Windows x86_64 wheel, and a commit-bound Linux x86_64 musl artifact whose 23 built-in actions are verified by execution on Linux; source builds for development |
+| Rust runner | Native Windows x86_64 wheel and a commit-bound Linux x86_64 musl artifact; methods declare their supported platforms |
 | Linux proof | Native dynamic execution in a fresh disposable WSL2 environment during release acceptance |
 | macOS proof | Structural only; dynamic macOS execution has not been validated |
 | Network actions | Literal loopback addresses in shipped actions and profiles |
