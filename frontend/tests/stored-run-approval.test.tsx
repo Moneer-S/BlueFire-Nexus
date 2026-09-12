@@ -15,7 +15,7 @@ function fixture() {
     plan: { mode: "execute", steps: [{ step_id: "handoff" }], edges: [] },
     approval_envelope: { schema_version: "bluefire.approval-envelope.v1", scenario_id: demoScenario.id, envelope_digest: "reviewed-envelope", steps: [{ step_id: "handoff", options: [] }] },
   };
-  const job: RunJob = { schema_version: "bluefire.job.v1", job_id: "job-receiver-execution", kind: "scenario.run", state: "awaiting_approval",
+  const job: RunJob = { schema_version: "bluefire.job.v1", job_id: `job-${"a".repeat(32)}`, kind: "scenario.run", state: "awaiting_approval",
     request: { mode: "execute", scenario: demoScenario, approval_request_id: "approval-reviewed", _run_submission_preflight: preflight, receiver_defense: { parent_job_id: "job-owner", receiver_job_id: "job-preparation", phase: "baseline" } },
     progress: { phase: "awaiting_approval" }, approval_request: { ...binding, approval_id: "approval-reviewed", status: "pending", expires_at: "2099-01-01T00:00:00Z" },
   };
@@ -69,6 +69,8 @@ it("reopens a native receiver execution with its reviewable approval, unchecked 
   mount(job);
   const checkbox = await screen.findByRole("checkbox", { name: /I approve this exact immutable job envelope once/ });
   await waitFor(() => expect(checkbox).toBeEnabled());
+  expect(api.job).toHaveBeenCalledWith(job.job_id);
+  expect(vi.mocked(api.job).mock.calls.every(([requestedId]) => requestedId === job.job_id)).toBe(true);
   expect(checkbox).not.toBeChecked();
   expect(screen.getByRole("textbox", { name: "Operator identity for this job" })).toHaveValue("");
   expect(screen.getByRole("button", { name: "Approve and release job" })).toBeDisabled();
