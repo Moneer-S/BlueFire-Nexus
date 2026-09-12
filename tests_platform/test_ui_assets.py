@@ -113,7 +113,7 @@ def test_execute_approval_is_ephemeral_and_operator_bound() -> None:
     assert '"job envelope"' in runs
     local_review = (SOURCE_ROOT / "components" / "RunConfiguration.tsx").read_text(encoding="utf-8")
     assert "<LocalExecuteReview" not in runs
-    assert "hasExecutePlanReview(preflight)" in runs
+    assert "hasExecutePlanReview(preflight, scenario)" in runs
     assert "config.scopeRefs.includes(reference)" in local_review
     assert "Operator identity" in runs
 
@@ -322,9 +322,10 @@ def test_durable_proposal_review_and_retry_stay_separate_from_execute_approval()
     assert "Policy-valid Simulate choices" in configuration
     for journey_copy in (
         "Proposal, policy, and application trail",
-        "Auto can apply only policy-valid Simulate choices from registered Behavior/Action contracts",
+        "Auto can execute an alternative only inside an explicitly reviewed method set",
         "I approve this exact immutable",
-        "Execute proposals still require durable review plus a fresh one-time approval before runner effects",
+        "Legacy exact-plan changes and Assist proposals require a fresh review",
+        "Selection alone does not establish dispatch, successful effects or independent verification",
     ):
         assert journey_copy in runs
     approval = (SOURCE_ROOT / "lib" / "approvalReview.ts").read_text(encoding="utf-8")

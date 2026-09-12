@@ -19,6 +19,7 @@ from bluefire.ai_wire import AIProviderTransportError
 from bluefire.config import AIProviderKind
 from bluefire.runner_lifecycle import ManagedRunnerLifecycle
 from bluefire.service import BlueFireService
+from tests_platform.test_ai_live_authorization import request as authorization_request
 from tests_platform.test_ai_transport_deadline import endpoint as endpoint
 from tests_platform.test_ai_transport_deadline import workers as workers
 from tests_platform.test_ai_wire_runtime import _provider_config
@@ -45,6 +46,10 @@ def test_service_close_cancels_its_pending_checks_and_waits_for_worker_cleanup(
     provider = replace(
         _provider_config(AIProviderKind.OPENAI_RESPONSES), endpoint=f"{url}/slow-body"
     )
+    denied = service.check_ai_provider({"provider": provider.to_dict(), "connect": True})
+    assert denied["code"] == "live_authorization_required" and not workers
+    assert not entered.is_set()
+    service.authorize_ai(authorization_request(provider, local_endpoint_authorized=True))
     results: list[Any] = []
     thread = threading.Thread(
         target=lambda: results.append(
@@ -66,12 +71,14 @@ def test_service_close_cancels_its_pending_checks_and_waits_for_worker_cleanup(
         assert results[0]["used_fallback"] is False
         assert len(workers) == 1 and workers[0].poll() is not None
         assert not any(t.name == "bluefire-ai-request-writer" for t in threading.enumerate())
-        success = other.check_ai_provider(
-            {"provider": replace(provider, endpoint=f"{url}/success").to_dict(), "connect": True}
-        )
+        success_provider = replace(provider, endpoint=f"{url}/success")
+        other.authorize_ai(authorization_request(success_provider, local_endpoint_authorized=True))
+        success = other.check_ai_provider({"provider": success_provider.to_dict(), "connect": True})
         assert success["code"] == "probe_passed"
         refused = service.check_ai_provider({"provider": provider.to_dict(), "connect": True})
-        assert refused["code"] == "request_cancelled"
+        assert refused["code"] == "live_context_unavailable"
+        assert refused["attempts"] == 0 and refused["connectivity"] == "not_tested"
+        assert refused["used_fallback"] is False
         assert len(workers) == 2
     finally:
         service.close()

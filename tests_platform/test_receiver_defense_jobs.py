@@ -907,7 +907,10 @@ def test_shutdown_includes_failed_construction_retained_pool(setup, monkeypatch)
     )
 
 
-def test_cancelled_native_run_without_finalization_keeps_cleanup_uncertain(setup):
+@pytest.mark.parametrize("finalization_available", [True, False])
+def test_cancelled_native_run_preserves_cleanup_and_finalization_boundaries(
+    setup, monkeypatch, finalization_available
+):
     service, access, _, sessions, request = setup
     runner = FixtureRunner(sessions)
     entered, release = threading.Event(), threading.Event()
@@ -921,6 +924,15 @@ def test_cancelled_native_run_without_finalization_keeps_cleanup_uncertain(setup
         return result
 
     runner.execute_task = held
+    if not finalization_available:
+        original_finalize = service.store.finalize
+
+        def unavailable(run_id, **kwargs):
+            if kwargs["result"].get("status") == "cancelled":
+                raise OSError("Authored cancelled-record finalization failure")
+            return original_finalize(run_id, **kwargs)
+
+        monkeypatch.setattr(service.store, "finalize", unavailable)
     sandbox = service.runner_factory(None)[1]
     service.runner_factory = lambda _profile: (runner, sandbox)
     parent, _, ready = prepared(setup)
@@ -943,11 +955,28 @@ def test_cancelled_native_run_without_finalization_keeps_cleanup_uncertain(setup
     finally:
         release.set()
     terminal = service.job_controller.wait(identifier, timeout=20)
-    assert terminal["state"] == "cancelled" and terminal["result_ref"] is None
     current = service.receiver_defense_job(parent["job_id"])
     phase = current["phases"][0]
-    assert phase["result"] is None and phase["cleanup"]["run"] == "pending"
-    assert current["status"] == "stopping" and not current["can_start_new_test"]
+    if finalization_available:
+        assert terminal["state"] == "cancelled" and terminal["result_ref"]
+        run = service.store.get_run(terminal["result_ref"])
+        assert run["status"] == "cancelled" and run["finalized_at"] and run["manifest"]
+        assert service.store.validate_bundle(run["run_id"])["valid"]
+        assert run["objective_reached"] is False
+        assert (
+            run["cleanup"]["success"] is True and run["cleanup"]["outstanding_receipt_count"] == 0
+        )
+        assert run["cleanup_recovery"]["remaining_receipt_count"] == 0
+        assert phase["result"]["run_id"] == run["run_id"]
+        assert phase["result"]["decision"] == "insufficient_evidence"
+        assert phase["result"]["artifact"] is None
+        assert phase["cleanup"] == {"receiver": "verified_closed", "run": "complete"}
+        assert phase["status"] == "failed" and current["status"] == "stopped"
+    else:
+        assert terminal["state"] == "failed" and terminal["result_ref"] is None
+        assert phase["result"] is None and phase["cleanup"]["run"] == "pending"
+        assert current["status"] == "stopping" and not current["can_start_new_test"]
+        assert not service.store.list_runs()[0].get("finalized_at")
     assert not phase["prepare_allowed"] and len(service.store.list_runs()) == 1
     assert not sessions[0].tasks and sessions[0].closed and not access.calls
     (service.store.root.parent / "native-cancelled-contract.json").write_text(

@@ -44,6 +44,7 @@ from bluefire.runner_inventory import (
 from bluefire.runner_lifecycle import RunnerLifecycleError
 from bluefire.service import BlueFireService
 from bluefire.util import content_hash
+from tests_platform.test_ai_live_authorization import request as authorization_request
 
 ROOT = Path(__file__).resolve().parents[1]
 EXECUTE_PROFILE_ACTIONS = {
@@ -1993,6 +1994,7 @@ def test_catalog_reports_provider_health_without_resolving_secret_values(
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "catalog-test-key-value")  # pragma: allowlist secret
     service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
+    service.authorize_ai(authorization_request(service.config.ai.provider("openai-responses.v1")))
 
     catalog = service.catalog()
 
@@ -2003,6 +2005,8 @@ def test_catalog_reports_provider_health_without_resolving_secret_values(
         if provider["provider_id"] == "openai-responses.v1"
     )
     assert remote["health"]["credential_available"] is True
+    assert remote["health"]["state"] == "ready"
+    assert service.ai_authorizations()["authorizations"][0]["usage"]["requests"] == 0
     assert "catalog-test-key-value" not in json.dumps(  # pragma: allowlist secret
         catalog, sort_keys=True
     )
@@ -2257,6 +2261,8 @@ def test_remote_provider_selection_persists_only_the_credential_reference(
     monkeypatch.setattr(UrllibAIJSONTransport, "post", refuse_network)
     service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
 
+    service.authorize_ai(authorization_request(service.config.ai.provider("openai-responses.v1")))
+
     result = service.run(
         {
             "scenario_id": "scenario.sandbox.research.chain.v1",
@@ -2272,7 +2278,9 @@ def test_remote_provider_selection_persists_only_the_credential_reference(
     assert secret_value not in serialized
     assert persisted["ai_provider"]["credential_reference"] == "OPENAI_API_KEY"
     assert persisted["ai_provider"]["health"]["credential_available"] is True
+    assert persisted["ai_provider"]["health"]["state"] == "ready"
     assert persisted["ai_proposals"] == []
+    assert service.ai_authorizations()["authorizations"][0]["usage"]["requests"] == 0
 
 
 def test_saved_history_reads_two_versions_without_changing_active_inventory(tmp_path: Path) -> None:

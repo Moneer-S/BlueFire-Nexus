@@ -17,6 +17,7 @@ from bluefire.runner_lifecycle import ManagedRunnerLifecycle
 from bluefire.service import BlueFireService
 from bluefire.util import canonical_json_bytes
 from tests_platform.test_ai import FakeTransport, _proposal, _request
+from tests_platform.test_ai_live_authorization import request as authorization_request
 from tests_platform.test_ai_transport_deadline import endpoint as endpoint
 from tests_platform.test_ai_transport_deadline import workers as workers
 from tests_platform.test_ai_wire_runtime import _ai_config, _envelope, _provider_config
@@ -48,6 +49,22 @@ def test_in_flight_job_proposal_is_cancelled_and_reaped_without_fallback(
         config=config,
         runner_lifecycle=ManagedRunnerLifecycle(tmp_path / "managed"),
     )
+    # Missing consent cannot start a worker, even for this authored local endpoint.
+    denied = service.check_ai_provider({"provider": provider.to_dict(), "connect": True})
+    assert denied["code"] == "live_authorization_required"
+    assert not entered.is_set() and not paths and not workers
+    grant = service.authorize_ai(
+        authorization_request(
+            provider,
+            purposes=["bluefire_ai_proposal"],
+            local_endpoint_authorized=True,
+            limits={
+                "max_requests": 1,
+                "max_request_bytes": 500_000,
+                "max_reserved_output_tokens": provider.max_output_tokens,
+            },
+        )
+    )["authorization"]
     # The shipped composition is under test: no injected provider or HTTP transport.
     submission = service.submit_run(
         {
@@ -82,6 +99,9 @@ def test_in_flight_job_proposal_is_cancelled_and_reaped_without_fallback(
         assert not errors
         assert len(workers) == 1 and workers[0].poll() is not None
         assert paths == ["/slow-body"]
+        retained = service.ai_authorizations()["authorizations"][0]
+        assert retained["authorization_id"] == grant["authorization_id"]
+        assert retained["usage"]["requests"] == 1
         run = service.store.get_run(result["progress"]["run_id"])
         assert result["result_ref"] == run["run_id"]
         assert result["progress"]["run_status"] == "cancelled"
@@ -96,12 +116,15 @@ def test_in_flight_job_proposal_is_cancelled_and_reaped_without_fallback(
         assert not any(event["event_type"] == "ai.proposal" for event in run["events"])
         if signal == "cancel":
             # A job signal must not poison the service's other provider operations.
+            success_provider = replace(
+                _provider_config(AIProviderKind.OPENAI_RESPONSES), endpoint=f"{url}/success"
+            )
+            service.authorize_ai(
+                authorization_request(success_provider, local_endpoint_authorized=True)
+            )
             checked = service.check_ai_provider(
                 {
-                    "provider": replace(
-                        _provider_config(AIProviderKind.OPENAI_RESPONSES),
-                        endpoint=f"{url}/success",
-                    ).to_dict(),
+                    "provider": success_provider.to_dict(),
                     "connect": True,
                 }
             )

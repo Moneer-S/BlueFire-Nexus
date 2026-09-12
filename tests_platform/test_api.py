@@ -160,6 +160,22 @@ class StubService:
         self.calls.append(("check_ai_provider", request))
         return {"connectivity": "not_tested", "attempts": 0}
 
+    def ai_authorizations(self):
+        self.calls.append(("ai_authorizations",))
+        return {"authorizations": []}
+
+    def authorize_ai(self, request: Mapping[str, Any]):
+        self.calls.append(("authorize_ai", request))
+        return {"authorization": request}
+
+    def revoke_ai_authorization(self, authorization_id: str, request: Mapping[str, Any]):
+        self.calls.append(("revoke_ai_authorization", authorization_id, request))
+        return {"authorization": {"authorization_id": authorization_id, "status": "revoked"}}
+
+    def review_runner_upgrade(self, *, profile_id: str | None = None):
+        self.calls.append(("review_runner_upgrade", profile_id))
+        return {"schema_version": "bluefire.runner-upgrade-review.v1", "profile_id": profile_id}
+
     def settings(self):
         self.calls.append(("settings",))
         return {"settings": []}
@@ -384,8 +400,13 @@ class StubService:
         *,
         profile_id: str | None = None,
         allow_upgrade: bool = False,
+        upgrade_review_digest: str | None = None,
     ):
-        self.calls.append(("bootstrap_runner", profile_id, allow_upgrade))
+        self.calls.append(
+            ("bootstrap_runner", profile_id, allow_upgrade)
+            if upgrade_review_digest is None
+            else ("bootstrap_runner", profile_id, allow_upgrade, upgrade_review_digest)
+        )
         return {"state": "stopped", "profile_id": profile_id}
 
     def start_runner(self, *, profile_id: str | None = None):
@@ -1495,10 +1516,37 @@ def test_runner_routes_dispatch_only_explicit_managed_lifecycle_actions() -> Non
         assert service.calls[0] == ("runner_status", None)
 
 
+def test_runner_upgrade_review_and_apply_forward_exact_selected_profile_and_digest() -> None:
+    profile_id = "sandbox-execute.v1"
+    digest = "sha256:" + "a" * 64
+    with running_server() as (server, service):
+        status, _, payload = request(
+            server, "POST", "/api/v1/runner/upgrade-review", body={"profile_id": profile_id}
+        )
+        assert status == 200 and json_body(payload)["profile_id"] == profile_id
+        assert service.calls == [("review_runner_upgrade", profile_id)]
+        status, _, _ = request(
+            server,
+            "POST",
+            "/api/v1/runner/bootstrap",
+            body={
+                "profile_id": profile_id,
+                "allow_upgrade": True,
+                "upgrade_review_digest": digest,
+            },
+        )
+        assert status == 200
+        assert service.calls == [
+            ("review_runner_upgrade", profile_id),
+            ("bootstrap_runner", profile_id, True, digest),
+        ]
+
+
 @pytest.mark.parametrize(
     ("action", "body"),
     [
         ("bootstrap", {"unknown": True}),
+        ("upgrade-review", {"profile_id": "sandbox-execute.v1", "allow_upgrade": True}),
         ("start", {"allow_upgrade": True}),
         ("stop", {"confirm_runner_id": "wrong-boundary"}),
         ("revoke", {"profile_id": "sandbox-execute.v1"}),
