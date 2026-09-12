@@ -87,12 +87,13 @@ jobs:
 
       - name: Install pinned Rust toolchain
         shell: bash
+        env:
+          RUSTUP_HOME: ${{ runner.temp }}/bluefire-python-rustup
         run: |
-          # The hosted images ship a cargo-clippy binary that rustup's own manifest does
-          # not record. The implicit sync from rust-toolchain.toml then stops with
-          # "detected conflict: bin/cargo-clippy" and rolls the whole toolchain back,
-          # failing before any project code compiles. Installing the pinned channel
-          # explicitly makes this step depend on the pin rather than on image state.
+          # Use fresh job-owned toolchain state; image components can conflict
+          # with a pinned install even when rustup is invoked with --force.
+          python -c "import os; from pathlib import Path; Path(os.environ['RUSTUP_HOME']).mkdir(mode=0o700)"
+          printf 'RUSTUP_HOME=%s\n' "$RUSTUP_HOME" >> "$GITHUB_ENV"
           channel="$(grep -E '^channel' rust-toolchain.toml | cut -d'"' -f2)"
           test -n "$channel"
           # Name cargo explicitly. A forced install that lists only clippy and rustfmt
