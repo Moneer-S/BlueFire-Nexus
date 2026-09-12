@@ -318,6 +318,7 @@
         "bluefire.job_runtime",
         "bluefire.orchestrator",
         "bluefire.execution_progress",
+        "bluefire.retained_run_observations",
         "bluefire.replay",
         "bluefire.replay_preparation",
         "bluefire.replay_restoration",

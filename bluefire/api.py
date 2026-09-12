@@ -569,6 +569,13 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 )
             )
             return
+        retained_id = self._routes._run_retained_observations_id(path)
+        if retained_id is not None:
+            if retained_id:
+                self._dispatch(
+                    lambda: self.platform_server.service.retained_observations(retained_id)
+                )
+            return
         bundle_id = self._routes._run_bundle_id(path)
         if bundle_id is not None:
             if bundle_id:
@@ -618,6 +625,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         body = self._read_json_object()
         if body is None:
+            return
+        retained_id = self._routes._run_retained_observations_id(path)
+        if retained_id is not None:
+            if retained_id:
+                self._method_not_allowed("GET")
             return
         if path == _REVIEWED_T1082_INTAKE_ROUTE:
             if self._routes._management_query_free():

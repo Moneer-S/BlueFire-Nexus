@@ -362,6 +362,9 @@ class PlatformService(Protocol):
 
     def run_bundle(self, run_id: str) -> bytes: ...
 
+    def retained_observations(self, run_id: str) -> JsonResult:
+        """Read display-only unsealed observations without recovery or replay authority."""
+
     def detail(self, run_id: str) -> JsonResult:
         """Return one run, including current node and evidence state."""
 

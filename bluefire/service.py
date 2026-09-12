@@ -21,7 +21,7 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 import yaml
 
 from . import product_store_run_presentation as run_presentation
-from . import receiver_defense_native
+from . import receiver_defense_native, retained_run_observations
 from .action_catalog import (
     ActionCatalogError,
     ActionCatalogSnapshot,
@@ -4336,6 +4336,17 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             return {**run, "presentation": run_presentation.presentation(run, metadata)}
         except RunStoreError as exc:
             raise APIError(HTTPStatus.NOT_FOUND, "run_not_found", "Run was not found.") from exc
+
+    def retained_observations(self, run_id: str) -> Mapping[str, Any]:
+        try:
+            return retained_run_observations.retained_observations(self.store, run_id)
+        except RunStoreError as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "retained_observations_unavailable",
+                "Retained observations are unavailable or failed safe display validation. "
+                "Sealed records require canonical inspection; no record was changed.",
+            ) from exc
 
     def rename_run(self, run_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
         try:

@@ -41,6 +41,10 @@ class StubService:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
 
+    def retained_observations(self, run_id):
+        self.calls.append(("retained_observations", run_id))
+        return {"schema_version": "bluefire.retained-run-observations.v1", "run_id": run_id}
+
     def build_info(self):
         self.calls.append(("build_info",))
         return {"schema_version": "bluefire.build-info.v1"}
