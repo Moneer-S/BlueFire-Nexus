@@ -64,7 +64,12 @@ from .evidence import (
     EvidenceRecord,
     SandboxObserver,
 )
-from .execution_progress import emergency_cleanup, persist_progress, record_interrupted_dispatch
+from .execution_progress import (
+    ExecutionRecordFailure,
+    emergency_cleanup,
+    persist_progress,
+    record_interrupted_dispatch,
+)
 from .job_runtime import JobCancelled
 from .observation_integrity import evaluate_observation_integrity
 from .planner import (
@@ -2771,20 +2776,28 @@ class Orchestrator:
                     "runner reported a mutating outcome without a committed cleanup receipt"
                 )
         except RunnerTaskCancelled as exc:
-            record_interrupted_dispatch(
-                store=self.store,
-                run_id=run_id,
-                step=step,
-                manifest=manifest,
-                runner_task_id=runner_task_id,
-                parent_ids=parent_ids,
-                dispatch_requested=dispatch_requested,
-                cancellation=exc,
-                row_factory=self._row,
-            )
-            for receipt_id in discover_current_receipts():
-                if receipt_id not in receipt_ids:
-                    receipt_ids.append(receipt_id)
+            try:
+                for receipt_id in discover_current_receipts():
+                    if receipt_id not in receipt_ids:
+                        receipt_ids.append(receipt_id)
+            except (OSError, RunnerTransportError):
+                # Exact workspace settlement remains mandatory and will report
+                # deferred cleanup if it cannot independently reconcile receipts.
+                pass
+            try:
+                record_interrupted_dispatch(
+                    store=self.store,
+                    run_id=run_id,
+                    step=step,
+                    manifest=manifest,
+                    runner_task_id=runner_task_id,
+                    parent_ids=parent_ids,
+                    dispatch_requested=dispatch_requested,
+                    cancellation=exc,
+                    row_factory=self._row,
+                )
+            except (OSError, ValueError) as record_error:
+                raise ExecutionRecordFailure(exc) from record_error
             raise
         except RunnerTransportError as exc:
             discovered_receipts = discover_current_receipts()

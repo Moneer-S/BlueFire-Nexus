@@ -92,6 +92,7 @@ from .contracts import (
 from .detection_ai_jobs import DetectionAIJobs
 from .detection_create_jobs import DetectionCreateJobs
 from .detection_lab import DetectionLabService
+from .execution_progress import ExecutionRecordFailure
 from .graph_ai_jobs import GraphAIJobs
 from .job_runtime import (
     TERMINAL_JOB_STATES,
@@ -1732,21 +1733,7 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             self._index_run(result)
             return result
         except (AIProviderCancelled, RunnerTaskCancelled, JobCancelled) as exc:
-            if execution_approval_id is not None and execution_workspace is not None:
-                recovery = self._recover_interrupted_cleanup(
-                    requested_approval_id=execution_approval_id
-                )
-                settled = self.product_store.get_execution_workspace(execution_approval_id)
-                if recovery["deferred"] or settled["state"] not in {
-                    "completed",
-                    "recovered",
-                    "not_required",
-                }:
-                    raise APIError(
-                        HTTPStatus.CONFLICT,
-                        "run_cleanup_deferred",
-                        "The run stopped, but its cleanup could not be reconciled.",
-                    ) from exc
+            self._settle_execution_cancellation(execution_approval_id, exc)
             if cancel_event is not None and cancel_event.is_set():
                 raise JobCancelled("run cancellation and cleanup were reconciled") from exc
             raise APIError(
@@ -3497,6 +3484,11 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
                 )
             self._index_run(result)
             return result
+        except (AIProviderCancelled, RunnerTaskCancelled, JobCancelled) as exc:
+            self._settle_execution_cancellation(approval_id, exc)
+            if context.cancellation_event.is_set():
+                raise JobCancelled("reviewed continuation cancellation was reconciled") from exc
+            raise
         except (
             CollectorError,
             OrchestrationError,
@@ -3969,6 +3961,29 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             outcome=outcome,
         )
 
+    def _settle_execution_cancellation(
+        self, approval_id: str | None, error: BaseException, *, operation: str = "run"
+    ) -> None:
+        if approval_id is not None:
+            recovery = self._recover_interrupted_cleanup(requested_approval_id=approval_id)
+            settled = self.product_store.get_execution_workspace(approval_id)
+            if recovery["deferred"] or settled["state"] not in {
+                "completed",
+                "recovered",
+                "not_required",
+            }:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    f"{operation}_cleanup_deferred",
+                    "The run stopped, but its cleanup could not be reconciled.",
+                ) from error
+        if isinstance(error, ExecutionRecordFailure):
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                f"{operation}_record_incomplete",
+                "The run stopped and cleanup was reconciled, but its interrupted attempt could not be durably recorded.",
+            ) from error
+
     def _settle_pre_dispatch_refusal(
         self,
         approval_id: str,
@@ -4198,10 +4213,28 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
     ) -> None:
         for job in self.product_store.list_jobs():
             request = job.get("request")
-            if (
-                not isinstance(request, Mapping)
-                or request.get("approval_request_id") != approval_id
-            ):
+            matches = (
+                isinstance(request, Mapping) and request.get("approval_request_id") == approval_id
+            )
+            if not matches:
+                progress = job.get("progress")
+                proposal_id = (
+                    progress.get("proposal_record_id") if isinstance(progress, Mapping) else None
+                )
+                if isinstance(proposal_id, str):
+                    try:
+                        review = self.product_store.get_ai_proposal_review(proposal_id)
+                    except ProductStoreError:
+                        continue
+                    resolution = review.get("resolution")
+                    matches = (
+                        review.get("job_id") == job.get("job_id")
+                        and review.get("status") == "accepted"
+                        and isinstance(resolution, Mapping)
+                        and resolution.get("decision") == "accepted"
+                        and resolution.get("approval_request_id") == approval_id
+                    )
+            if not matches:
                 continue
             for attempt in range(3 if result_ref is not None else 1):
                 # Cancellation can change running to cancelling while recovery
@@ -5289,21 +5322,7 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             self._index_run(result)
             return result
         except (AIProviderCancelled, RunnerTaskCancelled, JobCancelled) as exc:
-            if replay_approval_id is not None and replay_workspace is not None:
-                recovery = self._recover_interrupted_cleanup(
-                    requested_approval_id=replay_approval_id
-                )
-                settled = self.product_store.get_execution_workspace(replay_approval_id)
-                if recovery["deferred"] or settled["state"] not in {
-                    "completed",
-                    "recovered",
-                    "not_required",
-                }:
-                    raise APIError(
-                        HTTPStatus.CONFLICT,
-                        "replay_cleanup_deferred",
-                        "Replay stopped, but its cleanup could not be reconciled.",
-                    ) from exc
+            self._settle_execution_cancellation(replay_approval_id, exc, operation="replay")
             if cancel_event is not None and cancel_event.is_set():
                 raise JobCancelled("replay job cancellation was confirmed") from exc
             raise APIError(

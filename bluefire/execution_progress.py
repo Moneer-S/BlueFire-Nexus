@@ -11,6 +11,19 @@ from .run_store import RunStore
 from .runner_transport_errors import RunnerTaskCancelled
 
 
+class ExecutionRecordFailure(RunnerTaskCancelled):
+    """Cancellation requires cleanup even if its audit write failed."""
+
+    def __init__(self, cancellation: RunnerTaskCancelled) -> None:
+        super().__init__(
+            "Interrupted execution record could not be persisted.",
+            cooperative_requested=cancellation.cooperative_requested,
+            cooperative_acknowledged=cancellation.cooperative_acknowledged,
+            forced_tree_termination=cancellation.forced_tree_termination,
+            control_cleanup_verified=cancellation.control_cleanup_verified,
+        )
+
+
 def persist_progress(
     store: RunStore,
     run_id: str,

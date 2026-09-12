@@ -22,6 +22,8 @@ from enum import Enum
 from types import TracebackType
 from typing import Any, Callable, Iterable, Mapping, Protocol, Type
 
+from .application_errors import public_job_failure
+
 
 class JobState(str, Enum):
     """Durable background-job lifecycle states."""
@@ -735,11 +737,7 @@ class RunJobController:
             JobState.FAILED,
             progress={"phase": JobState.FAILED.value},
             merge_progress=True,
-            error={
-                "code": "execution_callback_failed",
-                "message": "execution callback failed",
-                "exception_type": type(exc).__name__,
-            },
+            error=public_job_failure(exc),
         )
 
     def _transition(

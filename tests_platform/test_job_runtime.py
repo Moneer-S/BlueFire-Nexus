@@ -6,6 +6,7 @@ from typing import Any, Mapping
 
 import pytest
 
+from bluefire.application_errors import APIError
 from bluefire.job_runtime import (
     JobContext,
     JobQueueFull,
@@ -15,6 +16,23 @@ from bluefire.job_runtime import (
     RunJobController,
 )
 from bluefire.product_store import ProductStore
+
+
+@pytest.mark.parametrize("code", ["run_record_incomplete", "unreviewed_error"])
+def test_failure_guidance_never_copies_arbitrary_exception_details(tmp_path, code):
+    store = ProductStore(tmp_path / "safe-failure.db")
+
+    def execute(context, request):
+        raise APIError(409, code, "private operator message", {"path": "private operator path"})
+
+    with RunJobController(store, execute, max_workers=1) as controller:
+        queued = controller.submit("scenario.run", {})
+        completed = controller.wait(queued["job_id"], timeout=5)
+    assert completed["state"] == "failed"
+    assert "private operator" not in str(completed["error"])
+    assert completed["error"]["code"] == (
+        code if code == "run_record_incomplete" else "execution_callback_failed"
+    )
 
 
 class RecordingStore(ProductStore):

@@ -10,7 +10,8 @@ from bluefire.ai import AIProposal, AIProviderResult, DeterministicOfflineProvid
 from bluefire.config import AutonomyLevel
 from bluefire.contracts import load_scenario
 from bluefire.job_runtime import JobState
-from bluefire.runner_transport_errors import RunnerTaskCancelled
+from bluefire.orchestrator import Orchestrator
+from bluefire.runner_transport_errors import RunnerTaskCancelled, RunnerTransportError
 from bluefire.service import BlueFireService
 from tests_platform.test_adaptive_authorization import POLICY
 from tests_platform.test_ai_integration import ProposalLifecycleRunner
@@ -138,7 +139,15 @@ def test_execute_adaptation_consumes_one_approval_and_retains_both_attempts(tmp_
 
 
 @pytest.mark.parametrize(
-    "boundary", ["provider_return", "record_persisted", "alternate_dispatch", "first_dispatch"]
+    "boundary",
+    [
+        "provider_return",
+        "record_persisted",
+        "alternate_dispatch",
+        "first_dispatch",
+        "first_dispatch_record_failure",
+        "first_dispatch_discovery_failure",
+    ],
 )
 def test_cancellation_at_adaptive_decision_preserves_attempts_and_only_cleans_up(
     tmp_path, monkeypatch, boundary
@@ -150,7 +159,7 @@ def test_cancellation_at_adaptive_decision_preserves_attempts_and_only_cleans_up
             result = self.execute(manifest, profile)
             cancelled_action = (
                 "sandbox.fixture.create.v1"
-                if boundary == "first_dispatch"
+                if boundary.startswith("first_dispatch")
                 else "sandbox.discovery.metadata.v1"
             )
             if manifest["action_id"] == cancelled_action:
@@ -162,7 +171,8 @@ def test_cancellation_at_adaptive_decision_preserves_attempts_and_only_cleans_up
                 )
             return result
 
-    runner = HeldRunner() if boundary.endswith("dispatch") else FailFirstDiscoveryRunner()
+    dispatch_boundary = boundary.startswith(("first_dispatch", "alternate_dispatch"))
+    runner = HeldRunner() if dispatch_boundary else FailFirstDiscoveryRunner()
 
     class HeldProvider(MethodProvider):
         def propose(self, request):
@@ -185,6 +195,37 @@ def test_cancellation_at_adaptive_decision_preserves_attempts_and_only_cleans_up
                 else MethodProvider(config.provider(provider_id))
             ),
         )
+        record_failures = []
+        discovery_failures = []
+        if boundary == "first_dispatch_discovery_failure":
+            discover = Orchestrator._discover_runner_receipts
+
+            def refuse_first_discovery(*args, **kwargs):
+                if released.is_set() and not discovery_failures:
+                    discovery_failures.append(True)
+                    raise RunnerTransportError("authored one-shot receipt discovery failure")
+                return discover(*args, **kwargs)
+
+            monkeypatch.setattr(
+                Orchestrator, "_discover_runner_receipts", staticmethod(refuse_first_discovery)
+            )
+        if boundary == "first_dispatch_record_failure":
+            write = service.store.write_json
+
+            def refuse_interruption_evidence(run_id, name, value):
+                if (
+                    name == "evidence.json"
+                    and not record_failures
+                    and any(
+                        row.get("content", {}).get("artifact_type") == "execution_interruption"
+                        for row in value.get("records", [])
+                    )
+                ):
+                    record_failures.append(True)
+                    raise OSError("authored one-shot audit write failure")
+                return write(run_id, name, value)
+
+            monkeypatch.setattr(service.store, "write_json", refuse_interruption_evidence)
         if boundary == "record_persisted":
             append = service.store.append_event
 
@@ -219,7 +260,10 @@ def test_cancellation_at_adaptive_decision_preserves_attempts_and_only_cleans_up
             service.cancel_job(job_id)
             released.set()
             cancelled = service.job_controller.wait(job_id, timeout=30)
-            assert cancelled["state"] == "cancelled", cancelled
+            expected_state = (
+                "failed" if boundary == "first_dispatch_record_failure" else "cancelled"
+            )
+            assert cancelled["state"] == expected_state, cancelled
             assert ("sandbox.discovery.metadata.v1" in runner.calls) == (
                 boundary == "alternate_dispatch"
             )
@@ -228,9 +272,17 @@ def test_cancellation_at_adaptive_decision_preserves_attempts_and_only_cleans_up
             run = service.detail(cancelled["result_ref"])
             assert run["status"] == "cancelled"
             assert run.get("objective_reached") is not True
-            if boundary != "first_dispatch":
+            if boundary == "first_dispatch_record_failure":
+                assert record_failures == [True]
+                assert cancelled["error"]["code"] == "run_record_incomplete"
+                assert run["cleanup"]["outstanding_receipt_count"] == 0
+                assert service.store.validate_bundle(run["run_id"])["valid"]
+                return
+            if boundary == "first_dispatch_discovery_failure":
+                assert discovery_failures == [True]
+            if not boundary.startswith("first_dispatch"):
                 assert any(row["step_id"] == "discover_records" for row in run["steps"])
-            if boundary.endswith("dispatch"):
+            if dispatch_boundary:
                 interrupted = next(row for row in run["steps"] if "interruption" in row)
                 assert interrupted["runner_task_id"] and interrupted["request_hash"]
                 assert interrupted["interruption"]["effect_outcome"] == "unknown"
@@ -257,10 +309,24 @@ def test_cancellation_at_adaptive_decision_preserves_attempts_and_only_cleans_up
             service.close()
 
 
+@pytest.mark.parametrize("cancel_replay", [False, True])
 def test_assist_method_review_requires_fresh_approval_and_replays_selected_method_once(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, cancel_replay
 ):
     runner = FailFirstDiscoveryRunner()
+    entered, released = threading.Event(), threading.Event()
+    if cancel_replay:
+
+        def execute_task(manifest, profile, *, task_id, cancel_event, durable_result_path):
+            result = runner.execute(manifest, profile)
+            if manifest["action_id"] == "sandbox.discovery.metadata.v1":
+                entered.set()
+                assert released.wait(15)
+                assert cancel_event.is_set()
+                raise RunnerTaskCancelled("authored interrupted reviewed replay")
+            return result
+
+        runner.execute_task = execute_task
     with TemporaryDirectory(prefix="bf-adaptive-assist-") as owned:
         sandbox = Path(owned) / "sandbox"
         sandbox.mkdir()
@@ -324,9 +390,14 @@ def test_assist_method_review_requires_fresh_approval_and_replays_selected_metho
             assert accepted["approval_request"]["approval_id"] != original_approval
             assert runner.calls == calls_before_review
             service.approve_job(job_id, {"approved_by": "fresh-replay-test-reviewer"})
+            if cancel_replay:
+                assert entered.wait(15)
+                service.cancel_job(job_id)
+                released.set()
             completed = service.job_controller.wait(job_id, timeout=60)
-            assert completed["state"] == "completed", completed
+            assert completed["state"] == ("cancelled" if cancel_replay else "completed"), completed
             replay = service.detail(completed["result_ref"])
+            assert replay["run_id"] != review["source_run_id"]
             attempts = [row for row in replay["steps"] if row["step_id"] == "discover_records"]
             assert (
                 len(attempts) == 1 and attempts[0]["action_id"] == "sandbox.discovery.metadata.v1"
@@ -334,5 +405,10 @@ def test_assist_method_review_requires_fresh_approval_and_replays_selected_metho
             assert replay["adaptive_retry"]["used"] == 1
             assert replay["replay"]["proposal_resolution"]["method_replay_from_start"] is True
             assert replay["cleanup"]["outstanding_receipt_count"] == 0
+            if cancel_replay:
+                assert replay["status"] == "cancelled"
+                assert attempts[0]["interruption"]["effect_outcome"] == "unknown"
+                assert service.store.validate_bundle(replay["run_id"])["valid"]
         finally:
+            released.set()
             service.close()
