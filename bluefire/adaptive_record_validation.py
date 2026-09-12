@@ -9,6 +9,19 @@ from .ai_record_validation import DurableProposalRecordError, _validate_provider
 from .util import content_hash
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+# Advisory input to the planner, never runner authority. Keep this value stable
+# for historical v4 records; future guidance needs an explicit compatible version.
+ADAPTIVE_DECISION_CONTRACT = {
+    "allowed_proposal_types": ["select_registered_action", "stop", "request_approval"],
+    "selection_effect": "Retry this step once using one exact untried registered option.",
+    "constraints": [
+        "Select the step, behavior and action together from the same option.",
+        "Keep the declared objective and every reviewed parameter and input unchanged.",
+        "A resource refusal is not target prevention; retained records must still satisfy the objective.",
+        "If no option is useful within these limits, stop or request a new operator decision.",
+    ],
+}
+
 _BASE_FIELDS = frozenset(
     {
         "schema_version",
@@ -209,22 +222,27 @@ def validate_v4_proposal_record(
         "v4 method allowlist projection invalid",
     )
     state = record.get("planner_state")
+    state_fields = {
+        "schema_version",
+        "source_state_digest",
+        "current_step_id",
+        "outcome",
+        "authorization_digest",
+        "registered_options",
+        "observations",
+        "deterministic_decision",
+    }
     _require(
         isinstance(state, Mapping)
-        and set(state)
-        == {
-            "schema_version",
-            "source_state_digest",
-            "current_step_id",
-            "outcome",
-            "authorization_digest",
-            "registered_options",
-            "observations",
-            "deterministic_decision",
-        },
+        and set(state) in (state_fields, state_fields | {"decision_contract"}),
         "v4 planner state fields invalid",
     )
     assert isinstance(state, Mapping)
+    if "decision_contract" in state:
+        _require(
+            state["decision_contract"] == ADAPTIVE_DECISION_CONTRACT,
+            "v4 advisory decision contract is invalid",
+        )
     _require(
         state["schema_version"] == "bluefire.planner-state.v2"
         and state["source_state_digest"] == record["state_digest"]
