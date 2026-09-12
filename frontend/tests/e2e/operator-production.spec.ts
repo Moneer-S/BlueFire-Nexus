@@ -155,7 +155,7 @@ function installFailureMonitors(page: Page): { assertClean: () => void } {
       failures.push(`http_error:${response.status()}:${new URL(response.url()).pathname}`);
     }
   });
-  return { assertClean: () => expect(failures, `Production UI emitted a browser or network failure. Session diagnostics: ${JSON.stringify([...sessionRequests.values()].map(({ started: _started, ...record }) => record))}`).toEqual([]) };
+  return { assertClean: () => expect(failures, `Production UI emitted a browser or network failure. Session diagnostics: ${JSON.stringify([...sessionRequests.values()].map(record => ({ method: record.method, document: record.document, response: record.response, elapsed_ms: record.elapsed_ms, failed_in_document: record.failed_in_document })))}`).toEqual([]) };
 }
 
 function installRequestCapture(page: Page): Record<string, JsonObject> {
