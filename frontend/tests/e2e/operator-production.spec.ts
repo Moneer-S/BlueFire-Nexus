@@ -433,7 +433,7 @@ test("production operator UI completes authoring, management, run, replay, and c
 
   await navigation.getByRole("link", { name: "Research Sources" }).click();
   await expect(page.getByRole("heading", { name: "Research sources", level: 1 })).toBeVisible();
-  await expect(page.getByText(/MITRE ATT&CK/i).first()).toBeVisible();
+  await expect(page.locator(".source-grid").getByRole("heading", { name: /MITRE ATT&CK/i })).toBeVisible();
   await navigation.getByRole("link", { name: "Detection Lab" }).click();
   await expect(page.getByRole("heading", { name: "Detection Lab", level: 1 })).toBeVisible();
   const newRule = page.locator("details").filter({ has: page.locator("summary", { hasText: /^New rule$/ }) });
