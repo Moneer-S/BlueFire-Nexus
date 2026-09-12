@@ -1,6 +1,6 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { NodeProps, ReactFlowProps } from "@xyflow/react";
 import { MemoryRouter } from "react-router-dom";
@@ -38,7 +38,7 @@ function ContextControls() {
     <output aria-label="Draft state">{dirty ? "dirty" : "saved"}</output>
     <output aria-label="Approval state">{runConfig.approved ? runConfig.approvedBy : "none"}</output>
     <output aria-label="Selected methods">{JSON.stringify(runConfig.actionImplementations)}</output>
-    <button onClick={() => setRunConfig({ ...runConfig, actionImplementations: { [scenario.steps[0]!.id]: "test-selected-method" } })}>Select method in context</button>
+    <button onClick={() => setRunConfig({ ...runConfig, actionImplementations: { [scenario.steps[0]!.id]: "sandbox.fixture.create.v1" } })}>Select method in context</button>
     <button onClick={() => setRunConfig({ ...runConfig, approved: true, approvedBy: "test-reviewer" })}>Approve current context</button>
     <button onClick={() => setScenario({ ...scenario, steps: scenario.steps.map((step, index) => index ? step : { ...step, behavior_id: scenario.steps[1]!.behavior_id }) })}>Change first behavior in context</button>
     <button onClick={() => setScenario({ ...scenario, layout: { ...scenario.layout, [scenario.steps[0]!.id]: { x: 902, y: 301 } } })}>Move first step in context</button>
@@ -71,7 +71,7 @@ describe("Builder metadata and graph updates", () => {
       await user.type(name, character);
       expect(screen.getByLabelText("Draft state")).toHaveTextContent("dirty");
       expect(screen.getByLabelText("Approval state")).toHaveTextContent("none");
-      expect(screen.getByLabelText("Selected methods")).toHaveTextContent("test-selected-method");
+      expect(screen.getByLabelText("Selected methods")).toHaveTextContent("sandbox.fixture.create.v1");
       expect(nodeRenders).toEqual([]);
       expect(renderedGraphs.length).toBeGreaterThan(0);
       for (const graph of renderedGraphs) {
@@ -124,6 +124,14 @@ describe("Builder metadata and graph updates", () => {
     await user.click(screen.getByRole("button", { name: "Select method in context" }));
     await user.click(screen.getByRole("button", { name: "Approve current context" }));
     const original = renderedGraphs.at(-1)!;
+    expect(original.nodes![0]!.data.method).toBe(demoCatalog.actions.find((action) => action.id === "sandbox.fixture.create.v1")!.title);
+    const originalBytes = localStorage.getItem("bluefire.local.scenario.v1");
+    const selectedId = demoScenario.steps[1]!.id;
+    fireEvent.click(screen.getByTestId(`rf__node-${selectedId}`));
+    expect(renderedGraphs.at(-1)!.nodes!.filter((node) => node.selected).map((node) => node.id)).toEqual([selectedId]);
+    for (const node of renderedGraphs.at(-1)!.nodes!) expect(node.data).toBe(original.nodes!.find((item) => item.id === node.id)!.data);
+    for (const edge of renderedGraphs.at(-1)!.edges!) expect(edge.data).toBe(original.edges!.find((item) => item.id === edge.id)!.data);
+    expect(localStorage.getItem("bluefire.local.scenario.v1")).toBe(originalBytes);
     nodeRenders.length = 0;
     await user.click(screen.getByRole("button", { name: "Change first behavior in context" }));
     expect(nodeRenders).toContain(demoScenario.steps[0]!.id);
@@ -131,9 +139,12 @@ describe("Builder metadata and graph updates", () => {
     expect(screen.getByLabelText("Approval state")).toHaveTextContent("none");
     await waitFor(() => expect(renderedGraphs.at(-1)!.nodes).not.toBe(original.nodes));
     expect(renderedGraphs.at(-1)!.nodes![0]!.data.behavior).toEqual(demoCatalog.behaviors.find((behavior) => behavior.id === demoScenario.steps[1]!.behavior_id));
+    expect(renderedGraphs.at(-1)!.nodes![0]!.data.method).toBeUndefined();
+    expect(renderedGraphs.at(-1)!.nodes!.find((node) => node.id === selectedId)!.selected).toBe(true);
 
     await user.click(screen.getByRole("button", { name: "Move first step in context" }));
     await waitFor(() => expect(renderedGraphs.at(-1)!.nodes![0]!.position).toEqual({ x: 902, y: 301 }));
+    expect(renderedGraphs.at(-1)!.nodes!.find((node) => node.id === selectedId)!.selected).toBe(true);
     await user.click(screen.getByRole("button", { name: "Clear routes in context" }));
     await waitFor(() => expect(renderedGraphs.at(-1)!.edges!.filter((edge) => edge.data?.kind === "route")).toHaveLength(0));
     await user.click(screen.getByRole("button", { name: "Change start in context" }));

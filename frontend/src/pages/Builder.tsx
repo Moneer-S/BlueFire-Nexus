@@ -10,7 +10,7 @@ import {
   PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Redo2, RotateCcw,
   ListOrdered, Network, Plus, ScanSearch, Search, Trash2, Undo2, X,
 } from "lucide-react";
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import "./Builder.css";
 import { guaranteedInputSources, stepParameterSummary } from "../lib/graph-authoring";
@@ -61,7 +61,7 @@ function flowEdges(scenario: ScenarioGraph, behaviors: Map<string, Behavior>): F
   return [...routes, ...artifacts];
 }
 
-function BehaviorNode({ id, data, selected }: NodeProps<BehaviorFlowNode>) {
+const BehaviorNode = memo(function BehaviorNode({ id, data, selected }: NodeProps<BehaviorFlowNode>) {
   const behavior = data.behavior;
   const updateNodeInternals = useUpdateNodeInternals();
   const handleSignature = JSON.stringify([
@@ -81,7 +81,7 @@ function BehaviorNode({ id, data, selected }: NodeProps<BehaviorFlowNode>) {
     {(behavior?.outputs ?? []).slice(0, 4).map((output, index) => <Handle key={output.name} type="source" position={Position.Right} id={`out:${output.name}`} className="typed-handle output-handle" style={{ top: 55 + index * 18 }} title={`Produces ${inputTypeLabel(output.type)}: ${inputLabel(output.name)}`} />)}
     <div className="route-handles">{outcomes.map((outcome, index) => <Handle key={outcome} type="source" position={Position.Bottom} id={`route:${outcome}`} className={`route-handle route-${outcome}`} style={{ left: `${18 + index * 22}%` }} title={branchLabels[outcome]} />)}</div>
   </article>;
-}
+});
 
 const nodeTypes = { behavior: BehaviorNode };
 const edgeTypes = { outcomeRoute: BuilderRouteEdge };
@@ -115,7 +115,11 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
   const behaviorMap = useMemo(() => new Map(behaviors.map((item) => [item.id, item])), [behaviors]);
   const actionMap = useMemo(() => new Map(actions.map((item) => [item.id, item])), [actions]);
   const [invalidNodes, setInvalidNodes] = useState<Set<string>>(new Set());
-  const makeNodes = useCallback((value: ScenarioGraph) => value.steps.map((step, index) => behaviorNode(step, behaviorMap.get(step.behavior_id), index, value, invalidNodes.has(step.id))), [behaviorMap, invalidNodes]);
+  const methodOverrides = review ? undefined : product.runConfig.actionImplementations;
+  const makeNodes = useCallback((value: ScenarioGraph) => value.steps.map((step, index) => {
+    const node = behaviorNode(step, behaviorMap.get(step.behavior_id), index, value, invalidNodes.has(step.id));
+    return { ...node, data: { ...node.data, method: actionMap.get(methodOverrides?.[step.id] ?? "")?.title } };
+  }), [actionMap, behaviorMap, invalidNodes, methodOverrides]);
   const [initialView] = useState(() => review ? defaultGraphView(scenario) : readWorkingGraphView(scenario));
   const [nodes, setNodes] = useState<BehaviorFlowNode[]>(() => makeNodes(graph).map((node) => ({ ...node, selected: node.id === initialView.selected?.id })));
   const [edges, setEdges] = useState<FlowEdge[]>(() => flowEdges(graph, behaviorMap));
@@ -174,7 +178,7 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
   const sectionIndex = Math.min(focusedSection ?? 0, sections.length - 1);
   const shownSteps = viewMode === "graph" && focusedSection !== null ? sections[sectionIndex]!.steps : visibleGraph.ordered;
   const shownIds = useMemo(() => new Set(shownSteps.map((step) => step.id)), [shownSteps]);
-  const displayNodes = useMemo(() => nodes.map((node) => ({ ...node, hidden: !shownIds.has(node.id), selected: node.selected && shownIds.has(node.id), data: { ...node.data, method: actionMap.get(runConfig.actionImplementations?.[node.id] ?? "")?.title } })), [actionMap, nodes, runConfig.actionImplementations, shownIds]);
+  const displayNodes = useMemo(() => nodes.map((node) => ({ ...node, hidden: !shownIds.has(node.id), selected: node.selected && shownIds.has(node.id) })), [nodes, shownIds]);
   const edgeIsShown = useCallback((edge: FlowEdge) => shownIds.has(edge.source) && shownIds.has(edge.target) && (edge.data?.kind !== "artifact" || showInputs) && (edge.data?.kind !== "route" || edge.data.outcome === "success" || allBranches || expandedBranches.has(edge.source)), [allBranches, expandedBranches, showInputs, shownIds]);
   const selectedRouteId = edges.find((edge) => edge.selected && edge.data?.kind === "route" && edgeIsShown(edge))?.id;
   const displayEdges = useMemo(() => edges.map((edge) => ({ ...edge, hidden: !edgeIsShown(edge), selected: edge.selected && edgeIsShown(edge), style: { ...edge.style, opacity: selectedRouteId && edge.id !== selectedRouteId ? .45 : 1 } })), [edgeIsShown, edges, selectedRouteId]);
@@ -241,15 +245,25 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
     return () => cancelAnimationFrame(frame);
   }, [flow, inspectorOpen, nodesInitialized, selectedId, selectionToReveal, viewMode]);
 
+  const selectionForGraphRefresh = useRef(selectedId);
+  // Graph edits can add and select a node together. Keep that committed selection
+  // available to the refresh without rebuilding graph data for selection alone.
+  useEffect(() => { selectionForGraphRefresh.current = selectedId; }, [selectedId]);
   useEffect(() => {
-    setNodes((current) => makeNodes(graph).map((node) => {
-      const previous = current.find((item) => item.id === node.id);
-      // Retain measurements while refreshing node data so selection never hides
-      // a focused node before ResizeObserver can measure it again.
-      return { ...node, measured: previous?.measured, selected: previous?.selected ?? node.id === selectedId };
-    }));
-    setEdges((current) => flowEdges(graph, behaviorMap).map((edge) => ({ ...edge, selected: current.some((item) => item.id === edge.id && item.selected) })));
-  }, [graph, behaviorMap, makeNodes, selectedId]);
+    const selected = selectionForGraphRefresh.current;
+    setNodes((current) => {
+      const previousNodes = new Map(current.map((node) => [node.id, node]));
+      return makeNodes(graph).map((node) => {
+        const previous = previousNodes.get(node.id);
+        // Preserve measured dimensions and selection when refreshing graph data.
+        return { ...node, measured: previous?.measured, selected: previous?.selected ?? node.id === selected };
+      });
+    });
+    setEdges((current) => {
+      const selectedEdges = new Set(current.filter((edge) => edge.selected).map((edge) => edge.id));
+      return flowEdges(graph, behaviorMap).map((edge) => ({ ...edge, selected: selectedEdges.has(edge.id) }));
+    });
+  }, [graph, behaviorMap, makeNodes]);
   useEffect(() => {
     if (!focusMode) return;
     const exitFocus = (event: globalThis.KeyboardEvent) => { if (event.key === "Escape" && !commandPaletteOpen) setFocusMode(false); };

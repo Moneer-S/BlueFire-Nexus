@@ -84,6 +84,9 @@ describe("Builder selection and navigation", () => {
     await user.keyboard("{Control>}c{/Control}");
     await user.keyboard("{Control>}v{/Control}");
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!).steps).toHaveLength(demoScenario.steps.length + 1));
+    const added = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!).steps.at(-1) as { id: string };
+    expect(screen.getByLabelText(/^Step ID/)).toHaveValue(added.id);
+    await waitFor(() => expect(screen.getByTestId(`rf__node-${added.id}`)).toHaveClass("selected"));
     await user.click(screen.getByRole("button", { name: "Delete selected node" }));
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(demoScenario));
     expect(window.confirm).toHaveBeenCalledOnce();
