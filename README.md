@@ -5,9 +5,9 @@ whatever the tool itself claims happened, lets you change a defense, then runs t
 and shows you what actually differs.
 
 The workbench runs on your own machine as a local loopback service bound to 127.0.0.1.
-Manual and offline AI workflows require no model account. Optional external AI sends the request's
-context to the provider you explicitly configure and authorize; that provider may require an account
-and charge for usage.
+Manual operation and the bundled deterministic planner require no model account. Optional external
+AI sends the request's context to the provider you explicitly configure and authorize; that provider
+may require an account and charge for usage.
 
 ![Walkthrough: the behavior graph, the saved run history, and a completed run's evidence](docs/assets/screenshots/walkthrough.gif)
 
