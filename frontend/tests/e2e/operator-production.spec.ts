@@ -169,7 +169,8 @@ function installRequestCapture(page: Page): Record<string, JsonObject> {
     else if (path === "/api/v1/settings/ui.preferences") key = "settings";
     else if (path === "/api/v1/runs/preflight") key = "preflight";
     else if (path === "/api/v1/runs") key = "run";
-    else if (/^\/api\/v1\/runs\/[^/]+\/replays$/.test(path)) key = "replay";
+    // The authored replay intent is now bound by preparation before job submission.
+    else if (/^\/api\/v1\/runs\/[^/]+\/replay-preparations$/.test(path)) key = "replay";
     else if (path === "/api/v1/comparisons") key = "comparison";
     else if (path.includes(`/api/v1/resources/runner-profiles/${PROFILE_ID}`)) key = "profile";
     else if (path.includes(`/api/v1/resources/runners/${RUNNER_ID}`)) key = "runner";
@@ -521,15 +522,43 @@ test("production operator UI completes authoring, management, run, replay, and c
   await expect(page.getByRole("heading", { name: "Compare runs" })).toBeVisible();
   await page.getByLabel("Source run").selectOption(browserRunId);
   await expect(page.getByRole("combobox", { name: "What will change?" })).toHaveValue("exact");
-  const replayResponse = page.waitForResponse((response) => /^\/api\/v1\/runs\/[^/]+\/replays$/.test(new URL(response.url()).pathname) && response.request().method() === "POST");
+  const replayPreparationResponse = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/runs/${browserRunId}/replay-preparations` && response.request().method() === "POST");
+  const replayResponse = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/runs/${browserRunId}/replay-jobs` && response.request().method() === "POST");
   await page.getByRole("button", { name: "Create Simulate replay" }).click();
-  const replayRun = await (await replayResponse).json() as JsonObject;
-  const replayRunId = replayRun.run_id;
+  const preparationResponse = await replayPreparationResponse;
+  expect(preparationResponse.ok()).toBe(true);
+  const preparedReplay = await preparationResponse.json() as JsonObject;
+  expect(preparedReplay.schema_version).toBe("bluefire.replay-preparation.v1");
+  expect(preparedReplay.replay_request).toEqual({ exact: true });
+  expect((preparedReplay.binding as JsonObject).source).toMatchObject({ run_id: browserRunId });
+  expect((preparedReplay.binding as JsonObject).replay_request).toEqual({ exact: true });
+  expect(preparedReplay.effects_started).toBe(false);
+  expect(preparedReplay.approval_created).toBe(false);
+  const replaySubmissionResponse = await replayResponse;
+  expect(replaySubmissionResponse.ok()).toBe(true);
+  const replaySubmission = await replaySubmissionResponse.json() as JsonObject;
+  const replayBody = replaySubmissionResponse.request().postDataJSON() as JsonObject;
+  expect(keys(replayBody)).toEqual(["exact", "preparation_context", "preparation_id", "submission_id"]);
+  expect(replayBody).toMatchObject({ exact: true, preparation_context: preparedReplay.preparation_context, preparation_id: preparedReplay.preparation_id });
+  expect(replayBody.submission_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  expect(replaySubmission.schema_version).toBe("bluefire.replay-job-submission.v1");
+  const replayJob = replaySubmission.job as JsonObject;
+  const replayJobId = `job-${String(replayBody.submission_id).replaceAll("-", "")}`;
+  expect(replayJob).toMatchObject({ job_id: replayJobId, kind: "scenario.replay" });
+  await expect(page).toHaveURL(new RegExp(`#/runs\\?job=${replayJobId}$`));
+  await page.getByText("Job details", { exact: true }).click();
+  await expect(page.getByText(replayJobId, { exact: true })).toBeVisible();
+  await expect(reviewLatest).toBeEnabled({ timeout: 90_000 });
+  await reviewLatest.click();
+  await expect(page).toHaveURL(/#\/runs\/run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$/);
+  const replayRunId = new URL(page.url()).hash.slice("#/runs/".length);
   expect(replayRunId).toMatch(RUN_ID);
-  await expect(page.getByText("Replay created")).toBeVisible();
+  expect(replayRunId).not.toBe(browserRunId);
+  await expect(page.getByRole("region", { name: "Recorded step outcomes" })).toBeVisible();
   completed.push("create_production_replay");
 
-  // Explicitly choose the comparison pair; replay creation may select its source.
+  // Return from the completed replay and explicitly choose the comparison pair.
+  await navigation.getByRole("link", { name: "Compare" }).click();
   await page.getByLabel("Source run").selectOption(baselineRunId);
   await (await runCheckbox(page, baselineRunId)).check();
   await (await runCheckbox(page, String(replayRunId))).check();
