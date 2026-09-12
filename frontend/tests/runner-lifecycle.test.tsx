@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { demoCatalog } from "../src/lib/demo";
 import { RunnersPage } from "../src/pages/CatalogPages";
 import type { RunnerLifecycleStatus } from "../src/types";
+import { runnerUpgradeReview, upgradeDigest } from "./runner-upgrade-fixtures";
 
 function json(value: unknown) {
   return new Response(JSON.stringify(value), {
@@ -41,6 +42,7 @@ describe("managed runner lifecycle", () => {
       if (path.endsWith("/resources/runner-profiles")) {
         return json({ schema_version: "bluefire.resource-list.v1", kind: "runner-profiles", resources: [] });
       }
+      if (path.endsWith("/runner/upgrade-review") && init?.method === "POST") return json(runnerUpgradeReview());
       if (path.endsWith("/runner/bootstrap") && init?.method === "POST") return json(upgraded);
       if (path.endsWith("/runner?profile_id=sandbox-execute.v1")) return json(stopped);
       throw new Error(`Unhandled test request: ${path}`);
@@ -51,11 +53,11 @@ describe("managed runner lifecycle", () => {
 
     render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/runners?profile=sandbox-execute.v1"]}><RunnersPage /></MemoryRouter></QueryClientProvider>);
 
-    await user.click(await screen.findByRole("button", { name: /Upgrade managed runner/i }));
-    expect(screen.getByRole("heading", { name: "Upgrade managed runner" })).toBeVisible();
+    await user.click(await screen.findByRole("button", { name: "Review runner upgrade" }));
+    expect(screen.getByRole("heading", { name: "Update runner and keep history" })).toBeVisible();
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/runner/bootstrap"))).toBe(false);
 
-    await user.click(screen.getByRole("button", { name: /Confirm verified upgrade/i }));
+    await user.click(await screen.findByRole("button", { name: "Apply reviewed runner upgrade" }));
 
     await waitFor(() => {
       expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/runner/bootstrap"))).toBe(true);
@@ -65,6 +67,7 @@ describe("managed runner lifecycle", () => {
     expect(JSON.parse(String(upgradeCall?.[1]?.body))).toEqual({
       profile_id: "sandbox-execute.v1",
       allow_upgrade: true,
+      upgrade_review_digest: upgradeDigest,
     });
   });
 
@@ -101,7 +104,7 @@ describe("managed runner lifecycle", () => {
     render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/runners?profile=sandbox-execute.v1"]}><RunnersPage /></MemoryRouter></QueryClientProvider>);
 
     expect(await screen.findByRole("button", { name: /Reconcile stale host/i })).toBeVisible();
-    expect(screen.queryByRole("button", { name: /Upgrade managed runner/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Review runner upgrade" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Reconcile stale host/i }));
 
     await waitFor(() => {
@@ -111,5 +114,6 @@ describe("managed runner lifecycle", () => {
     expect(stopCall?.[1]?.method).toBe("POST");
     expect(JSON.parse(String(stopCall?.[1]?.body))).toEqual({ profile_id: "sandbox-execute.v1" });
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/runner/bootstrap"))).toBe(false);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/runner/upgrade-review"))).toBe(false);
   });
 });

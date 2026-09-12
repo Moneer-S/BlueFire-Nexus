@@ -1,5 +1,6 @@
 import type { AssistanceRunEnvelope, RunPreparationDecision, SavedRunSelection } from "./run-assistance";
 import type { AILiveAuthorization, AILiveAuthorizationList, AILiveAuthorizationRequest, PublicAIProviderConfig } from "../types";
+import type { RunnerUpgradeReview } from "./runner-upgrade";
 import type { ReceiverContext, ReceiverContextRequest, ReceiverDecision, ReceiverDefenseEnvelope, ReceiverPhase, ReceiverTestList } from "./receiver-defense-types";
 import type { RunDetectionSelection, DetectionCreationSource, DetectionCreationEnvelope, DetectionCreationDecision, DetectionCreationValidation } from "./detection-creation";
 import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionRunEvaluation, DetectionCaseRole, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunPresentation, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
@@ -582,9 +583,14 @@ export const api = {
     if (DEMO_MODE) return { schema_version: "bluefire.runner-lifecycle-status.v1", state: "unavailable", runner_id: "bluefire-rust-runner.v1", profile_id: null, loopback_only: true, enrollment: "absent", process: "absent", runner: null, health: null };
     return request(`/runner${profileId ? `?profile_id=${encodeURIComponent(profileId)}` : ""}`);
   },
-  async bootstrapRunner(profileId?: string, allowUpgrade = false): Promise<RunnerLifecycleStatus> {
+  async reviewRunnerUpgrade(profileId?: string): Promise<RunnerUpgradeReview> {
+    if (DEMO_MODE) throw new ApiError("Demo mode cannot review a local runner upgrade.", "demo_runner_lifecycle_refused", undefined, 409);
+    return request("/runner/upgrade-review", { method: "POST", body: JSON.stringify(profileId ? { profile_id: profileId } : {}) }, 120_000);
+  },
+  async bootstrapRunner(profileId?: string, allowUpgrade = false, upgradeReviewDigest?: string): Promise<RunnerLifecycleStatus> {
     if (DEMO_MODE) throw new ApiError("Demo mode cannot bootstrap a local runner.", "demo_runner_lifecycle_refused", undefined, 409);
-    return request("/runner/bootstrap", { method: "POST", body: JSON.stringify({ ...(profileId ? { profile_id: profileId } : {}), ...(allowUpgrade ? { allow_upgrade: true } : {}) }) }, 120_000);
+    if (upgradeReviewDigest !== undefined && !allowUpgrade) throw new ApiError("An upgrade review requires an explicit upgrade request.", "runner_bootstrap_invalid", undefined, 400);
+    return request("/runner/bootstrap", { method: "POST", body: JSON.stringify({ ...(profileId ? { profile_id: profileId } : {}), ...(allowUpgrade ? { allow_upgrade: true } : {}), ...(upgradeReviewDigest !== undefined ? { upgrade_review_digest: upgradeReviewDigest } : {}) }) }, 120_000);
   },
   async startRunner(profileId?: string): Promise<RunnerLifecycleStatus> {
     if (DEMO_MODE) throw new ApiError("Demo mode cannot start a local runner.", "demo_runner_lifecycle_refused", undefined, 409);

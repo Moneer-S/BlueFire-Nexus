@@ -2,12 +2,15 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter } from "react-router-dom";
-import { expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { api, ApiError } from "../src/lib/api";
 import { demoCatalog } from "../src/lib/demo";
 import { RunnersPage } from "../src/pages/CatalogPages";
 import { ExecuteRunnerReadiness, RunnerInventoryRecovery } from "../src/components/ExecuteRunnerReadiness";
 import type { RunnerLifecycleStatus } from "../src/types";
+import { runnerUpgradeReview, upgradeDigest } from "./runner-upgrade-fixtures";
+
+beforeEach(() => { vi.spyOn(api, "reviewRunnerUpgrade").mockResolvedValue(runnerUpgradeReview()); });
 
 const profile = "sandbox-execute.v1";
 const stopped: RunnerLifecycleStatus = { schema_version: "bluefire.runner-lifecycle-status.v1", state: "stopped", runner_id: "bluefire-rust-runner.v1", profile_id: profile, loopback_only: true, enrollment: "active", process: "absent", runner: null, health: null };
@@ -37,11 +40,11 @@ it("keeps the experiment profile through status and explicit upgrade without exp
   const remove = vi.spyOn(api, "removeRunner");
   const user = userEvent.setup();
   mount(`/runners?profile=${profile}`);
-  await user.click(await screen.findByRole("button", { name: "Upgrade managed runner" }));
+  await user.click(await screen.findByRole("button", { name: "Review runner upgrade" }));
   expect(upgrade).not.toHaveBeenCalled();
-  expect(screen.getByText(/existing enrollment and allowed profile identities must match/i)).toBeVisible();
-  await user.click(screen.getByRole("button", { name: "Confirm verified upgrade" }));
-  await waitFor(() => expect(upgrade).toHaveBeenCalledExactlyOnceWith(profile, true));
+  expect(await screen.findByText(/sandbox, enrollment, permitted profiles and protocol contracts match/i)).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Apply reviewed runner upgrade" }));
+  await waitFor(() => expect(upgrade).toHaveBeenCalledExactlyOnceWith(profile, true, upgradeDigest));
   expect(screen.getByRole("combobox", { name: "Experiment runner profile" })).toHaveValue(profile);
   expect(status.mock.calls.every(([selected]) => selected === profile)).toBe(true);
   expect(revoke).not.toHaveBeenCalled(); expect(remove).not.toHaveBeenCalled();
@@ -53,8 +56,8 @@ it("retains the actual prior-history refusal and never retries or removes histor
   const upgrade = vi.spyOn(api, "bootstrapRunner").mockRejectedValue(new ApiError("Managed runner bootstrap was refused.", "runner_bootstrap_refused", [reason], 409));
   const start = vi.spyOn(api, "startRunner");
   const user = userEvent.setup(); mount(`/runners?profile=${profile}`);
-  await user.click(await screen.findByRole("button", { name: "Upgrade managed runner" }));
-  await user.click(screen.getByRole("button", { name: "Confirm verified upgrade" }));
+  await user.click(await screen.findByRole("button", { name: "Review runner upgrade" }));
+  await user.click(await screen.findByRole("button", { name: "Apply reviewed runner upgrade" }));
   expect(await screen.findByText(reason)).toBeVisible();
   expect(screen.getByText(/keep the runner stopped when upgrade is refused/i)).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Refresh" }));
@@ -94,9 +97,9 @@ it("keeps a pending upgrade refusal bound to the submitted profile after navigat
   const upgrade = vi.spyOn(api, "bootstrapRunner").mockImplementation(() => new Promise((_resolve, reject) => { rejectUpgrade = reject; }));
   const user = userEvent.setup();
   mount(`/runners?profile=${profile}`, <><Link to={`/runners?profile=${otherProfile}`}>Other profile</Link><Link to={`/runners?profile=${profile}`}>Original profile</Link><RunnersPage /></>);
-  await user.click(await screen.findByRole("button", { name: "Upgrade managed runner" }));
-  await user.click(screen.getByRole("button", { name: "Confirm verified upgrade" }));
-  await waitFor(() => expect(upgrade).toHaveBeenCalledExactlyOnceWith(profile, true));
+  await user.click(await screen.findByRole("button", { name: "Review runner upgrade" }));
+  await user.click(await screen.findByRole("button", { name: "Apply reviewed runner upgrade" }));
+  await waitFor(() => expect(upgrade).toHaveBeenCalledExactlyOnceWith(profile, true, upgradeDigest));
   await user.click(screen.getByRole("link", { name: "Other profile" }));
   const reason = "Runner upgrade is blocked by prior execution recovery history.";
   await act(async () => rejectUpgrade(new ApiError("Managed runner bootstrap was refused.", "runner_bootstrap_refused", [reason], 409)));

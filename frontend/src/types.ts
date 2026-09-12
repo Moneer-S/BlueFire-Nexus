@@ -425,6 +425,7 @@ export interface RunnerLifecycleStatus {
   loopback_only: true;
   enrollment: "absent" | "active" | "revoked" | "unavailable" | string;
   process: "absent" | "authenticated" | "stale" | "unavailable" | string;
+  upgrade_recovery_required?: true;
   runner: {
     source?: string;
     product_version?: string;

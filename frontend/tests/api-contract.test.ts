@@ -3,6 +3,7 @@ import { api, buildReplayPayload, buildRunPayload } from "../src/lib/api";
 import { demoRuns, demoScenario } from "../src/lib/demo";
 import type { RunConfiguration } from "../src/types";
 import { authorization, provider, snapshot } from "./provider-authorization-fixtures";
+import { runnerUpgradeReview, upgradeDigest } from "./runner-upgrade-fixtures";
 
 const configuration: RunConfiguration = {
   mode: "execute",
@@ -227,6 +228,19 @@ describe("control-plane request contracts", () => {
     vi.stubGlobal("fetch", fetchMock);
     await api.runnerStatus("new-execute.v1");
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/runner?profile_id=new-execute.v1");
+  });
+
+  it("binds reviewed upgrades to an explicit apply while preserving the legacy bootstrap body", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => { void _input; void _init; return new Response(JSON.stringify(runnerUpgradeReview()), { status: 200, headers: { "Content-Type": "application/json" } }); });
+    vi.stubGlobal("fetch", fetchMock);
+    await api.reviewRunnerUpgrade("selected-execute.v1");
+    await api.bootstrapRunner("selected-execute.v1", true, upgradeDigest);
+    expect(fetchMock.mock.calls.map(([input, init]) => [String(input), init?.method, JSON.parse(String(init?.body))])).toEqual([
+      ["/api/v1/runner/upgrade-review", "POST", { profile_id: "selected-execute.v1" }],
+      ["/api/v1/runner/bootstrap", "POST", { profile_id: "selected-execute.v1", allow_upgrade: true, upgrade_review_digest: upgradeDigest }],
+    ]);
+    await expect(api.bootstrapRunner("selected-execute.v1", false, upgradeDigest)).rejects.toMatchObject({ code: "runner_bootstrap_invalid" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("persists secret-safe settings, versioned scenarios, and allowlisted resources", async () => {
