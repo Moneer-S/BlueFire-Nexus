@@ -102,6 +102,7 @@ STRICT_SOURCE_AUDIT_PATHS = (
     "bluefire/runner_adapter.py",
     "bluefire/runner_bootstrap_record.py",
     "bluefire/runner_transport_framing.py",
+    "bluefire/product_store_proposal_reviews.py",
     "bluefire/runner_durable_result.py",
     "bluefire/receiver.py",
     "bluefire/receiver_policy.py",
