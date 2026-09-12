@@ -38,6 +38,7 @@ from .util import canonical_json_bytes, content_hash, file_hash
 
 if TYPE_CHECKING:
     from .runner_bootstrap import BootstrappedRunner
+    from .runner_history_documents import HistoricalWorkspace
     from .runner_trust import RunnerEnrollment
 
 
@@ -210,6 +211,7 @@ def _validated_history(
         if audit is None or audit["ledger_generation"] != generation:
             raise RunnerHistoryUpgradeError("Runner history changed during review.")
         expected: dict[str, str] = {}
+        workspaces: dict[Path, HistoricalWorkspace] = {}
         completed = undispatched = 0
         with _pinned_ledger_inspection(lifecycle.ledger_path) as connection:
             if connection is None:
@@ -223,9 +225,17 @@ def _validated_history(
                     continue
                 with _upgrade_stage("history_documents"):
                     manifest, profile = AuthenticatedRunnerServer._stored_execute_payload(row)
-                    validate_history_documents(
+                    workspace = validate_history_documents(
                         manifest, profile, platform=platform, sandbox=sandbox
                     )
+                    previous = workspaces.get(workspace.path)
+                    if previous is not None and previous.binding() != workspace.binding():
+                        raise RunnerHistoryUpgradeError(
+                            "Runner historical workspace changed during review."
+                        )
+                if previous is None:
+                    _require_settled_workspace(lifecycle, workspace)
+                    workspaces[workspace.path] = workspace
                 if row["state"] != "completed":
                     if (
                         row["state"] not in {"failed", "cancelled", "timed_out"}
@@ -290,6 +300,8 @@ def _validated_history(
                             raise RunnerHistoryUpgradeError("Runner result changed during review.")
             elif expected:
                 raise RunnerHistoryUpgradeError("Runner durable results are missing.")
+        for workspace in workspaces.values():
+            _require_settled_workspace(lifecycle, workspace)
         after = _file_snapshot(parent, lifecycle.ledger_path.name, _MAX_LEDGER_INSPECTION_BYTES)
         if after != before:
             raise RunnerHistoryUpgradeError("Runner history changed during review.")
@@ -300,8 +312,24 @@ def _validated_history(
         "completed_executions": completed,
         "undispatched_executions": undispatched,
         "durable_results": len(result_snapshots),
-        "history_digest": content_hash({"ledger": before, "results": result_snapshots}),
+        "history_digest": content_hash(
+            {
+                "ledger": before,
+                "results": result_snapshots,
+                "workspaces": [workspaces[path].binding() for path in sorted(workspaces)],
+            }
+        ),
     }
+
+
+def _require_settled_workspace(lifecycle: UpgradeLifecycle, workspace: HistoricalWorkspace) -> None:
+    """Inspect only an accepted historical scope and retain its exact identity."""
+    with _upgrade_stage("history_documents"):
+        workspace.recheck()
+    with _upgrade_stage("pending_cleanup"):
+        lifecycle._require_no_receipt_obligations(workspace.path)
+    with _upgrade_stage("history_documents"):
+        workspace.recheck()
 
 
 def _bound_review(
