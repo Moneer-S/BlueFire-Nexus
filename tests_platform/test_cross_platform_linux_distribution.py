@@ -39,8 +39,9 @@ def test_disposable_cleanup_unregisters_and_removes_storage(
     state = {"registered": True}
     commands: list[list[str]] = []
 
-    def probe(distribution_name: str) -> Mapping[str, Any]:
+    def probe(distribution_name: str, *, require_cli: bool = False) -> Mapping[str, Any]:
         assert distribution_name == name
+        assert require_cli
         return _facts(name, ready=state["registered"])
 
     def run(
@@ -55,6 +56,7 @@ def test_disposable_cleanup_unregisters_and_removes_storage(
 
     monkeypatch.setattr(distribution_module, "probe_wsl_distribution", probe)
     monkeypatch.setattr(distribution_module, "_bounded_result", run)
+    monkeypatch.setattr(distribution_module, "registration", lambda _name: ("original", install))
     monkeypatch.setattr(distribution_module.time, "sleep", lambda _seconds: None)
     lease = DisposableWslDistribution(
         executable=Path(sys.executable).resolve(strict=True),
@@ -63,6 +65,7 @@ def test_disposable_cleanup_unregisters_and_removes_storage(
         install_root=install,
         install_identity=distribution_module._root_identity(install),
         may_be_registered=True,
+        registration_id="original",
     )
 
     proof = lease.cleanup()
@@ -87,7 +90,7 @@ def test_failed_clone_cleans_private_storage(
     token = "0123456789abcdef"
     execution_name = "BlueFire-Gate11-Run-" + token
 
-    def probe(name: str) -> Mapping[str, Any]:
+    def probe(name: str, **_kwargs: Any) -> Mapping[str, Any]:
         return _facts(name, ready=name == WSL_DISTRIBUTION_ID)
 
     def fail_clone(*_args: Any, **_kwargs: Any) -> None:
@@ -95,6 +98,8 @@ def test_failed_clone_cleans_private_storage(
 
     monkeypatch.setattr(distribution_module, "probe_wsl_distribution", probe)
     monkeypatch.setattr(distribution_module, "_stream_clone", fail_clone)
+    monkeypatch.setattr(distribution_module, "registration", lambda _name: None)
+    monkeypatch.setattr(distribution_module, "_distribution_storage_parent", lambda: tmp_path)
     monkeypatch.setattr(distribution_module.secrets, "token_hex", lambda _size: token)
     monkeypatch.setattr(distribution_module.time, "sleep", lambda _seconds: None)
 

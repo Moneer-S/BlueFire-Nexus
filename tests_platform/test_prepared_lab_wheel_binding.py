@@ -153,6 +153,7 @@ def test_replacement_during_clone_never_reaches_the_guest_installer(
             "BlueFire-Gate11-Run-" + "1" * 16,
             install,
             lab.identity(install, directory=True),
+            registration_id="guid",
         )
         monkeypatch.setattr(lease, "cleanup", lambda: cleanup.append(True))
         captured["lease"] = lease
@@ -196,6 +197,7 @@ def test_installer_receives_the_original_archive_handle_without_reopening_its_pa
             "BlueFire-Gate11-Run-" + "2" * 16,
             install,
             lab.identity(install, directory=True),
+            registration_id="guid",
         )
         monkeypatch.setattr(lease, "cleanup", lambda: None)
         captured["lease"] = lease

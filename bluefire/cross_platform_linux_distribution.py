@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import re
 import secrets
-import stat
 import subprocess  # nosec B404 - only fixed WSL management commands are used
 import tempfile
 import time
@@ -17,6 +16,7 @@ from .cross_platform_readiness import (
     WSL_DISTRIBUTION_ID,
     probe_wsl_distribution,
 )
+from .lab_ownership import identity, registration, remove_empty_storage
 from .runtime_paths import runtime_temp_parent
 
 EXECUTION_DISTRIBUTION_PREFIX = "BlueFire-Gate11-Run-"
@@ -194,16 +194,7 @@ def _stream_clone(
 
 
 def _root_identity(path: Path) -> tuple[int, int]:
-    details = path.lstat()
-    reparse = bool(
-        int(getattr(details, "st_file_attributes", 0))
-        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-    )
-    _require(
-        stat.S_ISDIR(details.st_mode) and not stat.S_ISLNK(details.st_mode) and not reparse,
-        "the disposable WSL2 storage root is unsafe",
-    )
-    return int(details.st_dev), int(details.st_ino)
+    return identity(path, directory=True)
 
 
 def _management_detail(*streams: Any) -> str:
@@ -225,21 +216,7 @@ def _management_detail(*streams: Any) -> str:
 
 
 def _remove_empty_storage(path: Path, identity: tuple[int, int]) -> bool:
-    try:
-        if not path.exists():
-            return True
-        details = path.lstat()
-        if (
-            (int(details.st_dev), int(details.st_ino)) != identity
-            or not stat.S_ISDIR(details.st_mode)
-            or path.is_symlink()
-            or any(path.iterdir())
-        ):
-            return False
-        path.rmdir()
-        return not path.exists()
-    except OSError:
-        return False
+    return remove_empty_storage(path, identity)
 
 
 def probe_distribution_absence(distribution_name: str) -> list[Mapping[str, Any]]:
@@ -253,7 +230,7 @@ def probe_distribution_absence(distribution_name: str) -> list[Mapping[str, Any]
     for delay_ms in ABSENCE_DELAYS_MS:
         if delay_ms:
             time.sleep(delay_ms / 1000)
-        facts = probe_wsl_distribution(distribution_name)
+        facts = probe_wsl_distribution(distribution_name, require_cli=True)
         absent = (
             facts.get("probe_state") == "absent"
             and facts.get("configured") is False
@@ -273,6 +250,26 @@ class DisposableWslDistribution:
     install_identity: tuple[int, int]
     may_be_registered: bool = False
     cleaned: bool = False
+    registration_id: str | None = None
+
+    def _verify_registration(self) -> None:
+        _require(
+            self.registration_id is not None
+            and registration(self.distribution_name) == (self.registration_id, self.install_root)
+            and _root_identity(self.install_root) == self.install_identity,
+            "the disposable WSL2 registration or storage identity changed",
+        )
+
+    def _bind_registration(self) -> None:
+        current = registration(self.distribution_name)
+        _require(
+            current is not None
+            and current[1] == self.install_root
+            and _root_identity(self.install_root) == self.install_identity,
+            "the disposable WSL2 registration cannot be bound to its owned storage",
+        )
+        assert current is not None
+        self.registration_id = current[0]
 
     def command(self, *arguments: str) -> list[str]:
         _require(not self.cleaned, "the disposable WSL2 distribution was already removed")
@@ -292,8 +289,17 @@ class DisposableWslDistribution:
 
     def cleanup(self) -> Mapping[str, Any]:
         _require(not self.cleaned, "the disposable WSL2 distribution cleanup was repeated")
-        facts = probe_wsl_distribution(self.distribution_name)
-        if facts.get("probe_state") != "absent":
+        _require(
+            _root_identity(self.install_root) == self.install_identity,
+            "the disposable WSL2 storage identity changed before cleanup",
+        )
+        facts = probe_wsl_distribution(self.distribution_name, require_cli=True)
+        _require(
+            facts.get("probe_state") in {"ready", "absent"},
+            "the disposable WSL2 cleanup ownership probe is indeterminate",
+        )
+        if facts.get("probe_state") == "ready":
+            self._verify_registration()
             terminated = _bounded_result(
                 self.executable,
                 ["--terminate", self.distribution_name],
@@ -306,6 +312,7 @@ class DisposableWslDistribution:
                 terminated.returncode in {0, 1},
                 "the disposable WSL2 distribution could not be terminated",
             )
+            self._verify_registration()
             unregistered = _bounded_result(
                 self.executable,
                 ["--unregister", self.distribution_name],
@@ -334,7 +341,7 @@ class DisposableWslDistribution:
         }
 
 
-def _distribution_storage_parent() -> Path:
+def _distribution_storage_parent(*, create: bool = True) -> Path:
     """Owner-private storage for a disposable distribution, never the temp directory.
 
     WSL refuses to import a distribution under the user's Temp directory - it answers
@@ -354,8 +361,9 @@ def _distribution_storage_parent() -> Path:
         if os.name == "nt"
         else root / "bluefire-wsl-distributions"
     )
-    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    return parent
+    if create:
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return parent.resolve()
 
 
 def create_disposable_wsl_distribution(
@@ -378,7 +386,7 @@ def create_disposable_wsl_distribution(
     token = secrets.token_hex(8)
     distribution_name = EXECUTION_DISTRIBUTION_PREFIX + token
     _require(
-        probe_wsl_distribution(distribution_name).get("probe_state") == "absent",
+        probe_wsl_distribution(distribution_name, require_cli=True).get("probe_state") == "absent",
         "the disposable WSL2 distribution name is already registered",
     )
     install_root = _distribution_storage_parent() / f"wsl-distribution-{token}"
@@ -406,17 +414,20 @@ def create_disposable_wsl_distribution(
             and facts.get("version") == "2",
             "the cloned Gate 11 execution distribution is not WSL2",
         )
+        lease._bind_registration()
         return lease
     except BaseException as primary:
         try:
+            if lease.registration_id is None and registration(distribution_name) is not None:
+                # A partial import may have registered before its client failed.
+                # Its exact base path and file identity must establish ownership
+                # before any termination or unregister can be attempted.
+                lease._bind_registration()
             lease.cleanup()
         except BaseException as cleanup_error:
-            # The store no longer sits inside the caller's runtime directory, so nothing
-            # else will sweep it. A clone that failed before writing anything leaves an
-            # empty directory; remove it here, under the same identity check, rather than
-            # leaving it beside Temp. Anything non-empty is left for the original error to
-            # be reported against.
-            _remove_empty_storage(install_root, lease.install_identity)
+            # Retain even an empty owned directory when registration absence or
+            # cleanup ownership is unknown. Removing it would erase the storage
+            # binding needed to diagnose and retry the failed cleanup safely.
             raise DisposableWslDistributionError(
                 "the failed disposable WSL2 clone could not be cleaned"
             ) from cleanup_error

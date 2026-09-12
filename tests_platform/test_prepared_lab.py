@@ -290,6 +290,7 @@ def test_preparation_canonicalizes_state_and_never_cleans_unbound_registration(
             "BlueFire-Gate11-Run-" + token,
             install,
             lab.identity(install, directory=True),
+            registration_id="guid",
         )
         monkeypatch.setattr(lease, "cleanup", lambda: cleaned.append(True))
         captured["lease"] = lease

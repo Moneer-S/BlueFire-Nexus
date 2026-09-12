@@ -28,13 +28,24 @@ from typing import Any, BinaryIO, Iterator, Mapping, cast
 
 from .cross_platform_linux_distribution import (
     DisposableWslDistribution,
+    _distribution_storage_parent,
     create_disposable_wsl_distribution,
 )
 from .cross_platform_readiness import _trusted_wsl_executable
+from .lab_ownership import (
+    descriptor_identity,
+    identity_format,
+)
+from .lab_ownership import (
+    identity as identity,
+)
+from .lab_ownership import (
+    registration as registration,
+)
 
-SCHEMA = "bluefire.prepared-linux-lab.v1"
+SCHEMA = "bluefire.prepared-linux-lab.v2"
+LEGACY_SCHEMA = "bluefire.prepared-linux-lab.v1"
 NAME = re.compile(r"^BlueFire-Gate11-Run-([0-9a-f]{16})$")
-REGISTRY = r"Software\Microsoft\Windows\CurrentVersion\Lxss"
 GUEST_PYTHON = "/opt/bluefire-lab/venv/bin/python"
 CLEAN_ENV = [
     "/usr/bin/env",
@@ -47,46 +58,6 @@ CLEAN_ENV = [
     "PYTHONNOUSERSITE=1",
     "PYTHONUNBUFFERED=1",
 ]
-
-
-def identity(path: Path, *, directory: bool) -> tuple[int, int]:
-    details = path.lstat()
-    reparse = int(getattr(details, "st_file_attributes", 0)) & getattr(
-        stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400
-    )
-    good_type = (
-        stat.S_ISDIR(details.st_mode)
-        if directory
-        else stat.S_ISREG(details.st_mode) and details.st_nlink == 1
-    )
-    if not good_type or path.is_symlink() or reparse:
-        raise ValueError("lab state must use ordinary, unlinked files and directories")
-    return int(details.st_dev), int(details.st_ino)
-
-
-def registration(name: str) -> tuple[str, Path] | None:
-    if sys.platform != "win32":
-        raise ValueError("WSL registration requires Windows")
-    import winreg
-
-    matches = []
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REGISTRY, 0, winreg.KEY_READ) as root:
-        count = winreg.QueryInfoKey(root)[0]
-        if not 0 <= count <= 256:
-            raise ValueError("WSL registration inventory exceeds its bound")
-        for index in range(count):
-            key = winreg.EnumKey(root, index)
-            with winreg.OpenKey(root, key, 0, winreg.KEY_READ) as entry:
-                if winreg.QueryValueEx(entry, "DistributionName")[0] != name:
-                    continue
-                version = winreg.QueryValueEx(entry, "Version")[0]
-                base = winreg.QueryValueEx(entry, "BasePath")[0]
-                if version != 2 or not isinstance(base, str):
-                    raise ValueError("owned distribution registration is not WSL2")
-                matches.append((key, Path(base).resolve(strict=True)))
-    if len(matches) > 1:
-        raise ValueError("owned distribution name is ambiguous")
-    return matches[0] if matches else None
 
 
 def verify(lease: DisposableWslDistribution, document: Mapping[str, Any]) -> None:
@@ -148,8 +119,7 @@ def _wheel_snapshot(source: BinaryIO) -> tuple[int, int, int, int, int]:
     ):
         raise ValueError("wheel inputs require bounded ordinary, unlinked files")
     return (
-        details.st_dev,
-        details.st_ino,
+        *descriptor_identity(source.fileno()),
         details.st_size,
         details.st_mtime_ns,
         details.st_ctime_ns,
@@ -352,7 +322,10 @@ def _prepare_locked(state: Path, paths: list[WheelInput], executable: Path) -> N
     record: dict[str, Any] | None = None
     try:
         current = registration(lease.distribution_name)
-        if current is None or current[1] != lease.install_root.resolve(strict=True):
+        if current is None or current != (
+            lease.registration_id,
+            lease.install_root.resolve(strict=True),
+        ):
             raise ValueError("the newly cloned distribution storage does not match its lease")
         record = {
             "schema_version": SCHEMA,
@@ -361,6 +334,8 @@ def _prepare_locked(state: Path, paths: list[WheelInput], executable: Path) -> N
             "install_identity": lease.install_identity,
             "lock_identity": identity(state / "management.lock", directory=False),
             "registration_id": current[0],
+            "install_root": str(lease.install_root),
+            "identity_format": identity_format(),
         }
         with (state / "lease.json").open("x", encoding="utf-8") as handle:
             json.dump(record, handle, indent=2)
@@ -399,6 +374,60 @@ def _prepare_locked(state: Path, paths: list[WheelInput], executable: Path) -> N
         raise
 
 
+def _lease_storage(document: Any, state: Path) -> tuple[re.Match[str], Path]:
+    fields = {
+        "schema_version",
+        "distribution_name",
+        "state_identity",
+        "install_identity",
+        "lock_identity",
+        "registration_id",
+    }
+    if not isinstance(document, dict):
+        raise ValueError("invalid prepared lab lease")
+    legacy = document.get("schema_version") == LEGACY_SCHEMA
+    if not legacy:
+        fields |= {"install_root", "identity_format"}
+    if (
+        set(document) != fields
+        or document.get("schema_version") not in {LEGACY_SCHEMA, SCHEMA}
+        or (not legacy and document.get("identity_format") != identity_format())
+        or not isinstance(document.get("registration_id"), str)
+        or not 1 <= len(document["registration_id"]) <= 128
+    ):
+        raise ValueError("invalid prepared lab lease")
+    for key in ("state_identity", "install_identity", "lock_identity"):
+        value = document[key]
+        if (
+            not isinstance(value, list)
+            or len(value) != 2
+            or any(type(item) is not int or not 0 <= item < 2**128 for item in value)
+        ):
+            raise ValueError("invalid prepared lab identity")
+    match = NAME.fullmatch(str(document["distribution_name"]))
+    if match is None:
+        raise ValueError("the lease does not name an owned disposable distribution")
+    current = registration(match[0])
+    if current is None or current[0] != document["registration_id"]:
+        raise ValueError("owned distribution registration identity changed")
+    # V1 saved no path. Recover it only from the original registration GUID,
+    # a manager-defined location and the complete saved file identity. A legacy
+    # low-32-bit volume value must never be accepted as a full identity match.
+    install_root = current[1]
+    name = f"wsl-distribution-{match[1]}"
+    allowed = {_distribution_storage_parent(create=False) / name}
+    if legacy:
+        allowed.add(state / name)
+    if (
+        install_root not in allowed
+        or install_root != install_root.resolve(strict=True)
+        or (not legacy and document.get("install_root") != str(install_root))
+        or identity(install_root, directory=True) != tuple(document["install_identity"])
+    ):
+        raise ValueError("owned distribution storage identity changed")
+    return match, install_root
+
+
 @contextmanager
 def owned(state: Path) -> Iterator[tuple[DisposableWslDistribution, Mapping[str, Any]]]:
     state = state.resolve(strict=True)
@@ -407,36 +436,17 @@ def owned(state: Path) -> Iterator[tuple[DisposableWslDistribution, Mapping[str,
     original_lock = identity(lock_path, directory=False)
     lease_path = state / "lease.json"
     with lock_path.open("r+b") as lock_handle, management_lock(lock_handle):
-        if (
-            os.fstat(lock_handle.fileno()).st_dev,
-            os.fstat(lock_handle.fileno()).st_ino,
-        ) != original_lock:
+        if descriptor_identity(lock_handle.fileno()) != original_lock:
             raise ValueError("lab management lock changed during open")
         original = identity(lease_path, directory=False)
         with lease_path.open("rb") as handle:
-            if (os.fstat(handle.fileno()).st_dev, os.fstat(handle.fileno()).st_ino) != original:
+            if descriptor_identity(handle.fileno()) != original:
                 raise ValueError("lab lease identity changed during open")
             raw = handle.read(16385)
             if len(raw) > 16384:
                 raise ValueError("lab lease exceeds its size bound")
             document = json.loads(raw)
-            if (
-                not isinstance(document, dict)
-                or set(document)
-                != {
-                    "schema_version",
-                    "distribution_name",
-                    "state_identity",
-                    "install_identity",
-                    "lock_identity",
-                    "registration_id",
-                }
-                or document.get("schema_version") != SCHEMA
-            ):
-                raise ValueError("invalid prepared lab lease")
-            match = NAME.fullmatch(str(document["distribution_name"]))
-            if match is None:
-                raise ValueError("the lease does not name an owned disposable distribution")
+            match, install_root = _lease_storage(document, state)
             executable = _trusted_wsl_executable()
             if executable is None:
                 raise ValueError("prepared WSL labs require Windows")
@@ -444,9 +454,10 @@ def owned(state: Path) -> Iterator[tuple[DisposableWslDistribution, Mapping[str,
                 executable,
                 state,
                 match[0],
-                state / f"wsl-distribution-{match[1]}",
+                install_root,
                 tuple(document["install_identity"]),
                 may_be_registered=True,
+                registration_id=document["registration_id"],
             )
             verify(lease, document)
             yield lease, document

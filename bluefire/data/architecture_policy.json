@@ -164,6 +164,7 @@
         "bluefire.collector_gate_validation",
         "bluefire.collector_journey",
         "bluefire.prepared_lab",
+        "bluefire.lab_ownership",
         "bluefire.prepared_lab_guest",
         "bluefire.prepared_lab_install",
         "bluefire.prepared_lab_relay",

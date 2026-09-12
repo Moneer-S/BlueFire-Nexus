@@ -323,7 +323,7 @@ def probe_wsl2() -> Mapping[str, Any]:
     return probe_wsl_distribution(WSL_DISTRIBUTION_ID)
 
 
-def probe_wsl_distribution(distribution_id: str) -> Mapping[str, Any]:
+def probe_wsl_distribution(distribution_id: str, *, require_cli: bool = False) -> Mapping[str, Any]:
     """Reconcile registry and CLI facts for one exact bounded distribution name."""
 
     if _WSL_DISTRIBUTION_NAME.fullmatch(distribution_id) is None:
@@ -342,7 +342,7 @@ def probe_wsl_distribution(distribution_id: str) -> Mapping[str, Any]:
     if not executable.is_file():
         return (
             registry
-            if registry.get("probe_state") == "absent"
+            if not require_cli and registry.get("probe_state") == "absent"
             else _wsl_facts("indeterminate", None, None, distribution_id=distribution_id)
         )
     try:
@@ -367,7 +367,7 @@ def probe_wsl_distribution(distribution_id: str) -> Mapping[str, Any]:
     if completed.returncode != 0 or error != b"":
         return (
             registry
-            if registry.get("probe_state") in {"absent", "incompatible"}
+            if not require_cli and registry.get("probe_state") in {"absent", "incompatible"}
             else _wsl_facts("indeterminate", None, None, distribution_id=distribution_id)
         )
     listed = _parse_wsl_list_output(raw, distribution_id=distribution_id)
