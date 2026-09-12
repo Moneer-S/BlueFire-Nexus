@@ -2,16 +2,16 @@ import { expect, it } from "vitest";
 import { providerChoiceLabel, providerLabel } from "../src/lib/provider-presentation";
 
 it.each([
-  [{ provider_id: "deterministic-offline.v1", kind: "deterministic", model: "deterministic-planner.v1" }, "Offline deterministic planner"],
-  [{ id: "openai-responses.v1", kind: "openai_responses", model: "configured-model" }, "Responses API · configured-model"],
-  [{ config: { id: "custom.lab.v1", kind: "chat_completions", model: "lab-model" } }, "Chat Completions API · lab-model"],
-  [{ id: "openai-responses.v1", kind: "chat_completions", model: "other-model" }, "Chat Completions API · other-model"],
-  [{ id: "unfamiliar.v1" }, "Model connection"],
-  [{ config: [], kind: "unrecognized", model: "known-model" }, "Model connection · known-model"],
-  [{ kind: "__proto__", model: "" }, "Model connection"],
-  [{ kind: "constructor", model: "" }, "Model connection"],
-  [{ id: { toString: null, valueOf: null } }, "Model connection"],
-])("derives a readable label without changing source metadata", (source, expected) => {
+  ["deterministic provider", { provider_id: "deterministic-offline.v1", kind: "deterministic", model: "deterministic-planner.v1" }, "Offline deterministic planner"],
+  ["Responses provider", { id: "openai-responses.v1", kind: "openai_responses", model: "configured-model" }, "Responses API · configured-model"],
+  ["nested Chat Completions configuration", { config: { id: "custom.lab.v1", kind: "chat_completions", model: "lab-model" } }, "Chat Completions API · lab-model"],
+  ["configured kind overrides familiar ID", { id: "openai-responses.v1", kind: "chat_completions", model: "other-model" }, "Chat Completions API · other-model"],
+  ["unknown provider ID", { id: "unfamiliar.v1" }, "Model connection"],
+  ["malformed nested configuration", { config: [], kind: "unrecognized", model: "known-model" }, "Model connection · known-model"],
+  ["prototype kind", { kind: "__proto__", model: "" }, "Model connection"],
+  ["constructor kind", { kind: "constructor", model: "" }, "Model connection"],
+  ["non-string provider ID", { id: { toString: null, valueOf: null } }, "Model connection"],
+])("derives a readable label without changing source metadata: %s", (_case, source, expected) => {
   const original = structuredClone(source);
   expect(providerLabel(source)).toBe(expected);
   expect(source).toEqual(original);

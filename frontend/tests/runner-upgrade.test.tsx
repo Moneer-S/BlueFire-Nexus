@@ -182,13 +182,13 @@ it("offers exact reviewed recovery only when the service verifies an absent proc
   await waitFor(() => expect(apply).toHaveBeenCalledExactlyOnceWith(profile, true, upgradeDigest));
 });
 
-it.each([
-  { ...stopped, state: "ready", process: "authenticated" },
-  { ...stopped, state: "stale", process: "stale" },
-  { ...stopped, profile_id: "another-execute.v1" },
-  { ...stopped, state: "unavailable" },
-  { ...stopped, state: "unavailable", upgrade_recovery_required: true as const, process: "unavailable" },
-])("cannot request upgrade for a running, stale or different profile", status => {
+it.each<[string, RunnerLifecycleStatus]>([
+  ["authenticated running process", { ...stopped, state: "ready", process: "authenticated" }],
+  ["stale process", { ...stopped, state: "stale", process: "stale" }],
+  ["different profile", { ...stopped, profile_id: "another-execute.v1" }],
+  ["unavailable state", { ...stopped, state: "unavailable" }],
+  ["pending recovery with unavailable process", { ...stopped, state: "unavailable", upgrade_recovery_required: true as const, process: "unavailable" }],
+])("cannot request upgrade for a running, stale or different profile: %s", (_case, status) => {
   const review = vi.spyOn(api, "reviewRunnerUpgrade"); mount(status);
   expect(screen.queryByRole("button", { name: "Review runner upgrade" })).not.toBeInTheDocument();
   expect(review).not.toHaveBeenCalled();

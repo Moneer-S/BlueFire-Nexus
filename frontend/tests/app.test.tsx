@@ -1688,7 +1688,7 @@ describe("product application", () => {
     expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).endsWith("/ai/drafts"))).toBe(false);
   });
 
-  it.each(["/runs", "/ai-planner?view=audit"])("reloads the exact continuation plan before enabling approval on %s", async (path) => {
+  it.each([["run workspace", "/runs"], ["proposal audit", "/ai-planner?view=audit"]])("reloads the exact continuation plan before enabling approval in %s", async (_case, path) => {
     const accepted = acceptedProposalFixture();
     currentProposal = accepted.proposal;
     currentProposalJob = accepted.job;
@@ -1715,10 +1715,10 @@ describe("product application", () => {
   });
 
   it.each([
-    ["/runs", "missing"], ["/ai-planner?view=audit", "missing"],
-    ["/runs", "mismatch"], ["/ai-planner?view=audit", "mismatch"],
-    ["/runs", "consumed"], ["/ai-planner?view=audit", "consumed"],
-  ])("refuses a %s continuation with %s canonical authority", async (path, change) => {
+    ["run workspace missing review", "/runs", "missing"], ["proposal audit missing review", "/ai-planner?view=audit", "missing"],
+    ["run workspace mismatched binding", "/runs", "mismatch"], ["proposal audit mismatched binding", "/ai-planner?view=audit", "mismatch"],
+    ["run workspace consumed approval", "/runs", "consumed"], ["proposal audit consumed approval", "/ai-planner?view=audit", "consumed"],
+  ])("refuses invalid continuation authority: %s", async (_case, path, change) => {
     const accepted = acceptedProposalFixture();
     if (change === "missing") delete accepted.proposal.execute_approval_review;
     else if (change === "mismatch") accepted.proposal.execute_approval_review!.preflight.approval_binding!.state_digest = "a-different-state";

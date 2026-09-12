@@ -74,6 +74,12 @@ it("edits and reloads a retained proposal without replacing the active graph", a
   const mocks = mockReady();
   const first = mount();
   const input = await screen.findByRole("textbox", { name: "Review name" });
+  await userEvent.click(screen.getByRole("button", { name: "Plan, assumptions, and your changes" }));
+  expect(screen.getByRole("dialog", { name: "Review plan and changes" })).toBeVisible();
+  expect(screen.getByText("A bounded observation graph")).toBeVisible();
+  await userEvent.click(screen.getByText("Technical record", { selector: "summary" }));
+  expect(screen.getByText("Provider: chosen-provider · No fallback")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Close plan review" }));
   await userEvent.type(input, " edited");
   expect(input).toHaveValue("Proposed experiment edited");
   expect(screen.getByLabelText("Active name")).toHaveTextContent("Current manual experiment");

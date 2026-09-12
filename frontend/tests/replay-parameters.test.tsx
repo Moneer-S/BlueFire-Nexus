@@ -202,7 +202,11 @@ describe("typed replay parameter changes", () => {
     expect(overrides()).toEqual({ collect: { record_count: 3 } });
   });
 
-  it.each<ReplayParameterOverrides>([{ collect: { record_count: null } }, { collect: { unknown_parameter: 1 } }, { absent_step: { count: 1 } }])("exposes invalid supplied overrides without silently dropping them", (initial) => {
+  it.each<[string, ReplayParameterOverrides]>([
+    ["null parameter value", { collect: { record_count: null } }],
+    ["unknown parameter", { collect: { unknown_parameter: 1 } }],
+    ["unknown step", { absent_step: { count: 1 } }],
+  ])("exposes invalid supplied overrides without silently dropping them: %s", (_case, initial) => {
     render(<Harness initial={initial} />);
     expect(prepare()).toBeDisabled();
     expect(overrides()).toEqual(initial);

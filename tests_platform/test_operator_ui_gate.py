@@ -471,6 +471,10 @@ def test_vitest_inventory_is_canonical_and_rejects_escaped_paths(tmp_path: Path)
     escaped["testResults"][0]["name"] = str(outside)
     with pytest.raises(ValueError, match="escaped"):
         operator_ui_gate._vitest_ids(escaped, frontend)
+    duplicated = copy.deepcopy(report)
+    duplicated["testResults"][0]["assertionResults"] *= 2
+    with pytest.raises(ValueError, match="duplicated"):
+        operator_ui_gate._vitest_ids(duplicated, frontend)
 
 
 def test_frontend_suite_is_bound_to_exact_passed_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -489,8 +493,21 @@ def test_frontend_suite_is_bound_to_exact_passed_inventory(monkeypatch: pytest.M
     }
 
     assert operator_ui_gate._frontend_suite_is_exact(report) is True
-    report["passed_tests"] = tests[:-1]
-    assert operator_ui_gate._frontend_suite_is_exact(report) is False
+    invalid_changes = [
+        {"passed_tests": tests[:-1]},
+        {"passed_tests": [tests[0], tests[0]]},
+        {"passed_tests": [tests[0], "src/c.test.ts::C::replacement"]},
+        {"passed_tests": list(reversed(tests))},
+        {"tests": len(tests) + 1},
+        {"failed_tests": [tests[0]]},
+        {"skipped_tests": [tests[0]]},
+        {"passed": False},
+        {"exit_codes": {"typecheck": 1, "lint": 0, "unit": 0}},
+        {"exit_codes": {"typecheck": 0, "lint": 1, "unit": 0}},
+        {"exit_codes": {"typecheck": 0, "lint": 0, "unit": 1}},
+    ]
+    for change in invalid_changes:
+        assert operator_ui_gate._frontend_suite_is_exact({**report, **change}) is False
 
 
 def test_contract_suite_is_bound_to_exact_passed_inventory(monkeypatch: pytest.MonkeyPatch) -> None:

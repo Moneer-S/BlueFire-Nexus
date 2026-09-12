@@ -95,10 +95,10 @@ it.each(["simulate", "execute"] as const)("the Getting Started %s link selects s
 });
 
 it.each([
-  ["/runs?setup=simulate", "simulate", "execute"],
-  ["/runs?setup=execute#guided-execute", "execute", "simulate"],
-  ["/runs#guided-execute", "execute", "simulate"],
-] as const)("opens a fresh tab directly at %s without execution calls", async (path, mode, initialMode) => {
+  ["Simulate setup", "/runs?setup=simulate", "simulate", "execute"],
+  ["Execute setup", "/runs?setup=execute#guided-execute", "execute", "simulate"],
+  ["legacy guided Execute setup", "/runs#guided-execute", "execute", "simulate"],
+] as const)("opens a fresh tab directly at %s without execution calls", async (_case, path, mode, initialMode) => {
   const { config, nonReads } = mount(path, initialMode);
   await waitFor(() => expect(screen.getByRole("radio", { name: new RegExp(`^${mode}`, "i") })).toBeChecked());
   expect(config()).toMatchObject({ mode, scopeRefs: ["operator.selected.scope"], provider: "operator-provider", model: "operator-model", autonomy: "assist" });
@@ -301,7 +301,7 @@ it("opens history first and reopens the same new-review link without changing Ex
 });
 
 
-it.each(["/runs?prepare=1", "/runs?setup=simulate"])("leads %s with the requested setup before a populated history, and keeps history reachable", async (path) => {
+it.each([["new run", "/runs?prepare=1"], ["Simulate", "/runs?setup=simulate"]])("leads %s with the requested setup before a populated history, and keeps history reachable", async (_case, path) => {
   const { user, client, config, nonReads } = mount(path, "simulate");
   await screen.findByRole("heading", { name: "Run history" });
   const history = Array.from({ length: 11 }, (_, index) => ({ ...demoRuns[0]!, run_id: `run-history-${index}` }));

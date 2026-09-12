@@ -87,7 +87,14 @@ describe("explicit adaptive method authoring", () => {
     expect(saved.adaptive_execution).toEqual(policy);
   });
 
-  it.each([null, { ...policy, max_retries: 2 }, { ...policy, on_provider_failure: ["stop"] }, { ...policy, command: "not permitted" }, { ...policy, steps: [{ step_id: "stage", methods: [methods[0]] }] }, { ...policy, eligible_outcomes: ["success"] }])("rejects malformed or expanded authority on restoration", value => {
+  it.each([
+    ["missing policy", null],
+    ["expanded retry limit", { ...policy, max_retries: 2 }],
+    ["malformed provider failure policy", { ...policy, on_provider_failure: ["stop"] }],
+    ["unregistered command", { ...policy, command: "not permitted" }],
+    ["single-method alternative set", { ...policy, steps: [{ step_id: "stage", methods: [methods[0]] }] }],
+    ["success as a retry outcome", { ...policy, eligible_outcomes: ["success"] }],
+  ])("rejects malformed or expanded authority on restoration: %s", (_case, value) => {
     expect(() => parseAdaptiveExecution(value)).toThrow();
     expect(() => parseScenarioDocument({ ...scenario, adaptive_execution: value })).toThrow();
     expect(parseScenarioDocument(scenario)).not.toHaveProperty("adaptive_execution");

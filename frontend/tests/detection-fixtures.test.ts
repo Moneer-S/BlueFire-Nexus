@@ -10,13 +10,13 @@ it.each(["sqlite", "sigma", "yara", "spl"])("does not infer positive fixtures fr
   expect(syntheticSelectionExample(language, { artifact_type: "collector_observation" })).toBe("");
 });
 
-it.each([
-  { path: "one", "path|endswith": "two" },
-  { "nested.field": "value" },
-  { "path|regex": "staged/.+" },
-  { "path|contains|all": "staged/" },
-  { path: ["one", "two"] },
-  JSON.parse('{"__proto__":"untrusted"}') as Record<string, unknown>,
-])("leaves ambiguous or unsupported selections for explicit fixture input", (selection) => {
+it.each<[string, Record<string, unknown>]>([
+  ["conflicting path predicates", { path: "one", "path|endswith": "two" }],
+  ["nested field", { "nested.field": "value" }],
+  ["regular expression", { "path|regex": "staged/.+" }],
+  ["combined modifiers", { "path|contains|all": "staged/" }],
+  ["multiple path values", { path: ["one", "two"] }],
+  ["prototype property", JSON.parse('{"__proto__":"untrusted"}') as Record<string, unknown>],
+])("leaves ambiguous or unsupported selections for explicit fixture input: %s", (_case, selection) => {
   expect(syntheticSelectionExample("internal", selection)).toBe("");
 });
