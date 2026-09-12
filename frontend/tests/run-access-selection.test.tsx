@@ -30,3 +30,20 @@ it("shows configured access without granting it when an environment profile chan
   await user.click(screen.getByText("Environment and scope references"));
   expect(screen.getByLabelText(/^Target scope/)).toHaveValue("sandbox.workspace, network.loopback");
 });
+
+it("chooses a readable provider name while preserving its exact configuration identity", async () => {
+  const catalog = structuredClone(demoCatalog);
+  catalog.ai.providers!.push({ provider_id: "exact.connection.v1", kind: "openai_responses", model: "reviewed-model" });
+  function Setup() {
+    const { scenario, runConfig, setRunConfig } = useProduct();
+    return <><RunConfigurationPanel scenario={scenario} config={runConfig} onChange={setRunConfig} catalog={catalog}/><output aria-label="Requested configuration">{JSON.stringify(runConfig)}</output></>;
+  }
+  render(<MemoryRouter><ProductProvider><Setup/></ProductProvider></MemoryRouter>);
+  const user = userEvent.setup();
+  await user.click(screen.getByText("AI provider & environment details"));
+  const option = screen.getByRole("option", { name: "Responses API · reviewed-model" });
+  expect(option).toHaveValue("exact.connection.v1");
+  await user.selectOptions(screen.getByLabelText("Provider"), option);
+  expect(JSON.parse(screen.getByLabelText("Requested configuration").textContent!)).toMatchObject({ provider: "exact.connection.v1", model: "reviewed-model", endpoint: "", autonomy: "off" });
+  expect(screen.getByText("exact.connection.v1", { selector: "code" })).toBeVisible();
+});

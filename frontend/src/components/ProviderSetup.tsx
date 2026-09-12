@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { hasRequiredDataPolicy, matchingAuthorization, providerErrors, publicProvider, requiredRedactionKeys } from "../lib/provider-authorization";
 import { sameJson } from "../lib/replay-review";
+import { providerLabel } from "../lib/provider-presentation";
 import type { AIProviderCheck } from "../types";
 import { ProviderAuthorizationReview } from "./ProviderAuthorizationReview";
 import { Badge, Button, Callout, DataList, ErrorState, Field, Panel, PanelHeader, sentence } from "./Primitives";
@@ -45,9 +46,9 @@ export function ProviderSetup() {
     client.invalidateQueries({ queryKey: ["ai-authorizations"] });
   };
   const reportFailure = (error: unknown, fallback: string) => { setNoticeFailure(true); setNotice(error instanceof Error ? error.message : fallback); };
-  const save = useMutation({ mutationFn: () => api.saveResource("model-providers", form.id, { ...document }, "draft"), onSuccess: () => { setNoticeFailure(false); setNotice(`${form.id} saved. Activation and model usage authorization remain separate.`); refresh(); }, onError: error => reportFailure(error, "Provider save failed.") });
+  const save = useMutation({ mutationFn: () => api.saveResource("model-providers", form.id, { ...document }, "draft"), onSuccess: () => { setNoticeFailure(false); setNotice(`${providerLabel(document)} saved. Activation and model usage authorization remain separate.`); refresh(); }, onError: error => reportFailure(error, "Provider save failed.") });
   const probe = useMutation({ mutationFn: (connect: boolean) => api.checkAIProvider(document, connect), onSuccess: result => { setCheck(result); setCheckedBinding(reviewBinding); }, onError: error => reportFailure(error, "Provider check failed."), onSettled: refresh });
-  const lifecycle = useMutation({ mutationFn: ({ id, active }: { id: string; active: boolean }) => active ? api.deactivateResource("model-providers", id) : api.activateResource("model-providers", id), onSuccess: ({ resource }) => { setNoticeFailure(false); setNotice(`${resource.id} is ${resource.status}.`); refresh(); }, onError: error => reportFailure(error, "Provider activation failed.") });
+  const lifecycle = useMutation({ mutationFn: ({ id, active }: { id: string; active: boolean }) => active ? api.deactivateResource("model-providers", id) : api.activateResource("model-providers", id), onSuccess: ({ resource }) => { setNoticeFailure(false); setNotice(`${providerLabel(resource.document)} is ${resource.status}.`); refresh(); }, onError: error => reportFailure(error, "Provider activation failed.") });
   const update = (values: Partial<typeof form>) => { setForm(current => ({ ...current, ...values })); setCheck(undefined); setNotice(""); setNoticeFailure(false); };
   const busy = save.isPending || probe.isPending || lifecycle.isPending || authorizationBusy;
   const errors = providerErrors(document);
@@ -75,7 +76,6 @@ export function ProviderSetup() {
       {authorizations.isPending ? <p role="status">Checking model authorization context…</p> : null}
       {authorizations.isError ? <ErrorState title="Model authorization context is unavailable" error={authorizations.error} retry={() => authorizations.refetch()}/> : null}
       {notice ? noticeFailure ? <Callout tone="warning" title="Provider setup needs attention">{notice}</Callout> : <p role="status">{notice}</p> : null}
-      <Field label="Provider ID"><input value={display.id} disabled={locked} onChange={event => update({ id: event.target.value })} placeholder="provider.local.v1" maxLength={200}/></Field>
       <Field label="API style"><select value={display.kind} disabled={locked} onChange={event => update({ kind: event.target.value as APIStyle, model: event.target.value === "deterministic" ? "deterministic-planner.v1" : "", endpoint: "", env: "" })}>{Object.entries(styles).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</select></Field>
       <Field label={display.kind === "deterministic" ? "Model label" : "Model ID"} hint="Use the exact model ID supported by your endpoint; no aliases or provider substitution are applied."><input value={display.model} disabled={locked} onChange={event => update({ model: event.target.value })} maxLength={200}/></Field>
       {display.kind !== "deterministic" ? <>
@@ -88,6 +88,7 @@ export function ProviderSetup() {
           <Field label="Transport retries"><input type="number" min={0} max={5} value={display.retries} disabled={locked} onChange={event => update({ retries: Number(event.target.value) })}/></Field>
         </details>
       </> : null}
+      <details><summary>Connection identity</summary><Field label="Provider ID" hint="A default identity is already supplied. This stable reference binds saved configuration and usage authorization; change it only when storing a separate connection."><input value={display.id} disabled={locked} onChange={event => update({ id: event.target.value })} maxLength={200}/></Field></details>
       {active && !broker ? <p>Deactivate this provider below before editing its saved configuration. Activation alone never grants permission for model requests.</p> : null}
       {!valid && (display.model || display.endpoint || display.env) ? <ul aria-label="Provider configuration corrections">{errors.map(error => <li key={error}>{error}</li>)}</ul> : null}
       {!broker && !hasRequiredDataPolicy(document) ? <p>The saved configuration permits broader data than this review allows. <Button disabled={locked} onClick={() => { setExtra(current => ({ ...current, redaction: { ...document.redaction, enabled: true, include_evidence_content: false, redact_keys: [...new Set([...requiredRedactionKeys, ...document.redaction.redact_keys])] } })); setCheck(undefined); }}>Use required data protection</Button></p> : null}
@@ -98,11 +99,11 @@ export function ProviderSetup() {
       </> : null}
       {check ? <Callout title={check.code === "probe_passed" ? "Live structured-output test passed" : check.code === "configuration_ready" ? "Configuration checked · connection untested" : sentence(check.code)} tone={check.code === "probe_passed" ? "success" : check.code === "configuration_ready" || check.code === "deterministic_no_network" ? "info" : "warning"}><p>{check.message}</p>{check.response_model ? <p>Endpoint-reported model: <code>{check.response_model}</code></p> : null}<DataList items={[{ label: "Credential reference", value: sentence(check.credential_state) }, { label: "Connection", value: sentence(check.connectivity) }, { label: "Structured output", value: sentence(check.structured_output) }, { label: "Requests sent", value: check.attempts }]}/></Callout> : null}
       {resources.isError ? <ErrorState error={resources.error} retry={() => resources.refetch()}/> : null}
-      {resources.data?.resources.map(resource => <article className="secret-row" key={resource.id}><div><strong>{String(resource.document.model ?? resource.id)}</strong><small>{resource.id} · {String(resource.document.kind ?? "Provider")}</small></div><div className="row-badges"><Badge>{sentence(resource.status)}</Badge><Button size="small" disabled={locked} onClick={() => {
+      {resources.data?.resources.map(resource => <article className="secret-row" key={resource.id}><div><strong>{providerLabel(resource.document)}</strong><details><summary>Connection identity</summary><code>{resource.id}</code></details></div><div className="row-badges"><Badge>{sentence(resource.status)}</Badge><Button size="small" aria-label={`Edit ${providerLabel(resource.document)}`} disabled={locked} onClick={() => {
         const source = (resource.document.config && typeof resource.document.config === "object" ? resource.document.config : resource.document) as Record<string, unknown>;
         const key = source.api_key as { env?: string } | null;
-        setExtra(source); setForm({ id: resource.id, kind: source.kind as APIStyle, model: String(source.model ?? ""), endpoint: String(source.endpoint ?? ""), env: key?.env ?? "", timeout: Number(source.timeout_seconds ?? 30), tokens: Number(source.max_output_tokens ?? 800), retries: Number(source.max_retries ?? 0) }); setCheck(undefined); setNoticeFailure(false); setNotice(`Editing ${resource.id}.`);
-      }}>Edit {resource.id}</Button><Button size="small" disabled={locked} onClick={() => lifecycle.mutate({ id: resource.id, active: resource.status === "active" })}>{resource.status === "active" ? "Deactivate" : "Activate"}</Button></div></article>)}
+        setExtra(source); setForm({ id: resource.id, kind: source.kind as APIStyle, model: String(source.model ?? ""), endpoint: String(source.endpoint ?? ""), env: key?.env ?? "", timeout: Number(source.timeout_seconds ?? 30), tokens: Number(source.max_output_tokens ?? 800), retries: Number(source.max_retries ?? 0) }); setCheck(undefined); setNoticeFailure(false); setNotice(`Editing ${providerLabel(source)}.`);
+      }}>Edit</Button><Button size="small" disabled={locked} onClick={() => lifecycle.mutate({ id: resource.id, active: resource.status === "active" })}>{resource.status === "active" ? "Deactivate" : "Activate"}</Button></div></article>)}
     </div>
   </Panel>;
 }

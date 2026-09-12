@@ -23,6 +23,7 @@ describe("explicit provider setup", () => {
     vi.mocked(api.aiAuthorizations).mockResolvedValue(snapshot([authorization()]));
     const user = userEvent.setup(); mount();
     await waitFor(() => expect(screen.getByLabelText("API style")).toBeEnabled());
+    expect(screen.getByLabelText("Provider ID", { exact: false })).not.toBeVisible();
     await user.selectOptions(screen.getByLabelText("API style"), "chat_completions");
     await user.type(screen.getByLabelText("Model ID", { exact: false }), "my-model");
     await user.type(screen.getByLabelText("Request endpoint", { exact: false }), "https://model.example/v1/chat/completions");
@@ -42,17 +43,36 @@ describe("explicit provider setup", () => {
   });
   it("edits saved endpoint and environment reference while preserving request/redaction settings", async () => {
     const doc = { id: "provider.local.v1", kind: "openai_responses", model: "custom-model", endpoint: "http://localhost:8080/custom/responses", api_key: { env: "MODEL_LOCAL_TOKEN" }, timeout_seconds: 17, max_retries: 1, max_output_tokens: 2048, redaction: { enabled: true, include_evidence_content: false, max_string_chars: 1500, redact_keys: ["api_key", "authorization", "cookie", "credential", "password", "secret", "token", "private_note"] } };
-    const resource = { kind: "model_provider", id: doc.id, status: "draft", document: doc, digest: "test-digest", created_at: "", updated_at: "" };
+    const resource = { kind: "model_provider", id: doc.id, status: "draft", document: { config: doc }, digest: "test-digest", created_at: "", updated_at: "" };
     vi.mocked(api.resources).mockResolvedValue({ schema_version: "bluefire.resource-list.v1", kind: "model_provider", resources: [resource] });
     vi.mocked(api.saveResource).mockResolvedValue({ schema_version: "bluefire.resource.v1", resource });
     const user = userEvent.setup(); mount();
-    await user.click(await screen.findByRole("button", { name: "Edit provider.local.v1" }));
+    expect(await screen.findByText("Responses API · custom-model")).toBeVisible();
+    expect(screen.getByText(doc.id)).not.toBeVisible();
+    await user.click(await screen.findByRole("button", { name: "Edit Responses API · custom-model" }));
+    await user.click(screen.getAllByText("Connection identity")[0]!);
+    expect(screen.getByLabelText("Provider ID", { exact: false })).toHaveValue(doc.id);
     expect(screen.getByLabelText("Request endpoint", { exact: false })).toHaveValue(doc.endpoint);
     expect(screen.getByLabelText("Secret environment reference", { exact: false })).toHaveValue("MODEL_LOCAL_TOKEN");
     await user.click(screen.getByRole("button", { name: "Save secret-free draft" }));
     await waitFor(() => expect(api.saveResource).toHaveBeenCalledWith("model-providers", doc.id, publicProvider(doc), "draft"));
     expect(api.checkAIProvider).not.toHaveBeenCalled();
     expect(api.authorizeAI).not.toHaveBeenCalled();
+  });
+  it("names wrapped built-in cards without displaying their IDs as primary labels", async () => {
+    const configs = [
+      { id: "deterministic-offline.v1", kind: "deterministic", model: "deterministic-planner.v1" },
+      { id: "openai-responses.v1", kind: "openai_responses", model: "configured-model" },
+    ];
+    vi.mocked(api.resources).mockResolvedValue({ schema_version: "bluefire.resource-list.v1", kind: "model_provider", resources: configs.map(config => ({ kind: "model_provider", id: config.id, status: "active", document: { config }, digest: "test-digest", created_at: "", updated_at: "" })) });
+    mount();
+    expect(await screen.findByText("Offline deterministic planner")).toBeVisible();
+    expect(screen.getByText("Responses API · configured-model")).toBeVisible();
+    for (const config of configs) expect(screen.getByText(config.id)).not.toBeVisible();
+    expect(api.saveResource).not.toHaveBeenCalled();
+    expect(api.activateResource).not.toHaveBeenCalled();
+    expect(api.authorizeAI).not.toHaveBeenCalled();
+    expect(api.checkAIProvider).not.toHaveBeenCalled();
   });
   it("keeps deterministic mode free of a live-test button", async () => {
     mount();

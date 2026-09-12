@@ -27,7 +27,7 @@ async function mount(config: PublicAIProviderConfig = provider, initial = snapsh
   const user = userEvent.setup();
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}><ProviderSetup/></QueryClientProvider>);
   await screen.findByRole("heading", { name: "Review model data and usage" });
-  if (initial.context.kind !== "broker") await user.click(await screen.findByRole("button", { name: `Edit ${config.id}` }));
+  if (initial.context.kind !== "broker") await user.click(await screen.findByRole("button", { name: /^Edit / }));
   return user;
 }
 async function review(user: ReturnType<typeof userEvent.setup>) {
