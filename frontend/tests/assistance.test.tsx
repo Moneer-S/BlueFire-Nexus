@@ -10,10 +10,13 @@ import { api } from "../src/lib/api";
 import { assistanceJobId, assistancePath, readAssistanceReceipt, readAssistanceRecovery, storeAssistanceReceipt, type AssistanceContext, type AssistanceEnvelope, type AssistanceRequest } from "../src/lib/assistance";
 import { AssistanceProvider, useAssistancePanel, usePublishGraphAssistanceSelection, usePublishAssistanceSelection, usePublishSavedGraphSelection, usePublishRunDetectionSelection, type AssistanceSelection } from "../src/state/AssistanceContext";
 import { ProductProvider } from "../src/state/ProductContext";
+import type { CatalogResponse } from "../src/types";
 
 const digest = `sha256:${"a".repeat(64)}`;
 const selection: AssistanceSelection = { runId: "run-observed", candidateId: "saved-rule", resourceDigest: digest, title: "Collection retention", manualEdits: false };
 const provider = { provider_id: "chosen-provider", kind: "openai_chat_completions", model: "chosen-model" };
+type AssistantProvider = NonNullable<CatalogResponse["ai"]["providers"]>[number];
+const unavailableProvider: AssistantProvider = { ...provider, health: { state: "degraded", credential_available: false, message: "The credential reference is unavailable." } };
 const source = { run_id: selection.runId, manifest_digest: digest, evidence_digest: digest, observed_count: 3, evidence_count: 4, excluded_provenance_counts: {}, mode: "execute", finalized_at: "2030-01-01", observed_records_digest: digest };
 const context: AssistanceContext = { schema_version: "bluefire.assistance-context.v1", context_digest: digest,
   selected: { run_id: selection.runId, candidate_id: selection.candidateId, candidate_resource_digest: digest, title: selection.title, definition_digest: digest, target_language: "sqlite", source_binding: source },
@@ -32,10 +35,10 @@ function Selection({ value = selection }: { value?: AssistanceSelection }) {
   const location = useLocation();
   return <output data-testid="location">{location.pathname}{location.search}</output>;
 }
-function mount(value = selection, client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })) {
-  const tree = (next: AssistanceSelection) => <QueryClientProvider client={client}><MemoryRouter initialEntries={["/detection-lab"]}><ProductProvider><AssistanceProvider><Selection value={next} /><ExperimentAssistant providers={[provider]} /></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>;
+function mount(value = selection, client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }), model: AssistantProvider = provider) {
+  const tree = (next: AssistanceSelection) => <QueryClientProvider client={client}><MemoryRouter initialEntries={["/detection-lab"]}><ProductProvider><AssistanceProvider><Selection value={next} /><ExperimentAssistant providers={[model]} /></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>;
   const view = render(tree(value));
-  return { ...view, client, changeSelection: (next: AssistanceSelection) => view.rerender(tree(next)) };
+  return { ...view, client, changeSelection: (next: AssistanceSelection) => view.rerender(tree(next)), changeProvider: (next: AssistantProvider) => { model = next; view.rerender(tree(value)); } };
 }
 async function open() { const trigger = screen.getByRole("button", { name: /^Assistant/ }); if (trigger.getAttribute("aria-expanded") !== "true") await userEvent.setup().click(trigger); }
 async function compose() {
@@ -115,7 +118,7 @@ it("keeps Off silent, retrieves context only on opening, and submits one exact b
   const getContext = vi.spyOn(api, "assistanceContext").mockResolvedValue(context);
   const submit = vi.spyOn(api, "submitAssistance").mockImplementation(async (body) => envelope(body));
   vi.spyOn(api, "assistanceTurn").mockImplementation(async () => envelope(readAssistanceReceipt()!));
-  mount();
+  const view = mount();
   expect(getContext).not.toHaveBeenCalled(); expect(submit).not.toHaveBeenCalled();
   await open();
   await screen.findByText(selection.title);
@@ -125,6 +128,26 @@ it("keeps Off silent, retrieves context only on opening, and submits one exact b
   await user.selectOptions(screen.getByLabelText("AI mode"), "assist");
   await user.selectOptions(screen.getByLabelText("Provider"), provider.provider_id);
   await user.type(screen.getByLabelText("What would you like to do?"), request().message);
+  expect(screen.getByRole("status", { name: "Model connection readiness" })).toHaveTextContent("Model readiness is unknown. The service checks access and authorization before each request.");
+  expect(screen.getByRole("button", { name: "Start work" })).toBeEnabled();
+  for (const health of [
+    unavailableProvider.health!,
+    { state: "degraded", credential_available: true, message: "Authorize the reviewed model data and usage before sending requests." },
+    { state: "unavailable", credential_available: true },
+    { state: "ready", credential_available: false },
+  ]) {
+    view.changeProvider({ ...provider, health });
+    expect(screen.getByLabelText("Provider")).toBeEnabled();
+    expect(screen.getByLabelText("Provider")).toHaveValue(provider.provider_id);
+    expect(screen.getByRole("status", { name: "Model connection readiness" })).toHaveTextContent(health.message ?? "Review the model connection and usage authorization in Settings.");
+    expect(screen.getByRole("button", { name: "Start work" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Start work" }));
+    expect(submit).not.toHaveBeenCalled();
+    expect(readAssistanceReceipt()).toBeUndefined();
+  }
+  view.changeProvider({ ...provider, health: { state: "ready", credential_available: true } });
+  expect(screen.queryByRole("status", { name: "Model connection readiness" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Start work" })).toBeEnabled();
   await user.dblClick(screen.getByRole("button", { name: "Start work" }));
   await screen.findByRole("heading", { name: "Your review is needed" });
   expect(submit).toHaveBeenCalledTimes(1);
@@ -145,7 +168,7 @@ it("restores native review after reload without submitting again and returns foc
   storeAssistanceReceipt(request());
   vi.spyOn(api, "assistanceTurn").mockResolvedValue(envelope());
   const submit = vi.spyOn(api, "submitAssistance");
-  mount(); await open();
+  mount(selection, undefined, unavailableProvider); await open();
   await userEvent.setup().click(await screen.findByRole("link", { name: "Review rule revision" }));
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(screen.getByTestId("location")).toHaveTextContent("ai_job=job-rule");
@@ -226,7 +249,7 @@ it("stopping requests cancellation without claiming cleanup has finished", async
   storeAssistanceReceipt(request());
   const get = vi.spyOn(api, "assistanceTurn").mockResolvedValue(envelope());
   const stop = vi.spyOn(api, "controlJob").mockResolvedValue({ ...envelope().job, state: "cancelling" });
-  mount(); await open();
+  mount(selection, undefined, unavailableProvider); await open();
   await screen.findByRole("heading", { name: "Your review is needed" });
   get.mockResolvedValue(envelope(request(), "cancelling"));
   await userEvent.setup().click(screen.getByRole("button", { name: "Stop this operation" }));
@@ -371,7 +394,7 @@ it("keeps saved results and the exact turn when visiting runner setup and explic
   vi.spyOn(api, "assistanceTurn").mockResolvedValue(value);
   const recover = vi.spyOn(api, "continueAssistance").mockResolvedValue(value);
   const submit = vi.spyOn(api, "submitAssistance");
-  mount(); await open();
+  mount(selection, undefined, unavailableProvider); await open();
   await screen.findByText("Your rule revision and evaluation are saved.");
   const link = screen.getByRole("link", { name: "Check runner setup" });
   expect(link).toHaveAttribute("href", "/runs?setup=execute");

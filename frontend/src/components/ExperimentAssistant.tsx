@@ -151,11 +151,17 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
   const supportedModes = context.data?.capabilities.filter(item => item.available).flatMap(item => item.supported_autonomy) ?? [];
   const autonomy = assistantPreferences.autonomy === "auto" && context.data && !supportedModes.includes("auto") && supportedModes.includes("assist") ? "assist" : assistantPreferences.autonomy;
   const selectedProvider = models.find((item) => item.provider_id === assistantPreferences.provider);
+  const providerUnready = selectedProvider?.health?.credential_available === false || ["degraded", "unavailable"].includes(selectedProvider?.health?.state ?? "");
+  const providerGuidance = providerUnready
+    ? selectedProvider?.health?.message?.trim() || "Review the model connection and usage authorization in Settings."
+    : selectedProvider && selectedProvider.health?.state !== "ready"
+      ? "Model readiness is unknown. The service checks access and authorization before each request."
+      : undefined;
   const selected = context.data?.selected;
   const current = Boolean(selected && (isReceiverSelection(selected) ? receiverSelection && sameJson(selected, receiverSelection.selected) : isRunDetectionSelection(selected) ? creationSelection && sameJson(selected, creationSelection.selected) : isSavedRunSelection(selected) ? savedGraphSelection && sameJson(selected, savedGraphSelection.selected) : isGraphSelection(selected) ? graphRequestSelection && sameJson(selected, graphRequestSelection)
     : detectionSelection && selected.run_id === detectionSelection.runId && selected.candidate_id === detectionSelection.candidateId && selected.candidate_resource_digest === detectionSelection.resourceDigest));
   const modeSupported = context.data?.capabilities.some((item) => item.available && item.supported_autonomy?.some((mode) => mode === autonomy));
-  const ready = contextAvailable && !ownerBusy && !requestedJobId && current && !selection?.manualEdits && autonomy !== "off" && Boolean(selectedProvider) && Boolean(message.trim()) && modeSupported;
+  const ready = contextAvailable && !ownerBusy && !requestedJobId && current && !selection?.manualEdits && autonomy !== "off" && Boolean(selectedProvider) && !providerUnready && Boolean(message.trim()) && modeSupported;
   const action = turn?.next_action;
   const stopping = stopRequested === jobId || turn?.status === "cancelling" || turn?.status === "cancelled";
   const actionPath = action?.kind === "wait" || action?.kind === "continue" || stopping ? undefined : assistancePath(action?.native_path);
@@ -207,6 +213,7 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
         {!receipt && ownerBusy ? <p role="status">Your active operation is still running or waiting for review. You can inspect this selection and draft a follow-up; return to active work before starting another operation.</p> : null}
         {requestedJobId ? <p role="status">Opening the Assistant operation for this run…</p> : null}
         <p><Link onClick={navigate} to="/settings#model-connection">{models.length || receipt ? "Review model connection and usage authorization" : "Configure a provider in Settings"}</Link>{!models.length && !receipt ? " to use model assistance." : ". Restore an expired or unavailable connection here; saved work remains available."}</p>
+        {!receipt && autonomy !== "off" && selectedProvider && providerGuidance ? <p role="status" aria-label="Model connection readiness">{providerUnready ? <strong>Model connection needs attention. </strong> : null}{providerGuidance}</p> : null}
         {receipt ? <section className="assistant-operation" aria-label="Saved assistant work">
           <p className="assistant-request">{receipt.message}</p>
           <div className="assistant-binding"><span>{sentence(receipt.autonomy)} · {receipt.provider_id ?? "No provider"}</span>{isReceiverRequest(receipt) ? <span>{receipt.selection.kind === "receiver_scenario" ? `New receiver test · version ${receipt.selection.selection.version}` : "Existing receiver test · analysis only"}</span> : isRunDetectionRequest(receipt) ? <Link onClick={navigate} to={detectionCreationPath(receipt.selection.run_id)}>New {sentence(receipt.selection.target_language)} rule · source evidence<ArrowRight aria-hidden="true" /></Link> : isSavedGraphRequest(receipt) ? <span>Saved experiment · version {savedRunSource(receipt.selection).version} · {sentence(receipt.selection.run_intent.mode)}</span> : isGraphRequest(receipt) ? <span>New experiment · saved separately</span> : <Link onClick={navigate} to={`/detection-lab?${new URLSearchParams({ run: receipt.run_id, candidate: receipt.candidate_id, candidate_scope: "registry" })}`}>Source rule and evidence <ArrowRight aria-hidden="true" /></Link>}</div>
