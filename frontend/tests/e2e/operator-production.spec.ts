@@ -359,7 +359,10 @@ test("production operator UI completes authoring, management, run, replay, and c
   const assistant = page.getByRole("complementary", { name: "Experiment assistant" });
   await expect(assistant).toBeVisible();
   await expect(page.getByRole("main")).not.toHaveAttribute("inert");
-  await assistant.getByLabel("Assistant operation").selectOption("new");
+  // Returning to Builder clears the selected step. The dock now starts in
+  // objective authoring; the operation selector belongs to selected-step edits.
+  await expect(assistant.getByRole("region", { name: "Current selection" })).toContainText("Build from an objective");
+  await expect(assistant.getByLabel("Assistant operation")).toHaveCount(0);
   await assistant.getByLabel("AI mode", { exact: true }).selectOption("off");
   await expect(assistant.getByText("Off makes no new model requests. Manual tools remain available.")).toBeVisible();
   await assistant.getByLabel("AI mode", { exact: true }).selectOption("assist");
