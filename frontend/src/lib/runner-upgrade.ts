@@ -35,6 +35,7 @@ export function isReviewedRunnerUpgrade(review: RunnerUpgradeReview, runnerId: s
     && (review.recovery_required === undefined || review.recovery_required === true)
     && /^sha256:[0-9a-f]{64}$/.test(review.review_digest)
     && identities.every(identity => identity?.runner_id === runnerId && [identity.runner_version, identity.product_version, identity.binary_digest, identity.platform, identity.architecture, identity.inventory_schema, identity.action_sdk_version, identity.receipt_protocol].every(value => typeof value === "string" && value.length > 0))
+    && identities.every(identity => /^sha256:[0-9a-f]{64}$/.test(identity.binary_digest))
     && review.compatibility?.same_sandbox === true && review.compatibility.same_enrollment === true && review.compatibility.same_profiles === true && review.compatibility.same_protocols === true
     && ["platform", "architecture", "inventory_schema", "action_sdk_version", "receipt_protocol"].every(key => review.current[key as keyof RunnerUpgradeIdentity] === review.candidate[key as keyof RunnerUpgradeIdentity])
     && review.preservation?.old_binary === true && review.preservation.ledger === true && review.preservation.durable_results === true && review.preservation.product_history === true

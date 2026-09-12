@@ -42,7 +42,10 @@ it("keeps the experiment profile through status and explicit upgrade without exp
   mount(`/runners?profile=${profile}`);
   await user.click(await screen.findByRole("button", { name: "Review runner upgrade" }));
   expect(upgrade).not.toHaveBeenCalled();
-  expect(await screen.findByText(/sandbox, enrollment, permitted profiles and protocol contracts match/i)).toBeVisible();
+  await screen.findByRole("button", { name: "Apply reviewed runner upgrade" });
+  expect(screen.getByText(/sandbox, enrollment, permitted profiles and protocol contracts match/i)).not.toBeVisible();
+  await user.click(screen.getByText("Exact artifacts and history binding"));
+  expect(screen.getByText(/sandbox, enrollment, permitted profiles and protocol contracts match/i)).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Apply reviewed runner upgrade" }));
   await waitFor(() => expect(upgrade).toHaveBeenCalledExactlyOnceWith(profile, true, upgradeDigest));
   expect(screen.getByRole("combobox", { name: "Experiment runner profile" })).toHaveValue(profile);

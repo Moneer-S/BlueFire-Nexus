@@ -31,12 +31,14 @@ it("reviews exact artifacts and retained history before explicitly applying with
   expect(screen.getByRole("heading", { name: "Update runner and keep history" })).toBeVisible();
   expect(screen.getByText("Completed executions retained").nextElementSibling).toHaveTextContent("2");
   expect(screen.getByText("Durable results retained").nextElementSibling).toHaveTextContent("2");
-  expect(screen.getByText(/different verified artifact/)).toBeVisible();
+  expect(screen.getByText("Different verified artifact")).toBeVisible();
+  expect(screen.getByText(/Activation has not completed/)).not.toBeVisible();
+  await user.click(screen.getByText("Exact artifacts and history binding"));
   expect(screen.getByText(/Activation has not completed/)).toBeVisible();
   expect(review).toHaveBeenCalledExactlyOnceWith(profile); expect(apply).not.toHaveBeenCalled();
   await user.click(confirm);
   await waitFor(() => expect(apply).toHaveBeenCalledExactlyOnceWith(profile, true, upgradeDigest));
-  expect(await screen.findByText(/Runner upgrade applied/)).toBeVisible();
+  expect(await screen.findByText("Runner updated. History retained.")).toBeVisible();
   expect(start).not.toHaveBeenCalled(); expect(submit).not.toHaveBeenCalled(); expect(revoke).not.toHaveBeenCalled(); expect(remove).not.toHaveBeenCalled();
 });
 
@@ -73,6 +75,8 @@ it.each([
   ["history count", (review: Review) => { review.history.durable_results = -1; }],
   ["review digest", (review: Review) => { review.review_digest = "unbound"; }],
   ["protocol identity", (review: Review) => { review.candidate.receipt_protocol = "another-protocol"; }],
+  ["current artifact digest", (review: Review) => { review.current.binary_digest = "not-a-digest"; }],
+  ["candidate artifact digest", (review: Review) => { review.candidate.binary_digest = `sha256:${"c".repeat(63)}`; }],
 ])("refuses an incomplete or unsafe %s response", async (_label, mutate) => {
   const payload = runnerUpgradeReview(); mutate(payload);
   vi.spyOn(api, "reviewRunnerUpgrade").mockResolvedValue(payload);
@@ -123,7 +127,7 @@ it("shows an interrupted activation as an exact recovery transition, not a compl
   await user.click(screen.getByRole("button", { name: "Review runner upgrade" }));
   expect(await screen.findByText(/An interrupted upgrade must be completed/)).toBeVisible();
   expect(screen.getByRole("rowheader", { name: "Previously installed runner" })).toBeVisible();
-  expect(screen.queryByText(/Runner upgrade applied/)).not.toBeInTheDocument();
+  expect(screen.queryByText("Runner updated. History retained.")).not.toBeInTheDocument();
   expect(apply).not.toHaveBeenCalled();
 });
 

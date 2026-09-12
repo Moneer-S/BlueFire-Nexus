@@ -43,7 +43,7 @@ export function RunnerUpgradeReview({ profileId, status, disabled = false, onBus
   if (!profileId || (!canReviewRunnerUpgrade(profileId, status) && !review.variables && !apply.variables)) return null;
   return <section className="detail-section" aria-label="Runner upgrade review">
     <h3>Update runner and keep history</h3>
-    <p>Review the installed and packaged runner before applying an update. Settled history is retained; unresolved work must be reconciled first.</p>
+    <p>Review the candidate and retained history before applying the runner update.</p>
     <Button size="small" variant="secondary" disabled={!canReview} onClick={() => { apply.reset(); review.mutate({ profileId, binding: statusBinding }); }}>{review.isPending ? "Checking upgrade…" : reviewed || failure || invalidReview || staleReview ? "Refresh upgrade review" : "Review runner upgrade"}</Button>
     {busy ? <p role="status">{apply.isPending ? applyMatches ? "Applying reviewed runner upgrade…" : "Finishing the upgrade for the previous profile…" : "Verifying the candidate and retained history…"}</p> : null}
     {reviewed ? <>
@@ -55,12 +55,9 @@ export function RunnerUpgradeReview({ profileId, status, disabled = false, onBus
       ]}/>
       <div className="table-scroll"><table><thead><tr><th>Runner</th><th>Version</th><th>Platform</th></tr></thead><tbody>{[[currentLabel, reviewed.current], ["Verified candidate", reviewed.candidate]].map(([label, value]) => {
         const identity = value as RunnerUpgradeIdentity;
-        return <tr key={String(label)}><th scope="row">{String(label)}</th><td>{identity.runner_version}</td><td>{identity.platform} · {identity.architecture}</td></tr>;
+        return <tr key={String(label)}><th scope="row">{String(label)}</th><td>{identity.runner_version}{label === "Verified candidate" ? <div className="field-note">{reviewed.current.binary_digest === identity.binary_digest ? "Same artifact" : "Different verified artifact"}</div> : null}</td><td>{identity.platform} · {identity.architecture}</td></tr>;
       })}</tbody></table></div>
-      <p>{reviewed.current.binary_digest === reviewed.candidate.binary_digest ? "The candidate matches the installed artifact." : "The candidate is a different verified artifact, even if its version label is unchanged."}</p>
-      <p>The candidate has been verified. Activation has not completed, and no experiment execution has started. The sandbox, enrollment, permitted profiles and protocol contracts match.</p>
-      <p>The old binary, recovery ledger, durable results and product history will be preserved. This upgrade grants no new experiment authority.</p>
-      <details><summary>Exact artifacts and history binding</summary>{[[currentLabel, reviewed.current], ["Verified candidate", reviewed.candidate]].map(([label, value]) => {
+      <details><summary>Exact artifacts and history binding</summary><p>The candidate has been verified. Activation has not completed, and no experiment execution has started. The sandbox, enrollment, permitted profiles and protocol contracts match. The old binary, recovery ledger, durable results and product history will be preserved. This upgrade grants no new experiment authority.</p>{[[currentLabel, reviewed.current], ["Verified candidate", reviewed.candidate]].map(([label, value]) => {
         const identity = value as RunnerUpgradeIdentity;
         return <div key={String(label)}><h4>{String(label)}</h4><p>Artifact: <code>{identity.binary_digest.replace(/^sha256:/, "").slice(0, 12)}</code></p><DataList items={Object.entries(identity).map(([key, item]) => ({ label: key.replaceAll("_", " "), value: <code>{item}</code> }))}/></div>;
       })}<DataList items={[{ label: "Ledger rows", value: reviewed.history.total_rows }, { label: "Execute rows", value: reviewed.history.execute_rows }, { label: "Ledger generation", value: reviewed.history.ledger_generation ?? "No ledger generation recorded" }, { label: "History digest", value: <code>{reviewed.history.history_digest}</code> }, { label: "Review digest", value: <code>{reviewed.review_digest}</code> }]}/></details>
@@ -69,6 +66,6 @@ export function RunnerUpgradeReview({ profileId, status, disabled = false, onBus
     {invalidReview ? <p role="alert">The upgrade review is incomplete or does not match this runner. Refresh the review before applying an upgrade.</p> : null}
     {staleReview ? <p role="status">Runner status changed after this review. Request a fresh review before applying an upgrade.</p> : null}
     {failure ? <><ErrorState title="Runner upgrade needs attention" error={failure}/>{runnerLifecycleFailure(failure).map((detail, index) => <p key={index}>{detail}</p>)}<p>Keep the runner stopped when upgrade is refused. Resolve the reported blocker, then request a fresh review. No automatic retry was made.</p></> : null}
-    {apply.isSuccess && applyMatches ? apply.data.profile_id === profileId && apply.data.state === "stopped" && apply.data.enrollment === "active" ? <p role="status">Runner upgrade applied. Start the runner explicitly, then run fresh experiment preflight and approval before Execute.</p> : <p role="alert">The upgrade returned an unexpected runner status. Check this profile's current status before continuing.</p> : null}
+    {apply.isSuccess && applyMatches ? apply.data.profile_id === profileId && apply.data.state === "stopped" && apply.data.enrollment === "active" ? <p role="status">Runner updated. History retained.</p> : <p role="alert">The upgrade returned an unexpected runner status. Check this profile's current status before continuing.</p> : null}
   </section>;
 }
