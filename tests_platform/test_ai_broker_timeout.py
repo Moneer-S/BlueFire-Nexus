@@ -22,6 +22,7 @@ from bluefire.runner_lifecycle import ManagedRunnerLifecycle
 from bluefire.service import BlueFireService
 from bluefire.util import canonical_json_bytes
 from tests_platform import test_ai_broker_channel as support
+from tests_platform.ai_live_authorization_support import authorize_service
 
 pair = support.pair
 
@@ -31,7 +32,7 @@ def body(provider):
         structured_request(
             provider,
             instructions="Check",
-            input_text="{}",
+            input_text="Synthetic connection test. No scenario or evidence is supplied.",
             name="bluefire_connection_check",
             schema=_SCHEMA,
         )
@@ -46,6 +47,7 @@ def test_active_provider_timeout_settles_without_stopping_broker_or_product_serv
         runner_lifecycle=ManagedRunnerLifecycle(tmp_path / "managed"),
         ai_provider_access=access,
     )
+    authorize_service(service, provider)
     transport.block = True
     try:
         with pytest.raises(AIProviderTransportError) as caught:

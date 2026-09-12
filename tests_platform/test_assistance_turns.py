@@ -14,6 +14,7 @@ from bluefire.ai_wire import AIProviderCancelled
 from bluefire.application_errors import APIError
 from bluefire.config import AIConfig, AIProviderConfig, AutonomyLevel
 from bluefire.service import BlueFireService
+from tests_platform.ai_live_authorization_support import authorize_service
 from tests_platform.test_detection_ai_jobs import decision_body
 from tests_platform.test_detection_evaluations import query_candidate
 from tests_platform.test_method_comparison_jobs import source_run
@@ -128,6 +129,7 @@ def setup(tmp_path, request):
         service.config.ai.fallback_provider,
         (provider, *service.config.ai.providers),
     )
+    authorize_service(service, service._runtime_ai_config.provider())
     candidate_id = query_candidate(service, "size_bytes > 0")
     run_id = source_run(service, tmp_path)
     context = service.assistance_context(run_id, candidate_id)

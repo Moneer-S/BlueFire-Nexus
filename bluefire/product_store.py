@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, cast
 
+from . import product_store_ai_authorizations as ai_authorization_store
 from . import product_store_detection_evaluations as detection_evaluation_store
 from . import product_store_proposal_reviews as proposal_review_store
 from .contracts import ScenarioDefinition
@@ -824,6 +825,7 @@ class ProductStore:
                     """)
             self._backfill_detection_revisions(connection)
             detection_evaluation_store.initialize_schema(connection)
+            ai_authorization_store.initialize_schema(connection)
             if current is None or int(current) < 6:
                 self._migrate_legacy_plugin_metadata(connection)
             if current is None or int(current) < SCHEMA_VERSION:

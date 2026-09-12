@@ -21,6 +21,7 @@ from bluefire.runner_lifecycle import ManagedRunnerLifecycle
 from bluefire.service import BlueFireService
 from bluefire.util import canonical_json_bytes, content_hash
 from tests_platform import test_ai_broker_channel as support
+from tests_platform.ai_live_authorization_support import authorize_service
 from tests_platform.test_ai_wire_runtime import _envelope
 from tests_platform.test_detection_evaluations import observed_run, query_candidate
 
@@ -43,6 +44,7 @@ def test_normal_detection_job_crosses_enrolled_broker_and_requires_review(
         runner_lifecycle=ManagedRunnerLifecycle(tmp_path / "managed"),
         ai_provider_access=access,
     )
+    authorize_service(service, provider)
 
     def response(url, *, headers, body, timeout_seconds):
         assert (

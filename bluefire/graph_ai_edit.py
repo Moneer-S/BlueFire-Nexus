@@ -20,43 +20,11 @@ from .ai_wire import (
 )
 from .config import AIProviderConfig
 from .contracts import ScenarioDefinition
+from .graph_ai_edit_contract import OUTPUT_SCHEMA as OUTPUT_SCHEMA
 from .registry import BehaviorRegistry
 from .util import canonical_json_bytes
 
 PURPOSE = "bluefire_graph_step_edit"
-OUTPUT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["parameters", "rationale", "assumptions"],
-    "properties": {
-        "parameters": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 32,
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["name", "value"],
-                "properties": {
-                    "name": {"type": "string", "maxLength": 100},
-                    "value": {
-                        "anyOf": [
-                            {"type": "string", "maxLength": 1000},
-                            {"type": "number"},
-                            {"type": "boolean"},
-                        ]
-                    },
-                },
-            },
-        },
-        "rationale": {"type": "string", "minLength": 1, "maxLength": 4000},
-        "assumptions": {
-            "type": "array",
-            "maxItems": 8,
-            "items": {"type": "string", "minLength": 1, "maxLength": 500},
-        },
-    },
-}
 
 
 def require_selected_edit(source: Mapping[str, Any], candidate: Mapping[str, Any]) -> None:

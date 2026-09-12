@@ -52,6 +52,14 @@ ERROR_CODES = frozenset(
         "response_content_type",
         "response_too_large",
         "request_too_large",
+        "live_authorization_required",
+        "live_authorization_invalid",
+        "live_authorization_expired",
+        "live_context_unavailable",
+        "live_usage_exhausted",
+        "live_request_out_of_scope",
+        "live_configuration_invalid",
+        "live_data_policy_invalid",
     }
 )
 
@@ -244,12 +252,21 @@ def validate_broker_request(
 ) -> bytes | None:
     """Shared client/server validator; a channel server must also reject reused IDs."""
     common = {"kind", "session_id", "binding_digest", "request_id", "timeout_seconds"}
-    fields = common if request.get("kind") == "readiness" else common | {"body", "body_digest"}
+    control = request.get("kind") in {"authorize", "revoke"}
+    fields = (
+        common | {"authorization"}
+        if request.get("kind") == "authorize"
+        else (
+            common | {"authorization_id"}
+            if request.get("kind") == "revoke"
+            else common if request.get("kind") == "readiness" else common | {"body", "body_digest"}
+        )
+    )
     try:
         enrollment.require_current(enrollment.config)
         if (
             set(request) != fields
-            or request["kind"] not in {"readiness", "post"}
+            or request["kind"] not in {"readiness", "post", "authorize", "revoke"}
             or request["session_id"] != enrollment.session_id
             or request["binding_digest"] != enrollment.digest
             or not isinstance(request["request_id"], str)
@@ -263,6 +280,26 @@ def validate_broker_request(
             or not 0 < timeout <= enrollment.config.timeout_seconds
         ):
             raise ValueError
+        if control:
+            if (
+                timeout > 1
+                or (
+                    request["kind"] == "authorize"
+                    and not isinstance(request["authorization"], Mapping)
+                )
+                or (
+                    request["kind"] == "revoke"
+                    and (
+                        not isinstance(request["authorization_id"], str)
+                        or re.fullmatch(
+                            r"ai-authorization-[0-9a-f]{32}", request["authorization_id"]
+                        )
+                        is None
+                    )
+                )
+            ):
+                raise ValueError
+            return None
         if request["kind"] == "readiness":
             if timeout > 1:
                 raise ValueError

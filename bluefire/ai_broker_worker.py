@@ -9,9 +9,10 @@ from typing import Any, Mapping
 
 from .ai_broker_channel import FramedSocket, cancel_frame, response_binding
 from .ai_broker_contract import ERROR_CODES, BrokerEnrollment, refusal, validate_broker_request
+from .ai_broker_live_authorization import BrokerLiveAuthorizations
 from .ai_provider_access import DirectAIProviderAccess
 from .ai_transport import ManagedAIJSONTransport
-from .ai_wire import AIProviderTransportError, credential_value
+from .ai_wire import AIProviderCancelled, AIProviderTransportError, credential_value
 
 
 def serve_broker(
@@ -38,6 +39,8 @@ def serve_broker(
     thread: threading.Thread | None = None
     seen: set[str] = set()
     partial_started: float | None = None
+    authorizations = BrokerLiveAuthorizations(enrollment)
+    active_expires_at_ms: int | None = None
 
     def perform(request: Mapping[str, Any], body: bytes) -> None:
         result = response_binding(request)
@@ -48,6 +51,12 @@ def serve_broker(
                 timeout_seconds=float(request["timeout_seconds"]),
                 cancel_event=cancelled,
             )
+            if (
+                cancelled.is_set()
+                or active_expires_at_ms is None
+                or time.time_ns() // 1_000_000 >= active_expires_at_ms
+            ):
+                raise AIProviderCancelled()
             result.update(kind="result", body=base64.b64encode(payload).decode("ascii"))
         except AIProviderTransportError as exc:
             code = (
@@ -65,6 +74,12 @@ def serve_broker(
     try:
         while not stop.is_set():
             enrollment.require_current(config)
+            if (
+                active is not None
+                and active_expires_at_ms is not None
+                and time.time_ns() // 1_000_000 >= active_expires_at_ms
+            ):
+                cancelled.set()
             session_remaining = (enrollment.expires_at_ms - time.time_ns() // 1_000_000) / 1000
             if active is not None and finished.is_set():
                 if thread is None:
@@ -98,6 +113,24 @@ def serve_broker(
             if active is not None or request_id in seen or len(seen) >= 4096:
                 raise refusal()
             seen.add(request_id)
+            if frame["kind"] in {"authorize", "revoke"}:
+                result = response_binding(frame)
+                try:
+                    identity = (
+                        authorizations.authorize(frame["authorization"])
+                        if frame["kind"] == "authorize"
+                        else authorizations.revoke(frame["authorization_id"])
+                    )
+                    result.update(
+                        kind="authorization",
+                        authorization_id=identity,
+                        status="active" if frame["kind"] == "authorize" else "revoked",
+                    )
+                except AIProviderTransportError as exc:
+                    result.update(kind="error", code=exc.code, retryable=False)
+                stream.send(result, deadline=time.monotonic() + min(1.0, session_remaining))
+                previous = frame
+                continue
             if body is None:
                 state = access.readiness(config)
                 stream.send(
@@ -105,6 +138,20 @@ def serve_broker(
                         "kind": "readiness",
                         **response_binding(frame),
                         "credential_state": state.credential_state,
+                    },
+                    deadline=time.monotonic() + min(1.0, session_remaining),
+                )
+                previous = frame
+                continue
+            try:
+                active_expires_at_ms = authorizations.reserve(body)
+            except AIProviderTransportError as exc:
+                stream.send(
+                    {
+                        **response_binding(frame),
+                        "kind": "error",
+                        "code": exc.code,
+                        "retryable": False,
                     },
                     deadline=time.monotonic() + min(1.0, session_remaining),
                 )

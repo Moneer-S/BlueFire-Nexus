@@ -14,6 +14,7 @@ from bluefire.application_errors import APIError
 from bluefire.config import AIConfig, AIProviderConfig, AutonomyLevel
 from bluefire.product_store import ProductStore
 from bluefire.service import BlueFireService
+from tests_platform.ai_live_authorization_support import authorize_service
 from tests_platform.test_detection_evaluations import observed_run, query_candidate
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -96,6 +97,7 @@ def setup(tmp_path):
         service.config.ai.fallback_provider,
         (provider, *service.config.ai.providers),
     )
+    authorize_service(service, service._runtime_ai_config.provider())
     candidate_id = query_candidate(service)
     run_id, records = observed_run(service, tmp_path)
     body = {
@@ -137,6 +139,7 @@ def test_real_provider_revision_evaluation_and_idempotent_reconnect(setup, kind)
     service._runtime_ai_config = replace(
         service._runtime_ai_config, providers=(replace(provider, kind=type(provider.kind)(kind)),)
     )
+    authorize_service(service, service._runtime_ai_config.provider(body["provider_id"]))
     parent = service.detection_candidate(candidate_id)
     job = proposal(setup)
     assert service.detection_candidate(candidate_id) == parent

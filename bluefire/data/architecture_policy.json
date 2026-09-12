@@ -274,6 +274,7 @@
       "layer": "application",
       "patterns": [
         "bluefire.application_errors",
+        "bluefire.ai_authorized_access",
         "bluefire.assistance_context",
         "bluefire.assistance_receiver",
         "bluefire.assistance_receiver_context",
@@ -409,6 +410,9 @@
         "bluefire.ai_wire",
         "bluefire.ai_transport",
         "bluefire.ai_provider_access",
+        "bluefire.ai_live_authorization",
+        "bluefire.graph_ai_edit_contract",
+        "bluefire.ai_broker_live_authorization",
         "bluefire.ai_broker_contract",
         "bluefire.ai_broker",
         "bluefire.ai_broker_channel",

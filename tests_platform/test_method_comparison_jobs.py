@@ -18,6 +18,7 @@ from bluefire.config import AIConfig, AIProviderConfig, AutonomyLevel
 from bluefire.contracts import ExecutionMode
 from bluefire.orchestrator import Orchestrator
 from bluefire.service import BlueFireService
+from tests_platform.ai_live_authorization_support import authorize_service
 from tests_platform.test_detection_evaluations import query_candidate
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -169,6 +170,7 @@ def setup(tmp_path):
         service.config.ai.fallback_provider,
         (provider, *service.config.ai.providers),
     )
+    authorize_service(service, provider)
     candidate_id = query_candidate(service, "size_bytes > 0")
     run_id = source_run(service, tmp_path)
     context = service.method_comparison_context(run_id)
@@ -213,6 +215,7 @@ def test_packaged_method_replay_and_durable_comparison(setup, kind):
         service._runtime_ai_config,
         providers=(replace(provider, kind=type(provider.kind)(kind)), *service.config.ai.providers),
     )
+    authorize_service(service, service._runtime_ai_config.provider(request["provider_id"]))
     assert context["options"][0]["behavior_to"] == "sandbox.collection.archive.v1"
     job = proposal(setup)
     accepted = service.decide_method_comparison(job["job_id"], decision(job))

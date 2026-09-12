@@ -15,6 +15,7 @@ from bluefire.runner_lifecycle import ManagedRunnerLifecycle
 from bluefire.service import BlueFireService
 from bluefire.util import canonical_json_bytes
 from tests_platform import test_ai_broker_channel as support
+from tests_platform.ai_live_authorization_support import authorize_service
 from tests_platform.test_assistance_turns import Access
 from tests_platform.test_detection_ai_jobs import decision_body
 from tests_platform.test_detection_evaluations import query_candidate
@@ -43,6 +44,7 @@ def test_connected_turn_uses_enrolled_provider_for_each_typed_capability(
         runner_lifecycle=ManagedRunnerLifecycle(tmp_path / "managed"),
         ai_provider_access=access,
     )
+    authorize_service(service, provider)
     try:
         run_id = source_run(service, tmp_path)
         candidate_id = query_candidate(service, "size_bytes > 0")

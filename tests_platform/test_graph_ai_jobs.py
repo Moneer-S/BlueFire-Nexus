@@ -18,6 +18,7 @@ from bluefire.graph_ai_context import GRAPH
 from bluefire.product_store_errors import ProductStoreError
 from bluefire.service import BlueFireService
 from bluefire.util import content_hash
+from tests_platform.ai_live_authorization_support import authorize_service
 from tests_platform.test_ai_drafts import _model_draft
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -105,6 +106,7 @@ def setup(tmp_path, request):
         service.config.ai.fallback_provider,
         (provider, *service.config.ai.providers),
     )
+    authorize_service(service, provider)
     context = service.assistance_graph_context()
     body = {
         "submission_id": str(uuid.uuid4()),
@@ -444,11 +446,13 @@ import json, os, sys, uuid
 from pathlib import Path
 from bluefire.config import AIConfig, AIProviderConfig, AutonomyLevel
 from bluefire.service import BlueFireService
+from tests_platform.ai_live_authorization_support import authorize_service
 from tests_platform.test_graph_ai_jobs import Access
 database, marker, kind = sys.argv[1:]
 service = BlueFireService(project_root=Path.cwd(), runs_dir=Path(database).parent / 'runs', product_db_path=database, ai_provider_access=Access())
 provider = AIProviderConfig.from_mapping({'id':'provider.graph-crash.v1','kind':kind,'model':'unit-model','endpoint':'http://127.0.0.1:8765/v1/' + ('responses' if kind == 'openai_responses' else 'chat/completions')})
 service._runtime_ai_config = AIConfig(AutonomyLevel.OFF,provider.id,service.config.ai.fallback_provider,(provider,*service.config.ai.providers))
+authorize_service(service, provider)
 original = service.graph_ai._propose
 def crash_after_publication(ctx, request):
     original(ctx, request)

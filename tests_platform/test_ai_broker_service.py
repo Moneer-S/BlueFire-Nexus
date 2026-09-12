@@ -22,6 +22,7 @@ from bluefire.config import AIProviderKind, AutonomyLevel, load_config
 from bluefire.runner_lifecycle import ManagedRunnerLifecycle
 from bluefire.service import BlueFireService
 from bluefire.util import canonical_json_bytes, content_hash
+from tests_platform.ai_live_authorization_support import authorize_service
 from tests_platform.test_ai import CONFIG_PATH
 from tests_platform.test_ai import _request as proposal_request
 from tests_platform.test_ai_drafts import _model_draft
@@ -42,7 +43,7 @@ def forbid_http_or_credentials(monkeypatch):
 
 
 class DeterministicBroker:
-    """Test-only channel: production has no broker process/socket implementation yet."""
+    """Deterministic schema fixture; actual worker consent is checked in separate wire tests."""
 
     def __init__(self, enrollment):
         self.enrollment = enrollment
@@ -66,6 +67,17 @@ class DeterministicBroker:
             "request_id": request["request_id"],
             "request_digest": content_hash(request),
         }
+        if request["kind"] in {"authorize", "revoke"}:
+            result.update(
+                kind="authorization",
+                authorization_id=(
+                    request["authorization"]["authorization_id"]
+                    if request["kind"] == "authorize"
+                    else request["authorization_id"]
+                ),
+                status="active" if request["kind"] == "authorize" else "revoked",
+            )
+            return result
         if body is None:
             result["credential_state"] = (
                 "ready" if self.enrollment.config.api_key else "not_required"
@@ -129,6 +141,7 @@ def setup(tmp_path, kind=AIProviderKind.OPENAI_RESPONSES, *, local=False):
         runner_lifecycle=ManagedRunnerLifecycle(tmp_path / "managed"),
         ai_provider_access=access,
     )
+    authorize_service(service, provider, purposes=[name for name, _ in enrollment.schemas])
     # Bootstrap performs a real readiness check through the same access owner.
     channel.requests.clear()
     return provider, service, access, channel

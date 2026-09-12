@@ -54,6 +54,68 @@ class BrokeredAIProviderAccess:
     def enrollment(self) -> BrokerEnrollment:
         return self._enrollment
 
+    def _live_control(self, kind: str, payload: Mapping[str, Any]) -> None:
+        self.enrollment.require_current(self.enrollment.config)
+        request = {
+            "kind": kind,
+            "session_id": self.enrollment.session_id,
+            "binding_digest": self.enrollment.digest,
+            "request_id": secrets.token_hex(32),
+            "timeout_seconds": 1.0,
+            **payload,
+        }
+        validate_broker_request(self.enrollment, request)
+        cancellation = RequestCancellation(self._cancel, None)
+        with self._condition:
+            if cancellation.is_set():
+                raise AIProviderCancelled()
+            self._active += 1
+        try:
+            response = self._channel.exchange(
+                request, cancellation=cancellation, timeout_seconds=1.0
+            )
+            binding = {
+                "session_id": request["session_id"],
+                "binding_digest": request["binding_digest"],
+                "request_id": request["request_id"],
+                "request_digest": content_hash(request),
+            }
+            if not isinstance(response, Mapping) or any(
+                response.get(k) != v for k, v in binding.items()
+            ):
+                raise refusal("broker_unavailable")
+            if (
+                set(response) == set(binding) | {"kind", "code", "retryable"}
+                and response["kind"] == "error"
+                and response["code"] in ERROR_CODES
+                and response["retryable"] is False
+            ):
+                raise refusal(response["code"])
+            identity = (
+                payload["authorization"]["authorization_id"]
+                if kind == "authorize"
+                else payload["authorization_id"]
+            )
+            expected = {
+                **binding,
+                "kind": "authorization",
+                "authorization_id": identity,
+                "status": "active" if kind == "authorize" else "revoked",
+            }
+            if dict(response) != expected or cancellation.is_set():
+                raise refusal("broker_unavailable")
+            self.enrollment.require_current(self.enrollment.config)
+        finally:
+            with self._condition:
+                self._active -= 1
+                self._condition.notify_all()
+
+    def authorize_live(self, document: Mapping[str, Any]) -> None:
+        self._live_control("authorize", {"authorization": dict(document)})
+
+    def revoke_live(self, authorization_id: str) -> None:
+        self._live_control("revoke", {"authorization_id": authorization_id})
+
     def _exchange(
         self,
         config: AIProviderConfig,

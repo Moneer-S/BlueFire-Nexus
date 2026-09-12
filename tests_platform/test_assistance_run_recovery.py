@@ -26,15 +26,18 @@ import json,os,sys,uuid
 from pathlib import Path
 from bluefire.config import AIConfig,AIProviderConfig,AutonomyLevel
 from bluefire.service import BlueFireService
+from tests_platform.ai_live_authorization_support import authorize_service
 from tests_platform.test_graph_ai_jobs import Access
 from tests_platform.test_assistance_saved_runs import run_context,prepared
 database,marker,kind,boundary=sys.argv[1:]
-service=BlueFireService(project_root=Path.cwd(),runs_dir=Path(database).parent/'runs',product_db_path=database,ai_provider_access=Access())
+access=Access()
+service=BlueFireService(project_root=Path.cwd(),runs_dir=Path(database).parent/'runs',product_db_path=database,ai_provider_access=access)
 provider=AIProviderConfig.from_mapping({'id':'provider.graph-crash.v1','kind':kind,'model':'unit-model','endpoint':'http://127.0.0.1:8765/v1/'+('responses' if kind=='openai_responses' else 'chat/completions')})
 service._runtime_ai_config=AIConfig(AutonomyLevel.OFF,provider.id,service.config.ai.fallback_provider,(provider,*service.config.ai.providers))
+authorize_service(service, provider)
 context=service.assistance_graph_context()
 body={'submission_id':str(uuid.uuid4()),'selection':context['selected'],'context_digest':context['context_digest'],'message':'Propose a registered graph for review.','autonomy':'assist','provider_id':provider.id}
-request=run_context(service,service._provider_access,body)
+request=run_context(service,access,body)
 parent,child,envelope=prepared(service,request)
 def crash():
  Path(marker).write_text(json.dumps({'parent_id':parent['job_id'],'child_id':child['job_id'],'provider':provider.to_dict(),'request':request}),encoding='utf-8')

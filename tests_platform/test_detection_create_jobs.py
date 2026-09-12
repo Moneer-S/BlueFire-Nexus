@@ -15,6 +15,7 @@ from bluefire.ai_provider_access import ProviderReadiness
 from bluefire.application_errors import APIError
 from bluefire.config import AIConfig, AIProviderConfig, AutonomyLevel
 from bluefire.service import BlueFireService
+from tests_platform.ai_live_authorization_support import authorize_service
 from tests_platform.test_api import request as http_request
 from tests_platform.test_api import running_server
 from tests_platform.test_detection_evaluations import observed_run
@@ -113,6 +114,7 @@ def setup(tmp_path, request):
         service.config.ai.fallback_provider,
         (provider, *service.config.ai.providers),
     )
+    authorize_service(service, provider)
     run_id, rows = observed_run(service, tmp_path)
     discovered = service.detection_creation_source({"run_id": run_id})
     selected = {

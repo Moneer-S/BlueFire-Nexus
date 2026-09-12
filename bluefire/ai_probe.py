@@ -106,6 +106,24 @@ def check_provider(
         if set(output) != {"ok"} or output["ok"] is not True:
             raise AIWireError("response_invalid", "Provider did not return the check schema.")
     except AIProviderTransportError as exc:
+        if exc.code in {
+            "live_authorization_required",
+            "live_authorization_invalid",
+            "live_authorization_expired",
+            "live_context_unavailable",
+            "live_usage_exhausted",
+            "live_request_out_of_scope",
+            "live_configuration_invalid",
+            "live_data_policy_invalid",
+            "live_store_unavailable",
+        }:
+            result.update(
+                attempts=0,
+                connectivity="not_tested",
+                code=exc.code,
+                message="No model request was sent. Review the exact provider, permitted purpose and remaining data and usage limits.",
+            )
+            return result
         messages = {
             "authentication_failed": "The endpoint rejected authentication. Check the referenced credential and account access.",
             "rate_limited": "The endpoint rate-limited this request. No retry was sent.",

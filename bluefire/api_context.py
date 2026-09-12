@@ -36,6 +36,10 @@ class PlatformService(Protocol):
     def check_ai_provider(self, request: JsonObject) -> JsonResult:
         """Check explicit provider readiness or request one bounded live probe."""
 
+    def ai_authorizations(self) -> JsonResult: ...
+    def authorize_ai(self, request: JsonObject) -> JsonResult: ...
+    def revoke_ai_authorization(self, authorization_id: str, request: JsonObject) -> JsonResult: ...
+
     def settings(self) -> JsonResult:
         """List secret-safe local product settings."""
 

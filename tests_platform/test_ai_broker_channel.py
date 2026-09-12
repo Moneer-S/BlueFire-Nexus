@@ -24,6 +24,7 @@ from bluefire.prepared_lab_enrollment import enroll, product_config
 from bluefire.runner_lifecycle import ManagedRunnerLifecycle
 from bluefire.service import BlueFireService
 from bluefire.util import canonical_json_bytes
+from tests_platform.ai_live_authorization_support import authorize_broker, authorize_service
 from tests_platform.test_ai_drafts import _model_draft
 from tests_platform.test_ai_integration import _request as run_request
 from tests_platform.test_ai_wire_runtime import _envelope, _provider_config
@@ -149,6 +150,7 @@ def start(pair, kind=AIProviderKind.CHAT_COMPLETIONS):
     worker = threading.Thread(target=serve)
     worker.start()
     access = BrokeredAIProviderAccess(enrollment, SocketBrokerChannel(pair[0]))
+    authorize_broker(access, provider)
     return provider, enrollment, access, transport, worker, errors
 
 
@@ -163,6 +165,7 @@ def test_setup_graph_and_simulated_proposal_use_actual_broker_frames_and_normal_
         runner_lifecycle=ManagedRunnerLifecycle(tmp_path / "managed"),
         ai_provider_access=access,
     )
+    authorize_service(service, provider)
     try:
         checked = service.check_ai_provider({"provider": provider.to_dict(), "connect": True})
         assert checked["code"] == "probe_passed" and checked["credential_owner"] == "broker"
@@ -200,7 +203,7 @@ def test_cancel_drains_exact_response_then_allows_next_request(pair):
         structured_request(
             provider,
             instructions="Check",
-            input_text="{}",
+            input_text="Synthetic connection test. No scenario or evidence is supplied.",
             name="bluefire_connection_check",
             schema=_SCHEMA,
         )
@@ -311,7 +314,7 @@ def test_completed_readiness_request_id_cannot_be_reused_for_post(pair):
             structured_request(
                 provider,
                 instructions="Check",
-                input_text="{}",
+                input_text="Synthetic connection test. No scenario or evidence is supplied.",
                 name="bluefire_connection_check",
                 schema=_SCHEMA,
             )
@@ -347,7 +350,7 @@ def test_active_request_eof_cancels_transport_and_joins_exact_request_thread(pai
         structured_request(
             provider,
             instructions="Check",
-            input_text="{}",
+            input_text="Synthetic connection test. No scenario or evidence is supplied.",
             name="bluefire_connection_check",
             schema=_SCHEMA,
         )

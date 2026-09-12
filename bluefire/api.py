@@ -294,6 +294,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             if self._routes._management_query_free():
                 self._dispatch(lambda: self.platform_server.service.settings())
             return
+        if path == f"{API_PREFIX}/ai/authorizations":
+            if self._routes._management_query_free():
+                self._dispatch(lambda: self.platform_server.service.ai_authorizations())
+            return
         action_package_request = self._routes._action_package_request(path)
         if action_package_request is not None:
             package_id, package_version, package_action = action_package_request
@@ -684,6 +688,19 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if path == f"{API_PREFIX}/ai/providers/check":
             if self._routes._management_query_free():
                 self._dispatch(lambda: self.platform_server.service.check_ai_provider(body))
+            return
+        if path == f"{API_PREFIX}/ai/authorizations":
+            if self._routes._management_query_free():
+                self._dispatch(lambda: self.platform_server.service.authorize_ai(body))
+            return
+        if path.startswith(f"{API_PREFIX}/ai/authorizations/") and path.endswith("/revoke"):
+            if self._routes._management_query_free():
+                authorization_id = path[len(f"{API_PREFIX}/ai/authorizations/") : -len("/revoke")]
+                self._dispatch(
+                    lambda: self.platform_server.service.revoke_ai_authorization(
+                        authorization_id, body
+                    )
+                )
             return
         if path == f"{API_PREFIX}/ai/drafts":
             if self._routes._management_query_free():

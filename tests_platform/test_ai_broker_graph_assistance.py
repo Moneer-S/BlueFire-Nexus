@@ -12,6 +12,7 @@ from bluefire.prepared_lab_enrollment import product_config
 from bluefire.runner_lifecycle import ManagedRunnerLifecycle
 from bluefire.service import BlueFireService
 from tests_platform import test_ai_broker_channel as support
+from tests_platform.ai_live_authorization_support import authorize_service
 from tests_platform.test_graph_ai_jobs import Access, proposed
 from tests_platform.test_graph_ai_step_edit import configure
 
@@ -41,6 +42,7 @@ def test_enrolled_graph_turn_and_proposal_retain_native_review_boundary(
         runner_lifecycle=ManagedRunnerLifecycle(tmp_path / "managed"),
         ai_provider_access=access,
     )
+    authorize_service(service, provider)
     try:
         context = service.assistance_graph_context()
         body = {

@@ -152,6 +152,18 @@ class SocketBrokerChannel:
                 and result.get("code") in ERROR_CODES
                 and type(result.get("retryable")) is bool
             )
+        elif request.get("kind") in {"authorize", "revoke"}:
+            identity = (
+                request["authorization"]["authorization_id"]
+                if request["kind"] == "authorize"
+                else request["authorization_id"]
+            )
+            valid = result == {
+                **binding,
+                "kind": "authorization",
+                "authorization_id": identity,
+                "status": "active" if request["kind"] == "authorize" else "revoked",
+            }
         elif request.get("kind") == "readiness":
             valid = (
                 set(result) == common | {"credential_state"}

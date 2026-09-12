@@ -39,6 +39,7 @@ from .ai import (
     build_ai_provider,
     validate_persisted_proposal_record,
 )
+from .ai_authorized_access import AuthorizedAIProviderAccess
 from .ai_drafts import (
     AIDraftError,
     AIDraftProvider,
@@ -245,7 +246,7 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             ai_draft_provider_factory or _default_ai_draft_provider_factory
         )
         self._provider_check_transport = ManagedAIJSONTransport()
-        self._provider_access = ai_provider_access or DirectAIProviderAccess(
+        provider_access = ai_provider_access or DirectAIProviderAccess(
             transport=self._provider_check_transport
         )
         self._runtime_configuration_lock = threading.RLock()
@@ -256,6 +257,10 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         self.product_store = ProductStore(
             product_db_path or self.store.root / "bluefire-product.sqlite3"
         )
+        self._authorized_provider_access = AuthorizedAIProviderAccess(
+            provider_access, self.product_store
+        )
+        self._provider_access: AIProviderAccess = self._authorized_provider_access
         self._catalog_snapshot = self._load_action_catalog_snapshot()
         self.registry = self._catalog_snapshot.registry
         self._scenarios = self._load_scenarios()
@@ -530,7 +535,46 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             raise APIError(
                 HTTPStatus.BAD_REQUEST, "ai_provider_configuration_invalid", str(exc)
             ) from exc
-        return check_provider(provider, connect=request["connect"], access=self._provider_access)
+        return check_provider(
+            provider,
+            connect=request["connect"],
+            access=(
+                self._provider_access
+                if request["connect"]
+                else self._authorized_provider_access.access
+            ),
+        )
+
+    def ai_authorizations(self) -> Mapping[str, Any]:
+        return self._authorized_provider_access.list()
+
+    def authorize_ai(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        try:
+            return self._authorized_provider_access.authorize(request)
+        except AIProviderError as exc:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                getattr(exc, "code", "live_authorization_invalid"),
+                "Model data and usage authorization was refused. Check the exact configuration, scope and limits.",
+            ) from None
+
+    def revoke_ai_authorization(
+        self, authorization_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        if request:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "live_authorization_invalid",
+                "Revocation requires an empty request.",
+            )
+        try:
+            return self._authorized_provider_access.revoke(authorization_id)
+        except AIProviderError as exc:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                getattr(exc, "code", "live_authorization_invalid"),
+                "Model authorization could not be revoked.",
+            ) from None
 
     def draft_ai_graph(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         """Return one validated, normalized, deliberately unsaved scenario draft."""
