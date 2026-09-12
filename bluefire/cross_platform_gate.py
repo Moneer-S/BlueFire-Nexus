@@ -33,6 +33,8 @@ from .defense_frontier_gate import (
     _isolated_python_environment,
     _run_bounded_helper_process,
 )
+from .gate_helper_diagnostics import helper_failure_detail, protocol_failure_classification
+from .gate_private_diagnostics import PRIVATE_DIAGNOSTICS_ENV
 from .product_acceptance_run_bundle import acceptance_run_binding
 from .runner_bootstrap import current_architecture
 
@@ -62,6 +64,7 @@ _SUITE_INFRASTRUCTURE_FAILURES = frozenset(
     }
 )
 _ACCEPTANCE_ENVIRONMENT = (
+    PRIVATE_DIAGNOSTICS_ENV,
     "BLUEFIRE_ACCEPTANCE_ID",
     "BLUEFIRE_ACCEPTANCE_GATE_ID",
     "BLUEFIRE_ACCEPTANCE_CONTRACT_SHA256",
@@ -531,6 +534,9 @@ def _run_helper(repository: Path, evidence_dir: Path) -> Mapping[str, Any]:
                 repository=repository,
                 environment=environment,
                 timeout_seconds=1_500,
+                diagnostic_path=evidence_dir / "helper-process-diagnostic.json",
+                expected_schema=HELPER_SCHEMA,
+                expected_reports=REPORT_PATHS,
             )
             summary = json.loads(
                 output.decode("utf-8"),
@@ -567,9 +573,17 @@ def _run_helper(repository: Path, evidence_dir: Path) -> Mapping[str, Any]:
             "exit_code": returncode,
             "command": reported,
             "protocol_valid": valid_shape,
+            "failure_classification": protocol_failure_classification(summary, returncode, passed),
             "passed": passed,
         }
-    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError, ValueError):
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as exc:
         return {
             "schema_version": None,
             "status": "failed",
@@ -577,6 +591,7 @@ def _run_helper(repository: Path, evidence_dir: Path) -> Mapping[str, Any]:
             "reports": [],
             "run_count": 0,
             "exit_code": None,
+            "failure_classification": helper_failure_detail(exc),
             "command": reported,
             "protocol_valid": False,
             "passed": False,
@@ -723,7 +738,12 @@ def run_gate_11(
             return _failure(("Linux helper failed without a valid typed availability report", exc))
         return Gate11Outcome(status="failed", proofs=(), failure_reason=reason)
     if helper.get("passed") is not True:
-        return _failure(("cross-platform helper failed or returned an invalid protocol",))
+        return _failure(
+            (
+                "cross-platform helper failed or returned an invalid protocol: "
+                + str(helper.get("failure_classification", "unclassified")),
+            )
+        )
 
     suite = _run_pytest_suite(
         repository,

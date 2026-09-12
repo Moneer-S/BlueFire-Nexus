@@ -21,6 +21,19 @@ from .defense_frontier_gate import (
     _isolated_python_environment,
     _run_bounded_helper_process,
 )
+from .gate_frontend_report import vitest_inventory
+from .gate_helper_diagnostics import (
+    GateHelperFailure,
+    helper_failure_detail,
+    json_classification,
+    output_diagnostic,
+    protocol_failure_classification,
+)
+from .gate_private_diagnostics import (
+    PRIVATE_DIAGNOSTICS_ENV,
+    private_capture_root,
+    retain_private_output,
+)
 from .operator_ui_gate_validation import (
     CHECK_NAMES,
     OperatorUIGateValidationError,
@@ -45,6 +58,7 @@ FRONTEND_SCHEMA = "bluefire.operator-ui-frontend-suite.v1"
 _MAX_FRONTEND_OUTPUT_BYTES = 4 * 1024 * 1024
 
 _ACCEPTANCE_ENVIRONMENT = (
+    PRIVATE_DIAGNOSTICS_ENV,
     "BLUEFIRE_ACCEPTANCE_ID",
     "BLUEFIRE_ACCEPTANCE_GATE_ID",
     "BLUEFIRE_ACCEPTANCE_CONTRACT_SHA256",
@@ -179,6 +193,9 @@ def _run_helper(repository: Path, evidence_dir: Path) -> Mapping[str, Any]:
                 repository=repository,
                 environment=environment,
                 timeout_seconds=420,
+                diagnostic_path=evidence_dir / "helper-process-diagnostic.json",
+                expected_schema=HELPER_SCHEMA,
+                expected_reports=REPORT_PATHS,
             )
             summary = json.loads(output.decode("utf-8"))
         protocol_valid = bool(
@@ -196,13 +213,24 @@ def _run_helper(repository: Path, evidence_dir: Path) -> Mapping[str, Any]:
             "exit_code": returncode,
             "command": reported,
             "protocol_valid": protocol_valid,
+            "failure_classification": protocol_failure_classification(
+                summary, returncode, returncode == 0 and protocol_valid
+            ),
         }
-    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError, ValueError):
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as exc:
         return {
             "passed": False,
             "exit_code": None,
             "command": reported,
             "protocol_valid": False,
+            "failure_classification": helper_failure_detail(exc),
         }
 
 
@@ -252,27 +280,59 @@ def _run_node_command(
     frontend: Path,
     environment: Mapping[str, str],
     timeout_seconds: int,
+    evidence_dir: Path | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     command = [os.fspath(node), os.fspath(script), *arguments]
     # File-backed output prevents a failed Node worker from retaining an
     # inherited pipe and hanging the gate after its bounded parent exits.
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-        completed = subprocess.run(
-            command,
-            cwd=frontend,
-            env=dict(environment),
-            stdin=subprocess.DEVNULL,
-            stdout=stdout,
-            stderr=stderr,
-            check=False,
-            timeout=timeout_seconds,
-        )
+
+        def preserve_failure_output(classification: str, exit_code: int | None) -> None:
+            captures: list[bytes] = []
+            sizes: list[int] = []
+            for stream in (stdout, stderr):
+                stream.flush()
+                stream.seek(0, os.SEEK_END)
+                sizes.append(stream.tell())
+                stream.seek(0)
+                captures.append(stream.read(8193))
+            retain_private_output(
+                repository=frontend.parent,
+                evidence_dir=evidence_dir or frontend.parent,
+                stdout=captures[0],
+                stderr=captures[1],
+                source={
+                    "kind": "frontend_process",
+                    "command": command,
+                    "classification": classification,
+                    "exit_code": exit_code,
+                    "timeout_seconds": timeout_seconds,
+                    "stdout_total_bytes": sizes[0],
+                    "stderr_total_bytes": sizes[1],
+                },
+            )
+
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=frontend,
+                env=dict(environment),
+                stdin=subprocess.DEVNULL,
+                stdout=stdout,
+                stderr=stderr,
+                check=False,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            preserve_failure_output("timeout", None)
+            raise
         outputs: list[bytes] = []
         for stream in (stdout, stderr):
             stream.flush()
             stream.seek(0, os.SEEK_END)
             if stream.tell() > _MAX_FRONTEND_OUTPUT_BYTES:
-                raise ValueError("frontend suite output exceeded its bound")
+                preserve_failure_output("output_bound_exceeded", completed.returncode)
+                raise GateHelperFailure("output_bound_exceeded")
             stream.seek(0)
             outputs.append(stream.read(_MAX_FRONTEND_OUTPUT_BYTES + 1))
     return subprocess.CompletedProcess(
@@ -284,32 +344,10 @@ def _run_node_command(
 
 
 def _vitest_ids(value: Any, frontend: Path) -> list[str]:
-    if not isinstance(value, Mapping) or not isinstance(value.get("testResults"), list):
-        raise ValueError("Vitest JSON report is invalid")
-    test_ids: list[str] = []
-    for result in value["testResults"]:
-        if not isinstance(result, Mapping) or not isinstance(result.get("assertionResults"), list):
-            raise ValueError("Vitest file result is invalid")
-        raw_name = result.get("name")
-        if not isinstance(raw_name, str):
-            raise ValueError("Vitest file identity is invalid")
-        path = Path(raw_name).resolve(strict=True)
-        try:
-            relative = path.relative_to(frontend).as_posix()
-        except ValueError as exc:
-            raise ValueError("Vitest result escaped the frontend root") from exc
-        for assertion in result["assertionResults"]:
-            if (
-                not isinstance(assertion, Mapping)
-                or assertion.get("status") != "passed"
-                or not isinstance(assertion.get("title"), str)
-                or not isinstance(assertion.get("ancestorTitles"), list)
-                or not all(isinstance(item, str) for item in assertion["ancestorTitles"])
-            ):
-                raise ValueError("Vitest assertion did not pass exactly")
-            parts = [relative, *assertion["ancestorTitles"], assertion["title"]]
-            test_ids.append("::".join(parts))
-    return sorted(test_ids)
+    inventory = vitest_inventory(value, frontend)
+    if inventory["failed"] or inventory["skipped"]:
+        raise ValueError("Vitest assertion did not pass exactly")
+    return inventory["passed"]
 
 
 def _run_frontend_suite(repository: Path, evidence_dir: Path) -> Mapping[str, Any]:
@@ -337,7 +375,36 @@ def _run_frontend_suite(repository: Path, evidence_dir: Path) -> Mapping[str, An
             "--reporter=json",
         ],
     }
+    exit_codes: dict[str, int | None] = {"typecheck": None, "lint": None, "unit": None}
+    diagnostic: dict[str, Any] = {
+        "schema_version": "bluefire.gate-frontend-diagnostic.v1",
+        "stage": "typecheck",
+        "classification": "not_started",
+        "inventory_known": False,
+        "outputs": {},
+    }
+
+    def observe(stage: str, result: subprocess.CompletedProcess[bytes]) -> None:
+        exit_codes[stage] = result.returncode
+        diagnostic["outputs"][stage] = {
+            "stdout": output_diagnostic(result.stdout),
+            "stderr": output_diagnostic(result.stderr),
+            "private_capture": retain_private_output(
+                repository=repository,
+                evidence_dir=evidence_dir,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                source={
+                    "kind": "frontend_process",
+                    "stage": stage,
+                    "exit_code": result.returncode,
+                    "command": [str(node), str(scripts[stage]), *reported[stage][2:]],
+                },
+            ),
+        }
+
     try:
+        private_capture_root(repository, evidence_dir)
         with tempfile.TemporaryDirectory(
             prefix=".gate08-frontend-", dir=_runtime_temp_parent()
         ) as raw:
@@ -350,7 +417,10 @@ def _run_frontend_suite(repository: Path, evidence_dir: Path) -> Mapping[str, An
                 frontend=frontend,
                 environment=environment,
                 timeout_seconds=180,
+                evidence_dir=evidence_dir,
             )
+            observe("typecheck", typecheck)
+            diagnostic["stage"] = "lint"
             lint = _run_node_command(
                 node,
                 scripts["lint"],
@@ -358,7 +428,10 @@ def _run_frontend_suite(repository: Path, evidence_dir: Path) -> Mapping[str, An
                 frontend=frontend,
                 environment=environment,
                 timeout_seconds=180,
+                evidence_dir=evidence_dir,
             )
+            observe("lint", lint)
+            diagnostic["stage"] = "unit"
             unit = _run_node_command(
                 node,
                 scripts["unit"],
@@ -366,35 +439,56 @@ def _run_frontend_suite(repository: Path, evidence_dir: Path) -> Mapping[str, An
                 frontend=frontend,
                 environment=environment,
                 timeout_seconds=300,
+                evidence_dir=evidence_dir,
             )
-            parsed = json.loads(unit.stdout.decode("utf-8")) if unit.returncode == 0 else None
-            test_ids = _vitest_ids(parsed, frontend) if parsed is not None else []
+            observe("unit", unit)
+            classification, parsed = json_classification(unit.stdout)
+            if classification != "json_object":
+                raise GateHelperFailure(classification)
+            inventory = vitest_inventory(parsed, frontend)
+            diagnostic["inventory_known"] = True
+            passed = (
+                typecheck.returncode == lint.returncode == unit.returncode == 0
+                and not inventory["failed"]
+                and not inventory["skipped"]
+                and parsed.get("success") is not False
+                and not parsed.get("numFailedTests", 0)
+                and not parsed.get("numPendingTests", 0)
+                and not parsed.get("numFailedTestSuites", 0)
+            )
+            diagnostic["classification"] = "completed" if passed else "frontend_failed"
         report = {
             "schema_version": FRONTEND_SCHEMA,
-            "passed": typecheck.returncode == lint.returncode == unit.returncode == 0,
+            "passed": passed,
             "commands": reported,
-            "exit_codes": {
-                "typecheck": typecheck.returncode,
-                "lint": lint.returncode,
-                "unit": unit.returncode,
-            },
-            "tests": len(test_ids),
-            "passed_tests": test_ids,
-            "failed_tests": [],
-            "skipped_tests": [],
+            "exit_codes": exit_codes,
+            "tests": sum(len(identifiers) for identifiers in inventory.values()),
+            "passed_tests": inventory["passed"],
+            "failed_tests": inventory["failed"],
+            "skipped_tests": inventory["skipped"],
         }
-    except (OSError, subprocess.TimeoutExpired, UnicodeError, json.JSONDecodeError, ValueError):
+    except (
+        OSError,
+        subprocess.TimeoutExpired,
+        UnicodeError,
+        json.JSONDecodeError,
+        ValueError,
+    ) as exc:
+        diagnostic["classification"] = (
+            "timeout" if isinstance(exc, subprocess.TimeoutExpired) else helper_failure_detail(exc)
+        )
         report = {
             "schema_version": FRONTEND_SCHEMA,
             "passed": False,
             "commands": reported,
-            "exit_codes": {"typecheck": None, "lint": None, "unit": None},
+            "exit_codes": exit_codes,
             "tests": 0,
             "passed_tests": [],
             "failed_tests": ["frontend_suite_failed"],
             "skipped_tests": [],
         }
     _write_json(evidence_dir / FRONTEND_REPORT, report)
+    _write_json(evidence_dir / "gate08-frontend-diagnostic.json", diagnostic)
     return report
 
 
@@ -548,7 +642,10 @@ def run_gate_08(
     checks: Mapping[str, bool] = {}
     bundles: tuple[Mapping[str, str], ...] = ()
     if helper.get("passed") is not True:
-        issues.append("operator UI production browser helper failed")
+        issues.append(
+            "operator UI production browser helper failed: "
+            + str(helper.get("failure_classification", "unclassified"))
+        )
     if not _frontend_suite_is_exact(frontend):
         issues.append("operator UI frontend typecheck, lint, or exact unit suite failed")
     if not _suite_is_exact(suite):

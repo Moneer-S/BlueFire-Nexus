@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import traceback
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -19,6 +21,8 @@ from bluefire.cross_platform_journey import (
     CrossPlatformJourneyError,
     produce_cross_platform_evidence,
 )
+from bluefire.gate_helper_diagnostics import exception_diagnostic
+from bluefire.gate_private_diagnostics import PRIVATE_DIAGNOSTICS_ENV, retain_private_output
 
 
 def _failure() -> dict[str, object]:
@@ -59,7 +63,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             if summary.get("status") == "passed" or summary.get("blocking_check") == LINUX_CHECK
             else 1
         )
-    except (CrossPlatformJourneyError, OSError, RuntimeError, TypeError, ValueError):
+    except (CrossPlatformJourneyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        diagnostic = dict(exception_diagnostic(exc))
+        if os.environ.get(PRIVATE_DIAGNOSTICS_ENV):
+            try:
+                retain_private_output(
+                    repository=args.repository,
+                    evidence_dir=args.evidence_dir,
+                    stdout=b"",
+                    stderr="".join(
+                        traceback.format_exception(type(exc), exc, exc.__traceback__)
+                    ).encode("utf-8"),
+                    source={"kind": "cross_platform_exception", **exception_diagnostic(exc)},
+                )
+                diagnostic["private_exception_capture"] = "retained"
+            except (OSError, RuntimeError, ValueError):
+                # Preserve the original failure classification even if storage itself failed.
+                diagnostic["private_exception_capture"] = "unavailable"
+        print(json.dumps(diagnostic, sort_keys=True), file=sys.stderr)
         summary = _failure()
         exit_code = 1
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))

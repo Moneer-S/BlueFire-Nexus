@@ -28,7 +28,18 @@ from .defense_frontier_validation import (
     DefenseFrontierValidationError,
     validate_persisted_frontier,
 )
-from .product_acceptance_process import _execute_workflow, _playwright_browsers_path
+from .gate_helper_diagnostics import (
+    GateHelperFailure,
+    helper_failure_detail,
+    protocol_failure_classification,
+    record_helper_outcome,
+)
+from .gate_private_diagnostics import PRIVATE_DIAGNOSTICS_ENV, private_capture_root
+from .product_acceptance_process import (
+    WorkflowOutcome,
+    _execute_workflow,
+    _playwright_browsers_path,
+)
 from .product_acceptance_run_bundle import acceptance_run_binding, validated_run_bundle
 from .runner_bootstrap import current_architecture
 
@@ -36,6 +47,7 @@ VERIFICATION_REPORT = "gate04-verification-report.json"
 VERIFICATION_SCHEMA = "bluefire.defense-frontier-verification.v1"
 _MAX_REPORT_BYTES = 8 * 1024 * 1024
 _ACCEPTANCE_ENVIRONMENT = (
+    PRIVATE_DIAGNOSTICS_ENV,
     "BLUEFIRE_ACCEPTANCE_ID",
     "BLUEFIRE_ACCEPTANCE_GATE_ID",
     "BLUEFIRE_ACCEPTANCE_CONTRACT_SHA256",
@@ -299,22 +311,49 @@ def _run_bounded_helper_process(
     repository: Path,
     environment: Mapping[str, str],
     timeout_seconds: int,
+    diagnostic_path: Path | None = None,
+    expected_schema: str | None = None,
+    expected_reports: Sequence[str] | None = None,
 ) -> tuple[int, bytes]:
+    if diagnostic_path is not None and os.path.lexists(diagnostic_path):
+        raise FileExistsError("helper diagnostic already exists")
+    evidence_dir = (
+        diagnostic_path.parent if diagnostic_path is not None else Path(environment["TMP"])
+    )
+    private_capture_root(repository, evidence_dir)
     stdout_path = Path(environment["TMP"]) / "gate04-helper.stdout"
     stderr_path = Path(environment["TMP"]) / "gate04-helper.stderr"
-    outcome = _execute_workflow(
-        command,
-        repository=repository,
-        environment=environment,
-        timeout_seconds=timeout_seconds,
+    try:
+        outcome = _execute_workflow(
+            command,
+            repository=repository,
+            environment=environment,
+            timeout_seconds=timeout_seconds,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+        )
+    except OSError:
+        outcome = WorkflowOutcome(None, "helper process I/O failed")
+    classification, output = record_helper_outcome(
+        diagnostic_path,
         stdout_path=stdout_path,
         stderr_path=stderr_path,
+        exit_code=outcome.exit_code,
+        failure_reason=outcome.failure_reason,
+        timeout_seconds=timeout_seconds,
+        expected_schema=expected_schema,
+        expected_reports=expected_reports,
+        repository=repository,
+        evidence_dir=evidence_dir,
+        command=command,
     )
-    if outcome.exit_code is None or outcome.failure_reason is not None:
-        raise OSError("GATE-04 helper process containment failed")
-    if stdout_path.stat().st_size > 8_192 or stderr_path.stat().st_size > 8_192:
-        raise ValueError("GATE-04 helper output exceeded its byte bound")
-    return outcome.exit_code, stdout_path.read_bytes()
+    if outcome.exit_code is None or classification not in {
+        "completed",
+        "nonzero_exit",
+        "helper_reported_failure",
+    }:
+        raise GateHelperFailure(classification)
+    return outcome.exit_code, output
 
 
 def _run_helper(repository: Path, evidence_dir: Path) -> Mapping[str, Any]:
@@ -360,6 +399,9 @@ def _run_helper(repository: Path, evidence_dir: Path) -> Mapping[str, Any]:
                 repository=repository,
                 environment=environment,
                 timeout_seconds=780,
+                diagnostic_path=evidence_dir / "helper-process-diagnostic.json",
+                expected_schema=HELPER_SCHEMA,
+                expected_reports=REPORT_PATHS,
             )
             summary = json.loads(output.decode("utf-8"))
         valid = (
@@ -375,6 +417,9 @@ def _run_helper(repository: Path, evidence_dir: Path) -> Mapping[str, Any]:
             "exit_code": returncode,
             "command": reported,
             "protocol_valid": valid,
+            "failure_classification": protocol_failure_classification(
+                summary, returncode, returncode == 0 and valid
+            ),
         }
     except (
         OSError,
@@ -387,6 +432,7 @@ def _run_helper(repository: Path, evidence_dir: Path) -> Mapping[str, Any]:
         return {
             "passed": False,
             "exit_code": None,
+            "failure_classification": helper_failure_detail(exc),
             "command": reported,
             "protocol_valid": False,
             "failure_type": type(exc).__name__,
@@ -480,7 +526,10 @@ def run_gate_04(
     checks: Mapping[str, bool] = {}
     bundles: tuple[Mapping[str, str], ...] = ()
     if helper.get("passed") is not True:
-        issues.append("defense frontier helper failed or returned an invalid protocol")
+        issues.append(
+            "defense frontier helper failed or returned an invalid protocol: "
+            + str(helper.get("failure_classification", "unclassified"))
+        )
     if suite.get("passed") is not True or suite.get("tests") != _EXPECTED_CONTRACT_TEST_COUNT:
         issues.append("defense frontier focused regression suite failed or skipped")
     try:

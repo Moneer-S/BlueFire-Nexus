@@ -260,6 +260,24 @@ Do not push, merge, rewrite history, publish packages/releases, or change remote
 
 ## Release checklist
 
+For local acceptance diagnosis, create a dedicated empty directory outside every Git
+checkout and outside the acceptance bundle, then set
+`BLUEFIRE_ACCEPTANCE_PRIVATE_DIAGNOSTICS` to its absolute path before invoking the
+existing gate or acceptance command. BlueFire verifies that root and uses its
+existing owner-only directory/file controls. This option is refused in CI.
+
+Each capture retains the first 8 KiB of the original stdout and stderr, with an
+explicit truncation flag, byte counts, command/source details, and available
+acceptance binding in a private `source.json`. GATE-11 also retains its original
+exception traceback there. Public diagnostic records contain classifications,
+hashes, and a capture reference only. Unconfigured private capture is explicitly
+reported; no raw output is included in a passing proof or a gate receipt.
+
+These private captures may contain paths, credentials, or other sensitive output.
+Never commit them, upload them to CI artifacts, or include them in PRs or releases.
+Preserve them locally until the failing invocation and cleanup have been diagnosed;
+review and sanitize any excerpt separately before sharing it.
+
 - Python, Rust, frontend, browser, security, package, installed-wheel, API, CLI, and opt-in disposable E2E checks pass.
 - Version is consistent across Python, Rust, and frontend metadata.
 - Eight packaged/check-out scenarios and twenty action descriptors remain in parity.

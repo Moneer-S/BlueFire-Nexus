@@ -52,6 +52,7 @@ _HOST_IDENTITY_ENV = {
 _WORKFLOW_ENV_ALLOWLIST = frozenset(
     {
         "APPDATA",
+        "BLUEFIRE_ACCEPTANCE_PRIVATE_DIAGNOSTICS",
         "CC",
         "CI",
         "COMSPEC",
@@ -96,6 +97,11 @@ class _WorkflowIsolationError(OSError):
 
 
 def _workflow_environment() -> dict[str, str]:
+    if os.environ.get("BLUEFIRE_ACCEPTANCE_PRIVATE_DIAGNOSTICS") and any(
+        os.environ.get(key, "").lower() not in {"", "0", "false"}
+        for key in ("CI", "GITHUB_ACTIONS")
+    ):
+        raise ValueError("private gate diagnostics are unavailable in CI")
     return {
         key: value for key, value in os.environ.items() if key.upper() in _WORKFLOW_ENV_ALLOWLIST
     }

@@ -32,12 +32,15 @@ from .defense_frontier_gate import (
     _isolated_python_environment,
     _run_bounded_helper_process,
 )
+from .gate_helper_diagnostics import helper_failure_detail, protocol_failure_classification
+from .gate_private_diagnostics import PRIVATE_DIAGNOSTICS_ENV
 from .product_acceptance_run_bundle import acceptance_run_binding
 from .runner_bootstrap import current_architecture
 from .runtime_paths import runtime_temp_parent
 from .util import content_hash
 
 _ACCEPTANCE_ENVIRONMENT = (
+    PRIVATE_DIAGNOSTICS_ENV,
     "BLUEFIRE_ACCEPTANCE_ID",
     "BLUEFIRE_ACCEPTANCE_GATE_ID",
     "BLUEFIRE_ACCEPTANCE_CONTRACT_SHA256",
@@ -132,7 +135,10 @@ def _helper_detail(summary: Any) -> str:
     if not isinstance(summary, Mapping):
         return ""
     code = summary.get("error_code")
-    if isinstance(code, str) and code.replace("_", "").isalnum() and len(code) <= 64:
+    if isinstance(code, str) and code in (
+        "deep_behavior_journey_unproven",
+        "deep_behavior_journey_internal_failure",
+    ):
         return code
     return ""
 
@@ -181,6 +187,9 @@ def _run_helper(repository: Path, evidence_dir: Path) -> tuple[Mapping[str, Any]
                 repository=repository,
                 environment=environment,
                 timeout_seconds=1_500,
+                diagnostic_path=evidence_dir / "helper-process-diagnostic.json",
+                expected_schema=HELPER_SCHEMA,
+                expected_reports=JOURNEY_REPORT_PATHS,
             )
             summary = json.loads(
                 output.decode("utf-8"),
@@ -215,8 +224,19 @@ def _run_helper(repository: Path, evidence_dir: Path) -> tuple[Mapping[str, Any]
             "command": reported,
             "protocol_valid": valid,
             "passed": passed,
-        }, _helper_detail(summary)
-    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError, ValueError):
+        }, (
+            _helper_detail(summary)
+            or protocol_failure_classification(summary, returncode, passed)
+            or ""
+        )
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as exc:
         return {
             "schema_version": None,
             "status": "failed",
@@ -227,7 +247,7 @@ def _run_helper(repository: Path, evidence_dir: Path) -> tuple[Mapping[str, Any]
             "command": reported,
             "protocol_valid": False,
             "passed": False,
-        }, ""
+        }, helper_failure_detail(exc)
 
 
 def _acceptance_binding() -> Mapping[str, str]:
