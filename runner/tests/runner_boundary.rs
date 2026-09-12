@@ -1112,6 +1112,239 @@ fn collection_methods_refuse_changed_source_and_unreviewed_paths_before_writing(
     }
 }
 
+const COLLECTION_LIMIT_METHODS: &[(&str, &str)] = &[
+    ("records", "jsonl"),
+    ("archive", "tar"),
+    #[cfg(target_os = "linux")]
+    ("atomic-gzip", "jsonl.gz"),
+];
+
+fn collection_limit_fixture(root: &TempDir, profile: &RunnerProfile) -> (Vec<u8>, Vec<String>) {
+    let created = runner().execute(
+        manifest(profile, "sandbox.fixture.create.v1", json!({
+            "path": "fixtures/input.jsonl", "content_template": "telemetry-seed", "record_count": 8
+        })),
+        profile.clone(),
+    );
+    assert_eq!(created.status, TaskStatus::Success, "{created:#?}");
+    let transformed = runner().execute(
+        manifest(profile, "sandbox.fixture.transform.v1", json!({
+            "input": "fixtures/input.jsonl", "output": "fixtures/transformed.jsonl", "redact_values": false
+        })),
+        profile.clone(),
+    );
+    assert_eq!(transformed.status, TaskStatus::Success, "{transformed:#?}");
+    let mut receipts = created.receipt_ids;
+    receipts.extend(transformed.receipt_ids);
+    (fs::read(root.path().join("fixtures/transformed.jsonl")).unwrap(), receipts)
+}
+
+fn collection_limit_params(source: &[u8], variant: &str, limit: Option<u64>) -> Value {
+    let mut params = json!({
+        "input": "fixtures/transformed.jsonl", "expected_sha256": sha256_hex(source),
+        "stage_variant": variant
+    });
+    if let Some(limit) = limit {
+        params["max_collection_bytes"] = json!(limit);
+    }
+    params
+}
+
+fn cleanup_collection_receipts(profile: &RunnerProfile, receipts: Vec<String>) {
+    let result = runner().execute(
+        manifest(profile, "sandbox.cleanup.v1", json!({"receipt_ids": receipts})),
+        profile.clone(),
+    );
+    assert_eq!(result.status, TaskStatus::Success, "{result:#?}");
+    let cleanup = result.cleanup.unwrap();
+    assert!(cleanup.verification_performed);
+    assert!(cleanup.retained_paths.is_empty());
+    assert!(cleanup.errors.is_empty());
+}
+
+fn assert_collection_not_published(root: &TempDir, source: &[u8], receipt_count: usize) {
+    assert!(!root.path().join("staged").exists());
+    assert_eq!(fs::read(root.path().join("fixtures/transformed.jsonl")).unwrap(), source);
+    assert_eq!(fs::read_dir(root.path().join(".bluefire/receipts")).unwrap().count(), receipt_count);
+    let staging = root.path().join(".bluefire/staging");
+    if staging.exists() {
+        assert!(fs::read_dir(staging).unwrap().next().is_none());
+    }
+}
+
+#[test]
+fn collection_output_limits_keep_legacy_default_and_enforce_exact_publication_boundary() {
+    for &(method, extension) in COLLECTION_LIMIT_METHODS {
+        let root = TempDir::new().unwrap();
+        let profile = profile(&root, Vec::new());
+        let (source, fixture_receipts) = collection_limit_fixture(&root, &profile);
+        let action = format!("sandbox.collection.{method}.v1");
+        let artifact = root.path().join(format!("staged/collection/bundle.{extension}"));
+        let legacy = runner().execute(
+            manifest(&profile, &action, collection_limit_params(&source, "primary", None)),
+            profile.clone(),
+        );
+        assert_eq!(legacy.status, TaskStatus::Success, "{legacy:#?}");
+        let expected = fs::read(&artifact).unwrap();
+        assert!(expected.len() > 1 && expected.len() <= 1_048_576);
+        cleanup_collection_receipts(&profile, legacy.receipt_ids);
+        for limit in [1, expected.len() as u64 - 1] {
+            let result = runner().execute(
+                manifest(&profile, &action, collection_limit_params(&source, "primary", Some(limit))),
+                profile.clone(),
+            );
+            // gzip has executed a process; the native serializers have not published an effect.
+            let (status, kind) = if method == "atomic-gzip" {
+                (TaskStatus::Failed, EvidenceKind::Executed)
+            } else {
+                (TaskStatus::ControlBlocked, EvidenceKind::ControlBlocked)
+            };
+            assert_eq!(result.status, status, "{result:#?}");
+            assert_eq!(result.error.as_ref().unwrap().code, "collection_output_limit");
+            assert_eq!(result.evidence[0].kind, kind);
+            assert_eq!(result.evidence[0].details["side_effects_started"], method == "atomic-gzip");
+            assert!(result.receipt_ids.is_empty());
+            assert_collection_not_published(&root, &source, fixture_receipts.len());
+        }
+        for limit in [expected.len() as u64, 1_048_576] {
+            let result = runner().execute(
+                manifest(&profile, &action, collection_limit_params(&source, "primary", Some(limit))),
+                profile.clone(),
+            );
+            assert_eq!(result.status, TaskStatus::Success, "{result:#?}");
+            assert_eq!(fs::read(&artifact).unwrap(), expected);
+            assert_eq!(result.output["source_sha256"], sha256_hex(&source));
+            assert_eq!(result.output["size"], expected.len());
+            assert!(expected.len() as u64 <= limit);
+            assert_eq!(result.receipt_ids.len(), 1);
+            cleanup_collection_receipts(&profile, result.receipt_ids);
+        }
+        cleanup_collection_receipts(&profile, fixture_receipts);
+        assert_no_workspace_artifacts(root.path());
+    }
+}
+
+#[test]
+fn collection_output_limits_refuse_invalid_values_and_sealed_parameter_widening_before_effects() {
+    for &(method, _) in COLLECTION_LIMIT_METHODS {
+        let root = TempDir::new().unwrap();
+        let profile = profile(&root, Vec::new());
+        let (source, fixture_receipts) = collection_limit_fixture(&root, &profile);
+        let action = format!("sandbox.collection.{method}.v1");
+        for invalid in [json!(0), json!(1_048_577), json!(u64::MAX), json!(-1),
+            json!(1.5), json!(true), json!("1024"), Value::Null] {
+            let mut params = collection_limit_params(&source, "primary", None);
+            params["max_collection_bytes"] = invalid;
+            let result = runner().execute(manifest(&profile, &action, params), profile.clone());
+            assert_eq!(result.status, TaskStatus::Refused, "{result:#?}");
+            assert_eq!(result.error.as_ref().unwrap().code, "invalid_action_params");
+            assert_eq!(result.evidence[0].kind, EvidenceKind::ControlBlocked);
+            assert_eq!(result.evidence[0].details["side_effects_started"], false);
+            assert!(result.receipt_ids.is_empty());
+            assert_collection_not_published(&root, &source, fixture_receipts.len());
+        }
+        let mut tampered = manifest(&profile, &action, collection_limit_params(&source, "primary", Some(1)));
+        tampered.params["max_collection_bytes"] = json!(1_048_576);
+        let result = runner().execute(tampered, profile.clone());
+        assert_eq!(result.status, TaskStatus::ControlBlocked, "{result:#?}");
+        assert_eq!(result.error.as_ref().unwrap().code, "request_hash_mismatch");
+        assert_eq!(result.evidence[0].details["side_effects_started"], false);
+        assert!(result.receipt_ids.is_empty());
+        assert_collection_not_published(&root, &source, fixture_receipts.len());
+        cleanup_collection_receipts(&profile, fixture_receipts);
+        assert_no_workspace_artifacts(root.path());
+    }
+}
+
+#[test]
+fn collection_output_allowance_does_not_widen_the_manifest_input_read_limit() {
+    for &(method, _) in COLLECTION_LIMIT_METHODS {
+        let root = TempDir::new().unwrap();
+        let profile = profile(&root, Vec::new());
+        let (source, fixture_receipts) = collection_limit_fixture(&root, &profile);
+        let action = format!("sandbox.collection.{method}.v1");
+        let mut request = manifest(&profile, &action, collection_limit_params(&source, "primary", Some(1_048_576)));
+        request.limits.max_artifact_bytes = source.len() as u64 - 1;
+        seal_manifest(&mut request);
+        let result = runner().execute(request, profile.clone());
+        let (status, code) = if method == "records" {
+            (TaskStatus::Failed, "collection_input_failed")
+        } else {
+            (TaskStatus::ControlBlocked, "artifact_limit_blocked")
+        };
+        assert_eq!(result.status, status, "{result:#?}");
+        assert_eq!(result.error.as_ref().unwrap().code, code);
+        assert!(result.receipt_ids.is_empty());
+        assert_collection_not_published(&root, &source, fixture_receipts.len());
+        cleanup_collection_receipts(&profile, fixture_receipts);
+        assert_no_workspace_artifacts(root.path());
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn collection_output_budget_preserves_eight_record_objective_across_real_methods() {
+    let root = TempDir::new().unwrap();
+    let profile = profile(&root, Vec::new());
+    let (source, mut receipts) = collection_limit_fixture(&root, &profile);
+    // Declare the objective independently of the selected container or its reported digest.
+    let objective: Vec<Value> = std::str::from_utf8(&source).unwrap().lines()
+        .map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(objective.len(), 8);
+    for (index, record) in objective.iter().enumerate() {
+        assert_eq!(record["value"], format!("telemetry-value-{:03}", index + 1));
+    }
+    let budget = source.len() as u64;
+    let archive = runner().execute(
+        manifest(&profile, "sandbox.collection.archive.v1", collection_limit_params(&source, "primary", Some(budget))),
+        profile.clone(),
+    );
+    assert_eq!(archive.status, TaskStatus::ControlBlocked, "{archive:#?}");
+    assert_eq!(archive.error.as_ref().unwrap().code, "collection_output_limit");
+    assert!(archive.receipt_ids.is_empty());
+    assert_collection_not_published(&root, &source, receipts.len());
+    for (method, extension) in [("records", "jsonl"), ("atomic-gzip", "jsonl.gz")] {
+        let action = format!("sandbox.collection.{method}.v1");
+        let result = runner().execute(
+            manifest(&profile, &action, collection_limit_params(&source, "primary", Some(budget))),
+            profile.clone(),
+        );
+        assert_eq!(result.status, TaskStatus::Success, "{result:#?}");
+        let path = root.path().join(format!("staged/collection/bundle.{extension}"));
+        let bytes = fs::read(&path).unwrap();
+        assert!(bytes.len() as u64 <= budget);
+        let payload = if method == "atomic-gzip" {
+            assert!(bytes.len() < source.len());
+            // Independently decode the actual product artifact using fixed gzip arguments.
+            let decoded = Command::new("/usr/bin/gzip").args(["-d", "-c"]).arg(&path).output().unwrap();
+            assert!(decoded.status.success(), "{decoded:?}");
+            assert!(decoded.stderr.is_empty());
+            decoded.stdout
+        } else {
+            bytes
+        };
+        assert_eq!(payload, source);
+        let records: Vec<Value> = std::str::from_utf8(&payload).unwrap().lines()
+            .map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(records, objective);
+        receipts.extend(result.receipt_ids);
+    }
+    // A sufficiently large budget still permits USTAR and preserves the same member bytes.
+    let archive = runner().execute(
+        manifest(&profile, "sandbox.collection.archive.v1", collection_limit_params(&source, "heldout", Some(1_048_576))),
+        profile.clone(),
+    );
+    assert_eq!(archive.status, TaskStatus::Success, "{archive:#?}");
+    let bytes = fs::read(root.path().join("staged/variation/bundle.tar")).unwrap();
+    assert!(bytes.len() as u64 > budget);
+    assert_eq!(&bytes[257..263], b"ustar\0");
+    assert_eq!(&bytes[..27], b"fixtures/transformed.jsonl\0");
+    assert_eq!(&bytes[512..512 + source.len()], source.as_slice());
+    receipts.extend(archive.receipt_ids);
+    cleanup_collection_receipts(&profile, receipts);
+    assert_no_workspace_artifacts(root.path());
+}
+
 #[test]
 fn cleanup_refuses_a_receipt_whose_owned_path_metadata_was_rewritten() {
     let root = TempDir::new().unwrap();
