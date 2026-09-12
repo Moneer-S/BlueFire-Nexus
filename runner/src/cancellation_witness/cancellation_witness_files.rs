@@ -50,7 +50,7 @@ struct FileRenameInformation {
     file_name: [u16; 1],
 }
 
-#[link(name = "Kernel32")]
+#[link(name = "kernel32")]
 extern "system" {
     fn GetFileInformationByHandle(
         file: *mut c_void,

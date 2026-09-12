@@ -165,7 +165,7 @@ fn publish_no_replace(source: &Path, destination: &Path, _parent: &Path) -> Resu
     use std::os::windows::ffi::OsStrExt;
 
     const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
-    #[link(name = "Kernel32")]
+    #[link(name = "kernel32")]
     extern "system" {
         fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
     }
