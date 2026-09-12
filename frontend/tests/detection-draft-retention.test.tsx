@@ -44,7 +44,7 @@ async function edit(user: ReturnType<typeof userEvent.setup>) {
   await user.clear(editor);
   // Replace the full SQL document as a user pasting an edited rule would.
   await user.paste(edited);
-  await user.type(screen.getByRole("textbox", { name: "Reason for source revision" }), "Inspect contents observations");
+  await user.click(screen.getByRole("textbox", { name: "Reason for source revision" })); await user.paste("Inspect contents observations");
   expect(screen.getByText("Draft source not validated")).toBeVisible();
 }
 
@@ -91,7 +91,7 @@ it("restores exact selection, filter, tab and failed-save inputs after reload", 
   await edit(user);
   await user.click(screen.getByRole("button", { name: "Validate and save new revision" }));
   await screen.findByText("Validation refused");
-  await user.type(screen.getByRole("textbox", { name: "Search detection candidates" }), "Baseline");
+  await user.click(screen.getByRole("textbox", { name: "Search detection candidates" })); await user.paste("Baseline");
   await user.click(screen.getByRole("tab", { name: "Revisions" }));
   await user.click(screen.getByText("Advanced clone and tune"));
   remount();
@@ -125,7 +125,7 @@ it("separates evidence inputs by source context while preserving the rule draft"
   const action = vi.spyOn(api, "detectionAction");
   await edit(user);
   await user.click(screen.getByRole("tab", { name: "Observed" }));
-  await user.type(screen.getByRole("textbox", { name: /^Evidence IDs/ }), "observed-only-from-original");
+  await user.click(screen.getByRole("textbox", { name: /^Evidence IDs/ })); await user.paste("observed-only-from-original");
   await user.selectOptions(screen.getByRole("combobox", { name: "Detection source run" }), "");
   expect(screen.getByRole("textbox", { name: /^Evidence IDs/ })).toHaveValue("");
   expect(screen.getByRole("combobox", { name: "Finalized run" })).toHaveValue("");
@@ -166,8 +166,8 @@ it("retains benign examples and notes without evaluating them on return", async 
   const action = vi.spyOn(api, "detectionAction");
   await screen.findByRole("heading", { name: "Baseline SQL" });
   await user.click(screen.getByRole("tab", { name: "Fixtures" }));
-  await user.type(screen.getByRole("textbox", { name: /^Benign fixtures JSON/ }), "unfinished benign sample");
-  await user.type(screen.getByRole("textbox", { name: "Benign evaluation notes" }), "Investigate a normal collection");
+  await user.click(screen.getByRole("textbox", { name: /^Benign fixtures JSON/ })); await user.paste("unfinished benign sample");
+  await user.click(screen.getByRole("textbox", { name: "Benign evaluation notes" })); await user.paste("Investigate a normal collection");
   remount();
   expect(await screen.findByRole("textbox", { name: /^Benign fixtures JSON/ })).toHaveValue("unfinished benign sample");
   expect(screen.getByRole("textbox", { name: "Benign evaluation notes" })).toHaveValue("Investigate a normal collection");
@@ -197,7 +197,7 @@ it.each(["malformed", "oversized", "unknown-envelope"])("leaves an unreadable %s
 it("gives an explicit incoming candidate link precedence over a retained selection", async () => {
   const { user, remount } = setup();
   await edit(user);
-  await user.type(screen.getByRole("textbox", { name: "Search detection candidates" }), "Baseline");
+  await user.click(screen.getByRole("textbox", { name: "Search detection candidates" })); await user.paste("Baseline");
   remount(`/detection-lab?run=${demoRuns[1]!.run_id}&candidate=${otherId}&candidate_scope=registry`);
   expect(await screen.findByRole("heading", { name: "Other SQL" })).toBeVisible();
   expect(screen.getByRole("textbox", { name: "Search detection candidates" })).toHaveValue("");
@@ -289,7 +289,7 @@ it("keeps a storage-failed manual draft in this session until explicit discard",
     if (key === manualKey) throw new DOMException("Full", "QuotaExceededError");
     write.call(this, key, value);
   });
-  await user.type(screen.getByRole("textbox", { name: "Title" }), " only in session");
+  await user.click(screen.getByRole("textbox", { name: "Title" })); await user.paste(" only in session");
   expect(screen.getByRole("alert")).toHaveTextContent("only for this open session");
   remount();
   expect(await screen.findByRole("textbox", { name: "Title" })).toBeVisible();
@@ -429,7 +429,7 @@ function conflictError(details: unknown = { existing_candidate_id: id }) {
 }
 async function submitSecond(user: ReturnType<typeof userEvent.setup>) {
   await openManual(user);
-  await user.type(screen.getByRole("textbox", { name: "Title" }), "Second SQL");
+  await user.click(screen.getByRole("textbox", { name: "Title" })); await user.paste("Second SQL");
   await user.click(screen.getByRole("button", { name: "Save rule draft" }));
 }
 
@@ -570,7 +570,7 @@ it("opens the matching saved rule without cloning or losing New rule inputs", as
   const clone = vi.spyOn(api, "cloneDetection");
   await openManual(user);
   await user.click(screen.getByRole("button", { name: /Other SQL/ }));
-  await user.type(screen.getByRole("textbox", { name: "Title" }), "Second SQL");
+  await user.click(screen.getByRole("textbox", { name: "Title" })); await user.paste("Second SQL");
   await user.click(screen.getByRole("button", { name: "Save rule draft" }));
   await user.click(await screen.findByRole("button", { name: "View saved rule" }));
   await waitFor(() => expect(new URLSearchParams(screen.getByTestId("location").textContent!).get("candidate")).toBe(id));

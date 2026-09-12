@@ -30,8 +30,8 @@ it.each(cases)("retains a refused $kind form, locks pending edits/dismissal, and
   await user.click(await screen.findByRole("button", { name: test.trigger }));
   const originalDialog = screen.getByRole("dialog"); const dialog = within(originalDialog);
   const name = dialog.getByLabelText(test.nameLabel);
-  await user.clear(name); await user.type(name, "Retained reviewed metadata");
-  if (test.kind === "plugins") await user.type(dialog.getByLabelText(/^Reviewed SHA-256/), "ab".repeat(32));
+  await user.clear(name); await user.paste("Retained reviewed metadata");
+  if (test.kind === "plugins") { await user.click(dialog.getByLabelText(/^Reviewed SHA-256/)); await user.paste("ab".repeat(32)); }
   await user.click(dialog.getByRole("button", { name: test.save }));
   await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
   expect(screen.getByRole("dialog")).toBe(originalDialog);
@@ -55,7 +55,7 @@ it.each(cases)("retains a refused $kind form, locks pending edits/dismissal, and
   if (test.kind === "plugins") expect(dialog.getByLabelText(/^Reviewed SHA-256/)).toHaveValue("ab".repeat(32));
   let accept!: (value: Awaited<ReturnType<typeof api.saveResource>>) => void;
   save.mockImplementationOnce(() => new Promise((yes) => { accept = yes; }));
-  await user.clear(dialog.getByLabelText(test.idLabel)); await user.type(dialog.getByLabelText(test.idLabel), test.nextId);
+  await user.clear(dialog.getByLabelText(test.idLabel)); await user.paste(test.nextId);
   await user.click(dialog.getByRole("button", { name: test.save }));
   await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
   expect(screen.getByRole("dialog")).toBe(originalDialog);
@@ -72,7 +72,7 @@ it.each(cases)("retains a refused $kind form, locks pending edits/dismissal, and
   expect(screen.getByRole("button", { name: test.trigger })).toHaveFocus();
   await user.click(screen.getByRole("button", { name: test.trigger }));
   const nextDialog = within(screen.getByRole("dialog"));
-  await user.clear(nextDialog.getByLabelText(test.nameLabel)); await user.type(nextDialog.getByLabelText(test.nameLabel), "Next unsaved record");
+  await user.clear(nextDialog.getByLabelText(test.nameLabel)); await user.paste("Next unsaved record");
   expect(nextDialog.getByLabelText(test.nameLabel)).toHaveValue("Next unsaved record");
   expect(nextDialog.queryByRole("alert")).not.toBeInTheDocument(); expect(save).toHaveBeenCalledTimes(2);
   effects.forEach((effect) => expect(effect).not.toHaveBeenCalled());

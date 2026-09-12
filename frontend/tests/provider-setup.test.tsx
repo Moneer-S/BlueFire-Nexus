@@ -25,9 +25,13 @@ describe("explicit provider setup", () => {
     await waitFor(() => expect(screen.getByLabelText("API style")).toBeEnabled());
     expect(screen.getByLabelText("Provider ID", { exact: false })).not.toBeVisible();
     await user.selectOptions(screen.getByLabelText("API style"), "chat_completions");
-    await user.type(screen.getByLabelText("Model ID", { exact: false }), "my-model");
-    await user.type(screen.getByLabelText("Request endpoint", { exact: false }), "https://model.example/v1/chat/completions");
-    await user.type(screen.getByLabelText("Secret environment reference", { exact: false }), "MODEL_API_KEY");
+    // Enter complete setup values through the same clipboard events an operator uses.
+    await user.click(screen.getByLabelText("Model ID", { exact: false }));
+    await user.paste("my-model");
+    await user.click(screen.getByLabelText("Request endpoint", { exact: false }));
+    await user.paste("https://model.example/v1/chat/completions");
+    await user.click(screen.getByLabelText("Secret environment reference", { exact: false }));
+    await user.paste("MODEL_API_KEY");
     expect(api.checkAIProvider).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Check configuration" }));
     await screen.findByText("Configuration checked · connection untested");

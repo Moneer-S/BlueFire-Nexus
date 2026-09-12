@@ -192,6 +192,13 @@ const detectionComparison: DetectionComparisonResponse = {
   },
 };
 
+// These integration cases enter complete values. Per-keystroke lookup and
+// approval invalidation remain covered by their focused interaction tests.
+async function pasteText(user: ReturnType<typeof userEvent.setup>, field: HTMLElement, text: string) {
+  await user.click(field);
+  await user.paste(text);
+}
+
 function json(value: unknown) {
   return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
 }
@@ -308,7 +315,7 @@ describe("product application", () => {
     expect(screen.getByRole("button", { name: "Create approval-gated job" })).toBeEnabled();
     await user.click(screen.getByText("Environment and scope references"));
     await user.clear(screen.getByRole("textbox", { name: /Target scope/ }));
-    await user.type(screen.getByRole("textbox", { name: /Target scope/ }), "sandbox.changed");
+    await pasteText(user, screen.getByRole("textbox", { name: /Target scope/ }), "sandbox.changed");
     expect(screen.queryByRole("region", { name: "Canonical preflight plan" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create approval-gated job" })).toBeDisabled();
   });
@@ -337,7 +344,7 @@ describe("product application", () => {
     await user.click(screen.getByRole("button", { name: "New experiment" }));
     const title = screen.getByRole("textbox", { name: "Experiment name" });
     await user.clear(title);
-    await user.type(title, "Gate 08 local draft");
+    await pasteText(user, title, "Gate 08 local draft");
     await user.click(screen.getByRole("button", { name: "Create draft" }));
 
     expect(await screen.findByRole("heading", { name: "Gate 08 local draft" })).toBeVisible();
@@ -718,7 +725,7 @@ describe("product application", () => {
     await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/replay-preparations"))).toBe(true));
     const targetScope = screen.getByLabelText("Exact target scope");
     await user.clear(targetScope);
-    await user.type(targetScope, "sandbox.changed");
+    await pasteText(user, targetScope, "sandbox.changed");
     resolveFirstPreflight(json(preparation(firstRequest!)));
     await waitFor(() => expect(screen.getByRole("button", { name: "Review Execute replay" })).toBeEnabled());
     expect(screen.getByRole("button", { name: "Continue to approval" })).toBeDisabled();
@@ -761,7 +768,7 @@ describe("product application", () => {
     const baselineChoice = screen.getByRole("checkbox", { name: /MITRE ATT&CK/i });
     await user.click(baselineChoice);
     expect(await screen.findByText("Source handling")).toBeVisible();
-    await user.type(screen.getByRole("textbox", { name: /Required research reason/ }), "Branch reviewed source attribution.");
+    await pasteText(user, screen.getByRole("textbox", { name: /Required research reason/ }), "Branch reviewed source attribution.");
     await user.click(screen.getByRole("button", { name: "Create immutable clone" }));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).endsWith(`/detections/${detectionOriginId}/clone`))).toBe(true));
     const cloneCall = vi.mocked(fetch).mock.calls.find(([input]) => String(input).endsWith(`/detections/${detectionOriginId}/clone`));
@@ -1379,7 +1386,7 @@ describe("product application", () => {
     const approval = await screen.findByRole("checkbox", { name: /I approve this exact immutable job envelope once/ });
     const operator = screen.getByRole("textbox", { name: "Operator identity for this job" });
     await user.click(approval);
-    await user.type(operator, "must-not-cross-job-boundary");
+    await pasteText(user, operator, "must-not-cross-job-boundary");
 
     await user.selectOptions(selector, pausedJob.job_id);
     expect(await findDisplayedJobId(pausedJob.job_id)).toBeVisible();
@@ -1414,7 +1421,7 @@ describe("product application", () => {
     const selector = await screen.findByRole("combobox", { name: "Active durable job" });
     const firstApproval = await screen.findByRole("checkbox", { name: /I approve this exact immutable job envelope once/ });
     await user.click(firstApproval);
-    await user.type(screen.getByRole("textbox", { name: "Operator identity for this job" }), "operator-a");
+    await pasteText(user, screen.getByRole("textbox", { name: "Operator identity for this job" }), "operator-a");
     await user.click(screen.getByRole("button", { name: "Approve and release job" }));
     expect(approvalRequested).toBe(true);
 
@@ -1460,7 +1467,7 @@ describe("product application", () => {
     const approval = await screen.findByRole("checkbox", { name: /I approve this exact immutable job envelope once/ });
     await waitFor(() => expect(approval).toBeEnabled());
     await user.click(approval);
-    await user.type(screen.getByRole("textbox", { name: "Operator identity for this job" }), "operator-a");
+    await pasteText(user, screen.getByRole("textbox", { name: "Operator identity for this job" }), "operator-a");
     deferNextDetail = true;
     const oldDetailRequest = client.refetchQueries({ queryKey: ["job", executeJob.job_id], exact: true });
     await waitFor(() => expect(resolveOldDetail).toBeTypeOf("function"));
@@ -1500,7 +1507,7 @@ describe("product application", () => {
     const approval = await screen.findByRole("checkbox", { name: /I approve this exact immutable job envelope once/ });
     await waitFor(() => expect(approval).toBeEnabled());
     await user.click(approval);
-    await user.type(screen.getByRole("textbox", { name: "Operator identity for this job" }), "operator-a");
+    await pasteText(user, screen.getByRole("textbox", { name: "Operator identity for this job" }), "operator-a");
     await user.click(screen.getByRole("button", { name: "Approve and release job" }));
     await waitFor(() => expect(resolveApproval).toBeTypeOf("function"));
 
@@ -1695,7 +1702,7 @@ describe("product application", () => {
     activeJobInventory = [accepted.job];
     const user = userEvent.setup();
     renderApp(path);
-    if (path === "/ai-planner?view=audit") await user.type(await screen.findByRole("textbox", { name: "Job ID" }), accepted.job.job_id);
+    if (path === "/ai-planner?view=audit") await pasteText(user, await screen.findByRole("textbox", { name: "Job ID" }), accepted.job.job_id);
     const canonical = await screen.findByRole("region", { name: "Canonical preflight plan" });
     expect(canonical).toBeVisible();
     expect(within(canonical).getByText("Files in the selected workspace")).toBeVisible();
@@ -1709,7 +1716,7 @@ describe("product application", () => {
     expect(checkbox).toBeEnabled();
     expect(checkbox).not.toBeChecked();
     await user.click(checkbox);
-    await user.type(screen.getByRole("textbox", { name: /Operator identity/ }), "continuation-reviewer");
+    await pasteText(user, screen.getByRole("textbox", { name: /Operator identity/ }), "continuation-reviewer");
     expect(screen.getByRole("button", { name: /Approve and release/ })).toBeEnabled();
     expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/approval") && init?.method === "POST")).toBe(false);
   });
@@ -1728,7 +1735,7 @@ describe("product application", () => {
     activeJobInventory = [accepted.job];
     const user = userEvent.setup();
     renderApp(path);
-    if (path === "/ai-planner?view=audit") await user.type(await screen.findByRole("textbox", { name: "Job ID" }), accepted.job.job_id);
+    if (path === "/ai-planner?view=audit") await pasteText(user, await screen.findByRole("textbox", { name: "Job ID" }), accepted.job.job_id);
     await screen.findByText("Proposal is accepted");
     expect(screen.queryByRole("region", { name: "Canonical preflight plan" })).not.toBeInTheDocument();
     const release = screen.queryByRole("button", { name: /Approve and release/ });
@@ -1755,10 +1762,10 @@ describe("product application", () => {
     const user = userEvent.setup();
     renderApp("/ai-planner?view=audit", client);
     const lookup = await screen.findByRole("textbox", { name: "Job ID" });
-    await user.type(lookup, accepted.job.job_id);
+    await pasteText(user, lookup, accepted.job.job_id);
     await screen.findByRole("region", { name: "Canonical preflight plan" });
     await user.click(screen.getByRole("checkbox", { name: /I approve this exact proposal-continuation envelope once/ }));
-    await user.type(screen.getByRole("textbox", { name: /Operator identity/ }), "submitted-reviewer");
+    await pasteText(user, screen.getByRole("textbox", { name: /Operator identity/ }), "submitted-reviewer");
     await user.click(screen.getByRole("button", { name: "Approve and release continuation" }));
     await waitFor(() => expect(resolveApproval).toBeTypeOf("function"));
     const submitted = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith(`/jobs/${accepted.job.job_id}/approval`) && init?.method === "POST");
@@ -1767,7 +1774,7 @@ describe("product application", () => {
     expect(screen.queryByRole("region", { name: "Canonical preflight plan" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approve and release continuation" })).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: /Operator identity/ })).not.toBeInTheDocument();
-    await user.type(lookup, secondJob.job_id);
+    await pasteText(user, lookup, secondJob.job_id);
     expect(await screen.findByText(secondJob.result_ref!)).toBeVisible();
     const releasedJob: RunJob = { ...accepted.job, state: "running", progress: { phase: "running" }, approval_request: { ...accepted.approval_request, status: "consumed" } };
     await act(async () => {
@@ -1788,10 +1795,10 @@ describe("product application", () => {
     const user = userEvent.setup();
     renderApp("/ai-planner?view=audit");
     expect(await screen.findByRole("heading", { name: "Runtime proposal audit" })).toBeVisible();
-    await user.type(screen.getByRole("textbox", { name: "Job ID" }), proposalJob.job_id);
+    await pasteText(user, screen.getByRole("textbox", { name: "Job ID" }), proposalJob.job_id);
     expect(await screen.findByText("Bounded runtime proposal")).toBeVisible();
     await user.click(screen.getByRole("checkbox", { name: /I reviewed these exact three digests/ }));
-    await user.type(screen.getByRole("textbox", { name: "Proposal reviewer identity" }), "reviewer-a");
+    await pasteText(user, screen.getByRole("textbox", { name: "Proposal reviewer identity" }), "reviewer-a");
     await user.click(screen.getByRole("button", { name: "Accept registered continuation" }));
     expect(await screen.findByText("Fresh Execute approval after proposal acceptance")).toBeVisible();
     const fresh = screen.getByRole("checkbox", { name: /I approve this exact proposal-continuation envelope once/ });
