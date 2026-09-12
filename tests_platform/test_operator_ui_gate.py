@@ -286,6 +286,10 @@ def test_builder_exposes_resizable_panels_and_optional_graph_detail(tmp_path: Pa
         "components/RunConfiguration.tsx",
         "components/RunWorkspace.tsx",
         "components/CanonicalPlanReview.tsx",
+        "components/ProviderSetup.tsx",
+        "components/ProviderAuthorizationReview.tsx",
+        "lib/provider-authorization.ts",
+        "lib/run-progress-presentation.ts",
     ):
         target = tmp_path / "frontend" / "src" / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -302,6 +306,78 @@ def test_builder_exposes_resizable_panels_and_optional_graph_detail(tmp_path: Pa
     ):
         target.write_text(unsafe, encoding="utf-8")
         assert not operator_source_review_is_human_first(tmp_path)
+    target.write_text(workspace, encoding="utf-8")
+
+    # Each shipped helper must exist, contain its guards, and remain used by its owner.
+    for relative in (
+        "components/ProviderAuthorizationReview.tsx",
+        "lib/provider-authorization.ts",
+        "lib/run-progress-presentation.ts",
+    ):
+        target = tmp_path / "frontend" / "src" / relative
+        original = target.read_text(encoding="utf-8")
+        target.unlink()
+        assert not operator_source_review_is_human_first(tmp_path)
+        target.write_text("", encoding="utf-8")
+        assert not operator_source_review_is_human_first(tmp_path)
+        target.write_text(original, encoding="utf-8")
+        assert operator_source_review_is_human_first(tmp_path)
+
+    mutations = (
+        (
+            "components/ProviderSetup.tsx",
+            'from "./ProviderAuthorizationReview"',
+            'from "./MissingReview"',
+        ),
+        (
+            "components/ProviderSetup.tsx",
+            'from "../lib/provider-authorization"',
+            'from "../lib/missing"',
+        ),
+        ("components/ProviderSetup.tsx", "provider={document}", "provider={unreviewed}"),
+        (
+            "components/ProviderSetup.tsx",
+            "disabled={busy || !valid || !liveReady}",
+            "disabled={busy}",
+        ),
+        (
+            "components/ProviderAuthorizationReview.tsx",
+            'from "../lib/provider-authorization"',
+            'from "../lib/missing"',
+        ),
+        ("components/ProviderAuthorizationReview.tsx", "|| !confirmed ||", "||"),
+        ("components/ProviderAuthorizationReview.tsx", "|| !contextCurrent ||", "||"),
+        ("components/ProviderAuthorizationReview.tsx", "|| (loopback && !localConfirmed)", ""),
+        ("lib/provider-authorization.ts", "sameJson(row.provider, provider)", "true"),
+        ("lib/provider-authorization.ts", "row.purposes.includes(purpose)", "true"),
+        ("lib/provider-authorization.ts", "row.expires_at_ms <= now", "false"),
+        ("lib/provider-authorization.ts", "row.usage.requests >= row.limits.max_requests", "false"),
+        (
+            "lib/provider-authorization.ts",
+            "row.usage.request_bytes >= row.limits.max_request_bytes",
+            "false",
+        ),
+        (
+            "lib/provider-authorization.ts",
+            "row.usage.reserved_output_tokens >= row.limits.max_reserved_output_tokens",
+            "false",
+        ),
+        (
+            "components/RunWorkspace.tsx",
+            'from "../lib/run-progress-presentation"',
+            'from "../lib/missing"',
+        ),
+        ("lib/run-progress-presentation.ts", "? object(event.data) : event", "? event : event"),
+        ("lib/run-progress-presentation.ts", "stepOutcomeLabel(step, mode)", '"Success"'),
+    )
+    for relative, before, after in mutations:
+        target = tmp_path / "frontend" / "src" / relative
+        original = target.read_text(encoding="utf-8")
+        assert before in original
+        target.write_text(original.replace(before, after), encoding="utf-8")
+        assert not operator_source_review_is_human_first(tmp_path), relative
+        target.write_text(original, encoding="utf-8")
+    assert operator_source_review_is_human_first(tmp_path)
 
 
 def test_gate08_frontend_environment_scrubs_secrets_and_isolates_home(
