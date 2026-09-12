@@ -37,7 +37,8 @@ function mount(first = job()) {
 
 it("shows retained observations in the failed job without promoting a final result or releasing effects", async () => {
   const detail = vi.spyOn(api, "retainedRunDetail");
-  vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify(record()), { status: 200 }));
+  const { mode, ...progress } = record();
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ ...progress, plan: { mode } }), { status: 200 }));
   const approve = vi.spyOn(api, "approveJob");
   const submit = vi.spyOn(api, "submitRun");
   const control = vi.spyOn(api, "controlJob");

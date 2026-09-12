@@ -1,4 +1,4 @@
-import { isRetainedRunRecord } from "./retained-run-record";
+import { retainedRunRecord } from "./retained-run-record";
 import type { AssistanceRunEnvelope, RunPreparationDecision, SavedRunSelection } from "./run-assistance";
 import type { AILiveAuthorization, AILiveAuthorizationList, AILiveAuthorizationRequest, PublicAIProviderConfig } from "../types";
 import type { RunnerUpgradeReview } from "./runner-upgrade";
@@ -717,8 +717,9 @@ export const api = {
   },
   async retainedRunDetail(runId: string): Promise<RunRecord> {
     const run: unknown = DEMO_MODE ? demoRuns.find(item => item.run_id === runId) : await request<unknown>(`/runs/${encodeURIComponent(runId)}`);
-    if (!isRetainedRunRecord(run, runId)) throw new ApiError("The retained record is invalid or does not match this run.", "invalid_retained_run");
-    return structuredClone(run);
+    const observations = retainedRunRecord(run, runId);
+    if (!observations) throw new ApiError("The retained record is invalid or does not match this run.", "invalid_retained_run");
+    return structuredClone(observations);
   },
   async runDetail(runId: string): Promise<RunRecord> {
     if (DEMO_MODE) {

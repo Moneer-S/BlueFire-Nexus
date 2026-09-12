@@ -34,3 +34,23 @@ it.each([
   respond(value);
   await expect(api.retainedRunDetail(runId)).rejects.toMatchObject({ code: "invalid_retained_run" });
 });
+
+it.each(["created", "interrupted"])("reads the actual unfinished %s shape using its persisted plan mode", async status => {
+  const { mode, ...progress } = retained;
+  const stored = { ...progress, status, plan: { mode } };
+  respond(stored);
+  expect(await api.retainedRunDetail(runId)).toEqual({ ...stored, mode });
+  expect(stored).not.toHaveProperty("mode");
+  expect(stored).not.toHaveProperty("finalized_at");
+  await expect(api.runDetail(runId)).rejects.toMatchObject({ code: "run_not_finalized" });
+});
+
+it.each([
+  { status: "completed", plan: { mode: "execute" } },
+  { status: "interrupted", finalized_at: "2030-01-01T00:00:00Z", plan: { mode: "execute" } },
+  { status: "interrupted", plan: { mode: ["execute"] } },
+  { status: "interrupted", plan: {} },
+])("does not infer a missing mode from an unsupported record shape (%j)", async patch => {
+  respond({ ...retained, mode: undefined, ...patch });
+  await expect(api.retainedRunDetail(runId)).rejects.toMatchObject({ code: "invalid_retained_run" });
+});
