@@ -349,6 +349,8 @@
         "bluefire.receiver_session_contract",
         "bluefire.receiver_session_worker",
         "bluefire.runner_adapter",
+        "bluefire.runner_provider_values",
+        "bluefire.runner_descriptor_io",
         "bluefire.runner_bootstrap",
         "bluefire.runner_bootstrap_record",
         "bluefire.runner_client",
