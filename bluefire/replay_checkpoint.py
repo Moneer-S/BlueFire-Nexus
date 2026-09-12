@@ -4,19 +4,22 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .util import canonical_json_bytes, content_hash
-
-
-class CheckpointError(ValueError):
-    """Raised when checkpoint or restoration data is unsafe or inconsistent."""
-
+from .registry import BehaviorRegistry
+from .replay_checkpoint_parameters import (
+    current_parameter_hashes,
+    resolution_hashes,
+    verify_current_contracts,
+)
+from .replay_checkpoint_values import CheckpointError as CheckpointError
+from .replay_checkpoint_values import bounded_json_copy as _json_copy
+from .util import content_hash
 
 CHECKPOINT_SCHEMA = "bluefire.replay-checkpoint.v1"
+RESOLVED_CHECKPOINT_SCHEMA = "bluefire.replay-checkpoint.v2"
 RESTORATION_SCHEMA = "bluefire.replay-restoration-plan.v1"
 AUTHORITY_SCHEMA = "bluefire.replay-checkpoint-authority.v1"
 CLEANUP_SCHEMA = "bluefire.replay-checkpoint-cleanup.v1"
@@ -53,12 +56,8 @@ _RAW_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _DRIVE = re.compile(r"^[A-Za-z]:")
 _DEVICE = re.compile(r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$", re.IGNORECASE)
-_SENSITIVE_MARKERS = frozenset(
-    "apikey authorization cookie credential nonce password privatekey providerartifact receipt secret token".split()
-)
 _MAX_STEPS = 256
 _MAX_MATERIAL_FILES = 512
-_MAX_JSON_BYTES = 4 * 1024 * 1024
 _MAX_MATERIAL_BYTES = 256 * 1024 * 1024
 
 
@@ -98,51 +97,6 @@ def _bounded_int(value: Any, context: str, *, minimum: int = 0, maximum: int) ->
     if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
         raise CheckpointError(f"{context} is outside its integer bound")
     return int(value)
-
-
-def _json_copy(value: Any, context: str, *, reject_sensitive: bool = False) -> Any:
-    count = 0
-
-    def inspect(item: Any, depth: int) -> None:
-        nonlocal count
-        count += 1
-        if count > 20_000 or depth > 12:
-            raise CheckpointError(f"{context} exceeds its structural bound")
-        if item is None or isinstance(item, (bool, int)):
-            return
-        if isinstance(item, float):
-            return
-        if isinstance(item, str):
-            if len(item) > 16_384 or "\x00" in item:
-                raise CheckpointError(f"{context} contains unsafe text")
-            return
-        if isinstance(item, Mapping):
-            if len(item) > 1_024:
-                raise CheckpointError(f"{context} contains an oversized object")
-            for key, nested in item.items():
-                if not isinstance(key, str) or not key or len(key) > 256:
-                    raise CheckpointError(f"{context} contains an invalid field name")
-                compact = re.sub(r"[^a-z0-9]", "", key.casefold())
-                if reject_sensitive and any(marker in compact for marker in _SENSITIVE_MARKERS):
-                    raise CheckpointError(f"{context} contains forbidden sensitive authority")
-                inspect(nested, depth + 1)
-            return
-        if isinstance(item, Sequence) and not isinstance(item, (str, bytes, bytearray)):
-            if len(item) > 2_048:
-                raise CheckpointError(f"{context} contains an oversized list")
-            for nested in item:
-                inspect(nested, depth + 1)
-            return
-        raise CheckpointError(f"{context} is not strict JSON data")
-
-    inspect(value, 0)
-    try:
-        encoded = canonical_json_bytes(value)
-        if len(encoded) > _MAX_JSON_BYTES:
-            raise CheckpointError(f"{context} exceeds its byte bound")
-        return json.loads(encoded)
-    except (OverflowError, TypeError, ValueError) as exc:
-        raise CheckpointError(f"{context} is not canonical JSON data") from exc
 
 
 def _safe_path(value: Any, context: str) -> str:
@@ -196,7 +150,7 @@ def _scenario_summary(value: Mapping[str, Any], context: str) -> dict[str, Any]:
     metadata = {key: item for key, item in source.items() if key not in {"steps", "edges"}}
     return {"scenario_id": scenario_id, "scenario_hash": content_hash(cloned), "start_step_id": start, "metadata_hash": content_hash(metadata), "edges_hash": content_hash(source.get("edges", [])), "steps": steps}
 
-def _plan_summary(value: Mapping[str, Any], scenario: Mapping[str, Any], context: str) -> dict[str, Any]:
+def _plan_summary(value: Mapping[str, Any], scenario: Mapping[str, Any], context: str, parameter_hashes: Mapping[str, str] | None = None) -> dict[str, Any]:
     source = _mapping(value, context); cloned = _json_copy(source, context); raw_steps = source.get("steps")
     if not isinstance(raw_steps, Sequence) or isinstance(raw_steps, (str, bytes)) or not 1 <= len(raw_steps) <= _MAX_STEPS: raise CheckpointError(f"{context}.steps is invalid")
     steps: list[dict[str, Any]] = []
@@ -205,7 +159,7 @@ def _plan_summary(value: Mapping[str, Any], scenario: Mapping[str, Any], context
         steps.append({"step_id": _identifier(step.get("step_id"), f"{context}.steps[{index}].step_id"), "behavior_id": _identifier(step.get("behavior_id"), f"{context}.steps[{index}].behavior_id"), "action_id": _identifier(action, f"{context}.steps[{index}].action_id") if action is not None else None, "parameters_hash": content_hash(parameters), "step_hash": content_hash(step)})
     scenario_steps = scenario["steps"]
     if [row["step_id"] for row in steps] != [row["step_id"] for row in scenario_steps]: raise CheckpointError(f"{context} step order does not match the scenario")
-    if any(planned["behavior_id"] != defined["behavior_id"] or planned["parameters_hash"] != defined["parameters_hash"] for planned, defined in zip(steps, scenario_steps, strict=True)): raise CheckpointError(f"{context} behavior or parameters do not match the scenario")
+    if any(planned["behavior_id"] != defined["behavior_id"] or planned["parameters_hash"] != (parameter_hashes[defined["step_id"]] if parameter_hashes is not None else defined["parameters_hash"]) for planned, defined in zip(steps, scenario_steps, strict=True)): raise CheckpointError(f"{context} behavior or parameters do not match the scenario")
     scenario_id = _identifier(source.get("scenario_id"), f"{context}.scenario_id"); scenario_hash = _digest(source.get("scenario_digest"), f"{context}.scenario_digest")
     if scenario_id != scenario["scenario_id"] or scenario_hash != scenario["scenario_hash"]: raise CheckpointError(f"{context} scenario binding is invalid")
     mode = _text(source.get("mode"), f"{context}.mode", maximum=32); autonomy = _text(source.get("autonomy", "off"), f"{context}.autonomy", maximum=32)
@@ -318,15 +272,18 @@ def _checkpoint_id(manifest_hash: str) -> str:
     return "checkpoint-" + manifest_hash.removeprefix("sha256:")
 
 
-def build_checkpoint(*, source_run_id: str, source_binding_hash: str, scenario: Mapping[str, Any], plan: Mapping[str, Any], checkpoint_before_step_id: str, executed_steps: Sequence[Mapping[str, Any]], artifacts: Mapping[str, Any], material_files: Sequence[Mapping[str, Any]], source_authority: Mapping[str, Any], source_cleanup: Mapping[str, Any], collector_lineage: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+def build_checkpoint(*, source_run_id: str, source_binding_hash: str, scenario: Mapping[str, Any], plan: Mapping[str, Any], checkpoint_before_step_id: str, executed_steps: Sequence[Mapping[str, Any]], artifacts: Mapping[str, Any], material_files: Sequence[Mapping[str, Any]], source_authority: Mapping[str, Any], source_cleanup: Mapping[str, Any], collector_lineage: Mapping[str, Any] | None = None, parameter_resolution: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
     """Build a canonical checkpoint manifest for a completed Execute run."""
 
     run_id = _identifier(source_run_id, "source_run_id")
     if not run_id.startswith("run-"):
         raise CheckpointError("source_run_id must identify a run")
     binding_hash = _digest(source_binding_hash, "source_binding_hash")
+    if parameter_resolution is not None:
+        parameter_resolution = _mapping(_json_copy(parameter_resolution, "parameter_resolution"), "parameter_resolution")
     scenario_summary = _scenario_summary(scenario, "scenario")
-    plan_summary = _plan_summary(plan, scenario_summary, "plan")
+    parameter_hashes = resolution_hashes(parameter_resolution, scenario=scenario_summary, plan_hash=content_hash(plan), source_run_id=run_id, source_binding_hash=binding_hash, authority=_authority_summary(source_authority, "source_authority")) if parameter_resolution is not None else None
+    plan_summary = _plan_summary(plan, scenario_summary, "plan", parameter_hashes)
     checkpoint_step = _identifier(checkpoint_before_step_id, "checkpoint_before_step_id")
     plan_step_ids = [str(row["step_id"]) for row in plan_summary["steps"]]
     if checkpoint_step not in plan_step_ids or plan_step_ids.index(checkpoint_step) == 0:
@@ -359,6 +316,8 @@ def build_checkpoint(*, source_run_id: str, source_binding_hash: str, scenario: 
     if collector_lineage is not None:
         collector_hash = content_hash(_json_copy(collector_lineage, "collector_lineage"))
     body: dict[str, Any] = {"schema_version": CHECKPOINT_SCHEMA, "source_run_id": run_id, "source_binding_hash": binding_hash, "checkpoint_before_step_id": checkpoint_step, "source_scenario": scenario_summary, "source_plan": plan_summary, "executed_steps": executed, "artifacts": artifact_rows, "artifact_state_hash": content_hash(artifact_rows), "material_files": material, "material_state_hash": content_hash(material), "source_authority": authority, "source_cleanup": cleanup, "collector_lineage_hash": collector_hash}
+    if parameter_resolution is not None:
+        body.update(schema_version=RESOLVED_CHECKPOINT_SCHEMA, parameter_resolution=_json_copy(parameter_resolution, "parameter_resolution"))
     manifest_hash = content_hash(body)
     checkpoint = {**body, "checkpoint_id": _checkpoint_id(manifest_hash), "manifest_hash": manifest_hash}
     return validate_checkpoint(checkpoint)
@@ -398,7 +357,9 @@ def _validate_scenario_summary(value: Any) -> dict[str, Any]:
     }
 
 
-def _validate_plan_summary(value: Any, scenario: Mapping[str, Any]) -> dict[str, Any]:
+def _validate_plan_summary(
+    value: Any, scenario: Mapping[str, Any], parameter_hashes: Mapping[str, str] | None = None
+) -> dict[str, Any]:
     source = _mapping(value, "checkpoint source_plan")
     _exact(source, _PLAN_FIELDS, "checkpoint source_plan")
     raw_steps = source.get("steps")
@@ -423,7 +384,12 @@ def _validate_plan_summary(value: Any, scenario: Mapping[str, Any]) -> dict[str,
     if any(
         planned["step_id"] != defined["step_id"]
         or planned["behavior_id"] != defined["behavior_id"]
-        or planned["parameters_hash"] != defined["parameters_hash"]
+        or planned["parameters_hash"]
+        != (
+            parameter_hashes[defined["step_id"]]
+            if parameter_hashes is not None
+            else defined["parameters_hash"]
+        )
         for planned, defined in zip(steps, scenario["steps"], strict=True)
     ):
         raise CheckpointError("checkpoint plan does not match its scenario summary")
@@ -562,9 +528,14 @@ def validate_checkpoint(
     """Validate and detach an exact checkpoint manifest."""
 
     source = _mapping(value, "checkpoint")
-    _exact(source, _CHECKPOINT_FIELDS, "checkpoint")
-    if source.get("schema_version") != CHECKPOINT_SCHEMA:
+    resolved = source.get("schema_version") == RESOLVED_CHECKPOINT_SCHEMA
+    _exact(
+        source, _CHECKPOINT_FIELDS | ({"parameter_resolution"} if resolved else set()), "checkpoint"
+    )
+    if source.get("schema_version") not in {CHECKPOINT_SCHEMA, RESOLVED_CHECKPOINT_SCHEMA}:
         raise CheckpointError("checkpoint schema_version is invalid")
+    if resolved:
+        _json_copy(source.get("parameter_resolution"), "checkpoint parameter_resolution")
     run_id = _identifier(source.get("source_run_id"), "checkpoint source_run_id")
     source_binding_hash = _digest(
         source.get("source_binding_hash"), "checkpoint source_binding_hash"
@@ -579,7 +550,23 @@ def validate_checkpoint(
     ):
         raise CheckpointError("checkpoint source binding does not match its verified run bundle")
     scenario = _validate_scenario_summary(source.get("source_scenario"))
-    plan = _validate_plan_summary(source.get("source_plan"), scenario)
+    authority = _validate_authority_summary(source.get("source_authority"))
+    parameter_hashes = (
+        resolution_hashes(
+            _mapping(source.get("parameter_resolution"), "checkpoint parameter_resolution"),
+            scenario=scenario,
+            plan_hash=_digest(
+                _mapping(source.get("source_plan"), "checkpoint source_plan").get("plan_hash"),
+                "checkpoint plan_hash",
+            ),
+            source_run_id=run_id,
+            source_binding_hash=source_binding_hash,
+            authority=authority,
+        )
+        if resolved
+        else None
+    )
+    plan = _validate_plan_summary(source.get("source_plan"), scenario, parameter_hashes)
     plan_ids = [str(row["step_id"]) for row in plan["steps"]]
     if step_id not in plan_ids or plan_ids.index(step_id) == 0:
         raise CheckpointError("checkpoint resume step has no materialized prefix")
@@ -633,7 +620,6 @@ def validate_checkpoint(
     material = _material_rows(raw_material, artifact_rows, prefix, "checkpoint material_files")
     if list(raw_material) != material:
         raise CheckpointError("checkpoint material_files are not canonically sorted")
-    authority = _validate_authority_summary(source.get("source_authority"))
     cleanup = _validate_cleanup_summary(source.get("source_cleanup"))
     if authority["profile"]["profile_id"] != plan["runner_profile_id"]:
         raise CheckpointError("checkpoint plan and authority profiles disagree")
@@ -732,12 +718,22 @@ def build_restoration_plan(
     target_catalog_authority: Mapping[str, Any],
     target_runner_readiness: Mapping[str, Any],
     variant_impact: Mapping[str, Any],
+    registry: BehaviorRegistry | None = None,
 ) -> Mapping[str, Any]:
     """Bind a fresh recreation-and-verification plan to one checkpoint."""
 
     trusted = validate_checkpoint(checkpoint)
+    if trusted.get("schema_version") == RESOLVED_CHECKPOINT_SCHEMA:
+        if registry is None:
+            raise CheckpointError("resolved checkpoint restoration requires its reviewed catalog")
+        verify_current_contracts(trusted["parameter_resolution"], registry)
     scenario = _scenario_summary(target_scenario, "target_scenario")
-    plan = _plan_summary(target_plan, scenario, "target_plan")
+    parameter_hashes = (
+        current_parameter_hashes(registry, target_scenario, target_plan)
+        if registry is not None
+        else None
+    )
+    plan = _plan_summary(target_plan, scenario, "target_plan", parameter_hashes)
     profile = _profile_summary(target_profile, "target_profile")
     scope = _scope_summary(target_scope, "target_scope")
     catalog = _catalog_summary(target_catalog_authority, "target_catalog_authority")

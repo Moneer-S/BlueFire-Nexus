@@ -29,6 +29,7 @@ from .approvals import (
     ApprovalError,
     ApprovalStore,
     execution_approval_binding,
+    execution_approval_state,
     public_approval_record,
     validate_claimed_approval,
 )
@@ -98,6 +99,7 @@ from .replay_checkpoint_binding import (
     CheckpointBindingError,
     checkpoint_source_binding_hash,
 )
+from .replay_checkpoint_parameters import build_parameter_resolution
 from .run_store import RunHandle, RunStore
 from .runner_adapter import AdaptedAction, RunnerActionAdapter, RunnerAdapterError
 from .runner_client import (
@@ -1683,6 +1685,31 @@ class Orchestrator:
                     plan=plan.to_dict(),
                     approval_binding=approval_binding,
                 )
+                parameter_resolution = None
+                if any(
+                    content_hash(step.parameters)
+                    != content_hash(scenario.step(step.step_id).parameters)
+                    for step in plan.steps
+                ):
+                    if profile is None:
+                        raise CheckpointError("checkpoint source profile is absent")
+                    parameter_resolution = build_parameter_resolution(
+                        scenario.to_dict(),
+                        approval_binding,
+                        execution_approval_state(
+                            registry=self.registry,
+                            scenario=scenario,
+                            plan=plan.to_dict(),
+                            profile=profile,
+                            target_scope=authorized_target_scope,
+                            autonomy=plan.autonomy,
+                            ai_provider=plan.ai_provider,
+                            context=approval_context or None,
+                            runner_readiness=runner_readiness,
+                            catalog_authority=self.catalog_authority,
+                            adaptive_authorization=adaptive_authorization,
+                        ),
+                    )
                 for draft in checkpoint_drafts:
                     replay_checkpoints.append(
                         build_checkpoint(
@@ -1697,6 +1724,7 @@ class Orchestrator:
                             source_authority=draft["source_authority"],
                             source_cleanup=source_cleanup,
                             collector_lineage=draft.get("collector_lineage"),
+                            parameter_resolution=parameter_resolution,
                         )
                     )
             except (

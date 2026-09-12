@@ -39,7 +39,7 @@ def execution_intent_id(binding: Mapping[str, str]) -> str:
     return "intent-" + content_hash(binding).removeprefix("sha256:")[:32]
 
 
-def execution_approval_binding(
+def execution_approval_state(
     *,
     registry: BehaviorRegistry,
     scenario: ScenarioDefinition,
@@ -52,8 +52,8 @@ def execution_approval_binding(
     runner_readiness: Mapping[str, Any] | None = None,
     catalog_authority: Mapping[str, Any] | None = None,
     adaptive_authorization: Mapping[str, Any] | None = None,
-) -> Mapping[str, str]:
-    """Hash every operator-reviewed input that may affect an Execute plan."""
+) -> Mapping[str, Any]:
+    """Reconstruct every operator-reviewed input before hashing its authority."""
 
     raw_steps = plan.get("steps", [])
     action_implementations = {
@@ -99,6 +99,37 @@ def execution_approval_binding(
         state["runner_readiness"] = dict(runner_readiness)
     if catalog_authority is not None:
         state["catalog_authority"] = dict(catalog_authority)
+    return state
+
+
+def execution_approval_binding(
+    *,
+    registry: BehaviorRegistry,
+    scenario: ScenarioDefinition,
+    plan: Mapping[str, Any],
+    profile: RunnerProfile,
+    target_scope: Mapping[str, Any],
+    autonomy: AutonomyLevel,
+    ai_provider: Mapping[str, Any],
+    context: Mapping[str, Any] | None = None,
+    runner_readiness: Mapping[str, Any] | None = None,
+    catalog_authority: Mapping[str, Any] | None = None,
+    adaptive_authorization: Mapping[str, Any] | None = None,
+) -> Mapping[str, str]:
+    """Hash every operator-reviewed input that may affect an Execute plan."""
+    state = execution_approval_state(
+        registry=registry,
+        scenario=scenario,
+        plan=plan,
+        profile=profile,
+        target_scope=target_scope,
+        autonomy=autonomy,
+        ai_provider=ai_provider,
+        context=context,
+        runner_readiness=runner_readiness,
+        catalog_authority=catalog_authority,
+        adaptive_authorization=adaptive_authorization,
+    )
     ranks = {"safe": 1, "controlled": 2, "restricted": 3}
     tiers: list[str] = []
     for step in scenario.steps:
@@ -252,6 +283,7 @@ __all__ = [
     "ApprovalStore",
     "execution_approval_binding",
     "execution_approval_envelope",
+    "execution_approval_state",
     "execution_intent_id",
     "public_approval_record",
     "validate_claimed_approval",

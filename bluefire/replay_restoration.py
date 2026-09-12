@@ -73,6 +73,7 @@ def resolved_restoration_plan(
                 target_catalog_authority=replay_catalog_authority,
                 target_runner_readiness=dict(runner_readiness or {}),
                 variant_impact=variant_impact,
+                registry=resolved["replay_catalog"].registry,
             )
         except CheckpointError as exc:
             raise ReplayError(str(exc)) from exc

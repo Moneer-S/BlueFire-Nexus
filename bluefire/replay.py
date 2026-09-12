@@ -14,6 +14,7 @@ from .replay_checkpoint_binding import (
     CheckpointBindingError,
     checkpoint_source_binding_hash,
 )
+from .replay_checkpoint_parameters import verify_current_contracts
 from .run_store import RunStore
 from .util import content_hash, json_clone
 
@@ -194,6 +195,8 @@ def prepare_replay(
                     expected_step_id=request.from_step_id,
                     expected_source_binding_hash=expected_source_binding_hash,
                 )
+                if checkpoint.get("schema_version") == "bluefire.replay-checkpoint.v2":
+                    verify_current_contracts(checkpoint["parameter_resolution"], registry)
             except (CheckpointBindingError, CheckpointError) as exc:
                 raise ReplayError(
                     "Execute node restart checkpoint is unavailable or invalid"

@@ -453,6 +453,8 @@
         "bluefire.registry",
         "bluefire.replay_checkpoint",
         "bluefire.replay_checkpoint_binding",
+        "bluefire.replay_checkpoint_parameters",
+        "bluefire.replay_checkpoint_values",
         "bluefire.research",
         "bluefire.source_intake",
         "bluefire.source_intake_contracts",
