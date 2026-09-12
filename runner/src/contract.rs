@@ -324,14 +324,18 @@ pub struct ReviewedOperation {
     pub execution_binding_digest: Option<String>,
 }
 
-fn deserialize_reviewed_execution<'de, D>(deserializer: D) -> Result<Option<ReviewedExecution>, D::Error>
+fn deserialize_reviewed_execution<'de, D>(
+    deserializer: D,
+) -> Result<Option<ReviewedExecution>, D::Error>
 where
     D: Deserializer<'de>,
 {
     ReviewedExecution::deserialize(deserializer).map(Some)
 }
 
-fn deserialize_reviewed_operation<'de, D>(deserializer: D) -> Result<Option<ReviewedOperation>, D::Error>
+fn deserialize_reviewed_operation<'de, D>(
+    deserializer: D,
+) -> Result<Option<ReviewedOperation>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -359,7 +363,11 @@ pub struct ExecutionManifest {
         skip_serializing_if = "Option::is_none"
     )]
     pub provider_binding: Option<ProviderExecutionBinding>,
-    #[serde(default, deserialize_with = "deserialize_reviewed_operation", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_reviewed_operation",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub reviewed_operation: Option<ReviewedOperation>,
     pub mode: RunMode,
     pub runner_id: String,
@@ -390,7 +398,11 @@ pub struct RunnerProfile {
     pub platform: Platform,
     pub sandbox_root: PathBuf,
     pub allowed_actions: Vec<String>,
-    #[serde(default, deserialize_with = "deserialize_reviewed_execution", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_reviewed_execution",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub reviewed_execution: Option<ReviewedExecution>,
     #[serde(default)]
     pub control_blocked_actions: Vec<String>,
@@ -776,7 +788,10 @@ mod tests {
         assert!(serialized_profile.get("action_bindings").is_none());
         assert!(serialized_profile.get("reviewed_execution").is_none());
         let mut null_authority = serialized_profile;
-        null_authority.as_object_mut().unwrap().insert("reviewed_execution".to_string(), Value::Null);
+        null_authority
+            .as_object_mut()
+            .unwrap()
+            .insert("reviewed_execution".to_string(), Value::Null);
         assert!(serde_json::from_value::<RunnerProfile>(null_authority).is_err());
 
         let manifest: ExecutionManifest = serde_json::from_value(serde_json::json!({
@@ -814,7 +829,10 @@ mod tests {
         assert!(serialized_manifest.get("execution_binding").is_none());
         assert!(serialized_manifest.get("reviewed_operation").is_none());
         let mut null_operation = serialized_manifest.clone();
-        null_operation.as_object_mut().unwrap().insert("reviewed_operation".to_string(), Value::Null);
+        null_operation
+            .as_object_mut()
+            .unwrap()
+            .insert("reviewed_operation".to_string(), Value::Null);
         assert!(serde_json::from_value::<ExecutionManifest>(null_operation).is_err());
 
         let mut explicit_null = serialized_manifest;
@@ -833,10 +851,16 @@ mod tests {
         });
         assert!(serde_json::from_value::<ReviewedOperationIdentity>(value.clone()).is_ok());
         let mut missing = value.clone();
-        missing.as_object_mut().unwrap().remove("execution_binding_digest");
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("execution_binding_digest");
         assert!(serde_json::from_value::<ReviewedOperationIdentity>(missing).is_err());
         let mut extra = value;
-        extra.as_object_mut().unwrap().insert("parameters".to_string(), serde_json::json!({"arbitrary": true}));
+        extra.as_object_mut().unwrap().insert(
+            "parameters".to_string(),
+            serde_json::json!({"arbitrary": true}),
+        );
         assert!(serde_json::from_value::<ReviewedOperationIdentity>(extra).is_err());
     }
 }
