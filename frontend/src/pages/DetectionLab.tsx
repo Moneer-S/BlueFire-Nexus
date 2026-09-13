@@ -1,0 +1,987 @@
+import { displayTitle } from "../lib/display-title";
+import "./DetectionRevisionReview.css";
+import * as Dialog from "@radix-ui/react-dialog";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Beaker, CheckCircle2, Code2, FileCheck2, FlaskConical, Plus, Search, ShieldQuestion } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { api, ApiError } from "../lib/api";
+import { detectionDraftIdentity, useDetectionDraft } from "../state/useDetectionDraft";
+import { syntheticSelectionExample } from "../lib/detection-fixtures";
+import { runLabel } from "../lib/run-presentation";
+import { DetectionRunEvaluations } from "../components/DetectionRunEvaluations";
+import { DetectionAIRevision } from "../components/DetectionAIRevision";
+import { DetectionAICreation } from "../components/DetectionAICreation";
+import { detectionCreationPath } from "../lib/detection-creation";
+import { runCandidateKey, sourceObservedRecords, sourceRunParam } from "../lib/run-handoffs";
+import type {
+  DetectionCandidate,
+  CatalogResponse,
+  DetectionCloneRequest,
+  DetectionComparisonResponse,
+  DetectionResource,
+  DetectionSetDelta,
+  DetectionTuneRequest,
+  DetectionSourceRevisionRequest,
+  ManagedResource,
+  PublicBaselineReference,
+  RunRecord,
+} from "../types";
+import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, LoadingState, PageHeader, Panel, PanelHeader, sentence } from "../components/Primitives";
+
+const lifecycle = ["hypothesis", "parsed", "fixture_exercised", "observed_exercised", "benign_evaluated", "rejected"];
+const emptyAIProviders: NonNullable<CatalogResponse["ai"]["providers"]> = [];
+const manualRuleDefaults = { title: "", behaviorId: "sandbox.collection.stage.v1", language: "sqlite" };
+const manualLogsource = { category: "file_event", product: "generic" };
+const manualSelection = { artifact_type: "file_observation", "path|contains": "staged/" };
+function matchesManualFields(value: unknown, expected: Record<string, string>) {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).length === Object.keys(expected).length
+    && Object.entries(expected).every(([key, field]) => (value as Record<string, unknown>)[key] === field);
+}
+const manualRuleLanguages = [
+  ["internal", "Internal structured matcher"], ["sigma", "Sigma"],
+  ["sqlite", "SQLite"], ["yara", "YARA"], ["spl", "SPL structural check"],
+] as const;
+function languageLabel(language: string) {
+  const labels: Record<string, string> = { sqlite: "SQLite", sigma: "Sigma", yara: "YARA", "yara-l": "YARA-L", spl: "SPL", internal: "Internal matcher" };
+  return labels[language] ?? sentence(language);
+}
+function revisionLabel(candidate: DetectionCandidate) {
+  return Number.isSafeInteger(candidate.revision) && candidate.revision! > 0
+    ? `Revision ${candidate.revision} · ${sentence(candidate.revision_kind ?? "origin")}` : "Version not recorded";
+}
+function QueryEvaluator({ language, ready }: { language: string; ready?: boolean }) {
+  if (!["sqlite", "sigma"].includes(language)) return null;
+  return <p><strong>Evaluator: SQLite</strong> · {ready === undefined ? "Availability not reported" : ready ? "Ready" : "Unavailable"}. {language === "sigma" ? "Sigma rules are converted with pySigma before evaluation. " : ""}Queries evaluate normalized evidence locally; file contents are available only when the run collected them.</p>;
+}
+const baselineRelationships = new Set(["imported", "adapted", "inspired", "comparative"]);
+const baselineReviews = new Set(["reviewed", "conditional", "prohibited"]);
+const baselineUseClassifications = new Set(["reference_only", "metadata_import", "clean_reimplementation", "external_adapter", "compatible_code_adaptation", "incompatible_or_restricted"]);
+const baselineUpdateStatuses = new Set(["current", "review_due", "superseded", "blocked"]);
+
+type ReviewedComparison = { report: DetectionComparisonResponse; sources: CandidateView[] };
+
+function candidateReviewLabel(candidate: DetectionCandidate) {
+  return `${displayTitle(candidate.title?.trim() || "Untitled rule")} · ${revisionLabel(candidate)}`;
+}
+
+type CandidateView = DetectionCandidate & { resolvedId: string; resourceId?: string; runId?: string; demo?: boolean };
+
+interface ResearchSourceDocument extends Record<string, unknown> {
+  name?: string;
+  authority?: string;
+  pin?: string;
+  version?: string;
+  exact_ref?: string;
+  retrieved_at?: string;
+  license?: string;
+  file_level_license_review?: string;
+  trademark_considerations?: string;
+  license_review?: string;
+  relationship?: string;
+  use_classification?: string;
+  uses?: unknown;
+  attribution?: string;
+  security_review?: string;
+  last_verified_at?: string;
+  update_status?: string;
+}
+
+type ResearchSourceResource = ManagedResource<ResearchSourceDocument>;
+type RevisionKind = "clone" | "tune";
+type CandidateTab = "candidate" | "revisions" | "evaluations" | "fixtures" | "observed" | "history";
+
+function candidateDraftBinding(candidate: CandidateView, resource?: DetectionResource) {
+  return detectionDraftIdentity({ namespace: candidate.resourceId ? "registry" : "run", id: candidate.resolvedId, digest: resource?.digest ?? null, definition: resource?.document ?? candidate });
+}
+
+function sourceRunLabel(run: RunRecord) {
+  const date = run.created_at || run.finalized_at;
+  return `${runLabel(run)} \u00b7 ${sentence(run.mode)} \u00b7 ${date && Number.isFinite(Date.parse(date)) ? new Date(date).toLocaleString() : "Date unavailable"}`;
+}
+type LifecycleAction = "parse" | "exercise-fixtures" | "exercise-observed" | "evaluate-benign" | "reject";
+
+function publicBaselineFromSource(resource: ResearchSourceResource): PublicBaselineReference | undefined {
+  const source = resource.document;
+  const uses = Array.isArray(source.uses) ? source.uses.filter((item): item is string => typeof item === "string") : [];
+  if (
+    resource.status !== "pinned"
+    || !uses.includes("comparison")
+    || typeof resource.digest !== "string"
+    || !/^sha256:[0-9a-f]{64}$/.test(resource.digest)
+    || typeof source.pin !== "string"
+    || typeof source.version !== "string"
+    || typeof source.exact_ref !== "string"
+    || typeof source.retrieved_at !== "string"
+    || typeof source.license !== "string"
+    || typeof source.file_level_license_review !== "string"
+    || typeof source.trademark_considerations !== "string"
+    || typeof source.license_review !== "string"
+    || !baselineReviews.has(source.license_review)
+    || typeof source.relationship !== "string"
+    || !baselineRelationships.has(source.relationship)
+    || typeof source.use_classification !== "string"
+    || !baselineUseClassifications.has(source.use_classification)
+    || typeof source.attribution !== "string"
+    || typeof source.security_review !== "string"
+    || typeof source.last_verified_at !== "string"
+    || typeof source.update_status !== "string"
+    || !baselineUpdateStatuses.has(source.update_status)
+  ) return undefined;
+  return {
+    schema_version: "bluefire.public-baseline.v2",
+    research_source_id: resource.id,
+    source_digest: resource.digest,
+    pin: source.pin,
+    version: source.version,
+    exact_ref: source.exact_ref,
+    retrieved_at: source.retrieved_at,
+    license: source.license,
+    file_level_license_review: source.file_level_license_review,
+    trademark_considerations: source.trademark_considerations,
+    license_review: source.license_review as PublicBaselineReference["license_review"],
+    relationship: source.relationship as PublicBaselineReference["relationship"],
+    use_classification: source.use_classification as PublicBaselineReference["use_classification"],
+    use: "comparison",
+    attribution: source.attribution,
+    security_review: source.security_review,
+    last_verified_at: source.last_verified_at,
+    update_status: source.update_status,
+  };
+}
+
+function listText(values?: string[]) {
+  return values?.length ? values.map(sentence).join(", ") : "None";
+}
+
+function driftText(value: Record<string, string[]>) {
+  const entries = Object.entries(value);
+  return entries.length ? entries.map(([field, mappings]) => `${field}: ${mappings.join(", ") || "none"}`).join(" · ") : "None";
+}
+
+function shortDigest(value: string) {
+  return value.length > 24 ? `${value.slice(0, 15)}…${value.slice(-8)}` : value;
+}
+
+function stringList(value: unknown) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string") ? value.join(", ") || "None" : "Not reported";
+}
+
+export function DetectionLabPage() {
+  const [params, setParams] = useSearchParams();
+  const navigationKey = "bluefire.detection-navigation.v1";
+  const query = params.toString();
+  const [initial] = useState(() => {
+    try {
+      const raw = sessionStorage.getItem(navigationKey);
+      if (!raw) return { query: "", error: "" };
+      if (raw.length > 8192) throw new Error("oversized");
+      const value: unknown = JSON.parse(raw);
+      if (typeof value !== "string") throw new Error("invalid");
+      const stored = new URLSearchParams(value);
+      if ([...stored.keys()].some(key => !["run", "candidate", "candidate_scope", "q"].includes(key))) throw new Error("invalid");
+      return { query: stored.toString(), error: "" };
+    } catch { return { query: "", error: "The previous Detection Lab location could not be read. Its stored record was left untouched." }; }
+  });
+  const first = useRef(true);
+  const originalQuery = useRef(query);
+  const [navigationError, setNavigationError] = useState(initial.error);
+  const restoring = first.current && !query && Boolean(initial.query);
+  useEffect(() => {
+    if (first.current) {
+      first.current = false;
+      if (!query && initial.query) { setParams(initial.query, { replace: true }); return; }
+    }
+    if (params.has("create") || params.has("create_job") || (initial.error && query === originalQuery.current)) return;
+    const retained = new URLSearchParams();
+    for (const key of ["run", "candidate", "candidate_scope", "q"]) if (params.has(key)) retained.set(key, params.get(key)!);
+    try { const record = JSON.stringify(retained.toString()); if (record.length > 8192) throw new Error("oversized"); sessionStorage.setItem(navigationKey, record); setNavigationError(""); }
+    catch { setNavigationError("The current selection and search cannot be kept after reload. This page remains usable."); }
+  }, [query, params, setParams, initial]);
+  if (restoring) return <LoadingState label="Restoring Detection Lab selection"/>;
+  return <>{navigationError ? <p role="status">{navigationError}</p> : null}{params.get("create") === "1" || params.has("create_job") ? <DetectionCreationPage /> : <DetectionRegistryPage />}</>;
+}
+
+function DetectionCreationPage() {
+  const [params, setParams] = useSearchParams();
+  const runId = sourceRunParam(params, "run");
+  const jobId = params.has("create_job") ? params.get("create_job")! : undefined;
+  const runs = useQuery({ queryKey: ["runs"], queryFn: api.runs });
+  const source = useQuery({ queryKey: ["run", runId], queryFn: () => api.runDetail(runId), enabled: Boolean(runId), retry: false });
+  return <div className="page detection-page">
+    <PageHeader title="Detection Lab" />
+    <section className="detection-context" aria-label="Source run and evidence">
+      {jobId === undefined ? <Field label="Detection source run"><select value={runId} onChange={(event) => setParams((old) => { const next = new URLSearchParams(old); if (event.target.value) next.set("run", event.target.value); else next.delete("run"); return next; })}><option value="">Choose a run to bring in its evidence</option>{runId && !runs.data?.runs.some((run) => run.run_id === runId) ? <option value={runId}>{source.data ? sourceRunLabel(source.data) : "Selected source run \u00b7 Date unavailable"}</option> : null}{runs.data?.runs.map((run) => <option key={run.run_id} value={run.run_id}>{sourceRunLabel(run)}</option>)}</select></Field> : <p>{source.data ? runLabel(source.data) : "The saved proposal retains its original source run."}</p>}
+      {runs.error && jobId === undefined ? <ErrorState title="Run list unavailable" error={runs.error} retry={() => { void runs.refetch(); }} /> : null}
+      {source.error ? <ErrorState title="Source evidence unavailable" error={source.error} retry={() => { void source.refetch(); }} /> : source.data ? <><Link to={`/runs/${encodeURIComponent(runId)}`}>Review source run</Link><details className="detection-source-details"><summary>{sourceObservedRecords(source.data).length} independent observations · inspect source evidence</summary><SourceRunEvidence run={source.data} /></details></> : null}
+    </section>
+    <DetectionAICreation runId={runId} jobId={jobId} />
+  </div>;
+}
+
+function DetectionRegistryPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const sourceRunId = sourceRunParam(searchParams, "run");
+  const linkedCandidateId = sourceRunParam(searchParams, "candidate");
+  const registryCandidate = searchParams.get("candidate_scope") === "registry";
+  // Run handoffs and saved revisions can share an ID without sharing authority.
+  const linkedSelectionId = linkedCandidateId
+    ? sourceRunId && !registryCandidate ? runCandidateKey(sourceRunId, linkedCandidateId) : linkedCandidateId
+    : undefined;
+  const sourceQuery = useQuery({ queryKey: ["run", sourceRunId], queryFn: () => api.runDetail(sourceRunId), enabled: Boolean(sourceRunId) });
+  const runsQuery = useQuery({ queryKey: ["runs"], queryFn: api.runs });
+  const catalogQuery = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
+  const healthQuery = useQuery({ queryKey: ["detection-health"], queryFn: api.detectionHealth });
+  const candidatesQuery = useQuery({ queryKey: ["detections"], queryFn: api.detections });
+  const researchSourcesQuery = useQuery({
+    queryKey: ["resources", "research-sources"],
+    queryFn: () => api.resources<ResearchSourceDocument>("research-sources"),
+  });
+  const client = useQueryClient();
+  const search = searchParams.get("q") ?? "";
+  const setSearch = (value: string) => setSearchParams(old => { const next = new URLSearchParams(old); if (value) next.set("q", value); else next.delete("q"); return next; }, { replace: true });
+  const selectedId = linkedSelectionId;
+  const setSelectedId = (value: string) => setSearchParams(old => { const next = new URLSearchParams(old); next.set("candidate", value); next.set("candidate_scope", "registry"); return next; });
+  const [notice, setNotice] = useState<string>();
+  // Manual hypothesis inputs contain no run evidence or candidate authority.
+  const manualDraft = useDetectionDraft("manual-new-rule", manualRuleDefaults);
+  const { title, behaviorId, language } = manualDraft.value;
+  const manualChanged = detectionDraftIdentity(manualDraft.value) !== detectionDraftIdentity(manualRuleDefaults);
+  const [manualOpen, setManualOpen] = useState(Boolean(manualDraft.retained || manualDraft.warning || manualChanged));
+  const [manualDiscardOpen, setManualDiscardOpen] = useState(false);
+  const manualGeneration = useRef(0);
+  const manualMounted = useRef(false);
+  const manualQuery = searchParams.toString();
+  const manualNavigation = useMemo(() => ({ query: manualQuery }), [manualQuery]);
+  const manualNavigationRef = useRef(manualNavigation);
+  manualNavigationRef.current = manualNavigation;
+  useEffect(() => { manualMounted.current = true; return () => { manualMounted.current = false; }; }, []);
+  const updateManual = (field: keyof typeof manualRuleDefaults, value: string) => {
+    manualGeneration.current += 1;
+    manualDraft.update(field, value);
+  };
+  type ManualSubmission = { inputs: typeof manualRuleDefaults; generation: number; navigation: typeof manualNavigation };
+  const manualSavePending = useRef(false);
+  const [manualConflict, setManualConflict] = useState<{ id: string; submitted: ManualSubmission }>();
+  const currentManualSubmission = (submitted: ManualSubmission) => manualMounted.current
+    && manualGeneration.current === submitted.generation && manualNavigationRef.current === submitted.navigation;
+  const currentConflict = manualConflict && manualGeneration.current === manualConflict.submitted.generation
+    && manualNavigation === manualConflict.submitted.navigation ? manualConflict : undefined;
+  const conflictQuery = useQuery({
+    queryKey: ["detection-new-rule-conflict", currentConflict?.id, currentConflict?.submitted.generation, currentConflict?.submitted.navigation],
+    enabled: Boolean(currentConflict), retry: false,
+    queryFn: async () => {
+      if (!currentConflict) throw new Error("The earlier New rule inputs have changed. Save the current inputs to check again.");
+      const { candidate } = await api.detection(currentConflict.id);
+      const definition = candidate?.document;
+      if (candidate?.id !== currentConflict.id || definition?.candidate_id !== currentConflict.id
+        || definition.behavior_id !== currentConflict.submitted.inputs.behaviorId
+        || definition.target_language !== currentConflict.submitted.inputs.language
+        || definition.revision_kind !== "origin" || definition.revision_root_id !== currentConflict.id
+        || !matchesManualFields(definition.logsource, manualLogsource)
+        || !matchesManualFields(definition.selection, manualSelection)) {
+        throw new Error("The saved rule does not match this starter definition. No new draft was created.");
+      }
+      return candidate;
+    },
+  });
+  const activeSelection = useRef("");
+
+  const refreshDetections = () => {
+    void client.invalidateQueries({ queryKey: ["detections"] });
+    void client.invalidateQueries({ queryKey: ["detection-health"] });
+  };
+  const createMutation = useMutation({
+    mutationFn: ({ inputs }: ManualSubmission) => api.upsertDetection({
+      behavior_id: inputs.behaviorId,
+      title: inputs.title,
+      target_language: inputs.language,
+      logsource: manualLogsource,
+      selection: manualSelection,
+      provenance: { source: "operator-authored", license: "Review required" },
+      known_misses: ["Requires declared observation fields."],
+      predicted_fields: ["artifact_type", "path"],
+    }),
+    onSuccess: ({ candidate }, submitted) => {
+      refreshDetections();
+      if (!manualMounted.current) return;
+      const newerInputs = manualGeneration.current !== submitted.generation;
+      if (!newerInputs && manualNavigationRef.current === submitted.navigation) setSelectedId(candidate.id);
+      const savedTitle = typeof candidate.document.title === "string" && candidate.document.title.trim() ? candidate.document.title : "Hypothesis";
+      const savedState = candidate.status === "hypothesis" ? "saved as a strict hypothesis. It has not been parsed or exercised." : `saved at its ${sentence(candidate.status).toLowerCase()} state.`;
+      setNotice(`${displayTitle(savedTitle)} ${savedState}${newerInputs ? " Your newer draft inputs are still kept." : " New rule inputs remain available until you discard them."}`);
+    },
+    onError: (error, submitted) => {
+      if (!currentManualSubmission(submitted)) return;
+      const details = error instanceof ApiError ? error.details : undefined;
+      const existingId = details && typeof details === "object" && !Array.isArray(details)
+        ? (details as Record<string, unknown>).existing_candidate_id : undefined;
+      if (error instanceof ApiError && error.code === "detection_revision_required" && error.status === 409
+        && typeof existingId === "string" && /^detection-[0-9a-f]{20}$/.test(existingId)) {
+        setNotice(undefined);
+        setManualConflict({ id: existingId, submitted });
+      } else setNotice(error instanceof Error ? error.message : "The rule draft could not be saved.");
+    },
+    onSettled: () => { manualSavePending.current = false; },
+  });
+  const anotherDraftMutation = useMutation({
+    mutationFn: (conflict: NonNullable<typeof manualConflict>) => api.cloneDetection(conflict.id, {
+      title: conflict.submitted.inputs.title,
+      reason: "Start another operator-authored draft from the same starter definition.",
+    }),
+    onSuccess: ({ candidate }, conflict) => {
+      refreshDetections();
+      if (!currentManualSubmission(conflict.submitted)) return;
+      setManualConflict(undefined);
+      setSelectedId(candidate.id);
+      setNotice(`${displayTitle(conflict.submitted.inputs.title)} saved as a new rule draft. The existing rule and its results were kept. Edit and validate the new draft's source before evaluating runs.`);
+    },
+    onError: (error, conflict) => {
+      if (currentManualSubmission(conflict.submitted)) setNotice(error instanceof Error ? error.message : "The new draft could not be saved.");
+    },
+    onSettled: () => { manualSavePending.current = false; },
+  });
+  const saveLinkedMutation = useMutation({
+    mutationFn: ({ candidate, run }: { candidate: DetectionCandidate; run: RunRecord; navigation: typeof manualNavigation }) => api.detectionFromRun(run.run_id, candidate.candidate_id ?? candidate.id ?? ""),
+    onSuccess: ({ candidate, operation }, submitted) => {
+      refreshDetections();
+      if (!manualMounted.current || manualNavigationRef.current !== submitted.navigation) return;
+      setSelectedId(candidate.id);
+      setNotice(operation === "reused" ? `${candidate.id} already exists and was reused at its earned ${sentence(candidate.status)} state. Its lifecycle was not reset.` : `${candidate.id} ${operation === "cloned" ? "cloned as a new immutable revision" : "created"} in hypothesis state. The source run's lifecycle and match results were not copied.`);
+    },
+    onError: (error, submitted) => { if (manualMounted.current && manualNavigationRef.current === submitted.navigation) setNotice(error instanceof Error ? error.message : "The run-linked definition could not be saved."); },
+  });
+  const actionMutation = useMutation({
+    mutationFn: ({ id, action, body }: { id: string; action: LifecycleAction; body: Record<string, unknown> }) => api.detectionAction(id, action, body),
+    onSuccess: ({ candidate }) => {
+      setNotice(`${candidate.id} advanced honestly to ${sentence(candidate.status)}.`);
+      refreshDetections();
+    },
+    onError: (error) => setNotice(error instanceof Error ? error.message : "The lifecycle action was refused."),
+  });
+  const revisionMutation = useMutation({
+    mutationFn: ({ id, kind, body }: { id: string; kind: RevisionKind; body: DetectionCloneRequest | DetectionTuneRequest; navigation: typeof manualNavigation }) => kind === "clone"
+      ? api.cloneDetection(id, body as DetectionCloneRequest)
+      : api.tuneDetection(id, body as DetectionTuneRequest),
+    onSuccess: ({ candidate }, submitted) => {
+      refreshDetections();
+      if (!manualMounted.current || manualNavigationRef.current !== submitted.navigation) return;
+      setSelectedId(candidate.id);
+      setNotice(`${candidate.id} saved as a new immutable detection revision. Its parent candidate was not changed.`);
+      comparisonMutation.reset();
+    },
+    onError: (error, submitted) => {
+      if (manualMounted.current && manualNavigationRef.current === submitted.navigation) setNotice(error instanceof Error ? error.message : "The immutable revision was refused.");
+    },
+  });
+  const sourceRevisionMutation = useMutation({
+    mutationFn: ({ id, body }: { id: string; selection: string; body: DetectionSourceRevisionRequest }) => api.reviseDetectionSource(id, body),
+    onSuccess: ({ candidate }, submitted) => {
+      client.setQueryData<{ schema_version: string; candidates: DetectionResource[] }>(["detections"], (current) => current ? { ...current, candidates: [...current.candidates.filter((item) => item.id !== candidate.id), candidate] } : current);
+      refreshDetections();
+      if (activeSelection.current !== submitted.selection) return;
+      setSelectedId(candidate.id);
+      setSearchParams((old) => { const next = new URLSearchParams(old); next.set("candidate", candidate.id); next.set("candidate_scope", "registry"); return next; });
+      setNotice(`Revision ${candidate.document.revision} validated and saved. It is parsed; evaluate actual runs to measure its results.`);
+      comparisonMutation.reset();
+    },
+    onError: (error, submitted) => {
+      if (activeSelection.current === submitted.selection) setNotice(error instanceof Error ? error.message : "Source validation failed; no revision was saved.");
+    },
+  });
+  const comparisonMutation = useMutation({
+    mutationFn: async ({ baselineId, candidateId, sources }: { baselineId: string; candidateId: string; sources: CandidateView[]; navigation: typeof manualNavigation }): Promise<ReviewedComparison> => {
+      const report = await api.compareDetections(baselineId, candidateId);
+      if (report.baseline.candidate_id !== baselineId || report.candidate.candidate_id !== candidateId) throw new Error("The returned comparison does not match the requested revisions. Select and compare them again.");
+      return { report, sources };
+    },
+    onError: (error, submitted) => { if (manualMounted.current && manualNavigationRef.current === submitted.navigation) setNotice(error instanceof Error ? error.message : "The revision comparison was refused."); },
+  });
+
+  if (runsQuery.isPending || catalogQuery.isPending || candidatesQuery.isPending || healthQuery.isPending) return <LoadingState label="Opening Detection Lab" />;
+  if (runsQuery.isError) return <ErrorState error={runsQuery.error} retry={() => { void runsQuery.refetch(); }} />;
+  if (catalogQuery.isError) return <ErrorState error={catalogQuery.error} retry={() => { void catalogQuery.refetch(); }} />;
+  if (candidatesQuery.isError) return <ErrorState title="Detection registry unavailable" error={candidatesQuery.error} retry={() => { void candidatesQuery.refetch(); }} />;
+  if (healthQuery.isError) return <ErrorState title="Detection health unavailable" error={healthQuery.error} retry={() => { void healthQuery.refetch(); }} />;
+
+  const persisted: CandidateView[] = candidatesQuery.data.candidates.map((resource) => ({
+    ...(resource.document as DetectionCandidate),
+    state: String(resource.document.state ?? resource.status),
+    candidate_id: String(resource.document.candidate_id ?? resource.id),
+    resolvedId: resource.id,
+    resourceId: resource.id,
+  }));
+  const sourceRun = sourceQuery.data;
+  const linked: CandidateView[] = sourceRun ? (sourceRun.detections?.candidates ?? []).map((candidate, index) => ({
+    ...candidate,
+    resolvedId: runCandidateKey(sourceRun.run_id, candidate.candidate_id ?? candidate.id ?? String(index)),
+    runId: sourceRun.run_id,
+    demo: sourceRun.is_demo,
+  })) : [];
+  const candidates = [...new Map([...persisted, ...linked].map((item) => [item.resolvedId, item])).values()];
+  const filtered = candidates.filter((item) => `${item.resolvedId} ${item.title ?? ""} ${item.behavior_id ?? ""} ${item.target_language ?? item.language ?? ""}`.toLowerCase().includes(search.toLowerCase()));
+  const selected = candidates.find((item) => item.resolvedId === selectedId) ?? (selectedId ? undefined : filtered.find((item) => item.runId === sourceRunId) ?? filtered[0]);
+  activeSelection.current = JSON.stringify([sourceRunId, selected?.resolvedId]);
+  const counts = Object.fromEntries(lifecycle.map((state) => [state, candidates.filter((item) => item.state === state).length]));
+  const finalizedRuns = runsQuery.data.runs.filter((run) => Boolean(run.finalized_at) || run.status === "completed");
+  const rootId = selected?.revision_root_id ?? selected?.candidate_id ?? selected?.resolvedId;
+  const lineage = persisted
+    .filter((item) => (item.revision_root_id ?? item.candidate_id ?? item.resolvedId) === rootId)
+    .sort((left, right) => (left.revision ?? 1) - (right.revision ?? 1));
+  const sources = researchSourcesQuery.data?.resources ?? [];
+  const manualBehaviorAvailable = catalogQuery.data.behaviors.some(behavior => behavior.id === behaviorId);
+  const manualLanguageAvailable = manualRuleLanguages.some(([value]) => value === language);
+  const manualCanSave = Boolean(title.trim()) && title.length <= 200 && manualBehaviorAvailable && manualLanguageAvailable;
+
+  return <div className="page detection-page">
+    <PageHeader title="Detection Lab" actions={<Link className="button button-secondary button-medium" to={detectionCreationPath(sourceRunId)}>Create from run evidence</Link>} />
+    {notice ? <Callout title="Detection update">{notice}</Callout> : null}
+    <section className="detection-context" aria-label="Source run and evidence">
+      <div className="detection-context-controls">
+        <Field label="Detection source run"><select value={sourceRunId} onChange={(event) => { const run = event.target.value; setSearchParams((old) => { const next = new URLSearchParams(old); if (selected?.resourceId) { next.set("candidate", selected.resourceId); next.set("candidate_scope", "registry"); } else { next.delete("candidate"); next.delete("candidate_scope"); } if (run) next.set("run", run); else next.delete("run"); return next; }); }}><option value="">Choose a run to bring in its evidence</option>{sourceRunId && !runsQuery.data.runs.some((run) => run.run_id === sourceRunId) ? <option value={sourceRunId}>Selected source run · Date unavailable</option> : null}{runsQuery.data.runs.map((run) => <option key={run.run_id} value={run.run_id}>{sourceRunLabel(run)}</option>)}</select></Field>
+        {sourceRun ? <Link className="button button-secondary" to={`/runs/${encodeURIComponent(sourceRun.run_id)}`}>Review source run</Link> : null}
+      </div>
+      {sourceRunId && sourceQuery.isPending ? <LoadingState label="Loading source run evidence" /> : sourceQuery.isError ? <ErrorState title="Source run unavailable" error={sourceQuery.error} retry={() => { void sourceQuery.refetch(); }} /> : sourceRun ? <details className="detection-source-details"><summary>{sourceObservedRecords(sourceRun).length} independent observations · inspect source evidence</summary><SourceRunEvidence run={sourceRun} /></details> : null}
+    </section>
+    <div className="detection-tools">
+      <details open={manualOpen || !candidates.length} onToggle={event => setManualOpen(event.currentTarget.open)}>
+        <summary>New rule</summary>
+        <Panel>
+        <PanelHeader title="Start a rule draft" detail="Choose the behavior and query language, then edit and validate its source." />
+        <div className="detail-body">
+          {manualDraft.warning ? <p role="alert">{manualDraft.warning}</p> : manualDraft.retained || manualChanged ? <p role="status">Draft inputs kept in this browser tab.</p> : null}
+          {!manualBehaviorAvailable || !manualLanguageAvailable ? <p role="alert">The selected behavior or language is unavailable. Choose a registered behavior and a supported target language before saving.</p> : null}
+          {title.length > 200 ? <p role="alert">Shorten the title to 200 characters before saving.</p> : null}
+          <Field label="Title"><input value={title} onChange={(event) => updateManual("title", event.target.value)} maxLength={200} /></Field>
+          <Field label="Registered behavior"><select value={behaviorId} onChange={(event) => updateManual("behaviorId", event.target.value)}>{!manualBehaviorAvailable ? <option value={behaviorId}>Unavailable behavior</option> : null}{catalogQuery.data.behaviors.map((behavior) => <option key={behavior.id} value={behavior.id}>{displayTitle(behavior.title)}</option>)}</select></Field>
+          <Field label="Target language"><select value={language} onChange={(event) => updateManual("language", event.target.value)}>{!manualLanguageAvailable ? <option value={language}>Unavailable language</option> : null}{manualRuleLanguages.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
+          <QueryEvaluator language={language} ready={healthQuery.data.languages[language]?.ready} />
+          <div className="candidate-actions"><Button variant="primary" onClick={() => { if (manualCanSave && !manualSavePending.current) { manualSavePending.current = true; setManualConflict(undefined); createMutation.mutate({ inputs: { ...manualDraft.value }, generation: manualGeneration.current, navigation: manualNavigation }); } }} disabled={createMutation.isPending || anotherDraftMutation.isPending || !manualCanSave}><Plus />Save rule draft</Button>
+          <Dialog.Root open={manualDiscardOpen} onOpenChange={setManualDiscardOpen}>
+            <Dialog.Trigger asChild><Button variant="ghost" size="small" disabled={createMutation.isPending || anotherDraftMutation.isPending}>Discard New rule inputs</Button></Dialog.Trigger>
+            <Dialog.Portal><Dialog.Overlay className="dialog-overlay"/><Dialog.Content className="dialog-content">
+              <Dialog.Title>Discard New rule inputs?</Dialog.Title><Dialog.Description>Reset this manual form to its starting values. Saved rules and other drafts stay intact.</Dialog.Description>
+              <div className="dialog-actions"><Dialog.Close asChild><Button>Keep editing</Button></Dialog.Close><Button variant="danger" onClick={() => { manualGeneration.current += 1; manualDraft.discard(); setManualOpen(true); setManualDiscardOpen(false); }}>Discard these inputs</Button></div>
+            </Dialog.Content></Dialog.Portal>
+          </Dialog.Root></div>
+          {currentConflict ? <section aria-label="Matching saved rule">
+            {conflictQuery.isPending ? <LoadingState label="Loading the matching saved rule" /> : conflictQuery.isError ? <ErrorState title="Matching saved rule unavailable" error={conflictQuery.error} retry={() => { void conflictQuery.refetch(); }} /> : conflictQuery.data ? <>
+              <p><strong>{displayTitle(conflictQuery.data.document.title ?? "Saved rule")}</strong> already uses this starter definition ({sentence(conflictQuery.data.status)}).</p>
+              <p>Start another draft titled <strong>{displayTitle(currentConflict.submitted.inputs.title)}</strong> from the same starter definition. Its source must be edited and validated separately. The saved rule, its source and evaluation results stay intact; those results are not copied.</p>
+              <div className="candidate-actions">
+                <Button onClick={() => setSelectedId(currentConflict.id)} disabled={anotherDraftMutation.isPending}>View saved rule</Button>
+                <Button variant="primary" disabled={anotherDraftMutation.isPending || createMutation.isPending || !manualCanSave} onClick={() => {
+                  if (manualSavePending.current || !currentManualSubmission(currentConflict.submitted)) return;
+                  manualSavePending.current = true; setNotice(undefined); anotherDraftMutation.mutate(currentConflict);
+                }}>Start another draft</Button>
+              </div>
+            </> : null}
+          </section> : null}
+        </div>
+        </Panel>
+      </details>
+      <details>
+        <summary>Detection backends</summary>
+        <Panel>
+        <PanelHeader title="Available validation and query engines" />
+        <div className="detail-body">{Object.entries(healthQuery.data.languages).map(([id, backend]) => <article className="secret-row" key={id}><span><Code2 /></span><div><strong>{languageLabel(id)}</strong><small>{backend.backend} · {backend.version ?? "Version unavailable"}</small></div><div className="row-badges"><Badge tone={backend.ready ? "success" : "warning"}>{backend.ready ? "Ready" : "Unavailable"}</Badge><Badge tone={backend.authoritative ? "info" : "neutral"}>{backend.authoritative ? "Authoritative" : "Structural only"}</Badge></div></article>)}</div>
+        </Panel>
+      </details>
+      <details>
+        <summary>Validation stages</summary>
+        <Callout title="What validation establishes">Rendered text is not validation. Sigma is converted through pySigma and SQLite is inspected locally; neither advances beyond parsed until its bounded query really executes. SPL structural success remains a hypothesis. Observed exercise accepts only verified, immutable, independently observed evidence records. Clone and tune preserve their parent.</Callout>
+        <div className="lifecycle-strip" aria-label="Detection lifecycle counts">{lifecycle.map((state, index) => <div key={state} className={state === "rejected" ? "rejected" : ""}><span>{index + 1}</span><strong>{sentence(state)}</strong><em>{counts[state]}</em></div>)}</div>
+      </details>
+    </div>
+    <div className="detection-layout">
+      <Panel className="candidate-list">
+        <div className="history-search"><Search /><input aria-label="Search detection candidates" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search candidate, behavior, language" /></div>
+        <div>{filtered.map((item) => <button key={item.resolvedId} aria-label={`${item.title ? displayTitle(item.title) : item.resolvedId} · ${revisionLabel(item)} · ${languageLabel(item.target_language ?? item.language ?? "unknown")} · ${sentence(item.state)}`} aria-pressed={selected?.resolvedId === item.resolvedId} className={selected?.resolvedId === item.resolvedId ? "selected" : ""} onClick={() => { setSearchParams(old => { const next = new URLSearchParams(old); next.set("candidate", item.candidate_id ?? item.id ?? item.resolvedId); if (item.resourceId) next.set("candidate_scope", "registry"); else { next.delete("candidate_scope"); if (item.runId) next.set("run", item.runId); } return next; }); comparisonMutation.reset(); }}><span className="candidate-icon"><ShieldQuestion /></span><span><strong>{item.title ? displayTitle(item.title) : item.resolvedId}</strong><small>{revisionLabel(item)} · {languageLabel(item.target_language ?? item.language ?? "unknown")}</small><small>{displayTitle(catalogQuery.data.behaviors.find(behavior => behavior.id === item.behavior_id)?.title ?? "Behavior not recorded")}</small></span><span><Badge tone={item.state === "rejected" ? "danger" : item.state === "hypothesis" ? "neutral" : "success"}>{sentence(item.state)}</Badge>{item.demo ? <Badge tone="violet">Demo</Badge> : null}</span></button>)}</div>
+        {!filtered.length ? <EmptyState title="No candidates" description="Create a hypothesis or complete a run that generates detection research records." /> : null}
+      </Panel>
+      {selected ? <CandidateWorkspace
+        key={candidateDraftBinding(selected, candidatesQuery.data.candidates.find(item => item.id === selected.resourceId))}
+        candidate={selected}
+        resource={candidatesQuery.data.candidates.find((item) => item.id === selected.resourceId)}
+        backend={healthQuery.data.languages[selected.target_language ?? selected.language ?? "internal"]}
+        finalizedRuns={finalizedRuns}
+        sourceRunId={sourceRunId}
+        sourceRun={sourceRun}
+        ai={catalogQuery.data.ai}
+        saveLinkedPending={saveLinkedMutation.isPending}
+        onSaveLinked={() => sourceRun && selected.runId === sourceRun.run_id && saveLinkedMutation.mutate({ candidate: selected, run: sourceRun, navigation: manualNavigation })}
+        lineage={lineage}
+        researchSources={sources}
+        researchSourcesUnavailable={researchSourcesQuery.isError}
+        lifecyclePending={actionMutation.isPending}
+        revisionPending={revisionMutation.isPending || sourceRevisionMutation.isPending}
+        comparisonPending={comparisonMutation.isPending}
+        comparison={comparisonMutation.data?.report.baseline.candidate_id === selected.resourceId ? comparisonMutation.data : undefined}
+        onAction={(action, body) => selected.resourceId && actionMutation.mutate({ id: selected.resourceId, action, body })}
+        onRevision={(kind, body) => selected.resourceId && revisionMutation.mutate({ id: selected.resourceId, kind, body, navigation: manualNavigationRef.current })}
+        onSourceRevision={(body) => selected.resourceId && sourceRevisionMutation.mutate({ id: selected.resourceId, selection: activeSelection.current, body })}
+        onCompare={(candidateId) => selected.resourceId && comparisonMutation.mutate({ baselineId: selected.resourceId, candidateId, sources: structuredClone(lineage.filter(item => item.resourceId === selected.resourceId || item.resourceId === candidateId)), navigation: manualNavigation })}
+      /> : <Panel><DetectionAIRevision sourceRun={sourceRun} providers={catalogQuery.data.ai.providers ?? emptyAIProviders} defaultProvider={catalogQuery.data.ai.active_provider} manualEdits={false} /><EmptyState icon={<FlaskConical />} title={selectedId ? "Detector unavailable" : "Select a candidate"} description={selectedId ? "The requested detector is not available in this registry or source run. Select an available detector from the list." : "Inspect lifecycle evidence, fixtures, fields, immutable revisions, and reviewed public baselines."} /></Panel>}
+    </div>
+  </div>;
+}
+
+function SourceRunEvidence({ run }: { run: RunRecord }) {
+  const records = run.evidence?.records ?? [];
+  const counts = records.reduce<Record<string, number>>((result, record) => {
+    result[record.provenance] = (result[record.provenance] ?? 0) + 1;
+    return result;
+  }, {});
+  return <>
+    <DataList items={[
+      { label: "Source run", value: <code>{run.run_id}</code> },
+      { label: "Run mode", value: `${sentence(run.mode ?? "not_reported")}${run.is_demo ? " · Demo" : ""}` },
+      { label: "Run-linked candidates", value: run.detections?.candidates?.length ?? 0 },
+      { label: "Evidence by provenance", value: Object.entries(counts).map(([kind, count]) => `${sentence(kind)}: ${count}`).join(" · ") || "No evidence records" },
+    ]} />
+    <Callout title="Source evidence stays distinct">Run-linked lifecycle and match results describe this source run. Internal structured matcher results retain internal semantics; they do not establish deployment or execution in an external detection engine. Saving a definition starts the registry workflow separately.</Callout>
+    {!sourceObservedRecords(run).length ? <Callout tone="warning" title="Observed exercise unavailable">This source has no eligible independently observed records. Synthetic, executed, and counterfactual records cannot substitute for observed evidence.</Callout> : null}
+    <details><summary>Inspect source evidence ({records.length})</summary><div className="structured-list">{records.map((record, index) => <article key={record.evidence_id ?? record.id ?? index}><strong>{record.evidence_id ?? record.id ?? `Record ${index + 1}`}</strong><Badge tone={record.provenance === "observed" ? "info" : "neutral"}>{sentence(record.provenance)}</Badge><small>{record.producer ?? "Producer not reported"}{record.step_id ? ` · ${record.step_id}` : ""}</small><pre>{JSON.stringify(record, null, 2)}</pre></article>)}</div></details>
+  </>;
+}
+
+function CandidateWorkspace({
+  candidate,
+  resource,
+  backend,
+  finalizedRuns,
+  sourceRunId,
+  sourceRun,
+  ai,
+  saveLinkedPending,
+  onSaveLinked,
+  lineage,
+  researchSources,
+  researchSourcesUnavailable,
+  lifecyclePending,
+  revisionPending,
+  comparisonPending,
+  comparison,
+  onAction,
+  onRevision,
+  onSourceRevision,
+  onCompare,
+}: {
+  candidate: CandidateView;
+  resource?: DetectionResource;
+  backend?: { ready: boolean; authoritative: boolean; backend: string; version?: string | null };
+  finalizedRuns: RunRecord[];
+  sourceRunId: string;
+  sourceRun?: RunRecord;
+  ai: CatalogResponse["ai"];
+  saveLinkedPending: boolean;
+  onSaveLinked: () => void;
+  lineage: CandidateView[];
+  researchSources: ResearchSourceResource[];
+  researchSourcesUnavailable: boolean;
+  lifecyclePending: boolean;
+  revisionPending: boolean;
+  comparisonPending: boolean;
+  comparison?: ReviewedComparison;
+  onAction: (action: LifecycleAction, body: Record<string, unknown>) => void;
+  onRevision: (kind: RevisionKind, body: DetectionCloneRequest | DetectionTuneRequest) => void;
+  onSourceRevision: (body: DetectionSourceRevisionRequest) => void;
+  onCompare: (candidateId: string) => void;
+}) {
+  const [localError, setLocalError] = useState<string>();
+  const [discardOpen, setDiscardOpen] = useState(false);
+  const language = candidate.target_language ?? candidate.language ?? "internal";
+  const querySource = ["sqlite", "sigma"].includes(language);
+  const comparisonChoices = useMemo(() => lineage.filter(item => item.resourceId && item.resolvedId !== candidate.resolvedId), [lineage, candidate.resolvedId]);
+  const binding = useMemo(() => candidateDraftBinding(candidate, resource), [candidate, resource]);
+  const defaults = useMemo(() => ({
+    tab: "candidate" as CandidateTab, source: candidate.rule_source ?? "",
+    fixtures: syntheticSelectionExample(language, candidate.selection), benign: "", notes: "", reason: "",
+    revisionKind: "clone" as RevisionKind, revisionReason: "", revisionTitle: candidate.title ?? "",
+    selectionJson: JSON.stringify(candidate.selection ?? {}, null, 2), logsourceJson: JSON.stringify(candidate.logsource ?? {}, null, 2),
+    selectedBaselineIds: candidate.public_baselines?.map(item => item.research_source_id) ?? [], compareId: comparisonChoices[0]?.resourceId ?? "",
+  }), [candidate, language, comparisonChoices]);
+  const draft = useDetectionDraft(binding, defaults);
+  const observed = useDetectionDraft(binding + ":observed:" + sourceRunId, { runId: sourceRunId, evidenceIds: "" });
+  const { tab, source, fixtures, benign, notes, reason, revisionKind, revisionReason, revisionTitle, selectionJson, logsourceJson, selectedBaselineIds, compareId } = draft.value;
+  const setTab = (value: typeof defaults.tab) => draft.update("tab", value);
+  const setSource = (value: typeof defaults.source) => draft.update("source", value);
+  const setFixtures = (value: typeof defaults.fixtures) => draft.update("fixtures", value);
+  const setBenign = (value: typeof defaults.benign) => draft.update("benign", value);
+  const setNotes = (value: typeof defaults.notes) => draft.update("notes", value);
+  const setReason = (value: typeof defaults.reason) => draft.update("reason", value);
+  const setRevisionKind = (value: typeof defaults.revisionKind) => draft.update("revisionKind", value);
+  const setRevisionReason = (value: typeof defaults.revisionReason) => draft.update("revisionReason", value);
+  const setRevisionTitle = (value: typeof defaults.revisionTitle) => draft.update("revisionTitle", value);
+  const setSelectionJson = (value: typeof defaults.selectionJson) => draft.update("selectionJson", value);
+  const setLogsourceJson = (value: typeof defaults.logsourceJson) => draft.update("logsourceJson", value);
+  const setSelectedBaselineIds = (value: typeof defaults.selectedBaselineIds) => draft.update("selectedBaselineIds", value);
+  const setCompareId = (value: typeof defaults.compareId) => draft.update("compareId", value);
+  const { runId, evidenceIds } = observed.value;
+  const setRunId = (value: string) => { observed.update("runId", value); observed.update("evidenceIds", ""); };
+  const setEvidenceIds = (value: string) => observed.update("evidenceIds", value);
+  const observedRunQuery = useQuery({ queryKey: ["run", runId], queryFn: () => api.runDetail(runId), enabled: tab === "observed" && Boolean(runId) });
+  const observedRecords = sourceObservedRecords(observedRunQuery.data);
+  const sourceChanged = querySource && source !== (candidate.rule_source ?? "");
+  const storedSource = candidate.rule_source ?? source;
+  const code = useMemo(() => storedSource || (language === "internal" ? JSON.stringify({ logsource: candidate.logsource ?? {}, selection: candidate.selection ?? {} }, null, 2) : ""), [candidate.logsource, candidate.selection, language, storedSource]);
+  const draftChanged = (Object.keys(defaults) as (keyof typeof defaults)[]).some(key => key !== "tab" && key !== "compareId" && (Array.isArray(defaults[key]) ? detectionDraftIdentity(defaults[key]) !== detectionDraftIdentity(draft.value[key]) : defaults[key] !== draft.value[key]));
+  const draftWarning = draft.warning || observed.warning;
+
+  const authoritativeParsed = Boolean(backend?.authoritative && candidate.parser_backend?.name && candidate.state !== "hypothesis" && !sourceChanged);
+  const queryValidation = candidate.validation ?? {};
+  const lastExecution = queryValidation.last_execution && typeof queryValidation.last_execution === "object" && !Array.isArray(queryValidation.last_execution)
+    ? queryValidation.last_execution as Record<string, unknown>
+    : undefined;
+  const persisted = Boolean(resource);
+  const canParse = persisted && candidate.state === "hypothesis";
+  const canReviseSource = persisted && querySource && candidate.state !== "hypothesis";
+  const canFixture = persisted && candidate.state === "parsed";
+  const canObserved = persisted && ["internal", "sigma", "sqlite"].includes(language) && ["parsed", "fixture_exercised"].includes(candidate.state);
+  const canBenign = persisted && ["fixture_exercised", "observed_exercised"].includes(candidate.state);
+  const canReject = persisted && candidate.state !== "rejected";
+  const availableBaselines = useMemo(() => researchSources.map(publicBaselineFromSource).filter((item): item is PublicBaselineReference => Boolean(item)), [researchSources]);
+  const selectableBaselines = useMemo(() => {
+    const indexed = new Map(availableBaselines.map((item) => [item.research_source_id, item]));
+    for (const item of candidate.public_baselines ?? []) if (!indexed.has(item.research_source_id)) indexed.set(item.research_source_id, item);
+    return [...indexed.values()];
+  }, [availableBaselines, candidate.public_baselines]);
+  const sourcesById = useMemo(() => new Map(researchSources.map((item) => [item.id, item])), [researchSources]);
+
+  const submitFixtures = (action: "exercise-fixtures" | "evaluate-benign") => {
+    try {
+      const value = JSON.parse(action === "exercise-fixtures" ? fixtures : benign) as unknown;
+      if (!Array.isArray(value) || !value.length) throw new Error("Supply a nonempty JSON array of explicit synthetic examples.");
+      setLocalError(undefined);
+      onAction(action, action === "exercise-fixtures" ? { fixtures: value } : { fixtures: value, notes: notes.split("\n").map((item) => item.trim()).filter(Boolean) });
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : "Fixture JSON is invalid.");
+    }
+  };
+  const submitRevision = () => {
+    try {
+      if (!revisionReason.trim()) throw new Error("Explain why this immutable revision is needed.");
+      const selectedBaselines = selectableBaselines.filter((item) => selectedBaselineIds.includes(item.research_source_id));
+      const common: DetectionCloneRequest = {
+        reason: revisionReason.trim(),
+        ...(revisionTitle.trim() ? { title: revisionTitle.trim() } : {}),
+        ...(candidate.provenance ? { provenance: candidate.provenance } : {}),
+        ...(candidate.known_misses ? { known_misses: candidate.known_misses } : {}),
+        public_baselines: selectedBaselines,
+        ...(candidate.predicted_fields ? { predicted_fields: candidate.predicted_fields } : {}),
+      };
+      if (revisionKind === "clone") {
+        setLocalError(undefined);
+        onRevision("clone", common);
+        return;
+      }
+      const parsedSelection = JSON.parse(selectionJson) as unknown;
+      const parsedLogsource = JSON.parse(logsourceJson) as unknown;
+      if (!parsedSelection || Array.isArray(parsedSelection) || typeof parsedSelection !== "object") throw new Error("Tune selection must be a JSON object.");
+      if (!parsedLogsource || Array.isArray(parsedLogsource) || typeof parsedLogsource !== "object") throw new Error("Tune log source must be a JSON object.");
+      if (JSON.stringify(parsedSelection) === JSON.stringify(candidate.selection ?? {}) && JSON.stringify(parsedLogsource) === JSON.stringify(candidate.logsource ?? {})) throw new Error("A tune must change the selection or log source; use clone when rule behavior is unchanged.");
+      setLocalError(undefined);
+      onRevision("tune", { ...common, selection: parsedSelection as Record<string, unknown>, logsource: parsedLogsource as Record<string, unknown> });
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : "Revision inputs are invalid.");
+    }
+  };
+  const exportDraft = () => {
+    const payload = { schema_version: "bluefire.detection-draft.v1", candidate_id: candidate.resolvedId, state: candidate.state, language, rendered_source: querySource ? source : code, parser_backend: candidate.parser_backend ?? null, authoritative_validation: authoritativeParsed, local_inputs: draft.value, observed_selection: { source_context: sourceRunId, ...observed.value } };
+    const url = URL.createObjectURL(new Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${candidate.resolvedId}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return <Panel className="candidate-workspace">
+    <PanelHeader title={candidate.title ? displayTitle(candidate.title) : candidate.resolvedId} detail={`${languageLabel(language)} · ${revisionLabel(candidate)}`} actions={<Badge tone={candidate.state === "rejected" ? "danger" : candidate.state === "hypothesis" ? "neutral" : "success"}>{sentence(candidate.state)}</Badge>} />
+    <div className="workspace-tabs" role="tablist" aria-label="Detection candidate details">{(["candidate", "evaluations", "revisions", "fixtures", "observed", "history"] as const).map((item) => <button role="tab" aria-selected={tab === item} onClick={() => setTab(item)} key={item}>{item === "evaluations" ? "Run evaluations" : item === "candidate" && querySource ? "Rule" : sentence(item)}</button>)}</div>
+    <div className="candidate-body">
+      {draftWarning ? <p role="alert">{draftWarning}</p> : draftChanged ? <p role="status">Unsaved inputs. {draft.retained ? "Draft kept in this browser tab." : "Inputs are not a saved rule."}</p> : null}
+      <div className="candidate-draft-tools"><Button variant="ghost" size="small" onClick={exportDraft}>Export local inputs</Button>
+      <Dialog.Root open={discardOpen} onOpenChange={setDiscardOpen}>
+        <Dialog.Trigger asChild><Button variant="ghost" size="small" disabled={lifecyclePending || revisionPending}>Discard local inputs</Button></Dialog.Trigger>
+        <Dialog.Portal><Dialog.Overlay className="dialog-overlay"/><Dialog.Content className="dialog-content">
+          <Dialog.Title>Discard inputs for this revision?</Dialog.Title><Dialog.Description>Reset this candidate's source, research reasons, tuning and fixture inputs to its saved definition. Saved rules and other candidate drafts stay intact.</Dialog.Description>
+          <div className="dialog-actions"><Dialog.Close asChild><Button>Keep editing</Button></Dialog.Close><Button variant="danger" onClick={() => { draft.discard(); observed.discard(); setLocalError(undefined); setDiscardOpen(false); }}>Discard these inputs</Button></div>
+        </Dialog.Content></Dialog.Portal>
+      </Dialog.Root></div>
+      <DetectionAIRevision resource={resource} sourceRun={sourceRun} providers={ai.providers ?? emptyAIProviders} defaultProvider={ai.active_provider} manualEdits={sourceChanged} />
+      {!persisted ? <Callout title="Run-linked record">This candidate is part of an immutable run. Save its definition as a separate hypothesis to use lifecycle or revision actions.<Button size="small" onClick={onSaveLinked} disabled={saveLinkedPending || candidate.demo || !candidate.behavior_id || !candidate.selection || !candidate.logsource}>{saveLinkedPending ? "Saving hypothesis" : "Save hypothesis from run"}</Button></Callout> : null}
+      {localError ? <Callout tone="danger" title="Input refused locally">{localError}</Callout> : null}
+      {tab === "candidate" ? <>
+        <div className="editor-header"><span><Code2 />Candidate source</span><Badge tone={authoritativeParsed ? "success" : "warning"}>{sourceChanged ? "Draft source not validated" : authoritativeParsed ? "Authoritatively parsed" : "Not authoritative validation"}</Badge></div>
+        {querySource ? <><QueryEvaluator language={language} ready={backend?.ready} /><p>Validate the source, then evaluate the saved rule against run evidence to measure its matches.</p></> : null}
+        {language === "sqlite" && !source.trim() && canParse ? <div className="query-starter"><p>SQLite queries read normalized evidence from <code>logs</code>; <code>fixture_id</code> identifies each record. Start with a staged-file example, then adjust its fields to the evidence in your source run. The example has not been validated or evaluated.</p><Button size="small" disabled={lifecyclePending} onClick={() => setSource("SELECT fixture_id FROM logs\nWHERE artifact_type = 'file_observation'\n  AND path LIKE '%staged/%'")}>Insert SQLite starter</Button></div> : null}
+        {language === "internal" ? <pre className="rule-editor">{code}</pre> : <Field label={`${languageLabel(language)} source`} hint={canReviseSource ? "Saving creates a new parsed revision. The selected revision and its evaluations remain unchanged." : "Checks this rule source locally. Evaluating run evidence is a separate step."}><textarea rows={10} value={source} onChange={(event) => setSource(event.target.value)} disabled={(!canParse && !canReviseSource) || lifecyclePending || revisionPending} /></Field>}
+        {canReviseSource ? <Field label="Reason for source revision"><input value={revisionReason} onChange={(event) => setRevisionReason(event.target.value)} maxLength={1000} disabled={revisionPending} /></Field> : null}
+        {querySource && !backend?.ready ? <Callout tone="warning" title="Query backend unavailable">Install the reviewed backend shown in Detection backend health before validating this source. No revision can be validated while it is unavailable.</Callout> : null}
+        <div className="candidate-actions">{canReviseSource ? <Button size="small" onClick={() => onSourceRevision({ source, reason: revisionReason.trim() })} disabled={!sourceChanged || !source.trim() || !revisionReason.trim() || revisionPending || lifecyclePending || !backend?.ready}>{revisionPending ? "Validating source revision" : "Validate and save new revision"}</Button> : <Button size="small" onClick={() => onAction("parse", language === "internal" ? {} : { source })} disabled={!canParse || lifecyclePending || (language !== "internal" && !source) || (querySource && !backend?.ready)}>Validate source</Button>}{querySource ? <Button size="small" onClick={() => setTab("evaluations")} disabled={!persisted || candidate.state === "hypothesis" || candidate.state === "rejected" || revisionPending}>Evaluate actual runs</Button> : null}<Button size="small" variant="danger" onClick={() => onAction("reject", { reason, notes: [] })} disabled={!canReject || lifecyclePending || !reason.trim()}>Reject</Button></div>
+        <Field label="Rejection reason" hint="Required only for explicit terminal rejection."><input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={1000} disabled={!canReject} /></Field>
+        <details><summary>Rule identity and parser details</summary><DataList items={[
+          { label: "Candidate ID", value: <code>{candidate.candidate_id ?? candidate.id ?? candidate.resolvedId}</code> },
+          { label: "Immutable revision", value: revisionLabel(candidate) },
+          { label: "Revision root", value: <code>{candidate.revision_root_id ?? candidate.resolvedId}</code> },
+          { label: "Parent candidate", value: candidate.parent_candidate_id ? <code>{candidate.parent_candidate_id}</code> : "Origin has no parent" },
+          { label: "Definition digest", value: candidate.definition_digest ? <code>{candidate.definition_digest}</code> : "Not reported" },
+          { label: "Behavior", value: candidate.behavior_id ?? "Unassigned" },
+          { label: "Language", value: languageLabel(language) },
+          { label: "Parser", value: candidate.parser_backend?.name ?? backend?.backend ?? "Not run" },
+          { label: "Parser version", value: candidate.parser_backend?.version ?? backend?.version ?? "Not reported" },
+        ]} /></details>
+        {["sigma", "sqlite"].includes(language) && Object.keys(queryValidation).length ? <>
+          <p>These fields describe lifecycle checks. Saved Run evaluations report their own query execution and results separately.</p>
+          <DataList items={[
+            { label: "Conversion backend", value: [queryValidation.conversion_backend, queryValidation.conversion_backend_version].filter((item): item is string => typeof item === "string").join(" · ") || "Native bounded SQLite" },
+            { label: "Execution backend", value: [queryValidation.execution_backend, queryValidation.execution_backend_version].filter((item): item is string => typeof item === "string").join(" · ") || "Not executed" },
+            { label: "Source query executed", value: queryValidation.source_rule_executed === true ? "Yes" : "No" },
+            { label: "Mapped fields", value: stringList(queryValidation.mapped_fields) },
+            { label: "Unsupported fields", value: stringList(queryValidation.unsupported_fields) },
+            { label: "Evaluated records", value: stringList(lastExecution?.fixture_ids) },
+            { label: "Matched records", value: stringList(lastExecution?.matched_fixture_ids) },
+          ]} />
+          <details><summary>Query source and identity</summary><DataList items={[{ label: "Converted query digest", value: typeof queryValidation.query_sha256 === "string" ? <code>{queryValidation.query_sha256}</code> : "Not reported" }]} />{typeof queryValidation.converted_query === "string" ? <pre>{queryValidation.converted_query}</pre> : null}</details>
+        </> : null}
+        <PublicBaselineList baselines={candidate.public_baselines ?? []} sourcesById={sourcesById} empty="No reviewed public comparison baseline is pinned to this revision." />
+      </> : tab === "revisions" ? <RevisionWorkspace
+        candidate={candidate}
+        persisted={persisted}
+        lineage={lineage}
+        comparisonChoices={comparisonChoices}
+        comparison={comparison}
+        comparisonPending={comparisonPending}
+        compareId={compareId}
+        setCompareId={setCompareId}
+        revisionKind={revisionKind}
+        setRevisionKind={setRevisionKind}
+        revisionReason={revisionReason}
+        setRevisionReason={setRevisionReason}
+        revisionTitle={revisionTitle}
+        setRevisionTitle={setRevisionTitle}
+        selectionJson={selectionJson}
+        setSelectionJson={setSelectionJson}
+        logsourceJson={logsourceJson}
+        setLogsourceJson={setLogsourceJson}
+        selectableBaselines={selectableBaselines}
+        selectedBaselineIds={selectedBaselineIds}
+        setSelectedBaselineIds={setSelectedBaselineIds}
+        sourcesById={sourcesById}
+        sourcesUnavailable={researchSourcesUnavailable}
+        revisionPending={revisionPending}
+        onSubmit={submitRevision}
+        onCompare={onCompare}
+      /> : tab === "evaluations" ? <DetectionRunEvaluations
+        key={candidate.resolvedId}
+        candidate={candidate}
+        resourceId={resource?.id}
+        resourceDigest={resource?.digest}
+        sourceRunId={sourceRunId}
+        runs={finalizedRuns}
+        revisions={lineage.filter((item) => item.resourceId).map((item) => ({ id: item.resourceId!, label: `Revision ${item.revision ?? 1} · ${item.resourceId}` }))}
+      /> : tab === "fixtures" ? <>
+        <Callout title="Synthetic fixture prerequisites">{defaults.fixtures ? "The positive example is generated from this internal selection. Review and edit it before exercise; a match checks the matcher, not observed behavior." : "Supply explicit bounded examples that exercise this rule source. Generic file metadata cannot predict whether arbitrary SQLite, Sigma, or YARA source will match."} Benign samples and notes must be supplied explicitly. Fixture examples never become independently observed evidence.{["sqlite", "sigma"].includes(language) ? <Button size="small" onClick={() => setTab("evaluations")}>Evaluate observed runs without fixtures</Button> : null}</Callout>
+        <Field label="Malicious fixtures JSON" hint={language === "yara" ? "Synthetic YARA examples require exactly fixture_id and bounded text data." : "Explicit synthetic examples need fixture_id and fields referenced by the candidate."}><textarea rows={8} value={fixtures} onChange={(event) => setFixtures(event.target.value)} disabled={!canFixture} /></Field>
+        <Button size="small" onClick={() => submitFixtures("exercise-fixtures")} disabled={!canFixture || lifecyclePending || !fixtures.trim()}><Beaker />Exercise malicious fixtures</Button>
+        <Field label="Benign fixtures JSON" hint="Use representative benign examples; a benign label cannot suppress a measured match."><textarea rows={8} value={benign} onChange={(event) => setBenign(event.target.value)} disabled={!canBenign} /></Field>
+        <Field label="Benign evaluation notes"><textarea rows={3} value={notes} onChange={(event) => setNotes(event.target.value)} disabled={!canBenign} /></Field>
+        <Button size="small" onClick={() => submitFixtures("evaluate-benign")} disabled={!canBenign || lifecyclePending || !benign.trim() || !notes.trim()}><CheckCircle2 />Evaluate benign fixtures</Button>
+        <div className="fixture-grid"><article><Beaker /><strong>Malicious fixtures</strong><Badge tone={candidate.malicious_fixtures?.length ? "success" : "neutral"}>{candidate.malicious_fixtures?.length ?? 0} retained</Badge></article><article><CheckCircle2 /><strong>Benign fixtures</strong><Badge tone={candidate.benign_fixtures?.length ? "success" : "neutral"}>{candidate.benign_fixtures?.length ?? 0} retained</Badge></article></div>
+      </> : tab === "observed" ? <>
+        <Callout title="Immutable observed evidence only">The control plane verifies the finalized run bundle and independently observed provenance. Evidence content cannot be pasted here.{!["internal", "sigma", "sqlite"].includes(language) ? " This language has no normalized observed-JSON evaluator." : ""}</Callout>
+        <Field label="Finalized run"><select value={runId} onChange={(event) => { setRunId(event.target.value); setEvidenceIds(""); }} disabled={!canObserved}><option value="">Select run</option>{runId && !finalizedRuns.some((run) => run.run_id === runId) ? <option value={runId}>{runId}</option> : null}{finalizedRuns.map((run) => <option key={run.run_id} value={run.run_id}>{run.run_id}</option>)}</select></Field>
+        {runId && observedRunQuery.isPending ? <LoadingState label="Loading observed evidence selection" /> : observedRunQuery.isError ? <ErrorState title="Observed run unavailable" error={observedRunQuery.error} retry={() => { void observedRunQuery.refetch(); }} /> : runId && !observedRecords.length ? <Callout tone="warning" title="No eligible observed evidence">Choose a finalized run with independently observed records. This source cannot advance observed exercise.</Callout> : observedRecords.length ? <p>{observedRecords.length} observed records available: {observedRecords.map((record) => record.evidence_id).join(", ")}. The service verifies their immutable bundle before evaluation.</p> : null}
+        <Field label="Evidence IDs" hint="Comma-separated immutable evidence identifiers. Leave empty to use all eligible observed records."><input value={evidenceIds} onChange={(event) => setEvidenceIds(event.target.value)} disabled={!canObserved} /></Field>
+        <Button size="small" onClick={() => onAction("exercise-observed", { run_id: runId, ...(evidenceIds.trim() ? { evidence_ids: evidenceIds.split(",").map((item) => item.trim()).filter(Boolean) } : {}) })} disabled={!canObserved || lifecyclePending || !runId || !observedRunQuery.isSuccess || !observedRecords.length}><FileCheck2 />Exercise observed evidence</Button>
+        <DataList items={[{ label: "Observed evidence IDs", value: candidate.observed_evidence_ids?.join(", ") || "None" }, { label: "Predicted fields", value: candidate.predicted_fields?.join(", ") || "None" }, { label: "Observed fields", value: candidate.observed_fields?.join(", ") || "None" }, { label: "Field drift", value: candidate.field_drift ? driftText(candidate.field_drift) : "Not measured" }]} />
+        {candidate.field_drift ? <details><summary>Show raw field drift</summary><pre>{JSON.stringify(candidate.field_drift, null, 2)}</pre></details> : null}
+      </> : <div className="structured-list">{candidate.lifecycle_history?.length ? candidate.lifecycle_history.map((item, index) => <article key={item.sequence ?? index}><strong>{item.sequence ?? index + 1}. {sentence(item.action ?? "transition")}</strong><span>{sentence(item.from_state ?? item.prior_state ?? "new")} → {sentence(item.to_state ?? item.current_state ?? candidate.state)} · {sentence(item.outcome ?? "recorded")}</span><small>{item.recorded_at ?? item.timestamp ?? "Timestamp not reported"}{item.run_id ? ` · ${item.run_id}` : ""}</small></article>) : <EmptyState title="No lifecycle history" description="Run-linked legacy candidates may not include explicit durable lifecycle rows." />}</div>}
+    </div>
+  </Panel>;
+}
+
+function RevisionWorkspace({
+  candidate,
+  persisted,
+  lineage,
+  comparisonChoices,
+  comparison,
+  comparisonPending,
+  compareId,
+  setCompareId,
+  revisionKind,
+  setRevisionKind,
+  revisionReason,
+  setRevisionReason,
+  revisionTitle,
+  setRevisionTitle,
+  selectionJson,
+  setSelectionJson,
+  logsourceJson,
+  setLogsourceJson,
+  selectableBaselines,
+  selectedBaselineIds,
+  setSelectedBaselineIds,
+  sourcesById,
+  sourcesUnavailable,
+  revisionPending,
+  onSubmit,
+  onCompare,
+}: {
+  candidate: CandidateView;
+  persisted: boolean;
+  lineage: CandidateView[];
+  comparisonChoices: CandidateView[];
+  comparison?: ReviewedComparison;
+  comparisonPending: boolean;
+  compareId: string;
+  setCompareId: (value: string) => void;
+  revisionKind: RevisionKind;
+  setRevisionKind: (value: RevisionKind) => void;
+  revisionReason: string;
+  setRevisionReason: (value: string) => void;
+  revisionTitle: string;
+  setRevisionTitle: (value: string) => void;
+  selectionJson: string;
+  setSelectionJson: (value: string) => void;
+  logsourceJson: string;
+  setLogsourceJson: (value: string) => void;
+  selectableBaselines: PublicBaselineReference[];
+  selectedBaselineIds: string[];
+  setSelectedBaselineIds: (value: string[]) => void;
+  sourcesById: Map<string, ResearchSourceResource>;
+  sourcesUnavailable: boolean;
+  revisionPending: boolean;
+  onSubmit: () => void;
+  onCompare: (candidateId: string) => void;
+}) {
+  return <div className="review-stack">
+
+    <div>
+      <h3>Lineage</h3>
+      <div className="structured-list">{lineage.length ? lineage.map((item) => <article key={item.resolvedId}><strong>{candidateReviewLabel(item)}</strong><span>{sentence(item.state)}</span><details><summary>Revision identity</summary><DataList items={[{ label: "Candidate ID", value: <code>{item.resolvedId}</code> }, { label: "Parent candidate", value: item.parent_candidate_id ? <code>{item.parent_candidate_id}</code> : "Origin has no parent" }, { label: "Definition digest", value: item.definition_digest ? <code>{item.definition_digest}</code> : "Not reported" }]} /></details></article>) : <EmptyState title="No persisted lineage" description="Run-linked records cannot be revised in place." />}</div>
+    </div>
+    <div>
+      <h3>Compare two revisions</h3>
+      <div className="config-grid"><Field label="Baseline revision"><input value={candidateReviewLabel(candidate)} readOnly disabled /></Field><Field label="Candidate revision"><select value={compareId} onChange={(event) => setCompareId(event.target.value)} disabled={!comparisonChoices.length}><option value="">Select same-lineage revision</option>{comparisonChoices.map((item) => <option key={item.resolvedId} value={item.resourceId}>{candidateReviewLabel(item)}</option>)}</select></Field></div>
+      <div className="candidate-actions"><Button onClick={() => onCompare(compareId)} disabled={!persisted || !compareId || comparisonPending}>{comparisonPending ? "Comparing revisions…" : "Compare immutable revisions"}</Button></div>
+    </div>
+    {comparison ? <DetectionComparisonView review={comparison} sourcesById={sourcesById} /> : <Callout title="No comparison loaded">Choose another revision from this lineage to inspect source, rule, field, lifecycle, fixture, observed, and benign deltas.</Callout>}
+    <details className="detection-advanced-revisions"><summary>Advanced clone and tune</summary>
+    <Callout title="Advanced definition revisions">Clone copies the structured definition into an unparsed hypothesis; it does not copy compiled source or results. Tune changes structured selection or log source. To edit SQLite or Sigma, use the source editor in the Rule tab. Each revision receives a new ID and parent link.</Callout>
+    <fieldset>
+      <legend>Revision intent</legend>
+      <div className="choice-grid two">{(["clone", "tune"] as const).map((kind) => <label key={kind}><input type="radio" name="detection-revision-kind" checked={revisionKind === kind} onChange={() => setRevisionKind(kind)} disabled={!persisted} /><span><strong>{kind === "clone" ? "Clone unchanged rule behavior" : "Tune rule behavior"}</strong><small>{kind === "clone" ? "Branch attribution, title, known misses, fields, or public baselines." : "Change the structured selection or log source and retain a durable reason."}</small></span></label>)}</div>
+    </fieldset>
+    <div className="config-grid">
+      <Field label="Revision title"><input value={revisionTitle} onChange={(event) => setRevisionTitle(event.target.value)} maxLength={200} disabled={!persisted} /></Field>
+      <Field label="Required research reason" hint="Recorded in immutable tuning decisions and lifecycle history."><input value={revisionReason} onChange={(event) => setRevisionReason(event.target.value)} maxLength={1000} disabled={!persisted} /></Field>
+    </div>
+    {revisionKind === "tune" ? <div className="config-grid">
+      <Field label="Tuned selection JSON" hint="Must remain a non-empty structured object."><textarea rows={9} value={selectionJson} onChange={(event) => setSelectionJson(event.target.value)} disabled={!persisted} /></Field>
+      <Field label="Tuned log source JSON" hint="Change selection, log source, or both."><textarea rows={9} value={logsourceJson} onChange={(event) => setLogsourceJson(event.target.value)} disabled={!persisted} /></Field>
+    </div> : null}
+    <fieldset>
+      <legend>Reviewed public comparison baselines</legend>
+      {sourcesUnavailable ? <Callout tone="warning" title="Research source registry unavailable">Existing immutable pins remain visible, but new source pins cannot be discovered until the registry is available.</Callout> : null}
+      {selectableBaselines.length ? <div className="choice-grid two">{selectableBaselines.map((baseline) => {
+        const source = sourcesById.get(baseline.research_source_id);
+        const selected = selectedBaselineIds.includes(baseline.research_source_id);
+        return <label key={baseline.research_source_id}><input type="checkbox" checked={selected} disabled={!persisted || baseline.license_review === "prohibited"} onChange={() => setSelectedBaselineIds(selected ? selectedBaselineIds.filter((item) => item !== baseline.research_source_id) : [...selectedBaselineIds, baseline.research_source_id])} /><span><strong>{source?.document.name ?? baseline.research_source_id}</strong><small>{baseline.version} · {baseline.exact_ref ?? baseline.pin} · {sentence(baseline.use_classification ?? "legacy")} · {sentence(baseline.license_review)} license review</small></span></label>;
+      })}</div> : <p className="field-note">No pinned, comparison-authorized public research source is registered.</p>}
+      <PublicBaselineList baselines={selectableBaselines.filter((item) => selectedBaselineIds.includes(item.research_source_id))} sourcesById={sourcesById} empty="No public baseline will be attached to the new revision." />
+    </fieldset>
+    <div className="candidate-actions"><Button variant="primary" onClick={onSubmit} disabled={!persisted || revisionPending || !revisionReason.trim()}>{revisionKind === "clone" ? "Create immutable clone" : "Create immutable tune"}</Button></div>
+    </details>
+  </div>;
+}
+
+function PublicBaselineList({ baselines, sourcesById, empty }: { baselines: PublicBaselineReference[]; sourcesById: Map<string, ResearchSourceResource>; empty: string }) {
+  if (!baselines.length) return <Callout title="Public baseline pins">{empty}</Callout>;
+  return <div className="record-grid">{baselines.map((baseline) => {
+    const source = sourcesById.get(baseline.research_source_id);
+    return <article key={`${baseline.research_source_id}-${baseline.source_digest}`}>
+      <header><Badge tone={baseline.license_review === "reviewed" ? "success" : baseline.license_review === "prohibited" ? "danger" : "warning"}>{sentence(baseline.license_review)}</Badge><code title={baseline.source_digest}>{shortDigest(baseline.source_digest)}</code></header>
+      <strong>{source?.document.name ?? baseline.research_source_id}</strong>
+      <p>{source?.document.authority ? `${source.document.authority} · ` : ""}{sentence(baseline.relationship)} public comparison; {sentence(baseline.use_classification ?? "legacy")} source handling.</p>
+      <DataList items={[{ label: "Version", value: baseline.version }, { label: "Source handling", value: sentence(baseline.use_classification ?? "legacy") }, { label: "Exact ref", value: baseline.exact_ref ?? "Legacy baseline" }, { label: "Immutable source pin", value: <code>{baseline.pin}</code> }, { label: "License", value: baseline.license }, { label: "Authorized use", value: sentence(baseline.use) }, { label: "Update status", value: sentence(baseline.update_status ?? "legacy") }]} />
+      <details><summary>Show full public baseline identity</summary><DataList items={[{ label: "Research source ID", value: <code>{baseline.research_source_id}</code> }, { label: "Source digest", value: <code>{baseline.source_digest}</code> }, { label: "Retrieved", value: baseline.retrieved_at ?? "Legacy baseline" }, { label: "Last verified", value: baseline.last_verified_at ?? "Legacy baseline" }, { label: "File-level license review", value: baseline.file_level_license_review ?? "Legacy baseline" }, { label: "Trademark considerations", value: baseline.trademark_considerations ?? "Legacy baseline" }, { label: "Attribution", value: baseline.attribution ?? "Legacy baseline" }, { label: "Security review", value: baseline.security_review ?? "Legacy baseline" }, { label: "Schema", value: baseline.schema_version }]} /></details>
+    </article>;
+  })}</div>;
+}
+
+function SetDeltaView({ label, delta }: { label: string; delta: DetectionSetDelta }) {
+  return <article><header><strong>{label}</strong><Badge tone={delta.added.length || delta.removed.length ? "warning" : "neutral"}>{delta.added.length + delta.removed.length ? "Changed" : "Stable"}</Badge></header><DataList items={[{ label: "Added", value: listText(delta.added) }, { label: "Removed", value: listText(delta.removed) }, { label: "Unchanged", value: listText(delta.unchanged) }]} /></article>;
+}
+
+function DetectionComparisonView({ review, sourcesById }: { review: ReviewedComparison; sourcesById: Map<string, ResearchSourceResource> }) {
+  const comparison = review.report;
+  const boundSources = [comparison.baseline, comparison.candidate].map(identity => {
+    const matches = review.sources.filter(item => item.resourceId === identity.candidate_id && item.candidate_id === identity.candidate_id && Boolean(identity.definition_digest) && item.definition_digest === identity.definition_digest && item.revision === identity.revision && (item.revision_root_id ?? item.candidate_id) === comparison.revision_root_id);
+    return matches.length === 1 ? matches[0] : undefined;
+  });
+  const sourcesBound = boundSources.every(Boolean);
+  const changedCategories = Object.values(comparison.deltas).filter((item) => item.changed).length;
+  const { source, rule, fields, lifecycle: lifecycleDelta, fixtures, observed, benign } = comparison.deltas;
+  return <div className="review-stack" aria-label="Detection revision comparison">
+    <Callout tone={changedCategories ? "warning" : "success"} title="Immutable revision comparison">{changedCategories} of 7 delta categories changed. These are the saved results for the compared revisions. Changing the selection above does not change this result.</Callout>
+    <section className="detection-saved-sources" aria-label="Compared saved rule sources">
+      <h3>Saved rule sources</h3>
+      <p>Read-only source from the requested immutable revisions. Unsaved editor changes are not included.</p>
+      <div className="delta-columns">{[comparison.baseline, comparison.candidate].map((identity, index) => <section key={index} aria-label={index === 0 ? "Baseline saved source" : "Candidate saved source"}>
+        <h4>{index === 0 ? "Baseline" : "Candidate"}: {boundSources[index] ? candidateReviewLabel(boundSources[index]!) : `Revision ${identity.revision} · ${sentence(identity.revision_kind)}`}</h4>
+        {sourcesBound && typeof boundSources[index]?.rule_source === "string" && boundSources[index]!.rule_source!.length > 0 ? <pre tabIndex={0}>{boundSources[index]!.rule_source}</pre> : <p>{sourcesBound ? "No saved rule source was recorded for this revision. Structured definitions can be inspected in the comparison details." : "Saved source unavailable: both requested revisions must match the comparison’s immutable identity and definition digest. No current selection or draft has been substituted."}</p>}
+      </section>)}</div>
+    </section>
+    <details><summary>Comparison identity and definitions</summary><DataList items={[
+      { label: "Lineage ID", value: <code>{comparison.revision_root_id}</code> },
+      { label: "Comparison ID", value: <code>{comparison.comparison_id}</code> },
+      { label: "Baseline", value: <><code>{comparison.baseline.candidate_id}</code> · revision {comparison.baseline.revision} · {sentence(comparison.baseline.revision_kind)} · {sentence(comparison.baseline.state)}</> },
+      { label: "Candidate", value: <><code>{comparison.candidate.candidate_id}</code> · revision {comparison.candidate.revision} · {sentence(comparison.candidate.revision_kind)} · {sentence(comparison.candidate.state)}</> },
+      { label: "Baseline definition", value: <code>{comparison.baseline.definition_digest}</code> },
+      { label: "Candidate definition", value: <code>{comparison.candidate.definition_digest}</code> },
+    ]} /></details>
+    <div className="record-grid">
+      <article>
+        <header><Badge tone={source.changed ? "warning" : "success"}>{source.changed ? "Changed" : "Stable"}</Badge><strong>Source attribution</strong></header>
+        <DataList items={[{ label: "Provenance changed", value: source.provenance.changed ? "Yes" : "No" }, { label: "Baseline provenance digest", value: <code>{source.provenance.baseline_digest}</code> }, { label: "Candidate provenance digest", value: <code>{source.provenance.candidate_digest}</code> }, { label: "Public baseline pins changed", value: source.public_baselines.changed ? "Yes" : "No" }]} />
+        <p>Added: {source.public_baselines.added.map((item) => item.research_source_id).join(", ") || "none"} · Removed: {source.public_baselines.removed.map((item) => item.research_source_id).join(", ") || "none"} · Modified: {source.public_baselines.modified.map((item) => item.research_source_id).join(", ") || "none"}</p>
+      </article>
+      <article>
+        <header><Badge tone={rule.changed ? "warning" : "success"}>{rule.changed ? "Changed" : "Stable"}</Badge><strong>Rule definition</strong></header>
+        <DataList items={[{ label: "Changed fields", value: listText(rule.changed_fields) }, { label: "Baseline target language", value: rule.baseline.target_language }, { label: "Candidate target language", value: rule.candidate.target_language }, { label: "Baseline log source digest", value: <code>{rule.baseline.logsource_digest}</code> }, { label: "Candidate log source digest", value: <code>{rule.candidate.logsource_digest}</code> }, { label: "Baseline selection digest", value: <code>{rule.baseline.selection_digest}</code> }, { label: "Candidate selection digest", value: <code>{rule.candidate.selection_digest}</code> }, { label: "Baseline rule source digest", value: rule.baseline.rule_source_digest ? <code>{rule.baseline.rule_source_digest}</code> : "None" }, { label: "Candidate rule source digest", value: rule.candidate.rule_source_digest ? <code>{rule.candidate.rule_source_digest}</code> : "None" }]} />
+      </article>
+      <article>
+        <header><Badge tone={fields.changed ? "warning" : "success"}>{fields.changed ? "Changed" : "Stable"}</Badge><strong>Field coverage</strong></header>
+        <DataList items={[{ label: "Predicted added", value: listText(fields.predicted.added) }, { label: "Predicted removed", value: listText(fields.predicted.removed) }, { label: "Predicted unchanged", value: listText(fields.predicted.unchanged) }, { label: "Observed added", value: listText(fields.observed.added) }, { label: "Observed removed", value: listText(fields.observed.removed) }, { label: "Observed unchanged", value: listText(fields.observed.unchanged) }, { label: "Field drift changed", value: fields.drift.changed ? "Yes" : "No" }, { label: "Baseline drift", value: driftText(fields.drift.baseline) }, { label: "Candidate drift", value: driftText(fields.drift.candidate) }]} />
+      </article>
+      <article>
+        <header><Badge tone={lifecycleDelta.changed ? "warning" : "success"}>{lifecycleDelta.changed ? "Changed" : "Stable"}</Badge><strong>Lifecycle proof</strong></header>
+        <DataList items={[{ label: "Baseline state", value: sentence(lifecycleDelta.baseline_state) }, { label: "Candidate state", value: sentence(lifecycleDelta.candidate_state) }, { label: "Baseline actions", value: listText(lifecycleDelta.baseline_actions) }, { label: "Candidate actions", value: listText(lifecycleDelta.candidate_actions) }, { label: "Baseline history digest", value: <code>{lifecycleDelta.baseline_history_digest}</code> }, { label: "Candidate history digest", value: <code>{lifecycleDelta.candidate_history_digest}</code> }]} />
+      </article>
+      <article>
+        <header><Badge tone={fixtures.changed ? "warning" : "success"}>{fixtures.changed ? "Changed" : "Stable"}</Badge><strong>Malicious fixtures</strong></header>
+        <DataList items={[{ label: "Added fixture IDs", value: listText(fixtures.added_fixture_ids) }, { label: "Removed fixture IDs", value: listText(fixtures.removed_fixture_ids) }, { label: "Changed fixture IDs", value: listText(fixtures.changed_fixture_ids) }, { label: "All added IDs", value: listText(fixtures.fixture_ids.added) }, { label: "All removed IDs", value: listText(fixtures.fixture_ids.removed) }, { label: "All unchanged IDs", value: listText(fixtures.fixture_ids.unchanged) }, { label: "Baseline matches", value: fixtures.baseline_match_count }, { label: "Candidate matches", value: fixtures.candidate_match_count }]} />
+      </article>
+      <article>
+        <header><Badge tone={observed.changed ? "warning" : "success"}>{observed.changed ? "Changed" : "Stable"}</Badge><strong>Observed evidence</strong></header>
+        <DataList items={[{ label: "Evidence IDs added", value: listText(observed.evidence_ids.added) }, { label: "Evidence IDs removed", value: listText(observed.evidence_ids.removed) }, { label: "Evidence IDs unchanged", value: listText(observed.evidence_ids.unchanged) }, { label: "Run IDs added", value: listText(observed.run_ids.added) }, { label: "Run IDs removed", value: listText(observed.run_ids.removed) }, { label: "Run IDs unchanged", value: listText(observed.run_ids.unchanged) }]} />
+      </article>
+      <article>
+        <header><Badge tone={benign.changed ? "warning" : "success"}>{benign.changed ? "Changed" : "Stable"}</Badge><strong>Benign evaluation</strong></header>
+        <DataList items={[{ label: "Added fixture IDs", value: listText(benign.added_fixture_ids) }, { label: "Removed fixture IDs", value: listText(benign.removed_fixture_ids) }, { label: "Changed fixture IDs", value: listText(benign.changed_fixture_ids) }, { label: "All added IDs", value: listText(benign.fixture_ids.added) }, { label: "All removed IDs", value: listText(benign.fixture_ids.removed) }, { label: "All unchanged IDs", value: listText(benign.fixture_ids.unchanged) }, { label: "Notes added", value: listText(benign.notes.added) }, { label: "Notes removed", value: listText(benign.notes.removed) }, { label: "Notes unchanged", value: listText(benign.notes.unchanged) }, { label: "Baseline matches", value: benign.baseline_match_count }, { label: "Candidate matches", value: benign.candidate_match_count }]} />
+      </article>
+    </div>
+    {source.public_baselines.added.length || source.public_baselines.removed.length || source.public_baselines.modified.length ? <div className="review-stack">
+      <h3>Public baseline pin changes</h3>
+      {source.public_baselines.added.length ? <><p className="field-note">Added reviewed pins</p><PublicBaselineList baselines={source.public_baselines.added} sourcesById={sourcesById} empty="None" /></> : null}
+      {source.public_baselines.removed.length ? <><p className="field-note">Removed reviewed pins</p><PublicBaselineList baselines={source.public_baselines.removed} sourcesById={sourcesById} empty="None" /></> : null}
+      {source.public_baselines.modified.map((item) => <details key={item.research_source_id}><summary>Modified pin for {item.research_source_id}</summary><div className="delta-columns"><PublicBaselineList baselines={[item.baseline]} sourcesById={sourcesById} empty="None" /><PublicBaselineList baselines={[item.candidate]} sourcesById={sourcesById} empty="None" /></div></details>)}
+    </div> : null}
+    <div className="record-grid"><SetDeltaView label="Predicted field set" delta={fields.predicted} /><SetDeltaView label="Observed field set" delta={fields.observed} /><SetDeltaView label="Malicious fixture set" delta={fixtures.fixture_ids} /><SetDeltaView label="Observed evidence set" delta={observed.evidence_ids} /><SetDeltaView label="Observed run set" delta={observed.run_ids} /><SetDeltaView label="Benign fixture set" delta={benign.fixture_ids} /><SetDeltaView label="Benign note set" delta={benign.notes} /></div>
+    <details><summary>Show raw detection comparison</summary><pre aria-label="Raw detection revision comparison">{JSON.stringify(comparison, null, 2)}</pre></details>
+  </div>;
+}

@@ -1,0 +1,888 @@
+"""Explicit, authenticated upgrades that preserve a settled transport history.
+
+The lifecycle owns admission and the real transport lock. This module never starts
+a runner, migrates the ledger, or changes an execution authorization.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import os
+import re
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, ContextManager, Iterator, Mapping, Protocol
+
+from .runner_bootstrap_record import (
+    _bootstrap_record_payload,
+    _BootstrapRecord,
+    _record_authentication,
+)
+from .runner_history_documents import validate_history_documents
+from .runner_history_preservation import (
+    durable_file_snapshot,
+    durable_workspace_snapshot,
+    enrolled_sandbox_snapshot,
+    optional_durable_identity,
+)
+from .runner_private_files import _PinnedPrivateDirectory
+from .runner_transport import (
+    _MAX_LEDGER_INSPECTION_BYTES,
+    DEFAULT_MAX_FRAME_BYTES,
+    AuthenticatedRunnerServer,
+    _decode_durable_json_object,
+    _decode_json_object,
+    _enrollment_binding,
+    _pinned_ledger_inspection,
+    audit_runner_ledger,
+    runner_result_namespace_path,
+    validate_stored_execute_result,
+)
+from .util import canonical_json_bytes, content_hash, file_hash
+
+if TYPE_CHECKING:
+    from .runner_bootstrap import BootstrappedRunner
+    from .runner_history_documents import HistoricalWorkspace
+    from .runner_trust import RunnerEnrollment
+
+
+class UpgradeLifecycle(Protocol):
+    """Only stopped ownership, validation and staging capabilities are required."""
+
+    bootstrap_factory: Callable[..., BootstrappedRunner]
+
+    @property
+    def runtime_root(self) -> Path: ...
+    @property
+    def control_root(self) -> Path: ...
+    @property
+    def ledger_path(self) -> Path: ...
+    @property
+    def bootstrap_record_path(self) -> Path: ...
+
+    def _ledger_preflight(self, enrollment: RunnerEnrollment) -> str | None: ...
+    def _require_no_live_watchdogs(
+        self,
+        enrollment: RunnerEnrollment,
+        *,
+        ledger_generation: str | None,
+        require_namespace_empty: bool,
+    ) -> None: ...
+    def _require_no_receipt_obligations(self, sandbox: Path) -> None: ...
+    def _require_stopped(self, operation: str) -> None: ...
+    def _load_enrollment(self, *, require_active: bool) -> RunnerEnrollment: ...
+    def _load_bootstrap(self, enrollment: RunnerEnrollment) -> _BootstrapRecord: ...
+    def _parse_bootstrap_record(self, enrollment: RunnerEnrollment) -> _BootstrapRecord: ...
+    def _require_live_bootstrap(self, record: _BootstrapRecord) -> _BootstrapRecord: ...
+    def _validated_bootstrap_payload(self, bootstrapped: BootstrappedRunner) -> dict[str, Any]: ...
+
+
+REVIEW_SCHEMA = "bluefire.runner-upgrade-review.v1"
+LEGACY_JOURNAL_SCHEMA = "bluefire.runner-history-upgrade.v1"
+JOURNAL_SCHEMA = "bluefire.runner-history-upgrade.v2"
+MAX_RECORD_BYTES = 64 * 1024
+_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_IDENTITY_FIELDS = (
+    "runner_id",
+    "runner_version",
+    "product_version",
+    "binary_digest",
+    "platform",
+    "architecture",
+    "inventory_schema",
+    "action_sdk_version",
+    "receipt_protocol",
+)
+_COMPATIBILITY_FIELDS = (
+    "runner_id",
+    "sandbox_path",
+    "platform",
+    "architecture",
+    "inventory_schema",
+    "action_sdk_version",
+    "receipt_protocol",
+)
+
+
+class RunnerHistoryUpgradeError(RuntimeError):
+    """A public, path-free refusal of a history-preserving upgrade."""
+
+
+_STAGE_REFUSALS = {
+    "runner_state": "Runner upgrade could not verify the stopped runner and enrollment.",
+    "installed_record": "Runner upgrade could not validate the installed runner record.",
+    "artifact_staging": "Runner upgrade could not stage and verify the replacement artifact.",
+    "artifact_identity": "Runner upgrade could not verify the reviewed artifact identities.",
+    "ledger_state": "Runner upgrade could not audit the execution ledger and its settled state.",
+    "history_documents": "Runner upgrade could not validate historical execution documents.",
+    "history_results": "Runner upgrade could not validate historical execution results.",
+    "result_namespace": "Runner upgrade could not verify the durable result files.",
+    "pending_cleanup": "Runner upgrade could not verify pending cleanup or runner activity.",
+    "recovery_record": "Runner upgrade could not validate its interrupted upgrade record.",
+}
+
+
+@contextmanager
+def _upgrade_stage(stage: str) -> Iterator[None]:
+    """Keep specific safe refusals; identify lower-level failures without their data."""
+    message = _STAGE_REFUSALS[stage]
+    try:
+        yield
+    except RunnerHistoryUpgradeError:
+        raise
+    except Exception:
+        # Paths, document contents, and exception text must not cross this boundary.
+        raise RunnerHistoryUpgradeError(message) from None
+
+
+@dataclass(frozen=True)
+class UpgradeIO:
+    """Use the lifecycle's existing private publication and lock boundaries."""
+
+    read: Callable[..., Any]
+    write: Callable[..., None]
+    unlink: Callable[[Path], None]
+    ledger_lock: Callable[[], ContextManager[None]]
+
+
+def _file_snapshot(
+    directory: _PinnedPrivateDirectory, name: str, maximum: int, *, durable: bool = False
+) -> dict[str, Any]:
+    descriptor = directory._open_existing(name, write_dac=False)
+    try:
+        before = directory._validate_file(
+            name, descriptor, maximum=maximum, apply_permissions=False
+        )
+        provenance = optional_durable_identity(descriptor) if durable else None
+        digest = hashlib.sha256()
+        count = 0
+        while chunk := os.read(descriptor, 1024 * 1024):
+            count += len(chunk)
+            if count > maximum:
+                raise RunnerHistoryUpgradeError("Runner history exceeds its inspection limit.")
+            digest.update(chunk)
+        after = directory._validate_file(
+            name,
+            descriptor,
+            maximum=maximum,
+            apply_permissions=False,
+            expected_identity=(before.st_dev, before.st_ino),
+        )
+        if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ) or count != after.st_size:
+            raise RunnerHistoryUpgradeError("Runner history changed during review.")
+        snapshot: dict[str, Any] = {
+            "digest": "sha256:" + digest.hexdigest(),
+            "bytes": count,
+            "identity": [after.st_dev, after.st_ino],
+            "modified_ns": after.st_mtime_ns,
+            "changed_ns": after.st_ctime_ns,
+        }
+        if durable:
+            if optional_durable_identity(descriptor) != provenance:
+                raise RunnerHistoryUpgradeError("Runner retained object changed during review.")
+            snapshot.update(
+                durable_identity=provenance,
+                permissions=[after.st_mode, after.st_uid, after.st_gid],
+            )
+        return snapshot
+    finally:
+        os.close(descriptor)
+
+
+def _validated_history(
+    lifecycle: UpgradeLifecycle,
+    enrollment: RunnerEnrollment,
+    platform: str,
+    sandbox: Path,
+    *,
+    durable: bool = False,
+) -> dict[str, Any]:
+    """Audit all rows and the complete result namespace while the ledger is locked."""
+    with _upgrade_stage("ledger_state"):
+        generation = lifecycle._ledger_preflight(enrollment)
+    with _upgrade_stage("pending_cleanup"):
+        lifecycle._require_no_live_watchdogs(
+            enrollment,
+            ledger_generation=generation,
+            require_namespace_empty=False,
+        )
+    empty = {
+        "total_rows": 0,
+        "execute_rows": 0,
+        "completed_executions": 0,
+        "undispatched_executions": 0,
+        "durable_results": 0,
+        "ledger_generation": generation,
+    }
+    if generation is None:
+        return {
+            **empty,
+            "history_digest": content_hash({"ledger": None, "results": []}),
+            **(
+                {"preservation_digest": content_hash({"ledger": None, "results": []})}
+                if durable
+                else {}
+            ),
+        }
+    with (
+        _upgrade_stage("ledger_state"),
+        _PinnedPrivateDirectory(lifecycle.ledger_path.parent) as parent,
+    ):
+        before = _file_snapshot(
+            parent, lifecycle.ledger_path.name, _MAX_LEDGER_INSPECTION_BYTES, durable=durable
+        )
+        audit = audit_runner_ledger(lifecycle.ledger_path, enrollment)
+        if audit is None or audit["ledger_generation"] != generation:
+            raise RunnerHistoryUpgradeError("Runner history changed during review.")
+        expected: dict[str, str] = {}
+        workspaces: dict[Path, HistoricalWorkspace] = {}
+        completed = undispatched = 0
+        with _pinned_ledger_inspection(lifecycle.ledger_path) as connection:
+            if connection is None:
+                raise RunnerHistoryUpgradeError("Runner execution history is unavailable.")
+            for raw in connection.execute("SELECT * FROM transport_tasks ORDER BY task_id"):
+                row = dict(raw)
+                if row["operation"] != "execute":
+                    if row["state"] == "completed":
+                        with _upgrade_stage("history_results"):
+                            _decode_json_object(row["result_json"])
+                    continue
+                with _upgrade_stage("history_documents"):
+                    manifest, profile = AuthenticatedRunnerServer._stored_execute_payload(row)
+                    workspace = validate_history_documents(
+                        manifest, profile, platform=platform, sandbox=sandbox
+                    )
+                    previous = workspaces.get(workspace.path)
+                    if previous is not None and previous.binding() != workspace.binding():
+                        raise RunnerHistoryUpgradeError(
+                            "Runner historical workspace changed during review."
+                        )
+                if previous is None:
+                    _require_settled_workspace(lifecycle, workspace)
+                    workspaces[workspace.path] = workspace
+                if row["state"] != "completed":
+                    if (
+                        row["state"] not in {"failed", "cancelled", "timed_out"}
+                        or row["effect_dispatched"]
+                    ):
+                        raise RunnerHistoryUpgradeError(
+                            "Runner execution recovery remains unresolved."
+                        )
+                    undispatched += 1
+                    continue
+                with _upgrade_stage("history_results"):
+                    wrapper = _decode_json_object(row["result_json"])
+                    if set(wrapper) != {"result"} or not isinstance(wrapper["result"], dict):
+                        raise RunnerHistoryUpgradeError("Runner historical result is invalid.")
+                    result = validate_stored_execute_result(wrapper["result"], manifest, profile)
+                name = hashlib.sha256(row["task_id"].encode("utf-8")).hexdigest()[:40] + ".json"
+                expected[name] = content_hash(result)
+                completed += 1
+        with _upgrade_stage("result_namespace"):
+            namespace = runner_result_namespace_path(
+                lifecycle.ledger_path,
+                enrollment,
+                ledger_generation=generation,
+            )
+            result_snapshots: dict[str, Any] = {}
+            durable_results: dict[str, Any] = {}
+            if namespace.exists():
+                with _PinnedPrivateDirectory(namespace) as results:
+                    if set(results.names(maximum=1_000_000)) != set(expected):
+                        raise RunnerHistoryUpgradeError(
+                            "Runner durable results do not match settled history."
+                        )
+                    for name in sorted(expected):
+                        raw, identity, metadata = results.read_with_snapshot_identity(
+                            name,
+                            maximum=DEFAULT_MAX_FRAME_BYTES,
+                            apply_permissions=False,
+                        )
+                        if content_hash(_decode_durable_json_object(raw)) != expected[name]:
+                            raise RunnerHistoryUpgradeError(
+                                "Runner durable result differs from its ledger result."
+                            )
+                        result_snapshots[name] = {
+                            "digest": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                            "identity": list(identity),
+                            "metadata": list(metadata),
+                        }
+                        if durable:
+                            snapshot = _file_snapshot(
+                                results, name, DEFAULT_MAX_FRAME_BYTES, durable=True
+                            )
+                            if (
+                                snapshot["digest"] != result_snapshots[name]["digest"]
+                                or snapshot["identity"] != list(identity)
+                                or [
+                                    snapshot["changed_ns"],
+                                    snapshot["modified_ns"],
+                                    snapshot["bytes"],
+                                ]
+                                != list(metadata)
+                            ):
+                                raise RunnerHistoryUpgradeError(
+                                    "Runner result changed during preservation review."
+                                )
+                            durable_results[name] = durable_file_snapshot(snapshot)
+                    if set(results.names(maximum=1_000_000)) != set(expected):
+                        raise RunnerHistoryUpgradeError(
+                            "Runner result state changed during review."
+                        )
+                    for name, captured in result_snapshots.items():
+                        raw, identity, metadata = results.read_with_snapshot_identity(
+                            name,
+                            maximum=DEFAULT_MAX_FRAME_BYTES,
+                            apply_permissions=False,
+                        )
+                        if captured != {
+                            "digest": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                            "identity": list(identity),
+                            "metadata": list(metadata),
+                        }:
+                            raise RunnerHistoryUpgradeError("Runner result changed during review.")
+            elif expected:
+                raise RunnerHistoryUpgradeError("Runner durable results are missing.")
+        durable_workspaces = []
+        for path in sorted(workspaces):
+            workspace = workspaces[path]
+            _require_settled_workspace(lifecycle, workspace)
+            if durable:
+                durable_workspaces.append(durable_workspace_snapshot(workspace))
+        after = _file_snapshot(
+            parent, lifecycle.ledger_path.name, _MAX_LEDGER_INSPECTION_BYTES, durable=durable
+        )
+        if after != before:
+            raise RunnerHistoryUpgradeError("Runner history changed during review.")
+    preservation: dict[str, Any] = {}
+    if durable:
+        ledger = durable_file_snapshot(before)
+        preservation["preservation_digest"] = (
+            content_hash(
+                {"ledger": ledger, "results": durable_results, "workspaces": durable_workspaces}
+            )
+            if ledger is not None
+            and all(row is not None for row in durable_results.values())
+            and all(row is not None for row in durable_workspaces)
+            else None
+        )
+    return {
+        **empty,
+        **preservation,
+        "total_rows": audit["total_rows"],
+        "execute_rows": audit["execute_rows"],
+        "completed_executions": completed,
+        "undispatched_executions": undispatched,
+        "durable_results": len(result_snapshots),
+        "history_digest": content_hash(
+            {
+                "ledger": before,
+                "results": result_snapshots,
+                "workspaces": [workspaces[path].binding() for path in sorted(workspaces)],
+            }
+        ),
+    }
+
+
+def _require_settled_workspace(lifecycle: UpgradeLifecycle, workspace: HistoricalWorkspace) -> None:
+    """Inspect only an accepted historical scope and retain its exact identity."""
+    with _upgrade_stage("history_documents"):
+        workspace.recheck()
+    with _upgrade_stage("pending_cleanup"):
+        lifecycle._require_no_receipt_obligations(workspace.path)
+    with _upgrade_stage("history_documents"):
+        workspace.recheck()
+
+
+def _bound_review(
+    lifecycle: UpgradeLifecycle,
+    enrollment: RunnerEnrollment,
+    old: Mapping[str, Any],
+    new: Mapping[str, Any],
+    profile_binding: str | None,
+    *,
+    schema: str = JOURNAL_SCHEMA,
+) -> dict[str, Any]:
+    if schema not in {LEGACY_JOURNAL_SCHEMA, JOURNAL_SCHEMA}:
+        raise RunnerHistoryUpgradeError("Runner upgrade schema is unsupported.")
+    durable = schema == JOURNAL_SCHEMA
+    if profile_binding is not None and (
+        not isinstance(profile_binding, str) or _DIGEST.fullmatch(profile_binding) is None
+    ):
+        raise RunnerHistoryUpgradeError("Runner upgrade profile binding is invalid.")
+    if any(old.get(key) != new.get(key) for key in _COMPATIBILITY_FIELDS):
+        raise RunnerHistoryUpgradeError(
+            "Runner upgrade cannot change the sandbox, identity or protocols."
+        )
+    if (
+        old == new
+        or old["binary_path"] == new["binary_path"]
+        or not old["managed_binary"]
+        or not new["managed_binary"]
+        or old["source"] != "packaged"
+        or new["source"] != "packaged"
+    ):
+        raise RunnerHistoryUpgradeError("A distinct verified managed native artifact is required.")
+    with _upgrade_stage("artifact_identity"):
+        artifacts = []
+        for payload in (old, new):
+            binary = Path(payload["binary_path"])
+            if (
+                binary.resolve(strict=True) != binary
+                or not binary.is_relative_to(lifecycle.runtime_root.resolve(strict=True))
+                or file_hash(binary) != payload["binary_digest"]
+            ):
+                raise RunnerHistoryUpgradeError(
+                    "Reviewed runner artifacts are unavailable or changed."
+                )
+            if durable:
+                from .runner_bootstrap import _MAX_RUNNER_BYTES
+
+                with _PinnedPrivateDirectory(binary.parent) as parent:
+                    snapshot = _file_snapshot(parent, binary.name, _MAX_RUNNER_BYTES, durable=True)
+                if snapshot["digest"] != payload["binary_digest"]:
+                    raise RunnerHistoryUpgradeError(
+                        "Reviewed runner artifact changed during review."
+                    )
+                artifacts.append(snapshot)
+    sandbox_snapshot = None
+    sandbox_preservation = None
+    if durable:
+        with _upgrade_stage("history_documents"):
+            sandbox_snapshot = enrolled_sandbox_snapshot(Path(old["sandbox_path"]))
+            sandbox_preservation = durable_workspace_snapshot(sandbox_snapshot)
+    with _upgrade_stage("pending_cleanup"):
+        lifecycle._require_no_receipt_obligations(Path(old["sandbox_path"]))
+    history = _validated_history(
+        lifecycle, enrollment, str(old["platform"]), Path(old["sandbox_path"]), durable=durable
+    )
+    with _upgrade_stage("pending_cleanup"):
+        lifecycle._require_no_receipt_obligations(Path(old["sandbox_path"]))
+        lifecycle._require_no_live_watchdogs(
+            enrollment,
+            ledger_generation=history["ledger_generation"],
+            require_namespace_empty=False,
+        )
+    if sandbox_snapshot is not None:
+        with _upgrade_stage("history_documents"):
+            sandbox_snapshot.recheck()
+    return {
+        "schema_version": schema,
+        "old": dict(old),
+        "new": dict(new),
+        "enrollment": _enrollment_binding(
+            enrollment, str(enrollment.metadata["client_fingerprint"])
+        ),
+        "profiles": list(enrollment.allowed_profile_ids),
+        "profile_binding": profile_binding,
+        "history": history,
+        **(
+            {
+                "artifact_snapshot_digest": content_hash(artifacts),
+                "sandbox_snapshot_digest": (
+                    content_hash(sandbox_snapshot.binding())
+                    if sandbox_snapshot is not None
+                    else None
+                ),
+                "sandbox_preservation_digest": (
+                    content_hash(sandbox_preservation) if sandbox_preservation is not None else None
+                ),
+                "artifact_preservation_digest": (
+                    content_hash([durable_file_snapshot(row) for row in artifacts])
+                    if all(row["durable_identity"] is not None for row in artifacts)
+                    else None
+                ),
+            }
+            if durable
+            else {}
+        ),
+    }
+
+
+def _public_review(bound: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": REVIEW_SCHEMA,
+        "review_digest": content_hash(bound),
+        "recovery_scope": (
+            "durable_objects" if _has_durable_proof(bound) else "current_filesystem_session"
+        ),
+        "current": {key: bound["old"][key] for key in _IDENTITY_FIELDS},
+        "candidate": {key: bound["new"][key] for key in _IDENTITY_FIELDS},
+        "compatibility": dict.fromkeys(
+            ("same_sandbox", "same_enrollment", "same_profiles", "same_protocols"), True
+        ),
+        "history": {
+            key: value for key, value in bound["history"].items() if key != "preservation_digest"
+        },
+        "preservation": dict.fromkeys(
+            ("old_binary", "ledger", "durable_results", "product_history"), True
+        ),
+        "staging": {"candidate_verified": True, "activated": False, "execution_started": False},
+    }
+
+
+def review_upgrade(
+    lifecycle: UpgradeLifecycle,
+    io: UpgradeIO,
+    options: Mapping[str, Any],
+    *,
+    profile_binding: str | None = None,
+) -> Mapping[str, Any]:
+    with _upgrade_stage("runner_state"):
+        lifecycle._require_stopped("upgrade review")
+        enrollment = lifecycle._load_enrollment(require_active=True)
+    if tuple(options["allowed_profile_ids"]) != enrollment.allowed_profile_ids:
+        raise RunnerHistoryUpgradeError("Existing enrollment does not match the reviewed profiles.")
+    if pending_upgrade(lifecycle):
+        with _upgrade_stage("ledger_state"), io.ledger_lock():
+            with _upgrade_stage("recovery_record"):
+                reviewed = _pending_review(lifecycle, io, enrollment, profile_binding)
+            return {**_public_review(reviewed), "recovery_required": True}
+    with _upgrade_stage("installed_record"):
+        old = _bootstrap_record_payload(lifecycle._load_bootstrap(enrollment))
+    stage = {key: value for key, value in options.items() if key != "allowed_profile_ids"}
+    with _upgrade_stage("artifact_staging"):
+        new = lifecycle._validated_bootstrap_payload(
+            lifecycle.bootstrap_factory(
+                managed_root=lifecycle.runtime_root,
+                **stage,
+            )
+        )
+    with _upgrade_stage("ledger_state"), io.ledger_lock():
+        return _public_review(_bound_review(lifecycle, enrollment, old, new, profile_binding))
+
+
+def _authenticated(enrollment: RunnerEnrollment, payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {**payload, "authentication": _record_authentication(enrollment, payload)}
+
+
+def _optional_bootstrap(path: Path) -> Mapping[str, Any] | None:
+    with _PinnedPrivateDirectory(path.parent) as parent:
+        try:
+            return _decode_json_object(
+                parent.read(path.name, maximum=MAX_RECORD_BYTES, apply_permissions=False)
+            )
+        except FileNotFoundError:
+            return None
+
+
+def _publish_bootstrap_switch(
+    io: UpgradeIO,
+    path: Path,
+    expected: Mapping[str, Any],
+    replacement: Mapping[str, Any],
+) -> None:
+    """Use exact deletion/no-replace publication, protected by the durable journal.
+
+    A crash in the missing-record window is recoverable only through the
+    authenticated exact pending review. Never replace an unknown raced entry.
+    """
+    expected_bytes = canonical_json_bytes(expected)
+    with _PinnedPrivateDirectory(path.parent) as directory:
+        before = directory.read_with_snapshot_identity(
+            path.name, maximum=MAX_RECORD_BYTES, apply_permissions=False
+        )
+        if before[0] != expected_bytes:
+            raise RunnerHistoryUpgradeError("Runner bootstrap changed after review.")
+        directory.unlink(
+            path.name,
+            maximum=MAX_RECORD_BYTES,
+            expected=before[0],
+            expected_identity=before[1],
+            expected_snapshot=before[2],
+            apply_permissions=False,
+        )
+    io.write(path, replacement, maximum=MAX_RECORD_BYTES, replace=False)
+
+
+def _finish_upgrade(
+    lifecycle: UpgradeLifecycle,
+    io: UpgradeIO,
+    enrollment: RunnerEnrollment,
+    bound: Mapping[str, Any],
+) -> None:
+    digest = content_hash(bound)
+    old, new = _authenticated(enrollment, bound["old"]), _authenticated(enrollment, bound["new"])
+    pending = _load_pending(lifecycle, io, enrollment)
+    fresh = (
+        _pending_review(lifecycle, io, enrollment, bound["profile_binding"])
+        if "continuation" in bound
+        else _bound_review(
+            lifecycle,
+            enrollment,
+            bound["old"],
+            bound["new"],
+            bound["profile_binding"],
+            schema=bound["schema_version"],
+        )
+    )
+    if fresh != bound:
+        raise RunnerHistoryUpgradeError("Runner upgrade state changed before activation.")
+    if bound["schema_version"] == JOURNAL_SCHEMA:
+        _retain_record(
+            io,
+            lifecycle.control_root
+            / ("history-upgrade-origin-" + content_hash(pending).removeprefix("sha256:") + ".json"),
+            pending,
+        )
+        if "continuation" in bound:
+            _retain_record(
+                io,
+                lifecycle.control_root
+                / ("history-upgrade-continuation-" + digest.removeprefix("sha256:") + ".json"),
+                _authenticated(
+                    enrollment,
+                    {
+                        "schema_version": JOURNAL_SCHEMA,
+                        "state": "approved-continuation",
+                        "original_pending_digest": content_hash(pending),
+                        "review_digest": digest,
+                        "review": dict(bound),
+                    },
+                ),
+            )
+        if _pending_review(lifecycle, io, enrollment, bound["profile_binding"]) != bound:
+            raise RunnerHistoryUpgradeError("Runner upgrade state changed before publication.")
+    current = _optional_bootstrap(lifecycle.bootstrap_record_path)
+    if current == old:
+        _publish_bootstrap_switch(io, lifecycle.bootstrap_record_path, old, new)
+    elif current is None:
+        io.write(lifecycle.bootstrap_record_path, new, maximum=MAX_RECORD_BYTES, replace=False)
+    elif current != new:
+        raise RunnerHistoryUpgradeError(
+            "Runner upgrade recovery does not match the approved artifacts."
+        )
+    archive = lifecycle.control_root / ("upgrade-" + digest.removeprefix("sha256:") + ".json")
+    receipt = _authenticated(
+        enrollment,
+        {
+            "schema_version": bound["schema_version"],
+            "state": "committed",
+            "review_digest": digest,
+            "review": dict(bound),
+        },
+    )
+    if archive.exists():
+        if io.read(archive, maximum=MAX_RECORD_BYTES) != receipt:
+            raise RunnerHistoryUpgradeError("Runner upgrade provenance is inconsistent.")
+    else:
+        io.write(archive, receipt, maximum=MAX_RECORD_BYTES, replace=False)
+    _remove_pending(lifecycle, pending)
+
+
+def _retain_record(io: UpgradeIO, path: Path, record: Mapping[str, Any]) -> None:
+    """Append exact authenticated provenance without replacing a raced entry."""
+    if path.exists() or path.is_symlink():
+        if io.read(path, maximum=MAX_RECORD_BYTES) != record:
+            raise RunnerHistoryUpgradeError("Runner upgrade provenance is inconsistent.")
+    else:
+        io.write(path, record, maximum=MAX_RECORD_BYTES, replace=False)
+    with _PinnedPrivateDirectory(path.parent) as directory:
+        if directory.read(
+            path.name, maximum=MAX_RECORD_BYTES, apply_permissions=False
+        ) != canonical_json_bytes(record):
+            raise RunnerHistoryUpgradeError("Runner upgrade provenance bytes changed.")
+
+
+def _remove_pending(lifecycle: UpgradeLifecycle, expected: Mapping[str, Any]) -> None:
+    with _PinnedPrivateDirectory(lifecycle.control_root) as directory:
+        before = directory.read_with_snapshot_identity(
+            "upgrade-pending.json", maximum=MAX_RECORD_BYTES, apply_permissions=False
+        )
+        if _decode_json_object(before[0]) != expected or (
+            expected["schema_version"] == JOURNAL_SCHEMA
+            and before[0] != canonical_json_bytes(expected)
+        ):
+            raise RunnerHistoryUpgradeError("Runner upgrade pending record changed.")
+        directory.unlink(
+            "upgrade-pending.json",
+            maximum=MAX_RECORD_BYTES,
+            expected=before[0],
+            expected_identity=before[1],
+            expected_snapshot=before[2],
+            apply_permissions=False,
+        )
+
+
+def apply_upgrade(
+    lifecycle: UpgradeLifecycle,
+    io: UpgradeIO,
+    enrollment: RunnerEnrollment,
+    old: Mapping[str, Any],
+    new: Mapping[str, Any],
+    digest: str,
+    *,
+    profile_binding: str | None = None,
+) -> None:
+    if not isinstance(digest, str) or _DIGEST.fullmatch(digest) is None:
+        raise RunnerHistoryUpgradeError("Runner upgrade review digest is invalid.")
+    lifecycle._require_stopped("upgrade")
+    lifecycle._require_live_bootstrap(lifecycle._parse_bootstrap_record(enrollment))
+    with io.ledger_lock():
+        bound = _bound_review(lifecycle, enrollment, old, new, profile_binding)
+        if not hmac.compare_digest(content_hash(bound), digest):
+            raise RunnerHistoryUpgradeError(
+                "Runner upgrade review is stale; review the current state again."
+            )
+        pending = _authenticated(
+            enrollment,
+            {
+                "schema_version": bound["schema_version"],
+                "state": "approved",
+                "review_digest": digest,
+                "review": bound,
+            },
+        )
+        io.write(
+            lifecycle.control_root / "upgrade-pending.json",
+            pending,
+            maximum=MAX_RECORD_BYTES,
+            replace=False,
+        )
+        _finish_upgrade(lifecycle, io, enrollment, bound)
+
+
+def pending_upgrade(lifecycle: UpgradeLifecycle) -> bool:
+    path = lifecycle.control_root / "upgrade-pending.json"
+    return path.exists() or path.is_symlink()
+
+
+def _load_pending(
+    lifecycle: UpgradeLifecycle,
+    io: UpgradeIO,
+    enrollment: RunnerEnrollment,
+) -> dict[str, Any]:
+    path = lifecycle.control_root / "upgrade-pending.json"
+    pending = io.read(path, maximum=MAX_RECORD_BYTES)
+    if not isinstance(pending, dict) or set(pending) != {
+        "schema_version",
+        "state",
+        "review_digest",
+        "review",
+        "authentication",
+    }:
+        raise RunnerHistoryUpgradeError("Runner upgrade recovery record is invalid.")
+    payload = {key: value for key, value in pending.items() if key != "authentication"}
+    if (
+        pending["schema_version"] not in {LEGACY_JOURNAL_SCHEMA, JOURNAL_SCHEMA}
+        or pending["state"] != "approved"
+        or not isinstance(pending["authentication"], str)
+        or not hmac.compare_digest(
+            _record_authentication(enrollment, payload), pending["authentication"]
+        )
+        or not isinstance(pending["review"], dict)
+        or content_hash(pending["review"]) != pending["review_digest"]
+        or pending["review"].get("schema_version") != pending["schema_version"]
+    ):
+        raise RunnerHistoryUpgradeError("Runner upgrade recovery authentication failed.")
+    if pending["schema_version"] == JOURNAL_SCHEMA:
+        with _PinnedPrivateDirectory(path.parent) as directory:
+            if directory.read(
+                path.name, maximum=MAX_RECORD_BYTES, apply_permissions=False
+            ) != canonical_json_bytes(pending):
+                raise RunnerHistoryUpgradeError("Runner upgrade pending bytes changed.")
+    return pending
+
+
+def _pending_review(
+    lifecycle: UpgradeLifecycle,
+    io: UpgradeIO,
+    enrollment: RunnerEnrollment,
+    profile_binding: str | None,
+) -> dict[str, Any]:
+    pending = _load_pending(lifecycle, io, enrollment)
+    reviewed = pending["review"]
+    current = _bound_review(
+        lifecycle,
+        enrollment,
+        reviewed["old"],
+        reviewed["new"],
+        profile_binding,
+        schema=pending["schema_version"],
+    )
+    if current != reviewed and not _same_preserved_transition(reviewed, current):
+        raise RunnerHistoryUpgradeError(
+            "Runner upgrade recovery state changed; activation is blocked."
+        )
+    bootstrap = _optional_bootstrap(lifecycle.bootstrap_record_path)
+    if bootstrap is not None and bootstrap not in (
+        _authenticated(enrollment, current["old"]),
+        _authenticated(enrollment, current["new"]),
+    ):
+        raise RunnerHistoryUpgradeError(
+            "Runner upgrade recovery found an unexpected bootstrap record."
+        )
+    if current != reviewed:
+        current["continuation"] = {
+            "original_pending_digest": content_hash(pending),
+            "previous_review_digest": pending["review_digest"],
+            "bootstrap_digest": content_hash(bootstrap) if bootstrap is not None else None,
+        }
+    return current
+
+
+def _same_preserved_transition(previous: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
+    """Only a new explicit review can bind unchanged durable objects to a new session."""
+    if not _has_durable_proof(previous) or not _has_durable_proof(current):
+        return False
+
+    def preserved(value: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            **{
+                key: item
+                for key, item in value.items()
+                if key not in {"artifact_snapshot_digest", "sandbox_snapshot_digest", "history"}
+            },
+            "history": {
+                key: item for key, item in value["history"].items() if key != "history_digest"
+            },
+        }
+
+    return preserved(previous) == preserved(current)
+
+
+def _has_durable_proof(bound: Mapping[str, Any]) -> bool:
+    return bound.get("schema_version") == JOURNAL_SCHEMA and all(
+        isinstance(value, str) and _DIGEST.fullmatch(value) is not None
+        for value in (
+            bound.get("artifact_preservation_digest"),
+            bound.get("sandbox_preservation_digest"),
+            bound["history"].get("preservation_digest"),
+        )
+    )
+
+
+def recover_upgrade(
+    lifecycle: UpgradeLifecycle,
+    io: UpgradeIO,
+    *,
+    review_digest: str,
+    profile_binding: str | None = None,
+) -> None:
+    """Complete a reviewed interruption only inside fresh product admission."""
+    lifecycle._require_stopped("upgrade recovery")
+    enrollment = lifecycle._load_enrollment(require_active=True)
+    with io.ledger_lock():
+        current = _pending_review(lifecycle, io, enrollment, profile_binding)
+        if not isinstance(review_digest, str) or not hmac.compare_digest(
+            content_hash(current), review_digest
+        ):
+            raise RunnerHistoryUpgradeError(
+                "Runner upgrade recovery requires the exact reviewed digest."
+            )
+        _finish_upgrade(lifecycle, io, enrollment, current)
+
+
+def upgrade_failure(exc: Exception) -> RunnerHistoryUpgradeError:
+    if isinstance(exc, RunnerHistoryUpgradeError):
+        return exc
+    # Filesystem, SQLite, and document parsers can include paths or history material.
+    return RunnerHistoryUpgradeError(
+        "Runner settled history or upgrade state could not be verified."
+    )

@@ -1,0 +1,7 @@
+key_id: fixture-limit-release-2026
+provenance:
+  purpose: Verify the independently signed deterministic runtime-limit fixture
+  source: Ephemeral build key discarded after signing committed BlueFire fixtures
+public_key: 8cGcLNvWGEyJmEjI1NVy_HcO3L-GszO2k2goL2JyYSI  # pragma: allowlist secret -- public signed fixture material
+publisher_id: bluefire.fixture.provider-upgrade
+trusted_by: provider-fixture-reviewer

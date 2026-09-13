@@ -1,0 +1,529 @@
+schema_version: bluefire.action-catalog.v1
+items:
+  - schema_version: bluefire.action.v1
+    id: sandbox.fixture.create.v1
+    title: Create sample records
+    purpose: Create 1 to 100 synthetic JSONL records in the experiment workspace.
+    safety_tier: safe
+    capabilities: [sandbox.fixture, filesystem.write]
+    platforms: [windows, linux, macos]
+    inputs: []
+    outputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+        description: Runner-owned workspace reference.
+    parameters:
+      - name: record_count
+        type: integer
+        default: 6
+        minimum: 1
+        maximum: 100
+        description: Number of exact synthetic JSONL records to create at fixtures/input.jsonl.
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
+    provenance: &authored
+      source: BlueFire Nexus canonical sandbox design
+      reference: canonical sandbox action contract
+      license: MIT
+      derived: false
+      notes: Declarative contract only; implementation belongs to the reviewed runner.
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.fixture.transform.v1
+    title: Prepare sample records
+    purpose: Validate the sample records and optionally redact their values before collection.
+    safety_tier: safe
+    capabilities: [sandbox.fixture, filesystem.read, filesystem.write]
+    platforms: [windows, linux, macos]
+    inputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+    outputs:
+      - name: fixture
+        type: artifact.sandbox.fixture.v1
+    parameters:
+      - name: redact_values
+        type: boolean
+        default: true
+        description: When true, replace every accepted fixture value with the fixed public synthetic-redacted placeholder.
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.discovery.list.v1
+    title: Inspect sample file
+    purpose: Describe the selected sample file without reading its contents or listing neighboring files.
+    safety_tier: safe
+    capabilities: [sandbox.discovery, filesystem.read]
+    platforms: [windows, linux, macos]
+    inputs:
+      - name: fixture
+        type: artifact.sandbox.fixture.v1
+    outputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    parameters: []
+    mutates: false
+    cleanup_action_id: null
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.discovery.metadata.v1
+    title: Inspect sample file metadata
+    purpose: Read the selected sample file metadata for collection.
+    safety_tier: safe
+    capabilities: [sandbox.discovery, filesystem.read]
+    platforms: [windows, linux, macos]
+    inputs:
+      - name: fixture
+        type: artifact.sandbox.fixture.v1
+    outputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    parameters: []
+    mutates: false
+    cleanup_action_id: null
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: endpoint.discovery.system.v1
+    title: Inspect operating system
+    purpose: Report the runner operating system and processor architecture.
+    safety_tier: safe
+    capabilities: [endpoint.discovery, system.discovery]
+    platforms: [windows, linux, macos]
+    inputs: []
+    outputs:
+      - name: system
+        type: artifact.endpoint.system-profile.v1
+    parameters: []
+    mutates: false
+    cleanup_action_id: null
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: endpoint.discovery.windows-version.v1
+    title: Inspect Windows version
+    purpose: Report the Windows major, minor and build version.
+    safety_tier: safe
+    capabilities: [system.discovery]
+    platforms: [windows]
+    inputs: []
+    outputs:
+      - name: windows_version
+        type: artifact.endpoint.windows-version.v1
+    parameters: []
+    mutates: false
+    cleanup_action_id: null
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: endpoint.discovery.processes.v1
+    title: List running processes
+    purpose: Return process IDs and names from the runner, up to the selected record limit.
+    safety_tier: safe
+    capabilities: [endpoint.discovery, process.discovery, process.spawn]
+    platforms: [windows, linux, macos]
+    inputs: []
+    outputs:
+      - name: processes
+        type: artifact.endpoint.process-records.v1
+    parameters:
+      - name: record_limit
+        type: integer
+        default: 25
+        minimum: 1
+        maximum: 100
+        description: Maximum number of process identity records returned.
+    mutates: false
+    cleanup_action_id: null
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.discovery.recursive.v1
+    title: List sample files
+    purpose: List files and directories in the experiment workspace within the selected depth and record limits.
+    safety_tier: safe
+    capabilities: [sandbox.discovery, filesystem.read]
+    platforms: [windows, linux, macos]
+    inputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+    outputs:
+      - name: records
+        type: artifact.sandbox.filesystem.record.v1
+        multiple: true
+    parameters:
+      - name: record_limit
+        type: integer
+        default: 25
+        minimum: 1
+        maximum: 100
+        description: Maximum number of filesystem records returned.
+      - name: max_depth
+        type: integer
+        default: 3
+        minimum: 1
+        maximum: 16
+        description: Maximum directory depth traversed below the bound workspace.
+    mutates: false
+    cleanup_action_id: null
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.archive.tar.v1
+    title: Archive sample files (native TAR)
+    purpose: Write selected workspace files to an uncompressed TAR archive using the built-in runner.
+    safety_tier: controlled
+    capabilities: [sandbox.archive, filesystem.read, filesystem.write]
+    platforms: [windows, linux, macos]
+    inputs:
+      - name: records
+        type: artifact.sandbox.filesystem.record.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.archive.v1
+    parameters: []
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.collection.stage.v1
+    title: Stage sample records (JSON or JSONL)
+    purpose: Write the selected sample records to a JSON or JSONL bundle in the experiment workspace.
+    safety_tier: controlled
+    capabilities: [sandbox.collection, filesystem.read, filesystem.write]
+    platforms: [windows, linux, macos]
+    inputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    parameters:
+      - name: bundle_format
+        type: string
+        default: jsonl
+        enum: [jsonl, json]
+        description: Deterministic JSONL or JSON representation for the single validated fixture bundle.
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.collection.records.v1
+    title: Collect selected records (native JSONL)
+    purpose: Validate the selected transformed sample records and write them as a JSONL collection.
+    safety_tier: controlled
+    capabilities: [sandbox.collection, filesystem.read, filesystem.write]
+    platforms: [windows, linux, macos]
+    inputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.collection.v1
+    parameters:
+      - name: stage_variant
+        type: string
+        default: primary
+        enum: [primary, heldout]
+        description: Choose one of two fixed runner-owned staging directories.
+      - name: max_collection_bytes
+        type: integer
+        default: 1048576
+        minimum: 1
+        maximum: 1048576
+        description: Maximum output file size in bytes. All selected records must fit; oversized collections are refused before writing. Input and profile limits remain in force.
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.collection.archive.v1
+    title: Archive selected records (native TAR)
+    purpose: Preserve the selected transformed sample file inside one uncompressed TAR archive.
+    safety_tier: controlled
+    capabilities: [sandbox.archive, filesystem.read, filesystem.write]
+    platforms: [windows, linux, macos]
+    inputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.collection.v1
+    parameters:
+      - name: stage_variant
+        type: string
+        default: primary
+        enum: [primary, heldout]
+        description: Choose one of two fixed runner-owned staging directories.
+      - name: max_collection_bytes
+        type: integer
+        default: 1048576
+        minimum: 1
+        maximum: 1048576
+        description: Maximum output file size in bytes. All selected records must fit; oversized collections are refused before writing. Input and profile limits remain in force.
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.collection.atomic-gzip.v1
+    title: Compress selected records (Atomic gzip)
+    purpose: Compress the selected sample file with the installed Linux gzip utility using the reviewed Atomic Red Team adaptation.
+    safety_tier: controlled
+    capabilities: [sandbox.archive, filesystem.read, filesystem.write, process.spawn]
+    platforms: [linux]
+    inputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.collection.v1
+    parameters:
+      - name: stage_variant
+        type: string
+        default: primary
+        enum: [primary, heldout]
+        description: Choose one of two fixed runner-owned staging directories.
+      - name: max_collection_bytes
+        type: integer
+        default: 1048576
+        minimum: 1
+        maximum: 1048576
+        description: Maximum compressed file size in bytes. Gzip runs before this size is checked; an oversized result is not written to the staging folder. Input and profile limits remain in force.
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
+    provenance:
+      source: Atomic Red Team single-file gzip method, constrained BlueFire adaptation
+      reference: https://github.com/redcanaryco/atomic-red-team/blob/388942adbd9641f4dfdcf079d7efe9a75ec0ac43/atomics/T1560.001/T1560.001.yaml
+      license: MIT
+      derived: true
+      notes: Adapted test cde3c2af-3485-49eb-9c1f-0ed60e9cc0af; fixed system gzip consumes verified synthetic bytes on stdin, without the upstream shell, default input, fallback file creation or shell cleanup.
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.network.loopback.v1
+    title: Send to the lab receiver
+    purpose: Send the sample bundle to the local receiver at 127.0.0.1 and report its response.
+    safety_tier: controlled
+    capabilities: [sandbox.network, filesystem.read, network.loopback]
+    platforms: [windows, linux, macos]
+    inputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    outputs:
+      - name: receipt
+        type: artifact.sandbox.network.receipt.v1
+    parameters:
+      - name: port
+        type: integer
+        default: 4317
+        minimum: 1024
+        maximum: 65535
+        description: Loopback sink port selected by the reviewed runner profile.
+    mutates: false
+    cleanup_action_id: null
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.export.local.v1
+    title: Copy sample bundle locally
+    purpose: Create a temporary copy in the experiment workspace; cleanup removes it after the run.
+    safety_tier: controlled
+    capabilities: [sandbox.export, filesystem.read, filesystem.write, export.local]
+    platforms: [windows, linux, macos]
+    inputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    outputs:
+      - name: receipt
+        type: artifact.sandbox.export.receipt.v1
+    parameters:
+      - name: retention_label
+        type: string
+        default: ephemeral
+        enum: [ephemeral, review]
+        description: Selects the temporary ephemeral or review path; it is a policy label, not a preservation promise or caller path.
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.execution.native-canary.v1
+    title: Check native computation
+    purpose: Run a repeatable numeric calculation inside the runner and return its result.
+    safety_tier: safe
+    capabilities: [native.execution]
+    platforms: [windows, linux, macos]
+    inputs: []
+    outputs:
+      - name: result
+        type: artifact.sandbox.execution.canary.v1
+        description: Bounded numeric canary result and requested round count.
+    parameters:
+      - name: rounds
+        type: integer
+        default: 256
+        minimum: 1
+        maximum: 4096
+        description: Number of deterministic in-process canary rounds; it never becomes a command or process argument.
+    mutates: false
+    cleanup_action_id: null
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.execution.process-tree-cancellation-witness.v1
+    title: Test process cancellation
+    purpose: Start the packaged runner test process tree on Windows to verify cooperative and forced cancellation.
+    safety_tier: safe
+    capabilities: [native.execution, filesystem.read, filesystem.write, process.spawn]
+    platforms: [windows]
+    inputs: []
+    outputs: []
+    parameters: []
+    mutates: false
+    cleanup_action_id: null
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.identity-material.seed.v1
+    title: Create public canary file
+    purpose: Write a fixed public sample document in the experiment workspace for the inspection test.
+    safety_tier: safe
+    capabilities: [sandbox.identity-material.seed, filesystem.write]
+    platforms: [windows, linux, macos]
+    inputs: []
+    outputs:
+      - name: identity_material
+        type: artifact.sandbox.identity-material.v1
+        description: Exact fixed-path reference to the public identity-material canary.
+    parameters: []
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.identity-material.inspect.v1
+    title: Inspect public canary file
+    purpose: Read the selected public sample document and report its checksum and field count.
+    safety_tier: safe
+    capabilities: [sandbox.identity-material.inspect, filesystem.read]
+    platforms: [windows, linux, macos]
+    inputs:
+      - name: identity_material
+        type: artifact.sandbox.identity-material.v1
+    outputs:
+      - name: inspection
+        type: artifact.sandbox.identity-material.inspection.v1
+        description: Digest and bounded field count for the exact public canary.
+    parameters: []
+    mutates: false
+    cleanup_action_id: null
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.peer.handoff.v1
+    title: Send to the authenticated lab receiver
+    purpose: Send the sample bundle to a one-shot receiver on 127.0.0.1 using a managed one-task capability.
+    safety_tier: controlled
+    capabilities: [sandbox.peer, filesystem.read, network.loopback]
+    platforms: [windows, linux, macos]
+    inputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    outputs:
+      - name: receipt
+        type: artifact.sandbox.peer-handoff.receipt.v2
+        description: Authenticated handoff receipt with opaque authorization handles and bounded process/lifecycle evidence for the exact staged bundle.
+    parameters:
+      - name: port
+        type: integer
+        default: 4317
+        minimum: 1024
+        maximum: 65535
+        description: Port on the runner-enforced literal 127.0.0.1 destination; no hostname or address is accepted.
+    mutates: false
+    cleanup_action_id: null
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.observability.variant.v1
+    title: Create a sample encoding variation
+    purpose: Copy the sample bundle as original bytes or reversible hexadecimal chunks for comparison.
+    safety_tier: safe
+    capabilities: [sandbox.observability.variant, filesystem.read, filesystem.write]
+    platforms: [windows, linux, macos]
+    inputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    outputs:
+      - name: variant
+        type: artifact.sandbox.observability.variant.v1
+        description: Fixed-path reversible representation whose metadata identifies canonical or chunked_hex and binds the exact staged bundle.
+    parameters:
+      - name: representation
+        type: string
+        default: canonical
+        enum: [canonical, chunked_hex]
+        description: Reviewed reversible representation for side-by-side observability comparison.
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.restricted.persistence-marker.v1
+    title: Test restricted approval and cleanup
+    purpose: Write a non-executable workspace marker to test restricted approval, observation and cleanup.
+    safety_tier: restricted
+    capabilities: [sandbox.restricted, filesystem.write]
+    platforms: [windows, linux, macos]
+    inputs: []
+    outputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+        description: Runner-owned restricted canary workspace reference.
+      - name: marker
+        type: artifact.sandbox.restricted-marker.v1
+        description: Non-executable marker for the approval and cleanup test.
+    parameters:
+      - name: label
+        type: string
+        default: persistence_detection_canary
+        enum: [persistence_detection_canary, control_validation]
+        description: Reviewed semantic label; it never becomes a path, command, or host persistence setting.
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.cleanup.v1
+    title: Clean up experiment files
+    purpose: Remove files created by the run and report which removals were verified.
+    safety_tier: safe
+    capabilities: [sandbox.cleanup, filesystem.write, cleanup]
+    platforms: [windows, linux, macos]
+    inputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+    outputs:
+      - name: receipt
+        type: artifact.sandbox.cleanup.receipt.v1
+    parameters:
+      - name: verify_removal
+        type: boolean
+        default: true
+        enum: [true]
+        description: Require the runner to verify receipt and path removal and report authoritative verification counters.
+    mutates: true
+    cleanup_action_id: null
+    provenance: *authored
