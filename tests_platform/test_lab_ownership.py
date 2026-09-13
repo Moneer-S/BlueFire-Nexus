@@ -26,6 +26,15 @@ def test_lab_ownership_exports_the_shared_identity_boundary():
 def test_identity_format_preserves_lease_format_names(monkeypatch, platform, expected):
     monkeypatch.setattr(descriptors, "sys", SimpleNamespace(platform=platform))
     assert ownership.identity_format() == expected
+    if platform != "win32":
+        monkeypatch.setattr(
+            descriptors.ctypes,
+            "WinDLL",
+            lambda *_a, **_k: pytest.fail("unsupported platform reached Windows APIs"),
+            raising=False,
+        )
+        with pytest.raises(OSError, match="only on Windows"):
+            ownership._windows_file_identity(17)
 
 
 @pytest.mark.parametrize("stat_volume", [0x12345678, 0xFEDCBA9812345678])
@@ -53,6 +62,7 @@ def test_native_identity_failure_never_falls_back_to_stat(monkeypatch):
 
 @pytest.mark.parametrize("fault", [None, "file_id", "attributes", "reparse"])
 def test_native_file_information_requires_full_id_and_ordinary_handle(monkeypatch, fault):
+    monkeypatch.setattr(descriptors, "sys", SimpleNamespace(platform="win32"))
     calls = []
 
     class Query:

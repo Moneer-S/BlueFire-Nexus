@@ -28,6 +28,9 @@ def _ordinary(details: os.stat_result, *, directory: bool) -> None:
 def _windows_file_identity(descriptor: int) -> tuple[int, int]:
     """Read the full 64-bit volume and 128-bit file ID on every Python version."""
 
+    if sys.platform != "win32":
+        raise OSError("native Windows file identity is available only on Windows")
+
     import msvcrt
     from ctypes import wintypes
 

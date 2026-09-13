@@ -139,6 +139,7 @@ def durable_descriptor_identity(descriptor: int, *, directory: bool = False) -> 
     try:
         before = os.fstat(descriptor)
         _ordinary(before, directory=directory)
+        identity: dict[str, str]
         if sys.platform == "win32":
             volume, file_id = descriptor_identity(descriptor, directory=directory)
             if (
