@@ -39,15 +39,41 @@ function branchButton() {
   return within(list).getByRole("button", { name: new RegExp(`^\\d+ ${title}`) });
 }
 function assertGraphUnchanged() { expect(JSON.parse(localStorage.getItem(graphKey)!)).toEqual(demoScenario); }
+// These tests exercise retained view state. Locate its visible controls directly,
+// then check their accessible names without naming every hidden canvas button.
+function viewButton(name: "Canvas" | "Steps") {
+  return within(screen.getByLabelText("Experiment view")).getByRole("button", { name });
+}
+function textButton(name: string) {
+  const button = screen.getByText(name, { selector: "button" });
+  expect(button).toHaveRole("button");
+  expect(button).toBeVisible();
+  expect(button).toHaveAccessibleName(name);
+  return button;
+}
+function navigationLink(name: string) {
+  const link = screen.getByText(name, { selector: "a" });
+  expect(link).toHaveRole("link");
+  expect(link).toBeVisible();
+  expect(link).toHaveAccessibleName(name);
+  return link;
+}
+function labelButton(name: string) {
+  const button = screen.getByLabelText(name, { selector: "button" });
+  expect(button).toHaveRole("button");
+  expect(button).toBeVisible();
+  expect(button).toHaveAccessibleName(name);
+  return button;
+}
 
 it("restores a selected branch, Steps view and inspector on navigation and browser remount without changing the graph", async () => {
   const { user, remount, validate, save } = setup();
-  await user.click(within(screen.getByLabelText("Experiment view")).getByRole("button", { name: "Steps" }));
-  await user.click(screen.getByRole("button", { name: "Show all branches" }));
+  await user.click(viewButton("Steps"));
+  await user.click(textButton("Show all branches"));
   await user.click(branchButton());
   expect(branchButton()).toHaveAttribute("aria-pressed", "true");
-  await user.click(screen.getByRole("link", { name: "Leave editor" }));
-  await user.click(screen.getByRole("link", { name: "Return to editor" }));
+  await user.click(navigationLink("Leave editor"));
+  await user.click(navigationLink("Return to editor"));
   expect(branchButton()).toHaveAttribute("aria-pressed", "true");
   expect(screen.getByLabelText("Close step details", { selector: "button" })).toBeVisible();
   remount();
@@ -57,7 +83,7 @@ it("restores a selected branch, Steps view and inspector on navigation and brows
   expect(validate).not.toHaveBeenCalled(); expect(save).not.toHaveBeenCalled();
   // Hiding a branch still clears selection and cannot make Delete act on it.
   const confirm = vi.spyOn(window, "confirm");
-  await user.click(screen.getByRole("button", { name: "Focus on success path" }));
+  await user.click(textButton("Focus on success path"));
   const deleteButton = screen.getByLabelText("Delete selected node", { selector: "button" });
   expect(deleteButton).toBeVisible();
   expect(deleteButton).toBeDisabled();
@@ -67,21 +93,21 @@ it("restores a selected branch, Steps view and inspector on navigation and brows
 
 it("retains individually expanded branches and a closed inspector without selecting the next experiment", async () => {
   const { user, remount } = setup();
-  await user.click(screen.getByRole("button", { name: "Steps" }));
+  await user.click(viewButton("Steps"));
   const list = within(screen.getByRole("list", { name: "Experiment steps" }));
   const branchSource = demoScenario.steps.find(step => demoScenario.edges.some(edge => edge.from_step === step.id && edge.to_step === "fallback"))!;
   const title = demoCatalog.behaviors.find(behavior => behavior.id === branchSource.behavior_id)!.title;
   await user.click(list.getByRole("button", { name: new RegExp(`^\\d+ ${title}`) }));
-  await user.click(screen.getByRole("button", { name: "Expand selected branches" }));
+  await user.click(textButton("Expand selected branches"));
   await user.click(branchButton());
-  await user.click(screen.getByRole("button", { name: "Close step details" }));
+  await user.click(labelButton("Close step details"));
   remount();
   expect(branchButton()).toHaveAttribute("aria-pressed", "true");
   expect(screen.queryByRole("button", { name: "Close step details" })).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Show all branches" })).toBeVisible();
+  expect(textButton("Show all branches")).toBeVisible();
   assertGraphUnchanged();
-  await user.click(screen.getByRole("button", { name: "Choose different experiment" }));
-  expect(screen.getByRole("button", { name: "Canvas" })).toHaveAttribute("aria-pressed", "true");
+  await user.click(textButton("Choose different experiment"));
+  expect(viewButton("Canvas")).toHaveAttribute("aria-pressed", "true");
   expect(screen.queryByRole("list", { name: "Experiment steps" })).not.toBeInTheDocument();
 });
 
@@ -89,12 +115,12 @@ it("restores the selected section on the actual canvas after remount", async () 
   const scenario: Scenario = { ...structuredClone(demoScenario), start: "step_1", steps: Array.from({ length: 17 }, (_, index) => ({ ...structuredClone(demoScenario.steps[0]!), id: `step_${index + 1}` })), edges: [], layout: undefined };
   scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success", to_step: step.id }));
   const { user, remount } = setup(scenario);
-  await user.click(screen.getByRole("button", { name: "Next section" }));
+  await user.click(within(screen.getByLabelText("Experiment sections")).getByRole("button", { name: "Next section" }));
   expect(screen.getByRole("combobox", { name: "Path section" })).toHaveValue("1");
   remount();
   expect(screen.getByRole("combobox", { name: "Path section" })).toHaveValue("1");
   expect(document.querySelector('.react-flow__node[data-id="step_9"]')).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Copy selected node" })).toBeEnabled();
+  expect(labelButton("Copy selected node")).toBeEnabled();
   expect(JSON.parse(localStorage.getItem(graphKey)!)).toEqual(scenario);
 });
 
@@ -105,7 +131,7 @@ it.each(["unknown-step", "wrong-behavior", "wrong-scenario", "malformed", "overs
   const record = kind === "malformed" ? "{" : kind === "oversized" ? "x".repeat(32769) : JSON.stringify({ scenarioId: kind === "wrong-scenario" ? "other" : demoScenario.id, view });
   sessionStorage.setItem(key, record);
   setup();
-  expect(screen.getByRole("button", { name: "Canvas" })).toHaveAttribute("aria-pressed", "true");
+  expect(viewButton("Canvas")).toHaveAttribute("aria-pressed", "true");
   expect(screen.queryByRole("button", { name: "Close step details" })).not.toBeInTheDocument();
   expect(sessionStorage.getItem(key)).toBe(record);
   assertGraphUnchanged();
@@ -114,8 +140,8 @@ it.each(["unknown-step", "wrong-behavior", "wrong-scenario", "malformed", "overs
 it("keeps step selection usable when browser view storage is unavailable", async () => {
   const { user } = setup();
   const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("Storage unavailable"); });
-  await user.click(screen.getByRole("button", { name: "Steps" }));
-  await user.click(screen.getByRole("button", { name: "Show all branches" }));
+  await user.click(viewButton("Steps"));
+  await user.click(textButton("Show all branches"));
   await user.click(branchButton());
   expect(branchButton()).toHaveAttribute("aria-pressed", "true");
   expect(write).toHaveBeenCalled(); assertGraphUnchanged();
@@ -140,10 +166,11 @@ it.each(["saved", "proposal"])("does not restore or replace the working view whi
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const user = userEvent.setup();
   render(<QueryClientProvider client={client}><Tooltip.Provider><MemoryRouter initialEntries={[`/builder?${query}`]}><ProductProvider><BuilderPage/></ProductProvider></MemoryRouter></Tooltip.Provider></QueryClientProvider>);
-  expect(await screen.findByRole("button", { name: "Canvas" })).toHaveAttribute("aria-pressed", "true");
+  const view = within(await screen.findByLabelText("Experiment view"));
+  expect(view.getByRole("button", { name: "Canvas" })).toHaveAttribute("aria-pressed", "true");
   expect(screen.queryByRole("button", { name: "Close step details" })).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Steps" }));
-  await user.click(screen.getByRole("button", { name: "Show all branches" }));
+  await user.click(viewButton("Steps"));
+  await user.click(textButton("Show all branches"));
   await user.click(branchButton());
   expect(read.mock.calls.some(([item]) => item === key)).toBe(false);
   expect(write.mock.calls.some(([item]) => item === key)).toBe(false);
