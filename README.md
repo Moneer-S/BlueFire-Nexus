@@ -25,7 +25,7 @@ The graph editor, run history, detection tools, and optional AI Assistant work i
 
 ![Walkthrough of an experiment and its saved results](docs/assets/screenshots/walkthrough.gif)
 
-*Reviewing an experiment and its saved results in the local application.*
+*Reviewing an experiment, a recorded collection observation, and saved run results using synthetic lab data.*
 
 ## Get started
 
