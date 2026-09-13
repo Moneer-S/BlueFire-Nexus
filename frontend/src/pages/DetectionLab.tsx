@@ -467,7 +467,7 @@ function DetectionRegistryPage() {
           </Dialog.Root></div>
           {currentConflict ? <section aria-label="Matching saved rule">
             {conflictQuery.isPending ? <LoadingState label="Loading the matching saved rule" /> : conflictQuery.isError ? <ErrorState title="Matching saved rule unavailable" error={conflictQuery.error} retry={() => { void conflictQuery.refetch(); }} /> : conflictQuery.data ? <>
-              <p><strong>{displayTitle(conflictQuery.data.document.title)}</strong> already uses this starter definition ({sentence(conflictQuery.data.status)}).</p>
+              <p><strong>{displayTitle(conflictQuery.data.document.title ?? "Saved rule")}</strong> already uses this starter definition ({sentence(conflictQuery.data.status)}).</p>
               <p>Start another draft titled <strong>{displayTitle(currentConflict.submitted.inputs.title)}</strong> from the same starter definition. Its source must be edited and validated separately. The saved rule, its source and evaluation results stay intact; those results are not copied.</p>
               <div className="candidate-actions">
                 <Button onClick={() => setSelectedId(currentConflict.id)} disabled={anotherDraftMutation.isPending}>View saved rule</Button>
