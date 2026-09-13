@@ -1,211 +1,123 @@
-# BlueFire Nexus
+<p align="center">
+  <img src="docs/assets/brand/bluefire-mark.svg" alt="" width="46" height="54">
+</p>
 
-BlueFire Nexus runs a security test against a lab you own, collects the evidence separately from
-whatever the tool itself claims happened, lets you change a defense, then runs the same test again
-and shows you what actually differs.
+<h1 align="center">BlueFire Nexus</h1>
 
-The workbench runs on your own machine as a local loopback service bound to 127.0.0.1.
-Manual operation and the bundled deterministic planner require no model account. Optional external
-AI sends the request's context to the provider you explicitly configure and authorize; that provider
-may require an account and charge for usage.
+<p align="center"><strong>A visual workspace for purple teaming and detection engineering.</strong></p>
 
-![Walkthrough: the behavior graph, the saved run history, and a completed run's evidence](docs/assets/screenshots/walkthrough.gif)
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-64748b?style=flat" alt="License: MIT"></a>
+  <a href="docs/INSTALLATION.md"><img src="https://img.shields.io/badge/Python-3.10%2B-64748b?style=flat" alt="Requires Python 3.10 or newer"></a>
+  <a href="https://github.com/Moneer-S/BlueFire-Nexus/issues/201"><img src="https://img.shields.io/badge/status-V3%20development-2563eb?style=flat" alt="V3 in development"></a>
+</p>
 
-Recorded from the running product in a disposable WSL2 lab: the typed graph for *Compare record
-collection methods*, its saved run history, and a completed Execute run's evidence. Captured
-September 10, 2026; condensed to 15 seconds with navigation timing edited.
+<p align="center">
+  <a href="#get-started">Get started</a> ·
+  <a href="#build-the-experiment">Workflow</a> ·
+  <a href="docs/OPERATOR_GUIDE.md">Documentation</a> ·
+  <a href="https://github.com/Moneer-S/BlueFire-Nexus/issues/201">Roadmap</a>
+</p>
 
-Use it only on systems, accounts, networks, and labs you own or are explicitly authorized to test.
-V3 is in development. Final release acceptance and live-provider validation remain incomplete;
-the remaining work is tracked in [the V3 follow-up](https://github.com/Moneer-S/BlueFire-Nexus/issues/201).
+BlueFire Nexus is an open-source purple-team framework for building repeatable security tests and improving detections. Connect individual actions into an attack chain, run it in your lab, and inspect the results. Change a method or detection rule, repeat the experiment, and compare the outcome.
 
-## Run it locally
+The graph editor, run history, detection tools, and optional AI Assistant work in the same local application.
 
-Python 3.10 or newer. [Download a development build and install it](docs/INSTALLATION.md#download-the-candidate) —
-that guide links the real Windows, Linux and Intel macOS wheel artifacts and gives exact commands for
-a fresh directory. No source checkout or developer dependencies are needed.
+![Walkthrough of an experiment and its saved results](docs/assets/screenshots/walkthrough.gif)
 
-    bluefire --runs-dir "<an absolute path you keep>" ui
+*Reviewing an experiment and its saved results in the local application.*
 
-BlueFire opens your browser once the local listener is ready. If it does not, use the one-use URL
-printed in the terminal; `--no-browser` skips the attempt. Keep the terminal running, and reuse the
-same absolute `--runs-dir` on every restart so saved experiments, rules, jobs and run bundles stay
-with you.
+## Get started
 
-Then, for a first pass that needs no runner, no Docker and no model account: open a packaged
-experiment in **Experiments**, review it in **Build**, and in **Runs** choose **Review new run** with
-mode **Simulate** and AI **Off**. Run preflight, submit, and open the result. The
-[operator guide](docs/OPERATOR_GUIDE.md) walks the visible controls.
+Download a [development build for your platform](docs/INSTALLATION.md#download-the-candidate). The package includes the application, browser interface, examples, and native runner. You need Python 3.10 or newer; you do not need to build the frontend.
 
-A Simulate result records a preview. It is not evidence that a runner action or a defensive control
-executed.
+Create a `bluefire-v3` folder, extract the downloaded artifact ZIP, and put its intact wheel in a `wheels` subfolder. Run the commands for your platform from `bluefire-v3`.
 
-## What you do with it
+<details>
+<summary><strong>Windows x86-64</strong></summary>
 
-1. **Design** a versioned graph from registered behaviors and typed artifacts, where the success,
-   partial, blocked and failed paths are all explicit rather than implied.
-2. **Run** it in Simulate, or cross an approval-gated boundary into Execute with an exact profile,
-   scope, budgets and a one-time approval.
-3. **Observe** through collectors that are attributed separately: what the action reported is
-   `executed`, what a collector independently found is `observed`. The two never merge.
-4. **Change a defense** by recording the control or detection change, instead of editing the
-   baseline result to match the new belief.
-5. **Replay** the immutable scenario exactly, or as a declared variant that stays linked to its
-   lineage.
-6. **Compare** paths, controls, detections, evidence, cleanup and budgets. Compare reports what
-   differs; it does not claim the difference proves the defense caused it.
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install .\wheels\bluefire_nexus-3.0.0-py3-none-win_amd64.whl
+.\.venv\Scripts\bluefire.exe --runs-dir (Join-Path $PWD 'workspace') ui
+```
 
-![Build: the nine-step "Compare record collection methods" graph, each step typed with its parameters and outcome branches](docs/assets/screenshots/builder.png)
+</details>
 
-## A measured example
+<details>
+<summary><strong>Linux x86-64</strong></summary>
 
-Three fresh Linux runs executed the fixed system gzip integration through the graph, run review
-and approval controls, with AI Off. Each used eight synthetic records and a declared 512-byte
-collection limit. Independent collectors checked the produced bundle; all three runs finalized
-with complete cleanup.
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install ./wheels/bluefire_nexus-3.0.0-py3-none-linux_x86_64.whl
+.venv/bin/bluefire --runs-dir "$PWD/workspace" ui
+```
 
-| Observed run | Original values | Redacted values | Gzip size |
-|---|---:|---:|---:|
-| Baseline, main staging folder | 8 | 0 | 142 bytes |
-| Fresh variation, alternate staging folder | 8 | 0 | 142 bytes |
-| Benign control, alternate folder with redaction enabled | 0 | 8 | 130 bytes |
+</details>
 
-The benign run applied a real redaction transformation and declared its different objective before
-execution. It did not claim to retain the original values or demonstrate target-enforced prevention.
+<details>
+<summary><strong>Intel macOS</strong></summary>
 
-In Detection Lab, a saved rule revision replaced a check for nonempty staged files with a check for
-retained original values in the collection observations. Both revisions were fixed before the fresh
-variation and benign run. SQLite evaluated each saved rule against each observed run:
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install ./wheels/bluefire_nexus-3.0.0-py3-none-macosx_11_0_x86_64.whl
+.venv/bin/bluefire --runs-dir "$PWD/workspace" ui
+```
 
-| Evaluation source | Staged-file rule (R2) | Retained-value rule (R3) |
-|---|---:|---:|
-| Baseline, used for development | 1 match | 1 match |
-| Fresh original-value variation | 1 match | 1 match |
-| Fresh benign redacted run | 1 match — false positive | 0 matches |
+</details>
 
-Each run supplied four observation records. The revised rule kept the useful match and removed
-the benign false positive. This is a small, collector-specific evaluation using one synthetic
-generator and a staging-location variation. It does not establish general detection coverage,
-statistical performance or AI adaptation.
+The launcher opens your browser. If it cannot, open the URL printed in the terminal. Keep the terminal running and reuse the same `workspace` folder when you restart.
 
-## Modes and authority
+Open an example in **Experiments** to inspect or edit it in **Build**. Choose **Simulate** to preview the steps without performing their actions, or **Execute** to run them after setting up a compatible runner and reviewing the plan. Simulation does not need an AI account. See [running an experiment](docs/OPERATOR_GUIDE.md) and [the disposable Linux lab](docs/PREPARED_LINUX_LAB.md) for setup.
 
-Two effect modes. AI autonomy is a separate choice and never widens runner authority.
+## Build the experiment
 
-| | Simulate | Execute |
-|---|---|---|
-| Lab effects | None | Registered and approved effects only |
-| Runner | Not used | Required, and independently enforcing the selected profile |
-| Scope | Modeled | Explicit operator scope, bounded by policy and profile |
-| Evidence | Synthetic or counterfactual | Executed, blocked, or unknown; `observed` only from a collector |
-| Approval and cleanup | Modeled | Reviewed experiment authority and receipt-bound cleanup |
+Choose the steps, how each step runs, and what happens next if it succeeds, fails, or is blocked. Edit parameters in the graph, add compatible alternatives, and save the experiment for another run.
 
-| AI level | What it can do | What it cannot do |
-|---|---|---|
-| `off` | Use the deterministic planner only | No model call at all |
-| `assist` | Draft a typed graph or registered choice for review | Apply a runtime mutation without exact-digest review |
-| `auto` | Apply a policy-valid registered choice where mode and policy permit | Invent actions, expand scope, raise a tier, change the runner profile, or bypass Execute approval |
+Work directly in the editor or use the Assistant to draft and revise the plan. You can inspect its proposed changes before applying them.
 
-An Execute experiment can include a finite set of alternative methods for a step. Review binds
-those methods, their exact inputs and parameters, the objective, scope, limits and cleanup. When
-an eligible attempt fails or is prevented, Auto can use the observed result to choose one reviewed
-alternative and continue within that authorization. The run retains both attempts and the choice.
-Assist retains review; older exact-plan approvals do not gain this authority.
+![An experiment open in the Build workspace](docs/assets/screenshots/builder.png)
 
-The bundled offline provider makes planner behavior reproducible with no model account, and it is
-what release acceptance uses. Connecting an OpenAI-compatible provider changes nothing about
-authority: schema validation, allowlists, policy, runner enforcement and approval all still apply.
-Live model requests also need a separate review of the exact connection, permitted work and data,
-and finite usage limits for the current service session.
-Model quality is not something this project measures. See [AI Planner](docs/AI_PLANNER.md).
+## Follow the run
 
-To plan an experiment, open **Build > Plan with Assistant**, describe an objective, review and edit
-the proposed graph in Builder, then save it as its own experiment.
-[Graph assistance](docs/contextual-graph-assistance.md) covers saving, recovery and the current
-Assist/Auto limits.
+Review the path taken, collected files and observations, errors, and cleanup status. Open a step to inspect its details rather than reconstructing the sequence from separate tool logs.
 
-## Scope and limits
+A step reporting success and a collector confirming its effects are shown separately. Saved results remain available for inspection, comparison, and export.
 
-BlueFire is a local workbench for labs you control. It is not an endpoint-management, cloud
-administration, identity, or enterprise-network agent.
+## Improve the detection
 
-- The browser API has same-user loopback session protection, not remote or multi-user
-  authentication. Do not expose it through a proxy, tunnel or port forward.
-- The managed runner is a per-user process, not an operating-system service. Remote and cross-host
-  runner transport and enrollment are not shipped.
-- The native action boundary is deliberately narrow: no generic shell, no arbitrary program
-  execution.
-- Independent observation covers declared sandbox files, one exactly authorized child process on
-  Windows and Linux, and authenticated bindings from a managed loopback receiver. Host audit, cloud
-  audit, packet capture, EDR and SIEM adapters are declared readiness contracts, not integrations.
-- The AWS surface is one reversible disposable-role tagging lab with a deterministic backend.
-  Real-account smoke needs an operator-supplied named profile and manual confirmation.
-- Detection Lab is a bounded local evaluator, not a SIEM connector. SPL is structural only, and
-  public rules are provenance-retaining baselines.
-- Bundle and event hashes detect modification. They are not signatures and do not prove who produced
-  a bundle.
+Use **Detection Lab** to write a rule, evaluate it against a run's observations, and inspect the matching records. Test activity you want to catch alongside examples that should not match. Save a revised rule without losing the previous version or its results.
 
-Anything unavailable or structural stays labeled that way; the
-[release capability classification](docs/RELEASE_CAPABILITIES.md) is authoritative.
+![A saved detection rule open in Detection Lab](docs/assets/screenshots/detection-lab.png)
 
-Integrations retain their source identity and license. The bundled MITRE ATT&CK T1082 record
-supplies verified neutral metadata for an independently implemented action. The
-[Atomic gzip adaptation](docs/ATOMIC_GZIP.md) uses a fixed system gzip process on Linux; it does
-not execute the complete Atomic Red Team framework or bundle GNU gzip. See
-[source intake](docs/SOURCE_INTAKE.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
+Repeat the experiment or change a method, then open **Compare** to see the differences between runs. Compare rule evaluations separately to see which records each revision matched. Export the results when you need to share or investigate them further.
 
-| Surface | Current boundary |
-|---|---|
-| Python control plane | Python 3.10+ on Windows, Linux and macOS-compatible environments |
-| Rust runner | Native Windows x86_64 wheel and a commit-bound Linux x86_64 musl artifact; methods declare their supported platforms |
-| Linux proof | Native dynamic execution in a fresh disposable WSL2 environment during release acceptance |
-| macOS validation scope | CI includes Intel macOS installed-wheel Execute and cleanup smoke checks; these do not establish full macOS lab acceptance |
-| Network actions | Literal loopback addresses in shipped actions and profiles |
-| Managed runner | Separate same-user loopback process with local enrollment |
-| Cloud identity | One reversible AWS identity lab with deterministic local proof |
+![The Compare workspace with two selected runs](docs/assets/screenshots/compare.png)
 
-## How the product proves itself
+## Work with your model
 
-Run review exposes the canonical plan, the completed graph path, the event timeline, profile and
-scope, evidence provenance, detections, approval state and cleanup result. Every evidence record
-carries a producer and one provenance class — `synthetic`, `executed`, `observed`, `control_blocked`,
-`counterfactual` or `unknown` — and those classes are never collapsed into each other.
+The optional Assistant works beside the graph and results. It supports experiment planning, supported edits, and detection drafting and revision. Connect a compatible provider when you need it; manual operation remains available without one.
 
-![Detection Lab listing two revisions of one candidate, its rule source, and its validation stage](docs/assets/screenshots/detection-lab.png)
+**Assist** asks you to review proposed changes. For supported operations, **Auto** can choose from alternatives included in the run you approved. It cannot add new targets or permissions. **Off** follows the saved plan without calling a model.
 
-![Run Review for an Execute run, keeping 9 runner-reported records separate from 5 independent observations](docs/assets/screenshots/live-run.png)
+See [model setup and supported operations](docs/AI_PLANNER.md). Live-provider validation is still in progress, and external providers may charge for usage.
 
-Replay reruns an immutable scenario exactly or as a declared variant, and Compare reports path,
-prevention and detection state, telemetry, objective, cleanup and budget deltas.
+## Under the hood
 
-![Compare workspace listing two completed Execute runs, with controls to compare them or prepare a replay](docs/assets/screenshots/compare.png)
+Python coordinates experiments and detection evaluation. The Rust runner performs supported actions. React provides the interface, and SQLite stores the workspace's saved records.
 
-A locked 12-gate release contract checks all of this on a candidate build, with machine-readable
-receipts per gate. See [evidence model](docs/EVIDENCE_MODEL.md),
-[replay and compare](docs/REPLAY_COMPARE.md) and [Detection Lab](docs/DETECTION_LAB.md).
+The framework includes native methods and reviewed external-tool adaptations, including a Linux gzip test adapted from Atomic Red Team. Detection backends include local SQLite, Sigma conversion to SQLite, and YARA for file content, subject to the installed backend requirements.
 
-## Documentation
+[Architecture](docs/ARCHITECTURE.md) · [Execution](docs/EXECUTION_MODEL.md) · [Detection backends](docs/DETECTION_LAB.md) · [Reviewed T1082 source intake](docs/SOURCE_INTAKE.md) · [Development](docs/DEVELOPMENT.md) · [Contributing](CONTRIBUTING.md)
 
-- **Start here:** [installation](docs/INSTALLATION.md), [operator guide](docs/OPERATOR_GUIDE.md),
-  [configuration](docs/CONFIGURATION.md), [troubleshooting](docs/TROUBLESHOOTING.md)
-- **Architecture:** [system architecture](docs/ARCHITECTURE.md),
-  [execution model](docs/EXECUTION_MODEL.md)
-- **Interfaces:** [local API](docs/API.md), [CLI reference](docs/CLI.md),
-  [runner protocol](docs/RUNNER_DEPLOYMENT.md)
-- **Security:** [security policy](SECURITY.md), [threat model](docs/THREAT_MODEL.md),
-  [responsible use](docs/RESPONSIBLE_USE.md)
-- **Reference:** [evidence model](docs/EVIDENCE_MODEL.md),
-  [behavior authoring](docs/BEHAVIOR_AUTHORING.md), [source intake](docs/SOURCE_INTAKE.md),
-  [AI planner](docs/AI_PLANNER.md), [replay and compare](docs/REPLAY_COMPARE.md),
-  [run exports](docs/RUN_EXPORTS.md), [third-party notices](THIRD_PARTY_NOTICES.md)
-- **Contributing:** [development and verification](docs/DEVELOPMENT.md),
-  [contributing](CONTRIBUTING.md)
+## Current scope
 
-## Responsible use and license
+V3 is a development build, not a stable release. The included examples focus on local endpoint and file-collection tests using generated lab data. Execution support varies by method and platform. Remote runners, broad Active Directory coverage, and production EDR/SIEM collection integrations are not shipped.
 
-Use BlueFire Nexus only on systems, accounts, networks and labs you own or are explicitly authorized
-to test. Start in Simulate, use least-privilege runner profiles, prefer disposable targets, review
-every Execute plan, and verify cleanup.
+Broader technique coverage, graph usability, and final release validation are active work. See the [capability reference](docs/RELEASE_CAPABILITIES.md) and [roadmap](https://github.com/Moneer-S/BlueFire-Nexus/issues/201).
 
-Report security issues privately as described in the [security policy](SECURITY.md). BlueFire Nexus
-is licensed under the [MIT License](LICENSE).
+## License
+
+[MIT](LICENSE). Third-party components retain their own [licenses and attribution](THIRD_PARTY_NOTICES.md).
+
+Use BlueFire only on systems you own or are authorized to test. Keep the web service local. For security reports, follow [SECURITY.md](SECURITY.md).

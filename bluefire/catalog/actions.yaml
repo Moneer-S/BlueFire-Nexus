@@ -175,7 +175,7 @@ items:
 
   - schema_version: bluefire.action.v1
     id: sandbox.archive.tar.v1
-    title: Archive sample files — native TAR
+    title: Archive sample files (native TAR)
     purpose: Write selected workspace files to an uncompressed TAR archive using the built-in runner.
     safety_tier: controlled
     capabilities: [sandbox.archive, filesystem.read, filesystem.write]
@@ -194,7 +194,7 @@ items:
 
   - schema_version: bluefire.action.v1
     id: sandbox.collection.stage.v1
-    title: Stage sample records — JSON or JSONL
+    title: Stage sample records (JSON or JSONL)
     purpose: Write the selected sample records to a JSON or JSONL bundle in the experiment workspace.
     safety_tier: controlled
     capabilities: [sandbox.collection, filesystem.read, filesystem.write]
@@ -218,7 +218,7 @@ items:
 
   - schema_version: bluefire.action.v1
     id: sandbox.collection.records.v1
-    title: Collect selected records — native JSONL
+    title: Collect selected records (native JSONL)
     purpose: Validate the selected transformed sample records and write them as a JSONL collection.
     safety_tier: controlled
     capabilities: [sandbox.collection, filesystem.read, filesystem.write]
@@ -248,7 +248,7 @@ items:
 
   - schema_version: bluefire.action.v1
     id: sandbox.collection.archive.v1
-    title: Archive selected records — native TAR
+    title: Archive selected records (native TAR)
     purpose: Preserve the selected transformed sample file inside one uncompressed TAR archive.
     safety_tier: controlled
     capabilities: [sandbox.archive, filesystem.read, filesystem.write]
@@ -278,7 +278,7 @@ items:
 
   - schema_version: bluefire.action.v1
     id: sandbox.collection.atomic-gzip.v1
-    title: Compress selected records — Atomic gzip
+    title: Compress selected records (Atomic gzip)
     purpose: Compress the selected sample file with the installed Linux gzip utility using the reviewed Atomic Red Team adaptation.
     safety_tier: controlled
     capabilities: [sandbox.archive, filesystem.read, filesystem.write, process.spawn]

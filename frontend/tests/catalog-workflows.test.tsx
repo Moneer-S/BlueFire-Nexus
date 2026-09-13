@@ -32,15 +32,15 @@ it("requires a real template, filters methods by platform, and retains a refused
   expect(dialog.getByLabelText("Platform")).toHaveValue("windows");
   expect(dialog.getByLabelText(/^Runner binary environment reference/)).toHaveValue("REVIEWED_RUNNER_BINARY");
   expect(dialog.getByLabelText("Sandbox root environment reference")).toHaveValue("REVIEWED_WORKSPACE_ROOT");
-  expect(dialog.queryByRole("checkbox", { name: gzip.title })).not.toBeInTheDocument();
+  expect(dialog.queryByRole("checkbox", { name: "Compress selected records: Atomic gzip" })).not.toBeInTheDocument();
   expect(dialog.getByRole("checkbox", { name: action.title })).toBeChecked();
   await user.selectOptions(dialog.getByLabelText("Platform"), "linux");
-  expect(dialog.getByRole("checkbox", { name: gzip.title })).toBeChecked();
+  expect(dialog.getByRole("checkbox", { name: "Compress selected records: Atomic gzip" })).toBeChecked();
   await user.click(dialog.getByRole("checkbox", { name: action.title }));
   expect(dialog.getByRole("alert")).toHaveTextContent("Select the cleanup method");
   expect(dialog.getByRole("button", { name: "Save profile draft" })).toBeDisabled();
   await user.click(dialog.getByRole("checkbox", { name: action.title }));
-  await user.click(dialog.getByRole("checkbox", { name: gzip.title }));
+  await user.click(dialog.getByRole("checkbox", { name: "Compress selected records: Atomic gzip" }));
   await user.clear(dialog.getByLabelText("Time (seconds)"));
   await user.type(dialog.getByLabelText("Time (seconds)"), "60");
   await user.click(dialog.getByRole("button", { name: "Save profile draft" }));

@@ -1,3 +1,4 @@
+import { displayTitle } from "../lib/display-title";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
@@ -54,7 +55,7 @@ export function MethodComparisonResult({ receipt, proposal, replaySource }: { re
   const data = retained.isSuccess ? retained.data : undefined;
   const insufficient = data?.evaluations.some((item) => item.source.observed_count === 0 || ["Not enough evidence", "Engine error"].includes(evaluationLabel(item)));
   return <Panel>
-    <PanelHeader eyebrow="Measured method comparison" title="Same detector, two methods" detail={`${proposal.option.title_from} → ${proposal.option.title}. Results use the same saved detector definition on the original and replay evidence.`} />
+    <PanelHeader eyebrow="Measured method comparison" title="Same detector, two methods" detail={`${displayTitle(proposal.option.title_from)} → ${displayTitle(proposal.option.title)}. Results use the same saved detector definition on the original and replay evidence.`} />
     <div className="detail-body">
       {retained.isPending ? <LoadingState label="Checking retained comparison and evaluations" /> : retained.isError ? <ErrorState title="Comparison results unavailable" error={retained.error} retry={() => { void retained.refetch(); }} /> : data ? <>
         <Callout tone={insufficient ? "warning" : "info"} title={insufficient ? "Not enough evidence to compare detection" : "Exploratory comparison"}>
@@ -64,7 +65,7 @@ export function MethodComparisonResult({ receipt, proposal, replaySource }: { re
         <div className="detector-comparison-table" role="region" aria-label="Same detector method results" tabIndex={0}>
           <table><caption>Retained evaluations of the same saved detector</caption><thead><tr><th scope="col">Method / run</th><th scope="col">Detector result</th><th scope="col">Observed / all records</th><th scope="col">Evidence gaps</th><th scope="col">Query engine</th></tr></thead>
             <tbody>{data.evaluations.map((item, index) => <tr key={item.evaluation_id}>
-              <th scope="row">{index === 0 ? "Original method" : "Replay method"}<small>{index === 0 ? proposal.option.title_from : proposal.option.title}</small><Link to={`/runs/${encodeURIComponent(item.source.run_id)}`}>Review {index === 0 ? "original" : "replay"} run</Link></th>
+              <th scope="row">{index === 0 ? "Original method" : "Replay method"}<small>{displayTitle(index === 0 ? proposal.option.title_from : proposal.option.title)}</small><Link to={`/runs/${encodeURIComponent(item.source.run_id)}`}>Review {index === 0 ? "original" : "replay"} run</Link></th>
               <td><strong>{item.source.observed_count === 0 ? "Not enough evidence" : evaluationLabel(item)}</strong><small>State: {sentence(item.result.state)}</small><small>Matched events: {item.result.match_count === null ? "Not measured" : item.result.match_count}</small><small>Case: {sentence(item.case_role)} (operator declared)</small></td>
               <td>{item.source.observed_count} observed / {item.source.evidence_count} total</td>
               <td>{item.result.gap_count} recorded gaps<small>Missing fields: {item.result.missing_fields.join(", ") || "None reported"}</small></td>

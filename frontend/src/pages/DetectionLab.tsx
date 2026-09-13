@@ -1,3 +1,4 @@
+import { displayTitle } from "../lib/display-title";
 import "./DetectionRevisionReview.css";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -62,7 +63,7 @@ const baselineUpdateStatuses = new Set(["current", "review_due", "superseded", "
 type ReviewedComparison = { report: DetectionComparisonResponse; sources: CandidateView[] };
 
 function candidateReviewLabel(candidate: DetectionCandidate) {
-  return `${candidate.title?.trim() || "Untitled rule"} · ${revisionLabel(candidate)}`;
+  return `${displayTitle(candidate.title?.trim() || "Untitled rule")} · ${revisionLabel(candidate)}`;
 }
 
 type CandidateView = DetectionCandidate & { resolvedId: string; resourceId?: string; runId?: string; demo?: boolean };
@@ -309,7 +310,7 @@ function DetectionRegistryPage() {
       if (!newerInputs && manualNavigationRef.current === submitted.navigation) setSelectedId(candidate.id);
       const savedTitle = typeof candidate.document.title === "string" && candidate.document.title.trim() ? candidate.document.title : "Hypothesis";
       const savedState = candidate.status === "hypothesis" ? "saved as a strict hypothesis. It has not been parsed or exercised." : `saved at its ${sentence(candidate.status).toLowerCase()} state.`;
-      setNotice(`${savedTitle} ${savedState}${newerInputs ? " Your newer draft inputs are still kept." : " New rule inputs remain available until you discard them."}`);
+      setNotice(`${displayTitle(savedTitle)} ${savedState}${newerInputs ? " Your newer draft inputs are still kept." : " New rule inputs remain available until you discard them."}`);
     },
     onError: (error, submitted) => {
       if (!currentManualSubmission(submitted)) return;
@@ -334,7 +335,7 @@ function DetectionRegistryPage() {
       if (!currentManualSubmission(conflict.submitted)) return;
       setManualConflict(undefined);
       setSelectedId(candidate.id);
-      setNotice(`${conflict.submitted.inputs.title} saved as a new rule draft. The existing rule and its results were kept. Edit and validate the new draft's source before evaluating runs.`);
+      setNotice(`${displayTitle(conflict.submitted.inputs.title)} saved as a new rule draft. The existing rule and its results were kept. Edit and validate the new draft's source before evaluating runs.`);
     },
     onError: (error, conflict) => {
       if (currentManualSubmission(conflict.submitted)) setNotice(error instanceof Error ? error.message : "The new draft could not be saved.");
@@ -453,7 +454,7 @@ function DetectionRegistryPage() {
           {!manualBehaviorAvailable || !manualLanguageAvailable ? <p role="alert">The selected behavior or language is unavailable. Choose a registered behavior and a supported target language before saving.</p> : null}
           {title.length > 200 ? <p role="alert">Shorten the title to 200 characters before saving.</p> : null}
           <Field label="Title"><input value={title} onChange={(event) => updateManual("title", event.target.value)} maxLength={200} /></Field>
-          <Field label="Registered behavior"><select value={behaviorId} onChange={(event) => updateManual("behaviorId", event.target.value)}>{!manualBehaviorAvailable ? <option value={behaviorId}>Unavailable behavior</option> : null}{catalogQuery.data.behaviors.map((behavior) => <option key={behavior.id} value={behavior.id}>{behavior.title}</option>)}</select></Field>
+          <Field label="Registered behavior"><select value={behaviorId} onChange={(event) => updateManual("behaviorId", event.target.value)}>{!manualBehaviorAvailable ? <option value={behaviorId}>Unavailable behavior</option> : null}{catalogQuery.data.behaviors.map((behavior) => <option key={behavior.id} value={behavior.id}>{displayTitle(behavior.title)}</option>)}</select></Field>
           <Field label="Target language"><select value={language} onChange={(event) => updateManual("language", event.target.value)}>{!manualLanguageAvailable ? <option value={language}>Unavailable language</option> : null}{manualRuleLanguages.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
           <QueryEvaluator language={language} ready={healthQuery.data.languages[language]?.ready} />
           <div className="candidate-actions"><Button variant="primary" onClick={() => { if (manualCanSave && !manualSavePending.current) { manualSavePending.current = true; setManualConflict(undefined); createMutation.mutate({ inputs: { ...manualDraft.value }, generation: manualGeneration.current, navigation: manualNavigation }); } }} disabled={createMutation.isPending || anotherDraftMutation.isPending || !manualCanSave}><Plus />Save rule draft</Button>
@@ -466,8 +467,8 @@ function DetectionRegistryPage() {
           </Dialog.Root></div>
           {currentConflict ? <section aria-label="Matching saved rule">
             {conflictQuery.isPending ? <LoadingState label="Loading the matching saved rule" /> : conflictQuery.isError ? <ErrorState title="Matching saved rule unavailable" error={conflictQuery.error} retry={() => { void conflictQuery.refetch(); }} /> : conflictQuery.data ? <>
-              <p><strong>{conflictQuery.data.document.title}</strong> already uses this starter definition ({sentence(conflictQuery.data.status)}).</p>
-              <p>Start another draft titled <strong>{currentConflict.submitted.inputs.title}</strong> from the same starter definition. Its source must be edited and validated separately. The saved rule, its source and evaluation results stay intact; those results are not copied.</p>
+              <p><strong>{displayTitle(conflictQuery.data.document.title)}</strong> already uses this starter definition ({sentence(conflictQuery.data.status)}).</p>
+              <p>Start another draft titled <strong>{displayTitle(currentConflict.submitted.inputs.title)}</strong> from the same starter definition. Its source must be edited and validated separately. The saved rule, its source and evaluation results stay intact; those results are not copied.</p>
               <div className="candidate-actions">
                 <Button onClick={() => setSelectedId(currentConflict.id)} disabled={anotherDraftMutation.isPending}>View saved rule</Button>
                 <Button variant="primary" disabled={anotherDraftMutation.isPending || createMutation.isPending || !manualCanSave} onClick={() => {
@@ -496,7 +497,7 @@ function DetectionRegistryPage() {
     <div className="detection-layout">
       <Panel className="candidate-list">
         <div className="history-search"><Search /><input aria-label="Search detection candidates" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search candidate, behavior, language" /></div>
-        <div>{filtered.map((item) => <button key={item.resolvedId} aria-label={`${item.title ?? item.resolvedId} · ${revisionLabel(item)} · ${languageLabel(item.target_language ?? item.language ?? "unknown")} · ${sentence(item.state)}`} aria-pressed={selected?.resolvedId === item.resolvedId} className={selected?.resolvedId === item.resolvedId ? "selected" : ""} onClick={() => { setSearchParams(old => { const next = new URLSearchParams(old); next.set("candidate", item.candidate_id ?? item.id ?? item.resolvedId); if (item.resourceId) next.set("candidate_scope", "registry"); else { next.delete("candidate_scope"); if (item.runId) next.set("run", item.runId); } return next; }); comparisonMutation.reset(); }}><span className="candidate-icon"><ShieldQuestion /></span><span><strong>{item.title ?? item.resolvedId}</strong><small>{revisionLabel(item)} · {languageLabel(item.target_language ?? item.language ?? "unknown")}</small><small>{catalogQuery.data.behaviors.find(behavior => behavior.id === item.behavior_id)?.title ?? "Behavior not recorded"}</small></span><span><Badge tone={item.state === "rejected" ? "danger" : item.state === "hypothesis" ? "neutral" : "success"}>{sentence(item.state)}</Badge>{item.demo ? <Badge tone="violet">Demo</Badge> : null}</span></button>)}</div>
+        <div>{filtered.map((item) => <button key={item.resolvedId} aria-label={`${item.title ? displayTitle(item.title) : item.resolvedId} · ${revisionLabel(item)} · ${languageLabel(item.target_language ?? item.language ?? "unknown")} · ${sentence(item.state)}`} aria-pressed={selected?.resolvedId === item.resolvedId} className={selected?.resolvedId === item.resolvedId ? "selected" : ""} onClick={() => { setSearchParams(old => { const next = new URLSearchParams(old); next.set("candidate", item.candidate_id ?? item.id ?? item.resolvedId); if (item.resourceId) next.set("candidate_scope", "registry"); else { next.delete("candidate_scope"); if (item.runId) next.set("run", item.runId); } return next; }); comparisonMutation.reset(); }}><span className="candidate-icon"><ShieldQuestion /></span><span><strong>{item.title ? displayTitle(item.title) : item.resolvedId}</strong><small>{revisionLabel(item)} · {languageLabel(item.target_language ?? item.language ?? "unknown")}</small><small>{displayTitle(catalogQuery.data.behaviors.find(behavior => behavior.id === item.behavior_id)?.title ?? "Behavior not recorded")}</small></span><span><Badge tone={item.state === "rejected" ? "danger" : item.state === "hypothesis" ? "neutral" : "success"}>{sentence(item.state)}</Badge>{item.demo ? <Badge tone="violet">Demo</Badge> : null}</span></button>)}</div>
         {!filtered.length ? <EmptyState title="No candidates" description="Create a hypothesis or complete a run that generates detection research records." /> : null}
       </Panel>
       {selected ? <CandidateWorkspace
@@ -697,7 +698,7 @@ function CandidateWorkspace({
   };
 
   return <Panel className="candidate-workspace">
-    <PanelHeader title={candidate.title ?? candidate.resolvedId} detail={`${languageLabel(language)} · ${revisionLabel(candidate)}`} actions={<Badge tone={candidate.state === "rejected" ? "danger" : candidate.state === "hypothesis" ? "neutral" : "success"}>{sentence(candidate.state)}</Badge>} />
+    <PanelHeader title={candidate.title ? displayTitle(candidate.title) : candidate.resolvedId} detail={`${languageLabel(language)} · ${revisionLabel(candidate)}`} actions={<Badge tone={candidate.state === "rejected" ? "danger" : candidate.state === "hypothesis" ? "neutral" : "success"}>{sentence(candidate.state)}</Badge>} />
     <div className="workspace-tabs" role="tablist" aria-label="Detection candidate details">{(["candidate", "evaluations", "revisions", "fixtures", "observed", "history"] as const).map((item) => <button role="tab" aria-selected={tab === item} onClick={() => setTab(item)} key={item}>{item === "evaluations" ? "Run evaluations" : item === "candidate" && querySource ? "Rule" : sentence(item)}</button>)}</div>
     <div className="candidate-body">
       {draftWarning ? <p role="alert">{draftWarning}</p> : draftChanged ? <p role="status">Unsaved inputs. {draft.retained ? "Draft kept in this browser tab." : "Inputs are not a saved rule."}</p> : null}

@@ -1,3 +1,4 @@
+import { displayTitle } from "../lib/display-title";
 import type { CatalogResponse, RunRecord } from "../types";
 import { adaptiveRecords, decisionObservations, decisionOrigin, decisionProvenance, dispatchDescription, recordedMethodName, recordedPathNodes, selectedAttempt, type RuntimeRecord } from "../lib/adaptive-run";
 import { stepOutcomeLabel } from "../lib/run-presentation";
@@ -10,7 +11,7 @@ export function AdaptiveRunPath({ run, catalog }: { run: RunRecord; catalog: Cat
   const nodes = recordedPathNodes(run);
   return <section className="adaptive-run-path" aria-label="Recorded adaptive path">
     <header><h2>Methods tried</h2><p>Each node keeps its recorded attempts. A chosen method needs a matching runner result before execution is established.</p></header>
-    <ol className="adaptive-path-nodes">{nodes.map(node => <li key={node.stepId} className="adaptive-path-node"><h3>{catalog.behaviors.find(item => item.id === node.attempts[0]?.step.behavior_id)?.title ?? "Recorded step"}</h3>
+    <ol className="adaptive-path-nodes">{nodes.map(node => <li key={node.stepId} className="adaptive-path-node"><h3>{displayTitle(catalog.behaviors.find(item => item.id === node.attempts[0]?.step.behavior_id)?.title ?? "Recorded step")}</h3>
       <ol aria-label="Attempts at this step">{node.attempts.map(({ step, index }, attemptIndex) => <li key={index}>
         <span>Attempt {attemptIndex + 1} · run position {index + 1}</span><strong>{recordedMethodName(catalog, step.behavior_id, step.action_id)}</strong>
         <p>{stepOutcomeLabel(step, run.mode)} · {dispatchDescription(step, run)}</p>

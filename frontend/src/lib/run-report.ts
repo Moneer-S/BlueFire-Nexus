@@ -21,10 +21,10 @@ export function runReport(run: RunRecord): string {
     run.mode === "simulate" ? "Simulate does not perform target cleanup." : "Missing cleanup records do not establish that effects were removed.",
     "", "## Recorded path", "",
     ...(run.steps?.length ? run.steps.flatMap((step, index) => [
-      `${index + 1}. **${text(step.step_id)}** — ${text(stepOutcomeLabel(step, run.mode))}`,
+      `${index + 1}. **${text(step.step_id)}**: ${text(stepOutcomeLabel(step, run.mode))}`,
       `   Behavior: ${text(step.behavior_id)}; method: ${text(step.action_id ?? step.simulation_id)}; disposition: ${text(step.execution_disposition)}.`,
       `   Evidence references: ${text(step.evidence_ids?.join(", ") || "None recorded")}.`,
-      ...(step.error ? [`   Error: ${text(step.error.code)} — ${text(step.error.message)}`] : []),
+      ...(step.error ? [`   Error: ${text(step.error.code)}: ${text(step.error.message)}`] : []),
     ]) : ["No completed steps are recorded; this does not establish completion."]),
     "", "## Evidence and detection", "",
     `- Independently observed: ${count("observed")}`, `- Runner output (executed): ${count("executed")}`,

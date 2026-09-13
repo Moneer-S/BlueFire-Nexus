@@ -1,5 +1,6 @@
 import type { CatalogResponse, EvidenceRecord, RunRecord, RunStep } from "../types";
 import { recordedMethodName } from "./adaptive-run";
+import { displayTitle } from "./display-title";
 import { stepOutcomeLabel } from "./run-presentation";
 
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -12,9 +13,9 @@ export function recordedStepLabels(step: RunStep, catalog?: CatalogResponse, run
     ?? catalog?.behaviors.find(item => item.simulation_id === step.simulation_id && Boolean(step.simulation_id))?.id
     ?? run?.scenario?.steps.find(item => item.id === step.step_id)?.behavior_id;
   const behavior = catalog?.behaviors.find(item => item.id === behaviorId);
-  const name = behavior?.title ?? (step.step_id ? readable(step.step_id) : "Recorded step");
+  const name = behavior?.title ? displayTitle(behavior.title) : step.step_id ? readable(step.step_id) : "Recorded step";
   const method = catalog ? recordedMethodName(catalog, behaviorId, step.action_id) : "Method details unavailable";
-  return { name, method: step.simulation_id && !step.action_id ? `Simulation · ${behavior?.title ?? "recorded method"}` : method };
+  return { name, method: step.simulation_id && !step.action_id ? `Simulation · ${displayTitle(behavior?.title ?? "recorded method")}` : method };
 }
 
 /** An evidence link can identify an attempt; a repeated step ID alone cannot. */

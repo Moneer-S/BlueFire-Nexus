@@ -1,3 +1,4 @@
+import { displayTitle } from "../lib/display-title";
 import { useState } from "react";
 import type { ActionDefinition, Behavior, Scenario, ScenarioStep } from "../types";
 import { adaptiveExecutionIssues, adaptiveOutcomeLabels, applyAdaptiveStep, availableAdaptiveMethods, methodKey, removeAdaptiveStep, type AdaptiveMethod, type AdaptiveOutcome } from "../lib/adaptive-execution";
@@ -39,7 +40,7 @@ export function AdaptiveMethodEditor({ scenario, step, behaviors, actions, selec
         const key = methodKey(method), action = actions.get(method.action_id)!;
         return <label className="check-row" key={key}><input type="checkbox" checked={selected.has(key)} disabled={!selected.has(key) && methods.length >= 4}
           onChange={event => { setError(""); setMethods(event.target.checked ? [...methods, method] : methods.filter(item => methodKey(item) !== key)); }} />
-          <span><strong>{action.title}</strong><small>{behaviors.get(method.behavior_id)?.title !== action.title ? `${behaviors.get(method.behavior_id)?.title} · ` : ""}{action.platforms.join(" / ")}{method.behavior_id === step.behavior_id ? " · Primary step" : ""}</small></span></label>;
+          <span><strong>{displayTitle(action.title)}</strong><small>{behaviors.get(method.behavior_id)?.title !== action.title ? `${displayTitle(behaviors.get(method.behavior_id)?.title ?? "")} · ` : ""}{action.platforms.join(" / ")}{method.behavior_id === step.behavior_id ? " · Primary step" : ""}</small></span></label>;
       })}</fieldset>
       {missing.map(method => <div className="adaptive-unavailable" key={methodKey(method)}><p>One selected method is no longer available.</p><Button size="small" onClick={() => setMethods(methods.filter(item => methodKey(item) !== methodKey(method)))}>Remove unavailable choice</Button><details><summary>Method identity</summary><code>{method.behavior_id} / {method.action_id}</code></details></div>)}
       <fieldset className="adaptive-outcome-options"><legend>Consider a retry after</legend>{(Object.keys(adaptiveOutcomeLabels) as AdaptiveOutcome[]).map(outcome => <label className="check-row" key={outcome}><input type="checkbox" checked={outcomes.includes(outcome)} onChange={event => setOutcomes(event.target.checked ? [...outcomes, outcome] : outcomes.filter(item => item !== outcome))} /><span>{adaptiveOutcomeLabels[outcome]}</span></label>)}</fieldset>

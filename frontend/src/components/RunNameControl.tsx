@@ -2,14 +2,14 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../lib/api";
-import { runLabel } from "../lib/runPresentation";
+import { runNameValue } from "../lib/runPresentation";
 import type { RunRecord } from "../types";
 import { Button, ErrorState, Field } from "./Primitives";
 
 export function RunNameControl({ run }: { run: RunRecord }) {
   const client = useQueryClient();
   const [open, setOpen] = useState(false);
-  const [name, setName] = useState(runLabel(run));
+  const [name, setName] = useState(runNameValue(run));
   const rename = useMutation({
     mutationFn: (displayName: string | null) => api.renameRun(run.run_id, displayName),
     onSuccess: presentation => {
@@ -20,7 +20,7 @@ export function RunNameControl({ run }: { run: RunRecord }) {
       setOpen(false);
     },
   });
-  return <Dialog.Root open={open} onOpenChange={value => { if (rename.isPending) return; setOpen(value); if (value) { setName(runLabel(run)); rename.reset(); } }}>
+  return <Dialog.Root open={open} onOpenChange={value => { if (rename.isPending) return; setOpen(value); if (value) { setName(runNameValue(run)); rename.reset(); } }}>
     <Dialog.Trigger asChild><Button variant="ghost" size="small">Rename run</Button></Dialog.Trigger>
     <Dialog.Portal><Dialog.Overlay className="dialog-overlay"/><Dialog.Content className="dialog-content">
       <Dialog.Title>Rename run</Dialog.Title><Dialog.Description>Change the display name. Recorded evidence, run identity and comparisons stay intact.</Dialog.Description>

@@ -34,7 +34,7 @@ export function evaluationReportMarkdown(groups: EvaluationReportGroup[], runs: 
   const reports = loaded.flatMap(group => group.reports);
   if (!reports.length) throw new Error("Load a retained evaluation before downloading its report.");
   const runName = (id: string) => { const run = runs.find(value => value.run_id === id); return run ? runLabel(run) : id; };
-  const lines = [`# Detection evaluation report${groups.some(group => group.status !== "loaded") ? " — partial" : ""}`, "", `${reports.length} retained evaluation record${reports.length === 1 ? "" : "s"} included. This is a snapshot of loaded reports, not an export of draft evaluation inputs.`, ""];
+  const lines = [`# Detection evaluation report${groups.some(group => group.status !== "loaded") ? " (partial)" : ""}`, "", `${reports.length} retained evaluation record${reports.length === 1 ? "" : "s"} included. This is a snapshot of loaded reports, not an export of draft evaluation inputs.`, ""];
   for (const group of groups) lines.push(`- ${text(group.label)}: ${group.status === "loaded" ? `${group.reports.length} loaded record${group.reports.length === 1 ? "" : "s"}` : `${group.status}; no records from this revision included`}.`);
   if (groups.some(group => group.status !== "loaded")) lines.push("", "**Partial report:** some requested revision history is not loaded. A complete revision comparison is unavailable.");
   lines.push("", "## Measured evaluations", "");

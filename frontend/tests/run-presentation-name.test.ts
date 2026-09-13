@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { api } from "../src/lib/api";
 import { runLabel as compatibleRunLabel } from "../src/lib/run-presentation";
-import { isRunPresentation, runLabel, runMatchesSearch } from "../src/lib/runPresentation";
+import { isRunPresentation, runLabel, runMatchesSearch, runNameValue } from "../src/lib/runPresentation";
 import type { RunPresentation, RunRecord } from "../src/types";
 
 const runId = "run-20260908T120000Z-0123456789abcdef";
@@ -21,6 +21,15 @@ it("shares renamed, reset, historical and neutral labels without changing eviden
   expect(runLabel({ run_id: runId })).toBe("Run");
   expect(runLabel({ run_id: runId, objective: "Long recorded objective\n".repeat(30) })).toBe("Run");
   expect(run).toEqual(original);
+  for (const separator of ["—", "&mdash;", "&#8212;", "&#x2014;", "\\u2014"]) {
+    const name = `Collection ${separator} before control`;
+    const retained = { ...run, presentation: { ...presentation, display_name: name } };
+    const before = JSON.stringify(retained);
+    expect(runLabel(retained)).toBe("Collection: before control");
+    expect(runNameValue(retained)).toBe(name);
+    expect(runMatchesSearch(retained, name)).toBe(true);
+    expect(JSON.stringify(retained)).toBe(before);
+  }
 });
 
 it("searches actual names and immutable IDs while duplicate names retain identities", () => {

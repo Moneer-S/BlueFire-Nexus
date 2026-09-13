@@ -37,7 +37,7 @@ it("exports actual two-revision 1-of-3 measurements, same-match comparison and e
   expect(markdown).toContain("Independent filesystem metadata and digest observation only");
   expect(markdown).toContain("Source run created:");
   expect(appendix(markdown).evaluations).toEqual(records);
-  expect(markdown).not.toContain("— partial");
+  expect(markdown).not.toContain("(partial)");
 });
 
 it.each(["insufficient_evidence", "backend_error"] as const)("does not export %s as a negative or zero-match result", state => {
@@ -55,7 +55,7 @@ it.each(["insufficient_evidence", "backend_error"] as const)("does not export %s
 
 it("labels partial histories and never exports unavailable response data or invents a comparison", () => {
   const markdown = evaluationReportMarkdown([group(), { ...group(related), status: "unavailable" }], [run]);
-  expect(markdown).toMatch(/^# Detection evaluation report — partial/);
+  expect(markdown).toMatch(/^# Detection evaluation report \(partial\)/);
   expect(markdown).toContain("unavailable; no records from this revision included");
   expect(markdown).not.toContain("## Revision comparison");
   expect(appendix(markdown).evaluations).toEqual([report()]);
@@ -108,7 +108,7 @@ it("shows partial availability before download when related history is loading o
   expect(screen.getByRole("button", { name: "Download available reports" })).toBeEnabled();
   expect(screen.getByText(/Some selected revision history is loading or unavailable/)).toBeVisible();
   await test.user.click(screen.getByRole("button", { name: "Download available reports" }));
-  expect(await test.read()).toMatch(/^# Detection evaluation report — partial/);
+  expect(await test.read()).toMatch(/^# Detection evaluation report \(partial\)/);
   await act(async () => reject(new Error("History unavailable")));
   await test.user.click(screen.getByRole("button", { name: "Download available reports" }));
   expect(appendix(await test.read()).selections[1].status).toBe("unavailable");

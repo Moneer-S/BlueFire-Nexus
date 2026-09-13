@@ -81,12 +81,13 @@ it("keeps an uncertain name and cached evidence available until an explicit retr
 });
 
 it("resets through a null presentation request and restores the frozen experiment name", async () => {
-  const renamed = { ...first, presentation: saved(first, "Custom name") };
+  const renamed = { ...first, presentation: saved(first, "Custom name — before control") };
   const rename = vi.spyOn(api, "renameRun").mockResolvedValue(saved(first, null));
   setup(renamed);
   const user = userEvent.setup();
+  expect(screen.getByRole("heading", { name: "Custom name: before control" })).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Rename run" }));
-  expect(screen.getByRole("textbox", { name: "Run name" })).toHaveValue("Custom name");
+  expect(screen.getByRole("textbox", { name: "Run name" })).toHaveValue("Custom name — before control");
   await user.click(screen.getByRole("button", { name: "Use experiment name" }));
   expect(rename).toHaveBeenCalledExactlyOnceWith(first.run_id, null);
   expect(await screen.findByRole("heading", { name: "File collection" })).toBeVisible();

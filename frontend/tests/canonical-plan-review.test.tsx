@@ -98,7 +98,8 @@ it("names simulated methods and settings while retaining exact reviewed values",
   const behavior = { ...demoCatalog.behaviors[0]!, id: "sandbox.collection.atomic-gzip.v1", title: "Compress selected records — Atomic gzip" };
   const plan = { mode: "simulate", steps: [{ step_id: "stage_collection", behavior_id: behavior.id, parameters: { stage_variant: "heldout", redact_values: false }, inputs: {} }], edges: [] };
   render(<CanonicalPlanReview plan={plan} catalog={{ ...demoCatalog, behaviors: [behavior] }} />);
-  expect(screen.getByText(behavior.title)).toBeVisible();
+  expect(screen.getByText("Compress selected records: Atomic gzip")).toBeVisible();
+  expect(behavior.title).toBe("Compress selected records — Atomic gzip");
   expect(screen.getByText("Alternate staging folder")).toBeVisible();
   expect(screen.getByText("No")).toBeVisible();
   await userEvent.setup().click(screen.getByText("Step details"));

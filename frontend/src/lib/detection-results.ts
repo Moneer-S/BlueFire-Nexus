@@ -34,10 +34,10 @@ export function compareDetectorEvaluations(baseline: DetectionRunEvaluation[], r
     const roles = [...new Set(all.map(activityLabel))];
     let change = "Evaluate both revisions";
     if (left.length && right.length) {
-      if (new Set(all.map(sourceKey)).size !== 1) change = "Different evidence — review separately";
+      if (new Set(all.map(sourceKey)).size !== 1) change = "Different evidence: review separately";
       else if (all.some((report) => ["Engine error", "Not enough evidence"].includes(evaluationLabel(report)))) change = "Not enough evidence to compare";
       else if (new Set(left.map(outcomeKey)).size > 1 || new Set(right.map(outcomeKey)).size > 1) change = "Results differ across evaluations";
-      else if (roles.length !== 1) change = "Case labels differ — review context";
+      else if (roles.length !== 1) change = "Case labels differ: review context";
       else if (outcomeKey(left[0]!) === outcomeKey(right[0]!)) change = "Same measured matches";
       else if (left[0]!.result.state === "not_matched" && right[0]!.result.state === "matched") change = roles[0] === "benign" ? "New match in a declared benign case" : "New match";
       else if (left[0]!.result.state === "matched" && right[0]!.result.state === "not_matched") change = roles[0] === "benign" ? "Declared benign match removed" : "Previously matched event missed";

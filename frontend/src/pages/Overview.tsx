@@ -1,3 +1,4 @@
+import { displayTitle } from "../lib/display-title";
 import { runLabel } from "../lib/runPresentation";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, RotateCcw } from "lucide-react";
@@ -27,12 +28,12 @@ export function OverviewPage() {
     </section>
     <section className="work-section working-copy" aria-labelledby="working-copy-heading">
       <header className="work-section-heading"><h2 id="working-copy-heading">Working draft</h2><Badge tone={dirty ? "warning" : "neutral"}>{dirty ? "Unsaved changes" : "No unsaved changes"}</Badge></header>
-      <div><h3>{scenario.title}</h3><p>{scenario.steps.length} steps · {scenario.edges.length} routes</p><Link className="button button-secondary button-medium" to="/builder">Continue editing<ArrowRight aria-hidden="true"/></Link><Link className="button button-ghost button-medium" to="/runs?prepare=1">Review run</Link></div>
+      <div><h3>{displayTitle(scenario.title)}</h3><p>{scenario.steps.length} steps · {scenario.edges.length} routes</p><Link className="button button-secondary button-medium" to="/builder">Continue editing<ArrowRight aria-hidden="true"/></Link><Link className="button button-ghost button-medium" to="/runs?prepare=1">Review run</Link></div>
     </section>
     <section className="work-section" aria-labelledby="experiments-heading">
       <header className="work-section-heading"><h2 id="experiments-heading">Experiments</h2><Link to="/scenarios">View all<ArrowRight aria-hidden="true"/></Link></header>
       {experiments.isError ? <><ErrorState title="Experiments unavailable" error={experiments.error} retry={() => experiments.refetch()}/>{experiments.data ? <p className="workspace-note">Showing previously loaded experiments. Your working draft is preserved.</p> : null}</> : null}
-      {experiments.isPending ? <LoadingState label="Loading experiments"/> : experiments.data?.scenarios.length ? <ul className="work-object-list">{experiments.data.scenarios.slice(0, 5).map(item => <li key={item.id}><span><strong>{item.title}</strong><small>{item.steps.length} steps · {item.edges.length} routes</small></span><Link to={"/scenarios?selected=" + encodeURIComponent(item.id)}>Open in library<ArrowRight aria-hidden="true"/></Link></li>)}</ul> : experiments.isSuccess ? <div className="work-empty"><p>No experiments are available.</p><Link to="/scenarios">Create an experiment</Link></div> : null}
+      {experiments.isPending ? <LoadingState label="Loading experiments"/> : experiments.data?.scenarios.length ? <ul className="work-object-list">{experiments.data.scenarios.slice(0, 5).map(item => <li key={item.id}><span><strong>{displayTitle(item.title)}</strong><small>{item.steps.length} steps · {item.edges.length} routes</small></span><Link to={"/scenarios?selected=" + encodeURIComponent(item.id)}>Open in library<ArrowRight aria-hidden="true"/></Link></li>)}</ul> : experiments.isSuccess ? <div className="work-empty"><p>No experiments are available.</p><Link to="/scenarios">Create an experiment</Link></div> : null}
     </section>
   </div>;
 }

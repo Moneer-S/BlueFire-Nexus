@@ -1,10 +1,11 @@
 import type { CatalogResponse, RunRecord, RunStep } from "../types";
+import { displayTitle } from "./display-title";
 
 export type RuntimeRecord = NonNullable<RunRecord["ai_proposals"]>[number];
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 export const adaptiveRecords = (run: RunRecord) => (run.ai_proposals ?? []).filter(record => record.schema_version === "bluefire.ai-proposal-record.v4");
 export const recordedMethodName = (catalog: CatalogResponse, behavior?: string | null, action?: string | null) =>
-  catalog.actions.find(item => item.id === action)?.title ?? catalog.behaviors.find(item => item.id === behavior)?.title ?? "Method unavailable in this catalog";
+  displayTitle(catalog.actions.find(item => item.id === action)?.title ?? catalog.behaviors.find(item => item.id === behavior)?.title ?? "Method unavailable in this catalog");
 
 export function decisionOrigin(run: RunRecord, record: RuntimeRecord): number {
   if (record.run_id !== run.run_id || typeof record.deterministic_decision_id !== "string") return -1;
