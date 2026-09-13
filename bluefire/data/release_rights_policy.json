@@ -352,6 +352,9 @@
   },
   "assets": {
     "classifications": {
+      "project-authored-brand-mit": [
+        "docs/assets/brand/bluefire-mark.svg"
+      ],
       "project-authored-data-mit": [
         "bluefire/catalog/actions.yaml",
         "bluefire/catalog/behaviors.yaml",
