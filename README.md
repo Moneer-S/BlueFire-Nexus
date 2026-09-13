@@ -16,11 +16,12 @@ collection methods*, its saved run history, and a completed Execute run's eviden
 September 10, 2026; condensed to 15 seconds with navigation timing edited.
 
 Use it only on systems, accounts, networks, and labs you own or are explicitly authorized to test.
-V3 is an unreleased candidate.
+V3 is in development. Final release acceptance and live-provider validation remain incomplete;
+the remaining work is tracked in [the V3 follow-up](https://github.com/Moneer-S/BlueFire-Nexus/issues/201).
 
 ## Run it locally
 
-Python 3.10 or newer. [Download the matching PR build and install it](docs/INSTALLATION.md#download-the-candidate) —
+Python 3.10 or newer. [Download a development build and install it](docs/INSTALLATION.md#download-the-candidate) —
 that guide links the real Windows, Linux and Intel macOS wheel artifacts and gives exact commands for
 a fresh directory. No source checkout or developer dependencies are needed.
 

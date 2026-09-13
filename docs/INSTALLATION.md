@@ -1,15 +1,16 @@
 # Installation
 
 BlueFire Nexus requires Python 3.10 or newer. Its platform wheel includes the application,
-web interface, example experiments and native runner. V3 is currently an unreleased PR
-candidate; obtain its wheel from the actual PR build below.
+web interface, example experiments and native runner. V3 development builds are available
+from CI; they are not a stable release. Obtain the matching wheel below.
 
 ## Download the candidate
 
-Open [PR #200's checks](https://github.com/Moneer-S/BlueFire-Nexus/pull/200/checks)
-and select the **tests** run for the candidate you intend to install. Open that run's
-**Summary**, then download the matching artifact from **Artifacts** after its native-wheel
-job succeeds. This follows the selected candidate instead of a fixed link to an older build.
+Open [PR #200's checks](https://github.com/Moneer-S/BlueFire-Nexus/pull/200/checks), or
+[the tests workflow on main](https://github.com/Moneer-S/BlueFire-Nexus/actions/workflows/tests.yml?query=branch%3Amain)
+for merged development code. Select a successful **tests** run for the commit you intend to
+install. Open that run's **Summary**, then download the matching artifact from **Artifacts**.
+This follows the selected commit instead of a fixed link to an older build.
 GitHub may require you to sign in to download an Actions artifact.
 
 | Computer | Artifact | Wheel inside the ZIP |
