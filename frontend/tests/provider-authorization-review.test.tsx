@@ -4,10 +4,12 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProviderSetup } from "../src/components/ProviderSetup";
 import { api } from "../src/lib/api";
+import { downloadArtifact } from "../src/lib/download";
 import type { AILiveAuthorizationList, ManagedResource, PublicAIProviderConfig } from "../src/types";
 import { authorization, provider, snapshot } from "./provider-authorization-fixtures";
 
 vi.mock("../src/lib/api", () => ({ api: { resources: vi.fn(), checkAIProvider: vi.fn(), saveResource: vi.fn(), activateResource: vi.fn(), deactivateResource: vi.fn(), aiAuthorizations: vi.fn(), authorizeAI: vi.fn(), revokeAIAuthorization: vi.fn() } }));
+vi.mock("../src/lib/download", () => ({ downloadArtifact: vi.fn() }));
 const consent = /I authorize the selected model work/;
 const liveButton = () => screen.getByRole("button", { name: "Send live connection test" });
 const authorizeButton = () => screen.getByRole("button", { name: "Authorize reviewed model usage" });
@@ -41,6 +43,9 @@ describe("in-product data and usage authorization", () => {
   it("uses one explicit final action for the exact edited connection and bounded purposes, without a model call", async () => {
     const user = await mount();
     expect(api.authorizeAI).not.toHaveBeenCalled(); expect(api.checkAIProvider).not.toHaveBeenCalled(); expect(liveButton()).toBeDisabled();
+    await user.click(screen.getByText("Prepare a disposable lab connection"));
+    expect(screen.getByRole("button", { name: "Download lab connection" })).toBeEnabled();
+    expect(screen.getByText(/Direct connections in the current service can use the model usage review below/)).toBeVisible();
     await user.clear(screen.getByLabelText("Model ID", { exact: false })); await user.type(screen.getByLabelText("Model ID", { exact: false }), "reviewed-model");
     await review(user);
     await user.click(screen.getByRole("checkbox", { name: "Choose reviewed methods during a run" }));
@@ -71,6 +76,11 @@ describe("in-product data and usage authorization", () => {
     const user = await mount(provider, initial);
     for (const label of ["Provider ID", "API style", "Model ID", "Request endpoint", "Secret environment reference"]) expect(screen.getByLabelText(label, { exact: false })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Save secret-free draft" })).not.toBeInTheDocument();
+    await user.click(screen.getByText("Prepare a disposable lab connection"));
+    expect(screen.getByText(/This session already has an enrolled connection/)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Download lab connection" }));
+    expect(downloadArtifact).toHaveBeenCalledWith(expect.any(Blob), "bluefire-model-connection.json");
+    expect(api.authorizeAI).not.toHaveBeenCalled();
     await review(user); await user.click(authorizeButton()); await waitFor(() => expect(api.authorizeAI).toHaveBeenCalledWith(expect.objectContaining({ provider })));
     expect(api.saveResource).not.toHaveBeenCalled(); expect(api.activateResource).not.toHaveBeenCalled(); expect(api.checkAIProvider).not.toHaveBeenCalled();
   });
@@ -117,10 +127,14 @@ describe("in-product data and usage authorization", () => {
   it("requires visible repair of broader data policy and rejects invalid fields before saving", async () => {
     const unsafe = { ...provider, redaction: { ...provider.redaction, enabled: false, include_evidence_content: true } };
     const user = await mount(unsafe); await review(user); expect(authorizeButton()).toBeDisabled();
+    await user.click(screen.getByText("Prepare a disposable lab connection"));
+    expect(screen.getByRole("button", { name: "Download lab connection" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Use required data protection" }));
     expect(screen.getByRole("checkbox", { name: consent })).not.toBeChecked();
     await user.type(screen.getByLabelText("Secret environment reference", { exact: false }), " not-a-variable");
     expect(screen.getByRole("button", { name: "Save secret-free draft" })).toBeDisabled(); expect(screen.getByRole("button", { name: "Check configuration" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Download lab connection" })).toBeDisabled();
+    expect(downloadArtifact).not.toHaveBeenCalled();
     expect(api.saveResource).not.toHaveBeenCalled(); expect(api.authorizeAI).not.toHaveBeenCalled();
   });
 });

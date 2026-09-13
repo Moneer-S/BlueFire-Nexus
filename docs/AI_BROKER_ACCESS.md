@@ -89,6 +89,14 @@ reference at the operator boundary and sends the result over owned bootstrap
 stdin. No credential value enters command arguments, target/UI environments,
 public enrollment records or the inference response channel.
 
+In **Settings > Connect a model**, fill the connection and open **Prepare a disposable
+lab connection** to download its public definition. This download contains the environment
+reference name, never the key value or usage authorization. Provide the referenced variable
+to the host launcher, stop the existing lab session normally, then use that file with the
+same lab state directory and UI port. Review the locked enrolled connection in the reopened
+UI before giving the one final model data and usage authorization. An earlier service
+session's authorization does not transfer; ordinary direct-provider setup remains available.
+
 The freshly prepared clone reserves UID/GID 1001 for the broker and retains 1000
 for the product. The broker keeps its control-plane network while its private
 mount/IPC namespace hides host mounts and sockets. The target keeps the existing
