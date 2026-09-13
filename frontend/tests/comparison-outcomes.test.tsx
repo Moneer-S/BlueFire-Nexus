@@ -17,7 +17,9 @@ it("separates an unmet objective, missing observations, and failed cleanup witho
   expect(within(row).getByText("Not achieved")).toBeVisible();
   expect(within(row).getByText("Not reported")).toBeVisible();
   expect(within(row).getByText("Needs attention")).toBeVisible();
-  expect(within(row).getByText("collection")).toBeVisible();
+  const blockedStep = within(row).getByText("Collection");
+  expect(blockedStep).toBeVisible();
+  expect(blockedStep).toHaveAttribute("title", "collection");
   expect(within(row).queryByText(/prevented|no recorded gaps|0 observed items/i)).not.toBeInTheDocument();
 });
 
