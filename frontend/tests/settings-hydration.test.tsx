@@ -95,6 +95,9 @@ it("does not call a pending save successful for a document imported after it was
   const { user, submitted, release } = setupDeferredSave();
   await user.click(screen.getByRole("button", { name: /Save settings/ }));
   await user.upload(screen.getByLabelText("Import UI preferences file"), new File([JSON.stringify(buildUiPreferenceDocument("dark", "execute", "assist"))], "preferences.json", { type: "application/json" }));
+  // Importing reads the file asynchronously; the save must not be released until the
+  // imported values are actually in the form, or this races on a slower machine.
+  await waitFor(() => expect(current()).toMatchObject({ theme: "dark", mode: "execute", autonomy: "assist" }));
   await release();
   expect(submitted).toHaveLength(1);
   expect(submitted[0]).not.toMatchObject({ theme: "dark", effect_mode: "execute", autonomy: "assist" });
