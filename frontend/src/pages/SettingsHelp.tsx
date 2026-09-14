@@ -9,8 +9,10 @@ import {
   buildUiPreferenceDocument,
   parseUiPreferenceDocument,
   useProduct,
+  type UiPreferenceDocument,
   type UiTheme,
 } from "../state/ProductContext";
+import { sameJson } from "../lib/replay-review";
 import { Badge, Button, Callout, Field, PageHeader, Panel, PanelHeader } from "../components/Primitives";
 
 function readTextFile(file: File): Promise<string> {
@@ -51,9 +53,17 @@ export function SettingsPage() {
   }, [newRunDefaults, setNewRunDefaults, setTheme, settingsQuery.data]);
 
   const preferenceDocument = () => buildUiPreferenceDocument(theme, newRunDefaults.mode, newRunDefaults.autonomy);
+  // The submitted document travels with the mutation so success describes what was
+  // actually sent. Editing or importing while a save is in flight leaves the form
+  // ahead of the durable document, and saying "saved" then would be untrue.
   const saveMutation = useMutation({
-    mutationFn: () => api.saveSetting("ui.preferences", preferenceDocument()),
-    onSuccess: ({ setting }) => setNotice(`Preferences saved durably at ${new Date(setting.updated_at).toLocaleString()}. Current run settings and prepared approvals were unchanged.`),
+    mutationFn: (submitted: UiPreferenceDocument) => api.saveSetting("ui.preferences", submitted),
+    onSuccess: ({ setting }, submitted) => {
+      const savedAt = new Date(setting.updated_at).toLocaleString();
+      setNotice(sameJson(submitted, preferenceDocument())
+        ? `Preferences saved durably at ${savedAt}. Current run settings and prepared approvals were unchanged.`
+        : `The preferences submitted earlier were saved durably at ${savedAt}. This form has newer unsaved changes; save again to keep them.`);
+    },
     onError: (error) => setNotice(error instanceof Error ? error.message : "Preferences could not be saved."),
   });
   const exportSettings = () => {
@@ -86,7 +96,7 @@ export function SettingsPage() {
         <input aria-label="Import UI preferences file" className="sr-only" ref={fileRef} type="file" accept="application/json" onChange={(event) => importSettings(event.target.files?.[0])} />
         <Button variant="secondary" onClick={() => fileRef.current?.click()}><Upload />Import</Button>
         <Button variant="secondary" onClick={exportSettings}><Download />Export</Button>
-        <Button variant="primary" onClick={() => { edited.current = { theme: true, mode: true, autonomy: true }; saveMutation.mutate(); }} disabled={saveMutation.isPending}><Save />{saveMutation.isPending ? "Saving" : "Save settings"}</Button>
+        <Button variant="primary" onClick={() => { edited.current = { theme: true, mode: true, autonomy: true }; saveMutation.mutate(preferenceDocument()); }} disabled={saveMutation.isPending}><Save />{saveMutation.isPending ? "Saving" : "Save settings"}</Button>
       </>}
     />
     {notice ? <Callout title="Settings">{notice}</Callout> : settingsQuery.isError ? <Callout tone="warning" title="Durable settings unavailable">The form is using browser preferences. Save after the local service is ready.</Callout> : null}

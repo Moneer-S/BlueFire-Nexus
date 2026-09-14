@@ -56,3 +56,59 @@ it("does not replace explicitly saved browser preferences with an older pending 
   await finish();
   expect(current()).toEqual(preferences);
 });
+
+function setupDeferredSave() {
+  localStorage.clear();
+  vi.spyOn(api, "settings").mockResolvedValue({ schema_version: "bluefire.settings.v1", settings: [] });
+  let release!: () => void;
+  const submitted: unknown[] = [];
+  const save = vi.spyOn(api, "saveSetting").mockImplementation((key, value) => {
+    submitted.push(value);
+    return new Promise(resolve => {
+      release = () => resolve({ schema_version: "bluefire.setting.v1", setting: { key, value, updated_at: "2026-09-09T07:00:00Z" } });
+    });
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter><SettingsPage/><Witness/></MemoryRouter></ProductProvider></QueryClientProvider>);
+  return { user: userEvent.setup(), save, submitted, release: async () => act(async () => release()) };
+}
+
+it("does not call a pending save successful for values edited after it was submitted", async () => {
+  const { user, submitted, release } = setupDeferredSave();
+  await user.selectOptions(screen.getByRole("combobox", { name: "AI autonomy" }), "assist");
+  const sent = current();
+  await user.click(screen.getByRole("button", { name: /Save settings/ }));
+  // The operator keeps working while the request is in flight.
+  await user.selectOptions(screen.getByRole("combobox", { name: "AI autonomy" }), "auto");
+  await release();
+  // What was serialized is what was submitted, not what the form now shows.
+  expect(submitted).toHaveLength(1);
+  expect(submitted[0]).toMatchObject({ autonomy: "assist" });
+  expect(sent.autonomy).toBe("assist");
+  // The newer value is neither discarded nor announced as durable.
+  expect(current().autonomy).toBe("auto");
+  expect(await screen.findByText(/newer unsaved changes/)).toBeTruthy();
+  expect(screen.queryByText(/^Preferences saved durably/)).toBeNull();
+});
+
+it("does not call a pending save successful for a document imported after it was submitted", async () => {
+  const { user, submitted, release } = setupDeferredSave();
+  await user.click(screen.getByRole("button", { name: /Save settings/ }));
+  await user.upload(screen.getByLabelText("Import UI preferences file"), new File([JSON.stringify(buildUiPreferenceDocument("dark", "execute", "assist"))], "preferences.json", { type: "application/json" }));
+  await release();
+  expect(submitted).toHaveLength(1);
+  expect(submitted[0]).not.toMatchObject({ theme: "dark", effect_mode: "execute", autonomy: "assist" });
+  // The imported values survive and are reported as still unsaved.
+  expect(current()).toMatchObject({ theme: "dark", mode: "execute", autonomy: "assist" });
+  expect(await screen.findByText(/newer unsaved changes/)).toBeTruthy();
+});
+
+it("reports a save as durable when the form still matches what was submitted", async () => {
+  const { user, submitted, release } = setupDeferredSave();
+  await user.selectOptions(screen.getByRole("combobox", { name: "AI autonomy" }), "assist");
+  await user.click(screen.getByRole("button", { name: /Save settings/ }));
+  await release();
+  expect(submitted).toHaveLength(1);
+  expect(await screen.findByText(/Preferences saved durably/)).toBeTruthy();
+  expect(screen.queryByText(/newer unsaved changes/)).toBeNull();
+});
