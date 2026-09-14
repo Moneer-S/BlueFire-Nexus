@@ -108,7 +108,7 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
   const product = useProduct();
   const assistant = useAssistancePanel();
   const { scenario, setScenario, dirty } = review ?? product;
-  const { markSaved, setRunConfig } = product;
+  const { markSaved, setRunConfig, runConfig: durableRunConfig } = product;
   const runConfig = review ? { ...product.runConfig, mode: "simulate" as const, actionImplementations: {} } : product.runConfig;
   // Naming and other metadata edits keep the graph's presentation inputs stable.
   // The complete scenario still updates immediately for history, saves, and review.
@@ -291,6 +291,35 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
     else setHistory((items) => [...items.slice(0, historyIndex), structuredClone(next)]);
   }, [historyIndex, replaceScenario, review?.readOnly]);
 
+  // A step ID edit keeps the step's identity, so the selection and the chosen run
+  // method travel with it. Both would otherwise be lost per keystroke: the old ID
+  // stops matching any step, and setScenario drops an override whose step ID has
+  // vanished. Ordinary replacement with a different behavior still drops its
+  // override, because only this identity-preserving path re-keys one.
+  const renameStep = useCallback((previousId: string, nextId: string, next: Scenario) => {
+    if (review?.readOnly) return;
+    // Overrides are only selectable outside a review, and the review-mode copy of
+    // runConfig is rebuilt every render, so read the durable one.
+    const override = review ? undefined : durableRunConfig.actionImplementations?.[previousId];
+    applyScenario(next);
+    if (override) {
+      // setScenario prunes by step ID and a rename changes nothing else, so the
+      // rest of the map is already correct after it runs. setRunConfig clears any
+      // prepared approval, so the renamed step carries no stale authorization.
+      const actionImplementations = { ...(durableRunConfig.actionImplementations ?? {}) };
+      delete actionImplementations[previousId];
+      actionImplementations[nextId] = override;
+      setRunConfig({ ...durableRunConfig, actionImplementations });
+    }
+    // Re-key the existing node in the same update. Leaving it under the old ID lets
+    // React Flow report an empty selection for one render, which unmounts the
+    // inspector and drops focus mid-rename even though the selection is restored
+    // immediately afterwards.
+    selectionForGraphRefresh.current = nextId;
+    setSelectedId(nextId);
+    setNodes((items) => items.map((node) => (node.id === previousId ? { ...node, id: nextId, selected: true } : node)));
+  }, [applyScenario, durableRunConfig, review, setNodes, setRunConfig]);
+
   const undo = useCallback(() => { if (review?.readOnly || historyIndex <= 0) return; const index = historyIndex - 1; setHistoryIndex(index); replaceScenario(structuredClone(history[index]!)); }, [history, historyIndex, replaceScenario, review?.readOnly]);
   const redo = useCallback(() => { if (review?.readOnly || historyIndex >= history.length - 1) return; const index = historyIndex + 1; setHistoryIndex(index); replaceScenario(structuredClone(history[index]!)); }, [history, historyIndex, replaceScenario, review?.readOnly]);
 
@@ -469,7 +498,7 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
         </div>
         <div className={`validation-bar ${displayedValidation}`}><div><strong>{displayedValidation === "valid" ? "Experiment validated" : displayedValidation === "invalid" ? "Check the highlighted steps" : review?.readOnly ? "Read-only view · not validated here" : "Validate this experiment before run review"}</strong><span>{validationIssues[0] ?? `${scenario.steps.length} steps · ${scenario.edges.length} branches`}</span></div>{validationIssues.length > 1 ? <details><summary>{validationIssues.length} findings</summary><ul>{validationIssues.map((item) => <li key={item}>{item}</li>)}</ul></details> : null}</div>
       </Panel>
-      <Panel className="inspector-panel" hidden={!inspectorOpen}>{inspectorOpen ? <><PanelHeader eyebrow="Step details" title={displayTitle(selectedBehavior?.title ?? "Select a step")} actions={<IconButton label="Close step details" onClick={() => { setInspectorOpen(false); document.getElementById(inspectorToggleId)?.focus(); }}><X/></IconButton>} />{selected && selectedBehavior ? <fieldset className="graph-review-editor" disabled={review?.readOnly}><Inspector scenario={scenario} step={selected} behavior={selectedBehavior} behaviors={behaviorMap} actions={actionMap} onAlternative={useAlternative} updateStep={updateStep} updateScenario={applyScenario} selectedAction={runConfig.actionImplementations?.[selected.id] ?? ""} allowRunOverride={!review} onAction={(actionId) => { const next = { ...(runConfig.actionImplementations ?? {}) }; if (actionId) next[selected.id] = actionId; else delete next[selected.id]; setRunConfig({ ...runConfig, actionImplementations: next }); }} /></fieldset> : <EmptyState title="Select a step" description="Select a step on the canvas or in the list to choose its method, inputs, and branches." />}</> : null}</Panel>
+      <Panel className="inspector-panel" hidden={!inspectorOpen}>{inspectorOpen ? <><PanelHeader eyebrow="Step details" title={displayTitle(selectedBehavior?.title ?? "Select a step")} actions={<IconButton label="Close step details" onClick={() => { setInspectorOpen(false); document.getElementById(inspectorToggleId)?.focus(); }}><X/></IconButton>} />{selected && selectedBehavior ? <fieldset className="graph-review-editor" disabled={review?.readOnly}><Inspector scenario={scenario} step={selected} behavior={selectedBehavior} behaviors={behaviorMap} actions={actionMap} onAlternative={useAlternative} updateStep={updateStep} updateScenario={applyScenario} renameStep={renameStep} selectedAction={runConfig.actionImplementations?.[selected.id] ?? ""} allowRunOverride={!review} onAction={(actionId) => { const next = { ...(runConfig.actionImplementations ?? {}) }; if (actionId) next[selected.id] = actionId; else delete next[selected.id]; setRunConfig({ ...runConfig, actionImplementations: next }); }} /></fieldset> : <EmptyState title="Select a step" description="Select a step on the canvas or in the list to choose its method, inputs, and branches." />}</> : null}</Panel>
     </div>
     </div>
     <Dialog.Root open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen}>
@@ -496,10 +525,10 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
   </div>;
 }
 
-function Inspector({ scenario, step, behavior, behaviors, actions, updateStep, updateScenario, selectedAction, allowRunOverride, onAction, onAlternative }: { scenario: Scenario; step: ScenarioStep; behavior: Behavior; behaviors: Map<string, Behavior>; actions: Map<string, ActionDefinition>; updateStep: (id: string, update: (step: ScenarioStep) => ScenarioStep) => void; updateScenario: (scenario: Scenario) => void; selectedAction: string; allowRunOverride: boolean; onAction: (id: string) => void; onAlternative: (stepId: string, behaviorId: string) => void }) {
+function Inspector({ scenario, step, behavior, behaviors, actions, updateStep, updateScenario, renameStep, selectedAction, allowRunOverride, onAction, onAlternative }: { scenario: Scenario; step: ScenarioStep; behavior: Behavior; behaviors: Map<string, Behavior>; actions: Map<string, ActionDefinition>; updateStep: (id: string, update: (step: ScenarioStep) => ScenarioStep) => void; updateScenario: (scenario: Scenario) => void; renameStep: (previousId: string, nextId: string, scenario: Scenario) => void; selectedAction: string; allowRunOverride: boolean; onAction: (id: string) => void; onAlternative: (stepId: string, behaviorId: string) => void }) {
   const sources = guaranteedInputSources(scenario, step.id);
   const outputs = scenario.steps.flatMap((source) => (behaviors.get(source.behavior_id)?.outputs ?? []).map((output) => ({ source, output }))).filter((item) => sources.has(item.source.id));
-  const changeId = (id: string) => { if (!/^[a-z][a-z0-9_]*$/.test(id) || scenario.steps.some((item) => item.id === id && item.id !== step.id)) return; updateScenario({ ...scenario, ...(scenario.adaptive_execution ? { adaptive_execution: { ...scenario.adaptive_execution, steps: scenario.adaptive_execution.steps.map(item => item.step_id === step.id ? { ...item, step_id: id } : item) } } : {}), start: scenario.start === step.id ? id : scenario.start, steps: scenario.steps.map((item) => item.id === step.id ? { ...item, id } : { ...item, inputs: Object.fromEntries(Object.entries(item.inputs).map(([name, binding]) => [name, binding.from_step === step.id ? { ...binding, from_step: id } : binding])) }), edges: scenario.edges.map((edge) => ({ ...edge, from_step: edge.from_step === step.id ? id : edge.from_step, to_step: edge.to_step === step.id ? id : edge.to_step })), layout: Object.fromEntries(Object.entries(scenario.layout ?? {}).map(([key, value]) => [key === step.id ? id : key, value])) }); };
+  const changeId = (id: string) => { if (!/^[a-z][a-z0-9_]*$/.test(id) || scenario.steps.some((item) => item.id === id && item.id !== step.id)) return; renameStep(step.id, id, { ...scenario, ...(scenario.adaptive_execution ? { adaptive_execution: { ...scenario.adaptive_execution, steps: scenario.adaptive_execution.steps.map(item => item.step_id === step.id ? { ...item, step_id: id } : item) } } : {}), start: scenario.start === step.id ? id : scenario.start, steps: scenario.steps.map((item) => item.id === step.id ? { ...item, id } : { ...item, inputs: Object.fromEntries(Object.entries(item.inputs).map(([name, binding]) => [name, binding.from_step === step.id ? { ...binding, from_step: id } : binding])) }), edges: scenario.edges.map((edge) => ({ ...edge, from_step: edge.from_step === step.id ? id : edge.from_step, to_step: edge.to_step === step.id ? id : edge.to_step })), layout: Object.fromEntries(Object.entries(scenario.layout ?? {}).map(([key, value]) => [key === step.id ? id : key, value])) }); };
   return <div className="inspector-body"><section><div className="chip-list"><Badge tone={behavior.safety_tier === "restricted" ? "danger" : behavior.safety_tier === "controlled" ? "warning" : "success"}>{behavior.safety_tier}</Badge>{behavior.platforms.map((item) => <Badge key={item}>{item}</Badge>)}</div><p>{behavior.purpose}</p></section>
     <section><h3>Method</h3><p><strong>{displayTitle(behavior.title)}</strong> is the primary method for this step. Choose an alternative below to change the reusable step.</p><Field label="Run method override" hint={!allowRunOverride ? "Adopt this reviewed experiment before choosing a run override." : behavior.action_ids.length ? "Optional for the current run. Retained across Simulate and Execute; reviewed for compatibility and approval before execution. It is not part of the saved experiment." : "This step has no executable method. Choose a supported alternative to execute it."}><select aria-label="Run method override" value={selectedAction} onChange={(event) => onAction(event.target.value)} disabled={!allowRunOverride || !behavior.action_ids.length}><option value="">Recommended at run review</option>{behavior.action_ids.map((id) => <option key={id} value={id}>{actions.get(id)?.title ? displayTitle(actions.get(id)!.title) : id}{actions.get(id)?.platforms.length ? ` · ${actions.get(id)!.platforms.join(" / ")}` : ""}</option>)}</select></Field></section>
     {(behavior.compatible_behaviors?.length || step.alternates.length) ? <section><h3>Alternatives</h3><p>Save compatible methods for reuse, or choose a different primary method now. Configure an adaptive retry below to permit changes during execution.</p>{[...new Set([...(behavior.compatible_behaviors ?? []), ...step.alternates])].filter((id) => id !== behavior.id).map((id) => <div className="alternative-method" key={id}><label className="check-row"><input type="checkbox" checked={step.alternates.includes(id)} onChange={(event) => updateStep(step.id, (next) => ({ ...next, alternates: event.target.checked ? [...next.alternates, id] : next.alternates.filter((value) => value !== id) }))}/><span>{behaviors.get(id)?.title ? displayTitle(behaviors.get(id)!.title) : id}</span></label><p>{behaviors.get(id)?.purpose ?? "This method is unavailable in the loaded catalog."}</p><Button size="small" variant="secondary" disabled={!behaviors.has(id)} onClick={() => onAlternative(step.id, id)} aria-label={`Use ${behaviors.get(id)?.title ? displayTitle(behaviors.get(id)!.title) : id} for this step`}>Use this method</Button></div>)}</section> : null}
