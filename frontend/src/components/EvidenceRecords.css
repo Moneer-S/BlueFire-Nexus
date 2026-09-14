@@ -1,0 +1,14 @@
+.evidence-records article { min-width: 0; }
+.evidence-records article header { flex-wrap: wrap; font-size: .75rem; }
+.evidence-records article .evidence-record-title { font-size: .95rem; line-height: 1.4; }
+.evidence-records article p { font-size: .8rem; line-height: 1.5; }
+.evidence-measurements { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 14px; margin-block: 12px; }
+.evidence-measurements > div { min-width: 0; }
+.evidence-measurements dt { color: var(--muted-strong); font-size: .73rem; }
+.evidence-measurements dd { margin: 3px 0 0; font-size: .84rem; overflow-wrap: anywhere; }
+.evidence-measurements .evidence-digest { grid-column: 1 / -1; }
+.evidence-digest code { font-size: .73rem; }
+.evidence-records .evidence-measurement-boundary { color: var(--text); }
+.evidence-records .evidence-confidence { border-top: 1px solid var(--line); padding-top: 9px; }
+.evidence-records details pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow-y: auto; }
+.evidence-records .evidence-meta { overflow-wrap: anywhere; }

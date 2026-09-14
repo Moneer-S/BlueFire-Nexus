@@ -1,0 +1,29 @@
+.overview-page { gap: 28px; }
+.work-section { min-width: 0; }
+.work-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 44px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.work-section-heading h2 { margin: 0; font-size: 1rem; font-weight: 650; }
+.work-section-heading > a, .work-object-list a, .work-empty a { display: inline-flex; align-items: center; gap: 8px; color: var(--blue-soft); font-size: .82rem; text-decoration: none; }
+.work-section-heading svg, .work-object-list svg, .work-empty svg { width: 15px; height: 15px; }
+.workspace-note { margin: 8px 0; color: var(--muted); font-size: .82rem; line-height: 1.5; }
+.recent-work-table th, .recent-work-table td { padding: 14px 12px; text-align: left; }
+.recent-work-table th:first-child, .recent-work-table td:first-child { padding-left: 0; }
+.recent-work-table td:first-child { width: 48%; }
+.recent-work-table td > a { color: var(--text); font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
+.recent-work-table td > a:hover, .work-section a:hover { text-decoration: underline; }
+.recent-work-table time { color: var(--muted); white-space: nowrap; }
+.working-copy > div { padding: 16px 0; }
+.working-copy h3 { margin: 0; font-size: 1.05rem; font-weight: 600; overflow-wrap: anywhere; }
+.working-copy p { margin: 7px 0 14px; color: var(--muted); font-size: .82rem; }
+.working-copy .button + .button { margin-left: 8px; }
+.work-object-list { list-style: none; margin: 0; padding: 0; }
+.work-object-list li { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.work-object-list li > span { min-width: 0; }
+.work-object-list strong { display: block; font-size: .88rem; font-weight: 550; overflow-wrap: anywhere; }
+.work-object-list small { display: block; margin-top: 5px; color: var(--muted); font-size: .78rem; }
+.work-object-list a { flex-shrink: 0; }
+.work-empty { padding: 22px 0; font-size: .88rem; }
+.work-empty p { margin: 0 0 12px; color: var(--muted); }
+@media (max-width: 700px) {
+  .work-object-list li { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .recent-work-table { min-width: 600px; }
+}

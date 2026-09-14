@@ -1,0 +1,3 @@
+[allowlist]
+description = "detect-secrets stores one-way fingerprints, not credential values"
+paths = ['''^\.secrets\.baseline$''']

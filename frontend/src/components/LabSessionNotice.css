@@ -1,0 +1,6 @@
+.lab-session-notice { position: relative; margin-bottom: 20px; padding: 11px 80px 11px 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); font-size: .8rem; line-height: 1.5; }
+.lab-session-notice summary { cursor: pointer; font-weight: 600; }
+.lab-session-notice p { margin: 7px 0 0; max-width: 85ch; color: var(--muted-strong); }
+.lab-session-notice.urgent { border-color: var(--warning, #d6a64b); }
+.lab-session-clock { position: absolute; top: 11px; right: 14px; color: var(--muted-strong); font-size: .72rem; }
+@media (max-width: 500px) { .lab-session-notice { padding-right: 14px; } .lab-session-clock { display: block; position: static; margin-top: 6px; } }

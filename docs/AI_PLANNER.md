@@ -1,0 +1,259 @@
+# AI Planner
+
+BlueFire treats model output as an untrusted proposal. The model operates inside a small allowlist derived from the deterministic graph; it is never an execution or policy authority.
+
+## Autonomy levels
+
+Autonomy is independent from Simulate/Execute.
+
+| Level | Provider call | Current runtime behavior |
+|---|---|---|
+| `off` | No | Deterministic planner only; no AI proposal record |
+| `assist` | Yes, at a bounded runtime decision point | Record default-preserving advice; pause every actual registered mutation for durable accept/reject review |
+| `auto` | Yes, at a bounded runtime decision point | In Simulate, may apply a policy-permitted registered mutation. In Execute, may retry an eligible step using a different method explicitly included in its finite experiment authorization; review-required proposals still pause |
+
+Execute defaults to exact-plan authorization. Without an explicit `adaptive_execution` policy, runtime mutations pause for review and require a fresh exact one-time execution approval after acceptance. Legacy approvals never acquire adaptive authority.
+
+An operator can instead review a finite experiment containing two to four compatible methods for selected steps. Auto may choose an untried reviewed method after an eligible actual outcome and continue under that authorization. The authorization binds the objective, graph, exact compiled parameters and inputs, environment, target scope, action contracts, capabilities, effects, cleanup and resource limits. BlueFire rechecks the selected operation before its effects, and the sealed runner profile carries the finite operation identities. A different target, expanded effects or an unreviewed method requires a new decision. See [Adaptive execution authorization](ADAPTIVE_EXECUTION.md).
+
+Runtime AI cannot create or reorder nodes, invent an outcome edge, select an unregistered behavior or action, change a profile/scope/tier/budget, or introduce commands, paths, plugins, providers, or executable content. Finite Execute method selection does not authorize model-generated parameter changes.
+
+## Runtime decision loop
+
+The native workspaces also support bounded operations outside the runtime decision loop:
+
+- Builder Assistant proposes a separate new graph or a selected-step parameter patch over the current valid working graph. Native review must accept the proposal before a separate version is saved; other steps and branches cannot change in a selected-step request. See [Contextual graph assistance](contextual-graph-assistance.md).
+- Detection Lab Assist proposes a saved SQLite or Sigma source revision from verified observed evidence. Review the original and proposed source, then accept to save one immutable child and evaluate its development case. This operation does not deploy a rule.
+- Compare's guided method test chooses a registered alternative, prepares a full replay, evaluates the same saved detector on both runs, and retains their comparison. Assist reviews the proposed method; Auto may accept the bounded choice. Execute still stops for fresh approval. The replay uses the original scope, profile and observers with runtime AI Off. Recovery after a finalized replay performs analysis only.
+
+These operations use the configured Responses or Chat Completions structured-output adapter. They retain explicit failures rather than silently substituting a different provider or a fabricated result. See [Detection Lab](DETECTION_LAB.md) and [Replay & Compare](REPLAY_COMPARE.md) for their evidence and recovery limits.
+
+The legacy exact-plan decision loop remains:
+
+1. the deterministic planner selects the registered edge for the observed outcome and records a state digest;
+2. if autonomy is not Off, BlueFire builds a bounded `bluefire.ai-request.v2`;
+3. the request correlates each permitted next or retry node with its registered behaviors, safe primitive parameter schemas, exact edge, and behavior-owned actions enabled by the exact Execute profile;
+4. action IDs are omitted in Simulate, and only the current eligible node is exposed for retry;
+5. the provider returns strict `bluefire.ai-proposal.v2` JSON;
+6. BlueFire checks provider identity, schema, forbidden fields, request allowlists, registered ownership, exact profile enablement, parameter contracts, retry bounds, and autonomy semantics;
+7. policy-permitted Auto mutations apply only in Simulate; actual Assist mutations and exact-plan Execute mutations stop at a durable operator gate;
+8. acceptance revalidates the immutable run bundle, proposal, registered options, and state/plan/proposal/policy digests, then reconstructs only the accepted registered change;
+9. preflight is rerun against the exact scenario, profile, scope, policy, and resolved action plan;
+10. Execute acceptance creates a fresh exact one-time approval and performs a fresh-workspace replay from scenario start so prerequisite effects are recreated; the original approval can never be reused;
+11. the approved resolution is consumed only at its recorded source-step boundary, while normal graph, policy, adapter, budget, and runner checks remain authoritative;
+12. proposal and decision records retain the source digests, policy evaluation, evidence, limits, resolved plan, and continuation lineage.
+
+Application states include `recorded_for_review`, `awaiting_operator_approval`, `accepted_registered_default`, `accepted_registered_next_node`, `applied_registered_alternate`, `applied_typed_parameters`, `applied_registered_action`, `applied_registered_retry`, and explicit rejection/not-applied reasons. Durable reviews have one-time `pending`, `accepted`, or `rejected` states with operator/time metadata.
+
+For a finite Execute experiment, an eligible `blocked`, `failed` or `partial` outcome instead exposes compatible, untried reviewed methods for that same step. The provider receives relevant observations, prerequisites and remaining limits, then proposes an exact registered method, requests review or stops. Auto validates and records the choice, reserves the single lineage-wide retry and rechecks authorization immediately before dispatch. Both attempts retain their own results and evidence. The objective remains the one declared before execution; choosing an alternative does not establish that the objective succeeded.
+
+Assist records the proposed method and pauses. Accepting it prepares a fresh approval and a full replay with that method as the selected step's primary method, so prerequisites are recreated. The replay retains the consumed retry count and original authorization lineage. Interruption recovery reconciles owned cleanup; it does not resume an uncommitted adaptive operation or reuse a consumed approval.
+
+## Proposal schema
+
+A v2 proposal contains only:
+
+- schema/proposal identity and a closed type: `no_change`, `select_registered`, `select_next_node`, `change_parameters`, `select_registered_action`, `retry_registered`, `request_approval`, or `stop`;
+- selected step and behavior IDs constrained by the correlated registered option;
+- an optional exact registered edge, optional behavior-owned action ID, or at most 16 named primitive parameter changes, as required by that type;
+- rationale, alternatives, confidence, and review requirement.
+
+Recursive forbidden-field checks reject executable concepts such as commands, scripts, payloads, shells, interpreters, binaries, entry points, and arbitrary paths. Parameter changes are limited to booleans, bounded finite numbers/integers, and strings with a closed registered enum; nested values, free-form strings, and list parameters are not exposed. The merged parameters must still validate against the registered behavior contract. Assist proposals must set `requires_operator_review`.
+
+`select_next_node` can select only the exact edge registered for the outcome that actually occurred. The current scenario contract allows at most one edge for each `(from_step, outcome)` pair, so this records and verifies the registered transition; it does not let a model choose across outcomes or invent a branch.
+
+`select_registered_action` is exposed only in Execute and only for actions owned by the selected behavior and enabled, but not blocked, by the exact immutable runner profile. It changes metadata used for deterministic compilation; it does not load code dynamically. `retry_registered` is limited to the current non-cleanup node after `partial`, `blocked`, or `failed`, consumes normal step/time limits, and is capped at one adaptive retry for the entire lineage. Retry attempts keep separate result and evidence records.
+
+## Providers
+
+The installed service normally resolves the configured environment reference and
+uses its direct HTTP transport. An explicit internal access interface also supports
+an enrolled broker channel for control-plane composition. See [AI broker access](AI_BROKER_ACCESS.md)
+for its current tested scope and the isolation work required before prepared-lab use.
+
+### Deterministic offline
+
+`deterministic-offline.v1` is the default and test provider. It makes no network call and chooses only from request allowlists. It lets demos/tests exercise proposal records and autonomy semantics without credentials.
+
+### Configured structured-output providers
+
+`openai-responses.v1` is the provider ID in the shipped example configuration. The two network kinds are `openai_responses` and `chat_completions`. Both send bounded HTTPS requests (or literal-loopback HTTP) to the configured endpoint using its explicitly selected wire format and strict JSON-schema output. The runtime adapters:
+
+- offer no tools; Responses explicitly sends an empty tools list, disables parallel tool calls and sets tool choice to none;
+- request a strict JSON schema with no additional properties;
+- enforce endpoint syntax and forbid embedded credentials/query strings;
+- use a configured timeout and bounded retry count;
+- retry only transport/rate-limit/server failures;
+- cap response bytes and output tokens;
+- reject incomplete, malformed, over-budget, or schema-invalid output;
+- fall back deterministically on the legacy runtime decision path; durable contextual proposal jobs instead retain failure without substituting a provider.
+
+Responses uses `input`, `text.format` and `max_output_tokens`; Chat Completions uses `messages`, `response_format` and `max_completion_tokens`, with one non-streaming choice. Both request `store: false`. The endpoint must implement the selected strict schema format and response envelope. Native vendor protocols and text-only endpoints are not supported merely because their URL is configurable. Offline CI exercises both dialects with injected transport; it does not certify a live third-party endpoint.
+
+## Configuration
+
+In the UI, use **Settings > Connect a model**. For a keyed provider, set the key in the environment
+of the process that launches BlueFire before starting the service, and enter only its
+environment-variable name under **Secret environment reference**. Select the API style, full request
+endpoint, exact model and per-attempt request limits. **Save secret-free draft** retains the
+configuration. **Check configuration** validates it and credential availability without contacting
+the endpoint. Saving or activating a configuration grants no permission for model requests.
+
+In **Review model data and usage**, inspect the exact connection and credential reference, select
+the permitted model work, and review the lab data scope. Set total request attempts, request bytes,
+reserved output tokens and an authorization duration of at most 900 seconds. Enter your operator
+identity, confirm the data and usage limits, and choose **Authorize reviewed model usage**. A loopback
+endpoint needs its additional explicit confirmation. This action saves and activates a direct
+provider configuration when needed, then records the reviewed authorization; it sends no model
+request. An active configuration must be deactivated before editing. An enrolled broker connection
+is locked to its session; restore its authorized enrollment if it needs to change.
+
+The authorization applies only to the exact configuration, selected purposes and current service
+session. Requests reserve usage before each transport attempt; retries and failed or cancelled
+attempts consume those reservations. Reserved tokens are a conservative limit, not a bill or a
+measurement of actual tokens used. Expiry, revocation, exhausted limits or a service restart require
+a new review. **Saved model authorizations** retains their status and usage; remaining counters do
+not renew authority. Execute effects still require their separate experiment approval.
+
+**Send live connection test** is separate and requires current authorization for **Test the
+connection with synthetic data**. It sends one synthetic structured-output request, at most 256
+output tokens and a 10-second timeout, without retry or fallback. It may incur API cost and sends
+no experiment or evidence. A successful connection test establishes connection compatibility only.
+
+The following configuration example defines provider settings, not live usage authorization:
+
+```yaml
+ai:
+  autonomy: off
+  active_provider: deterministic-offline.v1
+  fallback_provider: deterministic-offline.v1
+  providers:
+    - id: deterministic-offline.v1
+      kind: deterministic
+      model: deterministic-planner.v1
+      timeout_seconds: 1
+      max_retries: 0
+      max_output_tokens: 800
+      redaction:
+        enabled: true
+        redact_keys: [api_key, authorization, cookie, credential, password, secret, token]
+        max_string_chars: 4000
+        include_evidence_content: false
+
+    - id: openai-responses.v1
+      kind: openai_responses
+      model: gpt-4o-mini
+      endpoint: https://api.openai.com/v1/responses
+      api_key: {env: OPENAI_API_KEY}
+      timeout_seconds: 30
+      max_retries: 2
+      max_output_tokens: 800
+      redaction:
+        enabled: true
+        redact_keys: [api_key, authorization, cookie, credential, password, secret, token]
+        max_string_chars: 4000
+        include_evidence_content: false
+```
+
+The API key value is read from the named environment variable at runtime for readiness checks and request authentication; it is not written to YAML, SQLite, catalog responses, or run bundles. Configuration and the local product-store resource retain the endpoint, model, bounds, redaction policy, and environment-variable reference. Bundle-safe runtime metadata deliberately omits the endpoint and redaction configuration; it exposes provider ID/kind, model, timeout/retry/token bounds, the credential-reference name, readiness/fallback status, proposal-application mode, and trust-boundary label.
+
+Set the secret locally:
+
+```bash
+export OPENAI_API_KEY="..."          # Linux/macOS
+# Windows PowerShell: $env:OPENAI_API_KEY = "..."
+```
+
+Then start the UI with the workspace you intend to keep:
+
+```bash
+bluefire --runs-dir "<an absolute path you keep>" ui
+```
+
+Complete the model data and usage review in that running UI. For runtime proposals, select
+**Choose reviewed methods during a run** among the permitted work, then choose the same provider
+and the intended autonomy in the experiment's run review. For contextual Assistant work, authorize
+its intended purposes and select the provider there. Review the actual proposal and recorded
+outcome; offline fake-transport tests do not establish a successful live journey.
+
+Keep using the same service session. A separate `scenario run` CLI invocation starts a new service;
+it cannot inherit the UI's live authorization. `scenario preview` validates preflight metadata
+without contacting a provider. Neither a preview nor a saved provider setting grants live usage.
+
+Use Auto only after the same scenario/provider has been reviewed in Assist and the runner profile is appropriately narrow.
+
+## Redaction and data controls
+
+Redaction replaces values whose keys match configured secret terms, truncates strings, and excludes evidence content by default. The legacy runtime context contains mode, current step/outcome, completed step IDs/behaviors/statuses and the deterministic decision. Finite Execute planning adds a bounded projection of verified observations: allowlisted counts and categories, evidence references and provenance, failure classifications, method prerequisites and remaining time, steps and retries. It does not send raw logs, commands, paths or credentials. Missing telemetry and unknown target prevention stay explicit; a BlueFire authorization or control refusal is not evidence that the target prevented an operation.
+
+Live authorization requires credential redaction and excludes raw logs and evidence bodies.
+Depending on the authorized purpose, requests may contain reviewed lab objectives and parameters,
+bounded observation summaries, rule text and evidence references. Detection assistance uses permitted
+field metadata under this policy. Its 128-observation model-context bound is separate from the full-run
+detector execution budget. Keep prompts and selected material within the reviewed lab scope; a
+redaction list is not a complete data-loss-prevention system.
+
+## Failure and fallback
+
+On the legacy runtime decision and synchronous draft paths, unavailable credentials, transport failure, timeout, retry exhaustion, invalid content type/JSON, incomplete response, schema mismatch, unregistered selection or token-budget excess produces an explicit deterministic fallback or rejected proposal record. Durable contextual graph, detection and method jobs retain failure and do not silently substitute an offline draft or alternate model. BlueFire does not silently apply partially parsed model text.
+
+Finite Execute experiments explicitly configure either stop or deterministic graph continuation on provider failure. A fallback is labeled as such and never counted as live-model success. Requests share the remaining experiment deadline across transport attempts and retry delays; no proposal call starts after the retry or execution budget is exhausted. Cancellation remains available while planning. Rejected typed proposals and provider attempt metadata are retained, including attempts that produced no usable response.
+
+Catalog provider readiness checks local configuration, the required credential reference and current
+live authorization availability; it does not contact the endpoint or measure model quality. Each
+request separately checks its purpose and remaining usage before transport. Service startup persists
+secret-safe provider configuration plus a readiness snapshot in the local product store. The catalog
+returns bundle-safe runtime metadata and a freshly computed readiness view, without returning the
+configured endpoint.
+
+## Legacy synchronous objective-to-graph drafting
+
+`POST /api/v1/ai/drafts` provides a backend objective-to-graph boundary separate
+from the runtime decision loop. It accepts a natural-language objective, an
+optional configured provider ID, and caller-selected bounds of at most 16 nodes
+and 32 edges. The response is an audit-rich, normalized
+`bluefire.scenario.v1` document marked `saved: false`; drafting does not write a
+scenario version, create a job, run an action, or grant authority.
+
+The model-facing catalog contains only registered non-metadata behavior IDs,
+descriptions, artifact contracts, and safe primitive parameter schemas. It
+contains no action IDs, implementation details, capabilities, runner profiles,
+scope, approvals, policy, or execution mode. The request-specific strict output
+schema lets a provider select only those behavior IDs and exact typed parameter
+fields. Recursive checks reject executable fields, authority fields, nested
+parameter payloads, and path-like string values.
+
+BlueFire treats the returned graph as an untrusted sketch. It enforces node and
+edge bounds, validates references and acyclicity, topologically normalizes the
+steps, derives deterministic artifact bindings from registered contracts, and
+adds identity, provenance, and limitations outside the provider boundary. The
+result must parse through `ScenarioDefinition` and pass the same registry graph
+validation as an operator-authored scenario before it is returned.
+
+The deterministic offline provider performs this drafting locally and is the
+fallback on the legacy synchronous path for unavailable credentials, bounded transport failures, incomplete
+responses, or invalid model output. The selected Responses or Chat Completions implementation uses
+the configured provider endpoint/model and credential environment reference,
+requests strict Structured Outputs, disables storage and tools, caps request,
+response, and output-token sizes, and never includes the credential in the
+result. Offline tests use an injected fake transport; they do not make a real
+credential or network call.
+
+## Audit and comparison
+
+Each proposal record retains run/current-step/outcome, autonomy, exact state/plan/proposal/policy digests, deterministic decision ID, correlated registered options, exact allowlists and limits, provider/result metadata, proposal content, policy evaluation, application state/reason, and a registered step when applicable. Durable decision records add job/source identity, operator, timestamp, resolution, fresh Execute approval reference when required, and deterministic continuation lineage. Execute continuation lineage also records the fresh preflight, target-scope, retry-count, full-replay, and resolved-action context used by the new exact approval. Comparison reports provider/autonomy changes, proposal counts, and application-state counts.
+
+Finite Execute attempts use `bluefire.ai-proposal-record.v4`, with the authorization digest, observation projection, selected operation and explicit decision source. A failed attempt may have no response or proposal; it remains inspectable evidence and cannot be accepted as a replay proposal. Deterministic provider responses exercise the software contract and are labeled separately from live-provider decisions.
+
+## Current limitations
+
+- Legacy runtime mutations are limited to the deterministic successor or an eligible current-node retry. Finite Execute selection is limited to a different reviewed method for the eligible current node, with exact precompiled parameters and inputs.
+- Registered next-node selection cannot choose across outcome branches because `bluefire.scenario.v1` permits only one edge for each source-node/outcome pair.
+- A finite method may use a different registered behavior and action only when compatible with the same declared objective and reviewed graph inputs. It never grants new runner authority or loads executable code.
+- Adaptive retry is a single lineage-wide retry, not a configurable recovery workflow.
+- Runtime AI cannot propose detections or arbitrary replay edits. The separate contextual Assistant operations use their own bounded proposal/review contracts; the legacy synchronous objective draft remains unsaved.
+- No monetary cost calculation/budget is implemented; output tokens, attempts, response bytes, and time are bounded.
+- Both structured-output dialects are tested with deterministic fake transport; a real account/network call requires operator credentials and infrastructure and is not part of offline tests.
+- No single dynamically verified product journey currently proves a real-provider Auto mutation followed by replay and comparison; those mechanisms have separate deterministic tests.
+
+These limits keep product claims aligned with the current implementation while preserving a safe path for future expansion.

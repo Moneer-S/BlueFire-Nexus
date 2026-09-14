@@ -1,0 +1,75 @@
+{
+  "schema_version": "bluefire.official-behavior-packs.v1",
+  "packs": [
+    {
+      "pack_id": "bluefire.endpoint-identity.v1",
+      "title": "Endpoint and identity disposable lab",
+      "kind": "endpoint_identity",
+      "platforms": ["windows"],
+      "scenario_asset": "endpoint_deep_behavior_lab.yaml",
+      "runner_profile_id": "sandbox-endpoint-deep-lab.v1",
+      "implementation": "bluefire.native-runner",
+      "phases": [
+        {"phase_id": "execution", "behavior_ids": ["sandbox.execution.native-canary.v1"]},
+        {"phase_id": "discovery", "behavior_ids": ["endpoint.discovery.system.v1", "endpoint.discovery.processes.v1", "sandbox.discovery.metadata.v1"]},
+        {"phase_id": "collection_staging", "behavior_ids": ["sandbox.fixture.create.v1", "sandbox.fixture.transform.v1", "sandbox.collection.stage.v1"]},
+        {"phase_id": "persistence", "behavior_ids": ["sandbox.restricted.persistence-marker.v1"]},
+        {"phase_id": "authorized_credentials", "behavior_ids": ["sandbox.credential.peer-challenge.v1"]},
+        {"phase_id": "disposable_lateral", "behavior_ids": ["sandbox.peer.handoff.v1"]},
+        {"phase_id": "telemetry_shaping", "behavior_ids": ["sandbox.observability.variant.v1"]},
+        {"phase_id": "cleanup", "behavior_ids": ["sandbox.cleanup.v1"]}
+      ],
+      "limitations": [
+        "Credential research uses a one-task HMAC capability derived only for an approved disposable receiver.",
+        "Peer movement is restricted to distinct one-shot processes on literal loopback.",
+        "Persistence is a non-executable detection canary and telemetry shaping is reversible."
+      ]
+    },
+    {
+      "pack_id": "bluefire.linux-container.v1",
+      "title": "Linux container disposable lab",
+      "kind": "linux_container",
+      "platforms": ["linux"],
+      "scenario_asset": "linux_container_validation.yaml",
+      "runner_profile_id": "sandbox-execute.v1",
+      "implementation": "bluefire.native-runner",
+      "phases": [
+        {"phase_id": "process_effects", "behavior_ids": ["endpoint.discovery.processes.v1"]},
+        {"phase_id": "filesystem_effects", "behavior_ids": ["sandbox.fixture.create.v1", "sandbox.fixture.transform.v1", "sandbox.archive.tar.v1"]},
+        {"phase_id": "internal_network_effects", "behavior_ids": ["sandbox.network.loopback.v1"]},
+        {"phase_id": "runtime_observation", "behavior_ids": ["endpoint.discovery.system.v1", "sandbox.discovery.recursive.v1"]},
+        {"phase_id": "alternate_implementation", "behavior_ids": ["sandbox.discovery.list.v1", "sandbox.discovery.metadata.v1"]},
+        {"phase_id": "cleanup", "behavior_ids": ["sandbox.cleanup.v1"]}
+      ],
+      "limitations": [
+        "Dynamic proof requires a fresh disposable Linux execution boundary; Simulate is insufficient.",
+        "Internal networking is restricted to an authenticated one-shot loopback receiver.",
+        "Both discovery implementations execute before receipt-bound cleanup."
+      ]
+    },
+    {
+      "pack_id": "bluefire.aws-identity-lab.v1",
+      "title": "AWS identity reversible lab",
+      "kind": "aws_identity",
+      "platforms": ["aws"],
+      "scenario_asset": null,
+      "runner_profile_id": "aws-identity-lab.v1",
+      "implementation": "bluefire.cloud_identity_pack",
+      "phases": [
+        {"phase_id": "credential_binding", "behavior_ids": ["aws.identity.credential-bind.v1"]},
+        {"phase_id": "enumeration", "behavior_ids": ["aws.identity.enumerate.v1"]},
+        {"phase_id": "control_plane_action", "behavior_ids": ["aws.identity.tag-role.v1"]},
+        {"phase_id": "cleanup_revocation", "behavior_ids": ["aws.identity.untag-role.v1"]},
+        {"phase_id": "audit_telemetry", "behavior_ids": ["aws.identity.audit.v1"]},
+        {"phase_id": "simulate", "behavior_ids": ["aws.identity.simulate.v1"]},
+        {"phase_id": "execute", "behavior_ids": ["aws.identity.execute.v1"]},
+        {"phase_id": "manual_smoke", "behavior_ids": ["aws.identity.manual-smoke.v1"]}
+      ],
+      "limitations": [
+        "Automated release proof uses a deterministic local AWS-compatible mock and never external credentials.",
+        "The manual provider path is disabled by default and accepts only a credential profile reference.",
+        "The control-plane tag is applied only to an explicitly named disposable lab role and is always revoked."
+      ]
+    }
+  ]
+}

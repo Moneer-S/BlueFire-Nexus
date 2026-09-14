@@ -1,0 +1,66 @@
+schema_version: bluefire.scenario.v1
+id: scenario.endpoint.lab-archive-collection.v1
+title: Archive sample files
+purpose: Compare observed collection of selected sample records and whole sample files.
+start: create_fixture
+steps:
+  - id: create_fixture
+    behavior_id: sandbox.fixture.create.v1
+    parameters: {record_count: 8}
+  - id: discover_system
+    behavior_id: endpoint.discovery.system.v1
+  - id: discover_processes
+    behavior_id: endpoint.discovery.processes.v1
+    parameters: {record_limit: 20}
+  - id: seed_lab_material
+    behavior_id: sandbox.identity-material.seed.v1
+  - id: inspect_lab_material
+    behavior_id: sandbox.identity-material.inspect.v1
+    inputs:
+      identity_material: {from_step: seed_lab_material, artifact: identity_material}
+  - id: transform_fixture
+    behavior_id: sandbox.fixture.transform.v1
+    parameters: {redact_values: true}
+    inputs:
+      workspace: {from_step: create_fixture, artifact: workspace}
+  - id: enumerate_files
+    behavior_id: sandbox.discovery.recursive.v1
+    parameters: {record_limit: 20, max_depth: 2}
+    inputs:
+      workspace: {from_step: create_fixture, artifact: workspace}
+  - id: stage_collection
+    behavior_id: sandbox.archive.tar.v1
+    inputs:
+      records: {from_step: enumerate_files, artifact: records}
+  - id: cleanup_workspace
+    behavior_id: sandbox.cleanup.v1
+    parameters: {verify_removal: true}
+    inputs:
+      workspace: {from_step: create_fixture, artifact: workspace}
+edges:
+  - {from_step: create_fixture, outcome: success, to_step: discover_system}
+  - {from_step: discover_system, outcome: success, to_step: discover_processes}
+  - {from_step: discover_processes, outcome: success, to_step: seed_lab_material}
+  - {from_step: discover_processes, outcome: partial, to_step: seed_lab_material}
+  - {from_step: seed_lab_material, outcome: success, to_step: inspect_lab_material}
+  - {from_step: inspect_lab_material, outcome: success, to_step: transform_fixture}
+  - {from_step: transform_fixture, outcome: success, to_step: enumerate_files}
+  - {from_step: enumerate_files, outcome: success, to_step: stage_collection}
+  - {from_step: stage_collection, outcome: success, to_step: cleanup_workspace}
+  - {from_step: stage_collection, outcome: partial, to_step: cleanup_workspace}
+  - {from_step: stage_collection, outcome: blocked, to_step: cleanup_workspace}
+  - {from_step: stage_collection, outcome: failed, to_step: cleanup_workspace}
+provenance:
+  source: BlueFire Nexus authored endpoint collection comparison
+  reference: scenario.endpoint.lab-archive-collection.v1
+  license: MIT
+  derived: false
+  notes: Uses existing reviewed compiled actions and the existing sandbox-execute.v1 profile; no shell, plugin payload, or caller-selected host file is introduced.
+limitations:
+  - The public lab material is seeded at one fixed runner-owned path and read by the compiled inspector; it is not a credential or a personal file.
+  - This method enumerates only the typed fixtures workspace and archives original and transformed whole files into staged/discovery.tar; it does not select individual records or include the separate public identity canary.
+  - The archive retains public synthetic values from the original fixture as well as the redacted transformed file; it is intentionally a different collection scope and container from the selected-record companion.
+  - System/process discovery and material access are executed evidence; filesystem digest observations prove resulting artifacts, not that a host audit sensor recorded those API calls or file reads.
+  - The standard filesystem collector must independently verify the declared file effects before Execute can reach its objective; unavailable telemetry leaves the objective incomplete.
+  - Detection and detector revision are separate product lifecycle evaluations against immutable observed evidence; this scenario does not claim an alert or prevention from successful execution alone.
+  - No host defense, persistence setting, remote endpoint, or external credential is changed, and all created files remain receipt-bound for cleanup.

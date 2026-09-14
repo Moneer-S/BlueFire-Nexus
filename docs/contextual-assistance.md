@@ -1,0 +1,105 @@
+# Contextual experiment assistance
+
+Assistant works from the selected saved objects and settings in the workbench.
+It uses the existing provider access, durable jobs and native reviews. Choose the
+context first, then **Assistant mode**, **Assistant provider** and **Start work**.
+The operation header retains its submitted mode and provider. New-request
+settings are not a global server AI switch: **Off** prevents new model requests,
+while **Stop this operation** cancels already submitted work.
+
+## Supported entry points
+
+| Selected work | Operator entry | Supported continuation and review |
+| --- | --- | --- |
+| New graph, optionally with a saved reference | **Build → Plan with Assistant** | Assist/Auto propose and validate a separate graph; native Builder review saves it. [Graph review](contextual-graph-assistance.md). |
+| Accepted saved graph | **Run with Assistant** | Explicit run settings; Assist reviews preparation, bounded Auto may continue it. Execute always needs fresh ordinary approval. [Saved runs](assisted-runs.md). |
+| Completed observed run | Initial rule creation in Detection Lab | Choose the observed behavior, SQLite/Sigma and development case. Assist/Auto propose source; native source review saves and evaluates it. [Initial detection](initial-detection-creation.md). |
+| Saved SQLite/Sigma rule and observed run | Assistant in Detection Lab or Compare | Assist can revise/evaluate and then propose a same-rule method comparison. Auto is not supported for this selection. [Method comparison](ai_method_comparison.md). |
+| Eligible saved receiver experiment and frozen settings | **Compare → Test a lab receiver control → Coordinate with Assistant** | Assist/Auto coordinate and interpret phases; each receiver preparation, review and Execute approval remains explicit. [Receiver control](receiver-control-test.md). |
+| Existing receiver test with verified evidence | **Analyse with Assistant** | Assist/Auto interpret the selected phase prefix only; Stop applies to analysis, not the independent native test. [Ownership contract](receiver-assistance-contract.md). |
+
+The UI advertises the modes supported for the selected context. A completed
+planner or retained proposal is not a completed run, saved rule, or measured
+control comparison. Native receipts establish those separate outcomes. Reopening
+saved work reads its state; it does not repeat provider requests or target effects.
+If a response is uncertain, retain the exact request and use its recovery control.
+Changing saved context may require a separate request rather than a retry.
+
+The connection indicator checks only service reachability and the current browser
+session. It can show **Disconnected**, **Session unavailable** or **Connection
+unchecked** while cached work remains visible. **Check connection** performs a
+read-only check; it does not resume work. Runner/provider readiness and the lab
+session deadline remain separate. After a session ends, follow its relaunch
+guidance and inspect saved jobs and cleanup before continuing.
+
+## Selected detector revision and method comparison
+
+This context binds one finalized observed run and one saved SQLite or Sigma
+detector. A connected Assist sequence revises the selected rule, links its native
+review, evaluates the accepted immutable revision, and automatically proposes a
+registered method comparison using that exact revised detector. The method
+remains in native review; an Execute replay requires its own fresh approval.
+
+The planner chooses typed capability references from authoritative context, not keyword dispatch. `detection.revise_and_evaluate` uses the selected detector. A subsequent `method.compare_same_detector` must use the committed revised detector; a comparison alone uses the selected detector. Planner output cannot introduce arbitrary objects, code, scope, provider changes, approvals or executable steps. The existing method service remains responsible for compatible options, frozen authority, replay preparation and measured comparison.
+
+`GET /api/v1/assistance/context?run_id=…&candidate_id=…` returns `bluefire.assistance-context.v1`: `context_digest`, `selected` (run ID, candidate ID/resource digest/title/definition digest/language and complete source binding), `capabilities` (ID/title/availability/reason/native path/`supported_autonomy`) and limitations. These selected-detector capabilities advertise `['assist']`; bounded Auto support in other contexts does not extend to this sequence. Off makes no model call or child operation. Assist requires an explicitly selected configured provider and pins its definition throughout the turn; no fallback provider or global default mutation is used.
+
+`POST /api/v1/assistance/turns` accepts exactly `submission_id`, `context_digest`, `run_id`, `candidate_id`, `candidate_resource_digest`, `message` (1–1000 characters; ordinary line breaks and tabs allowed, other controls refused), `case_role`, `autonomy`, and optional `provider_id`. The job is `assistance.turn` with deterministic `job-` plus submission UUID hex. `job.request.submitted_request` preserves the complete original request. Syntactically valid admission failures close that UUID as a durable failed job; a stale or missing object/provider cannot become a late successful submission after the UI clears its failed receipt. Duplicate lookup precedes mutable admission resolution. A transport-uncertain GET 404 does not authorize clearing a pending request.
+
+Submit, `GET /api/v1/assistance/turns/{job_id}`, and `POST /api/v1/assistance/turns/{job_id}/continue` return `{job, turn}`. The original parent request is unchanged. `turn` contains `status`, `message`, `context_digest`, `selected`, `plan`, `active_child`, `next_action`, `results`, `continuation`, and limitations. Its status distinguishes planning, Off, actual child work, native review, fresh Execute approval, recoverable handoff, completed measured receipts, blocked work, cancellation requested, and settled cancellation. A completed planner is not a completed experiment.
+
+Each plan step has `step_id`, `capability_id`, `detector_ref`, `title`, and `reason`. Child receipts expose actual `job_id`, `kind`, `state`, `step_id`, and `native_path`. Result references expose `kind`, `step_id`, `candidate_id`, `evaluation_ids`, `run_ids`, `comparison_id` (null for revision), and `native_path`. The reader validates exact native application/comparison/source/detector bindings before exposing results. Missing observations and unexecuted query engines remain insufficient in their native evaluation views; assistance never manufactures execution or defense success.
+
+Normal advancement runs from the existing native detection application's post-commit hook. It publishes the next existing job with a deterministic parent/step UUID; no new scheduler, timer, general workflow engine or mutating GET is added. A process loss, unavailable runner, queue capacity failure, or delayed native receipt can leave a handoff awaiting recovery. Continue is an explicit, idempotent recovery attempt with `submission_id` and the original `context_digest`; it creates a small existing-controller `assistance.continue` callback. `turn.continuation` exposes its job ID, submission ID, state and context digest. Reusing that UUID never reschedules its retained attempt; another explicit recovery can use a new UUID while native capability IDs remain fixed. If the process stopped after durable submission but before attaching the receipt to its parent, an exact POST retry repairs that link without advancing work. The parent retains the newest published continuation receipt: delayed attachment or retry of an older UUID cannot roll it back. The older attempt remains readable by its exact job ID. Repair preserves stopped-parent flags and terminal child states; GET remains read-only. Unattended recovery after process loss is not claimed.
+
+The existing `POST /jobs/{parent_id}/cancel` returns the ordinary parent job response. It atomically marks the turn stopped before signalling native children. Child publication, rule acceptance/application, method acceptance and replay publication consult the same durable stop guard. Already committed artifacts remain readable. Cancellation is displayed as pending until the actual active native operation settles; prior approvals are never inherited by a new replay. Explicit native detection retries retain and validate their original parent lineage. No automatic retry repeats an uncertain planner request or target effects.
+
+Portable connected tests use real jobs, reviews, immutable detector revisions, query evaluation and Simulate replay, plus actual framed broker tests for both API dialects. These do not establish installed UI behavior, real-model quality, benign/held-out coverage, unattended operation or production readiness. The other supported contexts are linked above. Broader defense/deployment operations and additional capability-specific Auto policies remain separate work; the bounded receiver test does not imply general defense orchestration.
+
+`turn.can_start_new_turn` is the explicit replacement permission. Integrity failure does not imply settlement: a retained plan stays non-replaceable until stopped and every native lifecycle is independently verified terminal, even when result validation fails. Invalid result references remain hidden after cancellation. Planner/admission failures without a plan may close normally.
+
+Cancelling an active `assistance.continue` receipt stops its bound parent turn before signalling recovery callbacks. Parent Stop also signals all active owned continuation controls directly, including superseded attempts, without recursive service cancellation. A cancelled preparation cannot publish a later native child; terminal continuation receipts remain immutable.
+
+
+Recovery guidance is separate from immutable selected context. Typed replay runner-readiness refusals produce a fixed safe reason and a native setup link bound to the validated recorded profile. Other preparation errors point to the first unfinished capability: native rule review or method requirements; unresolved context points to the selected source. Raw exception messages, arbitrary details and personal paths are not persisted in this guidance. The context digest and source/provider guards remain unchanged; no runner probe or model request is made while reading or polling the turn. Older receipts without structured guidance retain their normal recovery action.
+
+The closed Assistant badge describes the actual operation state, including Recovery needed, Needs attention and Stopping; a failed status refresh says Status unavailable. Visiting setup preserves the same request and saved revision. Resume explicitly uses the existing durable continuation UUID and repeats full native preparation checks, with fresh Execute approval still separate.
+
+
+Saved-graph run assistance uses `selection.kind = saved_graph`, the exact accepted graph job/application and explicit native `run_intent`. `POST /assistance/run-context` is read-only and binds immutable graph, catalog, static profile/provider definitions and native settings; volatile runner probes are excluded from the context digest. `run.saved_graph_and_inspect` is one validated capability with Assist and Auto support. Off makes no model or child request. Assist retains a `run.assistance.prepare` child for native review; Auto may accept only the retained native policy. The model cannot supply run settings or grant Execute authority.
+
+`GET /assistance/run-jobs/{id}` returns the job, preparation, exact decision, ordinary run job, inspection job, inspection, result and authoritative `review_ready`. `POST /assistance/run-jobs/{id}/review` accepts only `{decision: accept|reject, preparation_digest}`. Repeated decisions resolve their exact committed receipt. Declining creates no run and permits a new turn only once every owned lifecycle is settled. Preparation and decision are also retained in job progress.
+
+The ordinary run has one UUID-derived identity and `_run_submission_request` matching the frozen preparation. `request.assistance_run` binds its exact operation and preparation digest. A pending Execute approval and job are inserted in one existing SQLite transaction. Duplicate UUID lookup precedes readiness/admission; definite pre-publication refusals durably close that UUID with safe typed guidance and retained preflight. No later retry of the same request can become an unexpected execution. Native review preserves the original Execute readiness snapshot through the existing identity and age checks, with a separate fresh ordinary Execute approval still required. Configuration/catalog freshness is checked while the configuration lock and catalog lease are held. Parent Stop guards publication and the atomic transition into running, including concurrent approval release; the normal callback checks active parent and current bindings before native dispatch.
+
+Failed native preparation retains `job.progress.preflight_refusal` with safe code/message, the context digest, and the exact public preflight report plus run-request digest when available. Safe API errors before a report exists retain null preflight/request digest and omit nested diagnostic details. Reopening reads that refusal without creating a preparation, approval or run. Its retention honors the same active-parent and Stop boundary; a published preparation is never relabeled as a preflight failure.
+
+A finalized run links its exact bundle digest and ordinary job result reference before inspection is queued. Runtime Assist continuations follow the existing exact accepted native proposal/replay audit back to the original graph. Results retain the original saved application and separately expose `actual_scenario_digest`, `runtime_modified` and `runtime_proposal_record_ids`; a changed runtime graph is never misrepresented as the originally saved version. Native runtime proposal review and any subsequent fresh Execute approval remain separate native controls.
+
+Inspection uses `run.evidence.inspect` and the fixed enrolled `bluefire_run_evidence_inspection` schema in both provider dialects. It verifies the finalized manifest, observed evidence hashes/IDs, exact source and accepted runtime lineage. Configured data policy supplies field shapes by default; values remain unavailable unless explicitly permitted. Every model finding must reference supplied observed IDs. No observations, too many observations (128 maximum), or simulation remain explicitly insufficient; no-observation results make no provider request. Findings are model interpretations of development evidence, never independent defense validation.
+
+Finalization advances automatically in the existing controller. GET never dispatches. Reopening can recover a missing inspection handoff through the parent continuation endpoint; at most three explicit inspection attempts share the same run. A published inspection recovered after process loss is reused without another model call. Generic native retry is refused for bound preparation/run/inspection children: an uncertain run is never cloned behind its parent's retained identity. A genuinely new experiment requires a new native request and fresh Execute approval. Portable tests cover both dialects, real process loss/reopen, native runtime review, atomic approval/Stop races, exact UUID recovery, schema enrollment and redaction. They do not establish installed execution or model quality.
+
+## Fixed provider purposes
+
+The provider boundary supports these fixed purposes, each with its exact schema,
+through the configured Responses or Chat Completions dialect. Enrollment may
+restrict which purposes a particular provider can use. Model output is validated
+against the selected objects and supplied references; a purpose name is not
+permission to run arbitrary work.
+
+| Purpose | Product use |
+| --- | --- |
+| `bluefire_connection_check` | Explicit provider connection check; separate from the shell's GET-only local service check. |
+| `bluefire_experiment_assistance` | Choose available typed capabilities for the selected context. |
+| `bluefire_ai_graph_draft` | Propose a registered graph for native review. |
+| `bluefire_ai_proposal` | Existing runtime proposal within its native review and approval controls. |
+| `bluefire_detection_source_creation` | Propose initial SQLite/Sigma source from selected observations. |
+| `bluefire_detection_source_revision` | Propose a revision to the selected saved rule. |
+| `bluefire_method_comparison` | Choose an offered compatible method under frozen replay settings. |
+| `bluefire_run_evidence_inspection` | Interpret bounded verified run evidence. |
+| `bluefire_receiver_defense_inspection` | Interpret a verified receiver phase prefix; next-phase advice grants no authority. |
+
+This list documents implementation support, not installed workflow completion or
+live model quality. Portable protocol doubles, framed broker tests and serialized
+UI contracts must not be relabeled as live-provider or full receiver A/B/A proof.

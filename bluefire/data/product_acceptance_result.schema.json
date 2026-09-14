@@ -1,0 +1,833 @@
+{
+  "$defs": {
+    "artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "pattern": "^(?![/\\\\])(?![A-Za-z]:[/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+$",
+          "type": "string"
+        },
+        "role": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes",
+        "role"
+      ],
+      "type": "object"
+    },
+    "gate": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "passed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "failure_reason": {
+                "type": "null"
+              },
+              "missing_assertion_ids": {
+                "maxItems": 0
+              },
+              "proofs": {
+                "minItems": 1
+              },
+              "workflow": {
+                "properties": {
+                  "exit_code": {
+                    "const": 0
+                  },
+                  "receipt_path": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "failed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "failure_reason": {
+                "minLength": 1,
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "covered_assertion_ids": {
+          "items": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "environment_limitations": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "evidence_artifacts": {
+          "items": {
+            "$ref": "#/$defs/artifact"
+          },
+          "minItems": 2,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "failure_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gate_id": {
+          "pattern": "^GATE-(0[1-9]|1[0-2])$",
+          "type": "string"
+        },
+        "hashes": {
+          "additionalProperties": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "minProperties": 2,
+          "type": "object"
+        },
+        "missing_assertion_ids": {
+          "items": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "proof_types": {
+          "items": {
+            "enum": [
+              "dynamic",
+              "structural"
+            ]
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "proofs": {
+          "items": {
+            "$ref": "#/$defs/proof"
+          },
+          "type": "array"
+        },
+        "required": {
+          "const": true
+        },
+        "required_assertion_ids": {
+          "items": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "run_ids": {
+          "items": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed"
+          ]
+        },
+        "test_ids": {
+          "items": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "timestamp": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "workflow": {
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "items": {
+                "pattern": "^(?![/\\\\])(?![A-Za-z]:[/\\\\]).+$",
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "command_sha256": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "duration_ms": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "exit_code": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "finished_at": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "receipt_path": {
+              "pattern": "^(?![/\\\\])(?![A-Za-z]:[/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "started_at": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "stderr_path": {
+              "pattern": "^(?![/\\\\])(?![A-Za-z]:[/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+$",
+              "type": "string"
+            },
+            "stdout_path": {
+              "pattern": "^(?![/\\\\])(?![A-Za-z]:[/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+$",
+              "type": "string"
+            },
+            "working_directory": {
+              "const": "."
+            }
+          },
+          "required": [
+            "command",
+            "command_sha256",
+            "working_directory",
+            "exit_code",
+            "duration_ms",
+            "started_at",
+            "finished_at",
+            "stdout_path",
+            "stderr_path",
+            "receipt_path"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "gate_id",
+        "title",
+        "required",
+        "status",
+        "workflow",
+        "evidence_artifacts",
+        "run_ids",
+        "hashes",
+        "test_ids",
+        "required_assertion_ids",
+        "covered_assertion_ids",
+        "missing_assertion_ids",
+        "proof_types",
+        "proofs",
+        "environment_limitations",
+        "timestamp",
+        "failure_reason"
+      ],
+      "type": "object"
+    },
+    "proof": {
+      "additionalProperties": false,
+      "properties": {
+        "assertion_ids": {
+          "items": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$",
+            "type": "string"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "environment_limitations": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "evidence_artifacts": {
+          "items": {
+            "pattern": "^(?![/\\\\])(?![A-Za-z]:[/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "kind": {
+          "enum": [
+            "dynamic",
+            "structural"
+          ]
+        },
+        "run_bundles": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "manifest_sha256": {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "path": {
+                "pattern": "^(?![/\\\\])(?![A-Za-z]:[/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+$",
+                "type": "string"
+              },
+              "run_id": {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "run_id",
+              "path",
+              "manifest_sha256"
+            ],
+            "type": "object"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "run_ids": {
+          "items": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "status": {
+          "const": "passed"
+        },
+        "test_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "status",
+        "test_id",
+        "assertion_ids",
+        "evidence_artifacts",
+        "run_ids",
+        "run_bundles",
+        "environment_limitations"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://bluefire.local/schemas/product-acceptance-result.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "passed"
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "properties": {
+            "gates": {
+              "contains": {
+                "properties": {
+                  "status": {
+                    "const": "failed"
+                  }
+                },
+                "required": [
+                  "status"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": [
+            "gates"
+          ]
+        },
+        "properties": {
+          "failure_reason": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "failed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "failure_reason": {
+            "minLength": 1,
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "release": {
+            "const": true
+          }
+        },
+        "required": [
+          "release"
+        ]
+      },
+      "then": {
+        "properties": {
+          "repository": {
+            "properties": {
+              "clean_before": {
+                "const": true
+              },
+              "commit": {
+                "pattern": "^[0-9a-f]{40}$",
+                "type": "string"
+              },
+              "tree": {
+                "pattern": "^[0-9a-f]{40}$",
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "release": {
+            "const": true
+          },
+          "status": {
+            "const": "passed"
+          }
+        },
+        "required": [
+          "release",
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "repository": {
+            "properties": {
+              "clean_after": {
+                "const": true
+              },
+              "commit_after": {
+                "pattern": "^[0-9a-f]{40}$",
+                "type": "string"
+              },
+              "tree_after": {
+                "pattern": "^[0-9a-f]{40}$",
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "acceptance_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$",
+      "type": "string"
+    },
+    "contract_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "contract_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "environment": {
+      "additionalProperties": false,
+      "properties": {
+        "executable": {
+          "pattern": "^[^/\\\\]+$",
+          "type": "string"
+        },
+        "limitations": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "platform": {
+          "type": "string"
+        },
+        "python": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "platform",
+        "python",
+        "executable",
+        "limitations"
+      ],
+      "type": "object"
+    },
+    "evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_file_sha256": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "contract_path": {
+          "pattern": "^(?![/\\\\])(?![A-Za-z]:[/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+$",
+          "type": "string"
+        },
+        "postflight_file_sha256": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "postflight_path": {
+          "const": "postflight.json"
+        }
+      },
+      "required": [
+        "contract_path",
+        "contract_file_sha256",
+        "postflight_path",
+        "postflight_file_sha256"
+      ],
+      "type": "object"
+    },
+    "failure_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "finished_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "gates": {
+      "items": false,
+      "maxItems": 12,
+      "minItems": 12,
+      "prefixItems": [
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/gate"
+            },
+            {
+              "properties": {
+                "gate_id": {
+                  "const": "GATE-01"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/gate"
+            },
+            {
+              "properties": {
+                "gate_id": {
+                  "const": "GATE-02"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/gate"
+            },
+            {
+              "properties": {
+                "gate_id": {
+                  "const": "GATE-03"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/gate"
+            },
+            {
+              "properties": {
+                "gate_id": {
+                  "const": "GATE-04"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/gate"
+            },
+            {
+              "properties": {
+                "gate_id": {
+                  "const": "GATE-05"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/gate"
+            },
+            {
+              "properties": {
+                "gate_id": {
+                  "const": "GATE-06"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/gate"
+            },
+            {
+              "properties": {
+                "gate_id": {
+                  "const": "GATE-07"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/gate"
+            },
+            {
+              "properties": {
+                "gate_id": {
+                  "const": "GATE-08"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/gate"
+            },
+            {
+              "properties": {
+                "gate_id": {
+                  "const": "GATE-09"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/gate"
+            },
+            {
+              "properties": {
+                "gate_id": {
+                  "const": "GATE-10"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/gate"
+            },
+            {
+              "properties": {
+                "gate_id": {
+                  "const": "GATE-11"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/gate"
+            },
+            {
+              "properties": {
+                "gate_id": {
+                  "const": "GATE-12"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "type": "array"
+    },
+    "release": {
+      "type": "boolean"
+    },
+    "repository": {
+      "additionalProperties": false,
+      "properties": {
+        "clean_after": {
+          "type": "boolean"
+        },
+        "clean_before": {
+          "type": "boolean"
+        },
+        "commit": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit_after": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tree": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tree_after": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "commit",
+        "tree",
+        "commit_after",
+        "tree_after",
+        "clean_before",
+        "clean_after"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "bluefire.product-acceptance-result.v1"
+    },
+    "started_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "passed",
+        "failed"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "acceptance_id",
+    "contract_id",
+    "contract_sha256",
+    "release",
+    "status",
+    "started_at",
+    "finished_at",
+    "repository",
+    "environment",
+    "evidence",
+    "gates",
+    "failure_reason"
+  ],
+  "title": "BlueFire Nexus product acceptance result",
+  "type": "object"
+}

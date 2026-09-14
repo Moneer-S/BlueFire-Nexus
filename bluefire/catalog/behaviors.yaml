@@ -1,0 +1,707 @@
+schema_version: bluefire.behavior-catalog.v1
+items:
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.fixture.create.v1
+    title: Create sample records
+    purpose: Create 1 to 100 synthetic JSONL records in the experiment workspace.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.fixture, filesystem.write]
+    inputs: []
+    outputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+        description: Opaque runner-owned workspace reference.
+    parameters:
+      - name: record_count
+        type: integer
+        default: 6
+        minimum: 1
+        maximum: 100
+        description: Number of exact synthetic JSONL records to create at fixtures/input.jsonl.
+    simulation_id: simulation.sandbox.fixture.create.v1
+    action_ids: [sandbox.fixture.create.v1]
+    telemetry: [sandbox.fixture.created]
+    detection_hints: [Fixture creation is synthetic and should remain labeled synthetic.]
+    provenance: &authored
+      source: BlueFire Nexus canonical sandbox design
+      reference: canonical neutral behavior catalog
+      license: MIT
+      derived: false
+      notes: New control-plane metadata; no operational implementation is embedded.
+    limitations: [Represents only deterministic synthetic fixture data.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.fixture.transform.v1
+    title: Prepare sample records
+    purpose: Validate the sample records and optionally redact their values before collection.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.fixture, filesystem.read, filesystem.write]
+    inputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+    outputs:
+      - name: fixture
+        type: artifact.sandbox.fixture.v1
+    parameters:
+      - name: redact_values
+        type: boolean
+        default: true
+        description: When true, replace every accepted fixture value with the fixed public synthetic-redacted placeholder.
+    simulation_id: simulation.sandbox.fixture.transform.v1
+    action_ids: [sandbox.fixture.transform.v1]
+    telemetry: [sandbox.fixture.transformed]
+    detection_hints: [Transformation evidence should include the source artifact hash.]
+    provenance: *authored
+    limitations: [Only runner-owned fixture artifacts are eligible.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.discovery.list.v1
+    title: Inspect sample file
+    purpose: Describe the selected sample file without reading its contents or listing neighboring files.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: [T1083]
+    capabilities: [sandbox.discovery, filesystem.read]
+    inputs:
+      - name: fixture
+        type: artifact.sandbox.fixture.v1
+    outputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    parameters: []
+    simulation_id: simulation.sandbox.discovery.list.v1
+    action_ids: [sandbox.discovery.list.v1]
+    telemetry: [sandbox.discovery.listed]
+    detection_hints: [Evidence contains one metadata record for the exact bound fixture; no sibling or content enumeration occurs.]
+    provenance: *authored
+    limitations: [Does not enumerate sibling paths, the host filesystem, or fixture contents.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.discovery.metadata.v1
+    title: Inspect sample file metadata
+    purpose: Read the selected sample file metadata for collection.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: [T1083]
+    capabilities: [sandbox.discovery, filesystem.read]
+    inputs:
+      - name: fixture
+        type: artifact.sandbox.fixture.v1
+    outputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    parameters: []
+    simulation_id: simulation.sandbox.discovery.metadata.v1
+    action_ids: [sandbox.discovery.metadata.v1]
+    telemetry: [sandbox.discovery.metadata_inspected]
+    detection_hints: [Evidence contains one metadata record for the exact bound fixture without opening or hashing its contents.]
+    provenance: *authored
+    limitations: [Compatible exact-file alternative to listing; it does not inspect siblings, host metadata, or fixture contents.]
+
+  - schema_version: bluefire.behavior.v1
+    id: endpoint.discovery.system.v1
+    title: Inspect operating system
+    purpose: Report the runner operating system and processor architecture.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: [T1082]
+    capabilities: [endpoint.discovery, system.discovery]
+    inputs: []
+    outputs:
+      - name: system
+        type: artifact.endpoint.system-profile.v1
+    parameters: []
+    simulation_id: simulation.endpoint.discovery.system.v1
+    action_ids: [endpoint.discovery.system.v1]
+    telemetry: [endpoint.discovery.system_observed]
+    detection_hints: [System discovery is bounded to non-sensitive platform identity fields.]
+    provenance:
+      source: Reviewed MITRE ATT&CK Enterprise 19.2 T1082 metadata
+      reference: https://github.com/mitre/cti/blob/8543c5b05bd9bbcace9fc37f30bba96b675b6f33/enterprise-attack/attack-pattern/attack-pattern--354a7f88-63fb-41b5-a801-ce3b377b36f1.json
+      license: LicenseRef-MITRE-ATTACK-2026
+      derived: false
+      notes: The reviewed neutral T1082 projection informs this mapping; descriptions, procedures, commands, and upstream executable content are neither copied nor executed.
+    limitations: [Does not collect account, network, or host file content.]
+
+  - schema_version: bluefire.behavior.v1
+    id: endpoint.discovery.processes.v1
+    title: List running processes
+    purpose: Return process IDs and names from the runner, up to the selected record limit.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: [T1057]
+    capabilities: [endpoint.discovery, process.discovery, process.spawn]
+    inputs: []
+    outputs:
+      - name: processes
+        type: artifact.endpoint.process-records.v1
+    parameters:
+      - name: record_limit
+        type: integer
+        default: 25
+        minimum: 1
+        maximum: 100
+        description: Maximum number of process identity records returned.
+    simulation_id: simulation.endpoint.discovery.processes.v1
+    action_ids: [endpoint.discovery.processes.v1]
+    telemetry: [endpoint.discovery.processes_observed]
+    detection_hints: [Process discovery uses only a compiled API or fixed reviewed command vector.]
+    provenance: *authored
+    limitations: [Does not accept an executable or caller-authored arguments.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.discovery.recursive.v1
+    title: List sample files
+    purpose: List files and directories in the experiment workspace within the selected depth and record limits.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: [T1083]
+    capabilities: [sandbox.discovery, filesystem.read]
+    inputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+    outputs:
+      - name: records
+        type: artifact.sandbox.filesystem.record.v1
+        multiple: true
+    parameters:
+      - name: record_limit
+        type: integer
+        default: 25
+        minimum: 1
+        maximum: 100
+        description: Maximum number of filesystem records returned.
+      - name: max_depth
+        type: integer
+        default: 3
+        minimum: 1
+        maximum: 16
+        description: Maximum directory depth traversed below the bound workspace.
+    simulation_id: simulation.sandbox.discovery.recursive.v1
+    action_ids: [sandbox.discovery.recursive.v1]
+    telemetry: [sandbox.discovery.recursive_completed]
+    detection_hints: [Recursive enumeration should retain the bound root and truncation signal.]
+    provenance: *authored
+    limitations: [Symlinks are reported as blocked and are never traversed.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.archive.tar.v1
+    title: Archive sample files (native TAR)
+    purpose: Write selected workspace files to an uncompressed TAR archive using the built-in runner.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [windows, linux, macos]
+    # Native archive creation uses no external utility; T1560.001 is reserved for gzip.
+    techniques: [T1560]
+    capabilities: [sandbox.archive, filesystem.read, filesystem.write]
+    inputs:
+      - name: records
+        type: artifact.sandbox.filesystem.record.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.archive.v1
+    parameters: []
+    simulation_id: simulation.sandbox.archive.tar.v1
+    action_ids: [sandbox.archive.tar.v1]
+    telemetry: [sandbox.archive.created]
+    detection_hints: [Archive evidence should link its digest to every selected input record.]
+    provenance: *authored
+    limitations: [Only regular files inside runner-owned scope can be archived.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.collection.stage.v1
+    title: Stage sample records (JSON or JSONL)
+    purpose: Write the selected sample records to a JSON or JSONL bundle in the experiment workspace.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [windows, linux, macos]
+    techniques: [T1074.001]
+    capabilities: [sandbox.collection, filesystem.read, filesystem.write]
+    inputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    parameters:
+      - name: bundle_format
+        type: string
+        default: jsonl
+        enum: [jsonl, json]
+        description: Deterministic JSONL or JSON representation for the single validated fixture bundle.
+    simulation_id: simulation.sandbox.collection.stage.v1
+    action_ids: [sandbox.collection.stage.v1]
+    telemetry: [sandbox.collection.staged]
+    detection_hints: [Staging should link each output hash to its discovery-record parents.]
+    provenance: *authored
+    limitations: [Accepts exactly one bound regular-file fixture record and never leaves a partial bundle after input failure.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.collection.records.v1
+    title: Collect selected records (native JSONL)
+    purpose: Validate the selected transformed sample records and write them as a JSONL collection.
+    execution_state: action
+    safety_tier: controlled
+    capabilities: [sandbox.collection, filesystem.read, filesystem.write]
+    platforms: [windows, linux, macos]
+    techniques: [T1074.001]
+    inputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.collection.v1
+    parameters:
+      - name: stage_variant
+        type: string
+        default: primary
+        enum: [primary, heldout]
+        description: Choose one of two fixed runner-owned staging directories.
+      - name: max_collection_bytes
+        type: integer
+        default: 1048576
+        minimum: 1
+        maximum: 1048576
+        description: Maximum output file size in bytes. All selected records must fit; oversized collections are refused before writing. Input and profile limits remain in force.
+    simulation_id: simulation.sandbox.collection.records.v1
+    action_ids: [sandbox.collection.records.v1]
+    telemetry: [sandbox.collection.material_staged]
+    detection_hints: [Independently inspect staged bytes to distinguish retained and redacted public lab values.]
+    provenance: *authored
+    limitations: [Exactly one digest-bound transformed fixture is collected within 1 MiB; record counts and retained values require independent semantic observation.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.collection.archive.v1
+    title: Archive selected records (native TAR)
+    purpose: Preserve the selected transformed sample file inside one uncompressed TAR archive.
+    execution_state: action
+    safety_tier: controlled
+    capabilities: [sandbox.archive, filesystem.read, filesystem.write]
+    platforms: [windows, linux, macos]
+    techniques: [T1074.001]
+    inputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.collection.v1
+    parameters:
+      - name: stage_variant
+        type: string
+        default: primary
+        enum: [primary, heldout]
+        description: Choose one of two fixed runner-owned staging directories.
+      - name: max_collection_bytes
+        type: integer
+        default: 1048576
+        minimum: 1
+        maximum: 1048576
+        description: Maximum output file size in bytes. All selected records must fit; oversized collections are refused before writing. Input and profile limits remain in force.
+    simulation_id: simulation.sandbox.collection.archive.v1
+    action_ids: [sandbox.collection.archive.v1]
+    telemetry: [sandbox.collection.material_staged]
+    detection_hints: [Independently inspect staged bytes to distinguish retained and redacted public lab values.]
+    provenance: *authored
+    limitations: [Exactly one digest-bound transformed fixture is collected within 1 MiB; record counts and retained values require independent semantic observation.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.collection.atomic-gzip.v1
+    title: Compress selected records (Atomic gzip)
+    purpose: Compress the selected sample file with the installed Linux gzip utility using the reviewed Atomic Red Team adaptation.
+    execution_state: action
+    safety_tier: controlled
+    capabilities: [sandbox.archive, filesystem.read, filesystem.write, process.spawn]
+    platforms: [linux]
+    techniques: [T1560.001]
+    inputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.collection.v1
+    parameters:
+      - name: stage_variant
+        type: string
+        default: primary
+        enum: [primary, heldout]
+        description: Choose one of two fixed runner-owned staging directories.
+      - name: max_collection_bytes
+        type: integer
+        default: 1048576
+        minimum: 1
+        maximum: 1048576
+        description: Maximum compressed file size in bytes. Gzip runs before this size is checked; an oversized result is not written to the staging folder. Input and profile limits remain in force.
+    simulation_id: simulation.sandbox.collection.atomic-gzip.v1
+    action_ids: [sandbox.collection.atomic-gzip.v1]
+    telemetry: [sandbox.collection.material_staged]
+    detection_hints: [Independently inspect staged bytes to distinguish retained and redacted public lab values.]
+    provenance:
+      source: Atomic Red Team single-file gzip method, constrained BlueFire adaptation
+      reference: https://github.com/redcanaryco/atomic-red-team/blob/388942adbd9641f4dfdcf079d7efe9a75ec0ac43/atomics/T1560.001/T1560.001.yaml
+      license: MIT
+      derived: true
+      notes: Adapted test cde3c2af-3485-49eb-9c1f-0ed60e9cc0af; fixed system gzip consumes verified synthetic bytes on stdin, without the upstream shell, default input, fallback file creation or shell cleanup.
+    limitations: [Requires a protected installed Linux gzip ELF; no automatic installation. One digest-bound fixture and bounded compressed output; receipt-owned cleanup and independent decoded semantic observation.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.network.loopback.v1
+    title: Send to the lab receiver
+    purpose: Send the sample bundle to the local receiver at 127.0.0.1 and report its response.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.network, filesystem.read, network.loopback]
+    inputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    outputs:
+      - name: receipt
+        type: artifact.sandbox.network.receipt.v1
+    parameters:
+      - name: port
+        type: integer
+        default: 4317
+        minimum: 1024
+        maximum: 65535
+        description: Loopback sink port selected by the reviewed runner profile.
+    simulation_id: simulation.sandbox.network.loopback.v1
+    action_ids: [sandbox.network.loopback.v1]
+    telemetry: [sandbox.network.loopback_attempted]
+    detection_hints: [A policy refusal is control-blocked evidence, not executed evidence.]
+    provenance: *authored
+    limitations: [The action contract permits loopback scope only.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.export.local.v1
+    title: Copy sample bundle locally
+    purpose: Create a temporary copy in the experiment workspace; cleanup removes it after the run.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.export, filesystem.read, filesystem.write, export.local]
+    inputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    outputs:
+      - name: receipt
+        type: artifact.sandbox.export.receipt.v1
+    parameters:
+      - name: retention_label
+        type: string
+        default: ephemeral
+        enum: [ephemeral, review]
+        description: Selects the temporary ephemeral or review path; it is a policy label, not a preservation promise or caller path.
+    simulation_id: simulation.sandbox.export.local.v1
+    action_ids: [sandbox.export.local.v1]
+    telemetry: [sandbox.export.local_completed]
+    detection_hints: [Local-copy evidence should record the temporary policy label, bundle hash, and cleanup receipt.]
+    provenance: *authored
+    limitations: [The runner chooses the fixed local path; neither label survives normal cleanup and no caller path is accepted.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.execution.native-canary.v1
+    title: Check native computation
+    purpose: Run a repeatable numeric calculation inside the runner and return its result.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [native.execution]
+    inputs: []
+    outputs:
+      - name: result
+        type: artifact.sandbox.execution.canary.v1
+        description: Bounded numeric canary result and requested round count.
+    parameters:
+      - name: rounds
+        type: integer
+        default: 256
+        minimum: 1
+        maximum: 4096
+        description: Number of deterministic in-process canary rounds; it never becomes a command or process argument.
+    simulation_id: simulation.sandbox.execution.native-canary.v1
+    action_ids: [sandbox.execution.native-canary.v1]
+    telemetry: [sandbox.execution.native_canary_completed]
+    detection_hints: [Treat this as proof of one bounded compiled action path, not general command or program execution.]
+    provenance: *authored
+    limitations: [Performs only deterministic in-process computation and has no process, filesystem, or network effect.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.execution.process-tree-cancellation-witness.v1
+    title: Test process cancellation
+    purpose: Start the packaged runner test process tree on Windows to verify cooperative and forced cancellation.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows]
+    techniques: []
+    capabilities: [native.execution, filesystem.read, filesystem.write, process.spawn]
+    inputs: []
+    outputs: []
+    parameters: []
+    simulation_id: simulation.sandbox.execution.process-tree-cancellation-witness.v1
+    action_ids: [sandbox.execution.process-tree-cancellation-witness.v1]
+    telemetry: [sandbox.execution.process_tree_cancellation_witnessed]
+    detection_hints: [Treat success as a control-plane simulation only; dynamic proof requires a packaged Windows runner, nonce acknowledgement, and identity-bound absence probes.]
+    provenance: *authored
+    limitations: [Windows-only cancellation witness; it accepts no executable, command, path, script, or caller-selected process input.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.identity-material.seed.v1
+    title: Create public canary file
+    purpose: Write a fixed public sample document in the experiment workspace for the inspection test.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.identity-material.seed, filesystem.write]
+    inputs: []
+    outputs:
+      - name: identity_material
+        type: artifact.sandbox.identity-material.v1
+        description: Exact fixed-path reference to the public identity-material canary.
+    parameters: []
+    simulation_id: simulation.sandbox.identity-material.seed.v1
+    action_ids: [sandbox.identity-material.seed.v1]
+    telemetry: [sandbox.identity_material.seeded]
+    detection_hints: [Evidence must label the document public synthetic canary material and retain its fixed path and digest.]
+    provenance: *authored
+    limitations: [Creates only a public synthetic canary; it does not access, derive, store, or represent a credential.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.identity-material.inspect.v1
+    title: Inspect public canary file
+    purpose: Read the selected public sample document and report its checksum and field count.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.identity-material.inspect, filesystem.read]
+    inputs:
+      - name: identity_material
+        type: artifact.sandbox.identity-material.v1
+    outputs:
+      - name: inspection
+        type: artifact.sandbox.identity-material.inspection.v1
+        description: Digest and bounded field count for the exact public canary.
+    parameters: []
+    simulation_id: simulation.sandbox.identity-material.inspect.v1
+    action_ids: [sandbox.identity-material.inspect.v1]
+    telemetry: [sandbox.identity_material.inspected]
+    detection_hints: [Inspection evidence should contain only the exact artifact identity, digest, size, and bounded field count.]
+    provenance: *authored
+    limitations: [Reads only the seeded public canary and never returns its values or enumerates adjacent files.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.credential.peer-challenge.v1
+    title: Test receiver authentication
+    purpose: Prove possession of a one-task capability while sending the sample bundle to the local receiver.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.peer, filesystem.read, network.loopback]
+    inputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    outputs:
+      - name: receipt
+        type: artifact.sandbox.peer-handoff.receipt.v2
+        description: Authenticated lab receipt containing an opaque credential handle, challenge result, peer handles, and bounded process/lifecycle evidence.
+    parameters:
+      - name: port
+        type: integer
+        default: 4317
+        minimum: 1024
+        maximum: 65535
+        description: Port on the runner-enforced literal 127.0.0.1 destination; no hostname or address is accepted.
+    simulation_id: simulation.sandbox.credential.peer-challenge.v1
+    action_ids: [sandbox.peer.handoff.v1]
+    telemetry: [sandbox.credential.peer_challenge_attempted]
+    detection_hints: [A successful Execute result must prove the one-task challenge and retain only an opaque handle; Simulate never proves possession.]
+    provenance: *authored
+    limitations: [Uses only a managed high-entropy capability derived for one approved task and one ephemeral lab receiver; it never reads user, host, browser, cloud, or adjacent credentials.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.peer.handoff.v1
+    title: Send to the authenticated lab receiver
+    purpose: Send the sample bundle to a one-shot receiver on 127.0.0.1 using a managed one-task capability.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.peer, filesystem.read, network.loopback]
+    inputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    outputs:
+      - name: receipt
+        type: artifact.sandbox.peer-handoff.receipt.v2
+        description: Authenticated handoff receipt with opaque authorization handles and bounded process/lifecycle evidence for the exact staged bundle.
+    parameters:
+      - name: port
+        type: integer
+        default: 4317
+        minimum: 1024
+        maximum: 65535
+        description: Port on the runner-enforced literal 127.0.0.1 destination; no hostname or address is accepted.
+    simulation_id: simulation.sandbox.peer.handoff.v1
+    action_ids: [sandbox.peer.handoff.v1]
+    telemetry: [sandbox.peer.handoff_attempted]
+    detection_hints: [A successful lab handoff must bind the exact artifact, opaque one-task credential handle, distinct runner and receiver process identities, one-shot memory-only lifecycle, and authenticated receiver acknowledgement; a blocked-network profile refusal is never a successful handoff.]
+    provenance: *authored
+    limitations: [This tests authenticated same-host transfer between disposable lab roles; it never compromises or authorizes a remote host, accepts only a typed staged bundle, and exposes no raw credential value.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.observability.variant.v1
+    title: Create a sample encoding variation
+    purpose: Copy the sample bundle as original bytes or reversible hexadecimal chunks for comparison.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.observability.variant, filesystem.read, filesystem.write]
+    inputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    outputs:
+      - name: variant
+        type: artifact.sandbox.observability.variant.v1
+        description: Fixed-path reversible representation whose metadata identifies canonical or chunked_hex and binds the exact staged bundle.
+    parameters:
+      - name: representation
+        type: string
+        default: canonical
+        enum: [canonical, chunked_hex]
+        description: Reviewed reversible representation for side-by-side observability comparison.
+    simulation_id: simulation.sandbox.observability.variant.v1
+    action_ids: [sandbox.observability.variant.v1]
+    telemetry: [sandbox.observability.variant_created]
+    detection_hints: [Comparison evidence should bind the source and variant digests and the exact reversible representation.]
+    provenance: *authored
+    limitations: [The representation is transparent and reversible; no defense bypass, evasion, or control-impairment claim is made.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.cleanup.v1
+    title: Clean up experiment files
+    purpose: Remove files created by the run and report which removals were verified.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.cleanup, filesystem.write, cleanup]
+    inputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+    outputs:
+      - name: receipt
+        type: artifact.sandbox.cleanup.receipt.v1
+    parameters:
+      - name: verify_removal
+        type: boolean
+        default: true
+        enum: [true]
+        description: Require the runner to verify receipt and path removal and report authoritative verification counters.
+    simulation_id: simulation.sandbox.cleanup.v1
+    action_ids: [sandbox.cleanup.v1]
+    telemetry: [sandbox.cleanup.completed]
+    detection_hints: [Cleanup evidence should include the authoritative requested, removed, absent, retained, error, and verification fields.]
+    provenance: *authored
+    limitations: [Cannot name arbitrary paths; a public-path replacement is left untouched and makes cleanup fail visibly.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.restricted.persistence-marker.v1
+    title: Test restricted approval and cleanup
+    purpose: Write a non-executable workspace marker to test restricted approval, observation and cleanup.
+    execution_state: action
+    safety_tier: restricted
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.restricted, filesystem.write]
+    inputs: []
+    outputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+        description: Opaque runner-owned restricted canary workspace reference.
+      - name: marker
+        type: artifact.sandbox.restricted-marker.v1
+        description: Non-executable marker for the approval and cleanup test.
+    parameters:
+      - name: label
+        type: string
+        default: persistence_detection_canary
+        enum: [persistence_detection_canary, control_validation]
+        description: Reviewed semantic label; it never becomes a path, command, or host persistence setting.
+    simulation_id: simulation.sandbox.restricted.persistence-marker.v1
+    action_ids: [sandbox.restricted.persistence-marker.v1]
+    telemetry: [sandbox.restricted.persistence_marker_created]
+    detection_hints: [Correlate the fixed marker path with its approval, runner receipt, independent collector evidence, and cleanup outcome.]
+    provenance: *authored
+    limitations: [Does not create, alter, or test operating-system persistence; it writes only restricted/persistence-marker.json inside the bound runner workspace.]
+
+  - &metadata_research
+    schema_version: bluefire.behavior.v1
+    id: research.credential.access.v1
+    title: Credential-access detection research
+    purpose: Describe credential-access observables for hypothesis and fixture design.
+    execution_state: metadata_only
+    safety_tier: restricted
+    platforms: [windows, linux, macos]
+    techniques: [T1003]
+    capabilities: [research.metadata]
+    inputs: []
+    outputs:
+      - name: hypothesis
+        type: artifact.research.hypothesis.v1
+    parameters:
+      - name: evidence_basis
+        type: string
+        required: true
+        enum: [public_documentation, synthetic_fixture]
+    action_ids: []
+    telemetry: [research.hypothesis.created]
+    detection_hints: [Treat the output as a hypothesis until fixture or observed evidence exists.]
+    provenance: &legacy_metadata
+      source: BlueFire Nexus existing neutral profile metadata
+      reference: src/core/modules/impl/standard_modules.py profile mappings
+      license: MIT
+      derived: true
+      notes: Only tactic mapping and observable concepts were retained; no implementation was copied.
+    limitations: [Metadata only; unavailable for execution or simulation dispatch.]
+
+  - <<: *metadata_research
+    id: research.persistence.change.v1
+    title: Persistence-change detection research
+    purpose: Describe persistence-change observables for hypothesis and fixture design.
+    techniques: [T1547]
+
+  - <<: *metadata_research
+    id: research.lateral.movement.v1
+    title: Lateral-movement detection research
+    purpose: Describe lateral-movement observables for hypothesis and fixture design.
+    techniques: [T1021]
+
+  - <<: *metadata_research
+    id: research.defense.evasion.v1
+    title: Defense-evasion detection research
+    purpose: Describe defense-evasion observables for hypothesis and fixture design.
+    techniques: [T1562.001]

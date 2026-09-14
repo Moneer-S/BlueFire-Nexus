@@ -1,0 +1,131 @@
+"""Contextual assistance preserves ordinary browser/session and verb boundaries."""
+
+import json
+
+import pytest
+
+from tests_platform.test_api import JOB_ID, RUN_ID, request, running_server
+
+CANDIDATE = "detection-" + "a" * 20
+
+
+@pytest.mark.parametrize(
+    "method,path,expected_call,status",
+    [
+        (
+            "GET",
+            f"/assistance/context?run_id={RUN_ID}&candidate_id={CANDIDATE}",
+            ("assistance_context", RUN_ID, CANDIDATE),
+            200,
+        ),
+        ("POST", "/assistance/turns", ("submit_assistance_turn", {}), 202),
+        ("POST", "/assistance/receiver-context", ("assistance_receiver_context", {}), 200),
+        ("POST", "/assistance/graph-context", ("assistance_graph_context", {}), 200),
+        ("GET", "/assistance/graph-context", ("assistance_graph_context", None), 200),
+        ("GET", "/assistance/graph-context?", ("assistance_graph_context", None), 200),
+        ("GET", f"/ai/graph-jobs/{JOB_ID}", ("graph_ai_job", JOB_ID), 200),
+        ("POST", f"/ai/graph-jobs/{JOB_ID}/review", ("review_graph_ai", JOB_ID, {}), 200),
+        ("POST", f"/ai/graph-jobs/{JOB_ID}/validate", ("validate_graph_ai", JOB_ID, {}), 200),
+        ("GET", f"/assistance/turns/{JOB_ID}", ("assistance_turn", JOB_ID), 200),
+        (
+            "POST",
+            f"/assistance/turns/{JOB_ID}/continue",
+            ("continue_assistance_turn", JOB_ID, {}),
+            202,
+        ),
+    ],
+)
+def test_dispatch(method, path, expected_call, status):
+    with running_server() as (server, service):
+        actual, _, body = request(
+            server, method, "/api/v1" + path, body={} if method == "POST" else None
+        )
+        assert actual == status and isinstance(json.loads(body), dict)
+        assert service.calls == [expected_call]
+
+
+@pytest.mark.parametrize(
+    "violation,status",
+    [("method", 405), ("query", 400), ("session", 401), ("origin", 403), ("body", 400)],
+)
+def test_turn_submission_guards(violation, status):
+    with running_server() as (server, service):
+        actual, _, _ = request(
+            server,
+            "GET" if violation == "method" else "POST",
+            "/api/v1/assistance/turns" + ("?autonomy=auto" if violation == "query" else ""),
+            body=None if violation == "method" else [] if violation == "body" else {},
+            authenticated=violation != "session",
+            origin="https://untrusted.example" if violation == "origin" else "same",
+        )
+        assert actual == status and not service.calls
+
+
+@pytest.mark.parametrize(
+    "violation,status",
+    [("method", 405), ("query", 400), ("session", 401), ("origin", 403), ("body", 400)],
+)
+def test_receiver_context_keeps_native_http_guards(violation, status):
+    with running_server() as (server, service):
+        actual, _, _ = request(
+            server,
+            "GET" if violation == "method" else "POST",
+            "/api/v1/assistance/receiver-context"
+            + ("?prepare=true" if violation == "query" else ""),
+            body=None if violation == "method" else [] if violation == "body" else {},
+            authenticated=violation != "session",
+            origin="https://untrusted.example" if violation == "origin" else "same",
+        )
+        assert actual == status and not service.calls
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        f"run_id={RUN_ID}",
+        f"run_id={RUN_ID}&run_id={RUN_ID}",
+        f"run_id={RUN_ID}&candidate_id={CANDIDATE}&extra=true",
+        f"run_id=bad&candidate_id={CANDIDATE}",
+    ],
+)
+def test_context_requires_exact_selected_objects(query):
+    with running_server() as (server, service):
+        actual, _, _ = request(server, "GET", "/api/v1/assistance/context?" + query)
+        assert actual == 400 and not service.calls
+
+
+@pytest.mark.parametrize(
+    "query", ["&", "=", "scenario_id=", "scenario_id=a&version=1&digest=x&extra=1"]
+)
+def test_graph_context_refuses_nonempty_malformed_selection(query):
+    with running_server() as (server, service):
+        actual, _, body = request(server, "GET", "/api/v1/assistance/graph-context?" + query)
+        assert actual == 400
+        assert json.loads(body)["error"]["code"] == "graph_context_invalid"
+        assert not service.calls
+
+
+@pytest.mark.parametrize(
+    "violation,status",
+    [("query", 400), ("session", 401), ("origin", 403), ("body", 400), ("size", 413)],
+)
+def test_graph_edit_context_keeps_native_http_guards(violation, status):
+    with running_server() as (server, service):
+        actual, _, _ = request(
+            server,
+            "POST",
+            "/api/v1/assistance/graph-context"
+            + ("?scenario_id=other" if violation == "query" else ""),
+            body=(
+                []
+                if violation == "body"
+                else (
+                    {"oversized": "x" * 1024}
+                    if violation == "size"
+                    else {"kind": "graph", "base_scenario": None}
+                )
+            ),
+            authenticated=violation != "session",
+            origin="https://untrusted.example" if violation == "origin" else "same",
+        )
+        assert actual == status and not service.calls
