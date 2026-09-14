@@ -1200,23 +1200,45 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         path = self._request_path()
         if path is None or not self._validate_host():
             return
+        # No route reads a PUT, PATCH, DELETE or OPTIONS body, so one that arrives
+        # is never consumed. Left on a reused HTTP/1.1 connection it would be
+        # parsed as the next request line, so end the connection instead. This is
+        # set before any response so every exit below, including the ones a route
+        # helper answers itself, stops reusing the connection.
+        unread_body = self._request_carries_body()
+        if unread_body:
+            self.close_connection = True
         if self._is_api_path(path) and not self._require_browser_session(unread_body=True):
             return
         bundle_id = self._routes._run_bundle_id(path)
         if bundle_id is not None:
             if bundle_id:
-                self._method_not_allowed("GET")
+                self._method_not_allowed("GET", unread_body=unread_body)
             return
         if path == _REVIEWED_T1082_INTAKE_ROUTE:
             if self._routes._management_query_free():
-                self._method_not_allowed("POST")
+                self._method_not_allowed("POST", unread_body=unread_body)
             return
         action_package_allow = self._routes._action_package_route_allow(path)
         if action_package_allow is not None:
             if action_package_allow:
-                self._method_not_allowed(action_package_allow)
+                self._method_not_allowed(action_package_allow, unread_body=unread_body)
             return
-        self._method_not_allowed("GET, HEAD, POST")
+        self._method_not_allowed("GET, HEAD, POST", unread_body=unread_body)
+
+    def _request_carries_body(self) -> bool:
+        """Report whether this request declares a body this handler will not read."""
+
+        if self.headers.get_all("Transfer-Encoding", []):
+            return True
+        for raw_length in self.headers.get_all("Content-Length", []):
+            try:
+                if int(raw_length.strip()) > 0:
+                    return True
+            except ValueError:
+                # Unparseable framing is still framing this handler will not consume.
+                return True
+        return False
 
     def _request_session_cookie(self) -> str | None:
         raw_headers = self.headers.get_all("Cookie", [])
@@ -1462,11 +1484,19 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return None
         return value
 
-    def _reject_unread_body(self, status: int, code: str, message: str) -> None:
+    def _reject_unread_body(
+        self,
+        status: int,
+        code: str,
+        message: str,
+        *,
+        extra_headers: Mapping[str, str] | None = None,
+    ) -> None:
         """Reject before reading a body and close instead of parsing it as another request."""
 
         self.close_connection = True
-        self._error(status, code, message, extra_headers={"Connection": "close"})
+        headers = {**(extra_headers or {}), "Connection": "close"}
+        self._error(status, code, message, extra_headers=headers)
         self._finish_rejected_request()
 
     def _finish_rejected_request(self) -> None:
@@ -1578,8 +1608,9 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
     def _not_found(self) -> None:
         self._error(HTTPStatus.NOT_FOUND, "not_found", "Route not found.")
 
-    def _method_not_allowed(self, allow: str) -> None:
-        self._error(
+    def _method_not_allowed(self, allow: str, *, unread_body: bool = False) -> None:
+        reject = self._reject_unread_body if unread_body else self._error
+        reject(
             HTTPStatus.METHOD_NOT_ALLOWED,
             "method_not_allowed",
             "Method not allowed for this route.",

@@ -230,3 +230,63 @@ def test_rejection_cleanup_has_absolute_limits_without_trusting_body_framing(
         assert timeouts[-1] < timeouts[0]
     else:
         assert received[0] == 0
+
+
+@pytest.mark.parametrize("method", ["PUT", "PATCH", "DELETE", "OPTIONS"])
+def test_unsupported_method_with_body_closes_without_parsing_following_request(
+    method: str,
+) -> None:
+    """An unsupported method must not leave its body to be read as the next request."""
+
+    with running_server() as (server, service):
+        authority = f"127.0.0.1:{server.server_address[1]}"
+        with socket.create_connection(server.server_address, timeout=3) as client:
+            client.sendall(
+                (
+                    f"{method} /api/v1/catalog HTTP/1.1\r\nHost: {authority}\r\n"
+                    f"Origin: http://{authority}\r\nCookie: {server._test_browser_cookie}\r\n"
+                    "Content-Length: 2\r\nContent-Type: application/json\r\n\r\n"
+                    "{}GET /api/v1/catalog HTTP/1.1\r\n"
+                    f"Host: {authority}\r\nCookie: {server._test_browser_cookie}\r\n\r\n"
+                ).encode("ascii")
+            )
+            client.shutdown(socket.SHUT_WR)
+            with client.makefile("rb") as response:
+                reply = response.read()
+        headers, body = reply.split(b"\r\n\r\n", 1)
+        assert headers.startswith(b"HTTP/1.1 405 ")
+        # The smuggled GET must not be answered: exactly one response, and the
+        # service never saw a catalog call on this connection.
+        assert reply.count(b"HTTP/1.1 ") == 1
+        assert json.loads(body)["error"]["code"] == "method_not_allowed"
+        assert b"Connection: close" in headers
+        assert b"Allow: GET, HEAD, POST" in headers
+        assert service.calls == []
+        # A fresh connection still reaches the API normally.
+        status, _, _ = request(server, "GET", "/api/v1/catalog")
+        assert status == 200 and service.calls == [("catalog",)]
+
+
+def test_unsupported_method_without_body_keeps_the_connection_reusable() -> None:
+    """The close is for unread framing only; a bodyless 405 leaves keep-alive intact."""
+
+    with running_server() as (server, service):
+        authority = f"127.0.0.1:{server.server_address[1]}"
+        with socket.create_connection(server.server_address, timeout=3) as client:
+            client.sendall(
+                (
+                    f"DELETE /api/v1/catalog HTTP/1.1\r\nHost: {authority}\r\n"
+                    f"Origin: http://{authority}\r\nCookie: {server._test_browser_cookie}\r\n"
+                    "\r\n"
+                    f"GET /api/v1/catalog HTTP/1.1\r\nHost: {authority}\r\n"
+                    f"Cookie: {server._test_browser_cookie}\r\n\r\n"
+                ).encode("ascii")
+            )
+            client.shutdown(socket.SHUT_WR)
+            with client.makefile("rb") as response:
+                reply = response.read()
+        assert reply.startswith(b"HTTP/1.1 405 ")
+        # Nothing was left unread, so the following real request is still served.
+        assert reply.count(b"HTTP/1.1 ") == 2
+        assert b"HTTP/1.1 200 " in reply
+        assert service.calls == [("catalog",)]
