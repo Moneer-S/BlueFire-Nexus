@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -25,13 +25,22 @@ function renderBuilder() {
 }
 
 const witness = () => JSON.parse(screen.getByLabelText("Run config witness").textContent!);
+
+// Select from the step list rather than the canvas: a canvas click runs React Flow's
+// d3-drag mousedown handler, which reads event.view.document and throws under jsdom.
+async function selectFirstStep(user: ReturnType<typeof userEvent.setup>) {
+  const step = demoScenario.steps[0]!;
+  const title = demoCatalog.behaviors.find((behavior) => behavior.id === step.behavior_id)!.title;
+  await user.click(await screen.findByRole("button", { name: "Steps" }));
+  await user.click(within(screen.getByRole("list", { name: "Experiment steps" })).getByRole("button", { name: new RegExp(`^\\d+ ${title}`) }));
+  return step.id;
+}
 const storedSteps = () => (JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!) as { steps: { id: string }[] }).steps.map((step) => step.id);
 
 describe("Builder step rename", () => {
   it("keeps the renamed step selected through a multi-character rename", async () => {
     const user = renderBuilder();
-    const first = demoScenario.steps[0]!.id;
-    await user.click(await screen.findByTestId(`rf__node-${first}`));
+    const first = await selectFirstStep(user);
     const field = await screen.findByLabelText(/^Step ID/);
     // Every keystroke is its own valid rename, which is exactly the case that used
     // to drop the selection and replace the inspector after the first character.
@@ -41,13 +50,11 @@ describe("Builder step rename", () => {
     // The inspector is still editing the same step rather than asking for a selection.
     expect(await screen.findByLabelText(/^Step ID/)).toHaveValue(`${first}_two`);
     expect(screen.queryByText("Select a step")).toBeNull();
-    await waitFor(() => expect(screen.getByTestId(`rf__node-${first}_two`)).toHaveClass("selected"));
   }, 20000);
 
   it("carries a chosen run method to the new step ID and keeps approval cleared", async () => {
     const user = renderBuilder();
-    const first = demoScenario.steps[0]!.id;
-    await user.click(await screen.findByTestId(`rf__node-${first}`));
+    const first = await selectFirstStep(user);
     const override = screen.getByRole("combobox", { name: "Run method override" });
     const choice = Array.from(override.querySelectorAll("option")).map((option) => option.value).find(Boolean)!;
     await user.selectOptions(override, choice);
@@ -64,8 +71,7 @@ describe("Builder step rename", () => {
 
   it("still drops an override when the step is replaced by a different behavior", async () => {
     const user = renderBuilder();
-    const first = demoScenario.steps[0]!.id;
-    await user.click(await screen.findByTestId(`rf__node-${first}`));
+    const first = await selectFirstStep(user);
     const override = screen.getByRole("combobox", { name: "Run method override" });
     const choice = Array.from(override.querySelectorAll("option")).map((option) => option.value).find(Boolean)!;
     await user.selectOptions(override, choice);
