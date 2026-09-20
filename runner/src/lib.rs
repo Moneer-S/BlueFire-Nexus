@@ -7,7 +7,9 @@
 pub mod actions;
 mod atomic_gzip;
 mod cancellation_witness;
+mod canonical;
 pub mod contract;
+pub mod native_tool_installations;
 mod process;
 pub mod provider_action;
 pub mod providers;

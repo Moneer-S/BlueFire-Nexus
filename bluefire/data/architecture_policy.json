@@ -347,6 +347,7 @@
       "layer": "execution",
       "patterns": [
         "bluefire.ai_broker_bootstrap",
+        "bluefire.native_tool_inspection",
         "bluefire.receiver",
         "bluefire.receiver_auth",
         "bluefire.receiver_policy",
@@ -386,6 +387,7 @@
       "layer": "foundation",
       "patterns": [
         "bluefire.config",
+        "bluefire.native_tool_installations",
         "bluefire.contracts",
         "bluefire.adaptive_execution_contract",
         "bluefire.data.__init__",
@@ -496,7 +498,9 @@
     ]
   },
   "rust_layers": {
+    "canonical": "foundation",
     "contract": "foundation",
+    "native_tool_installations": "foundation",
     "cancellation_witness": "action",
     "cancellation_witness_files": "action",
     "process": "platform",
@@ -509,11 +513,13 @@
     "atomic_gzip_action": "action",
     "cleanup_unix": "safety",
     "cleanup_windows": "safety",
+    "owned_input": "safety",
     "provider_action": "action",
     "providers": "action",
     "runner": "execution",
     "runner_tests": "execution",
     "runner_reviewed_execution": "execution",
+    "runner_native_tools": "execution",
     "lib": "adapter",
     "main": "adapter"
   },

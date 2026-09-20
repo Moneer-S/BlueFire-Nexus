@@ -1,7 +1,9 @@
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Write};
+#[cfg(not(unix))]
+use std::io::{Seek, SeekFrom};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
@@ -266,6 +268,10 @@ mod cleanup_platform;
 #[cfg(windows)]
 #[path = "safety/cleanup_windows.rs"]
 mod cleanup_platform;
+
+#[path = "safety/owned_input.rs"]
+mod owned_input;
+pub use owned_input::OwnedReceiptInput;
 
 fn valid_receipt_id(receipt_id: &str) -> bool {
     receipt_id.len() == 64
@@ -1491,6 +1497,32 @@ impl SafeRoot {
     }
 }
 
+#[cfg(unix)]
+fn hash_opened_file(file: &File, max_bytes: u64) -> Result<String, String> {
+    use std::os::unix::fs::FileExt;
+
+    let mut digest = Sha256::new();
+    let mut offset = 0_u64;
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        // Positioned reads do not move the shared open-file offset. A dup/seek
+        // verifier would consume or disrupt the descriptor retained for a tool.
+        let read = file
+            .read_at(&mut buffer, offset)
+            .map_err(|error| format!("cannot hash opened file: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        offset = offset.saturating_add(read as u64);
+        if offset > max_bytes {
+            return Err("file exceeds the hashing byte limit".to_string());
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(hex::encode(digest.finalize()))
+}
+
+#[cfg(not(unix))]
 fn hash_opened_file(file: &File, max_bytes: u64) -> Result<String, String> {
     let mut file = file
         .try_clone()

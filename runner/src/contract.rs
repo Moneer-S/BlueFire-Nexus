@@ -2,11 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+pub use crate::canonical::{canonical_hash, canonical_json, sha256_hex};
 use chrono::{DateTime, Timelike, Utc};
 use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 
 pub const MANIFEST_SCHEMA_VERSION: &str = "bluefire.runner-manifest.v1";
 pub const PROFILE_SCHEMA_VERSION: &str = "bluefire.runner-profile.v1";
@@ -412,6 +412,8 @@ pub struct RunnerProfile {
     pub provider_bindings: Vec<ProviderExecutionBinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_artifacts: Vec<ProviderArtifact>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_tool_installations: Vec<crate::native_tool_installations::NativeToolInstallation>,
     pub capabilities: Vec<Capability>,
     pub max_safety_tier: SafetyTier,
     #[serde(default)]
@@ -521,45 +523,6 @@ pub struct TaskResult {
     pub error: Option<ErrorRecord>,
     #[serde(default)]
     pub limitations: Vec<String>,
-}
-
-pub fn canonical_json(value: &Value) -> String {
-    match value {
-        Value::Null => "null".to_string(),
-        Value::Bool(value) => value.to_string(),
-        Value::Number(value) => value.to_string(),
-        Value::String(value) => serde_json::to_string(value).expect("serializing a JSON string"),
-        Value::Array(values) => {
-            let body = values
-                .iter()
-                .map(canonical_json)
-                .collect::<Vec<_>>()
-                .join(",");
-            format!("[{body}]")
-        }
-        Value::Object(values) => {
-            let mut keys = values.keys().collect::<Vec<_>>();
-            keys.sort_unstable();
-            let body = keys
-                .into_iter()
-                .map(|key| {
-                    let encoded_key =
-                        serde_json::to_string(key).expect("serializing a JSON object key");
-                    format!("{encoded_key}:{}", canonical_json(&values[key]))
-                })
-                .collect::<Vec<_>>()
-                .join(",");
-            format!("{{{body}}}")
-        }
-    }
-}
-
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
-
-pub fn canonical_hash(value: &Value) -> String {
-    format!("sha256:{}", sha256_hex(canonical_json(value).as_bytes()))
 }
 
 fn manifest_hash_value(manifest: &ExecutionManifest) -> Value {

@@ -144,6 +144,7 @@ fn profile(root: &TempDir, network: Vec<NetworkDestination>) -> RunnerProfile {
         reviewed_execution: None,
         control_blocked_actions: Vec::new(),
         action_bindings: Vec::new(),
+        native_tool_installations: Vec::new(),
         provider_bindings: Vec::new(),
         provider_artifacts: Vec::new(),
         capabilities: vec![
