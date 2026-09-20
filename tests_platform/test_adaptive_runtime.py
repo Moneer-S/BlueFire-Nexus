@@ -2,9 +2,11 @@
 
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from bluefire import file_permissions
 from bluefire.adaptive_observations import project_runtime_observations
 from bluefire.adaptive_record_validation import validate_v4_attempt_record
 from bluefire.adaptive_runtime import propose_reviewed_method
@@ -165,6 +167,58 @@ def test_out_of_scope_choice_never_reaches_authority_callback(runtime):
     assert result.record["provider"]["requested_provider_id"] == config.id
     assert result.record["proposal"]["selected_action_id"] == "sandbox.network.loopback.v1"
     validate_v4_attempt_record(result.record)
+
+
+@pytest.mark.parametrize("mode,choice", [(0o640, 0), (0o660, 1)])
+def test_permission_observation_reaches_provider_and_durable_decision(
+    runtime, monkeypatch, mode, choice
+):
+    """Authored selector cases, not executed methods or live-provider evidence."""
+    kwargs, config = runtime
+    with monkeypatch.context() as platform_patch:
+        platform_patch.setattr(file_permissions.sys, "platform", "linux")
+        permissions = file_permissions.observed_permission_fields(SimpleNamespace(st_mode=mode))
+    step = kwargs["current_step"]
+    evidence = EvidenceRecord.create(
+        run_id=kwargs["run_id"],
+        step_id=step.step_id,
+        behavior_id=step.behavior_id,
+        provenance=EvidenceProvenance.OBSERVED,
+        producer="authored-filesystem-observation",
+        target_scope_ref="sandbox.workspace",
+        content={"artifact_type": "file_observation", **permissions},
+    )
+    validated = []
+
+    def choose(request):
+        facts = request.context["observations"]["attempts"][0]["evidence"][0]["facts"]
+        assert all(facts[key] == value for key, value in permissions.items())
+        return request.allowed_action_ids[int(facts["non_owner_write_bit"])]
+
+    provider = Provider(config, choose)
+    retained_authority = canonical_json_bytes(kwargs["authorization"])
+    result = propose_reviewed_method(
+        **{
+            **kwargs,
+            "steps": [{**kwargs["steps"][0], "evidence_ids": [evidence.evidence_id]}],
+            "evidence": [evidence],
+            "validate_choice": validated.append,
+        },
+        provider=provider,
+    )
+    request = provider.requests[0]
+    assert result.selected_step.action_id == request.allowed_action_ids[choice]
+    assert validated == [result.selected_step]
+    assert len(request.allowed_action_ids) == 2
+    assert canonical_json_bytes(kwargs["authorization"]) == retained_authority
+    assert result.record["planner_state"]["observations"] == request.context["observations"]
+    retained_record = canonical_json_bytes(result.record)
+    validate_v4_attempt_record(result.record)
+    assert (
+        validate_persisted_proposal_record(result.record).selected_action_id
+        == result.selected_step.action_id
+    )
+    assert canonical_json_bytes(result.record) == retained_record
 
 
 def test_stop_is_explicit_and_does_not_select_deterministic_successor(runtime):

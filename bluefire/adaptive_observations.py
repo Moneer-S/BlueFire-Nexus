@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 
 from .evidence import EvidenceProvenance, EvidenceRecord
+from .file_permissions import PERMISSION_FIELDS, PERMISSION_LIMITATION, permission_fields_valid
 from .planner import PlanStep
 from .util import content_hash
 
@@ -62,6 +63,39 @@ def _facts(content: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(value, str) and value in allowed:
             result[key] = value
     return result
+
+
+def _permission_facts(record: EvidenceRecord) -> dict[str, Any]:
+    if record.provenance is not EvidenceProvenance.OBSERVED:
+        return {}
+    content = record.content
+    if not (
+        content.get("artifact_type") == "file_observation"
+        or (
+            content.get("artifact_type") == "collector_observation"
+            and content.get("observation_kind") == "filesystem"
+        )
+    ):
+        return {}
+    invalid = {"permission_status": "invalid_metadata", "effective_access": "not_evaluated"}
+    top = {key: content[key] for key in PERMISSION_FIELDS if key in content}
+    nested = content.get("observed_fields")
+    if "observed_fields" in content and not isinstance(nested, Mapping):
+        return invalid
+    fields = (
+        {key: nested[key] for key in PERMISSION_FIELDS if key in nested}
+        if isinstance(nested, Mapping)
+        else top
+    )
+    if not top and not fields:
+        return {}
+    # Native file observations keep facts at the top level. Collector records
+    # additionally retain an observed-fields copy; neither can contradict the other.
+    if (top and (not permission_fields_valid(top) or top != fields)) or not permission_fields_valid(
+        fields
+    ):
+        return invalid
+    return fields
 
 
 def _failure(row: Mapping[str, Any], records: Sequence[EvidenceRecord]) -> dict[str, Any]:
@@ -128,6 +162,7 @@ def project_runtime_observations(
             observed = content.get("observed_fields")
             if record.provenance is EvidenceProvenance.OBSERVED and isinstance(observed, Mapping):
                 facts.update(_facts(observed))
+            facts.update(_permission_facts(record))
             output = content.get("output")
             if record.provenance is EvidenceProvenance.EXECUTED and isinstance(output, Mapping):
                 facts.update(_facts(output))
@@ -191,6 +226,7 @@ def project_runtime_observations(
             "Target prevention is not established by a product refusal.",
             "Reported execution alone does not independently verify the objective.",
             "Method availability does not establish success or external prerequisites.",
+            PERMISSION_LIMITATION,
         ],
     }
     return {**body, "projection_digest": content_hash(body)}
