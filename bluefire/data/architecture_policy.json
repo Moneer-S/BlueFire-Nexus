@@ -347,6 +347,7 @@
       "layer": "execution",
       "patterns": [
         "bluefire.ai_broker_bootstrap",
+        "bluefire.native_tool_inspection",
         "bluefire.receiver",
         "bluefire.receiver_auth",
         "bluefire.receiver_policy",
@@ -449,6 +450,7 @@
         "bluefire.detections",
         "bluefire.evidence",
         "bluefire.observation_integrity",
+        "bluefire.native_tool_installations",
         "bluefire.execution_contracts",
         "bluefire.planner",
         "bluefire.plugins",
