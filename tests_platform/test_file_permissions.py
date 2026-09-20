@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from bluefire import file_permissions
-from bluefire.collectors import CollectionRequest, FilesystemCollector
+from bluefire.collectors import CollectionRequest, CollectionSemanticsCollector, FilesystemCollector
 from bluefire.evidence import EvidenceError, EvidenceProvenance, SandboxObserver
 
 
@@ -125,6 +125,7 @@ def test_collector_retains_permission_availability_for_detection_and_replay(tmp_
         )
     )
     record = result.records[0]
+    assert result.descriptor.version == "1.1.0"
     fields = record.content["observed_fields"]
     assert fields["effective_access"] == "not_evaluated"
     assert fields["permission_status"] == record.content["permission_status"]
@@ -139,3 +140,37 @@ def test_collector_retains_permission_availability_for_detection_and_replay(tmp_
         assert fields["permission_mode_octal"] == record.content["permission_mode_octal"]
         assert fields["group_write_bit"] == record.content["group_write_bit"]
     assert record.to_dict()["content"]["observed_fields"] == fields
+
+
+def test_collection_semantics_v1_preserves_exact_historical_fields_without_permissions(tmp_path):
+    path = tmp_path / "data.jsonl"
+    path.write_text(
+        '{"record_id":"synthetic-001","synthetic":true,"template":"telemetry-seed","value":"telemetry-value-001"}\n'
+    )
+    result = CollectionSemanticsCollector(tmp_path).collect(
+        CollectionRequest(
+            run_id="run-permissions",
+            step_id="collect",
+            behavior_id="sandbox.collection.stage.v1",
+            action_id="sandbox.collection.stage.v1",
+            runner_profile_id="profile.test",
+            target_scope_ref="runner-profile:profile.test",
+            settings={"paths": ["data.jsonl"], "collect_after_step": "collect"},
+        )
+    )
+    record = result.records[0]
+    assert result.descriptor.version == "1.0.0"
+    assert record.limitations == (
+        "aggregate counts of reviewed synthetic fixture values only; no record values retained",
+        "one bounded JSONL stream, single-member USTAR or no-name gzip; no general archive extraction",
+    )
+    permission_fields = {
+        "permission_status",
+        "effective_access",
+        "permission_mode_octal",
+        "group_write_bit",
+        "other_write_bit",
+        "non_owner_write_bit",
+    }
+    assert permission_fields.isdisjoint(record.content)
+    assert permission_fields.isdisjoint(record.content["observed_fields"])

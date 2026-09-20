@@ -589,6 +589,7 @@ class CollectionSemanticsCollector(FilesystemCollector):
             runner_profile_id=request.runner_profile_id,
             parent_evidence_ids=request.parent_evidence_ids,
             deadline_monotonic=deadline,
+            include_permissions=False,
             _content_analyzer=parse_collection_semantics,
         )
 

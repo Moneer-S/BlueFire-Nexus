@@ -322,7 +322,22 @@ def test_gate11_report_binding_uses_exact_linux_transfer_facts(
     assert bundles == (windows_reference, linux_reference)
 
 
-def test_gate11_observation_uses_canonical_filesystem_collector_contract() -> None:
+@pytest.mark.parametrize(
+    "permissions",
+    [
+        {"permission_status": "unavailable_windows", "effective_access": "not_evaluated"},
+        {"permission_status": "unsupported_platform", "effective_access": "not_evaluated"},
+        {
+            "permission_status": "available",
+            "effective_access": "not_evaluated",
+            "permission_mode_octal": "0660",
+            "group_write_bit": True,
+            "other_write_bit": False,
+            "non_owner_write_bit": True,
+        },
+    ],
+)
+def test_gate11_observation_uses_canonical_filesystem_collector_contract(permissions) -> None:
     digest = "a" * 64
     path = "fixtures/input.jsonl"
     scope = "runner-profile:sandbox-execute.v1"
@@ -351,7 +366,7 @@ def test_gate11_observation_uses_canonical_filesystem_collector_contract() -> No
         environment={
             "environment_type": "disposable",
             "collector_id": "collector.filesystem.sandbox.v1",
-            "collector_version": "1.0.0",
+            "collector_version": "1.1.0",
         },
         parent_evidence_ids=(outer.evidence_id,),
         content={
@@ -361,12 +376,16 @@ def test_gate11_observation_uses_canonical_filesystem_collector_contract() -> No
             "modified_ns": 1,
             "observation_key": "filesystem/path-utf8-" + path.encode().hex(),
             "observation_kind": "filesystem",
-            "observed_fields": {"path": path, "sha256": digest, "size_bytes": 7},
+            "observed_fields": {"path": path, "sha256": digest, "size_bytes": 7, **permissions},
             "path": path,
             "sha256": digest,
             "size_bytes": 7,
+            **permissions,
         },
-        limitations=("independent filesystem metadata and digest observation only",),
+        limitations=(
+            "independent filesystem metadata and digest observation only",
+            "permission mode bits do not establish effective access; ACLs and parent traversal are not evaluated",
+        ),
         target_scope_ref=scope,
     )
     step = {
@@ -402,6 +421,8 @@ def test_gate11_observation_uses_canonical_filesystem_collector_contract() -> No
         replace(observed, producer="sandbox-observer.v1"),
         replace(observed, parent_evidence_ids=()),
         replace(observed, environment={"environment_type": "disposable"}),
+        replace(observed, environment={**observed.environment, "collector_version": "1.0.0"}),
+        replace(observed, limitations=observed.limitations[:1]),
         replace(
             observed,
             content={**observed.content, "observation_key": "filesystem/path-utf8-00"},
@@ -414,6 +435,26 @@ def test_gate11_observation_uses_canonical_filesystem_collector_contract() -> No
     for record in tampered:
         with pytest.raises(CrossPlatformObservationValidationError):
             validate_observed_filesystem_evidence(record, outer, step)
+    for changed in (
+        {**permissions, "permission_status": []},
+        {**permissions, "effective_access": "allowed"},
+        {**permissions, "permission_mode_octal": "9999"},
+        {**permissions, "non_owner_write_bit": 1},
+        {
+            **permissions,
+            "group_write_bit": False,
+            "other_write_bit": False,
+            "non_owner_write_bit": True,
+            "permission_mode_octal": "0600",
+        },
+        {},
+    ):
+        # Matching duplicated fields are insufficient if their contract is false.
+        content = {key: value for key, value in observed.content.items() if key not in permissions}
+        content.update(changed)
+        content["observed_fields"] = {"path": path, "sha256": digest, "size_bytes": 7, **changed}
+        with pytest.raises(CrossPlatformObservationValidationError):
+            validate_observed_filesystem_evidence(replace(observed, content=content), outer, step)
 
 
 def test_gate11_runner_evidence_uses_sealed_profile_digest() -> None:

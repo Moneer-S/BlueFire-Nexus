@@ -9,11 +9,12 @@ from typing import Any, Mapping
 
 from .collectors import CollectorError, filesystem_observation_key
 from .evidence import EvidenceProvenance, EvidenceRecord
+from .file_permissions import PERMISSION_FIELDS, permission_fields_valid
 
 _RAW_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _RECEIPT = re.compile(r"^[0-9a-f]{64}$")
 _COLLECTOR_ID = "collector.filesystem.sandbox.v1"
-_COLLECTOR_VERSION = "1.0.0"
+_COLLECTOR_VERSION = "1.1.0"
 _PERSISTENCE_ACTION = "sandbox.restricted.persistence-marker.v1"
 _CONTENT_FIELDS = {
     "artifact_type",
@@ -56,8 +57,11 @@ def validate_observed_filesystem_evidence(
     """Bind a FilesystemCollector record to one receipt-owning runner artifact."""
 
     content = record.content
+    permissions = {key: content[key] for key in PERMISSION_FIELDS if key in content}
     _require(
-        isinstance(content, Mapping) and set(content) == _CONTENT_FIELDS,
+        isinstance(content, Mapping)
+        and permission_fields_valid(permissions)
+        and set(content) == _CONTENT_FIELDS | set(permissions),
         "observed filesystem evidence fields are invalid",
     )
     output = outer.content.get("output")
@@ -110,7 +114,11 @@ def validate_observed_filesystem_evidence(
         and record.parent_evidence_ids == (outer.evidence_id,)
         and step.get("evidence_ids") == [outer.evidence_id, record.evidence_id]
         and record.confidence == 1.0
-        and record.limitations == ("independent filesystem metadata and digest observation only",)
+        and record.limitations
+        == (
+            "independent filesystem metadata and digest observation only",
+            "permission mode bits do not establish effective access; ACLs and parent traversal are not evaluated",
+        )
         and record.target_scope_ref == outer.target_scope_ref
         and _is_utc(record.timestamp)
         and content.get("artifact_type") == "collector_observation"
@@ -136,7 +144,7 @@ def validate_observed_filesystem_evidence(
         and output_binding_matches
         and type(content.get("modified_ns")) is int
         and content["modified_ns"] > 0
-        and observed_fields == {"path": path, "sha256": digest, "size_bytes": size}
+        and observed_fields == {"path": path, "sha256": digest, "size_bytes": size, **permissions}
         and isinstance(receipts, list)
         and len(receipts) == 1
         and all(isinstance(item, str) and _RECEIPT.fullmatch(item) for item in receipts)
