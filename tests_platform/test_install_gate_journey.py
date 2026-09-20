@@ -185,13 +185,26 @@ def _run() -> dict[str, Any]:
                 "modified_ns": 1,
                 "observation_key": _OBSERVATION_KEY,
                 "observation_kind": "filesystem",
+                "permission_status": "available",
+                "effective_access": "not_evaluated",
+                "permission_mode_octal": "0644",
+                "group_write_bit": False,
+                "other_write_bit": False,
+                "non_owner_write_bit": False,
                 "observed_fields": {
                     "path": support.CANARY_PATH,
                     "sha256": _ARTIFACT_DIGEST[7:],
                     "size_bytes": 151,
+                    "permission_status": "available",
+                    "effective_access": "not_evaluated",
+                    "permission_mode_octal": "0644",
+                    "group_write_bit": False,
+                    "other_write_bit": False,
+                    "non_owner_write_bit": False,
                 },
                 "mechanism": "independent-file-handle-read",
             },
+            "limitations": list(support.COLLECTOR_LIMITATIONS),
         },
         {
             "evidence_id": cleanup_id,
@@ -359,6 +372,40 @@ def test_run_requires_exact_observer_lineage_and_real_workspace_cleanup(tmp_path
     assert summary["residual_canary_absent"] is True
     assert summary["observation"]["parent_linked"] is True
 
+    unavailable_permissions = deepcopy(run)
+    unavailable_content = unavailable_permissions["evidence"]["records"][1]["content"]
+    for field in (
+        "permission_mode_octal",
+        "group_write_bit",
+        "other_write_bit",
+        "non_owner_write_bit",
+    ):
+        unavailable_content.pop(field)
+        unavailable_content["observed_fields"].pop(field)
+    unavailable_content["permission_status"] = "unsupported_platform"
+    unavailable_content["effective_access"] = "not_evaluated"
+    unavailable_content["observed_fields"]["permission_status"] = "unsupported_platform"
+    unavailable_content["observed_fields"]["effective_access"] = "not_evaluated"
+    unavailable_summary = support.validate_run(
+        unavailable_permissions,
+        sandbox_root=sandbox,
+        approval_binding=_binding(),
+        approved_by="gate01-release-operator",
+        replay_of=None,
+    )
+    assert unavailable_summary["observation"]["parent_linked"] is True
+
+    legacy_version = deepcopy(run)
+    legacy_version["evidence"]["records"][1]["environment"]["collector_version"] = "1.0.0"
+    with pytest.raises(support.SupportError, match="canonical collector observation"):
+        support.validate_run(
+            legacy_version,
+            sandbox_root=sandbox,
+            approval_binding=_binding(),
+            approved_by="gate01-release-operator",
+            replay_of=None,
+        )
+
     different_plan = deepcopy(run)
     different_plan["plan"]["unreviewed"] = True
     with pytest.raises(support.SupportError, match="reviewed approval binding"):
@@ -421,6 +468,35 @@ def test_run_requires_exact_observer_lineage_and_real_workspace_cleanup(tmp_path
     with pytest.raises(support.SupportError, match="canonical collector observation"):
         support.validate_run(
             inconsistent_observation,
+            sandbox_root=sandbox,
+            approval_binding=_binding(),
+            approved_by="gate01-release-operator",
+            replay_of=None,
+        )
+
+    missing_permission_field = deepcopy(run)
+    del missing_permission_field["evidence"]["records"][1]["content"]["observed_fields"][
+        "permission_mode_octal"
+    ]
+    with pytest.raises(support.SupportError, match="canonical collector observation"):
+        support.validate_run(
+            missing_permission_field,
+            sandbox_root=sandbox,
+            approval_binding=_binding(),
+            approved_by="gate01-release-operator",
+            replay_of=None,
+        )
+
+    inconsistent_permission_bits = deepcopy(run)
+    inconsistent_permission_bits["evidence"]["records"][1]["content"][
+        "permission_mode_octal"
+    ] = "0660"
+    inconsistent_permission_bits["evidence"]["records"][1]["content"]["observed_fields"][
+        "permission_mode_octal"
+    ] = "0660"
+    with pytest.raises(support.SupportError, match="canonical collector observation"):
+        support.validate_run(
+            inconsistent_permission_bits,
             sandbox_root=sandbox,
             approval_binding=_binding(),
             approved_by="gate01-release-operator",
