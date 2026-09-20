@@ -123,6 +123,9 @@ pub fn inspect_candidate(candidate: &Value) -> Value {
             if installation.validate().is_err() || size_bytes == 0 || size_bytes > MAX_SIZE_BYTES {
                 return unavailable("invalid_installation");
             }
+            if let Err(error) = crate::reviewed_chmod_builds::verify(&installation) {
+                return unavailable(error.code);
+            }
             json!({
                 "schema_version": CANDIDATE_RESULT_SCHEMA,
                 "candidate_digest": candidate_digest,
@@ -181,6 +184,70 @@ mod tests {
             "content_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
         });
         assert_eq!(inspect_candidate(&extra)["code"], "invalid_installation");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn protected_non_chmod_elf_cannot_become_a_chmod_installation() {
+        // Read-only regression: never invoke the system tool or create effects.
+        let candidate = json!({
+            "schema_version": CANDIDATE_SCHEMA,
+            "action_id": "sandbox.permission.chmod.v1",
+            "installation_location": "/usr/bin/touch",
+            "tool_version": "9.4-3ubuntu6.1"
+        });
+        let response = inspect_candidate(&candidate);
+        assert_eq!(response["status"], "unavailable");
+        assert!(response["installation"].is_null());
+        // Minimal images may lack this protected path; either way it is never
+        // admitted. Normal Linux CI exercises the independent identity refusal.
+        assert!(matches!(
+            response["code"].as_str(),
+            Some(
+                "unrecognized_tool_build"
+                    | "inspection_unavailable"
+                    | "unsafe_installation"
+                    | "unsupported_binary"
+                    | "capabilities_unknown"
+            )
+        ));
+        if let Ok(observed) = crate::native_tool_inspection::inspect_candidate(
+            "/usr/bin/touch",
+            std::env::consts::ARCH,
+            crate::canonical::canonical_hash(&candidate),
+            Duration::from_secs(5),
+        ) {
+            assert_eq!(response["code"], "unrecognized_tool_build");
+            let binding = find_action("sandbox.permission.chmod.v1")
+                .unwrap()
+                .native_tool_binding()
+                .unwrap();
+            let record = NativeToolInstallation {
+                schema_version: crate::native_tool_installations::SCHEMA.into(),
+                adapter_id: binding.adapter_id.into(),
+                adapter_version: binding.adapter_version.into(),
+                adapter_contract_digest: binding.adapter_contract_digest.into(),
+                tool_id: binding.tool_id.into(),
+                tool_version: "9.4-3ubuntu6.1".into(),
+                platform: "linux".into(),
+                architecture: std::env::consts::ARCH.into(),
+                content_sha256: observed.content_sha256,
+                size_bytes: observed.size_bytes,
+                installation_location: "/usr/bin/touch".into(),
+            };
+            // A forged saved record with the correct observed digest is refused
+            // by both setup inspection and the exact inspector used at dispatch.
+            assert_eq!(
+                inspect_installation(&record)["code"],
+                "unrecognized_tool_build"
+            );
+            assert_eq!(
+                crate::native_tool_inspection::inspect(&record, Duration::from_secs(5))
+                    .unwrap_err()
+                    .code,
+                "unrecognized_tool_build"
+            );
+        }
     }
 
     #[test]

@@ -10,20 +10,22 @@ export function detectionDraftIdentity(value: unknown): string {
   return JSON.stringify(ordered(value));
 }
 
-function valid<T extends Record<string, unknown>>(value: unknown, defaults: T): value is T {
+function valid<T extends Record<string, unknown>>(value: unknown, defaults: T, optionalKeys: readonly string[] = [], validators: Partial<Record<string, (value: unknown) => boolean>> = {}): value is T {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   if ("tab" in defaults && !["candidate", "revisions", "evaluations", "fixtures", "observed", "history"].includes(String(record.tab))) return false;
   if ("role" in defaults && !["attack", "benign", "replay", "heldout", "unknown"].includes(String(record.role))) return false;
   if ("evaluationUse" in defaults && !["development", "independent", "unspecified"].includes(String(record.evaluationUse))) return false;
   if ("revisionKind" in defaults && !["clone", "tune"].includes(String(record.revisionKind))) return false;
-  return Object.keys(record).length === Object.keys(defaults).length && Object.entries(defaults).every(([key, example]) =>
+  return Object.keys(record).every((key) => key in defaults) && Object.keys(record).length >= Object.keys(defaults).length - optionalKeys.length && Object.entries(defaults).every(([key, example]) =>
+    optionalKeys.includes(key) && !(key in record) ? true :
+    validators[key] && !validators[key]!(record[key]) ? false :
     Array.isArray(example) ? Array.isArray(record[key]) && record[key].length <= 128 && record[key].every(item => typeof item === "string" && item.length <= 1024)
       : typeof record[key] === typeof example && typeof record[key] === "string" && record[key].length <= maximum);
 }
 
 /** Editable text only. Reading or retaining a draft never calls a product action. */
-export function useDetectionDraft<T extends Record<string, unknown>>(binding: string, defaults: T) {
+export function useDetectionDraft<T extends Record<string, unknown>>(binding: string, defaults: T, optionalKeys: readonly string[] = [], validators: Partial<Record<string, (value: unknown) => boolean>> = {}) {
   const key = prefix + binding;
   const read = () => {
     const memory = fallback.get(key);
@@ -34,8 +36,8 @@ export function useDetectionDraft<T extends Record<string, unknown>>(binding: st
       if (!raw) return { key, value: defaults, blocked: false, warning: "", retained: false };
       if (raw.length > maximum) throw new Error("oversized");
       const record: unknown = JSON.parse(raw);
-      if (!record || typeof record !== "object" || Object.keys(record).length !== 2 || !("binding" in record) || record.binding !== binding || !("value" in record) || !valid(record.value, defaults)) throw new Error("invalid");
-      return { key, value: record.value as T, blocked: false, warning: "", retained: true };
+      if (!record || typeof record !== "object" || Object.keys(record).length !== 2 || !("binding" in record) || record.binding !== binding || !("value" in record) || !valid(record.value, defaults, optionalKeys, validators)) throw new Error("invalid");
+      return { key, value: { ...defaults, ...(record.value as Record<string, unknown>) } as T, blocked: false, warning: "", retained: true };
     } catch {
       return { key, value: defaults, blocked: true, warning: "The retained draft could not be read. Its stored bytes have been left untouched. New edits stay in this open session until you explicitly discard the retained draft.", retained: false };
     }
@@ -50,7 +52,7 @@ export function useDetectionDraft<T extends Record<string, unknown>>(binding: st
     const next = { ...prior, value: { ...prior.value, [field]: value } };
     try {
       const raw = JSON.stringify({ binding, value: next.value });
-      if (prior.blocked || raw.length > maximum || !valid(next.value, defaults)) throw new Error("cannot retain");
+      if (prior.blocked || raw.length > maximum || !valid(next.value, defaults, optionalKeys, validators)) throw new Error("cannot retain");
       sessionStorage.setItem(key, raw);
       fallback.delete(key); next.retained = true; next.warning = "";
     } catch {

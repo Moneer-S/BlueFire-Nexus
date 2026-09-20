@@ -44,7 +44,9 @@ Each concrete method must enforce these checks together before reporting readine
 1. A tool-owned module provides its descriptor, fixed invocation, structured parser,
    prerequisites, source/license review, and simulation fixtures. Catalog and runner
    inventory bind the exact action/behavior/implementation identity.
-2. Setup binds a protected installed tool's declared version, observed digest and location. Readiness
+2. Setup matches a protected installed tool's version and observed digest to an
+   adapter-owned, independently reviewed build list before binding its location.
+   Root ownership and a stable ELF fingerprint alone do not establish tool identity. Readiness
    distinguishes missing installation, unexpected identity, unsafe permissions,
    incompatible environment, and absent observers. Execution never installs code or
    searches an uncontrolled PATH.

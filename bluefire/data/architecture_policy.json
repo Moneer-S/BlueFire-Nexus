@@ -513,6 +513,7 @@
     "canonical": "foundation",
     "contract": "foundation",
     "native_tool_installations": "foundation",
+    "reviewed_chmod_builds": "foundation",
     "native_tool_inspection": "platform",
     "native_tool_setup": "execution",
     "cancellation_witness": "action",

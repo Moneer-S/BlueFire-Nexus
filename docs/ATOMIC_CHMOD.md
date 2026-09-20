@@ -29,9 +29,11 @@ invocation shape `mode`, `--`, `/proc/self/fd/N`, where `N` is derived from the
 held receipt-owned file descriptor.
 
 The setup prerequisite is a root-owned, protected GNU chmod executable whose
-content digest and size match the trusted profile. The operator supplies the
-package version label; inspection does not run `--version` or independently
-authenticate a package publisher. The label is included in approval binding.
+package version, architecture, content digest and size match the runner's
+[reviewed build list](REVIEWED_NATIVE_BUILDS.md), then the trusted profile.
+The first admitted build is Ubuntu Noble amd64 `9.4-3ubuntu6.1`; unknown builds
+are refused. Inspection does not run `--version`. An operator-supplied label
+cannot establish tool identity. The exact record is included in approval binding.
 Development and contract tests do not install, bundle, or invoke it. Runtime supervision remains
 current-user, network-free, bounded, cancellable, and receipt-owned. The
 original fixture bytes are retained and the creation receipt is used for
@@ -58,12 +60,12 @@ profile used by your enrolled local runner. Deactivate an active profile first.
 This retains its enrolled identity while you enable **Change sample file
 permissions (GNU chmod)** together with its setup and cleanup methods. Save the
 draft, then choose **Set up GNU
-chmod** on its card. Enter the protected installation location and its declared
-package version. Start the local runner through **Runners** if it is offline;
+chmod** on its card. Enter the protected installation location and the exact
+supported package version. Start the local runner through **Runners** if it is offline;
 the draft does not need activation or enrollment for this read-only check.
 **Inspect installation** reads the executable through the authenticated local
 runner's inspection connection; it checks protected ownership, permissions, native ELF
-architecture, bounded size, content hash and stable file identity without
+architecture, bounded size, independently reviewed content identity and stable file identity without
 launching the utility. A refused inspection carries no installation record.
 
 Review the result and choose **Save tool binding**. This saves a profile draft;

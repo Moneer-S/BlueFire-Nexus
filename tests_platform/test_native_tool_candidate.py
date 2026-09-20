@@ -101,6 +101,19 @@ def test_candidate_response_is_bound_and_unavailable_has_no_identity():
         validate_candidate_inspection(candidate(), response)
 
 
+def test_unknown_gnu_build_remains_unavailable_without_saved_identity():
+    response = {
+        **result(),
+        "status": "unavailable",
+        "code": "unrecognized_tool_build",
+        "installation": None,
+    }
+    assert validate_candidate_inspection(candidate(), response) == response
+    response["installation"] = record()
+    with pytest.raises(ContractError):
+        validate_candidate_inspection(candidate(), response)
+
+
 def test_subprocess_candidate_uses_fixed_readonly_command_and_removes_record(tmp_path):
     runner = object.__new__(SubprocessRustRunner)
     runner.work_root, runner.runner_binary = tmp_path, Path("/opt/bluefire/runner")

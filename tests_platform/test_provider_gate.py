@@ -1543,7 +1543,22 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
         command_inventory
     )
     gzip_copy.write_bytes(gzip_source)
+    # The permission adapter is another exact reviewed boundary. Neither its
+    # absence nor a changed launcher may be hidden by the older gzip fixture.
+    assert not provider_gate_source_audit._native_command_source_inventory_is_fixed(
+        command_inventory
+    )
+    chmod_source = (REPOSITORY / "runner" / "src" / "atomic_chmod.rs").read_bytes()
+    chmod_copy = command_inventory / "runner" / "src" / "atomic_chmod.rs"
+    chmod_copy.write_bytes(chmod_source)
     assert provider_gate_source_audit._native_command_source_inventory_is_fixed(command_inventory)
+    chmod_copy.write_bytes(
+        chmod_source + b'\nfn unreviewed() { let _ = std::process::Command::new("unreviewed"); }\n'
+    )
+    assert not provider_gate_source_audit._native_command_source_inventory_is_fixed(
+        command_inventory
+    )
+    chmod_copy.write_bytes(chmod_source)
     gzip_copy.write_bytes(
         gzip_source + b'\nfn unreviewed() { let _ = std::process::Command::new("unreviewed"); }\n'
     )

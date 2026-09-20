@@ -36,6 +36,7 @@ _CODES = frozenset(
         "architecture_mismatch",
         "capabilities_unknown",
         "unexpected_privilege",
+        "unrecognized_tool_build",
     }
 )
 _PLATFORMS = frozenset({"linux", "macos", "windows"})

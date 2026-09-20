@@ -18,6 +18,7 @@ pub mod provider_action;
 pub mod providers;
 mod receipt_store;
 mod receiver_auth;
+mod reviewed_chmod_builds;
 pub mod runner;
 pub mod safety;
 

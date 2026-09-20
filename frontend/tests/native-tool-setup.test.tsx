@@ -17,6 +17,17 @@ const ready: NativeToolCandidateInspection = { schema_version: "bluefire.native-
 function openDialog(onSave = vi.fn()) { render(<NativeToolSetupDialog profile={profile} onSave={onSave} />); return { user: userEvent.setup(), onSave }; }
 
 describe("NativeToolSetupDialog", () => {
+  it("explains an unrecognized executable without offering a binding", async () => {
+    vi.mocked(api.inspectNativeToolCandidate).mockResolvedValueOnce({ ...ready, status: "unavailable", code: "unrecognized_tool_build", installation: null });
+    const { user, onSave } = openDialog();
+    await user.click(screen.getByRole("button", { name: "Set up GNU chmod" }));
+    await user.type(screen.getByLabelText("Declared GNU version"), "9.4");
+    await user.click(screen.getByRole("button", { name: "Inspect installation" }));
+    await screen.findByText(/different build requires a reviewed BlueFire update/);
+    expect(screen.getByRole("button", { name: "Save tool binding" })).toBeDisabled();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
   it("inspects first and saves only an explicit verified binding", async () => {
     vi.mocked(api.inspectNativeToolCandidate).mockResolvedValueOnce(ready);
     const { user, onSave } = openDialog();
@@ -24,7 +35,7 @@ describe("NativeToolSetupDialog", () => {
     expect(screen.getByRole("button", { name: "Save tool binding" })).toBeDisabled();
     await user.type(screen.getByLabelText("Declared GNU version"), "9.4");
     await user.click(screen.getByRole("button", { name: "Inspect installation" }));
-    await screen.findByText("Protected installation verified");
+    await screen.findByText("Reviewed GNU build verified");
     await user.click(screen.getByRole("button", { name: "Save tool binding" }));
     await waitFor(() => expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ id: profile.id, native_tool_installations: expect.arrayContaining([profile.native_tool_installations![0], ready.installation]) })));
     expect(api.inspectNativeToolCandidate).toHaveBeenCalledWith(profile.id, "/usr/bin/chmod", "9.4");
@@ -52,7 +63,7 @@ describe("NativeToolSetupDialog", () => {
     await user.type(screen.getByLabelText("Installation location"), "/usr/local/bin/chmod");
     resolve(ready);
     await new Promise((done) => setTimeout(done, 0));
-    expect(screen.queryByText("Protected installation verified")).not.toBeInTheDocument();
+    expect(screen.queryByText("Reviewed GNU build verified")).not.toBeInTheDocument();
   });
 
   it("can inspect again after invalidating a stale request", async () => {
@@ -68,7 +79,7 @@ describe("NativeToolSetupDialog", () => {
     await user.type(screen.getByLabelText("Installation location"), "/usr/local/bin/chmod");
     resolve(ready);
     await user.click(screen.getByRole("button", { name: "Inspect installation" }));
-    await screen.findByText("Protected installation verified");
+    await screen.findByText("Reviewed GNU build verified");
     expect(api.inspectNativeToolCandidate).toHaveBeenLastCalledWith(profile.id, "/usr/local/bin/chmod", "9.4");
   });
 
@@ -78,9 +89,9 @@ describe("NativeToolSetupDialog", () => {
     await user.click(screen.getByRole("button", { name: "Set up GNU chmod" }));
     await user.type(screen.getByLabelText("Declared GNU version"), "9.4");
     await user.click(screen.getByRole("button", { name: "Inspect installation" }));
-    await screen.findByRole("status", { name: "Protected installation verified" });
+    await screen.findByRole("status", { name: "Reviewed GNU build verified" });
     await user.type(screen.getByLabelText("Installation location"), "-backup");
-    expect(screen.queryByRole("status", { name: "Protected installation verified" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "Reviewed GNU build verified" })).not.toBeInTheDocument();
   });
 
   it("invalidates a verified result when the profile changes", async () => {
@@ -90,8 +101,8 @@ describe("NativeToolSetupDialog", () => {
     await user.click(screen.getByRole("button", { name: "Set up GNU chmod" }));
     await user.type(screen.getByLabelText("Declared GNU version"), "9.4");
     await user.click(screen.getByRole("button", { name: "Inspect installation" }));
-    await screen.findByRole("status", { name: "Protected installation verified" });
+    await screen.findByRole("status", { name: "Reviewed GNU build verified" });
     view.rerender(<NativeToolSetupDialog profile={{ ...profile, id: "other-profile.v1" }} onSave={vi.fn()} />);
-    expect(screen.queryByRole("status", { name: "Protected installation verified" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "Reviewed GNU build verified" })).not.toBeInTheDocument();
   });
 });

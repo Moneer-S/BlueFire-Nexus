@@ -157,7 +157,7 @@ fn inspect_linux(
     if installation.platform != "linux" || installation.architecture != host_arch {
         return Err(unsupported());
     }
-    inspect_linux_core(
+    let inspected = inspect_linux_core(
         &installation.installation_location,
         &installation.architecture,
         Some((
@@ -166,7 +166,16 @@ fn inspect_linux(
         )),
         installation.digest(),
         timeout,
-    )
+    )?;
+    // The observed bytes must also be a known GNU build. A stable, protected
+    // ELF and an operator-declared version alone do not establish tool identity.
+    crate::reviewed_chmod_builds::verify(installation).map_err(|error| {
+        NativeToolInspectionError {
+            code: error.code,
+            message: error.message,
+        }
+    })?;
+    Ok(inspected)
 }
 
 #[cfg(target_os = "linux")]
