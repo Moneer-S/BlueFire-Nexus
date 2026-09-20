@@ -154,3 +154,23 @@ def test_frontier_collector_observes_conditional_export_under_shared_eligible_pa
     )
     with pytest.raises(CollectorGateValidationError, match="exact staged and final"):
         _validate_filesystem_binding(run, records, incomplete)
+    for content_update in (
+        {"effective_access": "allowed"},
+        {"permission_status": "claimed"},
+        {"permission_status": []},
+        {"non_owner_write_bit": 1},
+        {"permission_mode_octal": "9999"},
+    ):
+        original = collected.records[0]
+        content = {**original.content, **content_update}
+        content["observed_fields"] = {**content["observed_fields"], **content_update}
+        forged = replace(original, content=content)
+        altered = replace(collected, records=(forged, *collected.records[1:]))
+        with pytest.raises(CollectorGateValidationError, match="permission contract"):
+            _validate_filesystem_binding(
+                run,
+                tuple(
+                    forged if item.evidence_id == original.evidence_id else item for item in records
+                ),
+                CollectionSession(session.settings, {collector_id: altered}),
+            )

@@ -12,6 +12,14 @@ function metadata(): EvidenceRecord {
     content: { ...fields, artifact_type: "collector_observation", observation_kind: "filesystem", observed_fields: { ...fields } },
     limitations: ["independent filesystem metadata and digest observation only"] };
 }
+function metadataWithPermissions(status: "available" | "unavailable_windows" | "unsupported_platform" = "available"): EvidenceRecord {
+  const record = metadata();
+  const permissions = status === "available"
+    ? { permission_status: status, effective_access: "not_evaluated", permission_mode_octal: "0646", group_write_bit: false, other_write_bit: true, non_owner_write_bit: true }
+    : { permission_status: status, effective_access: "not_evaluated" };
+  record.content = { ...record.content!, ...permissions, observed_fields: { ...(record.content!.observed_fields as Record<string, unknown>), ...permissions } };
+  return record;
+}
 function semantics(container: string): EvidenceRecord {
   const record = metadata();
   const fields = { path: `staged/bundle.${container}`, size_bytes: 840, sha256: digest, container,
@@ -57,6 +65,61 @@ it("recognizes the older direct sandbox observer without requiring collector-spe
   expect(screen.getByText("File metadata observed")).toBeVisible();
   expect(screen.getByText("840 bytes")).toBeVisible();
   expect(screen.queryByText("Records inspected")).not.toBeInTheDocument();
+});
+
+it("shows validated numeric permission fields without evaluating effective access", () => {
+  render(<EvidenceRecords records={[metadataWithPermissions()]} />);
+  expect(screen.getByText("File permissions")).toBeVisible();
+  expect(screen.getByText("0646")).toBeVisible();
+  expect(screen.getByText("Group write bit").parentElement).toHaveTextContent("Not enabled");
+  expect(screen.getByText("Other write bit").parentElement).toHaveTextContent("Enabled");
+  expect(screen.getByText("Effective access not evaluated.")).toBeVisible();
+});
+
+it.each(["unavailable_windows", "unsupported_platform"] as const)("labels %s permissions without inventing zero bits", status => {
+  render(<EvidenceRecords records={[metadataWithPermissions(status)]} />);
+  expect(screen.getByText(status === "unavailable_windows" ? "Windows permissions not collected." : "Permissions not collected on this platform.")).toBeVisible();
+  expect(screen.getByText("Effective access not evaluated.")).toBeVisible();
+  expect(screen.queryByText("Mode")).not.toBeInTheDocument();
+});
+
+it("keeps the historical file card when permission fields are malformed or duplicated inconsistently", () => {
+  const record = metadataWithPermissions();
+  record.content!.permission_mode_octal = "644";
+  (record.content!.observed_fields as Record<string, unknown>).permission_mode_octal = "0644";
+  render(<EvidenceRecords records={[record]} />);
+  expect(screen.getByText("File metadata observed")).toBeVisible();
+  expect(screen.queryByText("File permissions")).not.toBeInTheDocument();
+  expect(screen.getByText("The observer recorded this file’s path, size and SHA-256 digest.")).toBeVisible();
+});
+
+it.each([
+  "duplicated flags contradict numeric mode",
+  "derived non-owner bit contradicts component flags",
+  "missing component permission bit",
+  "missing permission bit",
+  "unavailable status carries permission bits",
+] as const)("suppresses %s while retaining the historical file card", variation => {
+  const record = metadataWithPermissions();
+  if (variation === "duplicated flags contradict numeric mode") {
+    record.content!.group_write_bit = true;
+    (record.content!.observed_fields as Record<string, unknown>).group_write_bit = true;
+  } else if (variation === "derived non-owner bit contradicts component flags") {
+    record.content!.non_owner_write_bit = false;
+    (record.content!.observed_fields as Record<string, unknown>).non_owner_write_bit = false;
+  } else if (variation === "missing component permission bit") {
+    delete record.content!.group_write_bit;
+    delete (record.content!.observed_fields as Record<string, unknown>).group_write_bit;
+  } else if (variation === "missing permission bit") {
+    delete record.content!.non_owner_write_bit;
+    delete (record.content!.observed_fields as Record<string, unknown>).non_owner_write_bit;
+  } else {
+    record.content!.permission_status = "unavailable_windows";
+    (record.content!.observed_fields as Record<string, unknown>).permission_status = "unavailable_windows";
+  }
+  render(<EvidenceRecords records={[record]} />);
+  expect(screen.getByText("File metadata observed")).toBeVisible();
+  expect(screen.queryByText("File permissions")).not.toBeInTheDocument();
 });
 
 it.each(["unknown producer", "executed", "missing counts", "inconsistent fields", "inconsistent counts", "unknown container"])("leaves %s evidence uninterpreted and preserves its original content", variation => {

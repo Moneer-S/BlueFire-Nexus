@@ -450,6 +450,7 @@
         "bluefire.detection_query_limits",
         "bluefire.detections",
         "bluefire.evidence",
+        "bluefire.file_permissions",
         "bluefire.observation_integrity",
         "bluefire.execution_contracts",
         "bluefire.planner",
