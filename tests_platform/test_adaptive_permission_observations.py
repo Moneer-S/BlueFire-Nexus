@@ -91,7 +91,10 @@ def test_filesystem_collector_permissions_are_projected_without_sensitive_extras
         "observation_kind": "filesystem",
         **fields,
         "observed_fields": {**fields, "path": "private/fixture", "owner": "operator"},
-        "output": {"secret": "must not project", "path": "/host/private"},
+        "output": {
+            "secret": "must not project",  # pragma: allowlist secret
+            "path": "/host/private",
+        },
     }
     facts = _facts(_project(_record(content)))
     assert {key: facts[key] for key in PERMISSION_FIELDS} == fields
@@ -200,7 +203,10 @@ def test_non_observed_records_never_gain_permission_facts(provenance: EvidencePr
     content = {
         "artifact_type": "file_observation",
         **_permissions("0666"),
-        "output": {**_permissions("0666"), "nested_secret": "redact"},
+        "output": {
+            **_permissions("0666"),
+            "nested_secret": "redact",  # pragma: allowlist secret
+        },
         "observed_fields": {**_permissions("0666"), "owner": "redact"},
     }
     facts = _facts(_project(_record(content, provenance=provenance)))
