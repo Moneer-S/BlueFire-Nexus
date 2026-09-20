@@ -16,6 +16,7 @@ CHILDREN = {
     "runner/src/actions/collection.rs": "action",
     "runner/src/safety/cleanup_unix.rs": "safety",
     "runner/src/safety/cleanup_windows.rs": "safety",
+    "runner/src/safety/owned_input.rs": "safety",
 }
 
 

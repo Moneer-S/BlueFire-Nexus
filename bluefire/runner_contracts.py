@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .config import EnvironmentReference, RunnerProfile
-from .contracts import ActionDefinition, SafetyTier
+from .contracts import ActionDefinition, ContractError, SafetyTier
+from .native_tool_installations import canonical_native_tool_installations
 from .provider_runner_contracts import (
     ProviderRunnerContractError,
     canonical_provider_artifacts,
@@ -320,6 +321,18 @@ def seal_profile(document: Mapping[str, Any]) -> dict[str, Any]:
     sealed: dict[str, Any] = dict(json_clone(document))
     if sealed.get("schema_version") != "bluefire.runner-profile.v1":
         raise RunnerContractError("runner profile schema version is unsupported")
+    try:
+        tools = canonical_native_tool_installations(
+            sealed.get("native_tool_installations", []),
+            platform=sealed.get("platform", ""),
+            allowed_actions=sealed.get("allowed_actions", []),
+        )
+    except ContractError as exc:
+        raise RunnerContractError(str(exc)) from exc
+    if tools:
+        sealed["native_tool_installations"] = tools
+    else:
+        sealed.pop("native_tool_installations", None)
     if "action_bindings" in sealed:
         raw_bindings = sealed["action_bindings"]
         if not isinstance(raw_bindings, list):
@@ -383,6 +396,7 @@ def build_runner_profile(
     provider_bindings: Sequence[Mapping[str, Any]] = (),
     provider_artifacts: Sequence[Mapping[str, Any]] = (),
     reviewed_execution: Mapping[str, Any] | None = None,
+    native_tool_installations: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     if profile.mode.value != "execute":
         raise RunnerContractError("only Execute profiles can be compiled for the Rust runner")
@@ -452,6 +466,8 @@ def build_runner_profile(
     if providers:
         profile_doc["provider_bindings"] = providers
         profile_doc["provider_artifacts"] = artifacts
+    if native_tool_installations:
+        profile_doc["native_tool_installations"] = list(native_tool_installations)
     if reviewed_execution is not None:
         try:
             profile_doc["reviewed_execution"] = canonical_reviewed_execution(reviewed_execution)

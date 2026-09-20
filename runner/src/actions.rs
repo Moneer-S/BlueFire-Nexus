@@ -234,6 +234,9 @@ pub trait PreparedAction: Send {
 
 pub trait Action: Sync {
     fn descriptor(&self) -> &'static ActionDescriptor;
+    fn native_tool_binding(&self) -> Option<crate::native_tool_installations::NativeToolBinding> {
+        None
+    }
     fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure>;
 }
 

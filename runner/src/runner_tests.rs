@@ -1,6 +1,6 @@
 use super::*;
 use crate::contract::{
-    canonical_json, ProviderActionLimits, ProviderArtifact, ProviderArtifactSpec,
+    canonical_json, Platform, ProviderActionLimits, ProviderArtifact, ProviderArtifactSpec,
     ProviderParameterSpec, ProviderParameterType, ReviewedExecution, ReviewedOperation,
     ReviewedOperationIdentity, PROVIDER_EXECUTION_BINDING_SCHEMA_VERSION,
 };
@@ -14,6 +14,140 @@ use crate::providers::{
 };
 
 const PROVIDER_OUTPUT_OFFSET: u64 = 4096;
+
+fn native_installation() -> crate::native_tool_installations::NativeToolInstallation {
+    serde_json::from_value(json!({
+        "schema_version": "bluefire.native-tool-installation.v1",
+        "adapter_id": "sandbox.permission.chmod.v1", "adapter_version": "1.0.0",
+        "adapter_contract_digest": format!("sha256:{}", "a".repeat(64)),
+        "tool_id": "gnu.coreutils.chmod.v1", "tool_version": "9.5",
+        "platform": "linux", "architecture": std::env::consts::ARCH,
+        "content_sha256": format!("sha256:{}", "b".repeat(64)),
+        "size_bytes": 1234, "installation_location": "/usr/bin/chmod"
+    }))
+    .unwrap()
+}
+
+#[test]
+fn native_installation_cannot_grant_existing_or_unknown_actions_tool_authority() {
+    let binding = alias_binding(
+        "acme.profile.v1",
+        "acme.profile-action.v1",
+        "endpoint.discovery.system.v1",
+    );
+    let (profile, _) = alias_documents(Path::new("."), binding, json!({}));
+    assert!(native_tools::validate_profile(&profile).is_ok());
+    for id in [
+        "endpoint.discovery.system.v1",
+        "sandbox.permission.chmod.v1",
+    ] {
+        let mut changed = profile.clone();
+        changed.platform = Platform::Linux;
+        let mut installation = native_installation();
+        installation.adapter_id = id.into();
+        changed.allowed_actions = vec![id.into()];
+        changed.action_bindings.clear();
+        changed.native_tool_installations = vec![installation];
+        crate::contract::seal_profile(&mut changed);
+        assert!(native_tools::validate_profile(&changed).is_err());
+        let expected = if id == "endpoint.discovery.system.v1" {
+            "native_tool_profile_invalid"
+        } else {
+            "invalid_profile"
+        };
+        assert_eq!(validate_profile(&changed).unwrap_err().code, expected);
+    }
+}
+
+#[test]
+fn optional_tool_records_preserve_legacy_hash_and_rebinding_changes_approved_request() {
+    let binding = alias_binding(
+        "acme.profile.v1",
+        "acme.profile-action.v1",
+        "endpoint.discovery.system.v1",
+    );
+    let (mut profile, mut manifest) = alias_documents(Path::new("."), binding, json!({}));
+    let original = serde_json::to_value(&profile).unwrap();
+    assert!(original.get("native_tool_installations").is_none());
+    let mut explicit_empty = original;
+    explicit_empty["native_tool_installations"] = json!([]);
+    let empty: RunnerProfile = serde_json::from_value(explicit_empty.clone()).unwrap();
+    assert_eq!(expected_profile_digest(&empty), profile.policy_digest);
+    explicit_empty["native_tool_installations"] = Value::Null;
+    assert!(serde_json::from_value::<RunnerProfile>(explicit_empty).is_err());
+    profile.native_tool_installations = vec![native_installation()];
+    reseal_documents(&mut profile, &mut manifest);
+    let reviewed_request = manifest.request_hash.clone();
+    for field in ["path", "digest", "version"] {
+        let mut changed = profile.clone();
+        let installation = &mut changed.native_tool_installations[0];
+        match field {
+            "path" => installation.installation_location = "/opt/reviewed/chmod".into(),
+            "digest" => installation.content_sha256 = format!("sha256:{}", "c".repeat(64)),
+            _ => installation.tool_version = "9.6".into(),
+        }
+        let mut request = manifest.clone();
+        reseal_documents(&mut changed, &mut request);
+        assert_ne!(changed.policy_digest, profile.policy_digest, "{field}");
+        assert_ne!(request.request_hash, reviewed_request, "{field}");
+    }
+}
+
+#[test]
+fn selected_tool_requires_exact_compiled_binding() {
+    struct TestTool;
+    impl Action for TestTool {
+        fn descriptor(&self) -> &'static crate::actions::ActionDescriptor {
+            find_action("endpoint.discovery.system.v1")
+                .unwrap()
+                .descriptor()
+        }
+        fn native_tool_binding(
+            &self,
+        ) -> Option<crate::native_tool_installations::NativeToolBinding> {
+            Some(crate::native_tool_installations::NativeToolBinding {
+                adapter_id: "sandbox.permission.chmod.v1",
+                adapter_version: "1.0.0",
+                adapter_contract_digest:
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                tool_id: "gnu.coreutils.chmod.v1",
+            })
+        }
+        fn prepare(
+            &self,
+            _params: Value,
+        ) -> Result<Box<dyn crate::actions::PreparedAction>, ActionFailure> {
+            panic!("admission tests must not dispatch a tool")
+        }
+    }
+    let binding = alias_binding(
+        "acme.profile.v1",
+        "acme.profile-action.v1",
+        "endpoint.discovery.system.v1",
+    );
+    let (mut profile, _) = alias_documents(Path::new("."), binding, json!({}));
+    profile.platform = Platform::Linux;
+    assert!(native_tools::validate_selected(&profile, &TestTool).is_err());
+    profile.native_tool_installations = vec![native_installation()];
+    assert!(native_tools::validate_selected(&profile, &TestTool).is_ok());
+    for field in ["adapter", "contract", "tool", "platform", "architecture"] {
+        let mut changed = profile.clone();
+        let installation = &mut changed.native_tool_installations[0];
+        match field {
+            "adapter" => installation.adapter_version = "2.0.0".into(),
+            "contract" => {
+                installation.adapter_contract_digest = format!("sha256:{}", "c".repeat(64))
+            }
+            "tool" => installation.tool_id = "other.tool.v1".into(),
+            "platform" => changed.platform = Platform::Windows,
+            _ => installation.architecture = "unsupported".into(),
+        }
+        assert!(
+            native_tools::validate_selected(&changed, &TestTool).is_err(),
+            "{field}"
+        );
+    }
+}
 
 fn test_limits() -> ExecutionLimits {
     ExecutionLimits {
@@ -326,6 +460,7 @@ fn provider_documents(
         reviewed_execution: None,
         control_blocked_actions: Vec::new(),
         action_bindings: Vec::new(),
+        native_tool_installations: Vec::new(),
         provider_bindings: vec![binding.clone()],
         provider_artifacts: vec![ProviderArtifact {
             artifact_sha256: binding.artifact_sha256.clone(),
@@ -428,6 +563,7 @@ fn alias_documents(
         reviewed_execution: None,
         control_blocked_actions: Vec::new(),
         action_bindings: vec![binding.clone()],
+        native_tool_installations: Vec::new(),
         provider_bindings: Vec::new(),
         provider_artifacts: Vec::new(),
         capabilities: descriptor.capabilities.to_vec(),

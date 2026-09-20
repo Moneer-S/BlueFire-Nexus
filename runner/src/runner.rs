@@ -34,6 +34,8 @@ const MAX_JSON_STRING_BYTES: usize = 16 * 1024;
 const MAX_REQUEST_LIFETIME_MINUTES: i64 = 60;
 const MAX_ACTION_BINDINGS: usize = 512;
 
+#[path = "runner_native_tools.rs"]
+mod native_tools;
 #[path = "runner_reviewed_execution.rs"]
 mod reviewed_execution;
 const MAX_BINDING_CONSTANTS: usize = 32;
@@ -535,6 +537,8 @@ fn validate_profile(profile: &RunnerProfile) -> Result<(), ActionFailure> {
         }
     }
     reviewed_execution::validate_profile(profile)?;
+    native_tools::validate_profile(profile)
+        .map_err(|error| blocked("native_tool_profile_invalid", error))?;
     for path in &profile.target_scope.filesystem {
         normalize_relative(path, true).map_err(|error| blocked("invalid_profile_scope", error))?;
     }
@@ -721,6 +725,8 @@ fn validate_policy<'a>(
         } => {
             let descriptor = action.descriptor();
             ensure_action_ready(descriptor)?;
+            native_tools::validate_selected(profile, *action)
+                .map_err(|error| blocked("native_tool_installation_required", error))?;
             if !descriptor.platforms.contains(&actual_platform) {
                 return Err(blocked(
                     "platform_blocked",

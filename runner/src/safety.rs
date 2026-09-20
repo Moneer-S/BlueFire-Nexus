@@ -267,6 +267,10 @@ mod cleanup_platform;
 #[path = "safety/cleanup_windows.rs"]
 mod cleanup_platform;
 
+#[path = "safety/owned_input.rs"]
+mod owned_input;
+pub use owned_input::OwnedReceiptInput;
+
 fn valid_receipt_id(receipt_id: &str) -> bool {
     receipt_id.len() == 64
         && receipt_id

@@ -140,3 +140,26 @@ class NativeToolInstallation:
 
 
 __all__ = ["NativeToolInstallation", "SCHEMA"]
+
+
+def canonical_native_tool_installations(
+    value: Any, *, platform: str, allowed_actions: Any
+) -> list[dict[str, Any]]:
+    """Seal finite setup records; compiled-method admission remains runner-owned."""
+    if not isinstance(value, (list, tuple)) or len(value) > 16:
+        raise ContractError("native tool installations must be a list of at most 16 records")
+    if not value:
+        return []
+    if not isinstance(allowed_actions, (list, tuple)) or any(
+        not isinstance(action, str) for action in allowed_actions
+    ):
+        raise ContractError("native tool installations require explicit allowed actions")
+    records = [NativeToolInstallation.from_mapping(item).to_dict() for item in value]
+    identities = set()
+    for record in records:
+        if record["platform"] != platform or record["adapter_id"] not in allowed_actions:
+            raise ContractError("native tool installation is outside its runner profile")
+        if record["adapter_id"] in identities:
+            raise ContractError("native tool installation adapter is duplicated")
+        identities.add(record["adapter_id"])
+    return sorted(records, key=lambda record: str(record["adapter_id"]))
