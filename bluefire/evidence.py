@@ -15,6 +15,7 @@ from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Mapping
 
+from .file_permissions import PERMISSION_LIMITATION, observed_permission_fields
 from .util import content_hash, json_clone
 
 
@@ -401,6 +402,7 @@ class SandboxObserver:
         parent_evidence_ids: Iterable[str] = (),
         deadline_monotonic: float | None = None,
         _content_analyzer: Callable[[bytes], Mapping[str, Any]] | None = None,
+        include_permissions: bool = True,
     ) -> EvidenceRecord:
         if deadline_monotonic is not None and (
             isinstance(deadline_monotonic, bool) or not isinstance(deadline_monotonic, (int, float))
@@ -438,6 +440,7 @@ class SandboxObserver:
             os.close(descriptor)
         if (
             not stat.S_ISREG(after.st_mode)
+            or before.st_mode != after.st_mode
             or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
             or (before.st_size, before.st_mtime_ns, before.st_ctime_ns)
             != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
@@ -451,6 +454,15 @@ class SandboxObserver:
             if _content_analyzer is not None and captured is not None
             else {}
         )
+        permission_fields = observed_permission_fields(after) if include_permissions else {}
+        limitations = (
+            (
+                "filesystem observation only; no host telemetry collector attached",
+                PERMISSION_LIMITATION,
+            )
+            if include_permissions
+            else ("filesystem observation only; no host telemetry collector attached",)
+        )
         return EvidenceRecord.create(
             run_id=run_id,
             step_id=step_id,
@@ -463,6 +475,7 @@ class SandboxObserver:
             parent_evidence_ids=parent_evidence_ids,
             content={
                 **semantic_fields,
+                **permission_fields,
                 "artifact_type": "file_observation",
                 "path": PurePosixPath(relative_path).as_posix(),
                 "size_bytes": size,
@@ -470,7 +483,7 @@ class SandboxObserver:
                 "modified_ns": after.st_mtime_ns,
             },
             confidence=1.0,
-            limitations=("filesystem observation only; no host telemetry collector attached",),
+            limitations=limitations,
             target_scope_ref=f"runner-profile:{runner_profile_id}",
         )
 

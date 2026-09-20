@@ -56,9 +56,35 @@ A policy allow is not execution. An execution receipt is not observation. Observ
 
 - refuses absolute/traversal/link paths and files outside the root;
 - enforces configured byte and read-time limits;
-- records size, SHA-256, modification time, and relative path;
-- detects a size/mtime change during collection;
+- records size, SHA-256, modification time, relative path, and permission availability;
+- detects identity, size, timestamp, or file-mode changes during collection;
 - describes itself as filesystem-only.
+
+Filesystem collector `1.1.0` includes permission facts under its existing
+`file_metadata` capability. On Linux and macOS, `permission_mode_octal`,
+`group_write_bit`, and `other_write_bit` come from the same opened file handle as
+the content hash. These fields describe POSIX mode bits. They do not establish
+effective access through parent directories, ACLs, group membership, mounts or
+other controls; `effective_access` remains `not_evaluated`.
+
+On Windows, `permission_status` is `unavailable_windows` and the three POSIX fields
+are absent. The observer does not interpret Python's synthetic Windows mode as an
+ACL. Other unsupported platforms report `unsupported_platform`. A detector that
+requires absent fields has an evidence gap, not proof that write access is disabled.
+
+The permission fields are retained in `observed_fields` for detection and comparison.
+SQLite queries can use `permission_status` and `non_owner_write_bit` (the group or
+other write bit). For example, `SELECT fixture_id FROM logs WHERE
+permission_status = 'available' AND non_owner_write_bit = 1` tests for relaxed write
+bits. The fixed 64-column query limit remains unchanged; full octal mode and separate
+bits remain in evidence but are not additional SQL columns. Absent permission bits
+remain missing fields rather than false values.
+New observations carry their own hashes and collector version. Historical records
+remain unchanged and readable; missing permission fields in an older record do not
+mean that it had restrictive permissions. The run evidence card shows validated
+permission details beside the existing file size and digest, with effective access
+explicitly unevaluated. No action, permission change, or external tool invocation is
+performed by this observer.
 
 ### Native process/system discovery
 

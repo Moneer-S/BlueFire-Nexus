@@ -13,6 +13,22 @@ from .collector_gate_evidence import (
 )
 from .collectors import CollectionSession, FilesystemCollector, filesystem_observation_key
 from .evidence import EvidenceProvenance, EvidenceRecord
+from .file_permissions import PERMISSION_FIELDS, permission_fields_valid
+
+
+def _permissions(record: EvidenceRecord) -> dict[str, Any]:
+    fields = {key: record.content[key] for key in PERMISSION_FIELDS if key in record.content}
+    _require(
+        permission_fields_valid(fields)
+        and record.environment.get("collector_version") == "1.1.0"
+        and record.limitations
+        == (
+            "independent filesystem metadata and digest observation only",
+            "permission mode bits do not establish effective access; ACLs and parent traversal are not evaluated",
+        ),
+        "GATE-05 filesystem observation permission contract is invalid",
+    )
+    return fields
 
 
 def _validate_filesystem_binding(
@@ -53,6 +69,7 @@ def _validate_filesystem_binding(
         "GATE-05 filesystem observations do not cover the exact staged and final file effects",
     )
     for file_record in all_filesystem:
+        file_permissions = _permissions(file_record)
         file_parent, _file_step = _validate_collection_lineage(file_record, records_by_id, steps)
         file_output = file_parent.content.get("output")
         file_path = file_record.content.get("path")
@@ -68,6 +85,7 @@ def _validate_filesystem_binding(
                 "path": file_path,
                 "sha256": file_output.get("sha256"),
                 "size_bytes": file_output.get("size"),
+                **file_permissions,
             }
             and file_record.content.get("sha256") == file_output.get("sha256")
             and file_record.content.get("size_bytes") == file_output.get("size"),
@@ -80,6 +98,7 @@ def _validate_filesystem_binding(
     size = bundle.get("size") if isinstance(bundle, Mapping) else None
     observed_fields = record.content.get("observed_fields")
     expected_fields = {"path": path, "size_bytes": size, "sha256": digest}
+    permissions = _permissions(record)
     observation_key = filesystem_observation_key(path) if isinstance(path, str) else None
     settings_row = session.settings.collectors.get(FilesystemCollector.descriptor.id)
     settings = settings_row.get("settings") if isinstance(settings_row, Mapping) else None
@@ -121,7 +140,7 @@ def _validate_filesystem_binding(
         and record.content.get("observation_key") == observation_key
         and record.content.get("collector_id") == FilesystemCollector.descriptor.id
         and record.content.get("mechanism") == "independent-file-handle-read"
-        and observed_fields == expected_fields
+        and observed_fields == {**expected_fields, **permissions}
         and record.content.get("path") == path
         and record.content.get("size_bytes") == size
         and record.content.get("sha256") == digest
@@ -141,6 +160,7 @@ def _validate_filesystem_binding(
             "sha256",
             "size_bytes",
         }
+        | set(permissions)
         and record.environment
         == {
             "environment_type": "disposable",
@@ -157,6 +177,7 @@ def _validate_filesystem_binding(
         parent, _ = _validate_collection_lineage(exported, records_by_id, steps)
         output = parent.content.get("output")
         export_fields = {**expected_fields, "path": "exports/ephemeral/bundle.bin"}
+        export_permissions = _permissions(exported)
         _require(
             isinstance(output, Mapping)
             and output.get("artifact") == "exports/ephemeral/bundle.bin"
@@ -168,7 +189,8 @@ def _validate_filesystem_binding(
             == {
                 **record.content,
                 **export_fields,
-                "observed_fields": export_fields,
+                **export_permissions,
+                "observed_fields": {**export_fields, **export_permissions},
                 "observation_key": filesystem_observation_key("exports/ephemeral/bundle.bin"),
                 "modified_ns": exported.content.get("modified_ns"),
             }

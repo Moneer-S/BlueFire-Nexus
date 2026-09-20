@@ -14,10 +14,16 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from bluefire.file_permissions import PERMISSION_FIELDS, permission_fields_valid
+
 PROFILE_ID = "sandbox-restricted-owned.v1"
 SCENARIO_ID = "scenario.restricted.persistence-canary.v1"
 COLLECTOR_ID = "collector.filesystem.sandbox.v1"
-COLLECTOR_VERSION = "1.0.0"
+COLLECTOR_VERSION = "1.1.0"
+COLLECTOR_LIMITATIONS = (
+    "independent filesystem metadata and digest observation only",
+    "permission mode bits do not establish effective access; ACLs and parent traversal are not evaluated",
+)
 RUNNER_ID = "bluefire-rust-runner.v1"
 SCOPE = {"scope_refs": ["sandbox.workspace"]}
 CANARY_PATH = "restricted/persistence-marker.json"
@@ -811,6 +817,11 @@ def _validate_evidence(
     observed_content = raw_observed_content if isinstance(raw_observed_content, Mapping) else {}
     observed_environment = observed.get("environment")
     observed_fields = observed_content.get("observed_fields")
+    permission_fields = {
+        field: observed_content.get(field)
+        for field in PERMISSION_FIELDS
+        if field in observed_content
+    }
     observed_size = observed_content.get("size_bytes")
     artifact_digest = output.get("sha256")
     cleanup_output = cleaned.get("content", {}).get("output", {})
@@ -853,12 +864,16 @@ def _validate_evidence(
         and observed_content.get("mechanism") == "independent-file-handle-read"
         and type(observed_content.get("modified_ns")) is int
         and observed_content["modified_ns"] > 0
+        and permission_fields_valid(permission_fields)
         and observed_fields
         == {
             "path": CANARY_PATH,
             "sha256": artifact_digest[7:],
             "size_bytes": observed_size,
+            **permission_fields,
         }
+        and isinstance(observed, Mapping)
+        and observed.get("limitations") == list(COLLECTOR_LIMITATIONS)
         and observed_environment
         == {
             "environment_type": "disposable",
