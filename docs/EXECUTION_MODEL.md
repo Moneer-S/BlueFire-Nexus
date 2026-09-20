@@ -122,7 +122,7 @@ Transport failure is not action success. Invalid JSON, output overflow, timeout,
 
 ## Rust action boundary
 
-The current Rust registry contains twenty IDs:
+The current Rust registry contains 23 IDs:
 
 - sandbox.fixture.create.v1
 - sandbox.fixture.transform.v1
@@ -134,6 +134,9 @@ The current Rust registry contains twenty IDs:
 - sandbox.discovery.recursive.v1
 - sandbox.archive.tar.v1
 - sandbox.collection.stage.v1
+- sandbox.collection.records.v1
+- sandbox.collection.archive.v1
+- sandbox.collection.atomic-gzip.v1
 - sandbox.network.loopback.v1
 - sandbox.export.local.v1
 - sandbox.execution.native-canary.v1
@@ -159,11 +162,13 @@ List and metadata descriptors are version `2.0.0` and accept only the exact fixt
 
 Export `2.0.0` derives `exports/ephemeral/bundle.bin` or `exports/review/bundle.bin` from the reviewed `retention_label`. Both are temporary, receipt-owned local copies. The label records policy classification only: `review` does not mean preserved or fallback-surviving, and normal scenario cleanup deletes both labels.
 
-The runner has no generic command, shell, URL, hostname resolution, redirect, proxy, dynamic library, or Python plugin action. Its transforms/templates are compiled choices. Process discovery uses Windows native APIs or one fixed platform-selected absolute `ps` adapter; callers cannot select a program or arguments.
+The three collection methods are separate reviewed choices: native JSONL records, native TAR, and the Linux-only Atomic gzip method that uses the installed protected gzip utility through its fixed adapter. The runner has no generic command, shell, URL, hostname resolution, redirect, proxy, dynamic library, or Python plugin action. Its transforms/templates are compiled choices. Process discovery uses Windows native APIs or one fixed platform-selected absolute `ps` adapter; callers cannot select a program or arguments.
 
 ## AI proposal boundary
 
-Off creates no provider. Assist/Auto request a strict v2 proposal only after a step produces an observed outcome. The request binds the exact registered edge for that outcome and correlated options for a compatible behavior, allowlisted primitive parameters, an exact-profile registered action, and one bounded retry. Assist persists the choice and pauses before mutation. Auto may apply a policy-valid choice only in Simulate. Execute mutations remain stopped until proposal review, fresh-workspace full replay from the scenario start, and a separate fresh exact approval.
+Off creates no provider. Assist/Auto request a strict v2 proposal only after a step produces an observed outcome. The legacy exact-plan path binds the exact registered edge and correlated options; Assist persists the choice and pauses before mutation, while Auto may apply a policy-valid choice only in Simulate. In Execute, legacy exact-plan mutations remain stopped until proposal review, a fresh-workspace full replay from the scenario start, and a separate fresh exact approval.
+
+An opted-in finite adaptive experiment is a separate Execute authorization. It names two to four reviewed, compatible methods for selected steps and one lineage-wide retry. Auto may select one untried method after an eligible actual outcome within that authorization; the selection is still revalidated immediately before dispatch and cannot change the target, effects, parameters, profile, cleanup, or resource envelope. Assist still pauses for review. A different target, expanded effect, changed parameter, or unreviewed method requires a new decision and approval. See [Adaptive execution authorization](ADAPTIVE_EXECUTION.md).
 
 Provider credentials are environment references. Requests are redacted/bounded; OpenAI-compatible structured responses use timeouts, retry limits, response/token bounds, exact schema validation, and deterministic fallback. The model cannot choose an edge for another outcome, cross-pair options, issue a command or path, create a capability, change profile/scope/tier/policy, approve itself, or exceed the retry budget.
 

@@ -14,6 +14,7 @@ from tools.provider_gate_source_audit import _native_command_source_inventory_is
 REPOSITORY = Path(__file__).resolve().parents[1]
 CHILDREN = {
     "runner/src/actions/collection.rs": "action",
+    "runner/src/actions/atomic_gzip_action.rs": "action",
     "runner/src/safety/cleanup_unix.rs": "safety",
     "runner/src/safety/cleanup_windows.rs": "safety",
     "runner/src/safety/owned_input.rs": "safety",
