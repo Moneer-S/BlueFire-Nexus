@@ -15,7 +15,7 @@ function metadata(): EvidenceRecord {
 function metadataWithPermissions(status: "available" | "unavailable_windows" | "unsupported_platform" = "available"): EvidenceRecord {
   const record = metadata();
   const permissions = status === "available"
-    ? { permission_status: status, effective_access: "not_evaluated", permission_mode_octal: "0646", group_write_bit: false, other_write_bit: true }
+    ? { permission_status: status, effective_access: "not_evaluated", permission_mode_octal: "0646", group_write_bit: false, other_write_bit: true, non_owner_write_bit: true }
     : { permission_status: status, effective_access: "not_evaluated" };
   record.content = { ...record.content!, ...permissions, observed_fields: { ...(record.content!.observed_fields as Record<string, unknown>), ...permissions } };
   return record;
@@ -95,6 +95,8 @@ it("keeps the historical file card when permission fields are malformed or dupli
 
 it.each([
   "duplicated flags contradict numeric mode",
+  "derived non-owner bit contradicts component flags",
+  "missing component permission bit",
   "missing permission bit",
   "unavailable status carries permission bits",
 ] as const)("suppresses %s while retaining the historical file card", variation => {
@@ -102,9 +104,15 @@ it.each([
   if (variation === "duplicated flags contradict numeric mode") {
     record.content!.group_write_bit = true;
     (record.content!.observed_fields as Record<string, unknown>).group_write_bit = true;
-  } else if (variation === "missing permission bit") {
+  } else if (variation === "derived non-owner bit contradicts component flags") {
+    record.content!.non_owner_write_bit = false;
+    (record.content!.observed_fields as Record<string, unknown>).non_owner_write_bit = false;
+  } else if (variation === "missing component permission bit") {
     delete record.content!.group_write_bit;
     delete (record.content!.observed_fields as Record<string, unknown>).group_write_bit;
+  } else if (variation === "missing permission bit") {
+    delete record.content!.non_owner_write_bit;
+    delete (record.content!.observed_fields as Record<string, unknown>).non_owner_write_bit;
   } else {
     record.content!.permission_status = "unavailable_windows";
     (record.content!.observed_fields as Record<string, unknown>).permission_status = "unavailable_windows";

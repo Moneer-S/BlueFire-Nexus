@@ -10,7 +10,7 @@ type FileObservation = { path: string; bytes: number; digest: string; counts?: {
 const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
 const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
-const permissionKeys = ["permission_status", "effective_access", "permission_mode_octal", "group_write_bit", "other_write_bit"] as const;
+const permissionKeys = ["permission_status", "effective_access", "permission_mode_octal", "group_write_bit", "other_write_bit", "non_owner_write_bit"] as const;
 
 function permissionObservation(record: EvidenceRecord, content: Record<string, unknown>): PermissionObservation | undefined {
   if (record.producer !== "collector.filesystem.sandbox.v1"
@@ -32,9 +32,10 @@ function permissionObservation(record: EvidenceRecord, content: Record<string, u
   }
   if (topPresent.length !== permissionKeys.length || typeof content.permission_mode_octal !== "string"
     || !/^[0-7]{4}$/.test(content.permission_mode_octal)
-    || typeof content.group_write_bit !== "boolean" || typeof content.other_write_bit !== "boolean"
+    || typeof content.group_write_bit !== "boolean" || typeof content.other_write_bit !== "boolean" || typeof content.non_owner_write_bit !== "boolean"
     || content.group_write_bit !== ((Number.parseInt(content.permission_mode_octal[2]!, 8) & 2) !== 0)
-    || content.other_write_bit !== ((Number.parseInt(content.permission_mode_octal[3]!, 8) & 2) !== 0)) return;
+    || content.other_write_bit !== ((Number.parseInt(content.permission_mode_octal[3]!, 8) & 2) !== 0)
+    || content.non_owner_write_bit !== (content.group_write_bit || content.other_write_bit)) return;
   return {
     status,
     mode: content.permission_mode_octal,
