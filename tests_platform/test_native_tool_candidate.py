@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +14,7 @@ from bluefire.contracts import ContractError
 from bluefire.native_tool_candidate import SCHEMA, validate_candidate_inspection
 from bluefire.native_tool_installations import CANDIDATE_SCHEMA, canonical_native_tool_candidate
 from bluefire.runner_client import SubprocessRustRunner
+from bluefire.runner_lifecycle import ManagedRunnerLifecycle
 from bluefire.runner_transport import AuthenticatedRunnerServer, RunnerRemoteError
 from bluefire.service import BlueFireService
 from bluefire.util import content_hash
@@ -169,12 +171,13 @@ def test_default_setup_inspects_unenrolled_draft_through_existing_authenticated_
 
         class ExistingHost:
             def status(self):
-                return {
-                    "state": "ready",
-                    "enrollment_state": "active",
-                    "process_state": "authenticated",
-                    "profile_id": client.profile_id,
-                }
+                return ManagedRunnerLifecycle._status_payload(
+                    SimpleNamespace(runner_id="runner.test"),
+                    state="ready",
+                    enrollment_state="active",
+                    process_state="authenticated",
+                    profile_id=client.profile_id,
+                )
 
             def client_for_profile(self, profile_id):
                 assert profile_id == client.profile_id

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 import pytest
 
 from bluefire.native_tool_setup_transport import managed_setup_transport
-from bluefire.runner_lifecycle import RunnerLifecycleError
+from bluefire.runner_lifecycle import ManagedRunnerLifecycle, RunnerLifecycleError
 
 
 class FakeClient:
@@ -45,12 +46,13 @@ class FakeLifecycle:
 
 
 def ready_status() -> dict[str, Any]:
-    return {
-        "state": "ready",
-        "enrollment_state": "active",
-        "process_state": "authenticated",
-        "profile_id": "profile.execute.v1",
-    }
+    return ManagedRunnerLifecycle._status_payload(
+        SimpleNamespace(runner_id="runner.test"),
+        state="ready",
+        enrollment_state="active",
+        process_state="authenticated",
+        profile_id="profile.execute.v1",
+    )
 
 
 def test_setup_transport_binds_default_authenticated_host_without_execute() -> None:
@@ -69,9 +71,24 @@ def test_setup_transport_binds_default_authenticated_host_without_execute() -> N
 @pytest.mark.parametrize(
     "status",
     [
-        {"state": "stopped", "enrollment_state": "active", "process_state": "absent"},
-        {"state": "ready", "enrollment_state": "absent", "process_state": "authenticated"},
-        {"state": "ready", "enrollment_state": "active", "process_state": "stale"},
+        ManagedRunnerLifecycle._status_payload(
+            SimpleNamespace(runner_id="runner.test"),
+            state="stopped",
+            enrollment_state="active",
+            process_state="absent",
+        ),
+        ManagedRunnerLifecycle._status_payload(
+            SimpleNamespace(runner_id="runner.test"),
+            state="ready",
+            enrollment_state="absent",
+            process_state="authenticated",
+        ),
+        ManagedRunnerLifecycle._status_payload(
+            SimpleNamespace(runner_id="runner.test"),
+            state="ready",
+            enrollment_state="active",
+            process_state="stale",
+        ),
     ],
 )
 def test_setup_transport_refuses_missing_or_nonready_host(status: Mapping[str, Any]) -> None:

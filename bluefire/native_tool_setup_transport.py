@@ -48,8 +48,8 @@ def managed_setup_transport(lifecycle: ManagedRunnerLifecycle) -> ManagedSetupTr
     if (
         not isinstance(status, Mapping)
         or status.get("state") != "ready"
-        or status.get("enrollment_state") != "active"
-        or status.get("process_state") != "authenticated"
+        or status.get("enrollment") != "active"
+        or status.get("process") != "authenticated"
     ):
         raise RunnerLifecycleError("Managed runner is not authenticated and ready.")
     profile_id = status.get("profile_id")
