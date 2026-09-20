@@ -59,3 +59,12 @@ GNU gzip remains an external system dependency under GPL-3.0-or-later; it is not
 copied into BlueFire's source or wheel. Atomic Red Team's adapted test is MIT.
 BlueFire preserves its existing MIT license and the distinct upstream notices.
 Use of these project names describes provenance and does not imply endorsement.
+
+## Runner implementation
+
+`runner/src/actions/atomic_gzip_action.rs` owns the registered method's descriptor,
+typed parameters, input binding and receipt-backed artifact publication. The
+registry in `runner/src/actions.rs` composes it with the other reviewed actions.
+`runner/src/atomic_gzip.rs` owns the fixed system-process boundary described above.
+Keeping these responsibilities separate does not change the method's approval,
+limits, execution or cleanup behavior and does not add a generic command API.

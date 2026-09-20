@@ -503,6 +503,7 @@
     "safety": "safety",
     "actions": "action",
     "collection": "action",
+    "atomic_gzip_action": "action",
     "cleanup_unix": "safety",
     "cleanup_windows": "safety",
     "provider_action": "action",
