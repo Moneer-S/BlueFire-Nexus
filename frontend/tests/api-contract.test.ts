@@ -31,6 +31,18 @@ const configuration: RunConfiguration = {
 
 describe("control-plane request contracts", () => {
   afterEach(() => vi.unstubAllGlobals());
+  it("sends the explicit gzip method while retaining the existing chmod request default", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => { void input; void init; return new Response(JSON.stringify({ status: "unavailable", installation: null }), { status: 200, headers: { "Content-Type": "application/json" } }); });
+    vi.stubGlobal("fetch", fetchMock);
+    await api.inspectNativeToolCandidate("linux-profile.v1", "/usr/bin/chmod", "9.4-3ubuntu6.1");
+    await api.inspectNativeToolCandidate("linux-profile.v1", "/usr/bin/gzip", "1.12-1ubuntu3.2", "sandbox.collection.atomic-gzip.v1");
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual(Array(2).fill("/api/v1/resources/runner-profiles/linux-profile.v1/inspect-native-tool"));
+    expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init!.body)))).toEqual([
+      { schema_version: "bluefire.native-tool-candidate.v1", action_id: "sandbox.permission.chmod.v1", installation_location: "/usr/bin/chmod", tool_version: "9.4-3ubuntu6.1" },
+      { schema_version: "bluefire.native-tool-candidate.v1", action_id: "sandbox.collection.atomic-gzip.v1", installation_location: "/usr/bin/gzip", tool_version: "1.12-1ubuntu3.2" },
+    ]);
+    expect(fetchMock.mock.calls.every(([, init]) => init?.method === "POST" && init.credentials === "same-origin")).toBe(true);
+  });
   it("uses only explicit authenticated model-authorization endpoints and exact reviewed fields", async () => {
     const row = authorization();
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => new Response(JSON.stringify(init?.method === "POST" ? { authorization: row } : snapshot([row])), { status: 200, headers: { "Content-Type": "application/json" } }));

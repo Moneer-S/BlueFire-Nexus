@@ -82,7 +82,7 @@ pub fn inspect_candidate(candidate: &Value) -> Value {
     let Some(tool_version) = candidate.get("tool_version").and_then(Value::as_str) else {
         return unavailable("invalid_installation");
     };
-    if action_id != "sandbox.permission.chmod.v1"
+    if !crate::reviewed_native_builds::supports(action_id)
         || validate_tool_version(tool_version).is_err()
         || validate_location(location).is_err()
     {
@@ -123,7 +123,7 @@ pub fn inspect_candidate(candidate: &Value) -> Value {
             if installation.validate().is_err() || size_bytes == 0 || size_bytes > MAX_SIZE_BYTES {
                 return unavailable("invalid_installation");
             }
-            if let Err(error) = crate::reviewed_chmod_builds::verify(&installation) {
+            if let Err(error) = crate::reviewed_native_builds::verify(&installation) {
                 return unavailable(error.code);
             }
             json!({
@@ -187,14 +187,13 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    #[test]
-    fn protected_non_chmod_elf_cannot_become_a_chmod_installation() {
+    fn refuse_relabelled_tool(action_id: &str, location: &str, version: &str) {
         // Read-only regression: never invoke the system tool or create effects.
         let candidate = json!({
             "schema_version": CANDIDATE_SCHEMA,
-            "action_id": "sandbox.permission.chmod.v1",
-            "installation_location": "/usr/bin/touch",
-            "tool_version": "9.4-3ubuntu6.1"
+            "action_id": action_id,
+            "installation_location": location,
+            "tool_version": version
         });
         let response = inspect_candidate(&candidate);
         assert_eq!(response["status"], "unavailable");
@@ -212,13 +211,13 @@ mod tests {
             )
         ));
         if let Ok(observed) = crate::native_tool_inspection::inspect_candidate(
-            "/usr/bin/touch",
+            location,
             std::env::consts::ARCH,
             crate::canonical::canonical_hash(&candidate),
             Duration::from_secs(5),
         ) {
             assert_eq!(response["code"], "unrecognized_tool_build");
-            let binding = find_action("sandbox.permission.chmod.v1")
+            let binding = find_action(action_id)
                 .unwrap()
                 .native_tool_binding()
                 .unwrap();
@@ -228,12 +227,12 @@ mod tests {
                 adapter_version: binding.adapter_version.into(),
                 adapter_contract_digest: binding.adapter_contract_digest.into(),
                 tool_id: binding.tool_id.into(),
-                tool_version: "9.4-3ubuntu6.1".into(),
+                tool_version: version.into(),
                 platform: "linux".into(),
                 architecture: std::env::consts::ARCH.into(),
                 content_sha256: observed.content_sha256,
                 size_bytes: observed.size_bytes,
-                installation_location: "/usr/bin/touch".into(),
+                installation_location: location.into(),
             };
             // A forged saved record with the correct observed digest is refused
             // by both setup inspection and the exact inspector used at dispatch.
@@ -246,6 +245,28 @@ mod tests {
                     .unwrap_err()
                     .code,
                 "unrecognized_tool_build"
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn protected_non_chmod_elf_cannot_become_a_chmod_installation() {
+        refuse_relabelled_tool(
+            "sandbox.permission.chmod.v1",
+            "/usr/bin/touch",
+            "9.4-3ubuntu6.1",
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn gzip_setup_cannot_admit_chmod_or_another_protected_elf() {
+        for location in ["/usr/bin/chmod", "/usr/bin/touch"] {
+            refuse_relabelled_tool(
+                "sandbox.collection.atomic-gzip.v1",
+                location,
+                "1.12-1ubuntu3.2",
             );
         }
     }

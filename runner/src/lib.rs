@@ -19,6 +19,8 @@ pub mod providers;
 mod receipt_store;
 mod receiver_auth;
 mod reviewed_chmod_builds;
+mod reviewed_gzip_builds;
+mod reviewed_native_builds;
 pub mod runner;
 pub mod safety;
 

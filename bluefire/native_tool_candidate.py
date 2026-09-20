@@ -8,7 +8,7 @@ from .contracts import ContractError
 from .native_tool_installations import NativeToolInstallation, canonical_native_tool_candidate
 from .native_tool_readiness import SCHEMA as INSPECTION_SCHEMA
 from .native_tool_readiness import validate_native_tool_inspection
-from .tool_adapters.chmod import ADAPTER_ID, CONTRACT, TOOL_ID, VERSION
+from .tool_adapters.registry import adapter_for
 from .util import content_hash
 
 SCHEMA = "bluefire.native-tool-candidate-inspection.v1"
@@ -16,8 +16,10 @@ SCHEMA = "bluefire.native-tool-candidate-inspection.v1"
 
 def validate_candidate_inspection(candidate: Mapping[str, Any], result: Any) -> dict[str, Any]:
     candidate = canonical_native_tool_candidate(candidate)
-    if candidate["action_id"] != ADAPTER_ID:
-        raise ContractError("native tool candidate action is unsupported")
+    try:
+        spec = adapter_for(candidate["action_id"])
+    except ContractError:
+        raise ContractError("native tool candidate action is unsupported") from None
     if not isinstance(result, Mapping) or set(result) != {
         "schema_version",
         "candidate_digest",
@@ -53,10 +55,10 @@ def validate_candidate_inspection(candidate: Mapping[str, Any], result: Any) -> 
     installation = NativeToolInstallation.from_mapping(result["installation"])
     record = installation.to_dict()
     installation.check_binding(
-        expected_adapter_id=ADAPTER_ID,
-        expected_adapter_version=VERSION,
-        expected_adapter_contract_digest=CONTRACT.digest,
-        expected_tool_id=TOOL_ID,
+        expected_adapter_id=spec.ADAPTER_ID,
+        expected_adapter_version=spec.VERSION,
+        expected_adapter_contract_digest=spec.CONTRACT.digest,
+        expected_tool_id=spec.TOOL_ID,
         expected_platform="linux",
         expected_architecture=result["architecture"],
     )

@@ -26,7 +26,7 @@ BUILTIN_RUNNER_ACTION_VERSIONS: Mapping[str, str] = MappingProxyType(
         "sandbox.collection.stage.v1": "2.0.0",
         "sandbox.collection.records.v1": "1.0.0",
         "sandbox.collection.archive.v1": "1.0.0",
-        "sandbox.collection.atomic-gzip.v1": "1.0.0",
+        "sandbox.collection.atomic-gzip.v1": "1.1.0",
         "sandbox.permission.chmod.v1": "1.0.0",
         "sandbox.discovery.list.v1": "2.0.0",
         "sandbox.discovery.metadata.v1": "2.0.0",
@@ -47,8 +47,10 @@ BUILTIN_RUNNER_ACTION_VERSIONS: Mapping[str, str] = MappingProxyType(
 BUILTIN_RUNNER_ACTION_IDS = frozenset(BUILTIN_RUNNER_ACTION_VERSIONS)
 # Compiled tool-binding admission is separate from an action being registered.
 # Populate only when a method ships its fixed adapter and setup readiness path.
-BUILTIN_NATIVE_TOOL_ACTION_IDS = frozenset({"sandbox.permission.chmod.v1"})
-BUILTIN_STRUCTURAL_TOOL_ACTION_IDS = frozenset({"sandbox.permission.chmod.v1"})
+BUILTIN_NATIVE_TOOL_ACTION_IDS = frozenset(
+    {"sandbox.permission.chmod.v1", "sandbox.collection.atomic-gzip.v1"}
+)
+BUILTIN_STRUCTURAL_TOOL_ACTION_IDS = BUILTIN_NATIVE_TOOL_ACTION_IDS
 
 
 def native_tool_setup_problem(installations: Collection[Mapping[str, Any]]) -> str | None:

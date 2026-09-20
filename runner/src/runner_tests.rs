@@ -150,6 +150,47 @@ fn selected_tool_requires_exact_compiled_binding() {
     }
 }
 
+#[test]
+fn registered_gzip_requires_current_binding_and_cannot_borrow_chmod_identity() {
+    let action = find_action("sandbox.collection.atomic-gzip.v1").unwrap();
+    let binding = action.native_tool_binding().unwrap();
+    assert_eq!(binding.adapter_version, "1.1.0");
+    let alias = alias_binding(
+        "acme.profile.v1",
+        "acme.profile-action.v1",
+        "endpoint.discovery.system.v1",
+    );
+    let (mut profile, _) = alias_documents(Path::new("."), alias, json!({}));
+    profile.platform = Platform::Linux;
+    profile.allowed_actions = vec![binding.adapter_id.into()];
+    profile.action_bindings.clear();
+    assert!(native_tools::validate_selected(&profile, action).is_err());
+    let mut installation = native_installation();
+    installation.adapter_id = binding.adapter_id.into();
+    installation.adapter_version = binding.adapter_version.into();
+    installation.adapter_contract_digest = binding.adapter_contract_digest.into();
+    installation.tool_id = binding.tool_id.into();
+    profile.native_tool_installations = vec![installation];
+    // Pure declaration tests: matching shape is not a ready/executable build.
+    assert!(native_tools::validate_selected(&profile, action).is_ok());
+    for field in ["legacy-version", "contract", "chmod-tool", "chmod-record"] {
+        let mut changed = profile.clone();
+        let installation = &mut changed.native_tool_installations[0];
+        match field {
+            "legacy-version" => installation.adapter_version = "1.0.0".into(),
+            "contract" => {
+                installation.adapter_contract_digest = format!("sha256:{}", "c".repeat(64))
+            }
+            "chmod-tool" => installation.tool_id = "gnu.coreutils.chmod.v1".into(),
+            _ => *installation = native_installation(),
+        }
+        assert!(
+            native_tools::validate_selected(&changed, action).is_err(),
+            "{field}"
+        );
+    }
+}
+
 fn test_limits() -> ExecutionLimits {
     ExecutionLimits {
         timeout_ms: 5_000,

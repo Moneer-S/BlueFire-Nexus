@@ -33,6 +33,24 @@ it("does not offer native setup for a Simulate profile", async () => {
   expect(screen.queryByRole("button", { name: "Set up GNU chmod" })).not.toBeInTheDocument();
 });
 
+it("offers only the two enabled native-tool setups on an inactive Linux profile", async () => {
+  const dual: RunnerProfile = { ...chmodProfile, enabled_actions: [chmod.id, gzip.id, "sandbox.unreviewed-tool.v1"] };
+  setup("profiles", dual, [{ id: dual.id, status: "draft", document: dual }]);
+  expect(await screen.findByRole("button", { name: `Set up GNU chmod for Chmod profile (${dual.id})` })).toBeEnabled();
+  expect(screen.getByRole("button", { name: `Set up GNU gzip for Chmod profile (${dual.id})` })).toBeEnabled();
+  expect(screen.getAllByRole("button", { name: /^Set up GNU/ })).toHaveLength(2);
+  expect(screen.getByText("GNU chmod binding")).toBeVisible();
+  expect(screen.getByText("GNU gzip binding")).toBeVisible();
+});
+
+it.each(["active", "simulate", "baseline", "other-platform", "disabled-method"])("does not offer gzip setup for a %s profile", async reason => {
+  const selected: RunnerProfile = { ...chmodProfile, enabled_actions: reason === "disabled-method" ? [chmod.id] : [gzip.id], mode: reason === "simulate" ? "simulate" : "execute", platforms: reason === "other-platform" ? ["windows"] : ["linux"] };
+  setup("profiles", selected, reason === "baseline" ? [] : [{ id: selected.id, status: reason === "active" ? "active" : "draft", document: selected }]);
+  await screen.findByRole("heading", { name: "Chmod profile" });
+  expect(screen.queryByRole("button", { name: /^Set up GNU gzip/ })).not.toBeInTheDocument();
+  if (reason === "active") expect(screen.getByText("Deactivate this profile before changing its GNU gzip binding.")).toBeVisible();
+});
+
 it("configures a baseline with its existing identity and saves an inactive draft", async () => {
   setup(); const user = userEvent.setup(); const save = vi.spyOn(api, "saveResource").mockResolvedValue({ schema_version: "v1", resource: { kind: "runner-profiles", id: profile.id, document: profile as unknown as Record<string, unknown>, status: "draft", digest: "sha256:test", created_at: "2026-09-20", updated_at: "2026-09-20" } }); const activate = vi.spyOn(api, "activateResource");
   await user.click(await screen.findByRole("button", { name: "Configure methods for Sample template (sample-template.v1)" }));
@@ -40,6 +58,36 @@ it("configures a baseline with its existing identity and saves an inactive draft
   expect(dialog.getByDisplayValue(profile.id)).toHaveAttribute("readonly");
   await user.click(dialog.getByRole("button", { name: "Save profile draft" }));
   await waitFor(() => expect(save).toHaveBeenCalledWith("runner-profiles", profile.id, expect.objectContaining({ id: profile.id }), "draft"));
+  expect(activate).not.toHaveBeenCalled();
+});
+
+it("requires a versioned profile ID before saving and preserves configuration while correcting it", async () => {
+  setup();
+  const user = userEvent.setup();
+  const id = "gzip-ui-1440x900-example.v1";
+  const save = vi.spyOn(api, "saveResource").mockResolvedValue({ schema_version: "v1", resource: { kind: "runner-profiles", id, document: { ...profile, id } as unknown as Record<string, unknown>, status: "draft", digest: "sha256:test", created_at: "2026-09-20", updated_at: "2026-09-20" } });
+  const activate = vi.spyOn(api, "activateResource");
+  await user.click(await screen.findByRole("button", { name: "New profile" }));
+  const dialog = within(screen.getByRole("dialog", { name: "Draft runner profile" }));
+  await user.selectOptions(dialog.getByLabelText(/^Configuration template/), profile.id);
+  await user.selectOptions(dialog.getByLabelText("Platform"), "linux");
+  const input = dialog.getByRole("textbox", { name: "Profile ID" });
+  expect(dialog.getByText("Use a lowercase, versioned ID, for example local-experiment.v1.")).toBeVisible();
+  for (const invalid of ["gzip-ui-1440x900-example", "Uppercase.v1", "two__separators.v1", "invalid-version.v0"]) {
+    await user.clear(input);
+    await user.type(input, invalid);
+    await user.click(dialog.getByRole("button", { name: "Save profile draft" }));
+    expect(input).toBeInvalid();
+    expect(input).toHaveValue(invalid);
+    expect(save).not.toHaveBeenCalled();
+    expect(dialog.getByLabelText("Platform")).toHaveValue("linux");
+    expect(dialog.getByRole("checkbox", { name: "Compress selected records: Atomic gzip" })).toBeChecked();
+  }
+  await user.clear(input);
+  await user.type(input, id);
+  expect(input).toBeValid();
+  await user.click(dialog.getByRole("button", { name: "Save profile draft" }));
+  await waitFor(() => expect(save).toHaveBeenCalledWith("runner-profiles", id, expect.objectContaining({ id, platforms: ["linux"], enabled_actions: [action.id, gzip.id] }), "draft"));
   expect(activate).not.toHaveBeenCalled();
 });
 

@@ -359,7 +359,7 @@ items:
       license: MIT
       derived: true
       notes: Adapted test cde3c2af-3485-49eb-9c1f-0ed60e9cc0af; fixed system gzip consumes verified synthetic bytes on stdin, without the upstream shell, default input, fallback file creation or shell cleanup.
-    limitations: [Requires a protected installed Linux gzip ELF; no automatic installation. One digest-bound fixture and bounded compressed output; receipt-owned cleanup and independent decoded semantic observation.]
+    limitations: [Requires a protected reviewed GNU gzip build bound to the Linux Execute profile through tool setup; no automatic installation. One digest-bound fixture and bounded compressed output; receipt-owned cleanup and independent decoded semantic observation.]
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.network.loopback.v1

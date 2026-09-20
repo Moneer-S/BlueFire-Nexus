@@ -18,6 +18,7 @@ from bluefire.contracts import load_scenario
 from bluefire.evidence import EvidenceError
 from bluefire.registry import load_builtin_registry
 from bluefire.research import load_builtin_research_registry
+from bluefire.tool_adapters.gzip import CONTRACT, TOOL_ID, VERSION
 
 ROOT = Path(__file__).resolve().parents[1]
 METHOD = "sandbox.collection.atomic-gzip.v1"
@@ -135,6 +136,76 @@ def test_gzip_binding_requires_exact_tool_and_receipt_artifact(variant: str) -> 
     assert "sha256" not in simulated and "tool" not in simulated
 
 
+def test_versioned_gzip_binding_accepts_protected_nondefault_installation() -> None:
+    source = _source()
+    parameters = {"stage_variant": "primary", "max_collection_bytes": 1_048_576}
+    request, _, observable = collection_request(METHOD, parameters, source)
+    output = {
+        "artifact": observable[0],
+        "container": "gzip",
+        "input_count": 1,
+        "source_sha256": request["expected_sha256"],
+        "size": 200,
+        "sha256": "b" * 64,
+        "tool": {
+            "executable": "/opt/bluefire/gzip-1.13/bin/gzip",
+            "sha256": "c" * 64,
+            "arguments": ["-n", "-c"],
+            "source_test": "cde3c2af-3485-49eb-9c1f-0ed60e9cc0af",
+            "adapter_version": VERSION,
+            "adapter_contract_digest": CONTRACT.digest,
+            "installation_digest": "sha256:" + "d" * 64,
+            "tool_id": TOOL_ID,
+            "tool_version": "1.13",
+            "exit_code": 0,
+        },
+    }
+    assert (
+        collection_artifacts(METHOD, parameters, source, output, [])["bundle"]["container"]
+        == "gzip"
+    )
+    for field, bad in (
+        ("adapter_version", "1.0.0"),
+        ("tool_id", "gnu.other.v1"),
+        ("exit_code", 1),
+        ("installation_digest", "bad"),
+    ):
+        with pytest.raises(CollectionMethodError):
+            collection_artifacts(
+                METHOD, parameters, source, {**output, "tool": {**output["tool"], field: bad}}, []
+            )
+
+
+def test_versioned_gzip_binding_rejects_unknown_fields_and_does_not_authorize_execution() -> None:
+    source = _source()
+    parameters = {"stage_variant": "primary"}
+    request, _, observable = collection_request(METHOD, parameters, source)
+    tool = {
+        "executable": "/opt/bluefire/gzip/bin/gzip",
+        "sha256": "c" * 64,
+        "arguments": ["-n", "-c"],
+        "source_test": "cde3c2af-3485-49eb-9c1f-0ed60e9cc0af",
+        "adapter_version": VERSION,
+        "adapter_contract_digest": CONTRACT.digest,
+        "installation_digest": "sha256:" + "d" * 64,
+        "tool_id": TOOL_ID,
+        "tool_version": "1.13",
+        "exit_code": 0,
+        "caller_command": "gzip file",
+    }
+    output = {
+        "artifact": observable[0],
+        "container": "gzip",
+        "input_count": 1,
+        "source_sha256": request["expected_sha256"],
+        "size": 200,
+        "sha256": "b" * 64,
+        "tool": tool,
+    }
+    with pytest.raises(CollectionMethodError):
+        collection_artifacts(METHOD, parameters, source, output, [])
+
+
 def test_focused_example_keeps_native_alternatives_and_no_network() -> None:
     registry = load_builtin_registry()
     scenario = load_scenario(ROOT / "scenarios/atomic_gzip_collection.yaml")
@@ -178,7 +249,10 @@ def test_new_process_boundary_is_byte_bound_and_drift_fails_review() -> None:
     for before, after in (
         (b'.args(["-n", "-c"])', b'.args(["-n", "-c", "caller-file"])'),
         (b".env_clear()", b".envs(std::env::vars())"),
-        (b"metadata.uid() != 0", b"false"),
+        (
+            b"crate::native_tool_inspection::inspect(installation, timeout)",
+            b"caller_supplied_inspection()",
+        ),
         (b"let _ = child.0.kill();", b"let _ = ();"),
     ):
         changed = source.replace(before, after)

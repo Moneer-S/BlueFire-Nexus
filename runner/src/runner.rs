@@ -725,6 +725,12 @@ fn validate_policy<'a>(
             package_alias,
         } => {
             let descriptor = action.descriptor();
+            if !descriptor.platforms.contains(&actual_platform) {
+                return Err(blocked(
+                    "platform_blocked",
+                    "registered action does not support the actual host platform",
+                ));
+            }
             native_tools::validate_selected(profile, *action)
                 .map_err(|error| blocked("native_tool_installation_required", error))?;
             if matches!(descriptor.readiness, ActionReadiness::Structural)
@@ -739,12 +745,6 @@ fn validate_policy<'a>(
                 })?;
             } else {
                 ensure_action_ready(descriptor)?;
-            }
-            if !descriptor.platforms.contains(&actual_platform) {
-                return Err(blocked(
-                    "platform_blocked",
-                    "registered action does not support the actual host platform",
-                ));
             }
             if !package_alias
                 && !descriptor

@@ -4,6 +4,17 @@
 
 use std::time::Duration;
 
+use crate::native_tool_installations::{NativeToolBinding, NativeToolInstallation};
+use std::path::Path;
+
+pub(crate) const BINDING: NativeToolBinding = NativeToolBinding {
+    adapter_id: "sandbox.collection.atomic-gzip.v1",
+    adapter_version: "1.1.0",
+    adapter_contract_digest:
+        "sha256:dd6aec4a80857571f54097f0e8814f3e4307f50c90f8517bff2714381e1ee4ad",
+    tool_id: "gnu.gzip.v1",
+};
+
 #[cfg(any(test, target_os = "linux"))]
 fn capture(mut stream: impl std::io::Read, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
     let mut retained = Vec::new();
@@ -24,6 +35,8 @@ pub(crate) struct GzipOutput {
     pub bytes: Vec<u8>,
     pub executable: String,
     pub executable_sha256: String,
+    pub installation_digest: String,
+    pub tool_version: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -66,101 +79,66 @@ impl From<&str> for GzipError {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn compress(
+    installation: &NativeToolInstallation,
+    workspace: &Path,
     input: Vec<u8>,
     limit: usize,
     stderr_limit: usize,
     timeout: Duration,
 ) -> Result<GzipOutput, GzipError> {
-    use std::fs::File;
-    use std::io::{Read, Write};
-    use std::os::fd::AsRawFd;
-    use std::os::unix::fs::MetadataExt;
+    use std::io::Write;
     use std::os::unix::process::CommandExt;
-    use std::path::Path;
     use std::process::{Child, Command, Stdio};
     use std::thread;
     use std::time::Instant;
 
     let started = Instant::now();
 
-    // Never search PATH. Pin an already-open, root-owned ELF inode, including
-    // its digest, before execution. No caller can supply tool paths or flags.
-    let canonical = Path::new("/usr/bin/gzip")
-        .canonicalize()
-        .or_else(|_| Path::new("/bin/gzip").canonicalize())
-        .map_err(|_| "The reviewed system gzip utility is unavailable.")?;
-    if canonical != Path::new("/usr/bin/gzip") && canonical != Path::new("/bin/gzip") {
-        return Err("The system gzip path resolves outside its reviewed location.".into());
+    let timeout = timeout.min(Duration::from_secs(5));
+    if input.len() > 1_048_576 {
+        return Err("The gzip input exceeds its reviewed byte limit.".into());
     }
-    for parent in canonical.ancestors().skip(1) {
-        let metadata = parent
-            .metadata()
-            .map_err(|_| "Cannot inspect gzip directory ownership.")?;
-        if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
-            return Err("The system gzip directory is not protected from non-owner writes.".into());
+    let limit = limit.min(1_048_576);
+    let stderr_limit = stderr_limit.min(8192);
+    // Setup chooses a protected location; dispatch accepts only the compiled
+    // adapter binding and an independently reviewed build. Never search PATH or
+    // run candidate code to discover its version.
+    BINDING
+        .check_binding(installation, "linux", std::env::consts::ARCH)
+        .map_err(|_| {
+            GzipError::from("The gzip installation differs from its reviewed adapter binding.")
+        })?;
+    let inspected =
+        crate::native_tool_inspection::inspect(installation, timeout).map_err(|error| {
+            if error.code == "inspection_timeout" {
+                GzipError::timed_out(error.message)
+            } else {
+                GzipError::from(error.message)
+            }
+        })?;
+    inspected.recheck().map_err(|error| {
+        if error.code == "inspection_timeout" {
+            GzipError::timed_out(error.message)
+        } else {
+            GzipError::from(error.message)
         }
-    }
-    let mut file =
-        File::open(&canonical).map_err(|_| "Cannot open the reviewed system gzip utility.")?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| "Cannot inspect the system gzip utility.")?;
-    if !metadata.is_file()
-        || metadata.uid() != 0
-        || metadata.mode() & 0o6022 != 0
-        || metadata.mode() & 0o111 == 0
-        || metadata.len() > 16 * 1024 * 1024
-    {
-        return Err("The system gzip utility has unsupported ownership, mode, or size.".into());
-    }
+    })?;
     unsafe extern "C" {
-        fn fgetxattr(
-            fd: i32,
-            name: *const std::os::raw::c_char,
-            value: *mut std::ffi::c_void,
-            size: usize,
-        ) -> isize;
         fn prctl(option: i32, ...) -> i32;
         fn getppid() -> i32;
     }
-    // SAFETY: valid open descriptor, static NUL-terminated attribute, size query.
-    let capabilities = unsafe {
-        fgetxattr(
-            file.as_raw_fd(),
-            c"security.capability".as_ptr(),
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if capabilities != 0
-        && !(capabilities < 0 && std::io::Error::last_os_error().raw_os_error() == Some(61))
-    {
-        return Err(
-            "Cannot establish that the system gzip utility has no file capabilities.".into(),
-        );
-    }
-    let mut executable_bytes = Vec::new();
-    Read::by_ref(&mut file)
-        .take(16 * 1024 * 1024 + 1)
-        .read_to_end(&mut executable_bytes)
-        .map_err(|_| "Cannot hash the system gzip utility.")?;
-    if executable_bytes.len() as u64 != metadata.len() || !executable_bytes.starts_with(b"\x7fELF")
-    {
-        return Err("The system gzip utility is not a stable ELF executable.".into());
-    }
-    let executable_sha256 = crate::contract::sha256_hex(&executable_bytes);
     if started.elapsed() >= timeout {
         return Err(GzipError::timed_out(
             "The gzip execution deadline has elapsed.",
         ));
     }
-    let mut command = Command::new(format!("/proc/self/fd/{}", file.as_raw_fd()));
+    let mut command = Command::new(format!("/proc/self/fd/{}", inspected.fd()));
     command
-        .arg0(&canonical)
+        .arg0(&installation.installation_location)
         .args(["-n", "-c"])
         .env_clear()
         .env("LC_ALL", "C")
-        .current_dir("/")
+        .current_dir(workspace)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -171,6 +149,7 @@ pub(crate) fn compress(
         command.pre_exec(move || {
             if getppid() != expected_parent
                 || prctl(1, 9, 0_usize, 0_usize, 0_usize) != 0
+                || prctl(38, 1, 0_usize, 0_usize, 0_usize) != 0
                 || getppid() != expected_parent
             {
                 return Err(std::io::Error::from_raw_os_error(3));
@@ -191,7 +170,7 @@ pub(crate) fn compress(
             .map_err(|_| "Cannot start the reviewed system gzip utility.")?,
     );
     // Linux resolves the ELF through this open descriptor before close-on-exec.
-    drop(file);
+    // Keep the inspected identity alive through output verification.
     let mut stdin = child
         .0
         .stdin
@@ -258,15 +237,29 @@ pub(crate) fn compress(
             "The gzip utility did not produce a complete bounded no-name gzip stream.",
         ));
     }
+    inspected.recheck().map_err(|error| {
+        if error.code == "inspection_timeout" {
+            GzipError::timed_out(error.message)
+        } else {
+            GzipError::failed(error.message)
+        }
+    })?;
     Ok(GzipOutput {
         bytes,
-        executable: canonical.to_string_lossy().into_owned(),
-        executable_sha256,
+        executable: installation.installation_location.clone(),
+        executable_sha256: inspected
+            .content_sha256
+            .trim_start_matches("sha256:")
+            .into(),
+        installation_digest: inspected.installation_digest,
+        tool_version: installation.tool_version.clone(),
     })
 }
 
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn compress(
+    _installation: &NativeToolInstallation,
+    _workspace: &Path,
     _input: Vec<u8>,
     _limit: usize,
     _stderr_limit: usize,
