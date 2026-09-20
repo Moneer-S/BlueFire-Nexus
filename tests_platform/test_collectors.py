@@ -81,7 +81,7 @@ def test_filesystem_collector_preserves_observed_and_unknown_provenance(tmp_path
     ]
     assert result.records[0].producer == "collector.filesystem.sandbox.v1"
     assert result.records[0].content["collector_id"] == "collector.filesystem.sandbox.v1"
-    assert result.records[0].environment["collector_version"] == "1.0.0"
+    assert result.records[0].environment["collector_version"] == "1.1.0"
     assert result.records[1].content["artifact_type"] == "evidence_gap"
     assert result.health.readiness is CollectorReadiness.DEGRADED
 

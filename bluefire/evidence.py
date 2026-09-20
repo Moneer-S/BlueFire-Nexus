@@ -15,6 +15,7 @@ from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Mapping
 
+from .file_permissions import PERMISSION_LIMITATION, observed_permission_fields
 from .util import content_hash, json_clone
 
 
@@ -438,6 +439,7 @@ class SandboxObserver:
             os.close(descriptor)
         if (
             not stat.S_ISREG(after.st_mode)
+            or before.st_mode != after.st_mode
             or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
             or (before.st_size, before.st_mtime_ns, before.st_ctime_ns)
             != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
@@ -463,6 +465,7 @@ class SandboxObserver:
             parent_evidence_ids=parent_evidence_ids,
             content={
                 **semantic_fields,
+                **observed_permission_fields(after),
                 "artifact_type": "file_observation",
                 "path": PurePosixPath(relative_path).as_posix(),
                 "size_bytes": size,
@@ -470,7 +473,10 @@ class SandboxObserver:
                 "modified_ns": after.st_mtime_ns,
             },
             confidence=1.0,
-            limitations=("filesystem observation only; no host telemetry collector attached",),
+            limitations=(
+                "filesystem observation only; no host telemetry collector attached",
+                PERMISSION_LIMITATION,
+            ),
             target_scope_ref=f"runner-profile:{runner_profile_id}",
         )
 

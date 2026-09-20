@@ -3,9 +3,45 @@ import { recordedEvidenceLabels } from "../lib/run-progress-presentation";
 import { Badge, sentence } from "./Primitives";
 import "./EvidenceRecords.css";
 
-type FileObservation = { path: string; bytes: number; digest: string; counts?: { container: string; total: number; redacted: number; retained: number; empty: number } };
+type PermissionObservation =
+  | { status: "available"; mode: string; groupWrite: boolean; otherWrite: boolean }
+  | { status: "unavailable_windows" | "unsupported_platform" };
+type FileObservation = { path: string; bytes: number; digest: string; counts?: { container: string; total: number; redacted: number; retained: number; empty: number }; permissions?: PermissionObservation };
 const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
 const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
+const permissionKeys = ["permission_status", "effective_access", "permission_mode_octal", "group_write_bit", "other_write_bit"] as const;
+
+function permissionObservation(record: EvidenceRecord, content: Record<string, unknown>): PermissionObservation | undefined {
+  if (record.producer !== "collector.filesystem.sandbox.v1"
+    || content.artifact_type !== "collector_observation" || content.observation_kind !== "filesystem") return;
+  const observedFields = content.observed_fields;
+  if (!isObject(observedFields)) return;
+  const topPresent = permissionKeys.filter((key) => key in content);
+  const observedPresent = permissionKeys.filter((key) => key in observedFields);
+  if (!topPresent.length && !observedPresent.length) return;
+  if (topPresent.length !== observedPresent.length || topPresent.some((key) => !(key in observedFields))
+    || observedPresent.some((key) => !(key in content))
+    || permissionKeys.some((key) => key in content && content[key] !== observedFields[key])) return;
+  const status = content.permission_status;
+  if (status !== "available" && status !== "unavailable_windows" && status !== "unsupported_platform") return;
+  if (content.effective_access !== "not_evaluated") return;
+  if (status !== "available") {
+    if (topPresent.length !== 2) return;
+    return { status };
+  }
+  if (topPresent.length !== permissionKeys.length || typeof content.permission_mode_octal !== "string"
+    || !/^[0-7]{4}$/.test(content.permission_mode_octal)
+    || typeof content.group_write_bit !== "boolean" || typeof content.other_write_bit !== "boolean"
+    || content.group_write_bit !== ((Number.parseInt(content.permission_mode_octal[2]!, 8) & 2) !== 0)
+    || content.other_write_bit !== ((Number.parseInt(content.permission_mode_octal[3]!, 8) & 2) !== 0)) return;
+  return {
+    status,
+    mode: content.permission_mode_octal,
+    groupWrite: content.group_write_bit,
+    otherWrite: content.other_write_bit,
+  };
+}
 
 /** Recognize only the recorded built-in observation contracts, never action output. */
 function fileObservation(record: EvidenceRecord): FileObservation | undefined {
@@ -24,6 +60,7 @@ function fileObservation(record: EvidenceRecord): FileObservation | undefined {
   if (content.artifact_type === "collector_observation" && (!isObject(observedFields)
     || fields.some(name => observedFields[name] !== content[name]))) return;
   const result: FileObservation = { path: content.path, bytes: content.size_bytes, digest: content.sha256 };
+  result.permissions = permissionObservation(record, content);
   if (semantics) {
     const { record_count: total, redacted_record_count: redacted, retained_record_count: retained, empty_record_count: empty } = content;
     if (!count(total) || total < 1 || total > 100 || !count(redacted) || !count(retained) || !count(empty)
@@ -50,6 +87,11 @@ export function EvidenceRecords({ records, catalog, run }: { records: EvidenceRe
         <dl className="evidence-measurements"><div><dt>File</dt><dd><code>{observation.path}</code></dd></div><div><dt>Size</dt><dd>{observation.bytes.toLocaleString("en-US")} bytes</dd></div>
           {counts ? <><div><dt>Records inspected</dt><dd>{counts.total}</dd></div><div><dt>Redacted values</dt><dd>{counts.redacted}</dd></div><div><dt>Original values retained</dt><dd>{counts.retained}</dd></div><div><dt>Empty values</dt><dd>{counts.empty}</dd></div></> : null}
           <div className="evidence-digest"><dt>SHA-256</dt><dd><code>{observation.digest}</code></dd></div></dl>
+        {observation.permissions ? <div className="evidence-permissions" aria-label="File permissions">
+          <strong>File permissions</strong>
+          {observation.permissions.status === "available" ? <dl className="evidence-measurements"><div><dt>Mode</dt><dd><code>{observation.permissions.mode}</code></dd></div><div><dt>Group write bit</dt><dd>{observation.permissions.groupWrite ? "Enabled" : "Not enabled"}</dd></div><div><dt>Other write bit</dt><dd>{observation.permissions.otherWrite ? "Enabled" : "Not enabled"}</dd></div></dl> : <p>{observation.permissions.status === "unavailable_windows" ? "Windows permissions not collected." : "Permissions not collected on this platform."}</p>}
+          <p>Effective access not evaluated.</p>
+        </div> : null}
         <p className="evidence-measurement-boundary">{counts ? "These are aggregate counts of the reviewed synthetic fixture values. Individual values were not retained as evidence." : "This metadata observation does not establish record counts or whether values were redacted."}</p>
         {summary ? <p>Recorded summary: {summary}</p> : null}
       </> : <p>{summary ?? "No readable summary is available for this evidence format. Open the recorded content below."}</p>}

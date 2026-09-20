@@ -86,7 +86,8 @@ SQLITE_LOG_FIELDS = tuple("""fixture_id timestamp EventID Channel Provider_Name 
     TargetUserName LogonId Host Message artifact_type path content process.executable process.command_line process.parent.executable
     process.parent.command_line user.name host.name event.code event.category file.path source.ip source.port destination.ip
     destination.port network.transport registry.path registry.value observation_kind collector_id container
-    record_count redacted_record_count retained_record_count empty_record_count sha256 size_bytes""".split())
+    record_count redacted_record_count retained_record_count empty_record_count sha256 size_bytes
+    permission_status non_owner_write_bit""".split())
 _FIELD_INDEX = {field.casefold(): field for field in SQLITE_LOG_FIELDS}
 _QUOTED_FIELDS = ", ".join(f'"{field}"' for field in SQLITE_LOG_FIELDS)
 _CREATE_LOGS_SQL = "CREATE TABLE logs (" + ", ".join(

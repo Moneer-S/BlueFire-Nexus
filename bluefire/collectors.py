@@ -387,14 +387,27 @@ class FilesystemCollector:
     descriptor = CollectorDescriptor(
         id="collector.filesystem.sandbox.v1",
         name="Sandbox filesystem observer",
-        version="1.0.0",
+        version="1.1.0",
         kind="filesystem",
         capabilities=("file_metadata", "sha256"),
         independent_observation=True,
     )
     _observation_kind: str = "filesystem"
-    _field_names: tuple[str, ...] = ("path", "size_bytes", "sha256")
-    _limitations: tuple[str, ...] = ("independent filesystem metadata and digest observation only",)
+    _field_names: tuple[str, ...] = (
+        "path",
+        "size_bytes",
+        "sha256",
+        "permission_status",
+        "effective_access",
+        "permission_mode_octal",
+        "group_write_bit",
+        "other_write_bit",
+        "non_owner_write_bit",
+    )
+    _limitations: tuple[str, ...] = (
+        "independent filesystem metadata and digest observation only",
+        "permission mode bits do not establish effective access; ACLs and parent traversal are not evaluated",
+    )
     _result_limitations: tuple[str, ...] = ("filesystem metadata and content hash only",)
 
     def __init__(
@@ -480,7 +493,16 @@ class FilesystemCollector:
                             ),
                             "observation_kind": self._observation_kind,
                             "observed_fields": {
-                                field: observed.content[field] for field in self._field_names
+                                field: observed.content[field]
+                                for field in self._field_names
+                                if field
+                                not in {
+                                    "permission_mode_octal",
+                                    "group_write_bit",
+                                    "other_write_bit",
+                                    "non_owner_write_bit",
+                                }
+                                or field in observed.content
                             },
                             "collector_id": self.descriptor.id,
                             "mechanism": "independent-file-handle-read",
