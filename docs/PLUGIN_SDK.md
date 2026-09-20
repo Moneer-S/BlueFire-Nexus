@@ -1,8 +1,10 @@
 # Plugin manifest SDK
 
-BlueFire 0.1.x supports **declarative plugin manifests only**. Parsing a manifest does not install a package, import Python, load a dynamic library, discover an entry point, or make an action executable.
+The plugin manifest SDK defines **declarative plugin metadata**. Parsing a manifest does not install a package, import Python, load a dynamic library, discover an entry point, or make an action executable.
 
 This narrow boundary lets the product inventory proposed third-party content without treating metadata as trusted code. The local API can save, activate, deactivate, and inventory these manifests, but activation registers metadata only: `executable_loading` and `dynamic_actions` always remain `false`.
+
+Declarative manifests, signed provider packages, and fixed external utility adapters are separate contracts. A signed provider package is a content-addressed no-host-import WebAssembly module using the bounded ABI in [Action SDK](ACTION_SDK.md); it is not made executable by a plugin manifest. A fixed external utility adapter is a reviewed, adapter-owned invocation of one verified installed utility with typed inputs, fixed arguments, bounded execution, provenance, observation, and receipt-bound cleanup. The current Atomic gzip method is the concrete example ([Atomic gzip collection](ATOMIC_GZIP.md)); it does not establish a general adapter framework or a generic command interface.
 
 ## Manifest schema
 
@@ -87,6 +89,8 @@ The CLI command reports its static declarative trust boundary. The managed API i
 
 Declarative plugins remain metadata-only. Executable action-provider packages use a separate signed contract described in [Action SDK](ACTION_SDK.md); making that path available does not make a plugin manifest executable.
 
+Descriptor-only collectors remain unavailable until their real adapter, access, and target scope exist. In particular, Sysmon, auditd, PCAP, cloud identity, EDR, and SIEM entries describe possible evidence sources; they do not collect evidence merely because metadata names them.
+
 For material such as a selected Atomic Red Team test, do not blindly execute an upstream script. The safe integration path is:
 
 1. pin a tag/commit and retrieval date outside the repository;
@@ -108,4 +112,4 @@ For material such as a selected Atomic Red Team test, do not blindly execute an 
 - remote marketplace or update service;
 - automatic Atomic Red Team or public-rule execution.
 
-An executable extension must be either reviewed first-party compiled source or an explicitly trusted and activated signed provider package that satisfies the bounded runtime contract in [Action SDK](ACTION_SDK.md). Arbitrary executable plugins remain unsupported.
+An executable extension currently requires reviewed first-party compiled source or an explicitly trusted and activated signed provider package that satisfies the bounded runtime contract in [Action SDK](ACTION_SDK.md). The [reviewed tool-adapter contract](TOOL_ADAPTERS.md) is a prerequisite for additional fixed native integrations; parsing that contract does not register or execute a tool. Arbitrary executable plugins remain unsupported.
