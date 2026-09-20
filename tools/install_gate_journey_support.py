@@ -872,6 +872,7 @@ def _validate_evidence(
             "size_bytes": observed_size,
             **permission_fields,
         }
+        and isinstance(observed, Mapping)
         and observed.get("limitations") == list(COLLECTOR_LIMITATIONS)
         and observed_environment
         == {

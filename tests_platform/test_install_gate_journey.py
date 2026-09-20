@@ -406,6 +406,17 @@ def test_run_requires_exact_observer_lineage_and_real_workspace_cleanup(tmp_path
             replay_of=None,
         )
 
+    missing_limitations = deepcopy(run)
+    del missing_limitations["evidence"]["records"][1]["limitations"]
+    with pytest.raises(support.SupportError, match="canonical collector observation"):
+        support.validate_run(
+            missing_limitations,
+            sandbox_root=sandbox,
+            approval_binding=_binding(),
+            approved_by="gate01-release-operator",
+            replay_of=None,
+        )
+
     different_plan = deepcopy(run)
     different_plan["plan"]["unreviewed"] = True
     with pytest.raises(support.SupportError, match="reviewed approval binding"):
