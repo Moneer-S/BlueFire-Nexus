@@ -5,15 +5,16 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping, Sequence
 
+from .permission_objective import ACTION_ID, MODES
+from .permission_objective import permission_objective_evidence as permission_objective_evidence
+from .permission_objective import permission_observation_status as permission_observation_status
 from .runner_provider_values import RunnerAdapterError
 from .tool_adapters.chmod import CONTRACT
 
-ACTION_ID = "sandbox.permission.chmod.v1"
 BEHAVIOR_ID = "sandbox.permission.relax.v1"
 FIXTURE_PATH = "fixtures/transformed.jsonl"
 FIXTURE_TYPE = "artifact.sandbox.fixture.v1"
 OUTPUT_TYPE = FIXTURE_TYPE
-MODES = frozenset({"0600", "0640", "0660", "0666"})
 _HEX = frozenset("0123456789abcdef")
 
 

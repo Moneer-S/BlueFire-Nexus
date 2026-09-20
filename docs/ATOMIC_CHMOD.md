@@ -53,12 +53,16 @@ Linux execution evidence.
 
 ## Set up and review
 
-In Runner profiles, create a draft from an existing Execute configuration,
-select Linux, and enable **Change sample file permissions (GNU chmod)** together
-with its setup and cleanup methods. Save the draft, then choose **Set up GNU
+In Runner profiles, choose **Configure methods** on the existing Linux Execute
+profile used by your enrolled local runner. Deactivate an active profile first.
+This retains its enrolled identity while you enable **Change sample file
+permissions (GNU chmod)** together with its setup and cleanup methods. Save the
+draft, then choose **Set up GNU
 chmod** on its card. Enter the protected installation location and its declared
-package version. **Inspect installation** reads the executable through the
-selected runner; it checks protected ownership, permissions, native ELF
+package version. Start the local runner through **Runners** if it is offline;
+the draft does not need activation or enrollment for this read-only check.
+**Inspect installation** reads the executable through the authenticated local
+runner's inspection connection; it checks protected ownership, permissions, native ELF
 architecture, bounded size, content hash and stable file identity without
 launching the utility. A refused inspection carries no installation record.
 
@@ -66,6 +70,9 @@ Review the result and choose **Save tool binding**. This saves a profile draft;
 activation and execution review remain separate. The runner checks the saved
 bytes again during readiness and immediately before execution. A saved record,
 a connection check or an authored simulation is not a live permission experiment.
+Creating a new named profile does not add that identity to an existing runner
+enrollment. Use the existing enrolled profile for this journey; enrollment
+migration for additional profile identities is not part of this method.
 
 In the graph, connect **Create sample records**, **Prepare sample records**,
 the permission method and cleanup using their typed fixture input/output. Choose

@@ -1103,7 +1103,7 @@ def runner_inventory_digest(inventory: Mapping[str, Any]) -> str:
 
 
 def runner_transport_identity(
-    runner: RunnerTransport,
+    runner: object,
     inventory: Mapping[str, Any],
 ) -> Mapping[str, str]:
     """Build a secret-safe identity for the exact transport and runner binary."""

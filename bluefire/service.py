@@ -241,6 +241,7 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         self.recovered_runs = self.store.recover_interrupted_runs()
         self.runner_lifecycle = runner_lifecycle or ManagedRunnerLifecycle(managed_product_root())
         self.runner_factory = runner_factory or self._managed_runner
+        self._native_tool_setup_runner_factory = runner_factory
         self.collector_registry_factory = (
             collector_registry_factory or _default_collector_registry_factory
         )

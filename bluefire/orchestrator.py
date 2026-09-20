@@ -74,7 +74,7 @@ from .execution_progress import (
 from .job_runtime import JobCancelled
 from .native_tool_execution_readiness import inspected_tool_rows
 from .observation_integrity import evaluate_observation_integrity
-from .permission_method import existing_cleanup_receipts
+from .permission_method import existing_cleanup_receipts, permission_objective_evidence
 from .planned_runner_inventory import (
     PlannedRunnerInventoryError,
     validate_planned_runner_inventory,
@@ -2943,6 +2943,7 @@ class Orchestrator:
                 "policy_digest": runner_profile["policy_digest"],
                 "runner_status": runner_status,
                 "expected_observable_paths": list(adapted.observable_paths),
+                **permission_objective_evidence(runner_step.action_id, runner_step.parameters),
                 **(
                     {"collection_method": runner_step.action_id}
                     if runner_step.action_id in COLLECTION_METHODS

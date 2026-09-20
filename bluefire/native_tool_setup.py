@@ -9,8 +9,10 @@ from .application_errors import APIError
 from .contracts import ContractError, ExecutionMode
 from .native_tool_candidate import validate_candidate_inspection
 from .native_tool_installations import canonical_native_tool_candidate
+from .native_tool_setup_transport import managed_setup_transport
 from .registry import RegistryError
 from .runner_client import canonical_runner_inventory, runner_transport_identity
+from .runner_lifecycle import RunnerLifecycleError
 from .runner_transport_errors import RunnerTransportError
 from .tool_adapters.chmod import ADAPTER_ID
 
@@ -38,7 +40,12 @@ def inspect_profile_tool(
         ) from None
 
     try:
-        runner = service._runner_probe_transport(profile)
+        factory = service._native_tool_setup_runner_factory
+        runner = (
+            factory(profile)[0]
+            if factory is not None
+            else managed_setup_transport(service.runner_lifecycle)
+        )
         before = runner.inventory()
         canonical = canonical_runner_inventory(before)
         identity = runner_transport_identity(runner, before)
@@ -64,6 +71,12 @@ def inspect_profile_tool(
         ):
             raise ContractError("profile changed during inspection")
         return result
+    except RunnerLifecycleError:
+        raise APIError(
+            HTTPStatus.CONFLICT,
+            "native_tool_runner_unavailable",
+            "Start the local runner in Runners, then inspect this installation. The draft does not need activation.",
+        ) from None
     except (ContractError, RunnerTransportError, OSError, TypeError, ValueError):
         raise APIError(
             HTTPStatus.CONFLICT,

@@ -157,6 +157,55 @@ def test_authenticated_candidate_refuses_non_tool_action(
     assert runner.inspect_calls == 0 and runner.execute_calls == 0
 
 
+def test_default_setup_inspects_unenrolled_draft_through_existing_authenticated_host(
+    enrollment_root, secret_provider, tmp_path
+):
+    runner = CandidateRunner()
+    with AuthenticatedRunnerServer(
+        enrollment_root, runner, tmp_path / "transport.sqlite3", secret_provider=secret_provider
+    ) as server:
+        client = transport_support._client(enrollment_root, server, secret_provider)
+        selected = []
+
+        class ExistingHost:
+            def status(self):
+                return {
+                    "state": "ready",
+                    "enrollment_state": "active",
+                    "process_state": "authenticated",
+                    "profile_id": client.profile_id,
+                }
+
+            def client_for_profile(self, profile_id):
+                assert profile_id == client.profile_id
+                selected.append(profile_id)
+                return client, tmp_path / "workspace"
+
+        service = BlueFireService(
+            project_root=ROOT, runs_dir=tmp_path / "runs", runner_lifecycle=ExistingHost()
+        )
+        try:
+            document = configured_profile().to_dict()
+            document.update(
+                id="draft.permission-unenrolled.v1",
+                platforms=["linux"],
+                native_tool_installations=[],
+            )
+            assert document["id"] != client.profile_id
+            service.save_resource(
+                "runner_profile", document["id"], {"document": document, "status": "draft"}
+            )
+            before = deepcopy(service.product_store.get_resource("runner_profile", document["id"]))
+            assert service.inspect_runner_profile_tool(document["id"], candidate()) == result()
+            assert service.product_store.get_resource("runner_profile", document["id"]) == before
+            assert selected == [client.profile_id]
+            assert document["id"] not in {profile.id for profile in service._runner_profiles()}
+            assert service.store.list_runs() == []
+        finally:
+            service.close()
+    assert runner.inspect_calls == 1 and runner.execute_calls == 0
+
+
 @pytest.fixture
 def setup_service(tmp_path):
     runner = CandidateRunner()
