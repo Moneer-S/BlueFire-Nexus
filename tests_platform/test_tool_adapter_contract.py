@@ -183,12 +183,48 @@ def test_parameter_schema_has_no_unbounded_or_nonfinite_inputs(document, spec):
 
 
 @pytest.mark.parametrize(
-    "reference", ["http://example.invalid", "file:///tool", "https://fixture@example.invalid"]
+    "reference",
+    [
+        "http://example.invalid",
+        "file:///tool",
+        "https://fixture@example.invalid",
+        "https://exa mple.com/release",
+        "https://example.com/bad path",
+        "https://.",
+        "https://example.com:bad/release",
+        "https://example.com:65536/release",
+        "https://example.com:0/release",
+        "https://example.com:/release",
+        "https://@example.com/release",
+        "https://-example.com/release",
+        "https://example..com/release",
+        "https://example_.com/release",
+        "https://example%20.com/release",
+        "https://[invalid]/release",
+        "https://[fe80::1%25eth0]/release",
+        "https://" + "x" * 64 + ".com/release",
+    ],
 )
 def test_source_identity_is_not_an_installation_url_or_credential_channel(document, reference):
     document["source"]["reference"] = reference
     with pytest.raises(ContractError):
         ToolAdapterContract.from_mapping(document)
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "https://example.invalid/reviewed/1.0.0",
+        "https://example.com:443/release",
+        "https://example.com./release",
+        "https://xn--bcher-kva.example/release",
+        "https://192.0.2.1/release",
+        "https://[2001:db8::1]:443/release",
+    ],
+)
+def test_well_formed_provenance_identity_is_preserved_without_network_access(document, reference):
+    document["source"]["reference"] = reference
+    assert ToolAdapterContract.from_mapping(document).to_dict()["source"]["reference"] == reference
 
 
 @pytest.mark.parametrize(

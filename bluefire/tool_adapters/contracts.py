@@ -8,6 +8,7 @@ no script, executable path, argument vector, installer, or dispatch function.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import re
 from dataclasses import dataclass
@@ -91,13 +92,32 @@ class ToolAdapterContract:
             _text(source[name], f"source {name}")
         try:
             reference = urlsplit(source["reference"])
+            hostname = reference.hostname or ""
+            port = reference.port
+            try:
+                ipaddress.ip_address(hostname)
+                valid_host = "%" not in hostname
+            except ValueError:
+                ascii_host = hostname.encode("idna").decode("ascii").removesuffix(".")
+                labels = ascii_host.split(".")
+                valid_host = (
+                    len(ascii_host) <= 253
+                    and len(labels) >= 2
+                    and all(
+                        re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+                        for label in labels
+                    )
+                )
         except ValueError as exc:
             raise ContractError("source reference is malformed") from exc
         if (
             reference.scheme != "https"
-            or not reference.hostname
-            or reference.username
-            or reference.password
+            or any(char.isspace() for char in source["reference"])
+            or not valid_host
+            or port == 0
+            or reference.netloc.endswith(":")
+            or reference.username is not None
+            or reference.password is not None
         ):
             raise ContractError(
                 "source reference must be a public HTTPS identity without credentials"
