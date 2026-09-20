@@ -25,6 +25,10 @@ from .contracts import (
     _string,
     _strings,
 )
+from .native_tool_installations import (
+    NativeToolInstallation,
+    canonical_native_tool_installations,
+)
 
 
 class ConfigError(ContractError):
@@ -453,6 +457,7 @@ class RunnerProfile:
     cleanup_policy: CleanupPolicy
     budgets: RunnerBudgets
     secrets: Mapping[str, EnvironmentReference] = field(default_factory=dict)
+    native_tool_installations: tuple[NativeToolInstallation, ...] = ()
 
     @classmethod
     def from_mapping(cls, value: Any, context: str = "runner profile") -> "RunnerProfile":
@@ -476,6 +481,7 @@ class RunnerProfile:
                 "cleanup_policy",
                 "budgets",
                 "secrets",
+                "native_tool_installations",
             },
             required={
                 "id",
@@ -541,6 +547,19 @@ class RunnerProfile:
         for name, reference in raw_secrets.items():
             key = _namespace(name, f"{context}.secrets key")
             secrets[key] = EnvironmentReference.from_mapping(reference, f"{context}.secrets.{key}")
+        raw_tools = data.get("native_tool_installations", [])
+        if not isinstance(raw_tools, list):
+            raise ConfigError(f"{context}.native_tool_installations must be a list")
+        try:
+            # The v1 installation schema admits Linux only. Configuration may
+            # support additional platforms, but cannot borrow their authority.
+            tool_records = canonical_native_tool_installations(
+                raw_tools, platform="linux", allowed_actions=actions
+            )
+        except ContractError as exc:
+            raise ConfigError(f"{context}: {exc}") from exc
+        if tool_records and (mode is not ExecutionMode.EXECUTE or "linux" not in platforms):
+            raise ConfigError(f"{context}: native tools require a Linux Execute profile")
         return cls(
             id=_stable_id(data["id"], f"{context}.id"),
             mode=mode,
@@ -566,10 +585,13 @@ class RunnerProfile:
             ),
             budgets=RunnerBudgets.from_mapping(data["budgets"], f"{context}.budgets"),
             secrets=secrets,
+            native_tool_installations=tuple(
+                NativeToolInstallation.from_mapping(record) for record in tool_records
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        document: dict[str, Any] = {
             "id": self.id,
             "mode": self.mode.value,
             "environment_type": self.environment_type.value,
@@ -587,6 +609,11 @@ class RunnerProfile:
             "budgets": self.budgets.to_dict(),
             "secrets": {name: reference.to_dict() for name, reference in self.secrets.items()},
         }
+        if self.native_tool_installations:
+            document["native_tool_installations"] = [
+                installation.to_dict() for installation in self.native_tool_installations
+            ]
+        return document
 
 
 @dataclass(frozen=True, slots=True)

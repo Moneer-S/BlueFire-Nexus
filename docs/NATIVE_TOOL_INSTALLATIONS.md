@@ -1,8 +1,9 @@
 # Native tool installation identity
 
 The native-tool setup foundation separates an approved installation identity
-from an operation's logical parameters. It is not yet connected to a setup UI,
-durable trust store, runner inventory or external-tool execution dispatch.
+from an operation's logical parameters. Records persist in existing runner
+profiles and are bound to operator approval. A dedicated setup UI, inspected
+runner inventory and external-tool execution dispatch remain unimplemented.
 No method becomes ready by parsing a record or completing this inspection.
 
 `bluefire.native_tool_installations.NativeToolInstallation` validates an exact
@@ -37,20 +38,28 @@ Dispatch must recheck the sealed installation binding and the opened executable
 before effects; legacy exact-plan approvals must not gain tool authority.
 
 Runner profiles can now carry a finite `native_tool_installations` list. Its
-contents are included in the policy digest and therefore the approved manifest
-hash; an absent or empty list preserves the legacy profile digest. The Rust
+contents are included in the saved profile, operator approval state, adaptive
+authorization, policy digest and approved manifest hash. Changing the location,
+version or content identity invalidates the previous approval. An absent or
+empty list preserves the legacy profile digest. Dispatch derives records only
+from that reviewed profile and projects them to the actual platform and final
+reviewed actions; cleanup does not inherit unrelated installations. The Rust
 runner refuses records unless their adapter identity matches an explicitly
 registered method's compiled tool binding. Existing methods declare no such
 binding, so adding setup records cannot grant them external-tool authority.
 For this first schema, adapter IDs identify compiled action IDs. No method is
-currently admitted by this new boundary. The eventual setup inventory and
-operator review must bind these records before any tool can use them.
+currently admitted by this new boundary. Service preflight refuses unsupported
+setup before issuing an approval, and its runner probe reports degraded readiness.
+The eventual setup inventory must inspect the actual execution environment
+before a compiled tool adapter can become ready.
 
 The runner also provides read-only pinning for a single file named by a committed
 creation receipt. It validates both receipt and commit identity using bounded,
 no-follow reads, checks the expected content and size, requires current-user
 ownership and a single hard link, and retains the opened file for later checks.
-It detects changed content or path attachment. A metadata-only operation may
+It detects changed content or path attachment. On Unix, hashing uses positioned
+reads so neither initial pinning nor a recheck changes the consumer's read offset.
+A metadata-only operation may
 retain the original creation receipt for deletion during cleanup. This helper
 does not itself execute a tool, change permissions or authorize a target path.
 

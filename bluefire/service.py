@@ -144,6 +144,7 @@ from .runner_client import (
     runner_transport_identity,
 )
 from .runner_contracts import RunnerContractError, current_platform
+from .runner_inventory import native_tool_setup_problem
 from .runner_lifecycle import ManagedRunnerLifecycle, RunnerLifecycleError, RunnerProfileBudgetError
 from .runner_management_service import RunnerManagementServiceMixin
 from .util import content_hash, file_hash
@@ -5606,6 +5607,11 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
     ) -> tuple[RunnerTransport, Path, Mapping[str, Any]]:
         """Implement readiness while the exact catalog generation is locked."""
 
+        tool_problem = native_tool_setup_problem(
+            [installation.to_dict() for installation in profile.native_tool_installations]
+        )
+        if tool_problem is not None:
+            raise RunnerReadinessError(tool_problem)
         try:
             runner, sandbox = self.runner_factory(profile)
         except (
@@ -6097,6 +6103,11 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             action_ids.add(action_id)
 
         problems: list[str] = []
+        tool_problem = native_tool_setup_problem(
+            [installation.to_dict() for installation in profile.native_tool_installations]
+        )
+        if tool_problem is not None:
+            problems.append(tool_problem)
         if platform not in profile.platforms:
             problems.append("Runner platform is outside the stored profile allowlist.")
         missing_actions = sorted(set(profile.enabled_actions) - action_ids)

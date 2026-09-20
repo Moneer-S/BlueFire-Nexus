@@ -387,6 +387,7 @@
       "layer": "foundation",
       "patterns": [
         "bluefire.config",
+        "bluefire.native_tool_installations",
         "bluefire.contracts",
         "bluefire.adaptive_execution_contract",
         "bluefire.data.__init__",
@@ -450,7 +451,6 @@
         "bluefire.detections",
         "bluefire.evidence",
         "bluefire.observation_integrity",
-        "bluefire.native_tool_installations",
         "bluefire.execution_contracts",
         "bluefire.planner",
         "bluefire.plugins",

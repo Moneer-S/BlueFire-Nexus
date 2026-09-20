@@ -44,6 +44,19 @@ BUILTIN_RUNNER_ACTION_VERSIONS: Mapping[str, str] = MappingProxyType(
     }
 )
 BUILTIN_RUNNER_ACTION_IDS = frozenset(BUILTIN_RUNNER_ACTION_VERSIONS)
+# Compiled tool-binding admission is separate from an action being registered.
+# Populate only when a method ships its fixed adapter and setup readiness path.
+BUILTIN_NATIVE_TOOL_ACTION_IDS: frozenset[str] = frozenset()
+
+
+def native_tool_setup_problem(installations: Collection[Mapping[str, Any]]) -> str | None:
+    """Never present setup metadata as an admitted installed capability."""
+    if any(
+        record.get("adapter_id") not in BUILTIN_NATIVE_TOOL_ACTION_IDS for record in installations
+    ):
+        return "The installed action catalog does not support this native-tool setup."
+    return None
+
 
 _ACTION_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _SEMVER = re.compile(

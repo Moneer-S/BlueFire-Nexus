@@ -396,7 +396,6 @@ def build_runner_profile(
     provider_bindings: Sequence[Mapping[str, Any]] = (),
     provider_artifacts: Sequence[Mapping[str, Any]] = (),
     reviewed_execution: Mapping[str, Any] | None = None,
-    native_tool_installations: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     if profile.mode.value != "execute":
         raise RunnerContractError("only Execute profiles can be compiled for the Rust runner")
@@ -466,8 +465,6 @@ def build_runner_profile(
     if providers:
         profile_doc["provider_bindings"] = providers
         profile_doc["provider_artifacts"] = artifacts
-    if native_tool_installations:
-        profile_doc["native_tool_installations"] = list(native_tool_installations)
     if reviewed_execution is not None:
         try:
             profile_doc["reviewed_execution"] = canonical_reviewed_execution(reviewed_execution)
@@ -479,6 +476,20 @@ def build_runner_profile(
             profile_doc["allowed_actions"] = sorted(reviewed_actions)
         except ReviewedExecutionError as exc:
             raise RunnerContractError(str(exc)) from exc
+    # Tool identity comes only from the operator-reviewed profile. Project to
+    # this execution's finite action set so recovery cleanup does not require
+    # an unrelated tool installation or acquire its authority.
+    configured_tools = (
+        installation.to_dict() for installation in profile.native_tool_installations
+    )
+    installations = [
+        record
+        for record in configured_tools
+        if record["platform"] == actual_platform
+        and record["adapter_id"] in profile_doc["allowed_actions"]
+    ]
+    if installations:
+        profile_doc["native_tool_installations"] = installations
     return seal_profile(profile_doc)
 
 

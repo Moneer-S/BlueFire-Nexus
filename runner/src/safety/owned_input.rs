@@ -285,7 +285,7 @@ mod tests {
     use super::super::{owned_file, utc_now};
     use super::*;
     use std::fs;
-    use std::io::Write;
+    use std::io::{Read, Seek, Write};
     use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -438,6 +438,31 @@ mod tests {
             .unwrap();
         assert!(!path.exists());
         assert!(input.recheck_attachment(&fixture.root).is_err());
+    }
+
+    #[test]
+    fn receipt_verification_preserves_the_consumers_file_offset() {
+        let fixture = Fixture::new("offset");
+        let input = fixture.pin().unwrap();
+        let mut consumer = input.file().try_clone().unwrap();
+        assert_eq!(consumer.stream_position().unwrap(), 0);
+        let mut prefix = [0_u8; 7];
+        consumer.read_exact(&mut prefix).unwrap();
+        assert_eq!(&prefix, b"receipt");
+        input.recheck_bytes().unwrap();
+        input.recheck_attachment(&fixture.root).unwrap();
+        assert_eq!(consumer.stream_position().unwrap(), 7);
+        let mut remainder = String::new();
+        consumer.read_to_string(&mut remainder).unwrap();
+        assert_eq!(remainder, " input");
+        // A failed verification must preserve the cursor as well.
+        fs::write(
+            fixture.root.path().join("fixtures/input.jsonl"),
+            b"changed input",
+        )
+        .unwrap();
+        assert!(input.recheck_bytes().is_err());
+        assert_eq!(consumer.stream_position().unwrap(), 13);
     }
 
     #[test]
