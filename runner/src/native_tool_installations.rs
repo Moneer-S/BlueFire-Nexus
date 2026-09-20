@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::canonical::canonical_hash;
 
 pub const SCHEMA: &str = "bluefire.native-tool-installation.v1";
-const MAX_SIZE_BYTES: u64 = 128 * 1024 * 1024;
+pub(crate) const MAX_SIZE_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -26,7 +26,7 @@ pub struct NativeToolInstallation {
     pub installation_location: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct NativeToolBinding {
     pub adapter_id: &'static str,
     pub adapter_version: &'static str,
@@ -43,7 +43,7 @@ impl NativeToolInstallation {
         version(&self.adapter_version, "adapter_version")?;
         digest(&self.adapter_contract_digest, "adapter_contract_digest")?;
         stable_id(&self.tool_id, "tool_id")?;
-        tool_version(&self.tool_version)?;
+        validate_tool_version(&self.tool_version)?;
         if self.platform != "linux" {
             return Err("native tool installation platform is unsupported".into());
         }
@@ -54,7 +54,7 @@ impl NativeToolInstallation {
         if !(1..=MAX_SIZE_BYTES).contains(&self.size_bytes) {
             return Err("native tool installation size_bytes is invalid".into());
         }
-        location(&self.installation_location)?;
+        validate_location(&self.installation_location)?;
         Ok(())
     }
 
@@ -157,7 +157,7 @@ fn version(value: &str, name: &str) -> Result<(), String> {
     }
 }
 
-fn tool_version(value: &str) -> Result<(), String> {
+pub(crate) fn validate_tool_version(value: &str) -> Result<(), String> {
     let valid = text(value, 64)
         && value
             .chars()
@@ -186,7 +186,7 @@ fn digest(value: &str, name: &str) -> Result<(), String> {
     }
 }
 
-fn location(value: &str) -> Result<(), String> {
+pub(crate) fn validate_location(value: &str) -> Result<(), String> {
     let invalid = !text(value, 4096)
         || !value.starts_with('/')
         || value.starts_with("//")
@@ -258,6 +258,9 @@ mod tests {
     #[test]
     fn validation_rejects_unsafe_identity_and_location() {
         let mut value = installation();
+        value.installation_location = "/".into();
+        assert!(value.validate().is_err());
+        value = installation();
         value.adapter_id = "Adapter.example.v1".into();
         assert!(value.validate().is_err());
         value = installation();

@@ -1,9 +1,11 @@
 # Reviewed tool adapters
 
-Status: contract prerequisite. The Python `bluefire.tool_adapters` package validates
-review metadata and logical inputs. It does not install, register, advertise, or
-execute a tool. The existing [Atomic gzip method](ATOMIC_GZIP.md) remains its own
-fixed Rust adapter. No new method or platform execution is established by these tests.
+The Python `bluefire.tool_adapters` package validates review metadata and logical
+inputs. The [GNU chmod permission method](ATOMIC_CHMOD.md) connects that contract
+to protected installation setup, approval binding, a fixed Rust adapter, receipt
+cleanup and permission observations. Its software validation is separate from
+live lab proof. The existing [Atomic gzip method](ATOMIC_GZIP.md) remains its own
+fixed Rust adapter.
 
 ## Decision
 
@@ -37,12 +39,12 @@ These initial limits are not a product-wide ban on those method families.
 
 ## Integration seams and required enforcement
 
-The next vertical slice must implement these checks together before marking a method ready:
+Each concrete method must enforce these checks together before reporting readiness:
 
 1. A tool-owned module provides its descriptor, fixed invocation, structured parser,
    prerequisites, source/license review, and simulation fixtures. Catalog and runner
    inventory bind the exact action/behavior/implementation identity.
-2. Setup verifies a protected installed tool's version, digest, and location. Readiness
+2. Setup binds a protected installed tool's declared version, observed digest and location. Readiness
    distinguishes missing installation, unexpected identity, unsafe permissions,
    incompatible environment, and absent observers. Execution never installs code or
    searches an uncontrolled PATH.
@@ -96,6 +98,8 @@ an evaluated detector revision, benign activity, a fresh variation, cleanup, sav
 results and comparison through the installed UI. Keep absent lab/provider access
 explicit; it blocks that proof rather than turning fixtures into success.
 
-This prerequisite adds no registration or dispatch path. It can be reverted without
-changing existing saved experiments, approvals, runner inventories or evidence.
+To disable the permission method, remove it and its installation binding from the
+selected runner profile and review subsequent runs again. Keep historical evidence
+and creation receipts for cleanup. Reverting the implementation must retain a runner
+capable of cleaning up any outstanding receipt-owned files.
 Later adapter admission must carry its own rollback and compatibility evidence.

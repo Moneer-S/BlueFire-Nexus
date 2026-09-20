@@ -15,7 +15,7 @@ import bluefire.provider_gate as provider_gate
 import bluefire.provider_gate_validation as provider_gate_validation
 import tools.run_provider_gate_journey as provider_gate_helper
 from bluefire.product_acceptance import load_release_contract
-from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_IDS
+from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_IDS, BUILTIN_RUNNER_ACTION_VERSIONS
 from tools import provider_boundary_inventory, provider_gate_source_audit
 from tools.provider_gate_fixture_evidence import (
     _fixture_set,
@@ -982,6 +982,7 @@ def test_provider_gate_core_action_count_is_pinned_to_the_runner_registry() -> N
     update ``_CORE_ACTION_COUNT`` to match.
     """
     assert provider_gate_validation._CORE_ACTION_COUNT == len(BUILTIN_RUNNER_ACTION_IDS)
+    assert BUILTIN_RUNNER_ACTION_VERSIONS["sandbox.permission.chmod.v1"] == "1.0.0"
 
 
 def test_gate_02_emits_exact_unique_proofs_and_bundle_attachments(

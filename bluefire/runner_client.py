@@ -32,6 +32,9 @@ from .execution_contracts import (
 from .execution_contracts import (
     reject_forbidden_execution_keys as _reject_forbidden_execution_keys,
 )
+from .native_tool_candidate import validate_candidate_inspection
+from .native_tool_readiness import validate_native_tool_inspection
+from .native_tool_transport import inspect_subprocess_tool
 from .runner_darwin_containment import (
     _DARWIN_DESCRIPTOR_BOOTSTRAP,
     DarwinProcessContainment,
@@ -1053,6 +1056,13 @@ class RunnerTransport(Protocol):
 
 
 @runtime_checkable
+class NativeToolInspectionTransport(Protocol):
+    """Optional control capability; legacy runner transports need not implement it."""
+
+    def inspect_native_tool(self, record: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+
+@runtime_checkable
 class TaskAwareRunnerTransport(RunnerTransport, Protocol):
     """Runner transport that durably identifies and cancels one exact task."""
 
@@ -1198,6 +1208,25 @@ class InventoryBoundRunner:
         self.inventory()
         with self._dispatch_authority():
             return self.runner.execute(manifest, profile)
+
+    def inspect_native_tool(self, installation: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Inspect through the same approved identity, without dispatch authority."""
+        self.inventory()
+        operation = getattr(self.runner, "inspect_native_tool", None)
+        if not callable(operation):
+            raise RunnerReadinessError("The approved runner cannot inspect native tools.")
+        result = operation(installation)
+        self.inventory()
+        return validate_native_tool_inspection(installation, result)
+
+    def inspect_native_tool_candidate(self, candidate: Mapping[str, Any]) -> Mapping[str, Any]:
+        self.inventory()
+        operation = getattr(self.runner, "inspect_native_tool_candidate", None)
+        if not callable(operation):
+            raise RunnerReadinessError("The approved runner cannot inspect native tool candidates.")
+        result = operation(candidate)
+        self.inventory()
+        return validate_candidate_inspection(candidate, result)
 
     def execute_task(
         self,
@@ -1725,6 +1754,12 @@ class SubprocessRustRunner:
     def inventory(self) -> Mapping[str, Any]:
         output = self._invoke([str(self.runner_binary), "inventory", "--json"])
         return self._decode_json(output, "runner inventory")
+
+    def inspect_native_tool(self, record: Mapping[str, Any]) -> Mapping[str, Any]:
+        return inspect_subprocess_tool(self, record)
+
+    def inspect_native_tool_candidate(self, record: Mapping[str, Any]) -> Mapping[str, Any]:
+        return inspect_subprocess_tool(self, record, candidate=True)
 
     def execute(
         self,

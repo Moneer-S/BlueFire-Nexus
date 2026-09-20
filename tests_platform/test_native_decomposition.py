@@ -9,12 +9,14 @@ from pathlib import Path
 import pytest
 
 from bluefire import architecture_gate
+from tools.atomic_chmod_source_audit import reviewed_atomic_chmod_source
 from tools.provider_gate_source_audit import _native_command_source_inventory_is_fixed
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 CHILDREN = {
     "runner/src/actions/collection.rs": "action",
     "runner/src/actions/atomic_gzip_action.rs": "action",
+    "runner/src/atomic_chmod.rs": "action",
     "runner/src/safety/cleanup_unix.rs": "safety",
     "runner/src/safety/cleanup_windows.rs": "safety",
     "runner/src/safety/owned_input.rs": "safety",
@@ -60,3 +62,12 @@ def test_extracted_native_source_cannot_add_an_unreviewed_process_boundary(
             '\nfn unreviewed_process() { let _ = std::process::Command::new("caller"); }\n'
         )
     assert not _native_command_source_inventory_is_fixed(tmp_path)
+
+
+def test_atomic_chmod_source_rejects_new_process_and_source_edits() -> None:
+    source = (REPOSITORY / "runner/src/atomic_chmod.rs").read_bytes()
+    assert reviewed_atomic_chmod_source(source)
+    assert not reviewed_atomic_chmod_source(
+        source.replace(b"Command::new", b"Command::new_unreviewed", 1)
+    )
+    assert not reviewed_atomic_chmod_source(source + b'\nCommand::new("/bin/sh");\n')

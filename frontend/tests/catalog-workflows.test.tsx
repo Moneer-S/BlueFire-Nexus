@@ -11,13 +11,26 @@ import type { ActionDefinition, RunnerProfile } from "../src/types";
 const action: ActionDefinition = { id: "sandbox.cleanup.v1", title: "Clean up experiment files", purpose: "Remove created files.", safety_tier: "safe", capabilities: ["filesystem.write"], platforms: ["windows", "linux", "macos"], inputs: [], outputs: [], parameters: [] };
 const gzip: ActionDefinition = { ...action, id: "sandbox.collection.atomic-gzip.v1", title: "Compress selected records — Atomic gzip", cleanup_action_id: action.id, platforms: ["linux"] };
 const profile: RunnerProfile = { id: "sample-template.v1", mode: "execute", environment_type: "disposable", platforms: ["windows", "linux", "macos"], scope: ["sandbox.workspace"], network_allowlist: [], capabilities: ["filesystem.write"], safety_tiers: ["safe"], approval_required: true, enabled_actions: [action.id, gzip.id], blocked_actions: [], cleanup_policy: "always", runner_binary: { env: "REVIEWED_RUNNER_BINARY" }, sandbox_root: { env: "REVIEWED_WORKSPACE_ROOT" }, budgets: { max_seconds: 120, max_steps: 20, max_bytes: 8388608 }, secrets: {} };
-function setup(page: "profiles" | "methods" = "profiles") {
-  const catalog = { ...demoCatalog, runner_profiles: [profile], actions: [action, gzip] };
+const chmodProfile: RunnerProfile = { ...profile, id: "chmod-profile.v1", platforms: ["linux"], enabled_actions: ["sandbox.permission.chmod.v1"] };
+function setup(page: "profiles" | "methods" = "profiles", selectedProfile: RunnerProfile = profile, resources: unknown[] = []) {
+  const catalog = { ...demoCatalog, runner_profiles: [selectedProfile], actions: [action, gzip] };
   vi.spyOn(api, "catalog").mockResolvedValue(catalog);
-  vi.spyOn(api, "resources").mockResolvedValue({ schema_version: "v1", kind: "runner-profiles", resources: [] });
+  vi.spyOn(api, "resources").mockResolvedValue({ schema_version: "v1", kind: "runner-profiles", resources } as never);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(<QueryClientProvider client={client}><MemoryRouter>{page === "profiles" ? <RunnerProfilesPage/> : <BehaviorsPage/>}</MemoryRouter></QueryClientProvider>);
 }
+
+it("does not offer native setup for an active Execute profile", async () => {
+  setup("profiles", chmodProfile, [{ id: chmodProfile.id, status: "active", document: chmodProfile }]);
+  expect(await screen.findByText("Deactivate this profile before changing its GNU chmod binding.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Set up GNU chmod" })).not.toBeInTheDocument();
+});
+
+it("does not offer native setup for a Simulate profile", async () => {
+  setup("profiles", { ...chmodProfile, mode: "simulate" }, [{ id: chmodProfile.id, status: "draft", document: { ...chmodProfile, mode: "simulate" } }]);
+  await screen.findByText("simulate");
+  expect(screen.queryByRole("button", { name: "Set up GNU chmod" })).not.toBeInTheDocument();
+});
 
 it("requires a real template, filters methods by platform, and retains a refused profile for retry", async () => {
   setup(); const user = userEvent.setup();

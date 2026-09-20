@@ -85,6 +85,31 @@ export interface RunnerProfile {
   secrets: string[] | Record<string, { env: string }>;
   runner_binary?: string | { env: string };
   sandbox_root?: string | { env: string };
+  native_tool_installations?: NativeToolInstallation[];
+}
+
+export interface NativeToolInstallation {
+  schema_version: string;
+  adapter_id: string;
+  adapter_version: string;
+  adapter_contract_digest: string;
+  tool_id: string;
+  tool_version: string;
+  platform: string;
+  architecture: string;
+  content_sha256: string;
+  size_bytes: number;
+  installation_location: string;
+}
+
+export interface NativeToolCandidateInspection {
+  schema_version: "bluefire.native-tool-candidate-inspection.v1";
+  candidate_digest: string;
+  status: "ready" | "unavailable";
+  code: string;
+  installation: NativeToolInstallation | null;
+  platform: string;
+  architecture: string;
 }
 
 export interface CatalogResponse {

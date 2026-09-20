@@ -5,11 +5,14 @@
 //! side effect.
 
 pub mod actions;
+mod atomic_chmod;
 mod atomic_gzip;
 mod cancellation_witness;
 mod canonical;
 pub mod contract;
+mod native_tool_inspection;
 pub mod native_tool_installations;
+mod native_tool_setup;
 mod process;
 pub mod provider_action;
 pub mod providers;
@@ -27,6 +30,8 @@ pub use contract::{
     ProviderParameterSpec, ProviderParameterType, RunMode, RunnerProfile, SafetyTier, TargetScope,
     TaskResult, TaskStatus,
 };
+pub use native_tool_setup::inspect_candidate;
+pub use native_tool_setup::inspect_installation;
 pub use providers::{provider_runtimes, ProviderRuntimeDescriptor};
 pub use runner::{execute_files, Runner, RunnerError, MAX_DOCUMENT_BYTES};
 pub use safety::RECEIPT_PROTOCOL_VERSION;

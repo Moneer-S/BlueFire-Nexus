@@ -395,6 +395,10 @@ class StubService:
         self.calls.append(("probe_runner_profile", resource_id, request))
         return {"profile_id": resource_id, "health": {"state": "ready"}}
 
+    def inspect_runner_profile_tool(self, resource_id: str, request: Mapping[str, Any]):
+        self.calls.append(("inspect_runner_profile_tool", resource_id, request))
+        return {"profile_id": resource_id, "inspection": request}
+
     def runner_status(self, *, profile_id: str | None = None):
         self.calls.append(("runner_status", profile_id))
         return {"state": "ready", "profile_id": profile_id}
@@ -1747,6 +1751,76 @@ def test_runtime_resource_actions_dispatch_only_explicit_safe_routes() -> None:
             {},
         ) in service.calls
         assert ("activate_resource", "plugin", plugin_id, {}) in service.calls
+
+
+def test_runner_profile_native_tool_inspection_forwards_candidate_body() -> None:
+    profile_id = "profile.managed.v1"
+    body = {
+        "action_id": "sandbox.permission.chmod.v1",
+        "installation": {"schema_version": "bluefire.native-tool-installation.v1"},
+    }
+    with running_server() as (server, service):
+        status, _, payload = request(
+            server,
+            "POST",
+            f"/api/v1/resources/runner-profiles/{profile_id}/inspect-native-tool",
+            body=body,
+        )
+    assert status == 200
+    assert json_body(payload)["profile_id"] == profile_id
+    assert service.calls == [("inspect_runner_profile_tool", profile_id, body)]
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_code"),
+    [
+        (
+            "/api/v1/resources/runner-profiles/Profile.Upper/inspect-native-tool",
+            "invalid_resource_id",
+        ),
+        (
+            "/api/v1/resources/model-providers/provider.safe.v1/inspect-native-tool",
+            "invalid_resource_action",
+        ),
+        (
+            "/api/v1/resources/runner-profiles/profile.safe.v1/inspect-native-tool?x=1",
+            "invalid_management_query",
+        ),
+    ],
+)
+def test_runner_profile_native_tool_inspection_rejects_invalid_routes(
+    path: str, expected_code: str
+) -> None:
+    with running_server() as (server, service):
+        status, _, payload = request(server, "POST", path, body={})
+    assert status == 400
+    assert json_body(payload)["error"]["code"] == expected_code
+    assert not service.calls
+
+
+def test_runner_profile_native_tool_inspection_rejects_wrong_method() -> None:
+    with running_server() as (server, service):
+        status, _, _ = request(
+            server,
+            "GET",
+            "/api/v1/resources/runner-profiles/profile.safe.v1/inspect-native-tool",
+        )
+    assert status == 405
+    assert not service.calls
+
+
+@pytest.mark.parametrize("action", ["activate", "deactivate", "probe"])
+def test_existing_runner_profile_actions_reject_nonempty_bodies(action: str) -> None:
+    with running_server() as (server, service):
+        status, _, payload = request(
+            server,
+            "POST",
+            f"/api/v1/resources/runner-profiles/profile.safe.v1/{action}",
+            body={"installation": "must-not-be-forwarded"},
+        )
+    assert status == 400
+    assert json_body(payload)["error"]["code"] == "resource_action_invalid"
+    assert not service.calls
 
 
 def test_resource_lifecycle_actions_reject_nonempty_bodies_before_dispatch() -> None:
