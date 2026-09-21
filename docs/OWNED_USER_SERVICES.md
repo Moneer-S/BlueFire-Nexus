@@ -1,6 +1,6 @@
 # Owned user-service lifecycle prerequisite
 
-Status: internal contract and deterministic software tests. No systemd method,
+Status: internal identity, durable recovery journal and deterministic software tests. No systemd method,
 observer, setup control, profile capability or execution path is registered by this
 change. It does not establish service execution, persistence, cleanup or detection
 coverage on any platform.
@@ -45,6 +45,50 @@ collector integration must establish source authenticity and actual observations
 The observer ID is reserved here and is not advertised as an available collector.
 
 ## Required integration before admission
+
+### Durable intent and recovery
+
+`ServiceIntentJournal` in `bluefire.tool_adapters.service_journal` persists a
+bounded history in a private SQLite database. Its location is trusted setup
+configuration, never an action or model parameter. A reservation binds one request
+to the exact immutable identity and reserves its generated unit nonce within that
+database. Reusing the nonce with a different authorization, workspace, manager or
+request is refused, including after cleanup. All coordinators for that resource
+scope must use the same journal; separate databases do not provide a shared lock.
+
+Before an effect, the future coordinator records its intent with an expected
+revision. The transaction commits before returning. Only one unresolved operation
+is permitted; a stale competing revision is refused. A restart preserves the
+pending operation as `inspection_required`. It never automatically repeats a
+start or assumes that an unrecorded result means nothing happened. A coordinator
+must inspect the owned resource and record the known or unknown result before
+continuing.
+
+Setup advances through creation, reload, enablement and start once each. A failed
+or unknown setup result permits only cleanup. Cleanup progresses through stop,
+disablement, owned-link removal, owned-unit removal and reload; a failed or unknown
+cleanup stage may be retried, preserving its previous result. The entire history
+is capped at 32 operations. Exhaustion retains `cleanup_required` and needs explicit
+reconciliation; it does not claim the resource was removed or permit an unrecorded
+effect. Successful cleanup reaches `verification_required`, never `verified_absent`.
+Only fresh independent observations can establish absence through the assessment
+contract above.
+
+The journal records metadata and invokes no service or process. Its canonical
+record hash detects inconsistent storage, not forgery by someone who controls the
+database. Schema, identity, revision, operation order and database key bindings
+are checked on every read. The database and its parent directory must be private
+to the trusted coordinator. Symbolic-link paths are rejected, but this is not a
+descriptor-pinned defense against a hostile process swapping directory entries.
+
+Reservation does not prove initial absence, current ownership, readiness or
+permission. Approval expiry does not prevent recording results or inspecting
+cleanup history; it also gains no extension from a journal entry. The Rust effect
+boundary must still enforce exact authority and identity before each operation,
+and bind its resource receipts to these persisted intents before this can become
+an executable method. The journal is not registered in a product execution path.
+
+### Remaining runtime and observation work
 
 A concrete adapter must still supply the fixed unit contents and executable
 identity, sanitized unit environment, manager and cgroup readiness, trusted
