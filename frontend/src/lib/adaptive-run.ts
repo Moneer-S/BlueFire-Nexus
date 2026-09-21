@@ -50,7 +50,10 @@ export function decisionObservations(record: RuntimeRecord) {
   const projection = object(object(record.planner_state).observations);
   const attempts = Array.isArray(projection.attempts) ? projection.attempts.map(object) : [];
   const latest = attempts.filter(attempt => attempt.step_id === record.current_step_id).at(-1);
-  return { attempts, classification: object(latest?.failure).classification, budgets: object(projection.remaining_budgets),
+  const failure = object(latest?.failure);
+  return { attempts, classification: failure.classification,
+    telemetryGap: typeof failure.telemetry_gap === "boolean" ? failure.telemetry_gap : undefined,
+    budgets: object(projection.remaining_budgets),
     evidence: Array.isArray(latest?.evidence) ? latest.evidence.map(object).filter(item => typeof item.evidence_id === "string") : [],
     unknowns: Array.isArray(projection.unknowns) ? projection.unknowns.filter((item): item is string => typeof item === "string") : [] };
 }
