@@ -1,0 +1,105 @@
+{
+  "authored_label": "Authored software fixture; no host observation, executed gzip operation, live-provider result, or experiment.",
+  "evidence": [
+    {
+      "action_id": "sandbox.discovery.list.v1",
+      "behavior_id": "endpoint.discovery.system.v1",
+      "confidence": 1.0,
+      "content": {
+        "artifact_type": "collector_observation",
+        "observation_kind": "filesystem",
+        "observed_fields": {
+          "effective_access": "not_evaluated",
+          "group_write_bit": true,
+          "non_owner_write_bit": true,
+          "other_write_bit": false,
+          "permission_mode_octal": "0660",
+          "permission_status": "available"
+        }
+      },
+      "content_hash": "sha256:d2f36f356e277598c8f8b75aa8064b0be46013356cf5a320bacc4e265db0e230",
+      "environment": {},
+      "evidence_id": "evidence-8a79a2bbcdd79caa463a",
+      "limitations": [
+        "Authored software fixture; no host observation, executed gzip operation, live-provider result, or experiment."
+      ],
+      "parent_evidence_ids": [],
+      "producer": "authored-display-contract",
+      "provenance": "observed",
+      "record_hash": "sha256:8a79a2bbcdd79caa463a4903523ae2bf9d62cde7abbefb53d3927108178bc231",
+      "run_id": "authored-adaptive-display-run",
+      "runner_profile_id": null,
+      "schema_version": "bluefire.evidence.v1",
+      "step_id": "inspect",
+      "target_scope_ref": "fixture-scope",
+      "timestamp": "2026-09-20T00:00:00Z"
+    }
+  ],
+  "projection": {
+    "attempts": [
+      {
+        "action_id": "sandbox.discovery.list.v1",
+        "attempt_index": 0,
+        "behavior_id": "endpoint.discovery.system.v1",
+        "evidence": [
+          {
+            "evidence_id": "evidence-8a79a2bbcdd79caa463a",
+            "facts": {
+              "artifact_type": "collector_observation",
+              "effective_access": "not_evaluated",
+              "group_write_bit": true,
+              "non_owner_write_bit": true,
+              "observation_kind": "filesystem",
+              "other_write_bit": false,
+              "permission_mode_octal": "0660",
+              "permission_status": "available"
+            },
+            "provenance": "observed",
+            "record_hash": "sha256:8a79a2bbcdd79caa463a4903523ae2bf9d62cde7abbefb53d3927108178bc231"
+          }
+        ],
+        "failure": {
+          "classification": "execution_timeout",
+          "code": "atomic_gzip_timeout",
+          "target_prevention": "not_established",
+          "telemetry_gap": true,
+          "unrecognized_code_present": false
+        },
+        "missing_evidence_count": 1,
+        "omitted_evidence_count": 0,
+        "outcome": "failed",
+        "step_id": "inspect"
+      }
+    ],
+    "available_methods": [],
+    "omitted_attempt_count": 0,
+    "platform": "linux",
+    "projection_digest": "sha256:d96c75e7c5bcd90d5238f06970977f28ded6ab862439d82efb494ec8305e5005",
+    "remaining_budgets": {
+      "retries": 1,
+      "seconds": 10.0,
+      "steps": 2
+    },
+    "schema_version": "bluefire.runtime-observations.v1",
+    "unknowns": [
+      "Target prevention is not established by a product refusal.",
+      "Reported execution alone does not independently verify the objective.",
+      "Method availability does not establish success or external prerequisites.",
+      "permission mode bits only; ACLs, parent-directory traversal and effective access are not evaluated"
+    ]
+  },
+  "run_id": "authored-adaptive-display-run",
+  "source_step": {
+    "action_id": "sandbox.discovery.list.v1",
+    "behavior_id": "endpoint.discovery.system.v1",
+    "error": {
+      "code": "atomic_gzip_timeout"
+    },
+    "evidence_ids": [
+      "evidence-8a79a2bbcdd79caa463a",
+      "unresolved-authored-evidence"
+    ],
+    "status": "failed",
+    "step_id": "inspect"
+  }
+}

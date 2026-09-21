@@ -1,16 +1,13 @@
 import type { CatalogResponse, EvidenceRecord, RunRecord } from "../types";
 import { recordedEvidenceLabels } from "../lib/run-progress-presentation";
 import { Badge, sentence } from "./Primitives";
+import { permissionFacts, permissionKeys, type PermissionFacts } from "../lib/permission-facts";
 import "./EvidenceRecords.css";
 
-type PermissionObservation =
-  | { status: "available"; mode: string; groupWrite: boolean; otherWrite: boolean }
-  | { status: "unavailable_windows" | "unsupported_platform" };
+type PermissionObservation = Exclude<PermissionFacts, { status: "invalid_metadata" }>;
 type FileObservation = { path: string; bytes: number; digest: string; counts?: { container: string; total: number; redacted: number; retained: number; empty: number }; permissions?: PermissionObservation };
 const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
 const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-
-const permissionKeys = ["permission_status", "effective_access", "permission_mode_octal", "group_write_bit", "other_write_bit", "non_owner_write_bit"] as const;
 
 function permissionObservation(record: EvidenceRecord, content: Record<string, unknown>): PermissionObservation | undefined {
   if (record.producer !== "collector.filesystem.sandbox.v1"
@@ -23,25 +20,8 @@ function permissionObservation(record: EvidenceRecord, content: Record<string, u
   if (topPresent.length !== observedPresent.length || topPresent.some((key) => !(key in observedFields))
     || observedPresent.some((key) => !(key in content))
     || permissionKeys.some((key) => key in content && content[key] !== observedFields[key])) return;
-  const status = content.permission_status;
-  if (status !== "available" && status !== "unavailable_windows" && status !== "unsupported_platform") return;
-  if (content.effective_access !== "not_evaluated") return;
-  if (status !== "available") {
-    if (topPresent.length !== 2) return;
-    return { status };
-  }
-  if (topPresent.length !== permissionKeys.length || typeof content.permission_mode_octal !== "string"
-    || !/^[0-7]{4}$/.test(content.permission_mode_octal)
-    || typeof content.group_write_bit !== "boolean" || typeof content.other_write_bit !== "boolean" || typeof content.non_owner_write_bit !== "boolean"
-    || content.group_write_bit !== ((Number.parseInt(content.permission_mode_octal[2]!, 8) & 2) !== 0)
-    || content.other_write_bit !== ((Number.parseInt(content.permission_mode_octal[3]!, 8) & 2) !== 0)
-    || content.non_owner_write_bit !== (content.group_write_bit || content.other_write_bit)) return;
-  return {
-    status,
-    mode: content.permission_mode_octal,
-    groupWrite: content.group_write_bit,
-    otherWrite: content.other_write_bit,
-  };
+  const permissions = permissionFacts(content);
+  return permissions?.status !== "invalid_metadata" ? permissions : undefined;
 }
 
 /** Recognize only the recorded built-in observation contracts, never action output. */
