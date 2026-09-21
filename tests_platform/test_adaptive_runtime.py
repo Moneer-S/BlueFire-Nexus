@@ -1,5 +1,6 @@
 """Deterministic software evidence only; these tests are not live-provider proof."""
 
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -469,3 +470,110 @@ def test_product_refusal_never_claims_target_prevention(runtime, code, policy, e
     failure = projection["attempts"][0]["failure"]
     assert failure["classification"] == expected
     assert failure["target_prevention"] == "not_established"
+
+
+def test_known_timeout_and_missing_telemetry_support_distinct_reviewed_choices(runtime):
+    kwargs, config = runtime
+
+    def choose(request):
+        failure = request.context["observations"]["attempts"][-1]["failure"]
+        assert failure["telemetry_gap"] is True
+        assert failure["target_prevention"] == "not_established"
+        return request.allowed_action_ids[
+            0 if failure["classification"] == "execution_timeout" else 1
+        ]
+
+    provider = Provider(config, choose)
+    results = []
+    for error in ({"code": "atomic_gzip_timeout", "message": "private detail"}, None):
+        row = {**kwargs["steps"][0], "evidence_ids": ["missing-record"], "error": error}
+        result = propose_reviewed_method(**{**kwargs, "steps": [row]}, provider=provider)
+        assert result.record["application_status"] == "applied_reviewed_method"
+        assert result.selected_step is not None
+        assert b"private detail" not in canonical_json_bytes(result.record["planner_state"])
+        validate_v4_attempt_record(result.record)
+        results.append(result)
+    assert results[0].selected_step.action_id != results[1].selected_step.action_id
+
+
+def test_retained_projection_without_new_gap_annotation_remains_valid(runtime):
+    kwargs, config = runtime
+    record = deepcopy(propose_reviewed_method(**kwargs, provider=Provider(config)).record)
+    observations = record["planner_state"]["observations"]
+    for attempt in observations["attempts"]:
+        attempt["failure"].pop("telemetry_gap")
+    observations["projection_digest"] = content_hash(
+        {key: value for key, value in observations.items() if key != "projection_digest"}
+    )
+    record["planner_state_digest"] = content_hash(record["planner_state"])
+    before = canonical_json_bytes(record)
+    validate_v4_attempt_record(record)
+    assert canonical_json_bytes(record) == before
+
+
+@pytest.mark.parametrize(
+    "mode,error,choice",
+    [(0o640, "atomic_gzip_timeout", 0), (0o660, "atomic_gzip_timeout", 1), (0o660, None, 0)],
+)
+def test_combined_observations_reach_reviewed_selector_without_expanding_authority(
+    runtime, monkeypatch, mode, error, choice
+):
+    """Authored provider choices require both facts; no live execution is claimed."""
+    kwargs, config = runtime
+    with monkeypatch.context() as platform_patch:
+        platform_patch.setattr(file_permissions.sys, "platform", "linux")
+        permissions = file_permissions.observed_permission_fields(SimpleNamespace(st_mode=mode))
+    step = kwargs["current_step"]
+    observed = EvidenceRecord.create(
+        run_id=kwargs["run_id"],
+        step_id=step.step_id,
+        behavior_id=step.behavior_id,
+        provenance=EvidenceProvenance.OBSERVED,
+        producer="authored-filesystem-observation",
+        target_scope_ref="sandbox.workspace",
+        content={"artifact_type": "file_observation", **permissions},
+    )
+
+    def choose(request):
+        attempt = request.context["observations"]["attempts"][0]
+        assert attempt["failure"]["telemetry_gap"] is True
+        assert attempt["failure"]["target_prevention"] == "not_established"
+        facts = attempt["evidence"][0]["facts"]
+        assert facts["effective_access"] == "not_evaluated"
+        assert attempt["evidence"][0]["record_hash"] == observed.record_hash
+        needs_alternative = (
+            facts["non_owner_write_bit"]
+            and attempt["failure"]["classification"] == "execution_timeout"
+        )
+        return request.allowed_action_ids[int(needs_alternative)]
+
+    provider = Provider(config, choose)
+    validated = []
+    authority_before = canonical_json_bytes(kwargs["authorization"])
+    row = {
+        **kwargs["steps"][0],
+        "error": {"code": error} if error else None,
+        "evidence_ids": [observed.evidence_id, "unresolved-observation"],
+    }
+    result = propose_reviewed_method(
+        **{
+            **kwargs,
+            "steps": [row],
+            "evidence": [observed],
+            "validate_choice": validated.append,
+        },
+        provider=provider,
+    )
+    request = provider.requests[0]
+    assert len(request.allowed_action_ids) == 2
+    assert result.selected_step.action_id == request.allowed_action_ids[choice]
+    assert validated == [result.selected_step]
+    assert canonical_json_bytes(kwargs["authorization"]) == authority_before
+    assert result.record["planner_state"]["observations"] == request.context["observations"]
+    retained = canonical_json_bytes(result.record)
+    validate_v4_attempt_record(result.record)
+    assert (
+        validate_persisted_proposal_record(result.record).selected_action_id
+        == result.selected_step.action_id
+    )
+    assert canonical_json_bytes(result.record) == retained

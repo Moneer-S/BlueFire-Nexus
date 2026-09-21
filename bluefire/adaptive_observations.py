@@ -37,19 +37,27 @@ _AUTHORIZATION_ERRORS = frozenset(
         "policy_refused",
     }
 )
-_KNOWN_ERRORS = _AUTHORIZATION_ERRORS | {
-    "platform_blocked",
-    "adapter_refused",
-    "action_control_blocked",
-    "timeout",
-    "execution_failed",
-    "transport_error",
-    "missing_input",
-    "input_not_found",
-    "atomic_gzip_unavailable",
-    "collection_output_limit",
-    "artifact_limit_blocked",
-}
+_TIMEOUT_ERRORS = frozenset({"timeout", "atomic_gzip_timeout"})
+_EXECUTION_ERRORS = frozenset(
+    {"execution_failed", "atomic_gzip_failed", "atomic_gzip_write_failed"}
+)
+_TRANSPORT_ERRORS = frozenset({"transport_error", "runner_transport_failed"})
+_KNOWN_ERRORS = (
+    _AUTHORIZATION_ERRORS
+    | _TIMEOUT_ERRORS
+    | _EXECUTION_ERRORS
+    | _TRANSPORT_ERRORS
+    | {
+        "platform_blocked",
+        "adapter_refused",
+        "action_control_blocked",
+        "missing_input",
+        "input_not_found",
+        "atomic_gzip_unavailable",
+        "collection_output_limit",
+        "artifact_limit_blocked",
+    }
+)
 
 
 def _facts(content: Mapping[str, Any]) -> dict[str, Any]:
@@ -103,6 +111,9 @@ def _failure(row: Mapping[str, Any], records: Sequence[EvidenceRecord]) -> dict[
     code = error.get("code") if isinstance(error, Mapping) else None
     policy = row.get("policy")
     policy_status = policy.get("status") if isinstance(policy, Mapping) else None
+    telemetry_gap = any(item.provenance is EvidenceProvenance.UNKNOWN for item in records) or bool(
+        set(row.get("evidence_ids", ())) - {item.evidence_id for item in records}
+    )
     # A BlueFire control-blocked profile is a product control, not evidence that
     # a target detector prevented an operation. Unknown target effects stay unknown.
     if code == "platform_blocked":
@@ -115,7 +126,14 @@ def _failure(row: Mapping[str, Any], records: Sequence[EvidenceRecord]) -> dict[
         classification = "resource_limit"
     elif code in {"adapter_refused", "missing_input", "input_not_found", "atomic_gzip_unavailable"}:
         classification = "prerequisite_failure"
-    elif any(item.provenance is EvidenceProvenance.UNKNOWN for item in records):
+    elif code in _TIMEOUT_ERRORS:
+        classification = "execution_timeout"
+    elif code in _EXECUTION_ERRORS:
+        classification = "execution_failure"
+    elif code in _TRANSPORT_ERRORS:
+        classification = "runner_transport_failure"
+        telemetry_gap = True
+    elif telemetry_gap:
         classification = "missing_telemetry"
     elif row.get("status") == "failed":
         classification = "execution_failure"
@@ -128,6 +146,7 @@ def _failure(row: Mapping[str, Any], records: Sequence[EvidenceRecord]) -> dict[
         "code": code if isinstance(code, str) and code in _KNOWN_ERRORS else None,
         "unrecognized_code_present": code is not None and code not in _KNOWN_ERRORS,
         "target_prevention": "not_established",
+        "telemetry_gap": telemetry_gap,
     }
 
 
