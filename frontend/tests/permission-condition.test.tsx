@@ -2,15 +2,20 @@ import { render, screen } from "@testing-library/react";
 import { useDetectionDraft } from "../src/state/useDetectionDraft";
 import userEvent from "@testing-library/user-event";
 import { expect, it } from "vitest";
+import presetContract from "./fixtures/permission-preset-contract.json";
 import { PermissionConditionControl, permissionConditionForSelection, permissionPredictedFields, permissionSelection, type PermissionCondition } from "../src/components/PermissionConditionControl";
 
 it("maps the finite permission conditions to strict observed fields", () => {
-  expect(permissionSelection("world_writable")).toEqual({ artifact_type: "file_observation", permission_status: "available", other_write_bit: true });
-  expect(permissionSelection("non_owner_writable")).toEqual({ artifact_type: "file_observation", permission_status: "available", non_owner_write_bit: true });
+  expect(permissionSelection("world_writable")).toEqual(presetContract.world_writable);
+  expect(permissionSelection("non_owner_writable")).toEqual(presetContract.non_owner_writable);
+  expect(permissionSelection("staged")).toEqual({ artifact_type: "file_observation", "path|contains": "staged/" });
   expect(permissionConditionForSelection(permissionSelection("non_owner_writable"))).toBe("non_owner_writable");
   expect(permissionConditionForSelection({ artifact_type: "file_observation", other_write_bit: true })).toBeUndefined();
-  expect(permissionPredictedFields("world_writable")).toEqual(["artifact_type", "permission_status", "other_write_bit"]);
-  expect(permissionPredictedFields("non_owner_writable")).toEqual(["artifact_type", "permission_status", "non_owner_write_bit"]);
+  expect(permissionPredictedFields("world_writable")).toEqual(Object.keys(presetContract.world_writable));
+  expect(permissionPredictedFields("non_owner_writable")).toEqual(Object.keys(presetContract.non_owner_writable));
+  const legacy = { artifact_type: "file_observation", permission_status: "available", other_write_bit: true };
+  expect(permissionConditionForSelection(legacy)).toBe("world_writable");
+  expect(legacy).toEqual({ artifact_type: "file_observation", permission_status: "available", other_write_bit: true });
 });
 
 it("renders plain-language condition choices and discloses metadata limits", async () => {

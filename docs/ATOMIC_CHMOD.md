@@ -83,3 +83,25 @@ cleanup even if changing its metadata partially fails. The permission objective
 must be evaluated using separate filesystem observations, not the action's exit
 code. Retain unsuccessful results when comparing a revised permission detector
 against benign activity and a fresh mode variation.
+
+## Permission detection presets
+
+The **World-writable file** and **Non-owner writable file** conditions in the
+internal structured matcher use independent filesystem collector records:
+`artifact_type: collector_observation`, `observation_kind: filesystem`, available
+permission metadata, and the relevant write bit. These rules describe observed
+mode bits; they do not establish effective access or general detection coverage.
+
+An installed lab experiment exposed an earlier preset mismatch: the rule asked
+for `file_observation`, while the collector recorded `collector_observation`.
+The baseline therefore missed an independently observed world-writable file.
+Saved rules and their unsuccessful results remain unchanged. To correct an old
+rule, open **Revisions → Advanced clone and tune → Tune rule behavior**, choose
+**Use current observation fields**, record the reason, and create an immutable
+tune. Parse and exercise the new revision against the retained observations;
+keep benign and fresh-variation evaluations distinct.
+
+The cross-platform preset regression uses real file-handle collection with a
+deterministic permission-metadata projection. It is software contract evidence,
+not another live GNU chmod run or a claim about Windows ACLs. The staged-file
+starter and historical detection definitions are unchanged.

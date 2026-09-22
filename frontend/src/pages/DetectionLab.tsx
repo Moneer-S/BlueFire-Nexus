@@ -12,7 +12,7 @@ import { runLabel } from "../lib/run-presentation";
 import { DetectionRunEvaluations } from "../components/DetectionRunEvaluations";
 import { DetectionAIRevision } from "../components/DetectionAIRevision";
 import { DetectionAICreation } from "../components/DetectionAICreation";
-import { PermissionConditionControl, isPermissionCondition, permissionConditionForSelection, permissionPredictedFields, permissionSelection, type PermissionCondition } from "../components/PermissionConditionControl";
+import { PermissionConditionControl, isLegacyPermissionSelection, isPermissionCondition, permissionConditionForSelection, permissionPredictedFields, permissionSelection, type PermissionCondition } from "../components/PermissionConditionControl";
 import { detectionCreationPath } from "../lib/detection-creation";
 import { runCandidateKey, sourceObservedRecords, sourceRunParam } from "../lib/run-handoffs";
 import type {
@@ -894,7 +894,10 @@ function RevisionWorkspace({
       <Field label="Required research reason" hint="Recorded in immutable tuning decisions and lifecycle history."><input value={revisionReason} onChange={(event) => setRevisionReason(event.target.value)} maxLength={1000} disabled={!persisted} /></Field>
     </div>
     {revisionKind === "tune" ? <>
-      {permissionCondition ? <PermissionConditionControl value={permissionCondition} onChange={setPermissionCondition} disabled={!persisted || revisionPending} /> : null}
+      {permissionCondition ? <>
+        <PermissionConditionControl value={permissionCondition} onChange={setPermissionCondition} disabled={!persisted || revisionPending} />
+        {isLegacyPermissionSelection(JSON.parse(selectionJson)) ? <div><p>This saved rule uses the earlier file-observation fields. Independent filesystem collectors use different fields. Updating the draft preserves the saved rule and its results.</p><Button size="small" disabled={!persisted || revisionPending} onClick={() => setPermissionCondition(permissionCondition)}>Use current observation fields</Button></div> : null}
+      </> : null}
       <details><summary>Advanced structured inputs</summary><div className="config-grid">
         <Field label="Tuned selection JSON" hint="Must remain a non-empty structured object."><textarea rows={9} value={selectionJson} onChange={(event) => setSelectionJson(event.target.value)} disabled={!persisted} /></Field>
         <Field label="Tuned log source JSON" hint="Change selection, log source, or both."><textarea rows={9} value={logsourceJson} onChange={(event) => setLogsourceJson(event.target.value)} disabled={!persisted} /></Field>
