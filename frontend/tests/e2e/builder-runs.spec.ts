@@ -111,6 +111,8 @@ test("keyboard selection, copy and deletion follow the focused step", async ({ p
   await page.keyboard.press("Delete");
   await expect(second).toHaveCount(0);
   await expect(first).toHaveCount(1);
+  await expect(first).toHaveClass(/selected/);
+  await expect(page.getByRole("button", { name: "Delete selected node" })).toBeEnabled();
   await page.getByRole("button", { name: "Undo", exact: true }).click();
   await expect(second).toHaveCount(1);
   await expect(first).toHaveCount(1);

@@ -354,7 +354,14 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
       targetHandle: edge.targetHandle,
     })));
     applyScenario(next);
-    if (deletedNodeIds.includes(selectedId)) setSelectedId(next.steps[0]?.id ?? "");
+    if (deletedNodeIds.includes(selectedId)) {
+      const replacementId = next.steps[0]?.id ?? "";
+      // Keep the canvas and inspector on the same remaining step. Otherwise the
+      // graph refresh preserves its old unselected flag and clears the inspector.
+      selectionForGraphRefresh.current = replacementId;
+      setSelectedId(replacementId);
+      setNodes((items) => items.map((node) => ({ ...node, selected: node.id === replacementId })));
+    }
   };
   const confirmDelete = useCallback(async ({ nodes: requestedNodes, edges: requestedEdges }: { nodes: BehaviorFlowNode[]; edges: FlowEdge[] }) => {
     if (review?.readOnly) return false;
