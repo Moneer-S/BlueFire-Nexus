@@ -35,9 +35,13 @@ it.each(["theme", "mode", "autonomy"] as const)("preserves a touched %s while hy
   }
   if (field === "autonomy") await user.selectOptions(screen.getByRole("combobox", { name: "AI autonomy" }), "assist");
   await finish();
-  await waitFor(() => expect(current()).toEqual({ theme: field === "theme" ? "system" : "light", mode: field === "mode" ? "simulate" : "execute", autonomy: field === "autonomy" ? "assist" : "auto" }));
+  await waitFor(() => {
+    expect(current()).toEqual({ theme: field === "theme" ? "system" : "light", mode: field === "mode" ? "simulate" : "execute", autonomy: field === "autonomy" ? "assist" : "auto" });
+    // Rendering the hydrated state precedes ProductProvider's persistence effect.
+    // Wait for both observable results before treating hydration as complete.
+    expect(JSON.parse(localStorage.getItem("bluefire.local.run-config.v1")!)).toMatchObject({ theme: current().theme, effect_mode: current().mode, autonomy: current().autonomy });
+  });
   expect(screen.getByLabelText("Current run").textContent).toBe(run);
-  expect(JSON.parse(localStorage.getItem("bluefire.local.run-config.v1")!)).toMatchObject({ theme: current().theme, effect_mode: current().mode, autonomy: current().autonomy });
 });
 
 it("preserves an imported preference document when initial settings arrive later", async () => {
