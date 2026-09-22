@@ -60,6 +60,42 @@ def test_known_gzip_failures_keep_their_classification_with_unknown_evidence(cod
     assert failure["telemetry_gap"] is True
 
 
+@pytest.mark.parametrize("evidence_state", ["observed", "unknown", "missing"])
+@pytest.mark.parametrize("code", ["collection_timeout", "private-collection-error"])
+def test_collection_timeout_and_telemetry_gap_remain_independent(evidence_state, code):
+    record = _record(
+        EvidenceProvenance.UNKNOWN if evidence_state == "unknown" else EvidenceProvenance.OBSERVED
+    )
+    projection = _project(
+        {
+            "step_id": "step-1",
+            "behavior_id": "behavior-1",
+            "status": "failed",
+            "error": {"code": code, "message": "private collection output"},
+            "evidence_ids": [record.evidence_id],
+        },
+        [] if evidence_state == "missing" else [record],
+    )
+    attempt = projection["attempts"][0]
+    gap = evidence_state != "observed"
+    known_timeout = code == "collection_timeout"
+    assert attempt["failure"] == {
+        "classification": (
+            "execution_timeout"
+            if known_timeout
+            else "missing_telemetry" if gap else "execution_failure"
+        ),
+        "code": code if known_timeout else None,
+        "unrecognized_code_present": not known_timeout,
+        "target_prevention": "not_established",
+        "telemetry_gap": gap,
+    }
+    assert attempt["missing_evidence_count"] == int(evidence_state == "missing")
+    encoded = canonical_json_bytes(projection)
+    assert b"private-collection-error" not in encoded
+    assert b"private collection output" not in encoded
+
+
 def test_unresolved_evidence_is_missing_telemetry_even_for_success():
     projection = _project(
         {
