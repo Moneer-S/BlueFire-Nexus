@@ -66,6 +66,10 @@ function candidateReviewLabel(candidate: DetectionCandidate) {
   return `${displayTitle(candidate.title?.trim() || "Untitled rule")} · ${revisionLabel(candidate)}`;
 }
 
+function candidateNoticeTitle(candidate: DetectionResource) {
+  return displayTitle(candidate.document.title?.trim() || "Untitled rule");
+}
+
 type CandidateView = DetectionCandidate & { resolvedId: string; resourceId?: string; runId?: string; demo?: boolean };
 
 interface ResearchSourceDocument extends Record<string, unknown> {
@@ -349,14 +353,14 @@ function DetectionRegistryPage() {
       refreshDetections();
       if (!manualMounted.current || manualNavigationRef.current !== submitted.navigation) return;
       setSelectedId(candidate.id);
-      setNotice(operation === "reused" ? `${candidate.id} already exists and was reused at its earned ${sentence(candidate.status)} state. Its lifecycle was not reset.` : `${candidate.id} ${operation === "cloned" ? "cloned as a new immutable revision" : "created"} in hypothesis state. The source run's lifecycle and match results were not copied.`);
+      setNotice(operation === "reused" ? `${candidateNoticeTitle(candidate)} already exists and was reused at its earned ${sentence(candidate.status)} state. Its lifecycle was not reset.` : `${candidateNoticeTitle(candidate)} ${operation === "cloned" ? "was cloned as a new immutable revision" : "was created"} in hypothesis state. The source run's lifecycle and match results were not copied.`);
     },
     onError: (error, submitted) => { if (manualMounted.current && manualNavigationRef.current === submitted.navigation) setNotice(error instanceof Error ? error.message : "The run-linked definition could not be saved."); },
   });
   const actionMutation = useMutation({
     mutationFn: ({ id, action, body }: { id: string; action: LifecycleAction; body: Record<string, unknown> }) => api.detectionAction(id, action, body),
     onSuccess: ({ candidate }) => {
-      setNotice(`${candidate.id} advanced honestly to ${sentence(candidate.status)}.`);
+      setNotice(`${candidateNoticeTitle(candidate)} advanced to ${sentence(candidate.status)}.`);
       refreshDetections();
     },
     onError: (error) => setNotice(error instanceof Error ? error.message : "The lifecycle action was refused."),
@@ -369,7 +373,7 @@ function DetectionRegistryPage() {
       refreshDetections();
       if (!manualMounted.current || manualNavigationRef.current !== submitted.navigation) return;
       setSelectedId(candidate.id);
-      setNotice(`${candidate.id} saved as a new immutable detection revision. Its parent candidate was not changed.`);
+      setNotice(`${candidateNoticeTitle(candidate)} was saved as a new immutable detection revision. Its parent candidate was not changed.`);
       comparisonMutation.reset();
     },
     onError: (error, submitted) => {
