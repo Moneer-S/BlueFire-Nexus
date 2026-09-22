@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import threading
 import time
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from .detections import DetectionCandidate, DetectionError, DetectionPipeline
 from .evidence import EvidenceProvenance, EvidenceRecord
@@ -111,6 +111,39 @@ def execute_internal(
     available: set[str] = set()
     missing: set[str] = set()
     matched: list[str] = []
+
+    def compare_fields(content: Mapping[str, Any], *, permissions: bool) -> tuple[set[str], bool]:
+        nonlocal comparisons, comparison_bytes
+        record_missing: set[str] = set()
+        mismatch = False
+        for raw_key, expected in candidate.selection.items():
+            key, _, operator = raw_key.partition("|")
+            if (key in PERMISSION_FIELDS) != permissions:
+                continue
+            checkpoint()
+            comparisons += 1
+            if comparisons > INTERNAL_LIMITS["field_comparisons"]:
+                raise DetectionError("structured evaluation comparison limit exceeded")
+            present, actual = lookup(content, key)
+            if not present:
+                record_missing.add(key)
+            else:
+                available.add(key)
+                if type(expected) is bool and type(actual) is not bool:
+                    raise DetectionError("structured evaluation boolean field is invalid")
+                value_bytes = len(canonical_json_bytes(actual)) + len(
+                    canonical_json_bytes(expected)
+                )
+                comparison_bytes += value_bytes
+                if (
+                    value_bytes > INTERNAL_LIMITS["value_bytes"]
+                    or comparison_bytes > INTERNAL_LIMITS["comparison_bytes"]
+                ):
+                    raise DetectionError("structured evaluation comparison byte limit exceeded")
+                if not matches_value(actual, expected, operator, strict=True):
+                    mismatch = True
+        return record_missing, mismatch
+
     for record in records:
         checkpoint()
         if record.provenance is not EvidenceProvenance.OBSERVED:
@@ -129,50 +162,31 @@ def execute_internal(
             for key in ("artifact_type", "observation_kind")
         ):
             continue
+        # A known path or other non-permission mismatch makes the conjunction
+        # false before unavailable permission metadata can create a false gap.
+        record_missing, mismatch = compare_fields(record.content, permissions=False)
+        if mismatch:
+            continue
         if permission_keys:
             permissions = {
                 key: record.content[key] for key in PERMISSION_FIELDS if key in record.content
             }
             if not permissions:
-                missing.update(permission_keys)
+                missing.update(record_missing | permission_keys)
                 continue
             status = permissions.get("permission_status")
             if status == "available" and set(permissions) != set(PERMISSION_FIELDS):
-                missing.update(set(PERMISSION_FIELDS) - set(permissions))
+                missing.update(record_missing | (set(PERMISSION_FIELDS) - set(permissions)))
                 continue
             if not permission_fields_valid(permissions):
                 raise DetectionError("structured evaluation permission facts are invalid")
             if status != "available" and (
                 requires_available or permission_keys - {"permission_status", "effective_access"}
             ):
-                missing.update(permission_keys - {"effective_access"})
+                missing.update(record_missing | (permission_keys - {"effective_access"}))
                 continue
-        record_missing: set[str] = set()
-        mismatch = False
-        for raw_key, expected in candidate.selection.items():
-            checkpoint()
-            comparisons += 1
-            if comparisons > INTERNAL_LIMITS["field_comparisons"]:
-                raise DetectionError("structured evaluation comparison limit exceeded")
-            key, _, operator = raw_key.partition("|")
-            present, actual = lookup(record.content, key)
-            if not present:
-                record_missing.add(key)
-            else:
-                available.add(key)
-                if type(expected) is bool and type(actual) is not bool:
-                    raise DetectionError("structured evaluation boolean field is invalid")
-                value_bytes = len(canonical_json_bytes(actual)) + len(
-                    canonical_json_bytes(expected)
-                )
-                comparison_bytes += value_bytes
-                if (
-                    value_bytes > INTERNAL_LIMITS["value_bytes"]
-                    or comparison_bytes > INTERNAL_LIMITS["comparison_bytes"]
-                ):
-                    raise DetectionError("structured evaluation comparison byte limit exceeded")
-                if not matches_value(actual, expected, operator, strict=True):
-                    mismatch = True
+        permission_missing, mismatch = compare_fields(record.content, permissions=True)
+        record_missing.update(permission_missing)
         # Conjunction is certainly false if any known field disagrees. Otherwise
         # absent fields leave this record undecidable, even if other records match.
         if not mismatch:

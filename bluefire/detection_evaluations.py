@@ -218,7 +218,11 @@ def build_run_evaluation(
         "matched_evidence_hashes": {},
         "gap_evidence_ids": gaps[:_MAX_GAP_DISPLAY],
         "gap_count": len(gaps),
-        "mapped_fields": _field_names(candidate.validation.get("mapped_fields")),
+        "mapped_fields": (
+            sorted({key.partition("|")[0] for key in candidate.selection})
+            if internal
+            else _field_names(candidate.validation.get("mapped_fields"))
+        ),
         "available_fields": [],
         "unsupported_fields": [],
         "missing_fields": [],

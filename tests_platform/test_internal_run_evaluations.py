@@ -120,12 +120,16 @@ def test_real_tune_changes_same_observations_and_retains_prior_miss(service, tmp
 def test_missing_unknown_and_unobserved_sources_never_become_zero_matches(
     service, tmp_path, options
 ):
-    identity = internal_candidate(service)
+    identity = internal_candidate(
+        service, {"path|contains": "staged/", "path|endswith": ".jsonl", "nested.value": 1}
+    )
     run_id, _ = observed_run(service, tmp_path, **options)
     result = evaluate(service, identity, run_id)
     assert result["result"]["state"] == "insufficient_evidence"
     assert result["result"]["match_count"] is None
     assert result["backend"]["executed"] is False
+    assert result["result"]["mapped_fields"] == ["nested.value", "path"]
+    assert service.detection_run_evaluations(identity)["evaluations"] == [result]
 
 
 def test_missing_fields_only_exclude_decidably_unrelated_records(service):
@@ -143,6 +147,56 @@ def test_missing_fields_only_exclude_decidably_unrelated_records(service):
     rows.append(record({"artifact_type": "collector_observation"}, 2))
     result = engine.execute_internal(candidate, rows)
     assert result["missing_fields"] == ["nested.flag"]
+    assert result["matched_evidence_ids"] == []
+
+
+@pytest.mark.parametrize(
+    "selector,target,other",
+    [
+        ("path", {"path": "target"}, {"path": "different"}),
+        ("path|contains", {"path": "staged/target"}, {"path": "safe/different"}),
+        ("nested.name", {"nested": {"name": "target"}}, {"nested": {"name": "different"}}),
+    ],
+)
+def test_known_nonpermission_mismatch_excludes_irrelevant_permission_gaps(
+    service, selector, target, other
+):
+    candidate = candidate_document(
+        service, internal_candidate(service, {selector: "target", "other_write_bit": True})
+    )
+    matched = record({**target, **permission_content("0666")})
+    unrelated = record(other, 1)
+    result = engine.execute_internal(candidate, [matched, unrelated])
+    assert result["missing_fields"] == []
+    assert result["matched_evidence_ids"] == [matched.evidence_id]
+    assert result["evaluated_evidence_ids"] == [matched.evidence_id, unrelated.evidence_id]
+    # A potentially matching row still makes the entire result undecidable.
+    relevant_gap = record(target, 2)
+    result = engine.execute_internal(candidate, [matched, unrelated, relevant_gap])
+    assert result["missing_fields"] == ["other_write_bit"]
+    assert result["matched_evidence_ids"] == []
+    undecidable = engine.execute_internal(candidate, [matched, record({}, 3)])
+    assert undecidable["missing_fields"] == sorted([selector.partition("|")[0], "other_write_bit"])
+    assert undecidable["matched_evidence_ids"] == []
+
+
+@pytest.mark.parametrize(
+    "permission_facts",
+    [
+        {},
+        {"permission_status": "unavailable_windows", "effective_access": "not_evaluated"},
+        {"permission_status": "available", "effective_access": "not_evaluated"},
+        {"permission_status": "invalid_metadata", "effective_access": "not_evaluated"},
+    ],
+)
+def test_nonpermission_mismatch_excludes_unrelated_unusable_permission_facts(
+    service, permission_facts
+):
+    candidate = candidate_document(
+        service, internal_candidate(service, {"path": "target", "permission_status": "available"})
+    )
+    result = engine.execute_internal(candidate, [record({"path": "different", **permission_facts})])
+    assert result["missing_fields"] == []
     assert result["matched_evidence_ids"] == []
 
 
@@ -335,6 +389,8 @@ def test_engine_refusal_is_retained_without_partial_matches(service, tmp_path, m
     assert report["result"]["matched_evidence_ids"] == []
     assert report["result"]["evaluated_evidence_ids"] == []
     assert report["backend"]["executed"] is False
+    assert report["result"]["mapped_fields"] == ["artifact_type", "path"]
+    assert service.detection_run_evaluations(identity)["evaluations"] == [report]
     assert (
         service.detection_candidate(identity)["candidate"]["status"] == DetectionState.PARSED.value
     )
@@ -422,4 +478,6 @@ def test_inconclusive_observed_confidence_cannot_create_match_or_negative(servic
     assert report["result"]["gap_evidence_ids"] == [rows[1].evidence_id]
     assert report["result"]["matched_evidence_ids"] == []
     assert report["backend"]["executed"] is False
+    assert report["result"]["mapped_fields"] == ["flag"]
+    assert service.detection_run_evaluations(identity)["evaluations"] == [report]
     assert "source_contains_uncertain_observations" in report["result"]["diagnostic_codes"]
