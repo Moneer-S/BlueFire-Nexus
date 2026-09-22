@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
+from .ai_observation_summary import RuntimeObservationSummary
 from .ai_provider_access import AIJSONTransport, AIProviderAccess, DirectAIProviderAccess
 from .ai_record_validation import DurableProposalRecordError, validate_v3_proposal_record
 from .ai_transport import CancellationSignal, UrllibAIJSONTransport
@@ -491,8 +492,16 @@ class AIProposalRequest:
     )
     retryable_step_ids: tuple[str, ...] = ()
     deadline_monotonic: float | None = None
+    observation_summary: RuntimeObservationSummary | None = None
 
     def __post_init__(self) -> None:
+        if (
+            self.observation_summary is not None
+            and type(self.observation_summary) is not RuntimeObservationSummary
+        ):
+            raise AIProviderError(
+                "runtime observation summary must use the closed metadata contract"
+            )
         if self.deadline_monotonic is not None and (
             isinstance(self.deadline_monotonic, bool)
             or not isinstance(self.deadline_monotonic, (int, float))
@@ -592,6 +601,15 @@ class AIProposalRequest:
             },
             "retryable_step_ids": list(self.retryable_step_ids),
             "context": redact_for_model(self.context, policy),
+            **(
+                {
+                    "observation_summary": redact_for_model(
+                        self.observation_summary.to_dict(), policy, _key="observation_summary"
+                    )
+                }
+                if self.observation_summary is not None
+                else {}
+            ),
         }
 
     def validate_proposal(self, proposal: AIProposal) -> None:

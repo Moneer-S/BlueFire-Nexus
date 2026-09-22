@@ -188,6 +188,15 @@ Redaction replaces values whose keys match configured secret terms, truncates st
 
 Independent permission observations also retain the validated POSIX mode, group/other write bits and availability status. These fields come only from observed evidence, never a runner's reported output or a simulation. Malformed or contradictory permission metadata is labeled `invalid_metadata` without passing its values to the model. Windows and unsupported-platform observations retain their unavailable status rather than inferred POSIX bits. Permission bits do not establish effective access: ACLs, parent-directory traversal and effective access remain unevaluated. The projection retains evidence references and its digest; this added context does not authorize any additional method, parameter or retry.
 
+Serialized adaptive requests carry these finite facts in a separate, closed
+`observation_summary` metadata contract with generated record references and
+hashes. The original evidence projection remains omitted when evidence-content
+sharing is disabled. Arbitrary fields, free-form bodies and unobserved permission
+claims cannot enter this summary; configured redaction still applies to its
+container and fields. Historical proposal records and their identity remain
+unchanged. Fake-transport tests exercise both shipped provider formats through
+the live-authorization boundary; those tests are not live-model evidence.
+
 Known execution errors remain distinct from observation gaps. In particular, gzip
 timeouts and execution/publication failures retain their allowlisted error codes;
 an accompanying missing observation does not erase that reported failure. Runner
