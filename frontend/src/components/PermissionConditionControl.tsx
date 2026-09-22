@@ -16,7 +16,8 @@ const conditions: Array<{ value: PermissionCondition; label: string; description
 export function permissionSelection(condition: PermissionCondition): Record<string, unknown> {
   if (condition === "staged") return { artifact_type: "file_observation", "path|contains": "staged/" };
   return {
-    artifact_type: "file_observation",
+    artifact_type: "collector_observation",
+    observation_kind: "filesystem",
     permission_status: "available",
     [condition === "world_writable" ? "other_write_bit" : "non_owner_write_bit"]: true,
   };
@@ -25,7 +26,13 @@ export function permissionSelection(condition: PermissionCondition): Record<stri
 export function permissionPredictedFields(condition: PermissionCondition): string[] {
   return condition === "staged"
     ? ["artifact_type", "path"]
-    : ["artifact_type", "permission_status", condition === "world_writable" ? "other_write_bit" : "non_owner_write_bit"];
+    : ["artifact_type", "observation_kind", "permission_status", condition === "world_writable" ? "other_write_bit" : "non_owner_write_bit"];
+}
+
+export function isLegacyPermissionSelection(selection: unknown): boolean {
+  return permissionConditionForSelection(selection) !== undefined
+    && (selection as Record<string, unknown>).artifact_type === "file_observation"
+    && !("path|contains" in (selection as Record<string, unknown>));
 }
 
 export function permissionConditionForSelection(selection: unknown): PermissionCondition | undefined {
@@ -34,6 +41,11 @@ export function permissionConditionForSelection(selection: unknown): PermissionC
   for (const condition of conditions) {
     const expected = permissionSelection(condition.value);
     if (Object.keys(value).length === Object.keys(expected).length && Object.entries(expected).every(([key, field]) => value[key] === field)) return condition.value;
+    // Recognize saved legacy rules without changing their immutable definition.
+    if (condition.value !== "staged") {
+      const legacy = { artifact_type: "file_observation", permission_status: "available", [condition.value === "world_writable" ? "other_write_bit" : "non_owner_write_bit"]: true };
+      if (Object.keys(value).length === Object.keys(legacy).length && Object.entries(legacy).every(([key, field]) => value[key] === field)) return condition.value;
+    }
   }
   return undefined;
 }

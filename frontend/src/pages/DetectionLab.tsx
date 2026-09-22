@@ -12,7 +12,7 @@ import { runLabel } from "../lib/run-presentation";
 import { DetectionRunEvaluations } from "../components/DetectionRunEvaluations";
 import { DetectionAIRevision } from "../components/DetectionAIRevision";
 import { DetectionAICreation } from "../components/DetectionAICreation";
-import { PermissionConditionControl, isPermissionCondition, permissionConditionForSelection, permissionPredictedFields, permissionSelection, type PermissionCondition } from "../components/PermissionConditionControl";
+import { PermissionConditionControl, isLegacyPermissionSelection, isPermissionCondition, permissionConditionForSelection, permissionPredictedFields, permissionSelection, type PermissionCondition } from "../components/PermissionConditionControl";
 import { detectionCreationPath } from "../lib/detection-creation";
 import { runCandidateKey, sourceObservedRecords, sourceRunParam } from "../lib/run-handoffs";
 import type {
@@ -64,6 +64,10 @@ type ReviewedComparison = { report: DetectionComparisonResponse; sources: Candid
 
 function candidateReviewLabel(candidate: DetectionCandidate) {
   return `${displayTitle(candidate.title?.trim() || "Untitled rule")} · ${revisionLabel(candidate)}`;
+}
+
+function candidateNoticeTitle(candidate: DetectionResource) {
+  return displayTitle(candidate.document.title?.trim() || "Untitled rule");
 }
 
 type CandidateView = DetectionCandidate & { resolvedId: string; resourceId?: string; runId?: string; demo?: boolean };
@@ -349,14 +353,14 @@ function DetectionRegistryPage() {
       refreshDetections();
       if (!manualMounted.current || manualNavigationRef.current !== submitted.navigation) return;
       setSelectedId(candidate.id);
-      setNotice(operation === "reused" ? `${candidate.id} already exists and was reused at its earned ${sentence(candidate.status)} state. Its lifecycle was not reset.` : `${candidate.id} ${operation === "cloned" ? "cloned as a new immutable revision" : "created"} in hypothesis state. The source run's lifecycle and match results were not copied.`);
+      setNotice(operation === "reused" ? `${candidateNoticeTitle(candidate)} already exists and was reused at its earned ${sentence(candidate.status)} state. Its lifecycle was not reset.` : `${candidateNoticeTitle(candidate)} ${operation === "cloned" ? "was cloned as a new immutable revision" : "was created"} in hypothesis state. The source run's lifecycle and match results were not copied.`);
     },
     onError: (error, submitted) => { if (manualMounted.current && manualNavigationRef.current === submitted.navigation) setNotice(error instanceof Error ? error.message : "The run-linked definition could not be saved."); },
   });
   const actionMutation = useMutation({
     mutationFn: ({ id, action, body }: { id: string; action: LifecycleAction; body: Record<string, unknown> }) => api.detectionAction(id, action, body),
     onSuccess: ({ candidate }) => {
-      setNotice(`${candidate.id} advanced honestly to ${sentence(candidate.status)}.`);
+      setNotice(`${candidateNoticeTitle(candidate)} advanced to ${sentence(candidate.status)}.`);
       refreshDetections();
     },
     onError: (error) => setNotice(error instanceof Error ? error.message : "The lifecycle action was refused."),
@@ -369,7 +373,7 @@ function DetectionRegistryPage() {
       refreshDetections();
       if (!manualMounted.current || manualNavigationRef.current !== submitted.navigation) return;
       setSelectedId(candidate.id);
-      setNotice(`${candidate.id} saved as a new immutable detection revision. Its parent candidate was not changed.`);
+      setNotice(`${candidateNoticeTitle(candidate)} was saved as a new immutable detection revision. Its parent candidate was not changed.`);
       comparisonMutation.reset();
     },
     onError: (error, submitted) => {
@@ -894,7 +898,10 @@ function RevisionWorkspace({
       <Field label="Required research reason" hint="Recorded in immutable tuning decisions and lifecycle history."><input value={revisionReason} onChange={(event) => setRevisionReason(event.target.value)} maxLength={1000} disabled={!persisted} /></Field>
     </div>
     {revisionKind === "tune" ? <>
-      {permissionCondition ? <PermissionConditionControl value={permissionCondition} onChange={setPermissionCondition} disabled={!persisted || revisionPending} /> : null}
+      {permissionCondition ? <>
+        <PermissionConditionControl value={permissionCondition} onChange={setPermissionCondition} disabled={!persisted || revisionPending} />
+        {isLegacyPermissionSelection(JSON.parse(selectionJson)) ? <div><p>This saved rule uses the earlier file-observation fields. Independent filesystem collectors use different fields. Updating the draft preserves the saved rule and its results.</p><Button size="small" disabled={!persisted || revisionPending} onClick={() => setPermissionCondition(permissionCondition)}>Use current observation fields</Button></div> : null}
+      </> : null}
       <details><summary>Advanced structured inputs</summary><div className="config-grid">
         <Field label="Tuned selection JSON" hint="Must remain a non-empty structured object."><textarea rows={9} value={selectionJson} onChange={(event) => setSelectionJson(event.target.value)} disabled={!persisted} /></Field>
         <Field label="Tuned log source JSON" hint="Change selection, log source, or both."><textarea rows={9} value={logsourceJson} onChange={(event) => setLogsourceJson(event.target.value)} disabled={!persisted} /></Field>
