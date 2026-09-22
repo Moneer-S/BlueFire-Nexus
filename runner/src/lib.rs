@@ -17,6 +17,7 @@ mod receipt_store;
 mod receiver_auth;
 pub mod runner;
 pub mod safety;
+pub mod service_operation_binding;
 
 pub use actions::{inventory, ActionDescriptor, ACTION_SDK_SCHEMA_VERSION};
 pub use cancellation_witness::{run_internal_cancellation_descendant, INTERNAL_DESCENDANT_VERB};
