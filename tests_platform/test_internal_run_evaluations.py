@@ -182,6 +182,86 @@ def test_permission_unavailable_is_insufficient_even_when_status_disagrees(servi
 
 
 @pytest.mark.parametrize(
+    "selector,expected,requires_available,unavailable_matches",
+    [
+        ("permission_status", "available", True, False),
+        ("permission_status|contains", "available", True, False),
+        ("permission_status|startswith", "available", True, False),
+        ("permission_status|endswith", "available", True, False),
+        ("permission_status|contains", "avail", True, False),
+        ("permission_status", "unavailable_windows", False, True),
+        ("permission_status|contains", "unavailable", False, True),
+        ("permission_status|startswith", "unavailable", False, True),
+        ("permission_status|endswith", "windows", False, True),
+        ("permission_status", ["available"], False, False),
+        ("permission_status|contains", ["available"], False, False),
+        ("permission_status|endswith", ["available", "unavailable_windows"], False, False),
+    ],
+)
+def test_permission_status_selectors_preserve_availability_and_inspection_semantics(
+    service, selector, expected, requires_available, unavailable_matches
+):
+    candidate = candidate_document(service, internal_candidate(service, {selector: expected}))
+    available = record(permission_content("0666"))
+    unavailable = record(
+        {"permission_status": "unavailable_windows", "effective_access": "not_evaluated"}, 1
+    )
+    known = engine.execute_internal(candidate, [available])
+    assert known["missing_fields"] == []
+    assert known["matched_evidence_ids"] == ([available.evidence_id] if requires_available else [])
+    result = engine.execute_internal(candidate, [available, unavailable])
+    assert result["missing_fields"] == (["permission_status"] if requires_available else [])
+    assert result["matched_evidence_ids"] == (
+        [unavailable.evidence_id] if unavailable_matches else []
+    )
+    # Lists retain existing JSON/string operator semantics, not invented OR alternatives.
+    assert result["mapped_fields"] == ["permission_status"]
+
+
+def test_status_operator_unknown_is_persisted_without_partial_matches(service):
+    identity = internal_candidate(service, {"permission_status|contains": "available"})
+    handle = service.store.create_run(
+        scenario={"schema_version": "test"},
+        plan={"schema_version": "test"},
+        policy={"schema_version": "test"},
+        profile={"id": "profile.unit"},
+    )
+    rows = [
+        EvidenceRecord.create(
+            run_id=handle.run_id,
+            step_id=f"step-{index}",
+            behavior_id="sandbox.collection.stage.v1",
+            provenance=EvidenceProvenance.OBSERVED,
+            producer="authored-test-observation",
+            content=content,
+            target_scope_ref="software-test",
+        )
+        for index, content in enumerate(
+            [
+                permission_content("0666"),
+                {"permission_status": "unavailable_windows", "effective_access": "not_evaluated"},
+            ]
+        )
+    ]
+    service.store.finalize(
+        handle.run_id,
+        result={"status": "completed", "mode": "execute", "steps": []},
+        evidence=[row.to_dict() for row in rows],
+        detections=[],
+    )
+    before = service.detection_candidate(identity)
+    report = evaluate(service, identity, handle.run_id)
+    assert report["result"]["state"] == "insufficient_evidence"
+    assert report["result"]["match_count"] is None
+    assert report["result"]["matched_evidence_ids"] == []
+    assert report["result"]["matched_evidence_hashes"] == {}
+    assert report["result"]["missing_fields"] == ["permission_status"]
+    assert report["result"]["evaluated_evidence_ids"] == [row.evidence_id for row in rows]
+    assert service.detection_run_evaluations(identity)["evaluations"] == [report]
+    assert service.detection_candidate(identity) == before
+
+
+@pytest.mark.parametrize(
     "limit,value",
     [
         ("records", 0),

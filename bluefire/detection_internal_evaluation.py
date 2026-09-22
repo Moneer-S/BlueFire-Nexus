@@ -89,6 +89,25 @@ def execute_internal(
     permission_keys = set(PERMISSION_FIELDS).intersection(
         key.partition("|")[0] for key in candidate.selection
     )
+    requires_available = False
+    for raw_key, expected in candidate.selection.items():
+        key, _, operator = raw_key.partition("|")
+        if key != "permission_status":
+            continue
+        checkpoint()
+        comparisons += 1
+        value_bytes = len(canonical_json_bytes("available")) + len(canonical_json_bytes(expected))
+        comparison_bytes += value_bytes
+        if (
+            comparisons > INTERNAL_LIMITS["field_comparisons"]
+            or value_bytes > INTERNAL_LIMITS["value_bytes"]
+            or comparison_bytes > INTERNAL_LIMITS["comparison_bytes"]
+        ):
+            raise DetectionError("structured evaluation permission selector limit exceeded")
+        # Use the same parsed field/operator semantics as matching. A substring
+        # accepting available must not turn unavailable_windows into a match.
+        requires_available |= matches_value("available", expected, operator, strict=True)
+        checkpoint()
     available: set[str] = set()
     missing: set[str] = set()
     matched: list[str] = []
@@ -124,8 +143,7 @@ def execute_internal(
             if not permission_fields_valid(permissions):
                 raise DetectionError("structured evaluation permission facts are invalid")
             if status != "available" and (
-                candidate.selection.get("permission_status") == "available"
-                or permission_keys - {"permission_status", "effective_access"}
+                requires_available or permission_keys - {"permission_status", "effective_access"}
             ):
                 missing.update(permission_keys - {"effective_access"})
                 continue
