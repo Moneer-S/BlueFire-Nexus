@@ -95,6 +95,33 @@ def _check_private(path: Path, *, directory: bool) -> tuple[int, int]:
             os.close(descriptor)
 
 
+def _check_posix_ancestors(path: Path) -> None:
+    """Refuse directory entries another unprivileged owner could replace.
+
+    SQLite opens a pathname rather than our pinned directory descriptor. Every
+    ancestor must therefore be owned by this user or root and protect its child
+    entry. A sticky shared directory is safe only because the child owners are
+    checked by this same walk. Same-owner and privileged changes remain outside
+    this boundary; no permissions are repaired here.
+    """
+    if sys.platform == "win32":
+        return
+    for ancestor in reversed(path.parents):
+        descriptor = os.open(ancestor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            details = os.fstat(descriptor)
+            if (
+                not stat.S_ISDIR(details.st_mode)
+                or not os.path.samestat(details, ancestor.stat(follow_symlinks=False))
+                or details.st_uid not in {0, os.getuid()}
+                or (details.st_mode & 0o022 and not details.st_mode & stat.S_ISVTX)
+            ):
+                raise OSError("journal ancestor permits untrusted entry replacement")
+            _validate_darwin_descriptor_security(descriptor)
+        finally:
+            os.close(descriptor)
+
+
 class PrivateJournalStorage:
     """Check existing permissions; exclusively create only inside a private parent.
 
@@ -117,6 +144,7 @@ class PrivateJournalStorage:
             self.check()
 
     def _check_links(self) -> None:
+        _check_posix_ancestors(self.path)
         for item in (self.path, *self.path.parents):
             if item.is_symlink() or (
                 item.exists() and bool(getattr(item.lstat(), "st_file_attributes", 0) & 0x400)

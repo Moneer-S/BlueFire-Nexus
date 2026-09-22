@@ -91,7 +91,12 @@ file is exclusively created with private permissions before SQLite opens it.
 
 Every transaction pins the parent, leases the exact database identity, and
 rechecks ownership and privacy before commit. Links, reparse points and hardlinked
-databases are refused. These checks and cooperative locks do not defend against
+databases are refused. Because SQLite opens a pathname, POSIX admission also checks
+the full ancestor chain before creating or opening storage: ancestors must belong
+to the coordinator or root, and group/other-writable directories must enforce
+sticky entry protection. This prevents another unprivileged owner from replacing
+the private parent through an otherwise writable ancestor. The same checks run on
+subsequent access without repairing permissions. These checks and cooperative locks do not defend against
 a malicious process with the same owner credentials, privileged path swaps or
 rollback to an older valid private database. Reopening never proves provenance
 or recovers evidence already exposed by earlier permissive permissions.

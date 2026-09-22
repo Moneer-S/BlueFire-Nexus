@@ -203,3 +203,86 @@ def test_symbolic_link_path_refused(reserved):
     with pytest.raises(ContractError):
         ServiceIntentJournal(link)
     assert path.read_bytes() == before
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ancestor replacement permissions")
+@pytest.mark.parametrize("mode", [0o770, 0o777])
+def test_replaceable_ancestor_refused_before_sqlite(tmp_path, monkeypatch, mode):
+    shared = tmp_path / "shared"
+    shared.mkdir(mode=0o700)
+    private = shared / "private"
+    private.mkdir(mode=0o700)
+    path = private / "journal.sqlite3"
+    shared.chmod(mode)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("SQLite must not open beneath a replaceable ancestor")
+
+    monkeypatch.setattr(journal_module.sqlite3, "connect", forbidden)
+    with pytest.raises(ContractError):
+        ServiceIntentJournal(path)
+    assert not path.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ancestor replacement permissions")
+def test_existing_journal_rechecks_ancestor_before_sqlite(tmp_path, monkeypatch, identity):
+    parent = tmp_path / "parent"
+    parent.mkdir(mode=0o700)
+    private = parent / "private"
+    private.mkdir(mode=0o700)
+    path = private / "journal.sqlite3"
+    journal = ServiceIntentJournal(path)
+    row = journal.reserve(identity, "request-ancestor")
+    before = path.read_bytes()
+    parent.chmod(0o777)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("SQLite must not open after ancestor permission changes")
+
+    monkeypatch.setattr(journal_module.sqlite3, "connect", forbidden)
+    with pytest.raises(ContractError):
+        journal.get(row["identity_digest"])
+    assert path.read_bytes() == before
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX sticky directory entry protection")
+def test_owned_private_child_of_sticky_ancestor_is_usable(tmp_path, identity):
+    shared = tmp_path / "sticky"
+    shared.mkdir(mode=0o700)
+    shared.chmod(0o1777)
+    private = shared / "private"
+    private.mkdir(mode=0o700)
+    journal = ServiceIntentJournal(private / "journal.sqlite3")
+    row = journal.reserve(identity, "request-sticky")
+    assert journal.get(row["identity_digest"]) == row
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ancestor ownership contract")
+def test_foreign_sticky_ancestor_refused_before_sqlite(tmp_path, monkeypatch):
+    from bluefire.tool_adapters import service_journal_storage as storage
+
+    shared = tmp_path / "sticky"
+    shared.mkdir(mode=0o700)
+    shared.chmod(0o1777)
+    private = shared / "private"
+    private.mkdir(mode=0o700)
+    path = private / "journal.sqlite3"
+    ancestor_identity = shared.stat().st_dev, shared.stat().st_ino
+    original = storage.os.fstat
+
+    def foreign_stat(descriptor):
+        result = original(descriptor)
+        if (result.st_dev, result.st_ino) == ancestor_identity:
+            fields = list(result)
+            fields[4] = os.getuid() + 1
+            return os.stat_result(fields)
+        return result
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Sticky protection cannot trust a foreign directory owner")
+
+    monkeypatch.setattr(storage.os, "fstat", foreign_stat)
+    monkeypatch.setattr(journal_module.sqlite3, "connect", forbidden)
+    with pytest.raises(ContractError):
+        ServiceIntentJournal(path)
+    assert not path.exists()
