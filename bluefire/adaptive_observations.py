@@ -37,7 +37,7 @@ _AUTHORIZATION_ERRORS = frozenset(
         "policy_refused",
     }
 )
-_TIMEOUT_ERRORS = frozenset({"timeout", "atomic_gzip_timeout"})
+_TIMEOUT_ERRORS = frozenset({"timeout", "atomic_gzip_timeout", "collection_timeout"})
 _EXECUTION_ERRORS = frozenset(
     {"execution_failed", "atomic_gzip_failed", "atomic_gzip_write_failed"}
 )
