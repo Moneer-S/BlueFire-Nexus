@@ -22,6 +22,7 @@ from typing import Any, Callable, Literal, Mapping
 
 from .runner_inventory import (
     BUILTIN_RUNNER_ACTION_IDS,
+    BUILTIN_STRUCTURAL_TOOL_ACTION_IDS,
     RUNNER_ACTION_SDK_SCHEMA_VERSION,
     RUNNER_INVENTORY_SCHEMA_VERSION,
     RunnerInventoryAuthorityError,
@@ -333,7 +334,7 @@ def validate_runner_inventory(
             inventory,
             required_action_ids=BUILTIN_RUNNER_ACTION_IDS,
             require_exact_catalog=True,
-            structural_tool_action_ids={"sandbox.permission.chmod.v1"},
+            structural_tool_action_ids=BUILTIN_STRUCTURAL_TOOL_ACTION_IDS,
         )
     except RunnerInventoryAuthorityError:
         raise RunnerBootstrapError(
