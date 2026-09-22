@@ -61,8 +61,26 @@ def test_known_gzip_failures_keep_their_classification_with_unknown_evidence(cod
 
 
 @pytest.mark.parametrize("evidence_state", ["observed", "unknown", "missing"])
-@pytest.mark.parametrize("code", ["collection_timeout", "private-collection-error"])
-def test_collection_timeout_and_telemetry_gap_remain_independent(evidence_state, code):
+@pytest.mark.parametrize(
+    "code,known_timeout",
+    [
+        ("timeout", True),
+        ("atomic_gzip_timeout", True),
+        ("collection_timeout", True),
+        ("native_canary_timeout", True),
+        ("cancellation_witness_timeout", True),
+        ("fixture_create_timeout", True),
+        ("transform_timeout", True),
+        ("process_discovery_timeout", True),
+        ("recursive_discovery_timeout", True),
+        ("observability_variant_timeout", True),
+        ("loopback_timeout", True),
+        ("private-collection-error", False),
+        ("unrecognized_action_timeout", False),
+        ("loopback_timeout_setup_failed", False),
+    ],
+)
+def test_native_timeout_and_telemetry_gap_remain_independent(evidence_state, code, known_timeout):
     record = _record(
         EvidenceProvenance.UNKNOWN if evidence_state == "unknown" else EvidenceProvenance.OBSERVED
     )
@@ -78,7 +96,6 @@ def test_collection_timeout_and_telemetry_gap_remain_independent(evidence_state,
     )
     attempt = projection["attempts"][0]
     gap = evidence_state != "observed"
-    known_timeout = code == "collection_timeout"
     assert attempt["failure"] == {
         "classification": (
             "execution_timeout"
@@ -94,6 +111,29 @@ def test_collection_timeout_and_telemetry_gap_remain_independent(evidence_state,
     encoded = canonical_json_bytes(projection)
     assert b"private-collection-error" not in encoded
     assert b"private collection output" not in encoded
+    if not known_timeout:
+        assert code.encode() not in encoded
+
+
+@pytest.mark.parametrize("status", ["timed_out", "partial"])
+def test_recursive_discovery_deadline_keeps_timeout_with_partial_results(status):
+    # Native recursive discovery emits Partial if rows were collected before
+    # expiry, or TimedOut if none were collected. Neither establishes prevention.
+    record = _record(EvidenceProvenance.OBSERVED)
+    failure = _project(
+        {
+            "step_id": "step-1",
+            "behavior_id": "behavior-1",
+            "status": status,
+            "error": {"code": "recursive_discovery_timeout"},
+            "evidence_ids": [record.evidence_id],
+        },
+        [record],
+    )["attempts"][0]["failure"]
+    assert failure["classification"] == "execution_timeout"
+    assert failure["code"] == "recursive_discovery_timeout"
+    assert failure["telemetry_gap"] is False
+    assert failure["target_prevention"] == "not_established"
 
 
 def test_unresolved_evidence_is_missing_telemetry_even_for_success():
