@@ -103,7 +103,7 @@ def test_serialized_request_keeps_closed_facts_and_raw_evidence_redaction(runtim
         context={
             **request.context,
             "evidence": {"observation_summary": {"facts": "private raw content"}},
-            "secret": "private secret value",
+            "secret": "private secret value",  # pragma: allowlist secret -- authored redaction sentinel
         },
     )
     wire = request.to_dict(AIRedactionPolicy())
