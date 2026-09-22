@@ -56,7 +56,7 @@ from .collectors import (
     LoopbackReceiverCollector,
 )
 from .config import AutonomyLevel, CleanupPolicy, RunnerProfile
-from .contracts import ExecutionMode, ScenarioDefinition, StepOutcome
+from .contracts import ContractError, ExecutionMode, ScenarioDefinition, StepOutcome
 from .detections import DetectionCandidate, DetectionPipeline
 from .evidence import (
     EvidenceError,
@@ -782,16 +782,18 @@ class Orchestrator:
                     )
                 )
             inventory = self.runner.inventory()
-            tools = (
-                inspected_tool_rows(
-                    self.runner,
-                    profile.native_tool_installations,
-                    inventory,
-                    canonical_runner_inventory(inventory)["actions"],
-                )
-                if profile.native_tool_installations
-                else {}
-            )
+            tools = {}
+            if profile.native_tool_installations:
+                try:
+                    tools = inspected_tool_rows(
+                        self.runner,
+                        profile.native_tool_installations,
+                        inventory,
+                        canonical_runner_inventory(inventory)["actions"],
+                    )
+                except ContractError as exc:
+                    # Let the service settle the claimed, undispatched workspace.
+                    raise OrchestrationError(str(exc)) from exc
             if tools and canonical_runner_inventory(
                 self.runner.inventory()
             ) != canonical_runner_inventory(inventory):

@@ -10,6 +10,7 @@ import pytest
 
 from bluefire.api import APIError
 from bluefire.config import RunnerProfile, load_config
+from bluefire.job_runtime import JobState
 from bluefire.native_tool_installations import NativeToolInstallation
 from bluefire.runner_inventory import BUILTIN_NATIVE_TOOL_ACTION_IDS
 from bluefire.service import BlueFireService
@@ -215,3 +216,62 @@ def test_static_probe_with_saved_record_alone_is_degraded() -> None:
     inventory = ReviewedChmodRunner().inventory()
     result = BlueFireService._sanitized_runner_probe(profile, inventory)
     assert result["health"]["state"] == "degraded"
+
+
+@pytest.mark.parametrize("failure", ["unavailable", "digest", "exception"])
+def test_dispatch_inspection_refusal_settles_claimed_workspace(
+    tmp_path: Path, failure: str
+) -> None:
+    """Readiness succeeds; only the inspection after claiming approval fails."""
+    approval_id: str | None = None
+    dispatch_inspections = 0
+
+    class ChangedToolRunner(ReviewedChmodRunner):
+        def inspect_native_tool(self, installation: Mapping[str, Any]) -> Mapping[str, Any]:
+            nonlocal dispatch_inspections
+            if (
+                approval_id is not None
+                and service.product_store.get_approval_request(approval_id)["status"] == "claimed"
+            ):
+                dispatch_inspections += 1
+                if failure == "exception":
+                    raise OSError("unavailable tool at /private/host/tool")
+                self.failure = failure
+            return super().inspect_native_tool(installation)
+
+    runner = ChangedToolRunner()
+    service, profile = _service_with_native_profile(tmp_path, runner)
+    try:
+        submission = service.submit_run(_saved_native_request(profile))
+        assert submission["preflight"]["runner_readiness"] is not None
+        approval_id = str(submission["approval_request"]["approval_id"])
+        job_id = str(submission["job"]["job_id"])
+        service.job_controller.wait_for_state(job_id, {JobState.AWAITING_APPROVAL}, timeout=3)
+        service.approve_job(job_id, {"approved_by": "tool-reviewer"})
+        failed = service.job_controller.wait(job_id, timeout=3)
+
+        assert dispatch_inspections == 1
+        assert failed["state"] == "failed"
+        assert failed["error"] == {
+            "code": "execution_callback_failed",
+            "message": "execution callback failed",
+            "exception_type": "APIError",
+        }
+        assert "/private/host" not in str(failed)
+        assert runner.execute_calls == 0
+        assert service.store.list_runs() == []
+        assert service.product_store.get_approval_request(approval_id)["status"] == "claimed"
+        workspace = service.product_store.get_execution_workspace(approval_id)
+        assert workspace["state"] == "not_required"
+        assert workspace["run_id"] is None
+        assert workspace["outcome"] == {
+            "schema_version": "bluefire.execution-settlement.v1",
+            "status": "pre_dispatch_refused",
+            "remaining_receipt_count": 0,
+        }
+        with pytest.raises(APIError):
+            service.approve_job(job_id, {"approved_by": "tool-reviewer"})
+        assert dispatch_inspections == 1
+        assert runner.execute_calls == 0
+    finally:
+        service.close()
