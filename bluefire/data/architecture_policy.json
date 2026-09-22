@@ -339,6 +339,8 @@
       "patterns": [
         "bluefire.local_lock",
         "bluefire.product_store*",
+        "bluefire.tool_adapters.service_journal",
+        "bluefire.tool_adapters.service_journal_storage",
         "bluefire.run_store",
         "bluefire.run_bundle_export"
       ]
@@ -470,6 +472,7 @@
         "bluefire.tool_adapters.__init__",
         "bluefire.tool_adapters.contracts",
         "bluefire.tool_adapters.parameters",
+        "bluefire.tool_adapters.service_lifecycle",
         "bluefire.runner_contracts",
         "bluefire.runner_reviewed_execution",
         "bluefire.runner_inventory",
