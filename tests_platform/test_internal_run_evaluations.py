@@ -210,6 +210,45 @@ def test_non_boolean_values_refuse_whole_dataset(service, value):
         )
 
 
+@pytest.mark.parametrize("status_selector", ["permission_status", "permission_status|contains"])
+@pytest.mark.parametrize("access_selector", ["effective_access", "effective_access|contains"])
+def test_known_access_mismatch_excludes_unavailable_permission_gap(
+    service, status_selector, access_selector
+):
+    candidate = candidate_document(
+        service,
+        internal_candidate(service, {status_selector: "available", access_selector: "allowed"}),
+    )
+    unavailable = record(
+        {"permission_status": "unavailable_windows", "effective_access": "not_evaluated"}
+    )
+    for rows in ([unavailable], [record(permission_content("0666"), 1), unavailable]):
+        result = engine.execute_internal(candidate, rows)
+        assert result["missing_fields"] == []
+        assert result["matched_evidence_ids"] == []
+    # A mismatching field never legitimizes an invalid permission group.
+    with pytest.raises(DetectionError, match="permission facts"):
+        engine.execute_internal(
+            candidate,
+            [record({"permission_status": "invalid", "effective_access": "not_evaluated"})],
+        )
+
+
+def test_known_permission_mismatch_preserves_other_match_and_relevant_unknown(service):
+    candidate = candidate_document(
+        service, internal_candidate(service, {"path": "target", "other_write_bit": True})
+    )
+    matched = record({"path": "target", **permission_content("0666")})
+    unrelated = record(permission_content("0640"), 1)
+    result = engine.execute_internal(candidate, [matched, unrelated])
+    assert result["missing_fields"] == []
+    assert result["matched_evidence_ids"] == [matched.evidence_id]
+    relevant = record(permission_content("0666"), 2)
+    result = engine.execute_internal(candidate, [matched, unrelated, relevant])
+    assert result["missing_fields"] == ["path"]
+    assert result["matched_evidence_ids"] == []
+
+
 def test_permission_unavailable_is_insufficient_even_when_status_disagrees(service):
     identity = internal_candidate(
         service,

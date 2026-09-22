@@ -112,13 +112,15 @@ def execute_internal(
     missing: set[str] = set()
     matched: list[str] = []
 
-    def compare_fields(content: Mapping[str, Any], *, permissions: bool) -> tuple[set[str], bool]:
+    def compare_fields(
+        content: Mapping[str, Any], *, permissions: bool, only: frozenset[str] | None = None
+    ) -> tuple[set[str], bool]:
         nonlocal comparisons, comparison_bytes
         record_missing: set[str] = set()
         mismatch = False
         for raw_key, expected in candidate.selection.items():
             key, _, operator = raw_key.partition("|")
-            if (key in PERMISSION_FIELDS) != permissions:
+            if (key in PERMISSION_FIELDS) != permissions or (only is not None and key not in only):
                 continue
             checkpoint()
             comparisons += 1
@@ -183,6 +185,14 @@ def execute_internal(
             if status != "available" and (
                 requires_available or permission_keys - {"permission_status", "effective_access"}
             ):
+                # A validated unavailable group still has a known not_evaluated
+                # access literal. Its mismatch can exclude the row, but status
+                # availability and absent permission bits remain unknown.
+                _, mismatch = compare_fields(
+                    record.content, permissions=True, only=frozenset({"effective_access"})
+                )
+                if mismatch:
+                    continue
                 missing.update(record_missing | (permission_keys - {"effective_access"}))
                 continue
         permission_missing, mismatch = compare_fields(record.content, permissions=True)
