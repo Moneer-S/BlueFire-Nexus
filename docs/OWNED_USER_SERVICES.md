@@ -26,10 +26,14 @@ not overwrite or adopt an existing service. An identity digest is neither a
 signature nor proof of ownership. Deserialized data cannot grant authority.
 
 Cleanup assessment requires an intact, independently observed evidence record from
-the designated future service observer, with matching identity, profile and target.
+the designated future service observer, with full confidence (1.0) and matching
+identity, profile and target. Lower confidence cannot prove cleanup.
 The observation must follow the cleanup request, not be in the future, and be at
 most five seconds old at evaluation. The assessment retains the evidence ID and
-record hash. It never substitutes an action's exit status for an observation.
+record hash for intact records within the assessment's size bound, including
+records rejected for producer, confidence, time or shape. Missing, oversized or
+integrity-invalid input supplies no trusted reference. It never substitutes an
+action's exit status for an observation.
 
 | Assessment | Required interpretation |
 | --- | --- |
