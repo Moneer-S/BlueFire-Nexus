@@ -448,6 +448,8 @@
         "bluefire.detection_backend_health",
         "bluefire.detection_backends",
         "bluefire.detection_query_limits",
+        "bluefire.detection_internal_evaluation",
+        "bluefire.structured_matcher",
         "bluefire.detections",
         "bluefire.evidence",
         "bluefire.file_permissions",

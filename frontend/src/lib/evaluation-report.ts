@@ -69,7 +69,7 @@ export function evaluationReportMarkdown(groups: EvaluationReportGroup[], runs: 
     lines.push("");
   }
   lines.push("## Interpretation and coverage limits", "",
-    "- These results describe query evaluation on retained observations. They do not establish deployed detection, host prevention or broad attack coverage.",
+    "- These results describe the recorded detector engine evaluating retained observations. They do not establish deployed detection, host prevention or broad attack coverage.",
     "- Missing evaluations, insufficient evidence and backend errors are not negative detection results.",
     "- Activity and independent-data labels are operator declarations. They do not prove independence; recorded development use takes precedence.",
     "- The export includes only the successfully loaded records identified above. It makes no claim that unselected runs, missing telemetry or additional revisions were evaluated.", "",

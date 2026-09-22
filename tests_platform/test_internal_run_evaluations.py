@@ -1,0 +1,345 @@
+"""Real collector/software tests; no claim of installed or live-method proof."""
+
+import threading
+from dataclasses import replace
+
+import pytest
+
+from bluefire import detection_internal_evaluation as engine
+from bluefire.application_errors import APIError
+from bluefire.detections import DetectionCandidate, DetectionError, DetectionState
+from bluefire.evidence import EvidenceProvenance, EvidenceRecord
+from bluefire.service import BlueFireService
+from tests_platform.test_detection_evaluations import ROOT, evaluate, observed_run
+from tests_platform.test_detection_evaluations import service as service
+
+
+def internal_candidate(service, selection=None):
+    result = service.upsert_detection_hypothesis(
+        {
+            "behavior_id": "sandbox.collection.stage.v1",
+            "title": "Structured staging rule",
+            "target_language": "internal",
+            "logsource": {"category": "file_event", "product": "generic"},
+            "selection": selection
+            or {"artifact_type": "collector_observation", "path|contains": "staged/"},
+            "provenance": {"source": "internal-evaluation-software-test"},
+        }
+    )
+    identity = result["candidate"]["id"]
+    service.parse_detection_candidate(identity, {})
+    return identity
+
+
+def candidate_document(service, identity):
+    return DetectionCandidate.from_mapping(
+        service.detection_candidate(identity)["candidate"]["document"]
+    )
+
+
+def record(content, index=0):
+    return EvidenceRecord.create(
+        run_id="run-20260906T120000Z-0123456789abcdef",
+        step_id=f"step-{index}",
+        behavior_id="sandbox.collection.stage.v1",
+        provenance=EvidenceProvenance.OBSERVED,
+        producer="authored-test-observation",
+        content=content,
+        target_scope_ref="software-test",
+    )
+
+
+def test_same_internal_revision_records_multiple_runs_without_lifecycle_rewrite(service, tmp_path):
+    identity = internal_candidate(service)
+    first_run, records = observed_run(service, tmp_path)
+    service.exercise_detection_observed(identity, {"run_id": first_run})
+    before = service.detection_candidate(identity)
+    assert before["candidate"]["document"]["state"] == "observed_exercised"
+    old_run = service.store.get_run(first_run)
+    first = evaluate(service, identity, first_run)
+    second_run, _ = observed_run(service, tmp_path, path="safe/variation.txt")
+    second = evaluate(service, identity, second_run, "benign")
+    again = evaluate(service, identity, first_run)
+    assert first["result"]["matched_evidence_ids"] == [records[0].evidence_id]
+    assert first["result"]["matched_evidence_hashes"] == {
+        records[0].evidence_id: records[0].record_hash
+    }
+    assert second["result"]["state"] == "not_matched"
+    assert second["result"]["match_count"] == 0
+    assert again["evaluation_id"] != first["evaluation_id"]
+    assert first["candidate"]["query_sha256"] is None
+    assert first["candidate"]["source_sha256"] is None
+    assert (
+        first["candidate"]["definition_digest"]
+        == before["candidate"]["document"]["definition_digest"]
+    )
+    assert first["backend"]["semantics"] == "typed-json-conjunction.v1"
+    assert first["backend"]["name"] == "bluefire-structured-matcher"
+    assert service.detection_candidate(identity) == before
+    assert service.store.get_run(first_run) == old_run
+    assert len(service.detection_run_evaluations(identity)["evaluations"]) == 3
+    reopened = BlueFireService(
+        project_root=ROOT, runs_dir=tmp_path / "runs", product_db_path=tmp_path / "product.sqlite3"
+    )
+    try:
+        assert reopened.detection_run_evaluations(identity) == service.detection_run_evaluations(
+            identity
+        )
+    finally:
+        reopened.close()
+    # The old lifecycle transition is still single-use, not an evaluation shortcut.
+    with pytest.raises(APIError):
+        service.exercise_detection_observed(identity, {"run_id": second_run})
+
+
+def test_real_tune_changes_same_observations_and_retains_prior_miss(service, tmp_path):
+    identity = internal_candidate(service, {"path": "staged/discovery.tar"})
+    run_id, _ = observed_run(service, tmp_path)
+    missed = evaluate(service, identity, run_id)
+    child = service.tune_detection_candidate(
+        identity,
+        {
+            "reason": "Record staging uses a different suffix.",
+            "selection": {"path|contains": "staged/"},
+        },
+    )["candidate"]["id"]
+    service.parse_detection_candidate(child, {})
+    hit = evaluate(service, child, run_id)
+    variation, _ = observed_run(service, tmp_path, path="staged/variation.json")
+    assert evaluate(service, child, variation)["result"]["state"] == "matched"
+    assert missed["result"]["state"] == "not_matched"
+    assert hit["result"]["state"] == "matched"
+    assert missed["source"] == hit["source"]
+    assert missed["candidate"]["definition_digest"] != hit["candidate"]["definition_digest"]
+    assert service.detection_run_evaluations(identity)["evaluations"] == [missed]
+
+
+@pytest.mark.parametrize(
+    "options", [{"missing": True}, {"synthetic_only": True}, {"unobserved_postcondition": True}]
+)
+def test_missing_unknown_and_unobserved_sources_never_become_zero_matches(
+    service, tmp_path, options
+):
+    identity = internal_candidate(service)
+    run_id, _ = observed_run(service, tmp_path, **options)
+    result = evaluate(service, identity, run_id)
+    assert result["result"]["state"] == "insufficient_evidence"
+    assert result["result"]["match_count"] is None
+    assert result["backend"]["executed"] is False
+
+
+def test_missing_fields_only_exclude_decidably_unrelated_records(service):
+    identity = internal_candidate(
+        service, {"artifact_type": "collector_observation", "nested.flag": True}
+    )
+    candidate = candidate_document(service, identity)
+    rows = [
+        record({"artifact_type": "file_observation"}),
+        record({"artifact_type": "collector_observation", "nested": {"flag": True}}, 1),
+    ]
+    result = engine.execute_internal(candidate, rows)
+    assert result["matched_evidence_ids"] == [rows[1].evidence_id]
+    assert result["missing_fields"] == []
+    rows.append(record({"artifact_type": "collector_observation"}, 2))
+    result = engine.execute_internal(candidate, rows)
+    assert result["missing_fields"] == ["nested.flag"]
+    assert result["matched_evidence_ids"] == []
+
+
+@pytest.mark.parametrize("value", [0, 1, "false", "true", None])
+def test_non_boolean_values_refuse_whole_dataset(service, value):
+    identity = internal_candidate(service, {"flag": True})
+    with pytest.raises(DetectionError, match="boolean"):
+        engine.execute_internal(
+            candidate_document(service, identity),
+            [record({"flag": True}), record({"flag": value}, 1)],
+        )
+
+
+def test_permission_unavailable_is_insufficient_even_when_status_disagrees(service):
+    identity = internal_candidate(
+        service,
+        {
+            "artifact_type": "collector_observation",
+            "permission_status": "available",
+            "other_write_bit": True,
+        },
+    )
+    result = engine.execute_internal(
+        candidate_document(service, identity),
+        [
+            record(
+                {
+                    "artifact_type": "collector_observation",
+                    "permission_status": "unavailable_windows",
+                    "effective_access": "not_evaluated",
+                }
+            )
+        ],
+    )
+    assert result["missing_fields"] == ["other_write_bit", "permission_status"]
+    assert result["matched_evidence_ids"] == []
+
+
+@pytest.mark.parametrize(
+    "limit,value",
+    [
+        ("records", 0),
+        ("record_bytes", 1),
+        ("field_comparisons", 0),
+        ("comparison_bytes", 1),
+        ("value_bytes", 1),
+        ("json_nodes", 1),
+        ("json_depth", 0),
+        ("deadline_ms", 0),
+    ],
+)
+def test_resource_refusal_has_no_partial_result(service, monkeypatch, limit, value):
+    identity = internal_candidate(service, {"flag": True})
+    monkeypatch.setitem(engine.INTERNAL_LIMITS, limit, value)
+    with pytest.raises(DetectionError):
+        engine.execute_internal(candidate_document(service, identity), [record({"flag": True})])
+
+
+def test_cancellation_parser_binding_and_invalid_json_are_refused(service):
+    identity = internal_candidate(service, {"flag": True})
+    candidate = candidate_document(service, identity)
+    event = threading.Event()
+    event.set()
+    with pytest.raises(DetectionError, match="cancelled"):
+        engine.execute_internal(candidate, [record({"flag": True})], cancel_event=event)
+    with pytest.raises(DetectionError, match="parser"):
+        engine.execute_internal(replace(candidate, parser_backend={"name": "pretend"}), [])
+    with pytest.raises(DetectionError, match="value"):
+        engine.execute_internal(
+            candidate, [replace(record({"flag": True}), content={"flag": object()})]
+        )
+
+
+def test_cancellation_after_a_match_discards_all_partial_work(service, monkeypatch):
+    candidate = candidate_document(service, internal_candidate(service, {"flag": True}))
+    event = threading.Event()
+    original = engine.matches_value
+
+    def cancel_after_match(*args, **kwargs):
+        result = original(*args, **kwargs)
+        event.set()
+        return result
+
+    monkeypatch.setattr(engine, "matches_value", cancel_after_match)
+    with pytest.raises(DetectionError, match="cancelled"):
+        engine.execute_internal(
+            candidate, [record({"flag": True}), record({"flag": True}, 1)], cancel_event=event
+        )
+
+
+def test_false_boolean_is_a_measured_nonmatch_and_excess_depth_is_refused(service):
+    candidate = candidate_document(service, internal_candidate(service, {"flag": True}))
+    result = engine.execute_internal(candidate, [record({"flag": False})])
+    assert result["missing_fields"] == []
+    assert result["matched_evidence_ids"] == []
+    nested = {"flag": True}
+    for _ in range(18):
+        nested = {"nested": nested}
+    with pytest.raises(DetectionError, match="JSON work"):
+        engine.execute_internal(candidate, [record(nested)])
+
+
+def test_engine_refusal_is_retained_without_partial_matches(service, tmp_path, monkeypatch):
+    identity = internal_candidate(service)
+    run_id, _ = observed_run(service, tmp_path)
+    monkeypatch.setitem(engine.INTERNAL_LIMITS, "record_bytes", 1)
+    report = evaluate(service, identity, run_id)
+    assert report["result"]["state"] == "backend_error"
+    assert report["result"]["match_count"] is None
+    assert report["result"]["matched_evidence_ids"] == []
+    assert report["result"]["evaluated_evidence_ids"] == []
+    assert report["backend"]["executed"] is False
+    assert (
+        service.detection_candidate(identity)["candidate"]["status"] == DetectionState.PARSED.value
+    )
+
+
+def permission_content(mode):
+    bits = int(mode, 8)
+    return {
+        "artifact_type": "collector_observation",
+        "observation_kind": "filesystem",
+        "permission_status": "available",
+        "effective_access": "not_evaluated",
+        "permission_mode_octal": mode,
+        "group_write_bit": bool(bits & 0o020),
+        "other_write_bit": bool(bits & 0o002),
+        "non_owner_write_bit": bool(bits & 0o022),
+    }
+
+
+@pytest.mark.parametrize("mode,matched", [("0640", False), ("0666", True), ("0660", True)])
+def test_coherent_permission_groups_retain_mode_and_strict_bits(service, mode, matched):
+    identity = internal_candidate(
+        service,
+        {
+            "artifact_type": "collector_observation",
+            "observation_kind": "filesystem",
+            "permission_status": "available",
+            "non_owner_write_bit": True,
+        },
+    )
+    row = record(permission_content(mode))
+    result = engine.execute_internal(candidate_document(service, identity), [row])
+    assert result["missing_fields"] == []
+    assert result["matched_evidence_ids"] == ([row.evidence_id] if matched else [])
+
+
+def test_contradictory_permission_group_refuses_and_incomplete_group_is_unknown(service):
+    identity = internal_candidate(
+        service, {"permission_status": "available", "other_write_bit": True}
+    )
+    candidate = candidate_document(service, identity)
+    contradictory = {**permission_content("0640"), "other_write_bit": True}
+    with pytest.raises(DetectionError, match="permission facts"):
+        engine.execute_internal(
+            candidate, [record(permission_content("0666")), record(contradictory, 1)]
+        )
+    incomplete = permission_content("0666")
+    incomplete.pop("group_write_bit")
+    result = engine.execute_internal(candidate, [record(incomplete)])
+    assert result["missing_fields"] == ["group_write_bit"]
+    assert result["matched_evidence_ids"] == []
+
+
+@pytest.mark.parametrize("confidence", [0.0, 0.5])
+def test_inconclusive_observed_confidence_cannot_create_match_or_negative(service, confidence):
+    identity = internal_candidate(service, {"flag": True})
+    handle = service.store.create_run(
+        scenario={"schema_version": "test"},
+        plan={"schema_version": "test"},
+        policy={"schema_version": "test"},
+        profile={"id": "profile.unit"},
+    )
+    rows = [
+        EvidenceRecord.create(
+            run_id=handle.run_id,
+            step_id=f"step-{index}",
+            behavior_id="sandbox.collection.stage.v1",
+            provenance=EvidenceProvenance.OBSERVED,
+            producer="authored-confidence-case",
+            content={"flag": flag},
+            confidence=quality,
+            target_scope_ref="software-test",
+        )
+        for index, (flag, quality) in enumerate([(True, 1.0), (False, confidence)])
+    ]
+    service.store.finalize(
+        handle.run_id,
+        result={"status": "completed", "mode": "execute", "steps": []},
+        evidence=[row.to_dict() for row in rows],
+        detections=[],
+    )
+    report = evaluate(service, identity, handle.run_id)
+    assert report["result"]["state"] == "insufficient_evidence"
+    assert report["result"]["match_count"] is None
+    assert report["result"]["gap_evidence_ids"] == [rows[1].evidence_id]
+    assert report["result"]["matched_evidence_ids"] == []
+    assert report["backend"]["executed"] is False
+    assert "source_contains_uncertain_observations" in report["result"]["diagnostic_codes"]

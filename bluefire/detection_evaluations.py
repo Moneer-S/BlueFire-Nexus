@@ -1,4 +1,4 @@
-"""Immutable per-run query results, separate from candidate lifecycle promotion."""
+"""Immutable per-run detector results, separate from candidate lifecycle promotion."""
 
 from __future__ import annotations
 
@@ -10,8 +10,9 @@ from typing import Any, Mapping
 from .application_errors import APIError
 from .detection_context import DetectionContext
 from .detection_evaluation_semantics import classify
+from .detection_internal_evaluation import INTERNAL_LIMITS, execute_internal
 from .detection_query_limits import RUN_EXECUTION_LIMITS
-from .detections import DetectionCandidate, DetectionError, DetectionState
+from .detections import DetectionCandidate, DetectionError, DetectionPipeline, DetectionState
 from .evidence import EvidenceError, EvidenceProvenance, EvidenceRecord
 from .product_store_detection_evaluations import EVALUATION_SCHEMA, bind_report
 from .product_store_errors import ProductStoreError
@@ -21,7 +22,7 @@ from .util import content_hash
 _ROLES = {"attack", "benign", "replay", "heldout", "unknown"}
 _MAX_SOURCE_RECORDS = 10_000
 _MAX_GAP_DISPLAY = 128  # Display only; all gap records still prevent execution.
-_LANGUAGES = {"sqlite", "sigma"}
+_LANGUAGES = {"internal", "sqlite", "sigma"}
 _EXECUTABLE_STATES = {
     DetectionState.PARSED,
     DetectionState.FIXTURE_EXERCISED,
@@ -182,13 +183,14 @@ def build_run_evaluation(
         raise APIError(
             HTTPStatus.CONFLICT,
             "detection_evaluation_language_unsupported",
-            "Immutable run evaluation supports SQLite and Sigma converted to bounded SQLite. Internal matcher and YARA metadata are not executable query evidence.",
+            "Run evaluation supports the structured matcher, SQLite and Sigma converted to bounded SQLite. YARA cannot inspect file bytes from metadata.",
         )
-    if candidate.state not in _EXECUTABLE_STATES or not candidate.rule_source:
+    internal = candidate.target_language == "internal"
+    if candidate.state not in _EXECUTABLE_STATES or (not internal and not candidate.rule_source):
         raise APIError(
             HTTPStatus.CONFLICT,
             "detection_evaluation_parse_required",
-            "Parse this query candidate before evaluating a run.",
+            "Parse this detector before evaluating a run.",
         )
     run, records, observed = _source(service, request.get("run_id"))
     gaps = [
@@ -199,6 +201,11 @@ def build_run_evaluation(
         diagnostics.append("observed_evidence_unavailable")
     if gaps:
         diagnostics.append("source_contains_evidence_gaps")
+    if internal:
+        uncertain = [record.evidence_id for record in observed if record.confidence != 1.0]
+        if uncertain:
+            gaps.extend(uncertain)
+            diagnostics.append("source_contains_uncertain_observations")
     objective = run.get("objective_evaluation")
     integrity = objective.get("observation_integrity") if isinstance(objective, Mapping) else None
     if isinstance(integrity, Mapping) and integrity.get("satisfied") is False:
@@ -218,11 +225,37 @@ def build_run_evaluation(
         "diagnostic_codes": diagnostics,
     }
     backend: dict[str, Any] = {
-        "name": "SQLite in-memory bounded executor",
+        "name": DetectionPipeline.parser_name if internal else "SQLite in-memory bounded executor",
         "executed": False,
-        "limits": dict(RUN_EXECUTION_LIMITS),
+        "limits": dict(INTERNAL_LIMITS if internal else RUN_EXECUTION_LIMITS),
     }
-    if not diagnostics:
+    if not diagnostics and internal:
+        try:
+            execution: Mapping[str, Any] = execute_internal(candidate, observed)
+        except DetectionError:
+            result["state"] = "backend_error"
+            diagnostics.append("bounded_matcher_execution_refused")
+        else:
+            backend.update(
+                executed=True,
+                version=DetectionPipeline.parser_version,
+                semantics="typed-json-conjunction.v1",
+            )
+            result.update(execution)
+            if execution["missing_fields"]:
+                diagnostics.append("required_observation_fields_unavailable")
+            else:
+                matched_set = set(execution["matched_evidence_ids"])
+                result.update(
+                    state="matched" if matched_set else "not_matched",
+                    match_count=len(matched_set),
+                    matched_evidence_hashes={
+                        record.evidence_id: record.record_hash
+                        for record in observed
+                        if record.evidence_id in matched_set
+                    },
+                )
+    elif not diagnostics:
         try:
             execution = service.validator._execute_candidate_query(
                 candidate,
@@ -290,7 +323,7 @@ def build_run_evaluation(
             "limitations": [
                 "Activity label is operator-declared context, not observed intent or an expected-result assertion.",
                 "Independent test data is an operator declaration, not proof of unseen data or detection coverage. Recorded development use takes precedence.",
-                "Matches describe the bounded query against independently observed run metadata; they do not establish host detection deployment or prevention.",
+                "Matches describe the stated detector engine against independently observed run metadata; they do not establish host detection deployment or prevention.",
                 "Execution uses the whole observed dataset within its explicit resource budget. A refused execution has no partial result; excluded provenance cannot supply missing observations.",
                 "This report does not promote, reject, or rewrite the candidate lifecycle or source run.",
                 *(

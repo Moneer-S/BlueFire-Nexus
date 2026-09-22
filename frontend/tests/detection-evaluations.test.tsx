@@ -15,14 +15,15 @@ const candidate: DetectionCandidate = { candidate_id: candidateId, state: "parse
 const digest = `sha256:${"a".repeat(64)}`;
 let retained: DetectionRunEvaluation[];
 let resultState: DetectionRunEvaluation["result"]["state"];
+let reportLanguage = "sqlite";
 function report(id: string, source: string, role: DetectionCaseRole): DetectionRunEvaluation {
   const missing = resultState === "insufficient_evidence";
   return {
     schema_version: "bluefire.detection-run-evaluation.v1", evaluation_id: `evaluation-${retained.length}`, question: "Does the revised detector identify staged collection?", case_role: role, case_role_basis: "operator_declared",
-    candidate: { candidate_id: id, revision_root_id: parentId, revision: id === parentId ? 1 : 2, definition_digest: digest, query_sha256: digest, source_sha256: digest, target_language: "sqlite", parser_backend: { name: "sqlite" } },
+    candidate: { candidate_id: id, revision_root_id: parentId, revision: id === parentId ? 1 : 2, definition_digest: digest, query_sha256: reportLanguage === "internal" ? null : digest, source_sha256: reportLanguage === "internal" ? null : digest, target_language: reportLanguage, parser_backend: { name: reportLanguage } },
     source: { run_id: source, manifest_digest: digest, evidence_digest: digest, observed_count: 1, evidence_count: missing ? 2 : 1, excluded_provenance_counts: {} },
     result: { state: resultState, match_count: missing ? null : resultState === "matched" ? 1 : 0, evaluated_evidence_ids: missing ? [] : ["evidence-observed"], matched_evidence_ids: resultState === "matched" ? ["evidence-observed"] : [], gap_count: missing ? 1 : 0, gap_evidence_ids: missing ? ["evidence-gap"] : [], mapped_fields: ["artifact_type", "path"], available_fields: ["artifact_type", "path"], unsupported_fields: [], missing_fields: [], diagnostic_codes: missing ? ["source_contains_evidence_gaps"] : [] },
-    backend: { name: "SQLite in-memory bounded executor", executed: !missing, version: "3.50.4" }, created_at: "2026-09-06T12:00:00Z", limitations: ["Case role is operator-declared."],
+    backend: { name: reportLanguage === "internal" ? "bluefire-structured-matcher" : "SQLite in-memory bounded executor", executed: !missing, version: "test" }, created_at: "2026-09-06T12:00:00Z", limitations: ["Case role is operator-declared."],
   };
 }
 function mount(value = candidate) {
@@ -32,6 +33,7 @@ function mount(value = candidate) {
 beforeEach(() => {
   retained = [];
   resultState = "matched";
+  reportLanguage = "sqlite";
   vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     const path = String(url);
     const id = path.includes(parentId) ? parentId : candidateId;
@@ -106,10 +108,30 @@ it("shows immutable baseline and revision results together and preserves each so
   expect(screen.getByText(parentId)).toBeInTheDocument();
 });
 
-it.each(["internal", "yara"])("does not give %s candidates query-engine semantics", async (language) => {
+it.each(["yara", "spl"])("does not give %s candidates metadata-execution semantics", async (language) => {
   mount({ ...candidate, target_language: language });
   expect(screen.getByRole("button", { name: "Evaluate full observed run" })).toBeDisabled();
-  expect(screen.getByText(/Internal matcher results retain internal semantics/)).toBeInTheDocument();
+  expect(screen.getByText(/YARA cannot inspect file bytes from metadata alone/)).toBeInTheDocument();
   await screen.findByText("No retained run evaluations");
   expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+});
+
+it("evaluates multiple runs with one exercised internal revision and truthful engine identity", async () => {
+  reportLanguage = "internal";
+  const user = userEvent.setup();
+  const view = mount({ ...candidate, target_language: "internal", state: "observed_exercised" });
+  await user.click(screen.getByRole("button", { name: "Evaluate full observed run" }));
+  expect(await screen.findByText("Definition digest")).toBeVisible();
+  expect(screen.queryByText("Query digest")).not.toBeInTheDocument();
+  expect(screen.getByText("bluefire-structured-matcher · test · Executed")).toBeVisible();
+  resultState = "not_matched";
+  await user.selectOptions(screen.getByRole("combobox", { name: "Evaluation source run" }), otherRunId);
+  await user.click(screen.getByRole("button", { name: "Evaluate full observed run" }));
+  await screen.findByText("All retained evaluation records (2)");
+  expect(retained.map(row => row.candidate.candidate_id)).toEqual([candidateId, candidateId]);
+  expect(retained.map(row => row.source.run_id)).toEqual([runId, otherRunId]);
+  expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST").every(([url]) => String(url).endsWith("/evaluate-run"))).toBe(true);
+  view.unmount();
+  mount({ ...candidate, target_language: "internal", state: "observed_exercised" });
+  expect(await screen.findByText("All retained evaluation records (2)")).toBeVisible();
 });
