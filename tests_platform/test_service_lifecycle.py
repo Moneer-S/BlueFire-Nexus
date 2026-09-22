@@ -76,6 +76,7 @@ def _evidence(
     provenance: EvidenceProvenance = EvidenceProvenance.OBSERVED,
     producer: str = OBSERVER,
     action_id: str | None = "service.cleanup.v1",
+    confidence: float = 1.0,
 ) -> EvidenceRecord:
     row = identity.to_dict()
     return EvidenceRecord.create(
@@ -89,6 +90,7 @@ def _evidence(
         content=_facts(identity) if content is None else content,
         target_scope_ref=row["target_scope_digest"],
         timestamp=timestamp,
+        confidence=confidence,
     )
 
 
@@ -196,6 +198,37 @@ def test_cleanup_requires_independent_observer(identity, provenance, producer):
     )
     assert result.status == "unknown"
     assert result.reasons == ("independent_service_observer_required",)
+
+
+@pytest.mark.parametrize("confidence", [0.0, 0.5, 0.999999])
+def test_cleanup_cannot_be_proven_by_partial_confidence(identity, confidence):
+    record = _evidence(identity, confidence=confidence)
+    result = assess_service_cleanup(
+        identity, record, cleanup_started_at=STARTED, evaluated_at=EVALUATED
+    )
+    assert result.status == "unknown"
+    assert result.reasons == ("observation_confidence_insufficient",)
+    assert (result.evidence_id, result.record_hash) == (record.evidence_id, record.record_hash)
+
+
+@pytest.mark.parametrize(
+    "changes,reason",
+    [
+        ({"timestamp": "2026-01-01T00:09:59Z"}, "observation_outside_cleanup_window"),
+        ({"timestamp": "not-a-time"}, "observation_time_invalid"),
+        ({"producer": "observer.other.v1"}, "independent_service_observer_required"),
+        ({"provenance": EvidenceProvenance.SYNTHETIC}, "independent_service_observer_required"),
+        ({"content": {}}, "observation_shape_invalid"),
+    ],
+)
+def test_rejected_intact_observation_retains_audit_reference(identity, changes, reason):
+    record = _evidence(identity, **changes)
+    result = assess_service_cleanup(
+        identity, record, cleanup_started_at=STARTED, evaluated_at=EVALUATED
+    )
+    assert result.status == "unknown"
+    assert result.reasons == (reason,)
+    assert (result.evidence_id, result.record_hash) == (record.evidence_id, record.record_hash)
 
 
 @pytest.mark.parametrize(
@@ -357,6 +390,7 @@ def test_assessor_rejects_stale_mutated_record_hash(identity):
     )
     assert result.status == "unknown"
     assert result.reasons == ("observation_integrity_invalid",)
+    assert result.evidence_id is None and result.record_hash is None
 
 
 def test_assessor_rejects_oversized_observation(identity):

@@ -136,8 +136,13 @@ def assess_service_cleanup(
     if started < _time(scope["created_at"]) or evaluated < started:
         raise ContractError("cleanup evaluation has an invalid time window")
 
-    def unknown(reason: str) -> ServiceCleanupAssessment:
-        return ServiceCleanupAssessment("unknown", (reason,))
+    def unknown(reason: str, record: EvidenceRecord | None = None) -> ServiceCleanupAssessment:
+        return ServiceCleanupAssessment(
+            "unknown",
+            (reason,),
+            record.evidence_id if record is not None else None,
+            record.record_hash if record is not None else None,
+        )
 
     if evidence is None:
         return unknown("observation_missing")
@@ -149,13 +154,15 @@ def assess_service_cleanup(
     except (EvidenceError, TypeError, ValueError):
         return unknown("observation_integrity_invalid")
     if record.provenance is not EvidenceProvenance.OBSERVED or record.producer != OBSERVER:
-        return unknown("independent_service_observer_required")
+        return unknown("independent_service_observer_required", record)
+    if record.confidence != 1.0:
+        return unknown("observation_confidence_insufficient", record)
     try:
         observed = _time(record.timestamp)
     except ContractError:
-        return unknown("observation_time_invalid")
+        return unknown("observation_time_invalid", record)
     if observed < started or observed > evaluated or evaluated - observed > timedelta(seconds=5):
-        return unknown("observation_outside_cleanup_window")
+        return unknown("observation_outside_cleanup_window", record)
     try:
         facts = _object(
             record.content,
@@ -178,7 +185,7 @@ def assess_service_cleanup(
             if not isinstance(facts[name], str) or facts[name] not in allowed:
                 raise ContractError("invalid service observation state")
     except ContractError:
-        return unknown("observation_shape_invalid")
+        return unknown("observation_shape_invalid", record)
     mismatches = []
     if record.runner_profile_id != scope["runner_profile_id"]:
         mismatches.append("runner_profile_changed")
