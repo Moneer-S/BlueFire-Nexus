@@ -1,6 +1,7 @@
 """Authored software cases for real catalog methods; no live model or lab effects."""
 
 from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -106,6 +107,8 @@ def reviewed_experiment():
         for item in load_config(ROOT / "config/bluefire.example.yaml").runner_profiles
         if item.id == "sandbox-execute.v1"
     )
+    # This authored experiment explicitly selects the optional tool.
+    profile = replace(profile, enabled_actions=(*profile.enabled_actions, GZIP))
     plan = planner.compile(
         scenario, mode=ExecutionMode.EXECUTE, profile=profile, autonomy=AutonomyLevel.AUTO
     )
