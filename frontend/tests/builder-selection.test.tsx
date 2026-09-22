@@ -92,6 +92,26 @@ describe("Builder selection and navigation", () => {
     expect(window.confirm).toHaveBeenCalledOnce();
   }, 15000);
 
+  it("selects the replacement node after deleting the selected step", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderBuilder();
+    await user.click(await screen.findByRole("button", { name: "Steps" }));
+    const list = within(screen.getByRole("list", { name: "Experiment steps" }));
+    const steps = list.getAllByRole("button");
+    expect(steps.length).toBeGreaterThan(1);
+    await user.click(steps[1]!);
+    const deletedId = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!).steps[1].id as string;
+    expect(screen.getByTestId(`rf__node-${deletedId}`)).toHaveClass("selected");
+    await user.click(screen.getByRole("button", { name: "Delete selected node" }));
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!).steps.map((step: { id: string }) => step.id)).not.toContain(deletedId));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Delete selected node" })).toBeEnabled());
+    const replacementId = demoScenario.steps[0]!.id;
+    expect(within(screen.getByRole("list", { name: "Experiment steps" })).getAllByRole("button")[0]).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId(`rf__node-${replacementId}`)).toHaveClass("selected");
+    expect(window.confirm).toHaveBeenCalledOnce();
+  }, 15000);
+
   it("preserves the visible selection when changing sections and returning from the step list", async () => {
     const scenario: typeof demoScenario = { ...structuredClone(demoScenario), start: "step_1", steps: Array.from({ length: 17 }, (_, index) => ({ ...structuredClone(demoScenario.steps[0]!), id: `step_${index + 1}` })), edges: [], layout: undefined };
     scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success", to_step: step.id }));
