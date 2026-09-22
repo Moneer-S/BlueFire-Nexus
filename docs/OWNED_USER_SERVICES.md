@@ -81,9 +81,20 @@ contract above.
 The journal records metadata and invokes no service or process. Its canonical
 record hash detects inconsistent storage, not forgery by someone who controls the
 database. Schema, identity, revision, operation order and database key bindings
-are checked on every read. The database and its parent directory must be private
-to the trusted coordinator. Symbolic-link paths are rejected, but this is not a
-descriptor-pinned defense against a hostile process swapping directory entries.
+are checked on every read. Setup must supply an existing owner-private parent.
+POSIX admission requires the current owner, directory mode 0700 and file mode
+0600; macOS additionally rejects extended ACLs and ownership-ignoring mounts.
+Windows admission verifies the native protected owner-only DACL, including
+inheritance on the parent; chmod is not a Windows privacy guarantee. Existing
+shared storage is refused without permission repair or database writes. A new
+file is exclusively created with private permissions before SQLite opens it.
+
+Every transaction pins the parent, leases the exact database identity, and
+rechecks ownership and privacy before commit. Links, reparse points and hardlinked
+databases are refused. These checks and cooperative locks do not defend against
+a malicious process with the same owner credentials, privileged path swaps or
+rollback to an older valid private database. Reopening never proves provenance
+or recovers evidence already exposed by earlier permissive permissions.
 
 Reservation does not prove initial absence, current ownership, readiness or
 permission. Approval expiry does not prevent recording results or inspecting

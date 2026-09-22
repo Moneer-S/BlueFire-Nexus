@@ -17,7 +17,11 @@ from typing import Any, Iterator, Mapping
 from uuid import uuid4
 
 from ..contracts import ContractError
+from ..local_lock import LocalLockError
+from ..runner_trust import RunnerTrustError
 from ..util import canonical_json_bytes, content_hash
+from ..windows_owner_acl import WindowsOwnerAclError
+from .service_journal_storage import PrivateJournalStorage
 from .service_lifecycle import OwnedUserService
 
 SCHEMA = "bluefire.service-intent-journal.v1"
@@ -135,23 +139,38 @@ class ServiceIntentJournal:
         if not isinstance(path, Path) or path.name in {"", ":memory:"}:
             raise _fail("database requires a private filesystem path")
         self._path = path.absolute()
+        try:
+            self._storage = PrivateJournalStorage(self._path)
+        except (OSError, LocalLockError, RunnerTrustError, WindowsOwnerAclError) as exc:
+            raise _fail("database requires existing owner-private storage") from exc
+        self._path = self._storage.path
         with self._transaction(initialize=True):
             pass
 
-    def _check_path(self) -> None:
-        if self._path.is_symlink() or any(parent.is_symlink() for parent in self._path.parents):
-            raise _fail("database path cannot use symbolic links")
-        if self._path.exists() and not self._path.is_file():
-            raise _fail("database path is not a regular file")
-
     @contextmanager
     def _transaction(self, *, initialize: bool = False) -> Iterator[sqlite3.Connection]:
+        try:
+            with self._storage.lease():
+                with self._sqlite_transaction(initialize=initialize) as connection:
+                    yield connection
+        except (
+            sqlite3.Error,
+            OSError,
+            LocalLockError,
+            RunnerTrustError,
+            WindowsOwnerAclError,
+        ) as exc:
+            raise _fail("database operation failed") from exc
+
+    @contextmanager
+    def _sqlite_transaction(self, *, initialize: bool) -> Iterator[sqlite3.Connection]:
         connection: sqlite3.Connection | None = None
         try:
-            self._check_path()
             if not initialize and not self._path.is_file():
                 raise _fail("database is missing")
-            connection = sqlite3.connect(self._path, timeout=5, isolation_level=None)
+            connection = sqlite3.connect(
+                self._path.as_uri() + "?mode=rw", uri=True, timeout=5, isolation_level=None
+            )
             connection.execute("PRAGMA trusted_schema=OFF")
             connection.execute("PRAGMA synchronous=FULL")
             connection.execute("BEGIN IMMEDIATE")
@@ -186,9 +205,8 @@ class ServiceIntentJournal:
                 if columns != expected:
                     raise _fail("database columns are invalid")
             yield connection
+            self._storage.check()
             connection.commit()
-        except (sqlite3.Error, OSError) as exc:
-            raise _fail("database operation failed") from exc
         finally:
             if connection is not None:
                 if connection.in_transaction:

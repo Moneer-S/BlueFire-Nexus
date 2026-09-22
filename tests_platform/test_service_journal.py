@@ -1,6 +1,7 @@
 """Durable intent metadata cannot silently repeat an interrupted service effect."""
 
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -30,6 +31,16 @@ def finish(journal, row, operation, result="succeeded"):
         result,
         pending["revision"],
     )
+
+
+@pytest.fixture(autouse=True)
+def private_test_parent(tmp_path):
+    if os.name == "nt":
+        from bluefire.windows_owner_acl import apply_owner_private_acl_path
+
+        apply_owner_private_acl_path(tmp_path, directory=True)
+    else:
+        tmp_path.chmod(0o700)
 
 
 @pytest.fixture
