@@ -10,10 +10,16 @@ environment. It creates eight synthetic records, optionally redacts their values
 selects the exact transformed file, collects it, and cleans up receipt-owned files.
 The gzip method requires an already-installed, protected GNU gzip build listed in
 [Reviewed native tool builds](REVIEWED_NATIVE_BUILDS.md). In Settings, open the
-inactive Linux Execute profile and choose **Set up GNU gzip**. Inspect the exact
+inactive Execute profile, choose **Configure methods**, select Linux and the gzip
+collection method, and save the draft. Then choose **Set up GNU gzip**. Inspect the exact
 package version and installation location, review the result, then save its
 binding. Inspection does not run gzip or activate the profile. An unavailable or
 untrusted tool stops that method; BlueFire does not install it.
+
+New default profiles leave optional external tools unselected so native methods
+can run before tool setup. Existing saved profiles keep their selections: if an
+older profile enables unbound gzip, deactivate it and either finish this setup or
+unselect gzip in **Configure methods**. Saving that draft does not approve a run.
 
 In Run review, leave **Collection contents** enabled. This normal control selects
 the semantic observer; BlueFire derives the exact collection paths and schedule.

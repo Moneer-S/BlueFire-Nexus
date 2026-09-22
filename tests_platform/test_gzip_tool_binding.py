@@ -317,7 +317,7 @@ def test_gzip_candidate_setup_uses_normal_bluefire_service(tmp_path) -> None:
     document = configured_profile().to_dict()
     document["id"] = "draft.gzip-unenrolled.v1"
     document["platforms"] = ["linux"]
-    assert gzip.ADAPTER_ID in document["enabled_actions"]
+    document["enabled_actions"].append(gzip.ADAPTER_ID)
     document["native_tool_installations"] = []
     service.save_resource(
         "runner_profile", document["id"], {"document": document, "status": "draft"}

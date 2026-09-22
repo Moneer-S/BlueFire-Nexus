@@ -61,6 +61,25 @@ it("configures a baseline with its existing identity and saves an inactive draft
   expect(activate).not.toHaveBeenCalled();
 });
 
+it("explicitly selects optional gzip from a native-only default before setup", async () => {
+  const baseline: RunnerProfile = { ...profile, enabled_actions: [action.id] };
+  setup("profiles", baseline);
+  const user = userEvent.setup();
+  const save = vi.spyOn(api, "saveResource").mockResolvedValue({ schema_version: "v1", resource: { kind: "runner-profiles", id: baseline.id, document: baseline as unknown as Record<string, unknown>, status: "draft", digest: "sha256:test", created_at: "2026-09-22", updated_at: "2026-09-22" } });
+  const activate = vi.spyOn(api, "activateResource");
+  const inspect = vi.spyOn(api, "inspectNativeToolCandidate");
+  await user.click(await screen.findByRole("button", { name: "Configure methods for Sample template (sample-template.v1)" }));
+  const dialog = within(screen.getByRole("dialog"));
+  await user.selectOptions(dialog.getByLabelText("Platform"), "linux");
+  const choice = dialog.getByRole("checkbox", { name: "Compress selected records: Atomic gzip" });
+  expect(choice).not.toBeChecked();
+  await user.click(choice);
+  await user.click(dialog.getByRole("button", { name: "Save profile draft" }));
+  await waitFor(() => expect(save).toHaveBeenCalledWith("runner-profiles", baseline.id, expect.objectContaining({ platforms: ["linux"], enabled_actions: [action.id, gzip.id], native_tool_installations: undefined }), "draft"));
+  expect(inspect).not.toHaveBeenCalled();
+  expect(activate).not.toHaveBeenCalled();
+});
+
 it("requires a versioned profile ID before saving and preserves configuration while correcting it", async () => {
   setup();
   const user = userEvent.setup();

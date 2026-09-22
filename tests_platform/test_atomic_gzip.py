@@ -289,9 +289,16 @@ def test_shared_profile_stays_ready_and_only_selected_gzip_requires_linux(
         _, _, readiness = service._execute_readiness_boundary(profile)
         assert readiness["platform"] == platform
         compiled = build_runner_profile(profile, sandbox_root=sandbox, platform=platform)
-        assert METHOD in compiled["allowed_actions"]
+        assert METHOD not in compiled["allowed_actions"]
         scenario = load_scenario(ROOT / "scenarios/atomic_gzip_collection.yaml")
         for method in (METHOD, "sandbox.collection.records.v1", "sandbox.collection.archive.v1"):
+            # Method selection is explicit; gzip's independent installation
+            # readiness is tested before execution in test_optional_tool_defaults.
+            selected_profile = (
+                replace(profile, enabled_actions=(*profile.enabled_actions, METHOD))
+                if method == METHOD
+                else profile
+            )
             selected = replace(
                 scenario,
                 steps=tuple(
@@ -300,14 +307,14 @@ def test_shared_profile_stays_ready_and_only_selected_gzip_requires_linux(
                 ),
             )
             plan = DeterministicPlanner(service.registry).compile(
-                selected, mode=ExecutionMode.EXECUTE, profile=profile
+                selected, mode=ExecutionMode.EXECUTE, profile=selected_profile
             )
             step = next(row for row in plan.steps if row.step_id == "stage_collection")
             decision = PolicyEngine().evaluate(
                 step=step,
                 action=service.registry.get_action(method),
                 mode=ExecutionMode.EXECUTE,
-                profile=profile,
+                profile=selected_profile,
                 platform=platform,
                 target_scope={"scope_refs": ["sandbox.workspace"]},
                 request_hash="a" * 64,
