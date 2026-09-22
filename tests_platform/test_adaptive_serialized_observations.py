@@ -35,7 +35,7 @@ def _inputs(runtime, *, writable=True, provenance=EvidenceProvenance.OBSERVED):
             "path": "/private/operator/path",
             "raw_log": "private raw content",
             "untrusted_extra": "untrusted freeform payload",
-            "secret": "private secret value",
+            "secret": "private secret value",  # pragma: allowlist secret -- authored redaction sentinel
         },
         provenance,
     )
