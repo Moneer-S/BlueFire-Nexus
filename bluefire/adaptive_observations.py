@@ -37,7 +37,23 @@ _AUTHORIZATION_ERRORS = frozenset(
         "policy_refused",
     }
 )
-_TIMEOUT_ERRORS = frozenset({"timeout", "atomic_gzip_timeout", "collection_timeout"})
+# Exact codes emitted by existing native actions, including partial recursive
+# discovery when its deadline expires after collecting some records.
+_TIMEOUT_ERRORS = frozenset(
+    {
+        "timeout",
+        "atomic_gzip_timeout",
+        "collection_timeout",
+        "native_canary_timeout",
+        "cancellation_witness_timeout",
+        "fixture_create_timeout",
+        "transform_timeout",
+        "process_discovery_timeout",
+        "recursive_discovery_timeout",
+        "observability_variant_timeout",
+        "loopback_timeout",
+    }
+)
 _EXECUTION_ERRORS = frozenset(
     {"execution_failed", "atomic_gzip_failed", "atomic_gzip_write_failed"}
 )
