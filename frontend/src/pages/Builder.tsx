@@ -28,6 +28,8 @@ import { GraphProposalReview } from "../components/GraphProposalReview";
 import { SavedExperimentReview } from "../components/SavedExperimentReview";
 import { BuilderRouteEdge } from "../components/BuilderRouteEdge";
 import { BuilderRoutes } from "../components/BuilderRoutes";
+import { GraphDeleteDialog, graphDeletionSummary, graphStepName } from "../components/GraphDeleteDialog";
+import { useGraphDeletion } from "../state/useGraphDeletion";
 import { AdaptiveMethodEditor, AdaptiveRepair } from "../components/AdaptiveMethodEditor";
 import { adaptiveExecutionIssues } from "../lib/adaptive-execution";
 import type { BuilderFlowEdge } from "../lib/graph-routes";
@@ -265,19 +267,31 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
       return flowEdges(graph, behaviorMap).map((edge) => ({ ...edge, selected: selectedEdges.has(edge.id) }));
     });
   }, [graph, behaviorMap, makeNodes]);
+  const deletionScope = JSON.stringify([viewMode, allBranches, [...expandedBranches].sort(), focusedSection, showInputs, [...shownIds], selectedId, nodes.filter(node => node.selected && shownIds.has(node.id)).map(node => node.id).sort(), edges.filter(edge => edge.selected && edgeIsShown(edge)).map(edge => edge.id).sort()]);
+  const deletion = useGraphDeletion<BehaviorFlowNode, FlowEdge>({ revision: scenario, scope: deletionScope, readOnly: Boolean(review?.readOnly), currentRevision: () => currentScenario.current, focusContainer: () => graphCanvas.current, removalCommitted: elements => {
+    const remaining = Array.from(graphCanvas.current?.querySelectorAll<HTMLElement>(".react-flow__node, .react-flow__edge") ?? []);
+    return elements.nodes.every(node => !remaining.some(element => element.classList.contains("react-flow__node") && element.dataset.id === node.id)) && elements.edges.every(edge => !remaining.some(element => element.classList.contains("react-flow__edge") && element.dataset.id === edge.id));
+  }, focusFallback: elements => {
+    const workspace = graphCanvas.current?.closest(".builder-page");
+    if (viewMode === "steps") return workspace?.querySelector<HTMLElement>(".ordered-steps button[aria-pressed='true']") ?? workspace?.querySelector<HTMLElement>(".ordered-steps button, [aria-label='Show behavior palette'], [aria-label='Hide behavior palette']") ?? null;
+    if (elements.nodes.length) return graphCanvas.current?.querySelector<HTMLElement>(".react-flow__node.selected, .graph-empty-overlay button") ?? graphCanvas.current;
+    if (elements.edges.every(edge => edge.data?.kind === "route")) return workspace?.querySelector<HTMLElement>(".builder-routes button[data-route][aria-pressed='true']") ?? workspace?.querySelector<HTMLElement>(".builder-routes button[data-route]") ?? graphCanvas.current;
+    return graphCanvas.current;
+  } });
+  const { isPending: deletionPending, allowsRemoval: deletionAllowsRemoval, consume: consumeDeletion, request: requestDeletion } = deletion;
   useEffect(() => {
     if (!focusMode) return;
-    const exitFocus = (event: globalThis.KeyboardEvent) => { if (event.key === "Escape" && !commandPaletteOpen) setFocusMode(false); };
+    const exitFocus = (event: globalThis.KeyboardEvent) => { if (event.key === "Escape" && !commandPaletteOpen && !deletionPending()) setFocusMode(false); };
     window.addEventListener("keydown", exitFocus);
     return () => window.removeEventListener("keydown", exitFocus);
-  }, [commandPaletteOpen, focusMode]);
+  }, [commandPaletteOpen, focusMode, deletionPending]);
   useEffect(() => {
     const openCommands = (event: globalThis.KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setCommandPaletteOpen(true); }
+      if (!deletionPending() && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setCommandPaletteOpen(true); }
     };
     window.addEventListener("keydown", openCommands);
     return () => window.removeEventListener("keydown", openCommands);
-  }, []);
+  }, [deletionPending]);
   const replaceScenario = useCallback((next: Scenario) => {
     locallyAppliedScenario.current = next;
     currentScenario.current = next;
@@ -285,11 +299,11 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
     setValidationState("idle"); setValidationIssues((current) => current.length ? [] : current); setInvalidNodes((current) => current.size ? new Set() : current);
   }, [setScenario]);
   const applyScenario = useCallback((next: Scenario, record = true) => {
-    if (review?.readOnly) return;
+    if (review?.readOnly || deletionPending()) return;
     replaceScenario(next);
     if (record) { setHistory((items) => [...items.slice(0, historyIndex + 1), structuredClone(next)]); setHistoryIndex((index) => index + 1); }
     else setHistory((items) => [...items.slice(0, historyIndex), structuredClone(next)]);
-  }, [historyIndex, replaceScenario, review?.readOnly]);
+  }, [historyIndex, replaceScenario, review?.readOnly, deletionPending]);
 
   // A step ID edit keeps the step's identity, so the selection and the chosen run
   // method travel with it. Both would otherwise be lost per keystroke: the old ID
@@ -297,7 +311,7 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
   // vanished. Ordinary replacement with a different behavior still drops its
   // override, because only this identity-preserving path re-keys one.
   const renameStep = useCallback((previousId: string, nextId: string, next: Scenario) => {
-    if (review?.readOnly) return;
+    if (review?.readOnly || deletionPending()) return;
     // Overrides are only selectable outside a review, and the review-mode copy of
     // runConfig is rebuilt every render, so read the durable one.
     const override = review ? undefined : durableRunConfig.actionImplementations?.[previousId];
@@ -318,14 +332,14 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
     selectionForGraphRefresh.current = nextId;
     setSelectedId(nextId);
     setNodes((items) => items.map((node) => (node.id === previousId ? { ...node, id: nextId, selected: true } : node)));
-  }, [applyScenario, durableRunConfig, review, setNodes, setRunConfig]);
+  }, [applyScenario, durableRunConfig, review, setNodes, setRunConfig, deletionPending]);
 
-  const undo = useCallback(() => { if (review?.readOnly || historyIndex <= 0) return; const index = historyIndex - 1; setHistoryIndex(index); replaceScenario(structuredClone(history[index]!)); }, [history, historyIndex, replaceScenario, review?.readOnly]);
-  const redo = useCallback(() => { if (review?.readOnly || historyIndex >= history.length - 1) return; const index = historyIndex + 1; setHistoryIndex(index); replaceScenario(structuredClone(history[index]!)); }, [history, historyIndex, replaceScenario, review?.readOnly]);
+  const undo = useCallback(() => { if (review?.readOnly || deletionPending() || historyIndex <= 0) return; const index = historyIndex - 1; setHistoryIndex(index); replaceScenario(structuredClone(history[index]!)); }, [history, historyIndex, replaceScenario, review?.readOnly, deletionPending]);
+  const redo = useCallback(() => { if (review?.readOnly || deletionPending() || historyIndex >= history.length - 1) return; const index = historyIndex + 1; setHistoryIndex(index); replaceScenario(structuredClone(history[index]!)); }, [history, historyIndex, replaceScenario, review?.readOnly, deletionPending]);
 
   const uniqueId = (title: string) => { const root = title.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").replace(/^[^a-z]+/, "") || "step"; let id = root; let suffix = 2; while (scenario.steps.some((step) => step.id === id)) id = `${root}_${suffix++}`; return id; };
   const addBehavior = (behavior: Behavior, position?: { x: number; y: number }) => {
-    if (review?.readOnly) return;
+    if (review?.readOnly || deletionPending()) return;
     const id = uniqueId(behavior.title); const step: ScenarioStep = { id, behavior_id: behavior.id, parameters: Object.fromEntries(behavior.parameters.filter(shouldInitializeParameter).map((item) => [item.name, initialParameterValue(item)])), inputs: {}, alternates: [] };
     const previous = scenario.steps.at(-1); const next: Scenario = { ...scenario, start: scenario.steps.length ? scenario.start : id, steps: [...scenario.steps, step], edges: previous ? [...scenario.edges, { from_step: previous.id, outcome: "success", to_step: id }] : scenario.edges, layout: { ...scenario.layout, [id]: position ?? { x: 70 + (scenario.steps.length % 3) * 310, y: 70 + Math.floor(scenario.steps.length / 3) * 220 } } };
     applyScenario(next); setAllBranches(true); selectStep(id); setCompatibility(`${displayTitle(behavior.title)} added. Set its inputs and parameters in step details.`);
@@ -333,17 +347,23 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
 
   const updateStep = (stepId: string, update: (step: ScenarioStep) => ScenarioStep) => applyScenario({ ...scenario, steps: scenario.steps.map((step) => step.id === stepId ? update(structuredClone(step)) : step) });
   const useAlternative = (stepId: string, behaviorId: string) => {
-    if (review?.readOnly) return;
+    if (review?.readOnly || deletionPending()) return;
     try {
       applyScenario(selectScenarioAlternative(scenario, stepId, behaviorId, behaviorMap));
       setCompatibility(`${displayTitle(behaviorMap.get(behaviorId)!.title)} selected. Inputs, parameters, and connections are preserved. Validate and review the changed run before executing.`);
     } catch (error) { setCompatibility(error instanceof Error ? error.message : "This alternative is unavailable."); }
   };
-  const onNodesChange = useCallback((changes: NodeChange<BehaviorFlowNode>[]) => setNodes((items) => applyNodeChanges(review?.readOnly ? changes.filter((change) => change.type === "select" || change.type === "dimensions") : changes, items)), [review?.readOnly]);
-  const onEdgesChange = useCallback((changes: EdgeChange<FlowEdge>[]) => setEdges((items) => applyEdgeChanges(review?.readOnly ? changes.filter((change) => change.type === "select") : changes, items)), [review?.readOnly]);
+  const onNodesChange = useCallback((changes: NodeChange<BehaviorFlowNode>[]) => {
+    const allowed = changes.filter(change => change.type === "remove" ? deletionAllowsRemoval("nodes", change.id) : !(review?.readOnly || deletionPending()) || change.type === "select" || change.type === "dimensions");
+    setNodes(items => applyNodeChanges(allowed, items));
+  }, [review?.readOnly, deletionAllowsRemoval, deletionPending]);
+  const onEdgesChange = useCallback((changes: EdgeChange<FlowEdge>[]) => {
+    const allowed = changes.filter(change => change.type === "remove" ? deletionAllowsRemoval("edges", change.id) : !(review?.readOnly || deletionPending()) || change.type === "select");
+    setEdges(items => applyEdgeChanges(allowed, items));
+  }, [review?.readOnly, deletionAllowsRemoval, deletionPending]);
   const onNodeDragStop = (_: unknown, node: BehaviorFlowNode) => applyScenario({ ...scenario, layout: { ...scenario.layout, [node.id]: { x: Math.round(node.position.x), y: Math.round(node.position.y) } } });
   const onDelete = ({ nodes: deletedNodes, edges: deletedEdges }: { nodes: BehaviorFlowNode[]; edges: FlowEdge[] }) => {
-    if (review?.readOnly) return;
+    if (review?.readOnly || !consumeDeletion({ nodes: deletedNodes, edges: deletedEdges })) return;
     const deletedNodeIds = deletedNodes.map((node) => node.id);
     const next = deleteScenarioGraphElements(scenario, deletedNodeIds, deletedEdges.map((edge) => ({
       kind: edge.data?.kind,
@@ -375,12 +395,12 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
     const visibleNodes = requestedNodes.filter((node) => shownIds.has(node.id));
     const visibleEdges = requestedEdges.filter(edgeIsShown);
     if (!visibleNodes.length && !visibleEdges.length) return false;
-    const parts = [visibleNodes.length ? `${visibleNodes.length} node${visibleNodes.length === 1 ? "" : "s"}` : "", visibleEdges.length ? `${visibleEdges.length} edge${visibleEdges.length === 1 ? "" : "s"}` : ""].filter(Boolean);
-    return window.confirm(`Delete ${parts.join(" and ")} from this scenario?\n\nConnections to the deleted steps will also be removed. You can undo the confirmed change.`) ? { nodes: visibleNodes, edges: visibleEdges } : false;
-  }, [edgeIsShown, shownIds, review?.readOnly]);
+    const elements = { nodes: visibleNodes, edges: visibleEdges };
+    return requestDeletion(elements, graphDeletionSummary(scenario, behaviorMap, elements));
+  }, [edgeIsShown, shownIds, review?.readOnly, requestDeletion, scenario, behaviorMap]);
 
   const onConnect = (connection: Connection) => {
-    if (review?.readOnly) return;
+    if (review?.readOnly || deletionPending()) return;
     const source = scenario.steps.find((item) => item.id === connection.source); const target = scenario.steps.find((item) => item.id === connection.target);
     if (!source || !target || !connection.sourceHandle || !connection.targetHandle) return;
     if (connection.sourceHandle.startsWith("route:") && connection.targetHandle === "route:in") {
@@ -397,12 +417,12 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
     }
   };
 
-  const copySelected = () => { const selected = scenario.steps.find((step) => step.id === selectedId && shownIds.has(step.id)); if (!selected) return false; clipboard.current = structuredClone(selected); setCompatibility(`${selected.id} copied.`); return true; };
-  const paste = () => { if (review?.readOnly || !clipboard.current) return; const source = clipboard.current; const behavior = behaviorMap.get(source.behavior_id); if (!behavior) return; const id = uniqueId(`${source.id} copy`); const step = { ...structuredClone(source), id, inputs: {} }; const origin = scenario.layout?.[source.id] ?? { x: 60, y: 60 }; applyScenario({ ...scenario, steps: [...scenario.steps, step], layout: { ...scenario.layout, [id]: { x: origin.x + 36, y: origin.y + 36 } } }); setAllBranches(true); selectStep(id); };
+  const copySelected = () => { const selected = scenario.steps.find((step) => step.id === selectedId && shownIds.has(step.id)); if (!selected || deletionPending()) return false; clipboard.current = structuredClone(selected); setCompatibility(`${graphStepName(scenario, behaviorMap, selected.id)} copied.`); return true; };
+  const paste = () => { if (review?.readOnly || deletionPending() || !clipboard.current) return; const source = clipboard.current; const behavior = behaviorMap.get(source.behavior_id); if (!behavior) return; const id = uniqueId(`${source.id} copy`); const step = { ...structuredClone(source), id, inputs: {} }; const origin = scenario.layout?.[source.id] ?? { x: 60, y: 60 }; applyScenario({ ...scenario, steps: [...scenario.steps, step], layout: { ...scenario.layout, [id]: { x: origin.x + 36, y: origin.y + 36 } } }); setAllBranches(true); selectStep(id); };
   const duplicateSelected = () => { if (!review?.readOnly && copySelected()) window.setTimeout(paste, 0); };
   const keyboard = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
-    if (event.defaultPrevented || commandPaletteOpen || target.closest("input, select, textarea, [contenteditable]:not([contenteditable='false'])")) return;
+    if (event.defaultPrevented || commandPaletteOpen || deletionPending() || target.closest("input, select, textarea, [contenteditable]:not([contenteditable='false'])")) return;
     if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
     const key = event.key.toLowerCase();
     if (!["z", "c", "v", "d"].includes(key)) return;
@@ -505,7 +525,7 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
           const id = event.target instanceof Element ? event.target.closest(".react-flow__edge")?.getAttribute("data-id") : null;
           if (id && visibleRoutes.some((edge) => edge.id === id)) { event.preventDefault(); selectRoute(id); }
         }} onPointerDown={(event) => { const target = event.target as HTMLElement; if (!target.closest("button, input, select, textarea")) event.currentTarget.focus(); }} onDragOver={(event) => { if (event.dataTransfer.types.includes("application/x-bluefire-behavior")) event.preventDefault(); }} onDrop={drop}>
-        <ReactFlow<BehaviorFlowNode, FlowEdge> nodes={displayNodes} edges={displayEdges} nodesDraggable={!review?.readOnly} nodesConnectable={!review?.readOnly} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onEdgeClick={onEdgeClick} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={onNodeClick} onSelectionChange={onSelectionChange} onMove={onMove} onNodeDragStop={onNodeDragStop} onDelete={onDelete} onBeforeDelete={confirmDelete} onConnect={onConnect} fitView fitViewOptions={fitViewOptions} minZoom={minimumGraphZoom} maxZoom={1.6} deleteKeyCode={review?.readOnly ? null : deleteKeys} connectionLineStyle={connectionLineStyle} proOptions={proOptions}>
+        <ReactFlow<BehaviorFlowNode, FlowEdge> nodes={displayNodes} edges={displayEdges} nodesDraggable={!review?.readOnly && !deletion.summary} nodesConnectable={!review?.readOnly && !deletion.summary} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onEdgeClick={onEdgeClick} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={onNodeClick} onSelectionChange={onSelectionChange} onMove={onMove} onNodeDragStop={onNodeDragStop} onDelete={onDelete} onBeforeDelete={confirmDelete} onConnect={onConnect} fitView fitViewOptions={fitViewOptions} minZoom={minimumGraphZoom} maxZoom={1.6} deleteKeyCode={review?.readOnly || deletion.summary ? null : deleteKeys} connectionLineStyle={connectionLineStyle} proOptions={proOptions}>
           <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="rgba(117,198,255,.18)"/>{allBranches && scenario.steps.length > 12 ? <MiniMap pannable zoomable nodeColor={(node) => { const behavior = behaviorMap.get((node.data as BehaviorNodeData).step.behavior_id); return behavior?.safety_tier === "restricted" ? "#ff6e79" : behavior?.safety_tier === "controlled" ? "#f7b84b" : "#38a8ff"; }} maskColor="rgba(5,9,19,.74)"/> : null}<Controls showInteractive={false}/>
         </ReactFlow>{!nodes.length ? <div className="graph-empty-overlay"><GitBranch/><strong>Add the first step</strong><span>Choose a method to begin designing this experiment.</span><Button variant="primary" disabled={review?.readOnly} onClick={() => { setPaletteOpen(true); setInspectorOpen(false); }}>Add first step</Button></div> : null}</div>
         {routesOpen ? <BuilderRoutes routes={visibleRoutes} total={scenario.edges.length} selected={selectedRoute} readOnly={Boolean(review?.readOnly)} select={selectRoute} inspect={(source) => { selectStep(source); setRoutesOpen(false); window.requestAnimationFrame(() => document.getElementById(inspectorToggleId)?.focus()); }} remove={(id) => { void flow.deleteElements({ edges: [{ id }] }); }} close={() => { setRoutesOpen(false); document.getElementById(routesToggleId)?.focus(); }} /> : null}
@@ -515,6 +535,7 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
       <Panel className="inspector-panel" hidden={!inspectorOpen}>{inspectorOpen ? <><PanelHeader eyebrow="Step details" title={displayTitle(selectedBehavior?.title ?? "Select a step")} actions={<IconButton label="Close step details" onClick={() => { setInspectorOpen(false); document.getElementById(inspectorToggleId)?.focus(); }}><X/></IconButton>} />{selected && selectedBehavior ? <fieldset className="graph-review-editor" disabled={review?.readOnly}><Inspector scenario={scenario} step={selected} behavior={selectedBehavior} behaviors={behaviorMap} actions={actionMap} onAlternative={useAlternative} updateStep={updateStep} updateScenario={applyScenario} renameStep={renameStep} selectedAction={runConfig.actionImplementations?.[selected.id] ?? ""} allowRunOverride={!review} onAction={(actionId) => { const next = { ...(runConfig.actionImplementations ?? {}) }; if (actionId) next[selected.id] = actionId; else delete next[selected.id]; setRunConfig({ ...runConfig, actionImplementations: next }); }} /></fieldset> : <EmptyState title="Select a step" description="Select a step on the canvas or in the list to choose its method, inputs, and branches." />}</> : null}</Panel>
     </div>
     </div>
+    <GraphDeleteDialog summary={deletion.summary} confirm={deletion.confirm} cancel={deletion.cancel} restoreFocus={deletion.restoreFocus} />
     <Dialog.Root open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen}>
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay builder-command-overlay" />
