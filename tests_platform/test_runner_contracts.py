@@ -37,6 +37,7 @@ EXPECTED_BUILTIN_RUNNER_ACTION_VERSIONS = {
     "sandbox.collection.records.v1": "1.0.0",
     "sandbox.collection.archive.v1": "1.0.0",
     "sandbox.collection.atomic-gzip.v1": "1.0.0",
+    "sandbox.permission.chmod.v1": "1.0.0",
     "sandbox.discovery.list.v1": "2.0.0",
     "sandbox.discovery.metadata.v1": "2.0.0",
     "sandbox.discovery.recursive.v1": "1.0.0",
@@ -77,10 +78,10 @@ EXPECTED_EXECUTE_ACTIONS = [
 ]
 
 
-def test_python_authority_contains_exactly_twenty_three_compiled_actions() -> None:
+def test_python_authority_contains_exactly_twenty_four_compiled_actions() -> None:
     assert dict(BUILTIN_RUNNER_ACTION_VERSIONS) == EXPECTED_BUILTIN_RUNNER_ACTION_VERSIONS
     assert BUILTIN_RUNNER_ACTION_IDS == frozenset(EXPECTED_BUILTIN_RUNNER_ACTION_VERSIONS)
-    assert len(BUILTIN_RUNNER_ACTION_IDS) == 23
+    assert len(BUILTIN_RUNNER_ACTION_IDS) == 24
 
 
 def _execution_binding(

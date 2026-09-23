@@ -14,6 +14,7 @@ from .collection_methods import (
     collection_artifacts,
     collection_request,
 )
+from .permission_method import adapt_permission_method, permission_outputs
 from .planner import PlanStep
 from .provider_runner_contracts import PROVIDER_BINDING_SCHEMA
 from .runner_client import reject_forbidden_execution_keys
@@ -237,6 +238,7 @@ class RunnerActionAdapter:
             *COLLECTION_METHODS,
             "sandbox.fixture.create.v1",
             "sandbox.fixture.transform.v1",
+            "sandbox.permission.chmod.v1",
             "sandbox.discovery.list.v1",
             "sandbox.discovery.metadata.v1",
             "endpoint.discovery.system.v1",
@@ -367,6 +369,17 @@ class RunnerActionAdapter:
                     "redact_values": redact_values,
                 },
                 filesystem_scope=(source, "fixtures/transformed.jsonl"),
+                observable_paths=("fixtures/transformed.jsonl",),
+            )
+        elif action_id == "sandbox.permission.chmod.v1":
+            params = adapt_permission_method(
+                step.parameters,
+                bound_inputs=bound_inputs,
+                available_receipt_ids=receipt_ids,
+            )
+            adapted = AdaptedAction(
+                params=params,
+                filesystem_scope=("fixtures/transformed.jsonl",),
                 observable_paths=("fixtures/transformed.jsonl",),
             )
         elif action_id == "sandbox.discovery.list.v1":
@@ -811,9 +824,17 @@ class RunnerActionAdapter:
                     "sha256": runner_output.get("sha256"),
                     "record_count": runner_output.get("record_count"),
                     "redact_values": runner_output.get("redact_values"),
+                    "size": runner_output.get("size"),
                     "receipt_ids": list(receipt_ids),
                 }
             }
+        if action_id == "sandbox.permission.chmod.v1":
+            return permission_outputs(
+                step.parameters,
+                bound_inputs=bound_inputs,
+                runner_output=runner_output,
+                available_receipt_ids=receipt_ids,
+            )
         if action_id == "sandbox.discovery.list.v1":
             return {
                 "records": [

@@ -36,6 +36,7 @@ _TOOL_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,63}$", re.ASCII)
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ARCHITECTURES = frozenset({"x86_64", "aarch64"})
 _MAX_SIZE = 128 * 1024 * 1024
+CANDIDATE_SCHEMA = "bluefire.native-tool-candidate.v1"
 
 
 def _text(value: Any, name: str, pattern: re.Pattern[str]) -> str:
@@ -64,6 +65,25 @@ def _location(value: Any) -> str:
     if not components or any(component in {"", ".", ".."} for component in components):
         raise ContractError("native tool installation location is not canonical")
     return value
+
+
+def canonical_native_tool_candidate(value: Any) -> dict[str, str]:
+    """Validate read-only setup inputs without claiming installed identity."""
+    if not isinstance(value, Mapping) or set(value) != {
+        "schema_version",
+        "action_id",
+        "installation_location",
+        "tool_version",
+    }:
+        raise ContractError("native tool candidate has an unsupported shape")
+    if value["schema_version"] != CANDIDATE_SCHEMA:
+        raise ContractError("native tool candidate schema is unsupported")
+    return {
+        "schema_version": CANDIDATE_SCHEMA,
+        "action_id": _text(value["action_id"], "action_id", _STABLE_ID),
+        "installation_location": _location(value["installation_location"]),
+        "tool_version": _text(value["tool_version"], "tool_version", _TOOL_VERSION),
+    }
 
 
 @dataclass(frozen=True, slots=True, repr=False)

@@ -40,6 +40,7 @@ fn native_installation_cannot_grant_existing_or_unknown_actions_tool_authority()
     for id in [
         "endpoint.discovery.system.v1",
         "sandbox.permission.chmod.v1",
+        "unregistered.permission.tool.v1",
     ] {
         let mut changed = profile.clone();
         changed.platform = Platform::Linux;
@@ -50,10 +51,10 @@ fn native_installation_cannot_grant_existing_or_unknown_actions_tool_authority()
         changed.native_tool_installations = vec![installation];
         crate::contract::seal_profile(&mut changed);
         assert!(native_tools::validate_profile(&changed).is_err());
-        let expected = if id == "endpoint.discovery.system.v1" {
-            "native_tool_profile_invalid"
-        } else {
+        let expected = if id == "unregistered.permission.tool.v1" {
             "invalid_profile"
+        } else {
+            "native_tool_profile_invalid"
         };
         assert_eq!(validate_profile(&changed).unwrap_err().code, expected);
     }
