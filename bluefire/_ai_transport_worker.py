@@ -80,7 +80,8 @@ def _pinned_opener(url: str, policy: str) -> urllib.request.OpenerDirector:
     def connect(timeout: float) -> socket.socket:
         deadline = time.monotonic() + timeout
         for family, socktype, protocol, address in addresses:
-            remaining = deadline - time.monotonic()
+            # Deadline arithmetic can round slightly above the requested budget.
+            remaining = min(timeout, deadline - time.monotonic())
             if remaining <= 0:
                 raise TimeoutError
             endpoint = socket.socket(family, socktype, protocol)
