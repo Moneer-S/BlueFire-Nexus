@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import replace
 
 import pytest
@@ -247,6 +248,44 @@ def test_cleanup_requires_fresh_observation_inside_window(identity, timestamp):
 
 
 @pytest.mark.parametrize(
+    "timestamp,evaluated",
+    [
+        (STARTED, STARTED),
+        (STARTED, EVALUATED),
+        ("2026-01-01T00:10:00.000000Z", EVALUATED),
+    ],
+)
+def test_observation_at_cleanup_start_is_not_following_evidence(identity, timestamp, evaluated):
+    record = _evidence(identity, timestamp=timestamp)
+    result = assess_service_cleanup(
+        identity, record, cleanup_started_at=STARTED, evaluated_at=evaluated
+    )
+    assert result.status == "unknown"
+    assert result.reasons == ("observation_outside_cleanup_window",)
+    assert (result.evidence_id, result.record_hash) == (record.evidence_id, record.record_hash)
+
+
+@pytest.mark.parametrize(
+    "timestamp,evaluated",
+    [
+        ("2026-01-01T00:10:00.000001Z", EVALUATED),
+        (EVALUATED, EVALUATED),
+        ("2026-01-01T00:10:01Z", "2026-01-01T00:10:06Z"),
+    ],
+)
+def test_following_observation_preserves_inclusive_upper_and_freshness_bounds(
+    identity, timestamp, evaluated
+):
+    record = _evidence(identity, timestamp=timestamp)
+    result = assess_service_cleanup(
+        identity, record, cleanup_started_at=STARTED, evaluated_at=evaluated
+    )
+    assert result.status == "verified_absent"
+    assert result.reasons == ()
+    assert (result.evidence_id, result.record_hash) == (record.evidence_id, record.record_hash)
+
+
+@pytest.mark.parametrize(
     "field,value",
     [
         ("unit_load_state", "loaded"),
@@ -385,6 +424,53 @@ def test_cleanup_remains_reportable_after_due_time(identity):
 def test_assessor_rejects_stale_mutated_record_hash(identity):
     record = _evidence(identity)
     object.__setattr__(record, "content", {**record.content, "cgroup_state": "populated"})
+    result = assess_service_cleanup(
+        identity, record, cleanup_started_at=STARTED, evaluated_at=EVALUATED
+    )
+    assert result.status == "unknown"
+    assert result.reasons == ("observation_integrity_invalid",)
+    assert result.evidence_id is None and result.record_hash is None
+
+
+@pytest.mark.parametrize("field", ["content", "environment"])
+@pytest.mark.parametrize("structure", ["deep", "cycle", "deep_cycle"])
+def test_mutated_recursive_observation_is_integrity_invalid(identity, field, structure):
+    record = _evidence(identity)
+    nested: dict[str, object] = {}
+    cursor = nested
+    if structure != "cycle":
+        for _ in range(sys.getrecursionlimit() + 10):
+            child: dict[str, object] = {}
+            cursor["child"] = child
+            cursor = child
+    if structure in {"cycle", "deep_cycle"}:
+        cursor["cycle"] = nested
+    payload = getattr(record, field)
+    assert isinstance(payload, dict)
+    payload["nested"] = nested
+    failure = ValueError if structure == "cycle" else RecursionError
+    with pytest.raises(failure):
+        canonical_json_bytes(record.to_dict())
+
+    result = assess_service_cleanup(
+        identity, record, cleanup_started_at=STARTED, evaluated_at=EVALUATED
+    )
+    assert result.status == "unknown"
+    assert result.reasons == ("observation_integrity_invalid",)
+    assert result.evidence_id is None and result.record_hash is None
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("evidence_id", ""),
+        ("evidence_id", "evidence-forged"),
+        ("record_hash", ""),
+        ("record_hash", "sha256:" + "f" * 64),
+    ],
+)
+def test_malformed_or_forged_audit_reference_is_not_retained(identity, field, value):
+    record = replace(_evidence(identity), **{field: value})
     result = assess_service_cleanup(
         identity, record, cleanup_started_at=STARTED, evaluated_at=EVALUATED
     )
