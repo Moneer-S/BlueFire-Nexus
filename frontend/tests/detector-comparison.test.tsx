@@ -67,6 +67,34 @@ function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<QueryClientProvider client={client}><MemoryRouter><DetectorEvaluationComparison runIds={["attack", "heldout"]} /></MemoryRouter></QueryClientProvider>);
 }
+it("compares internal revision results and offers the real structured definition", async () => {
+  const user = userEvent.setup();
+  const resources = [resource("original", "original", 1), resource("revised", "original", 2)].map(item => ({ ...item, document: { ...item.document, target_language: "internal", rule_source: undefined, selection: { other_write_bit: true } } }));
+  vi.spyOn(api, "detections").mockResolvedValue({ schema_version: "v1", candidates: resources });
+  vi.spyOn(api, "detectionRunEvaluations").mockImplementation(async id => {
+    const value = report(id, "attack", id === "original" ? "not_matched" : "matched");
+    value.candidate = { ...value.candidate, target_language: "internal", query_sha256: null, source_sha256: null };
+    value.backend = { name: "bluefire-structured-matcher", executed: true, version: "1.0" };
+    return { evaluations: [value] };
+  });
+  const create = vi.fn().mockReturnValue("blob:structured-rule");
+  vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: create, revokeObjectURL: vi.fn() }));
+  const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+  mount();
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Original detector" }), "original");
+  await user.selectOptions(screen.getByRole("combobox", { name: "Revised detector" }), "revised");
+  expect(await screen.findByText("New match")).toBeVisible();
+  expect(screen.getByText("Evaluate both revisions")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Download revised rule" }));
+  expect(create).toHaveBeenCalledOnce();
+  expect(click.mock.instances[0]).toHaveAttribute("download", "revised.json");
+  expect((create.mock.calls[0]![0] as Blob).type).toBe("application/json");
+  const contents = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject;
+    reader.readAsText(create.mock.calls[0]![0] as Blob);
+  });
+  expect(JSON.parse(contents)).toEqual(resources[1]!.document);
+});
 it("loads only the chosen revision family and exposes missing held-out evaluations", async () => {
   const user = userEvent.setup();
   vi.spyOn(api, "detections").mockResolvedValue({ schema_version: "v1", candidates: [resource("original", "original", 1), resource("revised", "original", 2), resource("unrelated", "unrelated", 1)] });

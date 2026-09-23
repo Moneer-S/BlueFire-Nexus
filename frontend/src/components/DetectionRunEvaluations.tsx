@@ -49,7 +49,7 @@ export function DetectionRunEvaluations({ candidate, resourceId, resourceDigest,
     onSuccess: (_result, body) => { void client.invalidateQueries({ queryKey: ["detection-evaluations", body.candidateId] }); },
   });
   const language = candidate.target_language ?? candidate.language ?? "internal";
-  const canEvaluate = resourceId && ["sqlite", "sigma"].includes(language) && ["parsed", "fixture_exercised", "observed_exercised", "benign_evaluated"].includes(candidate.state);
+  const canEvaluate = resourceId && ["internal", "sqlite", "sigma"].includes(language) && ["parsed", "fixture_exercised", "observed_exercised", "benign_evaluated"].includes(candidate.state);
   const rows = [...(reports.data?.evaluations ?? []), ...(related.data?.evaluations ?? [])];
   const [downloadError, setDownloadError] = useState<string>();
   useEffect(() => setDownloadError(undefined), [binding, relatedId]);
@@ -79,8 +79,9 @@ export function DetectionRunEvaluations({ candidate, resourceId, resourceDigest,
 
   const resultForSelection = evaluate.variables?.binding === binding && evaluate.variables?.candidateId === resourceId && evaluate.variables?.run_id === runId && evaluate.variables.question === question.trim() && evaluate.variables.case_role === role && evaluate.variables.evaluation_use === evaluationUse;
   return <>
-    <p>Test this rule against the entire observed dataset in one query. Up to 10,000 records and 16 MiB of normalized fields are supported; resource refusals never become partial results. AI context has a separate, smaller limit.</p>
-    {!canEvaluate ? <Callout tone="warning" title="Parsed query candidate required">Save and parse a SQLite or Sigma candidate to evaluate a run. Internal matcher results retain internal semantics, and YARA cannot inspect file bytes from metadata alone.</Callout> : null}
+    <p>Test this rule against the entire observed dataset. Each evaluation is retained separately; the saved rule and its lifecycle stay unchanged. Up to 10,000 records and 16 MiB of normalized fields are supported, with additional engine limits; resource refusals never become partial results.</p>
+    {language === "internal" ? <p>The structured matcher uses type-sensitive field comparisons. Missing fields on a potentially matching record leave the result uncertain.</p> : null}
+    {!canEvaluate ? <Callout tone="warning" title="Parsed detector required">Save and parse a structured matcher, SQLite or Sigma rule to evaluate a run. YARA cannot inspect file bytes from metadata alone.</Callout> : null}
     {useDraft.warning ? <p role="alert">{useDraft.warning}</p> : null}
     {draft.warning ? <p role="alert">{draft.warning}</p> : draft.retained ? <p role="status">Evaluation inputs kept in this browser tab. They are not a saved evaluation.</p> : null}
     <div className="candidate-actions"><Button variant="ghost" size="small" onClick={exportInputs}>Export evaluation inputs</Button>
@@ -98,7 +99,7 @@ export function DetectionRunEvaluations({ candidate, resourceId, resourceDigest,
     <Field label="Use of this data" hint="Independent test data means data not used to write or tune this rule. Recorded development use takes precedence; an operator label alone cannot prove independence."><select value={evaluationUse} onChange={event => useDraft.update("evaluationUse", event.target.value as typeof evaluationUse)}><option value="unspecified">Not specified</option><option value="development">Development data</option><option value="independent">Independent test data</option></select></Field>
     <Button onClick={() => resourceId && evaluate.mutate({ binding, candidateId: resourceId, run_id: runId, question: question.trim(), case_role: role, activity_label: activity, evaluation_use: evaluationUse })} disabled={!canEvaluate || !runId || evaluate.isPending}>{evaluate.isPending ? "Evaluating immutable evidence" : "Evaluate full observed run"}</Button>
     {resultForSelection && evaluate.isError ? <ErrorState title="Evaluation refused" error={evaluate.error} /> : null}
-    {resultForSelection && evaluate.data ? <Callout title="Evaluation retained">{evaluationLabel(evaluate.data.evaluation)}. The measured result comes from the query and source evidence.</Callout> : null}
+    {resultForSelection && evaluate.data ? <p role="status"><strong>Evaluation retained</strong>: {evaluationLabel(evaluate.data.evaluation)}. The measured result comes from the recorded engine and source evidence.</p> : null}
     {revisions.some((revision) => revision.id !== resourceId) ? <Field label="Related revision reports"><select value={relatedId} onChange={(event) => setRelatedId(event.target.value)}><option value="">Selected revision only</option>{revisions.filter((revision) => revision.id !== resourceId).map((revision) => <option key={revision.id} value={revision.id}>{revision.label}</option>)}</select></Field> : null}
     {reports.isError ? <ErrorState title="Evaluation history unavailable" error={reports.error} retry={() => { void reports.refetch(); }} /> : null}
     {related.isError ? <ErrorState title="Related revision history unavailable" error={related.error} retry={() => { void related.refetch(); }} /> : null}
@@ -108,7 +109,7 @@ export function DetectionRunEvaluations({ candidate, resourceId, resourceDigest,
     {reportDownload.error ? <p role="alert">{reportDownload.error}</p> : null}
     {downloadError ? <p role="alert">{downloadError}</p> : null}
     {relatedId && reports.isSuccess && related.isSuccess ? <DetectorEvaluationTable baseline={related.data.evaluations} revised={reports.data.evaluations} baselineLabel={revisions.find((revision) => revision.id === relatedId)?.label ?? "Related revision"} revisedLabel={`Selected · revision ${candidate.revision ?? 1}`} /> : null}
-    {rows.length ? <details className="evaluation-history" open={!relatedId}><summary>All retained evaluation records ({rows.length})</summary><div className="structured-list" aria-label="Immutable run evaluations">{rows.map((report) => <EvaluationReport key={report.evaluation_id} report={report} />)}</div></details> : reports.isSuccess ? <EmptyState title="No retained run evaluations" description="Evaluate an immutable run to record its actual query matches, activity, data use, and evidence limits." /> : null}
+    {rows.length ? <details className="evaluation-history" open={!relatedId}><summary>All retained evaluation records ({rows.length})</summary><div className="structured-list" aria-label="Immutable run evaluations">{rows.map((report) => <EvaluationReport key={report.evaluation_id} report={report} />)}</div></details> : reports.isSuccess ? <EmptyState title="No retained run evaluations" description="Evaluate an immutable run to record its measured matches, activity, data use, and evidence limits." /> : null}
   </>;
 }
 
@@ -119,20 +120,20 @@ export function EvaluationReport({ report, compact = false }: { report: Detectio
   const detail = <><DataList items={[
     { label: "Source run", value: <RunReference runId={report.source.run_id} /> },
     { label: "Detector revision", value: <span>{report.candidate.revision} · <code>{report.candidate.candidate_id}</code></span> },
-    ...(!compact ? [{ label: "Observed / all records", value: `${report.source.observed_count} / ${report.source.evidence_count}` }, { label: "Query result", value: measured }] : []),
+    ...(!compact ? [{ label: "Observed / all records", value: `${report.source.observed_count} / ${report.source.evidence_count}` }, { label: "Detector result", value: measured }] : []),
     { label: "Source lineage", value: report.classification ? sentence(report.classification.source_lineage) : "Unknown (legacy report)" },
     { label: "Data use", value: evaluationUseLabel(report) },
     { label: "Missing fields", value: result.missing_fields.join(", ") || "None reported" },
     { label: "Evidence gaps", value: result.gap_count },
     { label: "Diagnostics", value: result.diagnostic_codes.map(sentence).join(", ") || "None" },
-    { label: "Query backend", value: backend },
-    { label: "Query digest", value: <code>{report.candidate.query_sha256}</code> },
+    { label: "Evaluation engine", value: backend },
+    { label: report.candidate.target_language === "internal" ? "Definition digest" : "Query digest", value: <code>{report.candidate.target_language === "internal" ? report.candidate.definition_digest : report.candidate.query_sha256}</code> },
   ]} /><MatchedObservations key={report.evaluation_id} report={report} /><details><summary>Inspect immutable evaluation record</summary><pre>{JSON.stringify(report, null, 2)}</pre></details></>;
   return <article className={compact ? "creation-result" : undefined}>
     {compact ? <><h3>{measured}</h3><p>{report.source.observed_count} independently observed · {report.source.evidence_count} total records</p></> : <strong>{report.question}</strong>}
     {report.development_case ? compact ? <p className="creation-evidence-note"><strong>Development evidence</strong> · This data was used while developing the rule. Test separate data before judging effectiveness.</p> : <Callout title="Development evidence">This data was used or declared for rule development. An independent label cannot make it unseen. Evaluate separate data before judging improvement.</Callout> : null}
     <div><Badge>{sentence(activityLabel(report))} activity · operator assigned</Badge><Badge tone={result.state === "insufficient_evidence" || result.state === "backend_error" ? "warning" : "info"}>{sentence(result.state)}</Badge></div>
-    {activityLabel(report) === "benign" && result.state === "matched" ? <Callout tone="warning" title="Match in a declared benign case">This query matched observed records in an operator-assigned benign case. Review this potential false positive; the label does not suppress the measured match.</Callout> : null}
+    {activityLabel(report) === "benign" && result.state === "matched" ? <Callout tone="warning" title="Match in a declared benign case">This rule matched observed records in an operator-assigned benign case. Review this potential false positive; the label does not suppress the measured match.</Callout> : null}
     {compact ? <><p>{backend}</p>{result.gap_count > 0 || result.missing_fields.length > 0 || result.diagnostic_codes.length > 0 ? <Callout tone="warning" title="Evidence needs review">{result.gap_count} evidence gaps. {result.missing_fields.length ? `Missing fields: ${result.missing_fields.join(", ")}. ` : ""}{result.diagnostic_codes.map(sentence).join(", ")}</Callout> : null}<details><summary>Matched observations and evaluation details</summary><p>{report.question}</p>{detail}</details></> : detail}
   </article>;
 }

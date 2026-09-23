@@ -8,6 +8,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from .detection_backends import DetectionError, DetectionState, ExternalDetectionValidator
 from .evidence import EvidenceProvenance, EvidenceRecord
+from .structured_matcher import invalid_selection_field, matches
 from .util import canonical_json_bytes, content_hash, json_clone
 
 _LANGUAGES = frozenset({"sigma", "spl", "sqlite", "yara", "yara-l", "internal"})
@@ -1176,23 +1177,12 @@ class DetectionPipeline:
             raise DetectionError(
                 "external detection languages require their authoritative parser or compiler"
             )
-        for field_name in candidate.selection:
-            if not isinstance(field_name, str):
-                return candidate.transition(
-                    DetectionState.REJECTED,
-                    rejection_reason=f"invalid selection field: {field_name!r}",
-                )
-            key, separator, operator = field_name.partition("|")
-            if (
-                not key
-                or " " in field_name
-                or any(not part for part in key.split("."))
-                or (separator and operator not in {"contains", "startswith", "endswith"})
-            ):
-                return candidate.transition(
-                    DetectionState.REJECTED,
-                    rejection_reason=f"invalid selection field: {field_name!r}",
-                )
+        field_name = invalid_selection_field(candidate.selection)
+        if field_name is not None:
+            return candidate.transition(
+                DetectionState.REJECTED,
+                rejection_reason=field_name,
+            )
         return candidate.transition(
             DetectionState.PARSED,
             parser_backend={"name": self.parser_name, "version": self.parser_version},
@@ -1275,27 +1265,7 @@ class DetectionPipeline:
 
     @staticmethod
     def _matches(selection: Mapping[str, Any], fixture: Mapping[str, Any]) -> bool:
-        for raw_key, expected in selection.items():
-            key, _, operator = raw_key.partition("|")
-            actual: Any = fixture
-            for part in key.split("."):
-                if not isinstance(actual, Mapping) or part not in actual:
-                    return False
-                actual = actual[part]
-            if operator == "contains":
-                if str(expected).casefold() not in str(actual).casefold():
-                    return False
-            elif operator == "startswith":
-                if not str(actual).casefold().startswith(str(expected).casefold()):
-                    return False
-            elif operator == "endswith":
-                if not str(actual).casefold().endswith(str(expected).casefold()):
-                    return False
-            elif operator:
-                return False
-            elif actual != expected:
-                return False
-        return True
+        return matches(selection, fixture)
 
 
 __all__ = [

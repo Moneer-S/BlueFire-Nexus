@@ -27,7 +27,7 @@ export function DetectorEvaluationTable({ baseline, revised, baselineLabel, revi
 }) {
   const rows = compareDetectorEvaluations(baseline, revised, runIds);
   return rows.length ? <div className="detector-comparison-table" role="region" aria-label="Measured detector comparison" tabIndex={0}>
-    <table><caption>Retained query evaluations by run and detector revision</caption><thead><tr><th scope="col">Run / case</th><th scope="col">{baselineLabel}</th><th scope="col">{revisedLabel}</th><th scope="col">Measured change</th></tr></thead>
+    <table><caption>Retained detector evaluations by run and revision</caption><thead><tr><th scope="col">Run / case</th><th scope="col">{baselineLabel}</th><th scope="col">{revisedLabel}</th><th scope="col">Measured change</th></tr></thead>
       <tbody>{rows.map((row) => <tr key={row.runId}><th scope="row"><RunReference runId={row.runId} /><small>{row.roles.length ? row.roles.map(sentence).join(" / ") : "Case not assigned"}</small></th>
         <td><EvaluationCell reports={row.baseline} /></td><td><EvaluationCell reports={row.revised} /></td><td>{row.change}</td></tr>)}</tbody>
     </table>
@@ -54,7 +54,7 @@ export function DetectorEvaluationComparison({ runIds }: { runIds: string[] }) {
   const candidates = useQuery({ queryKey: ["detections"], queryFn: api.detections });
   const [baselineId, setBaselineId] = useState("");
   const [revisedId, setRevisedId] = useState("");
-  const resources = (candidates.data?.candidates ?? []).filter((item) => ["sqlite", "sigma"].includes(item.document.target_language ?? item.document.language ?? ""));
+  const resources = (candidates.data?.candidates ?? []).filter((item) => ["internal", "sqlite", "sigma"].includes(item.document.target_language ?? item.document.language ?? ""));
   const baseline = resources.find((item) => item.id === baselineId);
   const family = baseline?.document.revision_root_id ?? baselineId;
   const revisions = resources.filter((item) => item.id !== baselineId && (item.document.revision_root_id ?? item.id) === family);
@@ -66,9 +66,13 @@ export function DetectorEvaluationComparison({ runIds }: { runIds: string[] }) {
     if (!ready) return;
     const selected = new Set(runIds);
     const evaluations = [...left.data.evaluations, ...right.data.evaluations].filter((report) => selected.has(report.source.run_id));
-    download("bluefire-detector-comparison.json", JSON.stringify({ schema_version: "bluefire.detector-comparison-export.v1", run_ids: runIds, baseline, revised, evaluations, limitations: ["Case roles are operator assigned. These results describe query execution on retained observations, not deployed host prevention.", "Missing evaluations and missing telemetry do not establish defense success."] }, null, 2) + "\n", "application/json");
+    download("bluefire-detector-comparison.json", JSON.stringify({ schema_version: "bluefire.detector-comparison-export.v1", run_ids: runIds, baseline, revised, evaluations, limitations: ["Case roles are operator assigned. These results describe the recorded detector engine evaluating retained observations, not deployed host prevention.", "Missing evaluations and missing telemetry do not establish defense success."] }, null, 2) + "\n", "application/json");
   };
   const exportRule = (resource: DetectionResource) => {
+    if (resource.document.target_language === "internal") {
+      download(`${resource.id}.json`, JSON.stringify(resource.document, null, 2) + "\n", "application/json");
+      return;
+    }
     if (!resource.document.rule_source) return;
     const extension = resource.document.target_language === "sigma" ? "yml" : "sql";
     download(`${resource.id}.${extension}`, resource.document.rule_source + "\n", "text/plain");
@@ -77,14 +81,14 @@ export function DetectorEvaluationComparison({ runIds }: { runIds: string[] }) {
   return <Panel className="detector-comparison">
     <PanelHeader title="Compare detector results" />
     <div className="detail-body">
-      {candidates.isPending ? <LoadingState label="Loading detector revisions" /> : candidates.isError ? <ErrorState title="Detector revisions unavailable" error={candidates.error} retry={() => { void candidates.refetch(); }} /> : !resources.length ? <p>Save and evaluate a SQLite or Sigma rule in <Link to={runIds[0] ? `/detection-lab?run=${encodeURIComponent(runIds[0])}` : "/detection-lab"}>Detection Lab</Link> to compare its revisions here.</p> : <>
+      {candidates.isPending ? <LoadingState label="Loading detector revisions" /> : candidates.isError ? <ErrorState title="Detector revisions unavailable" error={candidates.error} retry={() => { void candidates.refetch(); }} /> : !resources.length ? <p>Save and evaluate a structured matcher, SQLite or Sigma rule in <Link to={runIds[0] ? `/detection-lab?run=${encodeURIComponent(runIds[0])}` : "/detection-lab"}>Detection Lab</Link> to compare its revisions here.</p> : <>
         <div className="two-column"><Field label="Original detector"><select value={baselineId} onChange={(event) => { setBaselineId(event.target.value); setRevisedId(""); }}><option value="">Choose a detector</option>{resources.map((item) => <option key={item.id} value={item.id}>{label(item)}</option>)}</select></Field>
           <Field label="Revised detector"><select value={revised?.id ?? ""} disabled={!baseline} onChange={(event) => setRevisedId(event.target.value)}><option value="">Choose a revision</option>{revisions.map((item) => <option key={item.id} value={item.id}>{label(item)}</option>)}</select></Field></div>
         {baseline && !revisions.length ? <p>This detector has no saved revisions yet. Create one in Detection Lab.</p> : null}
         {left.isError || right.isError ? <ErrorState title="Detector evaluations unavailable" error={left.error ?? right.error} retry={() => { if (baseline) void left.refetch(); if (revised) void right.refetch(); }} /> : baseline && revised && !ready ? <LoadingState label="Loading retained detector results" /> : ready ? <>
           <DetectorEvaluationTable baseline={left.data.evaluations} revised={right.data.evaluations} baselineLabel={`Original · revision ${baseline.document.revision ?? 1}`} revisedLabel={`Revised · revision ${revised.document.revision ?? 1}`} runIds={runIds} />
-          <p className="field-note">Case labels describe the operator's test setup. Counts are matched observed events. Query evaluation does not establish deployed prevention.</p>
-          <div className="candidate-actions"><Button onClick={exportResults}>Export comparison and evidence</Button><Button onClick={() => exportRule(revised)} disabled={!revised.document.rule_source}>Download revised rule</Button></div>
+          <p className="field-note">Case labels describe the operator's test setup. Counts are matched observed events. Detector evaluation does not establish deployed prevention.</p>
+          <div className="candidate-actions"><Button onClick={exportResults}>Export comparison and evidence</Button><Button onClick={() => exportRule(revised)} disabled={revised.document.target_language !== "internal" && !revised.document.rule_source}>Download revised rule</Button></div>
         </> : null}
       </>}
     </div>
