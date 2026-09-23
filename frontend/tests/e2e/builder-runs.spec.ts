@@ -67,14 +67,20 @@ test("builder workspace exposes commands, layout, focus, legend, panels, and con
   await page.keyboard.press("Escape");
   await expect(page.locator(".builder-page")).not.toHaveClass(/builder-focus/);
 
-  const nodes = page.locator(".react-flow__node"); const initial = await nodes.count(); let prompt = "";
-  page.once("dialog", async (dialog) => { prompt = dialog.message(); await dialog.dismiss(); });
+  const nodes = page.locator(".react-flow__node"); const initial = await nodes.count();
+  const deleteDialog = page.getByRole("dialog", { name: "Delete from experiment?" });
   await page.getByRole("button", { name: "Delete selected node" }).click();
-  expect(prompt).toContain("Delete 1 node");
+  await expect(deleteDialog).toBeVisible();
+  await expect(deleteDialog.getByText("Place deterministic fixture", { exact: true })).toBeVisible();
+  await expect(deleteDialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+  await deleteDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(deleteDialog).toBeHidden();
   await expect(nodes).toHaveCount(initial);
 
-  page.once("dialog", async (dialog) => { await dialog.accept(); });
   await page.getByRole("button", { name: "Delete selected node" }).click();
+  await expect(deleteDialog).toBeVisible();
+  await deleteDialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(deleteDialog).toBeHidden();
   await expect(nodes).toHaveCount(initial - 1);
   await expect(page.locator('.react-flow__node[data-id="place_fixture"]')).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => {
@@ -105,13 +111,17 @@ test("keyboard selection, copy and deletion follow the focused step", async ({ p
   await expect(second).toHaveClass(/selected/);
   await expect(first).not.toHaveClass(/selected/);
   await page.keyboard.press("Control+c");
-  await expect(page.locator(".compatibility-banner")).toContainText("run_fixture copied");
-  page.once("dialog", (dialog) => dialog.accept());
+  await expect(page.locator(".compatibility-banner")).toContainText("Run reviewed fixture program copied.");
   await second.focus();
   await page.keyboard.press("Delete");
+  const deleteDialog = page.getByRole("dialog", { name: "Delete from experiment?" });
+  await expect(deleteDialog.getByText("Run reviewed fixture program", { exact: true })).toBeVisible();
+  await expect(deleteDialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+  await deleteDialog.getByRole("button", { name: "Delete", exact: true }).click();
   await expect(second).toHaveCount(0);
   await expect(first).toHaveCount(1);
   await expect(first).toHaveClass(/selected/);
+  await expect(first).toBeFocused();
   await expect(page.getByRole("button", { name: "Delete selected node" })).toBeEnabled();
   await page.getByRole("button", { name: "Undo", exact: true }).click();
   await expect(second).toHaveCount(1);
@@ -122,14 +132,14 @@ test("keyboard selection retains focus and text fields keep native copy", async 
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto("./#/builder");
   await page.getByRole("button", { name: "Show all branches", exact: true }).click();
-  for (const id of ["run_fixture", "place_fixture", "run_fixture"]) {
+  for (const [id, title] of [["run_fixture", "Run reviewed fixture program"], ["place_fixture", "Place deterministic fixture"], ["run_fixture", "Run reviewed fixture program"]] as const) {
     const node = page.locator(`.react-flow__node[data-id="${id}"]`);
     await node.focus();
     await page.keyboard.press("Enter");
     await expect(node).toHaveClass(/selected/);
     await expect(node).toBeFocused();
     await page.keyboard.press("Control+c");
-    await expect(page.locator(".compatibility-banner")).toContainText(`${id} copied`);
+    await expect(page.locator(".compatibility-banner")).toContainText(`${title} copied.`);
     await expect(node).toBeFocused();
   }
   const name = page.getByRole("textbox", { name: "Experiment name", exact: true });
@@ -138,7 +148,7 @@ test("keyboard selection retains focus and text fields keep native copy", async 
   await page.keyboard.press("Control+c");
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("Native text clipboard");
   await expect(name).toBeFocused();
-  await expect(page.locator(".compatibility-banner")).toContainText("run_fixture copied");
+  await expect(page.locator(".compatibility-banner")).toContainText("Run reviewed fixture program copied.");
 });
 
 test("laptop canvas and step details fit the viewport without losing the experiment", async ({ page }) => {
