@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import sys
 from dataclasses import replace
 
 import pytest
 
+import bluefire.tool_adapters.service_lifecycle as service_lifecycle
 from bluefire.contracts import ContractError
 from bluefire.evidence import EvidenceError, EvidenceProvenance, EvidenceRecord
 from bluefire.tool_adapters.service_lifecycle import (
@@ -439,7 +439,9 @@ def test_mutated_recursive_observation_is_integrity_invalid(identity, field, str
     nested: dict[str, object] = {}
     cursor = nested
     if structure != "cycle":
-        for _ in range(sys.getrecursionlimit() + 10):
+        # JSON recursion limits differ across supported Python interpreters.
+        # Keep a real, bounded deep mutation without requiring a serializer error.
+        for _ in range(1024):
             child: dict[str, object] = {}
             cursor["child"] = child
             cursor = child
@@ -448,10 +450,21 @@ def test_mutated_recursive_observation_is_integrity_invalid(identity, field, str
     payload = getattr(record, field)
     assert isinstance(payload, dict)
     payload["nested"] = nested
-    failure = ValueError if structure == "cycle" else RecursionError
-    with pytest.raises(failure):
-        canonical_json_bytes(record.to_dict())
+    result = assess_service_cleanup(
+        identity, record, cleanup_started_at=STARTED, evaluated_at=EVALUATED
+    )
+    assert result.status == "unknown"
+    assert result.reasons == ("observation_integrity_invalid",)
+    assert result.evidence_id is None and result.record_hash is None
 
+
+def test_canonicalization_recursion_error_is_contained(identity, monkeypatch):
+    record = _evidence(identity)
+
+    def refuse_depth(_document):
+        raise RecursionError("Synthetic canonicalization depth limit")
+
+    monkeypatch.setattr(service_lifecycle, "canonical_json_bytes", refuse_depth)
     result = assess_service_cleanup(
         identity, record, cleanup_started_at=STARTED, evaluated_at=EVALUATED
     )
