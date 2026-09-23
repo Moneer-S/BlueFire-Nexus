@@ -1,12 +1,13 @@
 """Portable native service/controller checks; no receiver or target process is launched."""
 
 import copy
+import functools
 import hashlib
 import json
 import threading
 import time
-import traceback
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -391,6 +392,211 @@ def test_saved_graph_change_is_refused_without_receiver_prepare(setup):
     assert not sessions and not access.calls
 
 
+class _PublicationDiagnostic:
+    """Finite test-local stage labels; never retain callback arguments or errors."""
+
+    phases = ("baseline", "protected", "restored")
+    stages = (
+        "before_execute",
+        "run",
+        "replay",
+        "finish",
+        "observe",
+        "close",
+        "source",
+        "verify",
+        "publication",
+    )
+    error_classes = {
+        "APIError",
+        "ProductStoreError",
+        "ReceiverSessionError",
+        "RunnerTransportError",
+        "JobCancelled",
+        "AssertionError",
+        "OSError",
+        "PermissionError",
+        "ValueError",
+        "KeyError",
+        "TypeError",
+        "RuntimeError",
+    }
+
+    def __init__(self):
+        self._local = threading.local()
+        self._entered = set()
+        self._states = {
+            (phase, stage): ("not_entered", "none")
+            for phase in self.phases
+            for stage in self.stages
+        }
+
+    def mark(self, phase, stage, state, error=None):
+        try:
+            if (phase, stage) in self._states and state in {
+                "entered",
+                "returned",
+                "raised",
+            }:
+                if state == "entered":
+                    self._entered.add((phase, stage))
+                name = type(error).__name__ if error is not None else "none"
+                self._states[phase, stage] = (
+                    state,
+                    name if name in self.error_classes or name == "none" else "other",
+                )
+        except Exception:
+            pass
+
+    def wrap(self, monkeypatch, owner, name, stage, *, phase_arg=None):
+        original = getattr(owner, name)
+
+        @functools.wraps(original)
+        def traced(*args, **kwargs):
+            previous = getattr(self._local, "phase", "unknown")
+            phase = previous
+            if phase_arg is not None:
+                try:
+                    marker = args[phase_arg]
+                    marker = marker.get("receiver_defense", marker)
+                    phase = marker.get("phase")
+                except Exception:
+                    phase = "unknown"
+            self._local.phase = phase if phase in self.phases else "unknown"
+            self.mark(self._local.phase, stage, "entered")
+            try:
+                result = original(*args, **kwargs)
+            except BaseException as exc:
+                self.mark(self._local.phase, stage, "raised", exc)
+                raise
+            else:
+                self.mark(self._local.phase, stage, "returned")
+                return result
+            finally:
+                self._local.phase = previous
+
+        monkeypatch.setattr(owner, name, traced)
+
+    def report(self, controller, job_id, phase):
+        try:
+            phase = phase if phase in self.phases else "unknown"
+            worker = "controller_lock_busy"
+            if controller._condition.acquire(blocking=False):
+                try:
+                    control = controller._controls.get(job_id)
+                    if control is None:
+                        worker = "not_managed"
+                    elif control.future is None:
+                        worker = "not_submitted"
+                    else:
+                        # Do not acquire Future's lock or perform a database read.
+                        worker = {
+                            "PENDING": "queued",
+                            "RUNNING": "running",
+                            "FINISHED": "done",
+                            "CANCELLED": "cancelled",
+                            "CANCELLED_AND_NOTIFIED": "cancelled",
+                        }.get(control.future._state, "unknown")
+                finally:
+                    controller._condition.release()
+            states = (
+                {stage: self._states[phase, stage] for stage in self.stages}
+                if phase in self.phases
+                else {}
+            )
+            print(
+                "Receiver publication diagnostic: "
+                + json.dumps({"phase": phase, "worker": worker, "stages": states}, sort_keys=True)
+            )
+        except Exception:
+            # Reporting cannot hide an assertion or add another bounded wait.
+            pass
+
+    @contextmanager
+    def on_failure(self, controller, job_id, phase):
+        try:
+            yield
+        except BaseException:
+            self.report(controller, job_id, phase)
+            raise
+
+
+@pytest.mark.parametrize(
+    "state,expected",
+    [
+        ("PENDING", "queued"),
+        ("RUNNING", "running"),
+        ("FINISHED", "done"),
+        ("CANCELLED", "cancelled"),
+        ("CANCELLED_AND_NOTIFIED", "cancelled"),
+        ("PRIVATE_WORKER_STATE", "unknown"),
+    ],
+)
+def test_publication_diagnostic_is_bounded_private_and_nonblocking(capsys, state, expected):
+    diagnostic = _PublicationDiagnostic()
+    private = "PRIVATE_DIAGNOSTIC_VALUE_MUST_NOT_APPEAR"
+    hidden_error = type(private, (Exception,), {})
+    for _ in range(64):
+        diagnostic.mark("restored", "verify", "raised", hidden_error(private))
+    controller = SimpleNamespace(
+        _condition=threading.Lock(),
+        _controls={private: SimpleNamespace(future=SimpleNamespace(_state=state))},
+    )
+    diagnostic.report(controller, private, "restored")
+    output = capsys.readouterr().out
+    assert private not in output and "PRIVATE_WORKER_STATE" not in output
+    report = json.loads(output.removeprefix("Receiver publication diagnostic: "))
+    assert report["phase"] == "restored" and report["worker"] == expected
+    assert report["stages"]["verify"] == ["raised", "other"]
+    assert len(report["stages"]) == 9 and len(diagnostic._states) == 27
+    with controller._condition:
+        diagnostic.report(controller, private, "restored")
+    blocked = json.loads(capsys.readouterr().out.removeprefix("Receiver publication diagnostic: "))
+    assert blocked["worker"] == "controller_lock_busy"
+
+
+def test_publication_diagnostic_preserves_callback_failure_and_tolerates_output_failure(
+    monkeypatch,
+):
+    diagnostic = _PublicationDiagnostic()
+    original = ValueError("Original synthetic callback failure")
+
+    def failed(_marker):
+        raise original
+
+    owner = SimpleNamespace(callback=failed)
+    diagnostic.wrap(monkeypatch, owner, "callback", "finish", phase_arg=0)
+    with pytest.raises(ValueError) as caught:
+        owner.callback({"phase": "restored"})
+    assert caught.value is original
+    assert diagnostic._states["restored", "finish"] == ("raised", "ValueError")
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError("Diagnostic output unavailable")
+
+    monkeypatch.setattr("builtins.print", unavailable)
+    controller = SimpleNamespace(_condition=threading.Lock(), _controls={})
+    diagnostic.report(controller, "private-job", "restored")
+
+
+@pytest.mark.parametrize("error_type", [AssertionError, TimeoutError, KeyboardInterrupt])
+def test_publication_wait_diagnostic_preserves_original_failure(capsys, error_type):
+    diagnostic = _PublicationDiagnostic()
+    private = "PRIVATE_WAIT_FAILURE_MUST_NOT_APPEAR"
+    original = error_type(private)
+    controller = SimpleNamespace(_condition=threading.Lock(), _controls={})
+    diagnostic.mark("restored", "publication", "entered")
+    with pytest.raises(error_type) as caught:
+        with diagnostic.on_failure(controller, private, "restored"):
+            raise original
+    assert caught.value is original
+    output = capsys.readouterr().out
+    assert private not in output
+    report = json.loads(output.removeprefix("Receiver publication diagnostic: "))
+    assert report["phase"] == "restored"
+    assert report["stages"]["publication"] == ["entered", "none"]
+
+
 def test_full_three_phase_ordinary_run_replay_retains_independent_policy_results(
     setup, monkeypatch
 ):
@@ -399,8 +605,27 @@ def test_full_three_phase_ordinary_run_replay_retains_independent_policy_results
     original_factory = service.runner_factory
     sandbox = original_factory(None)[1]
     service.runner_factory = lambda _profile: (runner, sandbox)
-    errors = []
-    from bluefire import receiver_defense_native, receiver_defense_view
+    from bluefire import (
+        receiver_defense_native,
+        receiver_defense_result,
+        receiver_defense_view,
+    )
+
+    diagnostic = _PublicationDiagnostic()
+    diagnostic.wrap(
+        monkeypatch,
+        service.receiver_defense,
+        "before_execute",
+        "before_execute",
+        phase_arg=0,
+    )
+    diagnostic.wrap(monkeypatch, service, "_execute_job_inner", "run", phase_arg=1)
+    diagnostic.wrap(monkeypatch, service, "_execute_replay_job", "replay", phase_arg=1)
+    diagnostic.wrap(monkeypatch, receiver_defense_native, "finish", "finish", phase_arg=2)
+    diagnostic.wrap(monkeypatch, service.receiver_defense.owners, "observe", "observe")
+    diagnostic.wrap(monkeypatch, service.receiver_defense.owners, "close", "close")
+    diagnostic.wrap(monkeypatch, receiver_defense_native, "_source", "source")
+    diagnostic.wrap(monkeypatch, receiver_defense_result, "verified_result", "verify")
 
     before_publish, publish, published, finish = (threading.Event() for _ in range(4))
     original_update = records.update
@@ -408,29 +633,18 @@ def test_full_three_phase_ordinary_run_replay_retains_independent_policy_results
     def hold_final_publication(store, child_id, values, **kwargs):
         final = values.get("result", {}).get("phase") == "restored"
         if final:
+            diagnostic.mark("restored", "publication", "entered")
             before_publish.set()
             assert publish.wait(10), "Final result publication was not released."
         result = original_update(store, child_id, values, **kwargs)
         if final:
+            diagnostic.mark("restored", "publication", "returned")
             published.set()
             assert finish.wait(10), "Final execution callback was not released."
         return result
 
     monkeypatch.setattr(records, "update", hold_final_publication)
 
-    original_execute = receiver_defense_native.finish
-
-    def execute(*args):
-        try:
-            return original_execute(*args)
-        except Exception:
-            errors.append(traceback.format_exc())
-            (service.store.root.parent / "execution-error.txt").write_text(
-                errors[-1], encoding="utf-8"
-            )
-            raise
-
-    monkeypatch.setattr(receiver_defense_native, "finish", execute)
     parent, _, envelope = prepared(setup)
     snapshots = []
     publication_windows = {}
@@ -442,10 +656,10 @@ def test_full_three_phase_ordinary_run_replay_retains_independent_policy_results
                 "reviewed_by": "Portable native review",
             }
             service.prepare_receiver_defense(parent["job_id"], submit)
-            child = service.job_controller.wait(
-                "job-" + uuid.UUID(submit["submission_id"]).hex, timeout=15
-            )
-            assert child["state"] == "completed", child
+            prepare_id = "job-" + uuid.UUID(submit["submission_id"]).hex
+            with diagnostic.on_failure(service.job_controller, prepare_id, phase):
+                child = service.job_controller.wait(prepare_id, timeout=15)
+                assert child["state"] == "completed", child
             envelope = service.receiver_defense_job(parent["job_id"])
         current = envelope["phases"][index]
         reviewed = service.review_receiver_defense(
@@ -459,13 +673,15 @@ def test_full_three_phase_ordinary_run_replay_retains_independent_policy_results
             },
         )
         execution = reviewed["phases"][index]["execution_job"]
-        execution = service.job_controller.wait_for_state(
-            execution["job_id"], {JobState.AWAITING_APPROVAL}, timeout=10
-        )
+        with diagnostic.on_failure(service.job_controller, execution["job_id"], phase):
+            execution = service.job_controller.wait_for_state(
+                execution["job_id"], {JobState.AWAITING_APPROVAL}, timeout=10
+            )
         service.approve_job(execution["job_id"], {"approved_by": "Portable native review"})
         if phase == "restored":
             try:
-                assert before_publish.wait(10), errors
+                reached_publication = before_publish.wait(10)
+                assert reached_publication, "Final receiver publication boundary was not reached."
                 child_id = current["receiver_job"]["job_id"]
                 original_visible = receiver_defense_view.visible_job
 
@@ -519,11 +735,17 @@ def test_full_three_phase_ordinary_run_replay_retains_independent_policy_results
                 mixed = publication_windows["old_execution_after_terminal"]
                 assert mixed["status"] == "active" and not mixed["can_start_new_test"]
                 assert mixed["phases"][2]["execution_job"]["state"] == "running"
+            except BaseException:
+                # Inspect before releasing the held callbacks, then preserve the
+                # original assertion, controller timeout or cancellation.
+                diagnostic.report(service.job_controller, execution["job_id"], phase)
+                raise
             finally:
                 publish.set()
                 finish.set()
-        terminal = service.job_controller.wait(execution["job_id"], timeout=20)
-        assert terminal["state"] == "completed", (terminal["error"], errors)
+        with diagnostic.on_failure(service.job_controller, execution["job_id"], phase):
+            terminal = service.job_controller.wait(execution["job_id"], timeout=20)
+            assert terminal["state"] == "completed", "Receiver execution did not complete."
         envelope = service.receiver_defense_job(parent["job_id"])
         assert envelope["phases"][index]["status"] == "completed", envelope
         snapshots.append(envelope)
@@ -536,6 +758,21 @@ def test_full_three_phase_ordinary_run_replay_retains_independent_policy_results
     assert len({item["result"]["artifact"]["sha256"] for item in envelope["phases"]}) == 1
     assert all(session.closed and len(session.tasks) == 1 for session in sessions)
     assert len(service.store.list_runs()) == 3 and not access.calls
+    # Witness the instrumentation on the actual portable replay/finalization path,
+    # not only on the diagnostic helper's unit doubles.
+    observed_stages = (
+        "replay",
+        "finish",
+        "observe",
+        "close",
+        "source",
+        "verify",
+        "publication",
+    )
+    assert all(("restored", stage) in diagnostic._entered for stage in observed_stages)
+    assert {stage: diagnostic._states["restored", stage] for stage in observed_stages} == {
+        stage: ("returned", "none") for stage in observed_stages
+    }
     (service.store.root.parent / "native-three-phase-contract.json").write_text(
         json.dumps(
             {
