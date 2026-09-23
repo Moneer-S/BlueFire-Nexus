@@ -151,7 +151,7 @@ def assess_service_cleanup(
         if len(canonical_json_bytes(document)) > 16 * 1024:
             return unknown("observation_size_exceeded")
         record = EvidenceRecord.from_mapping(document)
-    except (EvidenceError, TypeError, ValueError):
+    except (EvidenceError, TypeError, ValueError, RecursionError):
         return unknown("observation_integrity_invalid")
     if record.provenance is not EvidenceProvenance.OBSERVED or record.producer != OBSERVER:
         return unknown("independent_service_observer_required", record)
@@ -161,7 +161,7 @@ def assess_service_cleanup(
         observed = _time(record.timestamp)
     except ContractError:
         return unknown("observation_time_invalid", record)
-    if observed < started or observed > evaluated or evaluated - observed > timedelta(seconds=5):
+    if observed <= started or observed > evaluated or evaluated - observed > timedelta(seconds=5):
         return unknown("observation_outside_cleanup_window", record)
     try:
         facts = _object(
