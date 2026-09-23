@@ -155,17 +155,10 @@ def execute_internal(
         encoded_bytes += len(validate_json(dict(record.content)))
         if encoded_bytes > INTERNAL_LIMITS["record_bytes"]:
             raise DetectionError("structured evaluation byte limit exceeded")
-        # Known record-kind disagreement excludes unrelated observations before
-        # interpreting permission availability on the intended filesystem rows.
-        if any(
-            key in candidate.selection
-            and key in record.content
-            and not matches_value(record.content[key], candidate.selection[key], "", strict=True)
-            for key in ("artifact_type", "observation_kind")
-        ):
-            continue
-        # A known path or other non-permission mismatch makes the conjunction
-        # false before unavailable permission metadata can create a false gap.
+        # Validate every non-permission selector, including record kinds, through
+        # the same strict type, resource, and comparison-budget path. A known
+        # mismatch still makes the conjunction false before unavailable
+        # permission metadata can create a false gap.
         record_missing, mismatch = compare_fields(record.content, permissions=False)
         if mismatch:
             continue

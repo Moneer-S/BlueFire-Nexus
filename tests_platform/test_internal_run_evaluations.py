@@ -150,6 +150,61 @@ def test_missing_fields_only_exclude_decidably_unrelated_records(service):
     assert result["matched_evidence_ids"] == []
 
 
+@pytest.mark.parametrize("record_kind", ["artifact_type", "observation_kind"])
+def test_record_kind_boolean_mismatch_uses_strict_field_validation(service, record_kind):
+    candidate = candidate_document(service, internal_candidate(service, {record_kind: True}))
+    with pytest.raises(DetectionError, match="boolean field"):
+        engine.execute_internal(candidate, [record({record_kind: 1})])
+
+
+@pytest.mark.parametrize("record_kind", ["artifact_type", "observation_kind"])
+def test_record_kind_values_obey_comparison_byte_limit(service, record_kind):
+    candidate = candidate_document(service, internal_candidate(service, {record_kind: "expected"}))
+    oversized = "x" * (engine.INTERNAL_LIMITS["value_bytes"] + 1)
+    with pytest.raises(DetectionError, match="comparison byte limit"):
+        engine.execute_internal(candidate, [record({record_kind: oversized})])
+
+
+@pytest.mark.parametrize("record_kind", ["artifact_type", "observation_kind"])
+def test_valid_record_kind_nonmatch_remains_a_negative_result(service, record_kind):
+    candidate = candidate_document(service, internal_candidate(service, {record_kind: "expected"}))
+    result = engine.execute_internal(candidate, [record({record_kind: "other"})])
+    assert result["missing_fields"] == []
+    assert result["matched_evidence_ids"] == []
+
+
+def test_record_kind_mismatch_still_excludes_permission_gaps(service):
+    candidate = candidate_document(
+        service,
+        internal_candidate(
+            service, {"artifact_type": "collector_observation", "other_write_bit": True}
+        ),
+    )
+    unrelated = record({"artifact_type": "file_observation"})
+    observed = record({"artifact_type": "collector_observation", **permission_content("0666")}, 1)
+    result = engine.execute_internal(candidate, [unrelated, observed])
+    assert result["missing_fields"] == []
+    assert result["matched_evidence_ids"] == [observed.evidence_id]
+
+
+def test_record_kind_mismatches_across_rows_obey_aggregate_comparison_budget(service, monkeypatch):
+    expected = "x" * 60_000
+    candidate = candidate_document(
+        service, internal_candidate(service, {"artifact_type": expected})
+    )
+    per_comparison = len(engine.canonical_json_bytes("other")) + len(
+        engine.canonical_json_bytes(expected)
+    )
+    assert per_comparison < engine.INTERNAL_LIMITS["value_bytes"]
+    monkeypatch.setitem(engine.INTERNAL_LIMITS, "comparison_bytes", 4 * per_comparison)
+    record_count = engine.INTERNAL_LIMITS["comparison_bytes"] // per_comparison + 1
+    rows = [record({"artifact_type": "other"}, index) for index in range(record_count)]
+    encoded_record_bytes = sum(len(engine.canonical_json_bytes(dict(row.content))) for row in rows)
+    assert encoded_record_bytes < engine.INTERNAL_LIMITS["record_bytes"]
+    with pytest.raises(DetectionError, match="comparison byte limit"):
+        engine.execute_internal(candidate, rows)
+
+
 @pytest.mark.parametrize(
     "selector,target,other",
     [
