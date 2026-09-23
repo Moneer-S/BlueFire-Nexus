@@ -6,6 +6,7 @@ import socket
 import ssl
 import urllib.request
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -52,8 +53,14 @@ def test_public_policy_refuses_any_nonpublic_answer_before_connect(monkeypatch, 
         worker._pinned_opener("https://provider.example/v1/response", "public_https")
 
 
-def test_tls_connects_only_resolved_address_and_keeps_original_hostname_verification(monkeypatch):
+@pytest.mark.parametrize("clock", [None, 510.123])
+def test_tls_connects_only_resolved_address_and_keeps_original_hostname_verification(
+    monkeypatch, clock
+):
     resolutions, connections, tls = [], [], []
+    if clock is not None:
+        # Adding and subtracting two seconds at this tick rounds above two.
+        monkeypatch.setattr(worker, "time", SimpleNamespace(monotonic=lambda: clock))
 
     def resolve(host, port, **kwargs):
         resolutions.append((host, port, kwargs))
@@ -94,6 +101,53 @@ def test_tls_connects_only_resolved_address_and_keeps_original_hostname_verifica
     handler.https_open(urllib.request.Request("https://provider.example/v1/response"))
     assert len(resolutions) == 1 and resolutions[0][:2] == ("provider.example", 443)
     assert connections == [("8.8.8.8", 443)] and tls == ["provider.example"]
+
+
+@pytest.mark.parametrize("elapsed", [1.25, 2.0])
+def test_address_retry_uses_remaining_budget_and_stops_at_expiry(monkeypatch, elapsed):
+    ticks = iter((510.123, 510.123, 510.123 + elapsed))
+    monkeypatch.setattr(worker, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+    monkeypatch.setattr(
+        worker.socket, "getaddrinfo", lambda *_a, **_k: [address("8.8.8.8"), address("8.8.4.4")]
+    )
+    timeouts, connected, closed = [], [], []
+
+    class Socket:
+        def settimeout(self, timeout):
+            assert 0 < timeout <= 2
+            timeouts.append(timeout)
+
+        def connect(self, destination):
+            connected.append(destination)
+            if len(connected) == 1:
+                raise OSError("Synthetic first-address failure")
+
+        def close(self):
+            closed.append(self)
+
+    monkeypatch.setattr(worker.socket, "socket", lambda *_a: Socket())
+
+    def do_open(_handler, connection_class, request, **kwargs):
+        connection = connection_class(request.host, timeout=2, **kwargs)
+        connection._context = SimpleNamespace(wrap_socket=lambda endpoint, **_k: endpoint)
+        connection.connect()
+        return connection
+
+    monkeypatch.setattr(urllib.request.HTTPSHandler, "do_open", do_open)
+    opener = worker._pinned_opener("https://provider.example/v1/response", "public_https")
+    handler = next(
+        item for item in opener.handlers if isinstance(item, urllib.request.HTTPSHandler)
+    )
+    request = urllib.request.Request("https://provider.example/v1/response")
+    if elapsed == 2.0:
+        with pytest.raises(TimeoutError):
+            handler.https_open(request)
+        assert timeouts == [2] and connected == [("8.8.8.8", 443)]
+    else:
+        handler.https_open(request)
+        assert timeouts == pytest.approx([2, 0.75])
+        assert connected == [("8.8.8.8", 443), ("8.8.4.4", 443)]
+    assert len(closed) == 1
 
 
 def test_explicit_endpoint_allows_enrolled_local_tls_but_not_url_credentials(monkeypatch):
