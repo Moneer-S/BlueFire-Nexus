@@ -186,6 +186,27 @@ Use Auto only after the same scenario/provider has been reviewed in Assist and t
 
 Redaction replaces values whose keys match configured secret terms, truncates strings, and excludes evidence content by default. The legacy runtime context contains mode, current step/outcome, completed step IDs/behaviors/statuses and the deterministic decision. Finite Execute planning adds a bounded projection of verified observations: allowlisted counts and categories, evidence references and provenance, failure classifications, method prerequisites and remaining time, steps and retries. It does not send raw logs, commands, paths or credentials. Missing telemetry and unknown target prevention stay explicit; a BlueFire authorization or control refusal is not evidence that the target prevented an operation.
 
+Independent permission observations also retain the validated POSIX mode, group/other write bits and availability status. These fields come only from observed evidence, never a runner's reported output or a simulation. Malformed or contradictory permission metadata is labeled `invalid_metadata` without passing its values to the model. Windows and unsupported-platform observations retain their unavailable status rather than inferred POSIX bits. Permission bits do not establish effective access: ACLs, parent-directory traversal and effective access remain unevaluated. The projection retains evidence references and its digest; this added context does not authorize any additional method, parameter or retry.
+
+Serialized adaptive requests carry these finite facts in a separate, closed
+`observation_summary` metadata contract with generated record references and
+hashes. The original evidence projection remains omitted when evidence-content
+sharing is disabled. Arbitrary fields, free-form bodies and unobserved permission
+claims cannot enter this summary; configured redaction still applies to its
+container and fields. Historical proposal records and their identity remain
+unchanged. Fake-transport tests exercise both shipped provider formats through
+the live-authorization boundary; those tests are not live-model evidence.
+
+Known execution errors remain distinct from observation gaps. In particular, gzip
+timeouts and execution/publication failures retain their allowlisted error codes;
+an accompanying missing observation does not erase that reported failure. Runner
+transport failure leaves execution uncertain. The advisory `telemetry_gap` flag
+records unknown evidence or unresolved evidence references independently of the
+failure classification. A false flag does not establish observation completeness
+or objective success. Older retained projections may omit this annotation and
+remain unchanged; absence must not be interpreted as false. These facts guide a
+choice among reviewed methods and never relax approval, retry or cleanup limits.
+
 Live authorization requires credential redaction and excludes raw logs and evidence bodies.
 Depending on the authorized purpose, requests may contain reviewed lab objectives and parameters,
 bounded observation summaries, rule text and evidence references. Detection assistance uses permitted

@@ -409,6 +409,7 @@
         "bluefire.action_*",
         "bluefire.ai",
         "bluefire.ai_record_validation",
+        "bluefire.ai_observation_summary",
         "bluefire.ai_drafts",
         "bluefire.ai_detection_revision",
         "bluefire.ai_detection_create",
