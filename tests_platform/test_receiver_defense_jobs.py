@@ -7,6 +7,7 @@ import json
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -511,6 +512,14 @@ class _PublicationDiagnostic:
             # Reporting cannot hide an assertion or add another bounded wait.
             pass
 
+    @contextmanager
+    def on_failure(self, controller, job_id, phase):
+        try:
+            yield
+        except BaseException:
+            self.report(controller, job_id, phase)
+            raise
+
 
 @pytest.mark.parametrize(
     "state,expected",
@@ -568,6 +577,24 @@ def test_publication_diagnostic_preserves_callback_failure_and_tolerates_output_
     monkeypatch.setattr("builtins.print", unavailable)
     controller = SimpleNamespace(_condition=threading.Lock(), _controls={})
     diagnostic.report(controller, "private-job", "restored")
+
+
+@pytest.mark.parametrize("error_type", [AssertionError, TimeoutError, KeyboardInterrupt])
+def test_publication_wait_diagnostic_preserves_original_failure(capsys, error_type):
+    diagnostic = _PublicationDiagnostic()
+    private = "PRIVATE_WAIT_FAILURE_MUST_NOT_APPEAR"
+    original = error_type(private)
+    controller = SimpleNamespace(_condition=threading.Lock(), _controls={})
+    diagnostic.mark("restored", "publication", "entered")
+    with pytest.raises(error_type) as caught:
+        with diagnostic.on_failure(controller, private, "restored"):
+            raise original
+    assert caught.value is original
+    output = capsys.readouterr().out
+    assert private not in output
+    report = json.loads(output.removeprefix("Receiver publication diagnostic: "))
+    assert report["phase"] == "restored"
+    assert report["stages"]["publication"] == ["entered", "none"]
 
 
 def test_full_three_phase_ordinary_run_replay_retains_independent_policy_results(
@@ -629,10 +656,10 @@ def test_full_three_phase_ordinary_run_replay_retains_independent_policy_results
                 "reviewed_by": "Portable native review",
             }
             service.prepare_receiver_defense(parent["job_id"], submit)
-            child = service.job_controller.wait(
-                "job-" + uuid.UUID(submit["submission_id"]).hex, timeout=15
-            )
-            assert child["state"] == "completed", child
+            prepare_id = "job-" + uuid.UUID(submit["submission_id"]).hex
+            with diagnostic.on_failure(service.job_controller, prepare_id, phase):
+                child = service.job_controller.wait(prepare_id, timeout=15)
+                assert child["state"] == "completed", child
             envelope = service.receiver_defense_job(parent["job_id"])
         current = envelope["phases"][index]
         reviewed = service.review_receiver_defense(
@@ -646,15 +673,14 @@ def test_full_three_phase_ordinary_run_replay_retains_independent_policy_results
             },
         )
         execution = reviewed["phases"][index]["execution_job"]
-        execution = service.job_controller.wait_for_state(
-            execution["job_id"], {JobState.AWAITING_APPROVAL}, timeout=10
-        )
+        with diagnostic.on_failure(service.job_controller, execution["job_id"], phase):
+            execution = service.job_controller.wait_for_state(
+                execution["job_id"], {JobState.AWAITING_APPROVAL}, timeout=10
+            )
         service.approve_job(execution["job_id"], {"approved_by": "Portable native review"})
         if phase == "restored":
             try:
                 reached_publication = before_publish.wait(10)
-                if not reached_publication:
-                    diagnostic.report(service.job_controller, execution["job_id"], phase)
                 assert reached_publication, "Final receiver publication boundary was not reached."
                 child_id = current["receiver_job"]["job_id"]
                 original_visible = receiver_defense_view.visible_job
@@ -709,13 +735,17 @@ def test_full_three_phase_ordinary_run_replay_retains_independent_policy_results
                 mixed = publication_windows["old_execution_after_terminal"]
                 assert mixed["status"] == "active" and not mixed["can_start_new_test"]
                 assert mixed["phases"][2]["execution_job"]["state"] == "running"
+            except BaseException:
+                # Inspect before releasing the held callbacks, then preserve the
+                # original assertion, controller timeout or cancellation.
+                diagnostic.report(service.job_controller, execution["job_id"], phase)
+                raise
             finally:
                 publish.set()
                 finish.set()
-        terminal = service.job_controller.wait(execution["job_id"], timeout=20)
-        if terminal["state"] != "completed":
-            diagnostic.report(service.job_controller, execution["job_id"], phase)
-        assert terminal["state"] == "completed", "Receiver execution did not complete."
+        with diagnostic.on_failure(service.job_controller, execution["job_id"], phase):
+            terminal = service.job_controller.wait(execution["job_id"], timeout=20)
+            assert terminal["state"] == "completed", "Receiver execution did not complete."
         envelope = service.receiver_defense_job(parent["job_id"])
         assert envelope["phases"][index]["status"] == "completed", envelope
         snapshots.append(envelope)
