@@ -11,6 +11,8 @@ from typing import Any, Mapping, Sequence
 
 from .collection_methods import COLLECTION_METHODS
 from .evidence import EvidenceProvenance, EvidenceRecord
+from .permission_objective import ACTION_ID as PERMISSION_ACTION_ID
+from .permission_objective import permission_observation_status
 from .util import parse_iso8601_datetime
 
 _FILESYSTEM_PRODUCERS = frozenset(
@@ -92,6 +94,20 @@ def evaluate_observation_integrity(
         )
         output = execution.content.get("output") if execution is not None else None
         expected = output if isinstance(output, Mapping) else {}
+        permission_method = (
+            execution is not None
+            and execution.content.get("permission_method", execution.action_id)
+            == PERMISSION_ACTION_ID
+        )
+        permission_mode = execution.content.get("expected_permission_mode") if execution else None
+        permission_error = execution.content.get("error") if execution else None
+        permission_status = (
+            permission_observation_status(permission_mode, expected, permission_error, None)
+            if permission_method
+            else None
+        )
+        permission_observations: set[str] = set()
+        unavailable_permissions: list[str] = []
         digest = expected.get("sha256")
         digest = digest.removeprefix("sha256:") if isinstance(digest, str) else None
         size_field = (
@@ -170,6 +186,17 @@ def evaluate_observation_integrity(
                     and (digest_only or fields["size_bytes"] == expected_size)
                     and semantic_valid
                 ):
+                    if permission_method:
+                        observed_status = permission_observation_status(
+                            permission_mode, expected, permission_error, fields
+                        )
+                        permission_observations.add(observed_status)
+                        if observed_status == "unknown":
+                            unavailable_permissions.append(observed.evidence_id)
+                            continue
+                        if observed_status != "verified":
+                            conflicting.append(observed.evidence_id)
+                            continue
                     matching.append(observed.evidence_id)
                 else:
                     conflicting.append(observed.evidence_id)
@@ -182,6 +209,14 @@ def evaluate_observation_integrity(
                 else "verified" if matching else "observation_unavailable"
             )
         )
+        if permission_status == "not_established":
+            state = "permission_not_established"
+        elif permission_method:
+            permission_status = (
+                "mismatch"
+                if "mismatch" in permission_observations
+                else "verified" if state == "verified" else "unknown"
+            )
         postconditions.append(
             {
                 "path": path,
@@ -189,11 +224,24 @@ def evaluate_observation_integrity(
                 "execution_evidence_id": execution.evidence_id if execution else None,
                 "observed_evidence_ids": sorted(matching),
                 "conflicting_evidence_ids": sorted(conflicting),
+                **(
+                    {
+                        "permission_postcondition": {
+                            "expected_mode": permission_mode,
+                            "state": permission_status,
+                            "unavailable_evidence_ids": sorted(unavailable_permissions),
+                            "effective_access": "not_evaluated",
+                        }
+                    }
+                    if permission_method
+                    else {}
+                ),
                 "verified_dimensions": (
                     [
                         "path",
                         "sha256",
                         *([] if digest_only else ["size_bytes"]),
+                        *(["permission_mode_octal"] if permission_method else []),
                         *(
                             [
                                 "container",

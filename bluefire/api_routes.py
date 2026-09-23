@@ -538,7 +538,7 @@ class APIRoutes:
             return ("", "", "")
         allowed_actions = {"activate", "deactivate"}
         if kind == "runner_profile":
-            allowed_actions.add("probe")
+            allowed_actions.update({"probe", "inspect-native-tool"})
         if action not in allowed_actions:
             self._error(
                 HTTPStatus.BAD_REQUEST,

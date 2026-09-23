@@ -273,6 +273,9 @@ class PlatformService(Protocol):
     def probe_runner_profile(self, resource_id: str, request: JsonObject) -> JsonResult:
         """Return a sanitized bounded inventory probe for one stored runner profile."""
 
+    def inspect_runner_profile_tool(self, resource_id: str, request: JsonObject) -> JsonResult:
+        """Inspect a tool candidate without saving a binding or dispatching effects."""
+
     def runner_status(self, *, profile_id: str | None = None) -> JsonResult:
         """Return path-free managed-runner lifecycle status."""
 
