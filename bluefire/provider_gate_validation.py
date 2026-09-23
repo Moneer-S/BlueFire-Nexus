@@ -17,7 +17,7 @@ from .version import __version__
 # Pinned, not imported: this release-layer module may not depend on the domain-layer
 # runner registry (GATE-10 dependency direction). tests_platform/test_provider_gate.py
 # pins this to len(BUILTIN_RUNNER_ACTION_IDS) and fails if the registry moves again.
-_CORE_ACTION_COUNT = 23
+_CORE_ACTION_COUNT = 24
 
 JOURNEY_SCHEMA = "bluefire.provider-journey-evidence.v1"
 VERIFICATION_SCHEMA = "bluefire.provider-verification-evidence.v1"

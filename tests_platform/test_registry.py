@@ -31,6 +31,7 @@ EXPECTED_ACTION_IDS = {
     "sandbox.collection.records.v1",
     "sandbox.collection.archive.v1",
     "sandbox.collection.atomic-gzip.v1",
+    "sandbox.permission.chmod.v1",
     "sandbox.execution.process-tree-cancellation-witness.v1",
     "sandbox.network.loopback.v1",
     "sandbox.export.local.v1",
@@ -38,8 +39,8 @@ EXPECTED_ACTION_IDS = {
     "sandbox.cleanup.v1",
 } | REPRESENTATIVE_ACTION_IDS
 EXPECTED_EXECUTABLE_BEHAVIOR_IDS = (
-    EXPECTED_ACTION_IDS - {"endpoint.discovery.windows-version.v1"}
-) | {"sandbox.credential.peer-challenge.v1"}
+    EXPECTED_ACTION_IDS - {"endpoint.discovery.windows-version.v1", "sandbox.permission.chmod.v1"}
+) | {"sandbox.credential.peer-challenge.v1", "sandbox.permission.relax.v1"}
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -164,7 +165,10 @@ def test_representative_logical_parameters_expose_no_path_host_or_command() -> N
 
 def test_action_and_behavior_parameter_contracts_are_identical() -> None:
     registry = load_builtin_registry()
-    for action_id in EXPECTED_ACTION_IDS - {"endpoint.discovery.windows-version.v1"}:
+    for action_id in EXPECTED_ACTION_IDS - {
+        "endpoint.discovery.windows-version.v1",
+        "sandbox.permission.chmod.v1",
+    }:
         behavior = registry.get_behavior(action_id)
         action = registry.get_action(action_id)
         assert behavior.parameters == action.parameters

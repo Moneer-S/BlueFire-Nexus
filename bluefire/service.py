@@ -108,6 +108,8 @@ from .job_runtime import (
     RunJobController,
 )
 from .method_comparison_jobs import MethodComparisonJobs
+from .native_tool_execution_readiness import inspected_tool_rows
+from .native_tool_setup import inspect_profile_tool
 from .orchestrator import OrchestrationError, Orchestrator, SimulationCancelled
 from .package_management import ActionPackageOperations
 from .plugins import PluginManifest, PluginManifestError, PluginTrust
@@ -239,6 +241,7 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         self.recovered_runs = self.store.recover_interrupted_runs()
         self.runner_lifecycle = runner_lifecycle or ManagedRunnerLifecycle(managed_product_root())
         self.runner_factory = runner_factory or self._managed_runner
+        self._native_tool_setup_runner_factory = runner_factory
         self.collector_registry_factory = (
             collector_registry_factory or _default_collector_registry_factory
         )
@@ -1298,6 +1301,12 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             "resource": deactivated,
         }
 
+    def inspect_runner_profile_tool(
+        self, resource_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        stable_id = _management_identifier(resource_id, "runner_profile ID")
+        return inspect_profile_tool(self, stable_id, request)
+
     def probe_runner_profile(
         self,
         resource_id: str,
@@ -1343,7 +1352,28 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             return unavailable
         if not isinstance(inventory, Mapping):
             return unavailable
-        return self._sanitized_runner_probe(profile, inventory)
+        tool_rows: Mapping[str, Mapping[str, Any]] = {}
+        if profile.native_tool_installations:
+            try:
+                before = canonical_runner_inventory(inventory)
+                identity = runner_transport_identity(runner, inventory)
+                tool_rows = inspected_tool_rows(
+                    runner,
+                    profile.native_tool_installations,
+                    inventory,
+                    before["actions"],
+                )
+                after = runner.inventory()
+                if (
+                    canonical_runner_inventory(after) != before
+                    or runner_transport_identity(runner, after) != identity
+                ):
+                    return unavailable
+            except (ContractError, RunnerTransportError, OSError, TypeError, ValueError):
+                # Keep inventory visibility while reporting tool readiness as
+                # unverified. Never project a stored record as inspection proof.
+                tool_rows = {}
+        return self._sanitized_runner_probe(profile, inventory, inspected_tools=tool_rows)
 
     def validate(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         try:
@@ -5673,6 +5703,26 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             if isinstance(item, Mapping)
         }
         effective_action_rows = dict(action_rows)
+        if profile.native_tool_installations:
+            try:
+                effective_action_rows.update(
+                    inspected_tool_rows(
+                        runner,
+                        profile.native_tool_installations,
+                        raw_inventory,
+                        list(action_rows.values()),
+                    )
+                )
+                after_inventory = runner.inventory()
+                if (
+                    canonical_runner_inventory(after_inventory) != canonical_inventory
+                    or runner_transport_identity(runner, after_inventory) != identity
+                ):
+                    raise RunnerReadinessError("Runner identity changed during tool inspection.")
+            except (ContractError, RunnerTransportError, OSError, TypeError, ValueError):
+                raise RunnerReadinessError(
+                    "The selected tool installation could not be verified. Review tool setup and retry."
+                ) from None
         platform = str(canonical_inventory["platform"])
         package_bindings_by_action: dict[str, list[Mapping[str, Any]]] = {}
         for binding in self._catalog_snapshot.profile_action_bindings(profile):
@@ -6057,6 +6107,8 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
     def _sanitized_runner_probe(
         profile: RunnerProfile,
         inventory: Mapping[str, Any],
+        *,
+        inspected_tools: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> Mapping[str, Any]:
         unavailable: Mapping[str, Any] = {
             "schema_version": "bluefire.runner-probe.v1",
@@ -6099,6 +6151,8 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
                 action["version"] = action_version
             if readiness is not None:
                 action["readiness"] = readiness
+            if inspected_tools and action_id in inspected_tools:
+                action["readiness"] = inspected_tools[action_id]["readiness"]
             actions.append(action)
             action_ids.add(action_id)
 
@@ -6108,6 +6162,16 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         )
         if tool_problem is not None:
             problems.append(tool_problem)
+        elif any(
+            record.to_dict()["adapter_id"] not in (inspected_tools or {})
+            for record in profile.native_tool_installations
+        ):
+            problems.append("Tool installation could not be verified; review its setup and retry.")
+        elif any(
+            row["action_id"] in profile.enabled_actions and row.get("readiness") != "ready"
+            for row in actions
+        ):
+            problems.append("An enabled method needs tool setup or is unavailable on this runner.")
         if platform not in profile.platforms:
             problems.append("Runner platform is outside the stored profile allowlist.")
         missing_actions = sorted(set(profile.enabled_actions) - action_ids)

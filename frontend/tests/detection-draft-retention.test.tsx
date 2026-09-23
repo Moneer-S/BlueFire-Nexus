@@ -56,6 +56,7 @@ it("retains source, reasons, tuning and fixtures across candidate changes and ro
   await user.click(screen.getByRole("tab", { name: "Revisions" }));
   await user.click(screen.getByText("Advanced clone and tune"));
   await user.click(screen.getByRole("radio", { name: /Tune rule behavior/ }));
+  await user.click(screen.getByText("Advanced structured inputs", { selector: "summary" }));
   const selection = screen.getByRole("textbox", { name: /^Tuned selection JSON/ });
   await user.clear(selection); await user.paste('{"custom":"draft"}');
   const logsource = screen.getByRole("textbox", { name: /^Tuned log source JSON/ });
@@ -76,6 +77,7 @@ it("retains source, reasons, tuning and fixtures across candidate changes and ro
   expect(await screen.findByRole("textbox", { name: /^Malicious fixtures JSON/ })).toHaveValue("draft fixture text");
   await user.click(screen.getByRole("tab", { name: "Revisions" }));
   await user.click(screen.getByText("Advanced clone and tune"));
+  await user.click(screen.getByText("Advanced structured inputs", { selector: "summary" }));
   expect(screen.getByRole("textbox", { name: /^Tuned selection JSON/ })).toHaveValue('{"custom":"draft"}');
   expect(screen.getByRole("textbox", { name: /^Tuned log source JSON/ })).toHaveValue('{"category":"custom"}');
   expect(screen.getByRole("textbox", { name: "Revision title" })).toHaveValue("Baseline SQL edited");
@@ -337,6 +339,23 @@ it("shows unavailable retained manual choices truthfully and refuses save withou
   await user.selectOptions(screen.getByRole("combobox", { name: "Target language" }), "sqlite");
   expect(screen.getByRole("button", { name: "Save rule draft" })).toBeEnabled();
   expect(save).not.toHaveBeenCalled();
+});
+
+it("loads a legacy manual draft without permissionCondition as staged", async () => {
+  const value = { ...manualDefaults, language: "internal", title: "Legacy manual rule" };
+  const raw = JSON.stringify({ binding: "manual-new-rule", value });
+  sessionStorage.setItem(manualKey, raw);
+  const { user } = setup();
+  // Retained manual inputs already open the disclosure; do not close it.
+  await screen.findByRole("heading", { name: "Baseline SQL" });
+  expect(screen.getByRole("textbox", { name: "Title" })).toBeVisible();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(screen.getByRole("combobox", { name: "Detection condition" })).toHaveValue("staged");
+  expect(sessionStorage.getItem(manualKey)).toBe(raw);
+  await user.selectOptions(screen.getByRole("combobox", { name: "Detection condition" }), "world_writable");
+  expect(sessionStorage.getItem(manualKey)).not.toBe(raw);
+  expect(JSON.parse(sessionStorage.getItem(manualKey)!).value.permissionCondition).toBe("world_writable");
+  expect(JSON.parse(sessionStorage.getItem(manualKey)!).value).toMatchObject(value);
 });
 
 it.each([false, true])("preserves newer manual edits when an earlier save completes (remount=%s)", async remountWhilePending => {

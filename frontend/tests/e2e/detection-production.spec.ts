@@ -208,7 +208,7 @@ test("production Detection Lab executes and persists a native SQLite candidate",
 
   await workspace.getByLabel(/Sqlite source/i).fill(query);
   await workspace.getByRole("button", { name: "Validate source" }).click();
-  await expect(page.getByText(new RegExp(`${candidateId} advanced honestly to parsed\\.`, "i"))).toBeVisible();
+  await expect(page.getByText(new RegExp(`${title} advanced to parsed\\.`, "i"))).toBeVisible();
   await expect(workspace.locator(".panel-header .badge")).toHaveText("Parsed");
   await openDisclosure(workspace, "Query source and identity");
   await expect(dataValue(workspace, "Converted query digest")).toHaveText(SHA256);
@@ -224,7 +224,7 @@ test("production Detection Lab executes and persists a native SQLite candidate",
     path: "staged/browser-proof.txt",
   }]));
   await workspace.getByRole("button", { name: "Exercise malicious fixtures" }).click();
-  await expect(page.getByText(new RegExp(`${candidateId} advanced honestly to fixture exercised\\.`, "i"))).toBeVisible();
+  await expect(page.getByText(new RegExp(`${title} advanced to fixture exercised\\.`, "i"))).toBeVisible();
   await expect(workspace.locator(".panel-header .badge")).toHaveText("Fixture exercised");
   // Advancing the lifecycle remounts the workspace on its default tab.
   await workspace.getByRole("tab", { name: "Fixtures" }).click();

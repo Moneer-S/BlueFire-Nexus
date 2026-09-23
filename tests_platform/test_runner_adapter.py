@@ -11,6 +11,7 @@ from bluefire.runner_adapter import AdaptedAction, RunnerActionAdapter, RunnerAd
 ACTION_IDS = {
     "sandbox.fixture.create.v1",
     "sandbox.fixture.transform.v1",
+    "sandbox.permission.chmod.v1",
     "sandbox.discovery.list.v1",
     "sandbox.discovery.metadata.v1",
     "endpoint.discovery.system.v1",
@@ -34,6 +35,7 @@ ACTION_IDS = {
     "sandbox.cleanup.v1",
 }
 CONTROLLED_ACTIONS = {
+    "sandbox.permission.chmod.v1",
     "sandbox.archive.tar.v1",
     "sandbox.collection.stage.v1",
     "sandbox.collection.records.v1",
@@ -100,6 +102,32 @@ def _step(action_id: str, parameters: Mapping[str, Any] | None = None) -> PlanSt
                 observable_paths=("fixtures/transformed.jsonl",),
             ),
             id="fixture-transform",
+        ),
+        pytest.param(
+            "sandbox.permission.chmod.v1",
+            {"mode": "0660"},
+            {
+                "fixture": {
+                    "type": "artifact.sandbox.fixture.v1",
+                    "path": "fixtures/transformed.jsonl",
+                    "sha256": "d" * 64,
+                    "size": 42,
+                    "receipt_ids": [RECEIPT_CREATE],
+                }
+            },
+            (RECEIPT_CREATE,),
+            AdaptedAction(
+                params={
+                    "source_fixture_id": "transformed",
+                    "source_sha256": "d" * 64,
+                    "source_receipt_id": RECEIPT_CREATE,
+                    "source_size": 42,
+                    "mode": "0660",
+                },
+                filesystem_scope=("fixtures/transformed.jsonl",),
+                observable_paths=("fixtures/transformed.jsonl",),
+            ),
+            id="permission-chmod",
         ),
         pytest.param(
             "sandbox.discovery.list.v1",

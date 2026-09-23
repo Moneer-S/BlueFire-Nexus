@@ -13,6 +13,7 @@ Current built-in records are stored in `bluefire/data/research_sources.yaml` and
 | yara-python | `external_adapter` | Separately installed optional package; no source vendored | Used only through bounded compiler integration when available. |
 | Atomic Red Team general snapshot | `reference_only` | Metadata only | Historical comparative behavior/test-structure reference; this record does not import the corpus. |
 | Atomic Red Team single-file gzip test | `compatible_code_adaptation` | One reviewed method adapted into the fixed Linux gzip adapter | MIT, Copyright (c) 2018 Red Canary, Inc.; complete license preserved at `bluefire/data/atomic_red_team_LICENSE.txt`. |
+| Atomic Red Team chmod test | `compatible_code_adaptation` | Reviewed permission-change procedure adapted into a fixed Linux GNU chmod adapter | MIT, Copyright (c) 2018 Red Canary, Inc.; the same complete Atomic license is preserved. |
 
 Before any `compatible_code_adaptation`, perform file-level license review, preserve attribution and notices, isolate copied code paths, and record modifications in the source metadata.
 
@@ -35,6 +36,24 @@ its source and binary are not bundled into BlueFire's wheel. BlueFire's MIT
 license does not replace the system utility's terms. The adapter records the
 actual selected tool digest, and fails closed if the required utility is missing
 or fails its integrity checks. Attribution does not imply endorsement.
+
+## Atomic permission adapter
+
+`runner/src/atomic_chmod.rs` adapts Atomic Red Team T1222.002 test
+`34ca1464-de9d-40c6-8c77-690adf36a135` at commit
+`6132b92779873cb0d05bef07ba0a480d47eb1cc8`. The reviewed YAML digest is
+`76ea316186fe0c7f1d7bdaa9b29c92684eb7f63e28ba14834f50b9bd4fcc2049`.
+The preserved Atomic MIT license has the same digest listed above.
+The adapter replaces the upstream shell and arbitrary target path with a
+reviewed finite numeric mode and one held receipt-owned file descriptor;
+it adds protected executable inspection, bounded supervision and cleanup.
+See [the method documentation](docs/ATOMIC_CHMOD.md) for scope and limitations.
+
+GNU chmod belongs to [GNU Coreutils](https://github.com/coreutils/coreutils),
+licensed GPL-3.0-or-later. It is an optional separately installed system tool;
+its source and executable are neither bundled nor redistributed by BlueFire.
+BlueFire's MIT license does not replace the utility's terms. No Atomic framework
+or general command execution interface is imported.
 
 ## MITRE ATT&CK® Enterprise T1082 metadata
 

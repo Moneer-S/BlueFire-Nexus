@@ -527,3 +527,31 @@ items:
     mutates: true
     cleanup_action_id: null
     provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.permission.chmod.v1
+    title: Change sample file permissions (GNU chmod)
+    purpose: Change reviewed permission bits on the runner-owned transformed sample file.
+    safety_tier: controlled
+    capabilities: [filesystem.read, filesystem.write, process.spawn]
+    platforms: [linux]
+    inputs:
+      - name: fixture
+        type: artifact.sandbox.fixture.v1
+    outputs:
+      - name: fixture
+        type: artifact.sandbox.fixture.v1
+    parameters:
+      - name: mode
+        type: string
+        required: true
+        enum: ["0600", "0640", "0660", "0666"]
+        description: Reviewed numeric mode applied to the fixed transformed fixture.
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
+    provenance:
+      source: Atomic Red Team T1222.002 reviewed metadata
+      reference: https://github.com/redcanaryco/atomic-red-team/tree/6132b92779873cb0d05bef07ba0a480d47eb1cc8
+      license: MIT
+      derived: true
+      notes: Declarative adaptation only; the external GNU chmod adapter is separately pinned and not embedded here.

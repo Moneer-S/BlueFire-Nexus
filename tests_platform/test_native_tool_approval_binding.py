@@ -20,6 +20,7 @@ from bluefire.native_tool_installations import NativeToolInstallation
 from bluefire.planner import DeterministicPlanner
 from bluefire.product_store import ProductStore, ProductStoreError
 from bluefire.registry import load_builtin_registry
+from bluefire.tool_adapters.chmod import CONTRACT
 from bluefire.util import content_hash
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,7 +40,7 @@ def configured_profile() -> RunnerProfile:
             "schema_version": "bluefire.native-tool-installation.v1",
             "adapter_id": "sandbox.permission.chmod.v1",
             "adapter_version": "1.0.0",
-            "adapter_contract_digest": "sha256:" + "a" * 64,
+            "adapter_contract_digest": CONTRACT.digest,
             "tool_id": "gnu.coreutils.chmod.v1",
             "tool_version": "9.5",
             "platform": "linux",
@@ -127,15 +128,7 @@ def test_tool_rebinding_invalidates_durable_operator_approval(
 
 def test_tool_rebinding_invalidates_adaptive_authorization() -> None:
     registry = load_builtin_registry()
-    # Declarative fixture only: no compiled action or tool dispatch is added.
-    registry = registry.extended(
-        actions=[
-            replace(
-                registry.get_action("sandbox.fixture.transform.v1"),
-                id="sandbox.permission.chmod.v1",
-            )
-        ]
-    )
+    # The real registered method is enabled in the profile. No tool is executed.
     document = load_scenario(ROOT / "scenarios/sandbox_research_chain.yaml").to_dict()
     document["adaptive_execution"] = {
         "schema_version": "bluefire.adaptive-execution.v1",

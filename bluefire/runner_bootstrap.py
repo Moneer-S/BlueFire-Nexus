@@ -333,6 +333,7 @@ def validate_runner_inventory(
             inventory,
             required_action_ids=BUILTIN_RUNNER_ACTION_IDS,
             require_exact_catalog=True,
+            structural_tool_action_ids={"sandbox.permission.chmod.v1"},
         )
     except RunnerInventoryAuthorityError:
         raise RunnerBootstrapError(

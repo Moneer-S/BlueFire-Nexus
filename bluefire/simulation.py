@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from .collection_methods import COLLECTION_METHODS, CollectionMethodError, simulate_collection
 from .contracts import StepOutcome
 from .planner import PlanStep
+from .tool_adapters.chmod import CONTRACT
 from .util import canonical_json_bytes, content_hash
 
 _IDENTITY_MATERIAL_BYTES = (
@@ -105,6 +106,7 @@ class SimulationRegistry:
         {
             "simulation.sandbox.fixture.create.v1",
             "simulation.sandbox.fixture.transform.v1",
+            "simulation.sandbox.permission.relax.v1",
             "simulation.sandbox.discovery.list.v1",
             "simulation.sandbox.discovery.metadata.v1",
             "simulation.endpoint.discovery.system.v1",
@@ -278,6 +280,43 @@ class SimulationRegistry:
                 }
             }
             telemetry = ("sandbox.fixture.transformed",)
+        elif simulation_id == "simulation.sandbox.permission.relax.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset({"mode"}),
+                context="permission simulation",
+            )
+            mode = _choice(
+                step.parameters.get("mode"),
+                "permission simulation mode",
+                frozenset(CONTRACT.to_dict()["parameters"][0]["enum"]),
+            )
+            fixture = _mapping(bound_inputs.get("fixture"), "fixture")
+            if fixture.get("type") != "artifact.sandbox.fixture.v1":
+                raise SimulationError("permission simulation requires a typed fixture")
+            source = fixture.get("path")
+            if not isinstance(source, str) or not source.endswith("transformed.jsonl"):
+                raise SimulationError("permission simulation requires the transformed fixture")
+            simulated = dict(fixture)
+            simulated.update(
+                {
+                    "path": "synthetic/fixtures/transformed.jsonl",
+                    "synthetic": True,
+                    "permission_change": {
+                        "requested_mode": mode,
+                        "before_mode": "0644",
+                        "after_mode": mode,
+                        "permission_bits_observed": False,
+                        "external_tool_invoked": False,
+                    },
+                }
+            )
+            artifacts = {"fixture": simulated}
+            telemetry = ("sandbox.permission.simulated",)
+            limitations = (
+                *base_limitations,
+                "Permission bits are authored simulation metadata; no filesystem mode was observed or changed.",
+            )
         elif simulation_id in {
             "simulation.sandbox.discovery.list.v1",
             "simulation.sandbox.discovery.metadata.v1",
