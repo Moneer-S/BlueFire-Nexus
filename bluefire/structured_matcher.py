@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any, Mapping
 
 
@@ -34,7 +35,12 @@ def _strict_json_equal(actual: Any, expected: Any) -> bool:
     if type(actual) is bool or type(expected) is bool:
         return type(actual) is bool and type(expected) is bool and actual is expected
     if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
-        return actual == expected
+        # Python compares a float to an int using the float's exact binary value.
+        # Compare the JSON decimal forms instead, so a parsed exponent such as
+        # 1e23 equals the same exact integer without rounding either operand.
+        actual_number = Decimal(actual) if type(actual) is int else Decimal(str(actual))
+        expected_number = Decimal(expected) if type(expected) is int else Decimal(str(expected))
+        return actual_number == expected_number
     if type(actual) is not type(expected):
         return False
     if isinstance(actual, dict):

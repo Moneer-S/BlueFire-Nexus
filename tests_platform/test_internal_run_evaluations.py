@@ -242,6 +242,7 @@ def test_incomplete_permission_comparison_still_obeys_byte_limit(service, monkey
     [
         ({"number": 1}, {"number": 1.0}),
         ({"number": 0}, {"number": -0.0}),
+        ({"number": 10**23}, {"number": float("1e23")}),
         ({"nested.number": 1}, {"nested": {"number": 1.0}}),
         ({"values": [1, {"number": 0}]}, {"values": [1.0, {"number": -0.0}]}),
     ],
@@ -280,11 +281,23 @@ def test_nested_json_boolean_remains_distinct_from_a_number(service):
     assert result["matched_evidence_ids"] == []
 
 
+def test_strict_json_equality_does_not_round_nearby_large_numbers_together(service):
+    candidate = candidate_document(service, internal_candidate(service, {"number": 10**23}))
+
+    result = engine.execute_internal(
+        candidate, [record({"number": float("1.0000000000000001e23")})]
+    )
+
+    assert result["missing_fields"] == []
+    assert result["matched_evidence_ids"] == []
+
+
 @pytest.mark.parametrize(
     "selection,content",
     [
         ({"number": 1}, {"number": 1.0}),
         ({"nested.number": 0}, {"nested": {"number": -0.0}}),
+        ({"number": 10**23}, {"number": float("1e23")}),
     ],
 )
 def test_run_evaluation_persists_matches_for_equivalent_json_numbers(service, selection, content):
