@@ -128,4 +128,34 @@ describe("Builder selection and navigation", () => {
     expect(screen.getByRole("combobox", { name: "Path section" })).toHaveValue("2");
     expect(screen.getByRole("button", { name: "Copy selected node" })).toBeEnabled();
   }, 15000);
+
+  it.each([
+    { count: 17, section: "1", deleted: "step_9", replacement: "step_10", remainingSection: "1" },
+    { count: 17, section: "2", deleted: "step_17", replacement: "step_9", remainingSection: "1" },
+    { count: 13, section: "1", deleted: "step_13", replacement: "step_9", remainingSection: null },
+  ])("keeps a visible selection after deleting $deleted from section $section", async ({ count, section, deleted, replacement, remainingSection }) => {
+    const scenario: typeof demoScenario = { ...structuredClone(demoScenario), start: "step_1", steps: Array.from({ length: count }, (_, index) => ({ ...structuredClone(demoScenario.steps[0]!), id: `step_${index + 1}` })), edges: [], layout: undefined };
+    scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success", to_step: step.id }));
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderBuilder(scenario);
+    await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Path section" }), section);
+    await user.click(screen.getByRole("button", { name: "Steps" }));
+    await user.click(within(screen.getByRole("list", { name: "Experiment steps" })).getAllByRole("button")[scenario.steps.findIndex((step) => step.id === deleted)]!);
+    await user.click(screen.getByRole("button", { name: "Canvas" }));
+    expect(screen.getByRole("combobox", { name: "Path section" })).toHaveValue(section);
+    expect(screen.getByTestId(`rf__node-${deleted}`)).toHaveClass("selected");
+    await user.click(screen.getByRole("button", { name: "Delete selected node" }));
+    await waitFor(() => expect(screen.queryByTestId(`rf__node-${deleted}`)).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Delete selected node" })).toBeEnabled());
+    expect(screen.getByTestId(`rf__node-${replacement}`)).toHaveClass("selected");
+    expect(screen.getByLabelText(/^Step ID/)).toHaveValue(replacement);
+    if (remainingSection === null) expect(screen.queryByRole("combobox", { name: "Path section" })).not.toBeInTheDocument();
+    else expect(screen.getByRole("combobox", { name: "Path section" })).toHaveValue(remainingSection);
+    const saved = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!);
+    expect(saved.steps).toHaveLength(count - 1);
+    expect(saved.steps.some((step: { id: string }) => step.id === deleted)).toBe(false);
+    expect(window.confirm).toHaveBeenCalledOnce();
+  }, 15000);
 });

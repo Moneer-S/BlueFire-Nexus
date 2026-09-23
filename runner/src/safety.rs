@@ -1499,12 +1499,24 @@ impl SafeRoot {
 
 #[cfg(unix)]
 fn hash_opened_file(file: &File, max_bytes: u64) -> Result<String, String> {
+    hash_opened_file_until(file, max_bytes, None)
+}
+
+#[cfg(unix)]
+fn hash_opened_file_until(
+    file: &File,
+    max_bytes: u64,
+    deadline: Option<std::time::Instant>,
+) -> Result<String, String> {
     use std::os::unix::fs::FileExt;
 
     let mut digest = Sha256::new();
     let mut offset = 0_u64;
     let mut buffer = [0_u8; 16 * 1024];
     loop {
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            return Err("receipt input hashing exceeded its monotonic deadline".to_string());
+        }
         // Positioned reads do not move the shared open-file offset. A dup/seek
         // verifier would consume or disrupt the descriptor retained for a tool.
         let read = file
@@ -1524,6 +1536,15 @@ fn hash_opened_file(file: &File, max_bytes: u64) -> Result<String, String> {
 
 #[cfg(not(unix))]
 fn hash_opened_file(file: &File, max_bytes: u64) -> Result<String, String> {
+    hash_opened_file_until(file, max_bytes, None)
+}
+
+#[cfg(not(unix))]
+fn hash_opened_file_until(
+    file: &File,
+    max_bytes: u64,
+    deadline: Option<std::time::Instant>,
+) -> Result<String, String> {
     let mut file = file
         .try_clone()
         .map_err(|error| format!("cannot clone opened file for hashing: {error}"))?;
@@ -1533,6 +1554,9 @@ fn hash_opened_file(file: &File, max_bytes: u64) -> Result<String, String> {
     let mut total = 0_u64;
     let mut buffer = [0_u8; 16 * 1024];
     loop {
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            return Err("receipt input hashing exceeded its monotonic deadline".to_string());
+        }
         let read = file
             .read(&mut buffer)
             .map_err(|error| format!("cannot hash opened file: {error}"))?;

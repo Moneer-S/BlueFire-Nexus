@@ -28,6 +28,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, Callable, Iterator, Mapping, cast
 
+from . import native_tool_transport as native_tools
 from . import runner_transport_framing as framing
 from .runner_client import (
     RunnerTaskCancelled,
@@ -94,7 +95,9 @@ _MAX_RECEIPT_BYTES = 256 * 1024
 _EXECUTE_RECOVERY_RESERVE_BYTES = _MAX_RECOVERY_RECEIPTS * 68 + 128
 _SQLITE_OVERHEAD_BYTES = 2 * 1024 * 1024
 _FRAME_HEADER = struct.Struct("!I")
-_OPERATIONS = frozenset({"health", "inventory", "execute", "recover", "cancel", "shutdown"})
+_OPERATIONS = native_tools.INSPECTION_OPERATIONS.union(
+    {"health", "inventory", "execute", "recover", "cancel", "shutdown"}
+)
 _REQUEST_FIELDS = frozenset(
     {
         "schema_version",
@@ -2995,6 +2998,10 @@ class AuthenticatedRunnerServer:
                 self._verified_runner_binary_digest()
                 inventory, _canonical = self._validated_inventory(enrollment)
                 payload = {"inventory": dict(inventory)}
+            elif operation in native_tools.INSPECTION_OPERATIONS:
+                payload = native_tools.inspect_server_tool(
+                    self, request, enrollment, refusal=_RequestRefusal
+                )
             elif operation == "execute":
                 supplied = self._require_payload(request, frozenset({"manifest", "profile"}))
                 manifest = supplied["manifest"]
@@ -3824,7 +3831,7 @@ class AuthenticatedRunnerServer:
         )
 
 
-class AuthenticatedRunnerClient:
+class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
     """RunnerTransport client with exact-task reconnect recovery semantics."""
 
     def __init__(

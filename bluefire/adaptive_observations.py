@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 
 from .evidence import EvidenceProvenance, EvidenceRecord
+from .file_permissions import PERMISSION_FIELDS, PERMISSION_LIMITATION, permission_fields_valid
 from .planner import PlanStep
 from .util import content_hash
 
@@ -36,19 +37,43 @@ _AUTHORIZATION_ERRORS = frozenset(
         "policy_refused",
     }
 )
-_KNOWN_ERRORS = _AUTHORIZATION_ERRORS | {
-    "platform_blocked",
-    "adapter_refused",
-    "action_control_blocked",
-    "timeout",
-    "execution_failed",
-    "transport_error",
-    "missing_input",
-    "input_not_found",
-    "atomic_gzip_unavailable",
-    "collection_output_limit",
-    "artifact_limit_blocked",
-}
+# Exact codes emitted by existing native actions, including partial recursive
+# discovery when its deadline expires after collecting some records.
+_TIMEOUT_ERRORS = frozenset(
+    {
+        "timeout",
+        "atomic_gzip_timeout",
+        "collection_timeout",
+        "native_canary_timeout",
+        "cancellation_witness_timeout",
+        "fixture_create_timeout",
+        "transform_timeout",
+        "process_discovery_timeout",
+        "recursive_discovery_timeout",
+        "observability_variant_timeout",
+        "loopback_timeout",
+    }
+)
+_EXECUTION_ERRORS = frozenset(
+    {"execution_failed", "atomic_gzip_failed", "atomic_gzip_write_failed"}
+)
+_TRANSPORT_ERRORS = frozenset({"transport_error", "runner_transport_failed"})
+_KNOWN_ERRORS = (
+    _AUTHORIZATION_ERRORS
+    | _TIMEOUT_ERRORS
+    | _EXECUTION_ERRORS
+    | _TRANSPORT_ERRORS
+    | {
+        "platform_blocked",
+        "adapter_refused",
+        "action_control_blocked",
+        "missing_input",
+        "input_not_found",
+        "atomic_gzip_unavailable",
+        "collection_output_limit",
+        "artifact_limit_blocked",
+    }
+)
 
 
 def _facts(content: Mapping[str, Any]) -> dict[str, Any]:
@@ -64,11 +89,47 @@ def _facts(content: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _permission_facts(record: EvidenceRecord) -> dict[str, Any]:
+    if record.provenance is not EvidenceProvenance.OBSERVED:
+        return {}
+    content = record.content
+    if not (
+        content.get("artifact_type") == "file_observation"
+        or (
+            content.get("artifact_type") == "collector_observation"
+            and content.get("observation_kind") == "filesystem"
+        )
+    ):
+        return {}
+    invalid = {"permission_status": "invalid_metadata", "effective_access": "not_evaluated"}
+    top = {key: content[key] for key in PERMISSION_FIELDS if key in content}
+    nested = content.get("observed_fields")
+    if "observed_fields" in content and not isinstance(nested, Mapping):
+        return invalid
+    fields = (
+        {key: nested[key] for key in PERMISSION_FIELDS if key in nested}
+        if isinstance(nested, Mapping)
+        else top
+    )
+    if not top and not fields:
+        return {}
+    # Native file observations keep facts at the top level. Collector records
+    # additionally retain an observed-fields copy; neither can contradict the other.
+    if (top and (not permission_fields_valid(top) or top != fields)) or not permission_fields_valid(
+        fields
+    ):
+        return invalid
+    return fields
+
+
 def _failure(row: Mapping[str, Any], records: Sequence[EvidenceRecord]) -> dict[str, Any]:
     error = row.get("error")
     code = error.get("code") if isinstance(error, Mapping) else None
     policy = row.get("policy")
     policy_status = policy.get("status") if isinstance(policy, Mapping) else None
+    telemetry_gap = any(item.provenance is EvidenceProvenance.UNKNOWN for item in records) or bool(
+        set(row.get("evidence_ids", ())) - {item.evidence_id for item in records}
+    )
     # A BlueFire control-blocked profile is a product control, not evidence that
     # a target detector prevented an operation. Unknown target effects stay unknown.
     if code == "platform_blocked":
@@ -81,7 +142,14 @@ def _failure(row: Mapping[str, Any], records: Sequence[EvidenceRecord]) -> dict[
         classification = "resource_limit"
     elif code in {"adapter_refused", "missing_input", "input_not_found", "atomic_gzip_unavailable"}:
         classification = "prerequisite_failure"
-    elif any(item.provenance is EvidenceProvenance.UNKNOWN for item in records):
+    elif code in _TIMEOUT_ERRORS:
+        classification = "execution_timeout"
+    elif code in _EXECUTION_ERRORS:
+        classification = "execution_failure"
+    elif code in _TRANSPORT_ERRORS:
+        classification = "runner_transport_failure"
+        telemetry_gap = True
+    elif telemetry_gap:
         classification = "missing_telemetry"
     elif row.get("status") == "failed":
         classification = "execution_failure"
@@ -94,6 +162,7 @@ def _failure(row: Mapping[str, Any], records: Sequence[EvidenceRecord]) -> dict[
         "code": code if isinstance(code, str) and code in _KNOWN_ERRORS else None,
         "unrecognized_code_present": code is not None and code not in _KNOWN_ERRORS,
         "target_prevention": "not_established",
+        "telemetry_gap": telemetry_gap,
     }
 
 
@@ -128,6 +197,7 @@ def project_runtime_observations(
             observed = content.get("observed_fields")
             if record.provenance is EvidenceProvenance.OBSERVED and isinstance(observed, Mapping):
                 facts.update(_facts(observed))
+            facts.update(_permission_facts(record))
             output = content.get("output")
             if record.provenance is EvidenceProvenance.EXECUTED and isinstance(output, Mapping):
                 facts.update(_facts(output))
@@ -191,6 +261,7 @@ def project_runtime_observations(
             "Target prevention is not established by a product refusal.",
             "Reported execution alone does not independently verify the objective.",
             "Method availability does not establish success or external prerequisites.",
+            PERMISSION_LIMITATION,
         ],
     }
     return {**body, "projection_digest": content_hash(body)}

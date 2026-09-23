@@ -3,6 +3,7 @@ import type { CatalogResponse, RunRecord } from "../types";
 import { adaptiveRecords, decisionObservations, decisionOrigin, decisionProvenance, dispatchDescription, recordedMethodName, recordedPathNodes, selectedAttempt, type RuntimeRecord } from "../lib/adaptive-run";
 import { stepOutcomeLabel } from "../lib/run-presentation";
 import { DataList, sentence } from "./Primitives";
+import { AdaptivePermissionObservations } from "./AdaptivePermissionObservations";
 import "./AdaptiveRunPath.css";
 
 export function AdaptiveRunPath({ run, catalog }: { run: RunRecord; catalog: CatalogResponse }) {
@@ -38,8 +39,9 @@ export function AdaptiveDecision({ run, record, catalog }: { run: RunRecord; rec
       { label: "Provider", value: provenance.provider }, { label: "Model", value: provenance.model },
       { label: "Observed result", value: sentence(String(record.outcome ?? "not recorded")) },
       { label: "Failure classification", value: sentence(String(observations.classification ?? "unknown")) },
+      { label: "Observation coverage", value: observations.telemetryGap === true ? "Some observations are unavailable." : observations.telemetryGap === false ? "Completeness not established." : "Not recorded." },
       { label: "Remaining execution limits", value: `${observations.budgets.steps ?? "Unknown"} steps · ${observations.budgets.seconds ?? "Unknown"} seconds · ${observations.budgets.retries ?? "Unknown"} retries` },
-      { label: "Evidence references", value: observations.evidence.map(item => String(item.evidence_id)).join(", ") || "None retained in this projection" },
-    ]}/>{observations.unknowns.length ? <ul>{observations.unknowns.map((unknown, index) => <li key={index}>{unknown}</li>)}</ul> : <p>Observation limitations were not retained.</p>}<details><summary>Exact decision record</summary><pre>{JSON.stringify(record, null, 2)}</pre></details></details>
+      { label: "Current attempt evidence", value: observations.evidence.map(item => String(item.evidence_id)).join(", ") || "None retained for this attempt" },
+    ]}/><AdaptivePermissionObservations attempts={observations.attempts}/>{observations.unknowns.length ? <ul>{observations.unknowns.map((unknown, index) => <li key={index}>{unknown}</li>)}</ul> : <p>Observation limitations were not retained.</p>}<details><summary>Exact decision record</summary><pre>{JSON.stringify(record, null, 2)}</pre></details></details>
   </section>;
 }

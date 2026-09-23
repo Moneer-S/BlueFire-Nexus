@@ -300,6 +300,7 @@ fn reviewed_program_constants(opcode: &str) -> Option<BTreeMap<String, Value>> {
         | "sandbox.collection.records.v1"
         | "sandbox.collection.archive.v1"
         | "sandbox.collection.atomic-gzip.v1"
+        | "sandbox.permission.chmod.v1"
         | "sandbox.discovery.list.v1"
         | "sandbox.discovery.metadata.v1"
         | "sandbox.discovery.recursive.v1"
@@ -724,9 +725,21 @@ fn validate_policy<'a>(
             package_alias,
         } => {
             let descriptor = action.descriptor();
-            ensure_action_ready(descriptor)?;
             native_tools::validate_selected(profile, *action)
                 .map_err(|error| blocked("native_tool_installation_required", error))?;
+            if matches!(descriptor.readiness, ActionReadiness::Structural)
+                && action.native_tool_binding().is_some()
+            {
+                native_tools::inspect_selected(profile, *action).map_err(|error| {
+                    ActionFailure {
+                        status: TaskStatus::Refused,
+                        code: "native_tool_unavailable",
+                        message: error,
+                    }
+                })?;
+            } else {
+                ensure_action_ready(descriptor)?;
+            }
             if !descriptor.platforms.contains(&actual_platform) {
                 return Err(blocked(
                     "platform_blocked",

@@ -1,6 +1,8 @@
 """Read-only Linux setup inspection; never dispatch or execution authorization.
 
-An operator-approved version assertion is bound to exact executable bytes. This
+This filesystem primitive compares asserted metadata to exact executable bytes;
+it does not identify GNU software or establish tool readiness. Product setup and
+execution use the Rust adapter's independently reviewed build allowlist. This
 does not run ``--version``, discover tools on PATH, install anything, or make an
 untrusted installation record trusted. The runner must repeat its own checks on
 the held executable immediately before any approved operation.
