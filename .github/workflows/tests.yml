@@ -272,9 +272,17 @@ jobs:
           dpkg-deb --extract "$package" "$extracted"
           printf '%s  %s\n' 'afea077ce127d4fa9ad410d3066ba2b54dea19c0b44f04adf56c72d5f7b7a9bb' "$extracted/usr/bin/gzip" | sha256sum --check
           test "$(stat -c %s "$extracted/usr/bin/gzip")" = 93424
-          tool_root='/opt/bluefire-ci-tools/gzip-1.12-1ubuntu3.2'
-          test ! -e "$tool_root"
-          sudo install -d -o root -g root -m 0755 "$tool_root"
+          # The hosted image makes /opt writable; keep every tool ancestor protected.
+          for directory in / /usr /usr/lib; do
+            test -d "$directory" && test ! -L "$directory"
+            test "$(stat -c %u "$directory")" = 0
+            mode="$(stat -c %a "$directory")"
+            test "$((8#$mode & 022))" = 0
+          done
+          tool_base='/usr/lib/bluefire-ci-tools'
+          tool_root="$tool_base/gzip-1.12-1ubuntu3.2"
+          test ! -e "$tool_base" && test ! -L "$tool_base"
+          sudo install -d -o root -g root -m 0755 "$tool_base" "$tool_root"
           sudo install -o root -g root -m 0755 "$extracted/usr/bin/gzip" "$tool_root/gzip"
           printf 'BLUEFIRE_TEST_GZIP=%s/gzip\n' "$tool_root" >> "$GITHUB_ENV"
 

@@ -1121,12 +1121,17 @@ fn collection_test_profile(root: &TempDir, method: &str) -> RunnerProfile {
     if method == "atomic-gzip" {
         let location =
             std::env::var("BLUEFIRE_TEST_GZIP").unwrap_or_else(|_| "/usr/bin/gzip".into());
+        let mut inspection_codes = Vec::new();
         for version in ["1.12-1ubuntu3.2", "1.12-1ubuntu3.1"] {
             let result = bluefire_runner::inspect_candidate(&json!({
                 "schema_version": "bluefire.native-tool-candidate.v1",
                 "action_id": "sandbox.collection.atomic-gzip.v1",
                 "installation_location": location, "tool_version": version
             }));
+            inspection_codes.push(format!(
+                "{version}: {}",
+                result["code"].as_str().unwrap_or("missing-code")
+            ));
             if result["status"] == "ready" {
                 selected
                     .native_tool_installations
@@ -1135,7 +1140,7 @@ fn collection_test_profile(root: &TempDir, method: &str) -> RunnerProfile {
             }
         }
         assert_eq!(selected.native_tool_installations.len(), 1,
-            "Linux gzip integration tests require a protected reviewed build; see docs/REVIEWED_NATIVE_BUILDS.md");
+            "Linux gzip integration tests require a protected reviewed build; inspection codes: {inspection_codes:?}; see docs/REVIEWED_NATIVE_BUILDS.md");
         seal_profile(&mut selected);
     }
     selected

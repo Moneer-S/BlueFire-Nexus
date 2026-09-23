@@ -73,8 +73,11 @@ This supports an existing reviewed lab image, not a recommendation to downgrade.
 | `gzip_1.12-1ubuntu3.1_amd64.deb` | 98982 | `d3ea567e3c25ebcd272e541ad49c447bc1d7f3720b8081132177ddb3ca9b1f96` |
 | `usr/bin/gzip` extracted from that package | 93424 | `16f1f8dbe5b47b3c1160b9066bd15bfdd80548b1b878b1a025c462fec0ca02b1` |
 
-Linux Rust CI prepares the pinned 1.12-1ubuntu3.2 executable separately in its
-disposable job image and exposes its protected path only to the test fixture via
+Linux Rust CI prepares the pinned 1.12-1ubuntu3.2 executable under a fresh
+root-owned directory in `/usr/lib`, after verifying its existing ancestors are
+root-owned, non-symlink directories without group or other write access. It does
+not change existing directory permissions. The disposable job exposes this
+protected path only to the test fixture via
 `BLUEFIRE_TEST_GZIP`. Product execution does not read this variable. This keeps
 real gzip positive tests enabled without trusting an image's changing system
 package. The dependency is neither included in uploaded runner assets nor bundled
