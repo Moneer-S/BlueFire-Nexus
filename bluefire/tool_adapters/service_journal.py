@@ -23,6 +23,7 @@ from ..util import canonical_json_bytes, content_hash
 from ..windows_owner_acl import WindowsOwnerAclError
 from .service_journal_storage import PrivateJournalStorage
 from .service_lifecycle import OwnedUserService
+from .service_operation_binding import ServiceOperationBinding
 
 SCHEMA = "bluefire.service-intent-journal.v1"
 _APPLICATION_ID = 0x4246534A
@@ -346,3 +347,46 @@ class ServiceIntentJournal:
         with self._transaction() as connection:
             document = self._load(connection, identity_digest)
         return _view(document)
+
+    def pending_binding(
+        self,
+        identity_digest: str,
+        expected_revision: int,
+        *,
+        reviewed_scope_digest: str,
+        manager_installation_digest: str,
+        payload_installation_digest: str,
+    ) -> ServiceOperationBinding:
+        """Snapshot one committed pending intent without updating or authorizing it.
+
+        The digests are explicit inputs from future reviewed setup. This read
+        neither authenticates them nor locks an effect across the handoff. The
+        runner still needs its own durable reservation and live authority checks.
+        A reopened pending intent remains inspection-required, never dispatchable
+        merely because its binding can be reconstructed.
+        """
+        _text(identity_digest, _DIGEST)
+        _revision(expected_revision)
+        with self._transaction() as connection:
+            document = self._load(connection, identity_digest)
+            history = document["operations"]
+            if document["revision"] != expected_revision:
+                raise _fail("stale revision")
+            if not history or history[-1]["result"] != "pending":
+                raise _fail("no pending operation to bind")
+            operation = history[-1]
+            return ServiceOperationBinding.from_mapping(
+                {
+                    "schema_version": "bluefire.service-operation-binding.v1",
+                    "identity": document["identity"],
+                    "identity_digest": identity_digest,
+                    "journal_request_id": document["request_id"],
+                    "journal_revision": document["revision"],
+                    "journal_record_hash": content_hash(document),
+                    "operation_id": operation["operation_id"],
+                    "operation": operation["operation"],
+                    "reviewed_scope_digest": reviewed_scope_digest,
+                    "manager_installation_digest": manager_installation_digest,
+                    "payload_installation_digest": payload_installation_digest,
+                }
+            )
