@@ -187,6 +187,137 @@ def test_record_kind_mismatch_still_excludes_permission_gaps(service):
     assert result["matched_evidence_ids"] == [observed.evidence_id]
 
 
+def test_known_present_permission_mismatch_excludes_incomplete_group_gap(service):
+    candidate = candidate_document(
+        service,
+        internal_candidate(service, {"permission_status": "available", "group_write_bit": False}),
+    )
+    incomplete = permission_content("0660")
+    incomplete.pop("non_owner_write_bit")
+    unrelated = record(incomplete)
+    matched = record(permission_content("0640"), 1)
+
+    result = engine.execute_internal(candidate, [unrelated, matched])
+
+    assert result["missing_fields"] == []
+    assert result["matched_evidence_ids"] == [matched.evidence_id]
+
+
+def test_missing_effective_access_remains_a_gap_when_known_fields_match(service):
+    candidate = candidate_document(service, internal_candidate(service, {"group_write_bit": True}))
+    incomplete = permission_content("0660")
+    incomplete.pop("effective_access")
+
+    result = engine.execute_internal(candidate, [record(incomplete)])
+
+    assert result["missing_fields"] == ["effective_access"]
+    assert result["matched_evidence_ids"] == []
+
+
+def test_inconsistent_partial_permission_facts_cannot_exclude_a_row(service):
+    candidate = candidate_document(
+        service,
+        internal_candidate(service, {"permission_status": "available", "group_write_bit": False}),
+    )
+    inconsistent = permission_content("0640")
+    inconsistent["group_write_bit"] = True
+    inconsistent.pop("non_owner_write_bit")
+
+    with pytest.raises(DetectionError, match="permission facts"):
+        engine.execute_internal(candidate, [record(inconsistent)])
+
+
+def test_incomplete_permission_comparison_still_obeys_byte_limit(service, monkeypatch):
+    candidate = candidate_document(service, internal_candidate(service, {"group_write_bit": False}))
+    incomplete = permission_content("0660")
+    incomplete.pop("non_owner_write_bit")
+    monkeypatch.setitem(engine.INTERNAL_LIMITS, "comparison_bytes", 1)
+
+    with pytest.raises(DetectionError, match="comparison byte limit"):
+        engine.execute_internal(candidate, [record(incomplete)])
+
+
+@pytest.mark.parametrize(
+    "selection,content",
+    [
+        ({"number": 1}, {"number": 1.0}),
+        ({"number": 0}, {"number": -0.0}),
+        ({"nested.number": 1}, {"nested": {"number": 1.0}}),
+        ({"values": [1, {"number": 0}]}, {"values": [1.0, {"number": -0.0}]}),
+    ],
+)
+def test_strict_json_equality_matches_equivalent_number_spellings(service, selection, content):
+    candidate = candidate_document(service, internal_candidate(service, selection))
+    observed = record(content)
+
+    result = engine.execute_internal(candidate, [observed])
+
+    assert result["missing_fields"] == []
+    assert result["matched_evidence_ids"] == [observed.evidence_id]
+
+
+@pytest.mark.parametrize(
+    "selection,content",
+    [
+        ({"flag": True}, {"flag": 1}),
+        ({"nested.flag": True}, {"nested": {"flag": 1}}),
+    ],
+)
+def test_boolean_field_type_mismatch_still_refuses_evaluation(service, selection, content):
+    candidate = candidate_document(service, internal_candidate(service, selection))
+    observed = record(content)
+
+    with pytest.raises(DetectionError, match="boolean field"):
+        engine.execute_internal(candidate, [observed])
+
+
+def test_nested_json_boolean_remains_distinct_from_a_number(service):
+    candidate = candidate_document(service, internal_candidate(service, {"values": [True]}))
+
+    result = engine.execute_internal(candidate, [record({"values": [1]})])
+
+    assert result["missing_fields"] == []
+    assert result["matched_evidence_ids"] == []
+
+
+@pytest.mark.parametrize(
+    "selection,content",
+    [
+        ({"number": 1}, {"number": 1.0}),
+        ({"nested.number": 0}, {"nested": {"number": -0.0}}),
+    ],
+)
+def test_run_evaluation_persists_matches_for_equivalent_json_numbers(service, selection, content):
+    identity = internal_candidate(service, selection)
+    handle = service.store.create_run(
+        scenario={"schema_version": "test"},
+        plan={"schema_version": "test"},
+        policy={"schema_version": "test"},
+        profile={"id": "profile.unit"},
+    )
+    observed = EvidenceRecord.create(
+        run_id=handle.run_id,
+        step_id="step-numeric-equality",
+        behavior_id="sandbox.collection.stage.v1",
+        provenance=EvidenceProvenance.OBSERVED,
+        producer="authored-json-number-case",
+        content=content,
+        target_scope_ref="software-test",
+    )
+    service.store.finalize(
+        handle.run_id,
+        result={"status": "completed", "mode": "execute", "steps": []},
+        evidence=[observed.to_dict()],
+        detections=[],
+    )
+
+    report = evaluate(service, identity, handle.run_id)
+
+    assert report["result"]["state"] == "matched"
+    assert report["result"]["match_count"] == 1
+    assert report["result"]["matched_evidence_ids"] == [observed.evidence_id]
+
+
 def test_record_kind_mismatches_across_rows_obey_aggregate_comparison_budget(service, monkeypatch):
     expected = "x" * 60_000
     candidate = candidate_document(

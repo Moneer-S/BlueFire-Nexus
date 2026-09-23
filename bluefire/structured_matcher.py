@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .util import canonical_json_bytes
-
 
 def invalid_selection_field(selection: Mapping[str, Any]) -> str | None:
     for field in selection:
@@ -31,6 +29,25 @@ def lookup(record: Mapping[str, Any], key: str) -> tuple[bool, Any]:
     return True, actual
 
 
+def _strict_json_equal(actual: Any, expected: Any) -> bool:
+    """Compare JSON values while treating int/float as JSON numbers, not booleans."""
+    if type(actual) is bool or type(expected) is bool:
+        return type(actual) is bool and type(expected) is bool and actual is expected
+    if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
+        return actual == expected
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(actual, dict):
+        return actual.keys() == expected.keys() and all(
+            _strict_json_equal(actual[key], expected[key]) for key in actual
+        )
+    if isinstance(actual, list):
+        return len(actual) == len(expected) and all(
+            _strict_json_equal(left, right) for left, right in zip(actual, expected, strict=True)
+        )
+    return bool(actual == expected)
+
+
 def matches_value(actual: Any, expected: Any, operator: str, *, strict: bool = False) -> bool:
     if operator == "contains":
         return str(expected).casefold() in str(actual).casefold()
@@ -41,12 +58,9 @@ def matches_value(actual: Any, expected: Any, operator: str, *, strict: bool = F
     if operator:
         return False
     # Keep historical lifecycle matching readable. Immutable run evaluations use
-    # JSON type-sensitive equality, so true never matches 1 or "true".
-    return (
-        canonical_json_bytes(actual) == canonical_json_bytes(expected)
-        if strict
-        else actual == expected
-    )
+    # JSON equality: equivalent number spellings compare equal while true remains
+    # distinct from 1, including inside nested arrays and objects.
+    return _strict_json_equal(actual, expected) if strict else actual == expected
 
 
 def matches(selection: Mapping[str, Any], record: Mapping[str, Any]) -> bool:

@@ -36,6 +36,48 @@ def validate_internal_candidate(candidate: DetectionCandidate) -> None:
         raise DetectionError("the structured selection or parser identity is invalid")
 
 
+def _partial_available_permission_fields_valid(fields: Mapping[str, Any]) -> bool:
+    """Validate known permission facts before using one to exclude an incomplete row."""
+    if (
+        not set(fields) <= set(PERMISSION_FIELDS)
+        or fields.get("permission_status") != "available"
+        or ("effective_access" in fields and fields["effective_access"] != "not_evaluated")
+    ):
+        return False
+
+    bit_fields = ("group_write_bit", "other_write_bit", "non_owner_write_bit")
+    if any(key in fields and type(fields[key]) is not bool for key in bit_fields):
+        return False
+
+    mode_bits: dict[str, bool] = {}
+    if "permission_mode_octal" in fields:
+        mode = fields["permission_mode_octal"]
+        if (
+            not isinstance(mode, str)
+            or len(mode) != 4
+            or any(digit not in "01234567" for digit in mode)
+        ):
+            return False
+        bits = int(mode, 8)
+        mode_bits = {
+            "group_write_bit": bool(bits & 0o020),
+            "other_write_bit": bool(bits & 0o002),
+            "non_owner_write_bit": bool(bits & 0o022),
+        }
+        if any(key in fields and fields[key] is not value for key, value in mode_bits.items()):
+            return False
+
+    group = fields.get("group_write_bit")
+    other = fields.get("other_write_bit")
+    non_owner = fields.get("non_owner_write_bit")
+    if (group is True and non_owner is False) or (other is True and non_owner is False):
+        return False
+    if group is not None and other is not None and non_owner is not None:
+        if non_owner is not (group or other):
+            return False
+    return True
+
+
 def execute_internal(
     candidate: DetectionCandidate,
     records: Sequence[EvidenceRecord],
@@ -171,6 +213,12 @@ def execute_internal(
                 continue
             status = permissions.get("permission_status")
             if status == "available" and set(permissions) != set(PERMISSION_FIELDS):
+                if not _partial_available_permission_fields_valid(permissions):
+                    raise DetectionError("structured evaluation permission facts are invalid")
+                permission_missing, mismatch = compare_fields(record.content, permissions=True)
+                if mismatch:
+                    continue
+                record_missing.update(permission_missing)
                 missing.update(record_missing | (set(PERMISSION_FIELDS) - set(permissions)))
                 continue
             if not permission_fields_valid(permissions):
