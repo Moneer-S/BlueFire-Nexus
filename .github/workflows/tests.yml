@@ -256,6 +256,36 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show
 
+      - name: Prepare reviewed gzip dependency for Linux integration tests
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # CI-only preparation. The product neither downloads nor installs tools.
+          # Do not depend on the runner image's changing system gzip version.
+          package="$RUNNER_TEMP/gzip_1.12-1ubuntu3.2_amd64.deb"
+          curl --fail --location --proto '=https' --tlsv1.2 --max-time 120 \
+            'https://security.ubuntu.com/ubuntu/pool/main/g/gzip/gzip_1.12-1ubuntu3.2_amd64.deb' \
+            --output "$package"
+          printf '%s  %s\n' '4067522fbffe22672e4cf683bfc32e4a304bc872cf76f10049ab36d1a9eedb91' "$package" | sha256sum --check
+          extracted="$RUNNER_TEMP/bluefire-reviewed-gzip"
+          mkdir "$extracted"
+          dpkg-deb --extract "$package" "$extracted"
+          printf '%s  %s\n' 'afea077ce127d4fa9ad410d3066ba2b54dea19c0b44f04adf56c72d5f7b7a9bb' "$extracted/usr/bin/gzip" | sha256sum --check
+          test "$(stat -c %s "$extracted/usr/bin/gzip")" = 93424
+          # The hosted image makes /opt writable; keep every tool ancestor protected.
+          for directory in / /usr /usr/lib; do
+            test -d "$directory" && test ! -L "$directory"
+            test "$(stat -c %u "$directory")" = 0
+            mode="$(stat -c %a "$directory")"
+            test "$((8#$mode & 022))" = 0
+          done
+          tool_base='/usr/lib/bluefire-ci-tools'
+          tool_root="$tool_base/gzip-1.12-1ubuntu3.2"
+          test ! -e "$tool_base" && test ! -L "$tool_base"
+          sudo install -d -o root -g root -m 0755 "$tool_base" "$tool_root"
+          sudo install -o root -g root -m 0755 "$extracted/usr/bin/gzip" "$tool_root/gzip"
+          printf 'BLUEFIRE_TEST_GZIP=%s/gzip\n' "$tool_root" >> "$GITHUB_ENV"
+
       - name: Format
         if: runner.os == 'Linux'
         run: cargo fmt --manifest-path runner/Cargo.toml -- --check

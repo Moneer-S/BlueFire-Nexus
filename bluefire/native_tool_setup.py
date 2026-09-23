@@ -14,7 +14,7 @@ from .registry import RegistryError
 from .runner_client import canonical_runner_inventory, runner_transport_identity
 from .runner_lifecycle import RunnerLifecycleError
 from .runner_transport_errors import RunnerTransportError
-from .tool_adapters.chmod import ADAPTER_ID
+from .tool_adapters.registry import adapter_for
 
 
 def inspect_profile_tool(
@@ -23,13 +23,13 @@ def inspect_profile_tool(
     resource = service._runtime_resource("runner_profile", profile_id)
     try:
         candidate = canonical_native_tool_candidate(request)
+        adapter_for(candidate["action_id"])
         profile = service._validated_runner_profile(resource["document"], profile_id)
         if (
-            candidate["action_id"] != ADAPTER_ID
-            or profile.mode is not ExecutionMode.EXECUTE
+            profile.mode is not ExecutionMode.EXECUTE
             or tuple(profile.platforms) != ("linux",)
-            or ADAPTER_ID not in profile.enabled_actions
-            or ADAPTER_ID in profile.blocked_actions
+            or candidate["action_id"] not in profile.enabled_actions
+            or candidate["action_id"] in profile.blocked_actions
         ):
             raise ContractError("selected profile cannot set up this method")
     except (ContractError, RegistryError, KeyError, TypeError, ValueError):

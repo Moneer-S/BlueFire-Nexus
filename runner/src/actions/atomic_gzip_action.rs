@@ -38,7 +38,27 @@ impl PreparedAction for AtomicGzipPrepared {
         context: &ActionContext<'_>,
     ) -> Result<ActionOutcome, ActionFailure> {
         let started = Instant::now();
-        let task_timeout = Duration::from_millis(context.manifest.limits.timeout_ms);
+        let task_timeout =
+            Duration::from_millis(context.manifest.limits.timeout_ms).min(Duration::from_secs(5));
+        let installation = context
+            .profile
+            .native_tool_installations
+            .iter()
+            .find(|record| record.adapter_id == crate::atomic_gzip::BINDING.adapter_id)
+            .ok_or_else(|| {
+                ActionFailure::refused(
+                    "native_tool_installation_required",
+                    "Review the GNU gzip installation before execution.",
+                )
+            })?;
+        crate::atomic_gzip::BINDING
+            .check_binding(installation, "linux", std::env::consts::ARCH)
+            .map_err(|_| {
+                ActionFailure::refused(
+                    "native_tool_binding_mismatch",
+                    "The gzip tool differs from its reviewed method binding.",
+                )
+            })?;
         let params = self.0;
         let limit = collection_artifact_limit(context, &Some(params.expected_sha256.clone()));
         let input = authorize_path(context, &params.input, false)?;
@@ -64,6 +84,8 @@ impl PreparedAction for AtomicGzipPrepared {
             })?
             .min(task_timeout.saturating_sub(started.elapsed()));
         let compressed = crate::atomic_gzip::compress(
+            installation,
+            context.root.path(),
             bytes,
             (limit as usize).min(context.manifest.limits.max_stdout_bytes),
             context.manifest.limits.max_stderr_bytes,
@@ -91,7 +113,8 @@ pub(super) fn publish_atomic_gzip(
     source_sha256: &str,
     started: Instant,
 ) -> Result<ActionOutcome, ActionFailure> {
-    let task_timeout = Duration::from_millis(context.manifest.limits.timeout_ms);
+    let task_timeout =
+        Duration::from_millis(context.manifest.limits.timeout_ms).min(Duration::from_secs(5));
     if started.elapsed() >= task_timeout
         || crate::contract::utc_now() >= context.manifest.expires_at
     {
@@ -122,7 +145,12 @@ pub(super) fn publish_atomic_gzip(
         "source_sha256": source_sha256, "size": compressed.bytes.len(),
         "sha256": crate::contract::sha256_hex(&compressed.bytes),
         "tool": {"executable": compressed.executable, "sha256": compressed.executable_sha256,
-                 "arguments": ["-n", "-c"], "source_test": "cde3c2af-3485-49eb-9c1f-0ed60e9cc0af"}
+                 "arguments": ["-n", "-c"], "source_test": "cde3c2af-3485-49eb-9c1f-0ed60e9cc0af",
+                 "adapter_version": crate::atomic_gzip::BINDING.adapter_version,
+                 "adapter_contract_digest": crate::atomic_gzip::BINDING.adapter_contract_digest,
+                 "installation_digest": compressed.installation_digest,
+                 "tool_id": crate::atomic_gzip::BINDING.tool_id,
+                 "tool_version": compressed.tool_version, "exit_code": 0}
     }))
     .with_receipt(receipt);
     if started.elapsed() >= task_timeout
@@ -148,12 +176,12 @@ static ATOMIC_GZIP_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
         license: "MIT",
     },
     ..reviewed_descriptor! {
-        id: "sandbox.collection.atomic-gzip.v1", version: "1.0.0",
+        id: "sandbox.collection.atomic-gzip.v1", version: "1.1.0",
         behavior_ids: &["sandbox.collection.atomic-gzip.v1"],
         summary: "Compress the bound synthetic fixture through one fixed Linux system gzip adapter.",
         schema: collection_method_schema,
         capabilities: &[Capability::FilesystemRead, Capability::FilesystemWrite, Capability::ProcessSpawn],
-        tier: SafetyTier::Controlled, readiness: ActionReadiness::Ready, targets: &["sandbox"],
+        tier: SafetyTier::Controlled, readiness: ActionReadiness::Structural, targets: &["sandbox"],
         hints: &[ObservationHint { source: "filesystem", signal: "archive_create" }],
         cleanup: Some("sandbox.cleanup.v1"), limits: TASK_LIMITS,
         effects: (true, false, true), receipt: true,
@@ -162,6 +190,9 @@ static ATOMIC_GZIP_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
 impl Action for AtomicGzipAction {
     fn descriptor(&self) -> &'static ActionDescriptor {
         &ATOMIC_GZIP_DESCRIPTOR
+    }
+    fn native_tool_binding(&self) -> Option<crate::native_tool_installations::NativeToolBinding> {
+        Some(crate::atomic_gzip::BINDING)
     }
     fn prepare(&self, value: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
         let params: CollectionMethodParams = parse_params(value)?;

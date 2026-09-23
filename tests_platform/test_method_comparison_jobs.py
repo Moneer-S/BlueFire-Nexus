@@ -18,6 +18,7 @@ from bluefire.config import AIConfig, AIProviderConfig, AutonomyLevel
 from bluefire.contracts import ExecutionMode
 from bluefire.orchestrator import Orchestrator
 from bluefire.service import BlueFireService
+from bluefire.tool_adapters import gzip
 from tests_platform.ai_live_authorization_support import authorize_service
 from tests_platform.test_detection_evaluations import query_candidate
 
@@ -378,14 +379,39 @@ def test_auto_continues_fixed_simulate_sequence(setup):
 
 
 def test_auto_execute_stops_at_fresh_exact_approval(setup, tmp_path, monkeypatch):
+    from tests_platform.test_gzip_tool_binding import candidate
+    from tests_platform.test_optional_tool_defaults import OptionalToolRunner
     from tests_platform.test_replay_jobs import awaiting
-    from tests_platform.test_service import ReadyInventoryRunner
 
     service, access, _, body, _ = setup
-    runner = ReadyInventoryRunner(actions=set(service.registry.action_ids))
+    runner = OptionalToolRunner()
     sandbox = tmp_path / "fake-runner-root"
     sandbox.mkdir()
     monkeypatch.setattr(service, "runner_factory", lambda profile: (runner, sandbox))
+    service._native_tool_setup_runner_factory = lambda profile: (runner, sandbox)
+    profile = service._profile("sandbox-execute.v1", ExecutionMode.EXECUTE)
+    selected_profile = replace(
+        profile,
+        platforms=("linux",),
+        enabled_actions=(*profile.enabled_actions, gzip.ADAPTER_ID),
+    ).to_dict()
+    service.save_resource(
+        "runner_profile",
+        selected_profile["id"],
+        {"document": selected_profile, "status": "draft"},
+    )
+    inspected = service.inspect_runner_profile_tool(selected_profile["id"], candidate())
+    selected_profile["native_tool_installations"] = [inspected["installation"]]
+    service.save_resource(
+        "runner_profile",
+        selected_profile["id"],
+        {"document": selected_profile, "status": "draft"},
+    )
+    test_ai_config = service._runtime_ai_config
+    service.activate_resource("runner_profile", selected_profile["id"], {})
+    # Profile activation rebuilds the runtime snapshot; retain this fixture's
+    # explicitly configured fake provider for the comparison job.
+    service._runtime_ai_config = test_ai_config
     source_root = tmp_path / "execute-source-fixture"
     source_root.mkdir()
     run_id = source_run(service, source_root, execute=True)
