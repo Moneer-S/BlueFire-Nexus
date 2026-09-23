@@ -1,13 +1,14 @@
 //! Pinned read-only inputs selected from committed creation receipts.
 
 use std::fs::File;
+use std::time::Instant;
 
-use super::{hash_opened_file, CleanupIdentity, OwnedPathKind, SafeRoot};
 #[cfg(unix)]
 use super::{
     normalize_relative, receipt_identity, valid_receipt_id, ReceiptRecord, MAX_RECEIPT_BYTES,
     RECEIPT_COMMIT_DIR, RECEIPT_DIR, RECEIPT_SCHEMA, STATE_DIR,
 };
+use super::{CleanupIdentity, OwnedPathKind, SafeRoot};
 #[cfg(unix)]
 use crate::receipt_store::DurableReceiptCommit;
 #[cfg(unix)]
@@ -36,14 +37,26 @@ impl OwnedReceiptInput {
     }
 
     pub fn recheck_bytes(&self) -> Result<(), String> {
+        self.recheck_bytes_with_deadline(None)
+    }
+
+    pub fn recheck_bytes_until(&self, deadline: Instant) -> Result<(), String> {
+        self.recheck_bytes_with_deadline(Some(deadline))
+    }
+
+    fn recheck_bytes_with_deadline(&self, deadline: Option<Instant>) -> Result<(), String> {
+        check_deadline(deadline)?;
         let metadata = self
             .file
             .metadata()
             .map_err(|error| format!("cannot inspect pinned receipt input: {error}"))?;
         validate_current_metadata(&metadata, self.expected_size, self.identity)?;
-        if hash_opened_file(&self.file, self.expected_size)? != self.expected_sha256 {
+        if super::hash_opened_file_until(&self.file, self.expected_size, deadline)?
+            != self.expected_sha256
+        {
             return Err("pinned receipt input content changed".to_string());
         }
+        check_deadline(deadline)?;
         let after = self
             .file
             .metadata()
@@ -53,6 +66,23 @@ impl OwnedReceiptInput {
     }
 
     pub fn recheck_attachment(&self, root: &SafeRoot) -> Result<(), String> {
+        self.recheck_attachment_with_deadline(root, None)
+    }
+
+    pub fn recheck_attachment_until(
+        &self,
+        root: &SafeRoot,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        self.recheck_attachment_with_deadline(root, Some(deadline))
+    }
+
+    fn recheck_attachment_with_deadline(
+        &self,
+        root: &SafeRoot,
+        deadline: Option<Instant>,
+    ) -> Result<(), String> {
+        check_deadline(deadline)?;
         let (parent, name) = root.open_cleanup_parent(&self.relative_path)?;
         let parent = parent.ok_or_else(|| "receipt input parent disappeared".to_string())?;
         let opened = root
@@ -63,12 +93,12 @@ impl OwnedReceiptInput {
         if current != self.identity {
             return Err("receipt input path was replaced after pinning".to_string());
         }
-        self.recheck_bytes()
+        self.recheck_bytes_with_deadline(deadline)
     }
 }
 
+#[cfg(unix)]
 impl SafeRoot {
-    #[cfg(unix)]
     pub fn open_committed_receipt_input(
         &self,
         receipt_id: &str,
@@ -77,6 +107,45 @@ impl SafeRoot {
         expected_sha256: &str,
         expected_size: u64,
     ) -> Result<OwnedReceiptInput, String> {
+        self.open_committed_receipt_input_until_inner(
+            receipt_id,
+            profile_id,
+            expected_relative_path,
+            expected_sha256,
+            expected_size,
+            None,
+        )
+    }
+
+    pub fn open_committed_receipt_input_until(
+        &self,
+        receipt_id: &str,
+        profile_id: &str,
+        expected_relative_path: &str,
+        expected_sha256: &str,
+        expected_size: u64,
+        deadline: Instant,
+    ) -> Result<OwnedReceiptInput, String> {
+        self.open_committed_receipt_input_until_inner(
+            receipt_id,
+            profile_id,
+            expected_relative_path,
+            expected_sha256,
+            expected_size,
+            Some(deadline),
+        )
+    }
+
+    fn open_committed_receipt_input_until_inner(
+        &self,
+        receipt_id: &str,
+        profile_id: &str,
+        expected_relative_path: &str,
+        expected_sha256: &str,
+        expected_size: u64,
+        deadline: Option<Instant>,
+    ) -> Result<OwnedReceiptInput, String> {
+        check_deadline(deadline)?;
         if !valid_receipt_id(receipt_id) {
             return Err("receipt input ID is invalid".to_string());
         }
@@ -95,7 +164,7 @@ impl SafeRoot {
             return Err("receipt input path is not normalized".to_string());
         }
         let commit_bytes = self
-            .read_input_authority(RECEIPT_COMMIT_DIR, receipt_id)?
+            .read_input_authority_until(RECEIPT_COMMIT_DIR, receipt_id, deadline)?
             .ok_or_else(|| "receipt input requires a committed receipt".to_string())?;
         let commit = DurableReceiptCommit::decode(&commit_bytes)
             .map_err(|error| format!("receipt commit schema is invalid: {error}"))?;
@@ -103,7 +172,7 @@ impl SafeRoot {
             return Err("receipt input requires a matching committed receipt".to_string());
         }
         let record_bytes = self
-            .read_input_authority(RECEIPT_DIR, receipt_id)?
+            .read_input_authority_until(RECEIPT_DIR, receipt_id, deadline)?
             .ok_or_else(|| "receipt input receipt is unavailable".to_string())?;
         let record: ReceiptRecord = serde_json::from_slice(&record_bytes)
             .map_err(|error| format!("receipt schema is invalid: {error}"))?;
@@ -132,6 +201,7 @@ impl SafeRoot {
         if owned.len() != 1 {
             return Err("receipt does not own exactly the expected input".to_string());
         }
+        check_deadline(deadline)?;
         let (parent, name) = self.open_cleanup_parent(&relative)?;
         let parent = parent.ok_or_else(|| "receipt input parent is unavailable".to_string())?;
         let entry = self
@@ -150,17 +220,19 @@ impl SafeRoot {
             expected_sha256: expected_sha256.to_string(),
             expected_size,
         };
-        input.recheck_bytes()?;
+        input.recheck_bytes_with_deadline(deadline)?;
         Ok(input)
     }
 
     /// Read authority from a bounded, no-follow handle, never a caller path.
     #[cfg(unix)]
-    fn read_input_authority(
+    fn read_input_authority_until(
         &self,
         directory: &str,
         receipt_id: &str,
+        deadline: Option<Instant>,
     ) -> Result<Option<Vec<u8>>, String> {
+        check_deadline(deadline)?;
         let relative = format!("{STATE_DIR}/{directory}/{receipt_id}.json");
         let (parent, name) = self.open_cleanup_parent(&relative)?;
         let Some(parent) = parent else {
@@ -181,6 +253,7 @@ impl SafeRoot {
         }
         validate_current_metadata(&before, before.len(), entry.identity)?;
         let mut bytes = Vec::new();
+        check_deadline(deadline)?;
         (&entry.file)
             .take(MAX_RECEIPT_BYTES + 1)
             .read_to_end(&mut bytes)
@@ -188,6 +261,7 @@ impl SafeRoot {
         if bytes.len() as u64 != before.len() {
             return Err("input authority changed size while reading".to_string());
         }
+        check_deadline(deadline)?;
         let after = entry
             .file
             .metadata()
@@ -210,6 +284,18 @@ impl SafeRoot {
     ) -> Result<OwnedReceiptInput, String> {
         Err("receipt-owned input pinning is unavailable on this platform".to_string())
     }
+
+    pub fn open_committed_receipt_input_until(
+        &self,
+        _receipt_id: &str,
+        _profile_id: &str,
+        _expected_relative_path: &str,
+        _expected_sha256: &str,
+        _expected_size: u64,
+        _deadline: Instant,
+    ) -> Result<OwnedReceiptInput, String> {
+        Err("receipt-owned input pinning is unavailable on this platform".to_string())
+    }
 }
 
 fn identity(file: &File) -> Result<CleanupIdentity, String> {
@@ -217,6 +303,14 @@ fn identity(file: &File) -> Result<CleanupIdentity, String> {
         .metadata()
         .map_err(|error| format!("cannot inspect pinned receipt input: {error}"))?;
     identity_from_entry(&metadata)
+}
+
+fn check_deadline(deadline: Option<Instant>) -> Result<(), String> {
+    if deadline.is_some_and(|limit| Instant::now() >= limit) {
+        Err("receipt input operation exceeded its monotonic deadline".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 fn identity_from_entry(metadata: &std::fs::Metadata) -> Result<CleanupIdentity, String> {
@@ -287,7 +381,7 @@ mod tests {
     use std::fs;
     use std::io::{Read, Seek, Write};
     use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     fn fixture_path(label: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -463,6 +557,71 @@ mod tests {
         .unwrap();
         assert!(input.recheck_bytes().is_err());
         assert_eq!(consumer.stream_position().unwrap(), 13);
+    }
+
+    #[test]
+    fn expired_deadlines_refuse_pin_and_rechecks_before_effects() {
+        let fixture = Fixture::new("expired-deadline");
+        let expired = Instant::now() - Duration::from_millis(1);
+        let hash = crate::contract::sha256_hex(b"receipt input");
+        assert!(fixture
+            .root
+            .open_committed_receipt_input_until(
+                &fixture.record.receipt_id,
+                &fixture.record.runner_profile_id,
+                "fixtures/input.jsonl",
+                &hash,
+                13,
+                expired,
+            )
+            .is_err());
+
+        let input = fixture.pin().unwrap();
+        assert!(input.recheck_bytes_until(expired).is_err());
+        assert!(input
+            .recheck_attachment_until(&fixture.root, expired)
+            .is_err());
+        assert_eq!(
+            fs::read(fixture.root.path().join("fixtures/input.jsonl")).unwrap(),
+            b"receipt input"
+        );
+    }
+
+    #[test]
+    fn deadline_rechecks_preserve_consumer_offset() {
+        let fixture = Fixture::new("deadline-offset");
+        let input = fixture.pin().unwrap();
+        let mut consumer = input.file().try_clone().unwrap();
+        let mut prefix = [0_u8; 7];
+        consumer.read_exact(&mut prefix).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        input.recheck_bytes_until(deadline).unwrap();
+        input
+            .recheck_attachment_until(&fixture.root, deadline)
+            .unwrap();
+        assert_eq!(consumer.stream_position().unwrap(), 7);
+        let mut remainder = String::new();
+        consumer.read_to_string(&mut remainder).unwrap();
+        assert_eq!(remainder, " input");
+    }
+
+    #[test]
+    fn deadline_pin_rejects_authority_profile_mismatch_without_touching_input() {
+        let fixture = Fixture::new("deadline-authority-mismatch");
+        let hash = crate::contract::sha256_hex(b"receipt input");
+        let result = fixture.root.open_committed_receipt_input_until(
+            &fixture.record.receipt_id,
+            "profile.other.v1",
+            "fixtures/input.jsonl",
+            &hash,
+            13,
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read(fixture.root.path().join("fixtures/input.jsonl")).unwrap(),
+            b"receipt input"
+        );
     }
 
     #[test]

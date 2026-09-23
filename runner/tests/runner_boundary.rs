@@ -3171,7 +3171,7 @@ fn inventory_and_execute_cli_emit_the_versioned_json_contract() {
         "bluefire.runner-receipt-wal.v2"
     );
     let actions = inventory_json["actions"].as_array().unwrap();
-    assert_eq!(actions.len(), 23);
+    assert_eq!(actions.len(), 24);
     let gzip = actions
         .iter()
         .find(|action| action["action_id"] == "sandbox.collection.atomic-gzip.v1")
@@ -3180,6 +3180,33 @@ fn inventory_and_execute_cli_emit_the_versioned_json_contract() {
     assert_eq!(gzip["filesystem_effect"], true);
     assert_eq!(gzip["process_effect"], true);
     assert_eq!(gzip["network_effect"], false);
+
+    let chmod = actions
+        .iter()
+        .find(|action| action["action_id"] == "sandbox.permission.chmod.v1")
+        .expect("the setup-required chmod adapter must be present in the static inventory");
+    assert_eq!(chmod["action_version"], "1.0.0");
+    assert_eq!(chmod["platforms"], json!(["linux"]));
+    assert_eq!(chmod["readiness"], "structural");
+    assert_eq!(
+        chmod["capabilities"],
+        json!(["filesystem_read", "filesystem_write", "process_spawn"])
+    );
+    assert_eq!(chmod["filesystem_effect"], true);
+    assert_eq!(chmod["process_effect"], true);
+    assert_eq!(chmod["network_effect"], false);
+    assert_eq!(chmod["cleanup_action_id"], "sandbox.cleanup.v1");
+    assert_eq!(chmod["cleanup_receipt"], true);
+    assert_eq!(
+        chmod["native_tool_binding"],
+        json!({
+            "adapter_id": "sandbox.permission.chmod.v1",
+            "adapter_version": "1.0.0",
+            "adapter_contract_digest":
+                "sha256:db1c271df09ccd2c781e8b7df4e042fb33e76c90ab8cd621dc8f52dcd3a57dd8",
+            "tool_id": "gnu.coreutils.chmod.v1"
+        })
+    );
 
     let root = TempDir::new().unwrap();
     let profile = profile(&root, Vec::new());

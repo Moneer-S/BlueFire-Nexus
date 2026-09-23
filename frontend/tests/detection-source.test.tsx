@@ -6,6 +6,7 @@ import { expect, it, vi } from "vitest";
 import { api } from "../src/lib/api";
 import { demoCatalog, demoRuns } from "../src/lib/demo";
 import { DetectionLabPage } from "../src/pages/DetectionLab";
+import { permissionSelection } from "../src/components/PermissionConditionControl";
 import type { DetectionResource, DetectionResourceEnvelope } from "../src/types";
 
 const source = "SELECT fixture_id FROM logs WHERE observation_kind = 'filesystem'";
@@ -19,10 +20,19 @@ function LocationWitness() {
   return <output data-testid="location">{useLocation().search}</output>;
 }
 
-function setup(ready = true, aiJob = false, draft = false) {
+function setup(ready = true, aiJob = false, draft = false, permission = false, legacy = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const candidates = [structuredClone(parent), { ...structuredClone(parent), id: otherId, document: { ...structuredClone(parent.document), candidate_id: otherId, revision_root_id: otherId, title: "Other SQL" } }];
   if (draft) { candidates[0]!.document.state = "hypothesis"; candidates[0]!.document.rule_source = ""; }
+  if (permission) {
+    candidates[0]!.document.target_language = "internal";
+    candidates[0]!.document.selection = permissionSelection("world_writable");
+    candidates[0]!.document.predicted_fields = ["artifact_type", "observation_kind", "permission_status", "other_write_bit"];
+    if (legacy) {
+      candidates[0]!.document.selection = { artifact_type: "file_observation", permission_status: "available", other_write_bit: true };
+      candidates[0]!.document.predicted_fields = ["artifact_type", "permission_status", "other_write_bit"];
+    }
+  }
   vi.spyOn(api, "detections").mockImplementation(async () => ({ schema_version: "v1", candidates }));
   vi.spyOn(api, "runs").mockResolvedValue({ schema_version: "v1", unavailable_run_count: 0, runs: demoRuns });
   vi.spyOn(api, "runDetail").mockResolvedValue(demoRuns[0]!);
@@ -34,6 +44,66 @@ function setup(ready = true, aiJob = false, draft = false) {
   render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/detection-lab?run=${demoRuns[0]!.run_id}&candidate=${id}&candidate_scope=registry${aiJob ? "&ai_job=job-review-retained" : ""}`]}><DetectionLabPage /><LocationWitness /></MemoryRouter></QueryClientProvider>);
   return { user: userEvent.setup(), candidates };
 }
+
+it("recomputes predicted fields when a finite permission tune changes condition", async () => {
+  const { user } = setup(true, false, false, true);
+  const tune = vi.spyOn(api, "tuneDetection").mockResolvedValue({ schema_version: "v1", candidate: parent });
+  await screen.findByRole("heading", { name: "Baseline SQL" });
+  await user.click(screen.getByRole("tab", { name: "Revisions" }));
+  await user.click(screen.getByText("Advanced clone and tune"));
+  await user.click(screen.getByRole("radio", { name: /Tune rule behavior/i }));
+  await user.selectOptions(screen.getByRole("combobox", { name: "Detection condition" }), "non_owner_writable");
+  await user.type(screen.getByRole("textbox", { name: /Required research reason/ }), "Review permission condition change.");
+  await user.click(screen.getByRole("button", { name: "Create immutable tune" }));
+  await waitFor(() => expect(tune).toHaveBeenCalledTimes(1));
+  expect(tune.mock.calls[0]![1]).toMatchObject({
+    selection: permissionSelection("non_owner_writable"),
+    predicted_fields: ["artifact_type", "observation_kind", "permission_status", "non_owner_write_bit"],
+  });
+});
+
+it("explicitly updates a legacy permission draft without rewriting its saved parent", async () => {
+  const { user, candidates } = setup(true, false, false, true, true);
+  const original = structuredClone(candidates[0]);
+  const tune = vi.spyOn(api, "tuneDetection").mockResolvedValue({ schema_version: "v1", candidate: parent });
+  await screen.findByRole("heading", { name: "Baseline SQL" });
+  await user.click(screen.getByRole("tab", { name: "Revisions" }));
+  await user.click(screen.getByText("Advanced clone and tune"));
+  await user.click(screen.getByRole("radio", { name: /Tune rule behavior/i }));
+  expect(screen.getByRole("combobox", { name: "Detection condition" })).toHaveValue("world_writable");
+  expect(tune).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Use current observation fields" }));
+  expect(tune).not.toHaveBeenCalled();
+  expect(candidates[0]).toEqual(original);
+  await user.type(screen.getByRole("textbox", { name: /Required research reason/ }), "Match independent filesystem observations.");
+  await user.click(screen.getByRole("button", { name: "Create immutable tune" }));
+  await waitFor(() => expect(tune).toHaveBeenCalledTimes(1));
+  expect(tune.mock.calls[0]![1]).toMatchObject({
+    selection: permissionSelection("world_writable"),
+    predicted_fields: ["artifact_type", "observation_kind", "permission_status", "other_write_bit"],
+  });
+  expect(candidates[0]).toEqual(original);
+});
+
+it("preserves candidate predicted fields for custom permission JSON", async () => {
+  const { user } = setup(true, false, false, true);
+  const tune = vi.spyOn(api, "tuneDetection").mockResolvedValue({ schema_version: "v1", candidate: parent });
+  await screen.findByRole("heading", { name: "Baseline SQL" });
+  await user.click(screen.getByRole("tab", { name: "Revisions" }));
+  await user.click(screen.getByText("Advanced clone and tune"));
+  await user.click(screen.getByRole("radio", { name: /Tune rule behavior/i }));
+  await user.click(screen.getByText("Advanced structured inputs", { selector: "summary" }));
+  await user.clear(screen.getByRole("textbox", { name: /Tuned selection JSON/ }));
+  await user.paste('{"artifact_type":"file_observation","custom_permission":true}');
+  expect(screen.queryByRole("combobox", { name: "Detection condition" })).not.toBeInTheDocument();
+  await user.type(screen.getByRole("textbox", { name: /Required research reason/ }), "Review custom permission condition.");
+  await user.click(screen.getByRole("button", { name: "Create immutable tune" }));
+  await waitFor(() => expect(tune).toHaveBeenCalledTimes(1));
+  expect(tune.mock.calls[0]![1]).toMatchObject({
+    selection: { artifact_type: "file_observation", custom_permission: true },
+    predicted_fields: ["artifact_type", "observation_kind", "permission_status", "other_write_bit"],
+  });
+});
 
 async function edit(user: ReturnType<typeof userEvent.setup>) {
   const editor = await screen.findByRole("textbox", { name: /sqlite source/i });

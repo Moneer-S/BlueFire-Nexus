@@ -15,7 +15,7 @@ import bluefire.provider_gate as provider_gate
 import bluefire.provider_gate_validation as provider_gate_validation
 import tools.run_provider_gate_journey as provider_gate_helper
 from bluefire.product_acceptance import load_release_contract
-from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_IDS
+from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_IDS, BUILTIN_RUNNER_ACTION_VERSIONS
 from tools import provider_boundary_inventory, provider_gate_source_audit
 from tools.provider_gate_fixture_evidence import (
     _fixture_set,
@@ -982,6 +982,7 @@ def test_provider_gate_core_action_count_is_pinned_to_the_runner_registry() -> N
     update ``_CORE_ACTION_COUNT`` to match.
     """
     assert provider_gate_validation._CORE_ACTION_COUNT == len(BUILTIN_RUNNER_ACTION_IDS)
+    assert BUILTIN_RUNNER_ACTION_VERSIONS["sandbox.permission.chmod.v1"] == "1.0.0"
 
 
 def test_gate_02_emits_exact_unique_proofs_and_bundle_attachments(
@@ -1542,7 +1543,22 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
         command_inventory
     )
     gzip_copy.write_bytes(gzip_source)
+    # The permission adapter is another exact reviewed boundary. Neither its
+    # absence nor a changed launcher may be hidden by the older gzip fixture.
+    assert not provider_gate_source_audit._native_command_source_inventory_is_fixed(
+        command_inventory
+    )
+    chmod_source = (REPOSITORY / "runner" / "src" / "atomic_chmod.rs").read_bytes()
+    chmod_copy = command_inventory / "runner" / "src" / "atomic_chmod.rs"
+    chmod_copy.write_bytes(chmod_source)
     assert provider_gate_source_audit._native_command_source_inventory_is_fixed(command_inventory)
+    chmod_copy.write_bytes(
+        chmod_source + b'\nfn unreviewed() { let _ = std::process::Command::new("unreviewed"); }\n'
+    )
+    assert not provider_gate_source_audit._native_command_source_inventory_is_fixed(
+        command_inventory
+    )
+    chmod_copy.write_bytes(chmod_source)
     gzip_copy.write_bytes(
         gzip_source + b'\nfn unreviewed() { let _ = std::process::Command::new("unreviewed"); }\n'
     )

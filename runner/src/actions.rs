@@ -122,7 +122,9 @@ impl Serialize for ActionDescriptor {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("ActionDescriptor", 19)?;
+        let binding = find_action(self.action_id).and_then(|action| action.native_tool_binding());
+        let mut state = serializer
+            .serialize_struct("ActionDescriptor", if binding.is_some() { 20 } else { 19 })?;
         state.serialize_field("schema_version", self.schema_version)?;
         state.serialize_field("action_id", self.action_id)?;
         state.serialize_field("action_version", self.action_version)?;
@@ -142,6 +144,9 @@ impl Serialize for ActionDescriptor {
         state.serialize_field("network_effect", &self.network_effect)?;
         state.serialize_field("process_effect", &self.process_effect)?;
         state.serialize_field("cleanup_receipt", &self.cleanup_receipt)?;
+        if let Some(binding) = binding {
+            state.serialize_field("native_tool_binding", &binding)?;
+        }
         state.end()
     }
 }
@@ -596,7 +601,9 @@ macro_rules! reviewed_descriptor {
     };
 }
 
+mod atomic_chmod_action;
 mod atomic_gzip_action;
+use atomic_chmod_action::AtomicChmodAction;
 use atomic_gzip_action::AtomicGzipAction;
 #[cfg(test)]
 use atomic_gzip_action::{atomic_gzip_failure, publish_atomic_gzip};
@@ -3830,6 +3837,7 @@ static COLLECTION_STAGE: CollectionStageAction = CollectionStageAction;
 static COLLECTION_RECORDS: CollectionMethodAction = CollectionMethodAction { archive: false };
 static COLLECTION_ARCHIVE: CollectionMethodAction = CollectionMethodAction { archive: true };
 static ATOMIC_GZIP: AtomicGzipAction = AtomicGzipAction;
+static ATOMIC_CHMOD: AtomicChmodAction = AtomicChmodAction;
 static NETWORK_LOOPBACK: NetworkLoopbackAction = NetworkLoopbackAction;
 static PEER_HANDOFF: PeerHandoffAction = PeerHandoffAction;
 static OBSERVABILITY_VARIANT: ObservabilityVariantAction = ObservabilityVariantAction;
@@ -3838,7 +3846,7 @@ static RESTRICTED_PERSISTENCE_MARKER: RestrictedPersistenceMarkerAction =
     RestrictedPersistenceMarkerAction;
 static CLEANUP: CleanupAction = CleanupAction;
 
-static REGISTRY: [&'static dyn Action; 23] = [
+static REGISTRY: [&'static dyn Action; 24] = [
     &NATIVE_CANARY,
     &PROCESS_TREE_CANCELLATION_WITNESS,
     &IDENTITY_MATERIAL_SEED,
@@ -3856,6 +3864,7 @@ static REGISTRY: [&'static dyn Action; 23] = [
     &COLLECTION_RECORDS,
     &COLLECTION_ARCHIVE,
     &ATOMIC_GZIP,
+    &ATOMIC_CHMOD,
     &NETWORK_LOOPBACK,
     &PEER_HANDOFF,
     &OBSERVABILITY_VARIANT,
@@ -4025,6 +4034,7 @@ mod tests {
             "sandbox.collection.records.v1",
             "sandbox.collection.archive.v1",
             "sandbox.collection.atomic-gzip.v1",
+            "sandbox.permission.chmod.v1",
             "sandbox.network.loopback.v1",
             "sandbox.peer.handoff.v1",
             "sandbox.observability.variant.v1",
@@ -4064,7 +4074,20 @@ mod tests {
             assert!(value["observation_hints"]
                 .as_array()
                 .is_some_and(|rows| !rows.is_empty()));
-            assert_eq!(value["readiness"], "ready");
+            if descriptor.action_id == "sandbox.permission.chmod.v1" {
+                assert_eq!(value["readiness"], "structural");
+                assert_eq!(
+                    value["native_tool_binding"]["tool_id"],
+                    "gnu.coreutils.chmod.v1"
+                );
+                assert_eq!(
+                    value["native_tool_binding"]["adapter_id"],
+                    descriptor.action_id
+                );
+            } else {
+                assert_eq!(value["readiness"], "ready");
+                assert!(value.get("native_tool_binding").is_none());
+            }
             assert_eq!(value["provenance"]["license"], "MIT");
         }
     }
