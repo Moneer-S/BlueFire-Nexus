@@ -763,6 +763,7 @@ describe("product application", () => {
     expect(screen.getAllByText(/19\.2 · attack-enterprise-v19\.2/).length).toBeGreaterThan(0);
     expect(screen.getAllByRole("radio").filter((item) => item.getAttribute("name") === "detection-revision-kind")).toHaveLength(2);
     await user.click(screen.getByRole("radio", { name: /Tune rule behavior/i }));
+    await user.click(screen.getByText("Advanced structured inputs"));
     expect(screen.getByRole("textbox", { name: /Tuned selection JSON/ })).toBeVisible();
     await user.click(screen.getByRole("radio", { name: /Clone unchanged rule behavior/i }));
     const baselineChoice = screen.getByRole("checkbox", { name: /MITRE ATT&CK/i });

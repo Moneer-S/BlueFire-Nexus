@@ -12,6 +12,7 @@ import { runLabel } from "../lib/run-presentation";
 import { DetectionRunEvaluations } from "../components/DetectionRunEvaluations";
 import { DetectionAIRevision } from "../components/DetectionAIRevision";
 import { DetectionAICreation } from "../components/DetectionAICreation";
+import { PermissionConditionControl, isLegacyPermissionSelection, isPermissionCondition, permissionConditionForSelection, permissionPredictedFields, permissionSelection, type PermissionCondition } from "../components/PermissionConditionControl";
 import { detectionCreationPath } from "../lib/detection-creation";
 import { runCandidateKey, sourceObservedRecords, sourceRunParam } from "../lib/run-handoffs";
 import type {
@@ -31,10 +32,9 @@ import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, Loadin
 
 const lifecycle = ["hypothesis", "parsed", "fixture_exercised", "observed_exercised", "benign_evaluated", "rejected"];
 const emptyAIProviders: NonNullable<CatalogResponse["ai"]["providers"]> = [];
-const manualRuleDefaults = { title: "", behaviorId: "sandbox.collection.stage.v1", language: "sqlite" };
+const manualRuleDefaults = { title: "", behaviorId: "sandbox.collection.stage.v1", language: "sqlite", permissionCondition: "staged" as PermissionCondition };
 const manualLogsource = { category: "file_event", product: "generic" };
-const manualSelection = { artifact_type: "file_observation", "path|contains": "staged/" };
-function matchesManualFields(value: unknown, expected: Record<string, string>) {
+function matchesManualFields(value: unknown, expected: Record<string, unknown>) {
   return !!value && typeof value === "object" && !Array.isArray(value)
     && Object.keys(value).length === Object.keys(expected).length
     && Object.entries(expected).every(([key, field]) => (value as Record<string, unknown>)[key] === field);
@@ -249,8 +249,9 @@ function DetectionRegistryPage() {
   const setSelectedId = (value: string) => setSearchParams(old => { const next = new URLSearchParams(old); next.set("candidate", value); next.set("candidate_scope", "registry"); return next; });
   const [notice, setNotice] = useState<string>();
   // Manual hypothesis inputs contain no run evidence or candidate authority.
-  const manualDraft = useDetectionDraft("manual-new-rule", manualRuleDefaults);
+  const manualDraft = useDetectionDraft("manual-new-rule", manualRuleDefaults, ["permissionCondition"], { permissionCondition: isPermissionCondition });
   const { title, behaviorId, language } = manualDraft.value;
+  const manualPermissionCondition = isPermissionCondition(manualDraft.value.permissionCondition) ? manualDraft.value.permissionCondition : "staged";
   const manualChanged = detectionDraftIdentity(manualDraft.value) !== detectionDraftIdentity(manualRuleDefaults);
   const [manualOpen, setManualOpen] = useState(Boolean(manualDraft.retained || manualDraft.warning || manualChanged));
   const [manualDiscardOpen, setManualDiscardOpen] = useState(false);
@@ -284,7 +285,7 @@ function DetectionRegistryPage() {
         || definition.target_language !== currentConflict.submitted.inputs.language
         || definition.revision_kind !== "origin" || definition.revision_root_id !== currentConflict.id
         || !matchesManualFields(definition.logsource, manualLogsource)
-        || !matchesManualFields(definition.selection, manualSelection)) {
+        || !matchesManualFields(definition.selection, permissionSelection(currentConflict.submitted.inputs.language === "internal" && isPermissionCondition(currentConflict.submitted.inputs.permissionCondition) ? currentConflict.submitted.inputs.permissionCondition : "staged"))) {
         throw new Error("The saved rule does not match this starter definition. No new draft was created.");
       }
       return candidate;
@@ -302,10 +303,10 @@ function DetectionRegistryPage() {
       title: inputs.title,
       target_language: inputs.language,
       logsource: manualLogsource,
-      selection: manualSelection,
+      selection: permissionSelection(inputs.language === "internal" && isPermissionCondition(inputs.permissionCondition) ? inputs.permissionCondition : "staged"),
       provenance: { source: "operator-authored", license: "Review required" },
       known_misses: ["Requires declared observation fields."],
-      predicted_fields: ["artifact_type", "path"],
+      predicted_fields: permissionPredictedFields(inputs.language === "internal" && isPermissionCondition(inputs.permissionCondition) ? inputs.permissionCondition : "staged"),
     }),
     onSuccess: ({ candidate }, submitted) => {
       refreshDetections();
@@ -460,6 +461,7 @@ function DetectionRegistryPage() {
           <Field label="Title"><input value={title} onChange={(event) => updateManual("title", event.target.value)} maxLength={200} /></Field>
           <Field label="Registered behavior"><select value={behaviorId} onChange={(event) => updateManual("behaviorId", event.target.value)}>{!manualBehaviorAvailable ? <option value={behaviorId}>Unavailable behavior</option> : null}{catalogQuery.data.behaviors.map((behavior) => <option key={behavior.id} value={behavior.id}>{displayTitle(behavior.title)}</option>)}</select></Field>
           <Field label="Target language"><select value={language} onChange={(event) => updateManual("language", event.target.value)}>{!manualLanguageAvailable ? <option value={language}>Unavailable language</option> : null}{manualRuleLanguages.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
+          {language === "internal" ? <PermissionConditionControl value={manualPermissionCondition} onChange={(value) => updateManual("permissionCondition", value)} /> : null}
           <QueryEvaluator language={language} ready={healthQuery.data.languages[language]?.ready} />
           <div className="candidate-actions"><Button variant="primary" onClick={() => { if (manualCanSave && !manualSavePending.current) { manualSavePending.current = true; setManualConflict(undefined); createMutation.mutate({ inputs: { ...manualDraft.value }, generation: manualGeneration.current, navigation: manualNavigation }); } }} disabled={createMutation.isPending || anotherDraftMutation.isPending || !manualCanSave}><Plus />Save rule draft</Button>
           <Dialog.Root open={manualDiscardOpen} onOpenChange={setManualDiscardOpen}>
@@ -609,6 +611,10 @@ function CandidateWorkspace({
   const draft = useDetectionDraft(binding, defaults);
   const observed = useDetectionDraft(binding + ":observed:" + sourceRunId, { runId: sourceRunId, evidenceIds: "" });
   const { tab, source, fixtures, benign, notes, reason, revisionKind, revisionReason, revisionTitle, selectionJson, logsourceJson, selectedBaselineIds, compareId } = draft.value;
+  const livePermissionCondition = useMemo(() => {
+    if (language !== "internal") return undefined;
+    try { return permissionConditionForSelection(JSON.parse(selectionJson)); } catch { return undefined; }
+  }, [language, selectionJson]);
   const setTab = (value: typeof defaults.tab) => draft.update("tab", value);
   const setSource = (value: typeof defaults.source) => draft.update("source", value);
   const setFixtures = (value: typeof defaults.fixtures) => draft.update("fixtures", value);
@@ -685,8 +691,9 @@ function CandidateWorkspace({
       if (!parsedSelection || Array.isArray(parsedSelection) || typeof parsedSelection !== "object") throw new Error("Tune selection must be a JSON object.");
       if (!parsedLogsource || Array.isArray(parsedLogsource) || typeof parsedLogsource !== "object") throw new Error("Tune log source must be a JSON object.");
       if (JSON.stringify(parsedSelection) === JSON.stringify(candidate.selection ?? {}) && JSON.stringify(parsedLogsource) === JSON.stringify(candidate.logsource ?? {})) throw new Error("A tune must change the selection or log source; use clone when rule behavior is unchanged.");
+      const tunedPermissionCondition = language === "internal" ? permissionConditionForSelection(parsedSelection) : undefined;
       setLocalError(undefined);
-      onRevision("tune", { ...common, selection: parsedSelection as Record<string, unknown>, logsource: parsedLogsource as Record<string, unknown> });
+      onRevision("tune", { ...common, ...(tunedPermissionCondition ? { predicted_fields: permissionPredictedFields(tunedPermissionCondition) } : {}), selection: parsedSelection as Record<string, unknown>, logsource: parsedLogsource as Record<string, unknown> });
     } catch (error) {
       setLocalError(error instanceof Error ? error.message : "Revision inputs are invalid.");
     }
@@ -773,6 +780,8 @@ function CandidateWorkspace({
         selectableBaselines={selectableBaselines}
         selectedBaselineIds={selectedBaselineIds}
         setSelectedBaselineIds={setSelectedBaselineIds}
+        permissionCondition={livePermissionCondition}
+        setPermissionCondition={(value) => setSelectionJson(JSON.stringify(permissionSelection(value), null, 2))}
         sourcesById={sourcesById}
         sourcesUnavailable={researchSourcesUnavailable}
         revisionPending={revisionPending}
@@ -829,6 +838,8 @@ function RevisionWorkspace({
   selectableBaselines,
   selectedBaselineIds,
   setSelectedBaselineIds,
+  permissionCondition,
+  setPermissionCondition,
   sourcesById,
   sourcesUnavailable,
   revisionPending,
@@ -856,6 +867,8 @@ function RevisionWorkspace({
   selectableBaselines: PublicBaselineReference[];
   selectedBaselineIds: string[];
   setSelectedBaselineIds: (value: string[]) => void;
+  permissionCondition?: PermissionCondition;
+  setPermissionCondition: (value: PermissionCondition) => void;
   sourcesById: Map<string, ResearchSourceResource>;
   sourcesUnavailable: boolean;
   revisionPending: boolean;
@@ -884,10 +897,16 @@ function RevisionWorkspace({
       <Field label="Revision title"><input value={revisionTitle} onChange={(event) => setRevisionTitle(event.target.value)} maxLength={200} disabled={!persisted} /></Field>
       <Field label="Required research reason" hint="Recorded in immutable tuning decisions and lifecycle history."><input value={revisionReason} onChange={(event) => setRevisionReason(event.target.value)} maxLength={1000} disabled={!persisted} /></Field>
     </div>
-    {revisionKind === "tune" ? <div className="config-grid">
-      <Field label="Tuned selection JSON" hint="Must remain a non-empty structured object."><textarea rows={9} value={selectionJson} onChange={(event) => setSelectionJson(event.target.value)} disabled={!persisted} /></Field>
-      <Field label="Tuned log source JSON" hint="Change selection, log source, or both."><textarea rows={9} value={logsourceJson} onChange={(event) => setLogsourceJson(event.target.value)} disabled={!persisted} /></Field>
-    </div> : null}
+    {revisionKind === "tune" ? <>
+      {permissionCondition ? <>
+        <PermissionConditionControl value={permissionCondition} onChange={setPermissionCondition} disabled={!persisted || revisionPending} />
+        {isLegacyPermissionSelection(JSON.parse(selectionJson)) ? <div><p>This saved rule uses the earlier file-observation fields. Independent filesystem collectors use different fields. Updating the draft preserves the saved rule and its results.</p><Button size="small" disabled={!persisted || revisionPending} onClick={() => setPermissionCondition(permissionCondition)}>Use current observation fields</Button></div> : null}
+      </> : null}
+      <details><summary>Advanced structured inputs</summary><div className="config-grid">
+        <Field label="Tuned selection JSON" hint="Must remain a non-empty structured object."><textarea rows={9} value={selectionJson} onChange={(event) => setSelectionJson(event.target.value)} disabled={!persisted} /></Field>
+        <Field label="Tuned log source JSON" hint="Change selection, log source, or both."><textarea rows={9} value={logsourceJson} onChange={(event) => setLogsourceJson(event.target.value)} disabled={!persisted} /></Field>
+      </div></details>
+    </> : null}
     <fieldset>
       <legend>Reviewed public comparison baselines</legend>
       {sourcesUnavailable ? <Callout tone="warning" title="Research source registry unavailable">Existing immutable pins remain visible, but new source pins cannot be discovered until the registry is available.</Callout> : null}
