@@ -181,6 +181,21 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install build
 
+      - name: Install isolated pinned Rust toolchain
+        if: matrix.platform == 'linux'
+        shell: bash
+        env:
+          RUSTUP_HOME: ${{ runner.temp }}/bluefire-wheel-rustup
+        run: |
+          # Hosted images may leave a partial pinned toolchain in their shared rustup home.
+          python -c "import os; from pathlib import Path; Path(os.environ['RUSTUP_HOME']).mkdir(mode=0o700)"
+          printf 'RUSTUP_HOME=%s\n' "$RUSTUP_HOME" >> "$GITHUB_ENV"
+          channel="$(grep -E '^channel' rust-toolchain.toml | cut -d'"' -f2)"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal --component cargo --component clippy --component rustfmt
+          rustup run "$channel" cargo --version
+          rustup show
+
       - name: Verify pinned Rust toolchain
         run: rustup show
 
