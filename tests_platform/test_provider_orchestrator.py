@@ -199,7 +199,7 @@ def test_provider_only_inventory_skips_builtin_action_validation(
         raise AssertionError("provider-only plans must not enter the built-in action gate")
 
     monkeypatch.setattr(
-        "bluefire.orchestrator.validate_builtin_action_inventory",
+        "bluefire.planned_runner_inventory.validate_builtin_action_inventory",
         fail_builtin_validation,
     )
 

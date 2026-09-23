@@ -800,6 +800,13 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             kind, action_resource_id, action = resource_action
             if not kind:
                 return
+            if action == "inspect-native-tool":
+                self._dispatch(
+                    lambda: self.platform_server.service.inspect_runner_profile_tool(
+                        action_resource_id, body
+                    )
+                )
+                return
             if body:
                 self._error(
                     HTTPStatus.BAD_REQUEST,

@@ -10,14 +10,93 @@ import type { ActionDefinition, RunnerProfile } from "../src/types";
 
 const action: ActionDefinition = { id: "sandbox.cleanup.v1", title: "Clean up experiment files", purpose: "Remove created files.", safety_tier: "safe", capabilities: ["filesystem.write"], platforms: ["windows", "linux", "macos"], inputs: [], outputs: [], parameters: [] };
 const gzip: ActionDefinition = { ...action, id: "sandbox.collection.atomic-gzip.v1", title: "Compress selected records — Atomic gzip", cleanup_action_id: action.id, platforms: ["linux"] };
+const chmod: ActionDefinition = { ...action, id: "sandbox.permission.chmod.v1", title: "Change sample file permissions", safety_tier: "controlled", capabilities: ["filesystem.write"], platforms: ["linux"] };
 const profile: RunnerProfile = { id: "sample-template.v1", mode: "execute", environment_type: "disposable", platforms: ["windows", "linux", "macos"], scope: ["sandbox.workspace"], network_allowlist: [], capabilities: ["filesystem.write"], safety_tiers: ["safe"], approval_required: true, enabled_actions: [action.id, gzip.id], blocked_actions: [], cleanup_policy: "always", runner_binary: { env: "REVIEWED_RUNNER_BINARY" }, sandbox_root: { env: "REVIEWED_WORKSPACE_ROOT" }, budgets: { max_seconds: 120, max_steps: 20, max_bytes: 8388608 }, secrets: {} };
-function setup(page: "profiles" | "methods" = "profiles") {
-  const catalog = { ...demoCatalog, runner_profiles: [profile], actions: [action, gzip] };
+const chmodProfile: RunnerProfile = { ...profile, id: "chmod-profile.v1", platforms: ["linux"], enabled_actions: ["sandbox.permission.chmod.v1"] };
+function setup(page: "profiles" | "methods" = "profiles", selectedProfile: RunnerProfile = profile, resources: unknown[] = [], catalogProfiles: RunnerProfile[] = [selectedProfile]) {
+  const catalog = { ...demoCatalog, runner_profiles: catalogProfiles, actions: [action, gzip, chmod] };
   vi.spyOn(api, "catalog").mockResolvedValue(catalog);
-  vi.spyOn(api, "resources").mockResolvedValue({ schema_version: "v1", kind: "runner-profiles", resources: [] });
+  vi.spyOn(api, "resources").mockResolvedValue({ schema_version: "v1", kind: "runner-profiles", resources } as never);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(<QueryClientProvider client={client}><MemoryRouter>{page === "profiles" ? <RunnerProfilesPage/> : <BehaviorsPage/>}</MemoryRouter></QueryClientProvider>);
 }
+
+it("does not offer native setup for an active Execute profile", async () => {
+  setup("profiles", chmodProfile, [{ id: chmodProfile.id, status: "active", document: chmodProfile }]);
+  expect(await screen.findByText("Deactivate this profile before changing its GNU chmod binding.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Set up GNU chmod" })).not.toBeInTheDocument();
+});
+
+it("does not offer native setup for a Simulate profile", async () => {
+  setup("profiles", { ...chmodProfile, mode: "simulate" }, [{ id: chmodProfile.id, status: "draft", document: { ...chmodProfile, mode: "simulate" } }]);
+  await screen.findByText("simulate");
+  expect(screen.queryByRole("button", { name: "Set up GNU chmod" })).not.toBeInTheDocument();
+});
+
+it("configures a baseline with its existing identity and saves an inactive draft", async () => {
+  setup(); const user = userEvent.setup(); const save = vi.spyOn(api, "saveResource").mockResolvedValue({ schema_version: "v1", resource: { kind: "runner-profiles", id: profile.id, document: profile as unknown as Record<string, unknown>, status: "draft", digest: "sha256:test", created_at: "2026-09-20", updated_at: "2026-09-20" } }); const activate = vi.spyOn(api, "activateResource");
+  await user.click(await screen.findByRole("button", { name: "Configure methods for Sample template (sample-template.v1)" }));
+  const dialog = within(screen.getByRole("dialog"));
+  expect(dialog.getByDisplayValue(profile.id)).toHaveAttribute("readonly");
+  await user.click(dialog.getByRole("button", { name: "Save profile draft" }));
+  await waitFor(() => expect(save).toHaveBeenCalledWith("runner-profiles", profile.id, expect.objectContaining({ id: profile.id }), "draft"));
+  expect(activate).not.toHaveBeenCalled();
+});
+
+it("edits a managed profile absent from the catalog without losing its binding", async () => {
+  const custom: RunnerProfile = { ...chmodProfile, id: "managed-custom.v1", safety_tiers: ["controlled"], native_tool_installations: [{ schema_version: "bluefire.native-tool-installation.v1", adapter_id: "sandbox.permission.chmod.v1", adapter_version: "1.0.0", adapter_contract_digest: "sha256:" + "a".repeat(64), tool_id: "gnu.coreutils.chmod.v1", tool_version: "9.4", platform: "linux", architecture: "x86_64", content_sha256: "sha256:" + "b".repeat(64), size_bytes: 1234, installation_location: "/usr/bin/chmod" }] };
+  setup("profiles", custom, [{ id: custom.id, status: "draft", document: custom }], []);
+  const user = userEvent.setup(); const save = vi.spyOn(api, "saveResource").mockResolvedValue({ schema_version: "v1", resource: { kind: "runner-profiles", id: custom.id, document: custom as unknown as Record<string, unknown>, status: "draft", digest: "sha256:test", created_at: "2026-09-20", updated_at: "2026-09-20" } }); const activate = vi.spyOn(api, "activateResource");
+  await user.click(await screen.findByRole("button", { name: "Configure methods for Managed custom (managed-custom.v1)" }));
+  const dialog = within(screen.getByRole("dialog"));
+  expect(dialog.getByDisplayValue(custom.id)).toHaveAttribute("readonly");
+  expect(dialog.getByRole("button", { name: "Save profile draft" })).toBeEnabled();
+  await user.click(dialog.getByRole("button", { name: "Save profile draft" }));
+  await waitFor(() => expect(save).toHaveBeenCalledWith("runner-profiles", custom.id, expect.objectContaining({ native_tool_installations: custom.native_tool_installations }), "draft"));
+  expect(activate).not.toHaveBeenCalled();
+});
+
+it("keeps colliding profile names distinguishable across baseline, draft, and active controls", async () => {
+  const baseline: RunnerProfile = { ...chmodProfile, id: "lab-profile.v1", safety_tiers: ["controlled"] };
+  const draft: RunnerProfile = { ...baseline, id: "lab_profile.v1" };
+  const active: RunnerProfile = { ...baseline, id: "lab-profile.v2" };
+  setup("profiles", baseline, [
+    { id: draft.id, status: "draft", document: draft },
+    { id: active.id, status: "active", document: active },
+  ], [baseline]);
+  const user = userEvent.setup();
+  const activate = vi.spyOn(api, "activateResource").mockResolvedValue({ schema_version: "v1", resource: { kind: "runner-profiles", id: draft.id, document: draft as unknown as Record<string, unknown>, status: "active", digest: "sha256:test", created_at: "2026-09-20", updated_at: "2026-09-20" } });
+  const deactivate = vi.spyOn(api, "deactivateResource");
+  const save = vi.spyOn(api, "saveResource");
+  for (const candidate of [baseline, draft, active]) {
+    const card = within(await screen.findByRole("region", { name: `Lab profile (${candidate.id})` }));
+    expect(card.getByRole("heading", { name: "Lab profile" })).toBeVisible();
+    expect(card.getByText("Profile ID")).toBeVisible();
+    expect(card.getByText(candidate.id, { exact: true })).toBeVisible();
+  }
+  const draftCard = within(screen.getByRole("region", { name: `Lab profile (${draft.id})` }));
+  const activeCard = within(screen.getByRole("region", { name: `Lab profile (${active.id})` }));
+  const setupButton = draftCard.getByRole("button", { name: "Set up GNU chmod for Lab profile (lab_profile.v1)" });
+  expect(setupButton).toBeEnabled();
+  expect(activeCard.queryByRole("button", { name: /Configure methods|Set up GNU chmod/ })).not.toBeInTheDocument();
+  expect(activeCard.getByRole("button", { name: "Deactivate Lab profile (lab-profile.v2)" })).toBeEnabled();
+  await user.click(setupButton);
+  const setupDialog = within(screen.getByRole("dialog"));
+  expect(setupDialog.getByText(draft.id, { exact: true })).toBeVisible();
+  expect(setupDialog.getByRole("button", { name: "Save tool binding" })).toBeDisabled();
+  await user.click(setupDialog.getByRole("button", { name: "Cancel" }));
+  await user.click(draftCard.getByRole("button", { name: "Configure methods for Lab profile (lab_profile.v1)" }));
+  const dialog = within(screen.getByRole("dialog"));
+  expect(dialog.getByRole("heading", { name: "Configure Lab profile" })).toBeVisible();
+  expect(dialog.getByText(draft.id, { exact: true })).toBeVisible();
+  expect(dialog.getByLabelText(/^Profile ID/)).toHaveValue(draft.id);
+  expect(dialog.getByLabelText(/^Profile ID/)).toHaveAttribute("readonly");
+  await user.click(dialog.getByRole("button", { name: "Cancel" }));
+  await user.click(draftCard.getByRole("button", { name: "Validate & activate Lab profile (lab_profile.v1)" }));
+  await waitFor(() => expect(activate).toHaveBeenCalledExactlyOnceWith("runner-profiles", draft.id));
+  expect(deactivate).not.toHaveBeenCalled();
+  expect(save).not.toHaveBeenCalled();
+});
 
 it("requires a real template, filters methods by platform, and retains a refused profile for retry", async () => {
   setup(); const user = userEvent.setup();

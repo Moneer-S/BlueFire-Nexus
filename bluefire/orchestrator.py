@@ -56,7 +56,7 @@ from .collectors import (
     LoopbackReceiverCollector,
 )
 from .config import AutonomyLevel, CleanupPolicy, RunnerProfile
-from .contracts import ExecutionMode, ScenarioDefinition, StepOutcome
+from .contracts import ContractError, ExecutionMode, ScenarioDefinition, StepOutcome
 from .detections import DetectionCandidate, DetectionPipeline
 from .evidence import (
     EvidenceError,
@@ -72,7 +72,13 @@ from .execution_progress import (
     record_interrupted_dispatch,
 )
 from .job_runtime import JobCancelled
+from .native_tool_execution_readiness import inspected_tool_rows
 from .observation_integrity import evaluate_observation_integrity
+from .permission_method import existing_cleanup_receipts, permission_objective_evidence
+from .planned_runner_inventory import (
+    PlannedRunnerInventoryError,
+    validate_planned_runner_inventory,
+)
 from .planner import (
     DeterministicPlanner,
     ExecutionDisposition,
@@ -103,7 +109,6 @@ from .replay_checkpoint_parameters import build_parameter_resolution
 from .run_store import RunHandle, RunStore
 from .runner_adapter import AdaptedAction, RunnerActionAdapter, RunnerAdapterError
 from .runner_client import (
-    RunnerReadinessError,
     RunnerTaskCancelled,
     RunnerTransport,
     RunnerTransportError,
@@ -116,6 +121,7 @@ from .runner_inventory import (
     RunnerInventoryAuthorityError,
     validate_builtin_action_inventory,
 )
+from .runner_receipt_authority import validate_result_receipts
 from .runtime_proposals import (
     RuntimeProposalError,
     RuntimeProposals,
@@ -775,7 +781,26 @@ class Orchestrator:
                         JsonLinesFixtureCollector(sandbox_root),
                     )
                 )
-            self._validate_inventory(native_plan, self.runner.inventory())
+            inventory = self.runner.inventory()
+            tools = {}
+            if profile.native_tool_installations:
+                try:
+                    tools = inspected_tool_rows(
+                        self.runner,
+                        profile.native_tool_installations,
+                        inventory,
+                        canonical_runner_inventory(inventory)["actions"],
+                    )
+                except ContractError as exc:
+                    # Let the service settle the claimed, undispatched workspace.
+                    raise OrchestrationError(str(exc)) from exc
+            if tools and canonical_runner_inventory(
+                self.runner.inventory()
+            ) != canonical_runner_inventory(inventory):
+                raise OrchestrationError("Runner inventory changed during tool inspection")
+            self._validate_inventory(
+                native_plan, inventory, structural_tool_action_ids=tuple(tools)
+            )
         elif approval_record is not None:
             raise OrchestrationError("Simulate does not accept an Execute approval capability")
 
@@ -2736,6 +2761,23 @@ class Orchestrator:
         runner_task_id: str | None = None
         dispatch_requested = False
         try:
+            # Metadata changes retain existing cleanup authority; this narrow
+            # opcode does not fabricate a file-creation receipt for an old file.
+            retained_receipts = existing_cleanup_receipts(
+                str(runner_step.action_id),
+                adapted.params,
+                receipt_ids,
+            )
+            if retained_receipts:
+                committed_before = self._discover_runner_receipts(
+                    observer.root,
+                    expected_profile_id=profile.id,
+                    require_commit=True,
+                )
+                if not set(retained_receipts) <= set(committed_before):
+                    raise RunnerTransportError(
+                        "metadata operation has no committed source ownership"
+                    )
             execute_task = getattr(self.runner, "execute_task", None)
             wrapped_runner = getattr(self.runner, "runner", None)
             wrapped_supports_tasks = wrapped_runner is None or callable(
@@ -2776,33 +2818,25 @@ class Orchestrator:
                 runner_result = self.runner.execute(manifest, runner_profile)
             self._validate_runner_result(manifest, runner_profile, runner_result)
             returned_receipts = self._validated_receipt_ids(runner_result.get("receipt_ids", []))
-            if any(
-                receipt_id in pre_dispatch_committed_receipts for receipt_id in returned_receipts
-            ):
-                raise RunnerTransportError("runner returned a pre-existing receipt as a new effect")
             discovered_request_receipts = discover_current_receipts()
             committed_request_receipts = discover_current_receipts(require_commit=True)
-            if any(
-                receipt_id not in committed_request_receipts for receipt_id in returned_receipts
-            ):
-                raise RunnerTransportError(
-                    "runner returned a receipt without a committed current-request binding"
+            committed_after: Sequence[str] = ()
+            if retained_receipts:
+                committed_after = self._discover_runner_receipts(
+                    observer.root,
+                    expected_profile_id=profile.id,
+                    require_commit=True,
                 )
-            self._validate_cleanup_result(manifest, runner_result)
-            runner_status = str(runner_result.get("status"))
-            new_committed_receipts = tuple(
-                receipt_id
-                for receipt_id in committed_request_receipts
-                if receipt_id not in pre_dispatch_committed_receipts
+            validate_result_receipts(
+                returned=returned_receipts,
+                prior_request_commits=pre_dispatch_committed_receipts,
+                current_request_commits=committed_request_receipts,
+                retained=retained_receipts,
+                committed_ownership=committed_after,
+                status=str(runner_result.get("status")),
+                has_observable_paths=bool(adapted.observable_paths),
             )
-            if (
-                adapted.observable_paths
-                and runner_status in {"success", "partial", "timed_out"}
-                and not new_committed_receipts
-            ):
-                raise RunnerTransportError(
-                    "runner reported a mutating outcome without a committed cleanup receipt"
-                )
+            self._validate_cleanup_result(manifest, runner_result)
         except RunnerTaskCancelled as exc:
             try:
                 for receipt_id in discover_current_receipts():
@@ -2911,6 +2945,7 @@ class Orchestrator:
                 "policy_digest": runner_profile["policy_digest"],
                 "runner_status": runner_status,
                 "expected_observable_paths": list(adapted.observable_paths),
+                **permission_objective_evidence(runner_step.action_id, runner_step.parameters),
                 **(
                     {"collection_method": runner_step.action_id}
                     if runner_step.action_id in COLLECTION_METHODS
@@ -3598,6 +3633,7 @@ class Orchestrator:
             "sandbox.collection.records.v1": ("fixtures", "staged"),
             "sandbox.collection.archive.v1": ("fixtures", "staged"),
             "sandbox.collection.atomic-gzip.v1": ("fixtures", "staged"),
+            "sandbox.permission.chmod.v1": ("fixtures",),
             "sandbox.network.loopback.v1": ("staged",),
             "sandbox.peer.handoff.v1": ("staged",),
             "sandbox.observability.variant.v1": ("staged", "observability"),
@@ -3628,7 +3664,12 @@ class Orchestrator:
         return tuple(unique[key] for key in sorted(unique))
 
     @staticmethod
-    def _validate_inventory(plan: ExecutionPlan, inventory: Mapping[str, Any]) -> None:
+    def _validate_inventory(
+        plan: ExecutionPlan,
+        inventory: Mapping[str, Any],
+        *,
+        structural_tool_action_ids: Sequence[str] = (),
+    ) -> None:
         requested: set[str] = set()
         provider_bindings: dict[tuple[Any, Any], Mapping[str, Any]] = {}
         for step in plan.steps:
@@ -3652,49 +3693,13 @@ class Orchestrator:
                 raise OrchestrationError("Execute plan has an unreviewed native action")
             requested.add(opcode)
         try:
-            if requested:
-                validate_builtin_action_inventory(
-                    inventory,
-                    required_action_ids=requested,
-                )
-            providers = canonical_provider_bindings(
-                tuple(provider_bindings.values()),
-                context="planned provider bindings",
+            validate_planned_runner_inventory(
+                inventory,
+                required_action_ids=requested,
+                provider_bindings=tuple(provider_bindings.values()),
+                structural_tool_action_ids=structural_tool_action_ids,
             )
-            if providers:
-                canonical_inventory = canonical_runner_inventory(inventory)
-                raw_runtimes = canonical_inventory.get("provider_runtimes")
-                if not isinstance(raw_runtimes, list):
-                    raise RunnerReadinessError("Runner provider runtime is unavailable.")
-                runtimes = {
-                    (str(runtime["kind"]), str(runtime["abi_version"])): runtime
-                    for runtime in raw_runtimes
-                }
-                for binding in providers:
-                    runtime = runtimes.get(("wasm", str(binding["abi_version"])))
-                    if (
-                        runtime is None
-                        or runtime.get("readiness") != "ready"
-                        or runtime.get("no_host_imports") is not True
-                        or runtime.get("contract_digest")
-                        != binding["provider_runtime_contract_digest"]
-                    ):
-                        raise RunnerReadinessError(
-                            "Runner provider runtime does not match the planned contract."
-                        )
-                    hard_limits = runtime.get("hard_limits")
-                    if not isinstance(hard_limits, Mapping) or any(
-                        binding["limits"][field] > hard_limits.get(field, 0)
-                        for field in binding["limits"]
-                    ):
-                        raise RunnerReadinessError(
-                            "Runner provider runtime cannot satisfy the planned limits."
-                        )
-        except (
-            ProviderRunnerContractError,
-            RunnerInventoryAuthorityError,
-            RunnerReadinessError,
-        ):
+        except PlannedRunnerInventoryError:
             raise OrchestrationError(
                 "Rust runner inventory does not satisfy the planned action contracts"
             ) from None

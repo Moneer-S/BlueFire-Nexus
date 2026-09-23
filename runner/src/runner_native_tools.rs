@@ -47,3 +47,18 @@ pub(super) fn validate_selected(
     }
     binding.check_binding(installation, "linux", std::env::consts::ARCH)
 }
+
+pub(super) fn inspect_selected(profile: &RunnerProfile, action: &dyn Action) -> Result<(), String> {
+    validate_selected(profile, action)?;
+    let binding = action
+        .native_tool_binding()
+        .ok_or("selected method has no native binding")?;
+    let installation = profile
+        .native_tool_installations
+        .iter()
+        .find(|record| record.adapter_id == binding.adapter_id)
+        .ok_or("selected method has no reviewed installation")?;
+    crate::native_tool_inspection::inspect(installation, std::time::Duration::from_secs(5))
+        .map_err(|issue| issue.message.to_string())?;
+    Ok(())
+}

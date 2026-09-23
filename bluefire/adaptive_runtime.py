@@ -9,6 +9,7 @@ from typing import Any, Callable, Mapping, Sequence
 from .adaptive_observations import project_runtime_observations
 from .adaptive_record_validation import ADAPTIVE_DECISION_CONTRACT, validate_v4_attempt_record
 from .ai import AIProposalRequest, AIProviderCancelled, AIProviderError, ProposalType
+from .ai_observation_summary import RuntimeObservationSummary
 from .config import AIProviderKind, AutonomyLevel
 from .contracts import SafetyTier
 from .evidence import EvidenceRecord
@@ -150,6 +151,7 @@ def propose_reviewed_method(
         retryable_step_ids=(current_step.step_id,) if choices else (),
         context=planner_state,
         deadline_monotonic=deadline,
+        observation_summary=RuntimeObservationSummary.from_projection(projection),
     )
     record: dict[str, Any] = {
         "schema_version": "bluefire.ai-proposal-record.v4",

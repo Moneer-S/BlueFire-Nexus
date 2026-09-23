@@ -27,6 +27,7 @@ BUILTIN_RUNNER_ACTION_VERSIONS: Mapping[str, str] = MappingProxyType(
         "sandbox.collection.records.v1": "1.0.0",
         "sandbox.collection.archive.v1": "1.0.0",
         "sandbox.collection.atomic-gzip.v1": "1.0.0",
+        "sandbox.permission.chmod.v1": "1.0.0",
         "sandbox.discovery.list.v1": "2.0.0",
         "sandbox.discovery.metadata.v1": "2.0.0",
         "sandbox.discovery.recursive.v1": "1.0.0",
@@ -46,7 +47,8 @@ BUILTIN_RUNNER_ACTION_VERSIONS: Mapping[str, str] = MappingProxyType(
 BUILTIN_RUNNER_ACTION_IDS = frozenset(BUILTIN_RUNNER_ACTION_VERSIONS)
 # Compiled tool-binding admission is separate from an action being registered.
 # Populate only when a method ships its fixed adapter and setup readiness path.
-BUILTIN_NATIVE_TOOL_ACTION_IDS: frozenset[str] = frozenset()
+BUILTIN_NATIVE_TOOL_ACTION_IDS = frozenset({"sandbox.permission.chmod.v1"})
+BUILTIN_STRUCTURAL_TOOL_ACTION_IDS = frozenset({"sandbox.permission.chmod.v1"})
 
 
 def native_tool_setup_problem(installations: Collection[Mapping[str, Any]]) -> str | None:
@@ -255,6 +257,7 @@ def validate_builtin_action_inventory(
     *,
     required_action_ids: Collection[str],
     require_exact_catalog: bool = False,
+    structural_tool_action_ids: Collection[str] = (),
 ) -> Mapping[str, Mapping[str, str]]:
     """Validate raw descriptors or a canonical inventory snapshot.
 
@@ -275,6 +278,9 @@ def validate_builtin_action_inventory(
         raise RunnerInventoryAuthorityError("runner inventory action list is invalid")
 
     requested = frozenset(required_action_ids)
+    structural_tools = frozenset(structural_tool_action_ids)
+    if not structural_tools <= BUILTIN_STRUCTURAL_TOOL_ACTION_IDS:
+        raise RunnerInventoryAuthorityError("structural tool action set is invalid")
     if not requested or not requested <= BUILTIN_RUNNER_ACTION_IDS:
         raise RunnerInventoryAuthorityError("required runner action set is invalid")
 
@@ -344,7 +350,9 @@ def validate_builtin_action_inventory(
         row = normalized[action_id]
         if row["action_version"] != BUILTIN_RUNNER_ACTION_VERSIONS[action_id]:
             raise RunnerInventoryAuthorityError("runner action version is incompatible")
-        if row["readiness"] != "ready":
+        if row["readiness"] != "ready" and not (
+            action_id in structural_tools and row["readiness"] == "structural"
+        ):
             raise RunnerInventoryAuthorityError("runner action is not ready")
         if not _valid_digest(row["contract_digest"]):
             raise RunnerInventoryAuthorityError("runner action contract digest is invalid")
