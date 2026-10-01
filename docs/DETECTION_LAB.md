@@ -133,6 +133,33 @@ The orchestrator currently creates one built-in internal staging candidate for `
 
 This internal matcher validates its own structured predicate only. It is not a replacement for Sigma, YARA, SPL, EDR, or SIEM syntax.
 
+### Edit internal rule conditions
+
+Select a saved internal rule and open **Revisions → Revise this rule**. With
+**Tune rule behavior** selected, **Match all these conditions** provides field,
+operator and value controls for supported collection and permission conditions.
+Counts remain non-negative whole numbers, Yes/No values remain booleans, and
+permission modes preserve their leading zeros. Suggested values have readable
+labels; custom text remains available. Permission bits do not prove effective
+access.
+
+Use **Remove** on the **Collection format** condition to stop restricting a
+rule to one container format while retaining its other conditions. Choose
+**Apply conditions** to update the draft selection, record the reason, then
+choose **Save revised rule** to create a separate revision. Applying conditions
+does not save or evaluate a rule; the parent and its results remain unchanged.
+
+Unapplied condition edits stay with the exact rule draft across navigation and
+reload in the same browser tab. Apply or **Discard condition edits** before
+saving a tune or editing advanced JSON. The workspace's **Discard these inputs**
+also clears these edits. Storage failures and edits bound to a different
+selection are reported instead of silently applying them.
+
+Unsupported fields, operators or complex selections remain unchanged and
+inspectable under **Advanced structured inputs → Tuned selection JSON**. The visual
+editor reports **Visual editing unavailable** rather than dropping predicates.
+Invalid supported condition values must be repaired before applying them.
+
 ## Predicted versus observed fields
 
 Field drift reports:

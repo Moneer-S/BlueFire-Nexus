@@ -13,6 +13,8 @@ import { DetectionRunEvaluations } from "../components/DetectionRunEvaluations";
 import { DetectionAIRevision } from "../components/DetectionAIRevision";
 import { DetectionAICreation } from "../components/DetectionAICreation";
 import { PermissionConditionControl, isLegacyPermissionSelection, isPermissionCondition, permissionConditionForSelection, permissionPredictedFields, permissionSelection, type PermissionCondition } from "../components/PermissionConditionControl";
+import { StructuredRuleEditor } from "../components/StructuredRuleEditor";
+import { isStructuredRuleDraftText, readStructuredRuleDraft, type StructuredRuleDraft } from "../lib/structured-rule-selection";
 import { detectionCreationPath } from "../lib/detection-creation";
 import { runCandidateKey, sourceObservedRecords, sourceRunParam } from "../lib/run-handoffs";
 import type {
@@ -604,13 +606,17 @@ function CandidateWorkspace({
   const defaults = useMemo(() => ({
     tab: "candidate" as CandidateTab, source: candidate.rule_source ?? "",
     fixtures: syntheticSelectionExample(language, candidate.selection), benign: "", notes: "", reason: "",
-    revisionKind: "clone" as RevisionKind, revisionReason: "", revisionTitle: candidate.title ?? "",
+    revisionKind: (language === "internal" ? "tune" : "clone") as RevisionKind, revisionReason: "", revisionTitle: candidate.title ?? "",
     selectionJson: JSON.stringify(candidate.selection ?? {}, null, 2), logsourceJson: JSON.stringify(candidate.logsource ?? {}, null, 2),
+    structuredSelectionDraft: "",
     selectedBaselineIds: candidate.public_baselines?.map(item => item.research_source_id) ?? [], compareId: comparisonChoices[0]?.resourceId ?? "",
   }), [candidate, language, comparisonChoices]);
-  const draft = useDetectionDraft(binding, defaults);
+  const draft = useDetectionDraft(binding, defaults, ["structuredSelectionDraft"], { structuredSelectionDraft: isStructuredRuleDraftText });
   const observed = useDetectionDraft(binding + ":observed:" + sourceRunId, { runId: sourceRunId, evidenceIds: "" });
   const { tab, source, fixtures, benign, notes, reason, revisionKind, revisionReason, revisionTitle, selectionJson, logsourceJson, selectedBaselineIds, compareId } = draft.value;
+  const structuredDraft = readStructuredRuleDraft(draft.value.structuredSelectionDraft);
+  const setStructuredDraft = (value: StructuredRuleDraft | null) => draft.update("structuredSelectionDraft", value ? JSON.stringify(value) : "");
+  const structuredPending = language === "internal" && structuredDraft !== null;
   const livePermissionCondition = useMemo(() => {
     if (language !== "internal") return undefined;
     try { return permissionConditionForSelection(JSON.parse(selectionJson)); } catch { return undefined; }
@@ -624,7 +630,7 @@ function CandidateWorkspace({
   const setRevisionKind = (value: typeof defaults.revisionKind) => draft.update("revisionKind", value);
   const setRevisionReason = (value: typeof defaults.revisionReason) => draft.update("revisionReason", value);
   const setRevisionTitle = (value: typeof defaults.revisionTitle) => draft.update("revisionTitle", value);
-  const setSelectionJson = (value: typeof defaults.selectionJson) => draft.update("selectionJson", value);
+  const setSelectionJson = (value: typeof defaults.selectionJson) => { setStructuredDraft(null); draft.update("selectionJson", value); };
   const setLogsourceJson = (value: typeof defaults.logsourceJson) => draft.update("logsourceJson", value);
   const setSelectedBaselineIds = (value: typeof defaults.selectedBaselineIds) => draft.update("selectedBaselineIds", value);
   const setCompareId = (value: typeof defaults.compareId) => draft.update("compareId", value);
@@ -671,6 +677,7 @@ function CandidateWorkspace({
   };
   const submitRevision = () => {
     try {
+      if (revisionKind === "tune" && structuredPending) throw new Error("Apply or discard the visual condition edits before creating an immutable tune.");
       if (!revisionReason.trim()) throw new Error("Explain why this immutable revision is needed.");
       const selectedBaselines = selectableBaselines.filter((item) => selectedBaselineIds.includes(item.research_source_id));
       const common: DetectionCloneRequest = {
@@ -775,6 +782,9 @@ function CandidateWorkspace({
         setRevisionTitle={setRevisionTitle}
         selectionJson={selectionJson}
         setSelectionJson={setSelectionJson}
+        structuredDraft={structuredDraft}
+        setStructuredDraft={setStructuredDraft}
+        structuredPending={structuredPending}
         logsourceJson={logsourceJson}
         setLogsourceJson={setLogsourceJson}
         selectableBaselines={selectableBaselines}
@@ -833,6 +843,9 @@ function RevisionWorkspace({
   setRevisionTitle,
   selectionJson,
   setSelectionJson,
+  structuredDraft,
+  setStructuredDraft,
+  structuredPending,
   logsourceJson,
   setLogsourceJson,
   selectableBaselines,
@@ -862,6 +875,9 @@ function RevisionWorkspace({
   setRevisionTitle: (value: string) => void;
   selectionJson: string;
   setSelectionJson: (value: string) => void;
+  structuredDraft: StructuredRuleDraft | null;
+  setStructuredDraft: (value: StructuredRuleDraft | null) => void;
+  structuredPending: boolean;
   logsourceJson: string;
   setLogsourceJson: (value: string) => void;
   selectableBaselines: PublicBaselineReference[];
@@ -875,6 +891,7 @@ function RevisionWorkspace({
   onSubmit: () => void;
   onCompare: (candidateId: string) => void;
 }) {
+  const internal = (candidate.target_language ?? candidate.language ?? "internal") === "internal";
   return <div className="review-stack">
 
     <div>
@@ -887,8 +904,8 @@ function RevisionWorkspace({
       <div className="candidate-actions"><Button onClick={() => onCompare(compareId)} disabled={!persisted || !compareId || comparisonPending}>{comparisonPending ? "Comparing revisions…" : "Compare immutable revisions"}</Button></div>
     </div>
     {comparison ? <DetectionComparisonView review={comparison} sourcesById={sourcesById} /> : <Callout title="No comparison loaded">Choose another revision from this lineage to inspect source, rule, field, lifecycle, fixture, observed, and benign deltas.</Callout>}
-    <details className="detection-advanced-revisions"><summary>Advanced clone and tune</summary>
-    <Callout title="Advanced definition revisions">Clone copies the structured definition into an unparsed hypothesis; it does not copy compiled source or results. Tune changes structured selection or log source. To edit SQLite or Sigma, use the source editor in the Rule tab. Each revision receives a new ID and parent link.</Callout>
+    <details className="detection-advanced-revisions"><summary>{internal ? "Revise this rule" : "Advanced clone and tune"}</summary>
+    {internal ? <div><h4>Save a separate revision</h4><p>Change the conditions below, then save the revised rule with a reason. The original rule and its results stay unchanged. A copy without changes does not copy compiled source or results. Validate the new revision before evaluating it.</p></div> : <Callout title="Advanced definition revisions">Clone copies the structured definition into an unparsed hypothesis; it does not copy compiled source or results. Tune changes structured selection or log source. To edit SQLite or Sigma, use the source editor in the Rule tab. Each revision receives a new ID and parent link.</Callout>}
     <fieldset>
       <legend>Revision intent</legend>
       <div className="choice-grid two">{(["clone", "tune"] as const).map((kind) => <label key={kind}><input type="radio" name="detection-revision-kind" checked={revisionKind === kind} onChange={() => setRevisionKind(kind)} disabled={!persisted} /><span><strong>{kind === "clone" ? "Clone unchanged rule behavior" : "Tune rule behavior"}</strong><small>{kind === "clone" ? "Branch attribution, title, known misses, fields, or public baselines." : "Change the structured selection or log source and retain a durable reason."}</small></span></label>)}</div>
@@ -899,11 +916,12 @@ function RevisionWorkspace({
     </div>
     {revisionKind === "tune" ? <>
       {permissionCondition ? <>
-        <PermissionConditionControl value={permissionCondition} onChange={setPermissionCondition} disabled={!persisted || revisionPending} />
-        {isLegacyPermissionSelection(JSON.parse(selectionJson)) ? <div><p>This saved rule uses the earlier file-observation fields. Independent filesystem collectors use different fields. Updating the draft preserves the saved rule and its results.</p><Button size="small" disabled={!persisted || revisionPending} onClick={() => setPermissionCondition(permissionCondition)}>Use current observation fields</Button></div> : null}
+        <PermissionConditionControl value={permissionCondition} onChange={setPermissionCondition} disabled={!persisted || revisionPending || structuredPending} />
+        {isLegacyPermissionSelection(JSON.parse(selectionJson)) ? <div><p>This saved rule uses the earlier file-observation fields. Independent filesystem collectors use different fields. Updating the draft preserves the saved rule and its results.</p><Button size="small" disabled={!persisted || revisionPending || structuredPending} onClick={() => setPermissionCondition(permissionCondition)}>Use current observation fields</Button></div> : null}
       </> : null}
+      {internal ? <StructuredRuleEditor source={selectionJson} draft={structuredDraft} onDraft={setStructuredDraft} onApply={setSelectionJson} disabled={!persisted || revisionPending} /> : null}
       <details><summary>Advanced structured inputs</summary><div className="config-grid">
-        <Field label="Tuned selection JSON" hint="Must remain a non-empty structured object."><textarea rows={9} value={selectionJson} onChange={(event) => setSelectionJson(event.target.value)} disabled={!persisted} /></Field>
+        <Field label="Tuned selection JSON" hint="Unsupported selectors stay here unchanged. Apply or discard visual edits before editing JSON."><textarea rows={9} value={selectionJson} onChange={(event) => setSelectionJson(event.target.value)} disabled={!persisted || structuredPending || revisionPending} /></Field>
         <Field label="Tuned log source JSON" hint="Change selection, log source, or both."><textarea rows={9} value={logsourceJson} onChange={(event) => setLogsourceJson(event.target.value)} disabled={!persisted} /></Field>
       </div></details>
     </> : null}
@@ -917,7 +935,7 @@ function RevisionWorkspace({
       })}</div> : <p className="field-note">No pinned, comparison-authorized public research source is registered.</p>}
       <PublicBaselineList baselines={selectableBaselines.filter((item) => selectedBaselineIds.includes(item.research_source_id))} sourcesById={sourcesById} empty="No public baseline will be attached to the new revision." />
     </fieldset>
-    <div className="candidate-actions"><Button variant="primary" onClick={onSubmit} disabled={!persisted || revisionPending || !revisionReason.trim()}>{revisionKind === "clone" ? "Create immutable clone" : "Create immutable tune"}</Button></div>
+    <div className="candidate-actions"><Button variant="primary" onClick={onSubmit} disabled={!persisted || revisionPending || !revisionReason.trim() || (revisionKind === "tune" && structuredPending)}>{revisionKind === "clone" ? "Create immutable clone" : internal ? "Save revised rule" : "Create immutable tune"}</Button></div>
     </details>
   </div>;
 }
