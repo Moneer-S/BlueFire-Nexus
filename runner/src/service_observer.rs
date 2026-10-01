@@ -104,6 +104,51 @@ impl ReportedServiceProperties {
     }
 }
 
+/// Validated property relationships, before any cgroup input is supplied.
+/// These reported paths are not authenticated locations or authority to open them.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ReportedPropertyScope {
+    binding: ServiceOperationBinding,
+    pub(crate) manager_pid: u32,
+    pub(crate) manager_control_group: String,
+    pub(crate) unit_search_paths: Vec<String>,
+    pub(crate) unit_load_state: &'static str,
+    pub(crate) unit_active_state: &'static str,
+    pub(crate) unit_control_group: Option<String>,
+    pub(crate) fragment_path: Option<String>,
+    pub(crate) manager_unit_file_state: String,
+}
+
+impl ReportedPropertyScope {
+    pub(crate) fn with_cgroup_events(
+        self,
+        cgroup_events: ReadOutcome<'_>,
+    ) -> Result<ReportedServiceProperties, ObservationIssue> {
+        let cgroup = fields(
+            cgroup_events,
+            &["populated", "frozen"],
+            ' ',
+            MAX_CGROUP_BYTES,
+            "cgroup",
+        )?;
+        let populated = bit(cgroup["populated"])?;
+        let frozen = bit(cgroup["frozen"])?;
+        Ok(ReportedServiceProperties {
+            binding: self.binding,
+            manager_pid: self.manager_pid,
+            manager_control_group: self.manager_control_group,
+            unit_search_paths: self.unit_search_paths,
+            unit_load_state: self.unit_load_state,
+            unit_active_state: self.unit_active_state,
+            unit_control_group: self.unit_control_group,
+            fragment_path: self.fragment_path,
+            manager_unit_file_state: self.manager_unit_file_state,
+            cgroup_state: if populated { "populated" } else { "empty" },
+            cgroup_frozen: frozen,
+        })
+    }
+}
+
 impl ObservationTarget {
     pub fn from_binding(binding: &ServiceOperationBinding) -> Result<Self, ObservationIssue> {
         let projection: BindingProjection = serde_json::from_str(binding.canonical_json())
@@ -173,6 +218,18 @@ impl ObservationTarget {
         unit: ReadOutcome<'_>,
         cgroup_events: ReadOutcome<'_>,
     ) -> Result<ReportedServiceProperties, ObservationIssue> {
+        self.parse_property_scope(owner_manager, user_manager, unit)?
+            .with_cgroup_events(cgroup_events)
+    }
+
+    /// Validate all three property inputs before exposing their constrained paths.
+    /// A future reader must authenticate those locations before acquiring events.
+    pub(crate) fn parse_property_scope(
+        &self,
+        owner_manager: ReadOutcome<'_>,
+        user_manager: ReadOutcome<'_>,
+        unit: ReadOutcome<'_>,
+    ) -> Result<ReportedPropertyScope, ObservationIssue> {
         let manager = fields(
             owner_manager,
             &MANAGER_FIELDS,
@@ -291,16 +348,7 @@ impl ObservationTarget {
                 return Err(ObservationIssue::IdentityMismatch("unit_cgroup"));
             }
         }
-        let cgroup = fields(
-            cgroup_events,
-            &["populated", "frozen"],
-            ' ',
-            MAX_CGROUP_BYTES,
-            "cgroup",
-        )?;
-        let populated = bit(cgroup["populated"])?;
-        let frozen = bit(cgroup["frozen"])?;
-        Ok(ReportedServiceProperties {
+        Ok(ReportedPropertyScope {
             binding: self.binding.clone(),
             manager_pid,
             manager_control_group: manager_group.into(),
@@ -311,8 +359,6 @@ impl ObservationTarget {
             fragment_path: (!unit["FragmentPath"].is_empty())
                 .then(|| unit["FragmentPath"].to_string()),
             manager_unit_file_state: unit["UnitFileState"].into(),
-            cgroup_state: if populated { "populated" } else { "empty" },
-            cgroup_frozen: frozen,
         })
     }
 }

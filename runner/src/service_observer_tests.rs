@@ -165,6 +165,86 @@ fn complete_absent_and_loaded_reports_keep_distinct_resource_states() {
 }
 
 #[test]
+fn property_scope_exposes_validated_paths_without_inventing_cgroup_data() {
+    let target = target(&document());
+    let data = loaded();
+    let scope = target
+        .parse_property_scope(complete(&data[0]), complete(&data[1]), complete(&data[2]))
+        .unwrap();
+    assert_eq!(&scope.binding, target.binding());
+    assert_eq!(scope.manager_pid, 42);
+    assert_eq!(scope.manager_control_group, "/user.slice/user-1000.slice/user@1000.service");
+    assert_eq!(scope.unit_search_paths, [
+        "/home/bluefire/.config/systemd/user", "/etc/systemd/user", "/usr/lib/systemd/user",
+    ]);
+    assert_eq!(scope.unit_control_group.as_deref(), Some(
+        "/user.slice/user-1000.slice/user@1000.service/app.slice/bluefire-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.service"
+    ));
+    assert_eq!(scope.fragment_path.as_deref(), Some(
+        "/home/bluefire/.config/systemd/user/bluefire-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.service"
+    ));
+    assert_eq!(scope.with_cgroup_events(ReadOutcome::Unavailable),
+        Err(ObservationIssue::Unavailable("cgroup")));
+}
+
+#[test]
+fn staged_completion_and_public_wrapper_require_complete_cgroup_input() {
+    let target = target(&document());
+    for data in [absent(), loaded()] {
+        let scope = || target
+            .parse_property_scope(complete(&data[0]), complete(&data[1]), complete(&data[2]))
+            .unwrap();
+        for (input, expected) in [
+            (ReadOutcome::Unavailable, ObservationIssue::Unavailable("cgroup")),
+            (complete(b""), ObservationIssue::Unknown("cgroup")),
+            (complete(b"populated 0\n"), ObservationIssue::Unknown("cgroup")),
+            (complete(b"populated 0\nfrozen 2\n"), ObservationIssue::Unknown("cgroup_value")),
+            (ReadOutcome::Finished { bytes: &data[3], exit_code: 1, truncated: false },
+                ObservationIssue::Unknown("cgroup")),
+            (ReadOutcome::Finished { bytes: &data[3], exit_code: 0, truncated: true },
+                ObservationIssue::Unknown("cgroup")),
+        ] {
+            assert_eq!(scope().with_cgroup_events(input), Err(expected));
+            assert_eq!(target.parse_reported_properties(
+                complete(&data[0]), complete(&data[1]), complete(&data[2]), input,
+            ), Err(expected));
+        }
+        let reported = scope().with_cgroup_events(complete(b"populated 1\nfrozen 1\n")).unwrap();
+        assert_eq!(reported.cgroup_state, "populated");
+        assert!(reported.cgroup_frozen);
+        assert_eq!(reported.binding(), target.binding());
+    }
+}
+
+#[test]
+fn property_scope_refuses_incomplete_inputs_and_foreign_resource_paths() {
+    let target = target(&document());
+    let baseline = loaded();
+    for index in 0..3 {
+        for input in [ReadOutcome::Unavailable, ReadOutcome::Finished {
+            bytes: &baseline[index], exit_code: 0, truncated: true,
+        }] {
+            let mut reads = baseline.each_ref().map(|bytes| complete(bytes));
+            reads[index] = input;
+            assert!(matches!(target.parse_property_scope(reads[0], reads[1], reads[2]),
+                Err(ObservationIssue::Unavailable(_) | ObservationIssue::Unknown(_))));
+        }
+    }
+    for (index, field, value) in [
+        (0, "InvocationID", "cccccccccccccccccccccccccccccccc"),
+        (1, "ControlGroup", "/user.slice/user-1001.slice/user@1001.service"),
+        (2, "ControlGroup", "/user.slice/user-1000.slice/user@1000.service/unrelated.service"),
+        (2, "FragmentPath", "/tmp/bluefire-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.service"),
+    ] {
+        let mut data = baseline.clone();
+        replace(&mut data[index], field, value);
+        assert!(matches!(target.parse_property_scope(
+            complete(&data[0]), complete(&data[1]), complete(&data[2]),
+        ), Err(ObservationIssue::IdentityMismatch(_))));
+    }
+}
+
+#[test]
 fn changed_identity_rederives_queries_and_cannot_reuse_the_previous_manager() {
     let mut changed = document();
     changed["identity"]["owner_uid"] = json!(2001);
