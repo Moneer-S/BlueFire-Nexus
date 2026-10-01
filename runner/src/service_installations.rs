@@ -5,11 +5,11 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::canonical::canonical_hash;
-use crate::native_tool_installations::{NativeToolBinding, NativeToolInstallation};
 #[cfg(target_os = "linux")]
 use crate::native_tool_inspection::{
     inspect_protected_record, CurrentExecutable, InspectedNativeTool,
 };
+use crate::native_tool_installations::{NativeToolBinding, NativeToolInstallation};
 #[cfg(target_os = "linux")]
 use std::time::Instant;
 
@@ -113,8 +113,10 @@ impl Role {
             }
             Self::Payload => {
                 installation.tool_version == env!("CARGO_PKG_VERSION")
-                    && (installation.content_sha256.as_str(), installation.size_bytes)
-                        == current_runner
+                    && (
+                        installation.content_sha256.as_str(),
+                        installation.size_bytes,
+                    ) == current_runner
             }
         };
         if !recognized {
@@ -170,7 +172,10 @@ fn select(
         }
     }
     let select_role = |role: Role, required: &InstallationReference| {
-        let matches: Vec<_> = records.iter().filter(|record| required.matches(record)).collect();
+        let matches: Vec<_> = records
+            .iter()
+            .filter(|record| required.matches(record))
+            .collect();
         let [record] = matches.as_slice() else {
             return Err(REFUSAL.to_string());
         };

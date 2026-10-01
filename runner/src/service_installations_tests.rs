@@ -47,7 +47,10 @@ fn documents(records: &[NativeToolInstallation]) -> (Value, Value) {
 fn compiled_contracts_have_real_canonical_digests_and_no_dispatch() {
     for role in [Role::Manager, Role::Payload] {
         let document = role.contract();
-        assert_eq!(canonical_hash(&document), role.binding().adapter_contract_digest);
+        assert_eq!(
+            canonical_hash(&document),
+            role.binding().adapter_contract_digest
+        );
         assert_eq!(document["dispatch"], "unregistered");
         assert!(document.get("adapter_contract_digest").is_none());
         assert_eq!(document.as_object().unwrap().len(), 10);
@@ -55,9 +58,18 @@ fn compiled_contracts_have_real_canonical_digests_and_no_dispatch() {
     }
     assert!(crate::actions::find_action(crate::service_admission::SERVICE_ACTION_ID).is_none());
     assert!(crate::reviewed_chmod_builds::verify(&manager()).is_err());
-    assert_eq!(crate::native_tool_setup::inspect_installation(&manager())["code"], "binding_mismatch");
-    assert_eq!(Role::Payload.contract()["identity"]["version"], env!("CARGO_PKG_VERSION"));
-    assert_ne!(MANAGER_BINDING.adapter_contract_digest, PAYLOAD_BINDING.adapter_contract_digest);
+    assert_eq!(
+        crate::native_tool_setup::inspect_installation(&manager())["code"],
+        "binding_mismatch"
+    );
+    assert_eq!(
+        Role::Payload.contract()["identity"]["version"],
+        env!("CARGO_PKG_VERSION")
+    );
+    assert_ne!(
+        MANAGER_BINDING.adapter_contract_digest,
+        PAYLOAD_BINDING.adapter_contract_digest
+    );
 }
 
 #[test]
@@ -93,7 +105,9 @@ fn payload_requires_current_runner_version_bytes_and_size() {
     let digest = format!("sha256:{}", "3".repeat(64));
     let baseline = record(Role::Payload, &digest, 4096);
     assert!(Role::Payload.validate(&baseline, (&digest, 4096)).is_ok());
-    assert!(Role::Payload.validate(&baseline, (MANAGER_SHA256, 4096)).is_err());
+    assert!(Role::Payload
+        .validate(&baseline, (MANAGER_SHA256, 4096))
+        .is_err());
     assert!(Role::Payload.validate(&baseline, (&digest, 4097)).is_err());
     let mut changed = baseline.clone();
     changed.tool_version = format!("{}-unreviewed", env!("CARGO_PKG_VERSION"));
@@ -106,7 +120,10 @@ fn payload_requires_current_runner_version_bytes_and_size() {
 #[test]
 fn role_identity_cannot_be_relabelled_or_use_fixture_contracts() {
     let digest = format!("sha256:{}", "4".repeat(64));
-    for (role, baseline) in [(Role::Manager, manager()), (Role::Payload, record(Role::Payload, &digest, 64))] {
+    for (role, baseline) in [
+        (Role::Manager, manager()),
+        (Role::Payload, record(Role::Payload, &digest, 64)),
+    ] {
         let mut variants = Vec::new();
         let mut changed = baseline.clone();
         changed.adapter_id = "sandbox.permission.chmod.v1".into();
@@ -142,21 +159,30 @@ fn scope_selects_exact_unique_role_records_without_aliases() {
     for field in ["digest", "path", "installation_id", "content_sha256"] {
         let mut changed = scope.clone();
         changed["installations"]["manager"][field] = json!("unbound");
-        assert!(select(&changed, &profile, (&digest, 64)).is_err(), "{field}");
+        assert!(
+            select(&changed, &profile, (&digest, 64)).is_err(),
+            "{field}"
+        );
     }
     let mut swapped = scope.clone();
     swapped["installations"]["manager"] = scope["installations"]["payload"].clone();
     swapped["installations"]["payload"] = scope["installations"]["manager"].clone();
     assert!(select(&swapped, &profile, (&digest, 64)).is_err());
     let mut duplicate = profile.clone();
-    duplicate["native_tool_installations"].as_array_mut().unwrap().push(json!(records[0]));
+    duplicate["native_tool_installations"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!(records[0]));
     assert!(select(&scope, &duplicate, (&digest, 64)).is_err());
     let mut alias = records[0].clone();
     alias.installation_location = "/opt/duplicate/systemctl".into();
     duplicate["native_tool_installations"][2] = json!(alias);
     assert!(select(&scope, &duplicate, (&digest, 64)).is_err());
     let mut missing = profile.clone();
-    missing["native_tool_installations"].as_array_mut().unwrap().pop();
+    missing["native_tool_installations"]
+        .as_array_mut()
+        .unwrap()
+        .pop();
     assert!(select(&scope, &missing, (&digest, 64)).is_err());
     let mut unknown = scope;
     unknown["installations"]["extra"] = json!({});
@@ -192,8 +218,12 @@ fn exact_role_metadata_cannot_admit_an_unsafe_or_symlinked_installation() {
     let digest = format!("sha256:{}", crate::canonical::sha256_hex(&running));
     let current = CurrentExecutable::observe(&digest, deadline).unwrap();
     let root = std::env::temp_dir().join(format!(
-        "bluefire-service-installation-test-{}-{}", std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        "bluefire-service-installation-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     std::fs::create_dir(&root).unwrap();
     let path = root.join("manager");
@@ -202,7 +232,10 @@ fn exact_role_metadata_cannot_admit_an_unsafe_or_symlinked_installation() {
         for location in [path.to_str().unwrap(), "/proc/self/exe"] {
             let mut manager = manager();
             manager.installation_location = location.into();
-            let (scope, profile) = documents(&[manager, record(Role::Payload, &digest, running.len() as u64)]);
+            let (scope, profile) = documents(&[
+                manager,
+                record(Role::Payload, &digest, running.len() as u64),
+            ]);
             assert!(inspect(&scope, &profile, &current, deadline).is_err());
         }
     });

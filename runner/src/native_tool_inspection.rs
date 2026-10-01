@@ -651,11 +651,17 @@ mod tests {
         assert_eq!(current.observed_identity(), (digest.as_str(), size));
         current.recheck().unwrap();
         assert_eq!(
-            CurrentExecutable::observe("sha256:untrusted", deadline).err().unwrap().code,
+            CurrentExecutable::observe("sha256:untrusted", deadline)
+                .err()
+                .unwrap()
+                .code,
             "digest_mismatch"
         );
         assert_eq!(
-            CurrentExecutable::observe(&digest, Instant::now()).err().unwrap().code,
+            CurrentExecutable::observe(&digest, Instant::now())
+                .err()
+                .unwrap()
+                .code,
             "inspection_timeout"
         );
     }

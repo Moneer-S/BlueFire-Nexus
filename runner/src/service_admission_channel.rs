@@ -206,7 +206,9 @@ pub(super) fn verify(
     let context: Context =
         serde_json::from_slice(&contents(&context_file)?).map_err(|_| REFUSAL)?;
     let interpreter = check_parent(&context, parent)?;
-    let deadline = Instant::now().checked_add(Duration::from_secs(2)).ok_or(REFUSAL)?;
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(2))
+        .ok_or(REFUSAL)?;
     let current_runner =
         CurrentExecutable::observe(&context.runner_digest, deadline).map_err(|_| REFUSAL)?;
     let admission = authenticate(&context, &contents(&envelope_file)?)?;
