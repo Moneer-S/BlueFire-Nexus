@@ -180,7 +180,7 @@ fn property_scope_exposes_validated_paths_without_inventing_cgroup_data() {
     assert_eq!(
         scope.unit_search_paths,
         [
-            "/home/bluefire/.config/systemd/user",
+            "/synthetic/config/systemd/user",
             "/etc/systemd/user",
             "/usr/lib/systemd/user",
         ]
@@ -191,7 +191,7 @@ fn property_scope_exposes_validated_paths_without_inventing_cgroup_data() {
     assert_eq!(
         scope.fragment_path.as_deref(),
         Some(
-            "/home/bluefire/.config/systemd/user/bluefire-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.service"
+            "/synthetic/config/systemd/user/bluefire-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.service"
         )
     );
     assert_eq!(
