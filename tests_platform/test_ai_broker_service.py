@@ -5,10 +5,12 @@ from __future__ import annotations
 import base64
 import copy
 import json
+import sys
 import threading
 import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,6 +20,7 @@ from bluefire.ai_broker_contract import BrokerEnrollment, schema_identity, valid
 from bluefire.ai_drafts import graph_draft_json_schema
 from bluefire.ai_probe import _SCHEMA
 from bluefire.ai_wire import AIProviderCancelled, AIProviderTransportError, structured_request
+from bluefire.application_errors import APIError
 from bluefire.config import AIProviderKind, AutonomyLevel, load_config
 from bluefire.runner_lifecycle import ManagedRunnerLifecycle
 from bluefire.service import BlueFireService
@@ -117,6 +120,47 @@ class DeterministicBroker:
         self.closed = True
 
 
+def _close_failed_setup(service, provider, error):
+    diagnostic = {
+        "stage": "service_setup_authorization",
+        "error_code": "other",
+        "context_kind": "unknown",
+        "access_closed": None,
+        "provider_matches": None,
+        "enrollment_expired": None,
+    }
+    try:
+        if type(error) is APIError and error.code in {
+            "live_context_unavailable",
+            "broker_session_expired",
+            "live_authorization_expired",
+            "live_authorization_invalid",
+        }:
+            diagnostic["error_code"] = error.code
+        owner = service._authorized_provider_access
+        context = owner.context
+        if context.get("kind") in {"broker", "direct"}:
+            diagnostic["context_kind"] = context["kind"]
+        if type(owner._closed) is bool:
+            diagnostic["access_closed"] = owner._closed
+        diagnostic["provider_matches"] = context.get("provider") == provider.to_dict()
+        expiry = context.get("expires_at_ms")
+        if type(expiry) is int:
+            diagnostic["enrollment_expired"] = time.time_ns() // 1_000_000 >= expiry
+    except BaseException:
+        # Failure evidence must not prevent cleanup or replace the original error.
+        pass
+    try:
+        service.close()
+        diagnostic["cleanup"] = "closed"
+    except BaseException:
+        diagnostic["cleanup"] = "failed"
+    try:
+        print("broker-setup-diagnostic " + json.dumps(diagnostic, sort_keys=True), flush=True)
+    except BaseException:
+        pass
+
+
 def setup(tmp_path, kind=AIProviderKind.OPENAI_RESPONSES, *, local=False):
     provider = replace(_provider_config(kind, authenticated=not local), max_retries=0)
     draft = draft_request()
@@ -141,7 +185,11 @@ def setup(tmp_path, kind=AIProviderKind.OPENAI_RESPONSES, *, local=False):
         runner_lifecycle=ManagedRunnerLifecycle(tmp_path / "managed"),
         ai_provider_access=access,
     )
-    authorize_service(service, provider, purposes=[name for name, _ in enrollment.schemas])
+    try:
+        authorize_service(service, provider, purposes=[name for name, _ in enrollment.schemas])
+    except BaseException as error:
+        _close_failed_setup(service, provider, error)
+        raise
     # Bootstrap performs a real readiness check through the same access owner.
     channel.requests.clear()
     return provider, service, access, channel
@@ -368,3 +416,124 @@ def test_service_close_rejects_late_graph_draft_without_saving_or_fallback(tmp_p
     finally:
         service.close()
         thread.join(3)
+
+
+def test_expired_setup_context_is_refused_and_service_is_closed(tmp_path, monkeypatch, capsys):
+    import bluefire.ai_broker_contract as broker_contract
+    import bluefire.ai_live_authorization as live_authorization
+
+    module = sys.modules[__name__]
+    clock = {"ms": time.time_ns() // 1_000_000}
+    initial = clock["ms"]
+    fixture_time = SimpleNamespace(time_ns=lambda: clock["ms"] * 1_000_000)
+    # Replace only these module bindings, not the shared time module or monotonic waits.
+    monkeypatch.setattr(module, "time", fixture_time)
+    monkeypatch.setattr(broker_contract, "time", fixture_time)
+    monkeypatch.setattr(live_authorization, "now_ms", lambda: clock["ms"])
+    constructor = BlueFireService
+    authorize = authorize_service
+    retained = {}
+    closed = []
+
+    def construct(*args, **kwargs):
+        service = constructor(*args, **kwargs)
+        retained["service"] = service
+        retained["access"] = kwargs["ai_provider_access"]
+        original_close = service.close
+
+        def close():
+            closed.append(service)
+            original_close()
+
+        monkeypatch.setattr(service, "close", close)
+        clock["ms"] += 60_001
+        return service
+
+    def capture_refusal(*args, **kwargs):
+        try:
+            return authorize(*args, **kwargs)
+        except APIError as error:
+            retained["error"] = error
+            raise
+
+    monkeypatch.setattr(module, "BlueFireService", construct)
+    monkeypatch.setattr(module, "authorize_service", capture_refusal)
+    with pytest.raises(APIError) as refused:
+        setup(tmp_path)
+    assert refused.value is retained["error"]
+    assert refused.value.status == 400 and refused.value.code == "live_context_unavailable"
+    assert retained["access"].enrollment.expires_at_ms == initial + 60_000
+    assert closed == [retained["service"]]
+    assert retained["access"]._channel.closed
+    assert retained["service"].job_controller._closed
+    assert not any(
+        row["kind"] in {"authorize", "post"} for row in retained["access"]._channel.requests
+    )
+    output = capsys.readouterr().out
+    prefix = "broker-setup-diagnostic "
+    assert output.startswith(prefix)
+    assert json.loads(output[len(prefix) :]) == {
+        "stage": "service_setup_authorization",
+        "error_code": "live_context_unavailable",
+        "context_kind": "broker",
+        "access_closed": False,
+        "provider_matches": True,
+        "enrollment_expired": True,
+        "cleanup": "closed",
+    }
+
+
+@pytest.mark.parametrize("failure", ["authorization", "diagnostic_output", "cleanup"])
+def test_setup_failure_preserves_original_error_and_omits_private_values(
+    tmp_path, monkeypatch, capsys, failure
+):
+    module = sys.modules[__name__]
+    sentinel = "synthetic-private-setup-detail:/fixture/private/provider"
+    original_error = APIError(400, "live_context_unavailable", sentinel, {"private": sentinel})
+    constructor = BlueFireService
+    retained = {}
+    closed = []
+
+    def construct(*args, **kwargs):
+        service = constructor(*args, **kwargs)
+        retained["service"] = service
+        retained["access"] = kwargs["ai_provider_access"]
+        original_close = service.close
+
+        def close():
+            closed.append(service)
+            original_close()
+            if failure == "cleanup":
+                raise RuntimeError(sentinel)
+
+        monkeypatch.setattr(service, "close", close)
+        return service
+
+    def refuse(*args, **kwargs):
+        raise original_error
+
+    def broken_output(*args, **kwargs):
+        raise OSError(sentinel)
+
+    monkeypatch.setattr(module, "BlueFireService", construct)
+    monkeypatch.setattr(module, "authorize_service", refuse)
+    if failure == "diagnostic_output":
+        monkeypatch.setattr(module, "print", broken_output, raising=False)
+    with pytest.raises(APIError) as refused:
+        setup(tmp_path)
+    assert refused.value is original_error
+    assert closed == [retained["service"]]
+    assert retained["access"]._channel.closed
+    assert retained["service"].job_controller._closed
+    assert not any(
+        row["kind"] in {"authorize", "post"} for row in retained["access"]._channel.requests
+    )
+    output = capsys.readouterr().out
+    assert sentinel not in output
+    if failure == "diagnostic_output":
+        assert output == ""
+    else:
+        record = json.loads(output.removeprefix("broker-setup-diagnostic "))
+        assert len(output) < 512
+        assert record["access_closed"] is False and record["provider_matches"] is True
+        assert record["cleanup"] == ("failed" if failure == "cleanup" else "closed")
