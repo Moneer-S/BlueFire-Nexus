@@ -20,7 +20,7 @@ fn target(document: &Value) -> ObservationTarget {
 fn absent() -> [Vec<u8>; 4] {
     [
         b"Id=user@1000.service\nLoadState=loaded\nActiveState=active\nInvocationID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nMainPID=42\nControlGroup=/user.slice/user-1000.slice/user@1000.service\n".to_vec(),
-        b"ControlGroup=/user.slice/user-1000.slice/user@1000.service\nUnitPath=/home/bluefire/.config/systemd/user /etc/systemd/user /usr/lib/systemd/user\n".to_vec(),
+        b"ControlGroup=/user.slice/user-1000.slice/user@1000.service\nUnitPath=/synthetic/config/systemd/user /etc/systemd/user /usr/lib/systemd/user\n".to_vec(),
         b"Id=bluefire-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.service\nNames=bluefire-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.service\nLoadState=not-found\nActiveState=inactive\nControlGroup=\nFragmentPath=\nDropInPaths=\nUnitFileState=\nTransient=no\nNeedDaemonReload=no\n".to_vec(),
         b"populated 0\nfrozen 0\n".to_vec(),
     ]
@@ -70,7 +70,7 @@ fn loaded() -> [Vec<u8>; 4] {
     replace(
         &mut data[2],
         "FragmentPath",
-        "/home/bluefire/.config/systemd/user/bluefire-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.service",
+        "/synthetic/config/systemd/user/bluefire-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.service",
     );
     replace(&mut data[2], "UnitFileState", "enabled");
     data[3] = b"populated 1\nfrozen 0\n".to_vec();
