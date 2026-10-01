@@ -1,6 +1,6 @@
 # Owned user-service lifecycle prerequisite
 
-Status: internal contract and deterministic software tests. No systemd method,
+Status: internal identity, durable recovery journal and deterministic software tests. No systemd method,
 observer, setup control, profile capability or execution path is registered by this
 change. It does not establish service execution, persistence, cleanup or detection
 coverage on any platform.
@@ -49,6 +49,66 @@ collector integration must establish source authenticity and actual observations
 The observer ID is reserved here and is not advertised as an available collector.
 
 ## Required integration before admission
+
+### Durable intent and recovery
+
+`ServiceIntentJournal` in `bluefire.tool_adapters.service_journal` persists a
+bounded history in a private SQLite database. Its location is trusted setup
+configuration, never an action or model parameter. A reservation binds one request
+to the exact immutable identity and reserves its generated unit nonce within that
+database. Reusing the nonce with a different authorization, workspace, manager or
+request is refused, including after cleanup. All coordinators for that resource
+scope must use the same journal; separate databases do not provide a shared lock.
+
+Before an effect, the future coordinator records its intent with an expected
+revision. The transaction commits before returning. Only one unresolved operation
+is permitted; a stale competing revision is refused. A restart preserves the
+pending operation as `inspection_required`. It never automatically repeats a
+start or assumes that an unrecorded result means nothing happened. A coordinator
+must inspect the owned resource and record the known or unknown result before
+continuing.
+
+Setup advances through creation, reload, enablement and start once each. A failed
+or unknown setup result permits only cleanup. Cleanup progresses through stop,
+disablement, owned-link removal, owned-unit removal and reload; a failed or unknown
+cleanup stage may be retried, preserving its previous result. The entire history
+is capped at 32 operations. Exhaustion retains `cleanup_required` and needs explicit
+reconciliation; it does not claim the resource was removed or permit an unrecorded
+effect. Successful cleanup reaches `verification_required`, never `verified_absent`.
+Only fresh independent observations can establish absence through the assessment
+contract above.
+
+The journal records metadata and invokes no service or process. Its canonical
+record hash detects inconsistent storage, not forgery by someone who controls the
+database. Schema, identity, revision, operation order and database key bindings
+are checked on every read. Setup must supply an existing owner-private parent.
+POSIX admission requires the current owner, directory mode 0700 and file mode
+0600; macOS additionally rejects extended ACLs and ownership-ignoring mounts.
+Windows admission verifies the native protected owner-only DACL, including
+inheritance on the parent; chmod is not a Windows privacy guarantee. Existing
+shared storage is refused without permission repair or database writes. A new
+file is exclusively created with private permissions before SQLite opens it.
+
+Every transaction pins the parent, leases the exact database identity, and
+rechecks ownership and privacy before commit. Links, reparse points and hardlinked
+databases are refused. Because SQLite opens a pathname, POSIX admission also checks
+the full ancestor chain before creating or opening storage: ancestors must belong
+to the coordinator or root, and group/other-writable directories must enforce
+sticky entry protection. This prevents another unprivileged owner from replacing
+the private parent through an otherwise writable ancestor. The same checks run on
+subsequent access without repairing permissions. These checks and cooperative locks do not defend against
+a malicious process with the same owner credentials, privileged path swaps or
+rollback to an older valid private database. Reopening never proves provenance
+or recovers evidence already exposed by earlier permissive permissions.
+
+Reservation does not prove initial absence, current ownership, readiness or
+permission. Approval expiry does not prevent recording results or inspecting
+cleanup history; it also gains no extension from a journal entry. The Rust effect
+boundary must still enforce exact authority and identity before each operation,
+and bind its resource receipts to these persisted intents before this can become
+an executable method. The journal is not registered in a product execution path.
+
+### Remaining runtime and observation work
 
 A concrete adapter must still supply the fixed unit contents and executable
 identity, sanitized unit environment, manager and cgroup readiness, trusted
