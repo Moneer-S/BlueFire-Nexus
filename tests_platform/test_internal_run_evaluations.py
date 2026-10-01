@@ -492,6 +492,37 @@ def test_known_unavailable_status_mismatch_excludes_permission_bit_gap(service):
 
 
 @pytest.mark.parametrize(
+    "exact_status,expected_missing",
+    [
+        ("unsupported_platform", []),
+        ("unavailable_windows", ["other_write_bit", "permission_status"]),
+    ],
+)
+def test_known_status_mismatch_excludes_available_operator_gap(
+    service, exact_status, expected_missing
+):
+    candidate = candidate_document(
+        service,
+        internal_candidate(
+            service,
+            {
+                "permission_status|contains": "available",
+                "permission_status": exact_status,
+                "other_write_bit": True,
+            },
+        ),
+    )
+    unavailable_windows = record(
+        {"permission_status": "unavailable_windows", "effective_access": "not_evaluated"}
+    )
+
+    result = engine.execute_internal(candidate, [unavailable_windows])
+
+    assert result["missing_fields"] == expected_missing
+    assert result["matched_evidence_ids"] == []
+
+
+@pytest.mark.parametrize(
     "selector",
     [
         "permission_status|contains",

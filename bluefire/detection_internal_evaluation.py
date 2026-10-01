@@ -132,6 +132,7 @@ def execute_internal(
         key.partition("|")[0] for key in candidate.selection
     )
     requires_available = False
+    available_accepting_status_selectors: set[str] = set()
     for raw_key, expected in candidate.selection.items():
         key, _, operator = raw_key.partition("|")
         if key != "permission_status":
@@ -148,21 +149,31 @@ def execute_internal(
             raise DetectionError("structured evaluation permission selector limit exceeded")
         # Use the same parsed field/operator semantics as matching. A substring
         # accepting available must not turn unavailable_windows into a match.
-        requires_available |= matches_value("available", expected, operator, strict=True)
+        if matches_value("available", expected, operator, strict=True):
+            requires_available = True
+            available_accepting_status_selectors.add(raw_key)
         checkpoint()
     available: set[str] = set()
     missing: set[str] = set()
     matched: list[str] = []
 
     def compare_fields(
-        content: Mapping[str, Any], *, permissions: bool, only: frozenset[str] | None = None
+        content: Mapping[str, Any],
+        *,
+        permissions: bool,
+        only: frozenset[str] | None = None,
+        exclude_raw_keys: frozenset[str] | None = None,
     ) -> tuple[set[str], bool]:
         nonlocal comparisons, comparison_bytes
         record_missing: set[str] = set()
         mismatch = False
         for raw_key, expected in candidate.selection.items():
             key, _, operator = raw_key.partition("|")
-            if (key in PERMISSION_FIELDS) != permissions or (only is not None and key not in only):
+            if (
+                (key in PERMISSION_FIELDS) != permissions
+                or (only is not None and key not in only)
+                or (exclude_raw_keys is not None and raw_key in exclude_raw_keys)
+            ):
                 continue
             checkpoint()
             comparisons += 1
@@ -229,17 +240,21 @@ def execute_internal(
                 # A validated unavailable group retains its status and access
                 # literal. Selectors accepting available still need permission
                 # evidence; absent bits remain unknown unless a known fact disagrees.
-                known_unavailable_fields = {"effective_access"}
-                if not requires_available:
-                    known_unavailable_fields.add("permission_status")
+                known_unavailable_fields = {"effective_access", "permission_status"}
+                known_unavailable_fields_for_gaps = set(known_unavailable_fields)
+                if requires_available:
+                    known_unavailable_fields_for_gaps.remove("permission_status")
                 _, mismatch = compare_fields(
                     record.content,
                     permissions=True,
                     only=frozenset(known_unavailable_fields),
+                    exclude_raw_keys=frozenset(available_accepting_status_selectors),
                 )
                 if mismatch:
                     continue
-                missing.update(record_missing | (permission_keys - known_unavailable_fields))
+                missing.update(
+                    record_missing | (permission_keys - known_unavailable_fields_for_gaps)
+                )
                 continue
         permission_missing, mismatch = compare_fields(record.content, permissions=True)
         record_missing.update(permission_missing)
