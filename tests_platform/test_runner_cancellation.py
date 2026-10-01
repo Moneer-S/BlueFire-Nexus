@@ -3154,7 +3154,15 @@ def test_cancellation_cleanup_binds_immutable_live_handshake_identities(
         request_path = root / "cancel.request"
         _wait_for_file(request_path)
         request = request_path.read_bytes()
-        (root / "cancel.ack").write_bytes(b"ack:" + request[7:])
+        acknowledgement = root / "cancel.ack"
+        staging = root / ".cancel.ack.bluefire-staging"
+        # Match the witness's complete-before-visible acknowledgement publication.
+        with staging.open("xb") as stream:
+            stream.write(b"ack:" + request[7:])
+            stream.flush()
+            os.fsync(stream.fileno())
+        assert not acknowledgement.exists()
+        staging.rename(acknowledgement)
 
     responder = threading.Thread(target=acknowledge)
     responder.start()
