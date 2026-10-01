@@ -207,6 +207,169 @@ def test_legacy_watchdog_without_service_channel_is_unchanged(monkeypatch):
         )
 
 
+@pytest.fixture
+def synthetic_descriptors(monkeypatch):
+    created, closed = [], []
+
+    def seal(payload):
+        descriptor = 501 + len(created)
+        created.append((descriptor, payload))
+        return descriptor
+
+    monkeypatch.setattr(launch, "_sealed_descriptor", seal)
+    monkeypatch.setattr(launch, "_read_sealed", lambda *_args, **_kwargs: b"synthetic")
+    monkeypatch.setattr(launch.os, "close", closed.append)
+    return SimpleNamespace(created=created, closed=closed)
+
+
+@pytest.mark.parametrize("state_home", [None, "", " \t "])
+def test_launch_captures_relocated_home_before_watchdog_environment_is_cleared(
+    monkeypatch, tmp_path, synthetic_descriptors, state_home
+):
+    from bluefire.secret_store import _posix_managed_product_root
+
+    relocated_home = tmp_path / "relocated-home"
+    monkeypatch.setenv("HOME", str(relocated_home))
+    monkeypatch.setenv("USERPROFILE", str(relocated_home))
+    if state_home is None:
+        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    else:
+        monkeypatch.setenv("XDG_STATE_HOME", state_home)
+    channel = launch._channels({"synthetic": True}, b"synthetic-envelope")
+    expected_state = relocated_home / ".local" / "state"
+
+    monkeypatch.setenv("HOME", str(tmp_path / "different-home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "different-home"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "different-state"))
+    assert channel.environment == {
+        launch._CONTEXT_ENV: "501",
+        launch._ENVELOPE_ENV: "502",
+        "XDG_STATE_HOME": str(expected_state),
+    }
+    assert (
+        _posix_managed_product_root(environ=channel.environment, platform_name="linux")
+        == expected_state / "bluefire-nexus"
+    )
+    channel.close()
+    assert synthetic_descriptors.closed == [501, 502]
+
+
+@pytest.mark.parametrize("state_form", ["absolute", "whitespace", "tilde"])
+def test_explicit_state_home_uses_product_precedence_and_normalization(
+    monkeypatch, tmp_path, synthetic_descriptors, state_form
+):
+    relocated_home = tmp_path / "relocated-home"
+    monkeypatch.setenv("HOME", str(relocated_home))
+    monkeypatch.setenv("USERPROFILE", str(relocated_home))
+    expected_state = tmp_path / "explicit-state"
+    configured_state = str(expected_state)
+    if state_form == "whitespace":
+        configured_state = f" \t{configured_state} \t"
+    elif state_form == "tilde":
+        configured_state = "~/explicit-state"
+        expected_state = relocated_home / "explicit-state"
+    monkeypatch.setenv("XDG_STATE_HOME", configured_state)
+
+    channel = launch._channels({"synthetic": True}, b"synthetic-envelope")
+    assert channel.environment["XDG_STATE_HOME"] == str(expected_state)
+    assert "HOME" not in channel.environment and "USERPROFILE" not in channel.environment
+    channel.close()
+    assert synthetic_descriptors.closed == [501, 502]
+
+
+def test_missing_home_captures_the_normal_account_home_fallback(
+    monkeypatch, tmp_path, synthetic_descriptors
+):
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.delenv("USERPROFILE", raising=False)
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    account_home = tmp_path / "account-home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: account_home))
+
+    channel = launch._channels({"synthetic": True}, b"synthetic-envelope")
+    assert channel.environment["XDG_STATE_HOME"] == str(account_home / ".local" / "state")
+    channel.close()
+    assert synthetic_descriptors.closed == [501, 502]
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="Linux owner-private product secret store"
+)
+def test_captured_state_home_reopens_only_the_synthetic_protected_store(monkeypatch, tmp_path):
+    from bluefire.secret_store import SecretStoreError, default_secret_provider
+
+    relocated_home = tmp_path / "relocated-home"
+    account_home = tmp_path / "account-home"
+    monkeypatch.setenv("HOME", str(relocated_home))
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    plaintext = b"authored synthetic service-launch bytes"
+    opaque = default_secret_provider().protect("synthetic.service-launch", plaintext)
+    channel = launch._channels({"synthetic": True}, b"synthetic-envelope")
+    try:
+        monkeypatch.delenv("HOME")
+        monkeypatch.delenv("USERPROFILE", raising=False)
+        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: account_home))
+        with pytest.raises(SecretStoreError):
+            default_secret_provider().unprotect("synthetic.service-launch", opaque)
+        assert not account_home.exists()
+
+        environment = channel.environment
+        assert "HOME" not in environment and "USERPROFILE" not in environment
+        monkeypatch.setenv("XDG_STATE_HOME", environment["XDG_STATE_HOME"])
+        assert default_secret_provider().unprotect("synthetic.service-launch", opaque) == plaintext
+        assert not account_home.exists()
+    finally:
+        channel.close()
+
+
+@pytest.mark.parametrize("state_form", ["relative", "parent", "nul"])
+def test_invalid_state_home_refuses_before_creating_descriptors(
+    monkeypatch, tmp_path, synthetic_descriptors, state_form
+):
+    state_home = {
+        "relative": "relative-state",
+        "parent": str(tmp_path / ".." / "state"),
+        "nul": str(tmp_path / "invalid\0state"),
+    }[state_form]
+    monkeypatch.setattr(launch.os, "environ", {"XDG_STATE_HOME": state_home})
+    with pytest.raises(RunnerTransportError, match="Protected owned-service launch"):
+        launch._channels({"synthetic": True}, b"synthetic-envelope")
+    assert synthetic_descriptors.created == [] and synthetic_descriptors.closed == []
+
+
+@pytest.mark.parametrize("error", [OSError, RuntimeError, UnicodeError, ValueError])
+def test_state_home_resolution_failure_cannot_leak_descriptors(
+    monkeypatch, synthetic_descriptors, error
+):
+    import bluefire.secret_store as secret_store
+
+    def unavailable(**_kwargs):
+        raise error("Synthetic unavailable home")
+
+    monkeypatch.setattr(secret_store, "_posix_managed_product_root", unavailable)
+    with pytest.raises(RunnerTransportError, match="Protected owned-service launch"):
+        launch._channels({"synthetic": True}, b"synthetic-envelope")
+    assert synthetic_descriptors.created == [] and synthetic_descriptors.closed == []
+
+
+def test_second_descriptor_failure_closes_the_first_after_state_capture(
+    monkeypatch, tmp_path, synthetic_descriptors
+):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    seal = launch._sealed_descriptor
+
+    def fail_second(payload):
+        if synthetic_descriptors.created:
+            raise OSError("Synthetic descriptor failure")
+        return seal(payload)
+
+    monkeypatch.setattr(launch, "_sealed_descriptor", fail_second)
+    with pytest.raises(OSError, match="Synthetic descriptor failure"):
+        launch._channels({"synthetic": True}, b"synthetic-envelope")
+    assert len(synthetic_descriptors.created) == 1
+    assert synthetic_descriptors.closed == [501]
+
+
 def test_invalid_channel_cleanup_preserves_refusal_and_closes_both_descriptors(monkeypatch):
     monkeypatch.setattr(launch.sys, "platform", "linux")
     monkeypatch.setenv(launch._CONTEXT_ENV, "501")
