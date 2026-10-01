@@ -9,7 +9,7 @@ import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -73,6 +73,29 @@ def launch_boundary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         path: os.open(path, os.O_RDONLY)
         for path in (runner.runner_binary, runner._watchdog_interpreter)
     }
+    # Authored Linux records model unit identities, not native metadata evidence.
+    # CPython 3.12.10 gives Windows lstat/fstat different ctime sources:
+    # https://github.com/python/cpython/blob/v3.12.10/Modules/posixmodule.c#L2009-L2018
+    # https://github.com/python/cpython/blob/v3.12.10/Python/fileutils.c#L1036-L1040
+    path_identities = MappingProxyType(
+        {
+            runner.runner_binary: (1, 101, stat.S_IFREG | 0o700, 1, 1000, 1000, 64, 100, 100),
+            runner._watchdog_interpreter: (
+                1,
+                102,
+                stat.S_IFREG | 0o700,
+                1,
+                1000,
+                1000,
+                64,
+                100,
+                100,
+            ),
+        }
+    )
+    descriptor_identities = MappingProxyType(
+        {descriptors[path]: identity for path, identity in path_identities.items()}
+    )
     state = SimpleNamespace(
         runner=runner,
         descriptors=descriptors,
@@ -98,7 +121,7 @@ def launch_boundary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         state.identity_diagnostic[side + "_observed"] = False
         observed = tuple(getattr(details, name) for name in IDENTITY_FIELDS)
         if side == "held" and initial_identity is None:
-            # This is the first actual fixture fstat result, not manufactured metadata.
+            # Observe the first returned fixture view, before explicit mutations.
             initial_identity = observed
         if initial_identity is not None:
             state.identity_diagnostic[side] = tuple(
@@ -114,8 +137,19 @@ def launch_boundary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         values = {name: getattr(details, name) for name in dir(details) if name.startswith("st_")}
         return SimpleNamespace(**(values | changes))
 
+    def identity_view(identity):
+        return SimpleNamespace(**dict(zip(IDENTITY_FIELDS, identity, strict=True)))
+
+    def changed_field(details, field):
+        value = getattr(details, field)
+        return changed_details(
+            details, **{field: value ^ 0o100 if field == "st_mode" else value + 1}
+        )
+
     def visible(path):
-        details = real_lstat(path)
+        if path not in path_identities:
+            return real_lstat(path)
+        details = identity_view(path_identities[path])
         if state.changed and path == state.selected:
             if state.mutation[1] == "missing":
                 raise FileNotFoundError("authored missing canonical path")
@@ -125,12 +159,19 @@ def launch_boundary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                 return changed_details(details, st_ino=details.st_ino + 1)
             if state.mutation[1] == "mode":
                 return changed_details(details, st_mode=details.st_mode ^ 0o100)
+            if state.mutation[1] == "named":
+                return changed_field(details, state.mutation[2])
         return details
 
     def opened(descriptor):
-        details = real_fstat(descriptor)
-        if state.changed and state.mutation[1] == "fd":
-            return changed_details(details, st_ino=details.st_ino + 1)
+        if descriptor not in descriptor_identities:
+            return real_fstat(descriptor)
+        details = identity_view(descriptor_identities[descriptor])
+        if state.changed and descriptor == descriptors[state.selected]:
+            if state.mutation[1] == "fd":
+                return changed_details(details, st_ino=details.st_ino + 1)
+            if state.mutation[1] == "held":
+                return changed_field(details, state.mutation[2])
         return details
 
     def observed_visible(path):
@@ -415,6 +456,43 @@ def test_identity_changes_refuse_before_target_execution_and_reap_started_helper
     else:
         assert len(state.calls) == 1
         assert state.events.index("armed") < state.events.index("kill") < state.events.index("reap")
+
+
+@pytest.mark.parametrize("phase", ("prelaunch", "prego"))
+@pytest.mark.parametrize("side", ("held", "named"))
+@pytest.mark.parametrize("field", IDENTITY_FIELDS)
+def test_each_identity_field_refuses_before_go_and_preserves_cleanup(
+    launch_boundary, capsys, phase, side, field
+):
+    state = launch_boundary
+    state.mutation = phase, side, field
+    with pytest.raises(RunnerTransportError, match="containment failed"):
+        _launch(state, state.selected)
+    record = json.loads(capsys.readouterr().out.removeprefix("linux-launch-fixture-diagnostic "))
+    assert state.changed is True and record["mutation_applied"] is True
+    assert record["phase"] == phase and record["role"] == "runner"
+    assert record[side + "_differing_fields"] == [field]
+    other_side = "named" if side == "held" else "held"
+    assert record[other_side + "_differing_fields"] == []
+    assert record["held_observed"] is True and record["named_observed"] is True
+    assert record["absolute"] is True and record["regular"] is True
+    assert record["single_link"] is (not (side == "named" and field == "st_nlink"))
+    assert record["read_failed"] == []
+    assert "go" not in state.events
+    if phase == "prelaunch":
+        assert not state.calls
+        assert state.events == ["control-close", "control-close"]
+    else:
+        assert len(state.calls) == 1
+        assert state.events == [
+            "spawn",
+            "control-close",
+            "armed",
+            "kill",
+            "reap",
+            "control-close",
+            "control-close",
+        ]
 
 
 @pytest.mark.parametrize("method", ("watchdog", "invoke", "invoke-task"))
