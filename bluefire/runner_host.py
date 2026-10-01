@@ -22,6 +22,14 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .runner_client import RunnerTransport, SubprocessRustRunner
+from .runner_host_identity import (
+    LOOPBACK_HOST,
+    PROCESS_RECORD_MAX_BYTES,
+    PROCESS_RECORD_SCHEMA_VERSION,
+    RunnerHostError,
+    process_record_authentication,
+    validate_process_record,
+)
 from .runner_transport import AuthenticatedRunnerServer
 from .runner_trust import (
     RunnerEnrollment,
@@ -33,34 +41,8 @@ from .runner_trust import (
 from .secret_store import SecretProvider
 from .util import canonical_json_bytes, file_hash
 
-PROCESS_RECORD_SCHEMA_VERSION = "bluefire.runner-process.v1"
-PROCESS_RECORD_MAX_BYTES = 16 * 1024
-LOOPBACK_HOST = "127.0.0.1"
-
 _HEX_32 = re.compile(r"^[0-9a-f]{64}$")
-_HEX_16 = re.compile(r"^[0-9a-f]{32}$")
-_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _TASK_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
-_PROCESS_RECORD_FIELDS = frozenset(
-    {
-        "schema_version",
-        "launch_id",
-        "pid",
-        "host",
-        "port",
-        "runner_id",
-        "client_id",
-        "server_fingerprint",
-        "server_instance_id",
-        "runner_binary_digest",
-        "started_at_ns",
-        "authentication",
-    }
-)
-
-
-class RunnerHostError(RuntimeError):
-    """A deliberately path- and secret-free managed-host refusal."""
 
 
 def _receiver_task_key(enrollment: RunnerEnrollment, task_id: str) -> bytes:
@@ -71,59 +53,6 @@ def _receiver_task_key(enrollment: RunnerEnrollment, task_id: str) -> bytes:
         b"bluefire.loopback-receiver.task.v1\0" + task_id.encode("ascii"),
         hashlib.sha256,
     ).digest()
-
-
-def process_record_authentication(enrollment: RunnerEnrollment, payload: Mapping[str, Any]) -> str:
-    """Authenticate the exact process-record payload with enrollment material."""
-
-    return (
-        "sha256:"
-        + hmac.new(
-            enrollment.hmac_key(), canonical_json_bytes(dict(payload)), hashlib.sha256
-        ).hexdigest()
-    )
-
-
-def validate_process_record(
-    value: Any,
-    *,
-    enrollment: RunnerEnrollment,
-    expected_binary_digest: str,
-) -> dict[str, Any]:
-    """Validate a process record as an address hint, never as health proof."""
-
-    if not isinstance(value, dict) or set(value) != _PROCESS_RECORD_FIELDS:
-        raise RunnerHostError("Runner process record is invalid.")
-    unsigned = {key: value[key] for key in value if key != "authentication"}
-    authentication = value.get("authentication")
-    expected_authentication = process_record_authentication(enrollment, unsigned)
-    if (
-        value.get("schema_version") != PROCESS_RECORD_SCHEMA_VERSION
-        or not isinstance(value.get("launch_id"), str)
-        or _HEX_32.fullmatch(str(value["launch_id"])) is None
-        or isinstance(value.get("pid"), bool)
-        or not isinstance(value.get("pid"), int)
-        or not 1 <= int(value["pid"]) <= 2**63 - 1
-        or value.get("host") != LOOPBACK_HOST
-        or isinstance(value.get("port"), bool)
-        or not isinstance(value.get("port"), int)
-        or not 1 <= int(value["port"]) <= 65535
-        or value.get("runner_id") != enrollment.runner_id
-        or value.get("client_id") != enrollment.client_id
-        or value.get("server_fingerprint") != enrollment.metadata["server_fingerprint"]
-        or not isinstance(value.get("server_instance_id"), str)
-        or _HEX_16.fullmatch(str(value["server_instance_id"])) is None
-        or value.get("runner_binary_digest") != expected_binary_digest
-        or _DIGEST.fullmatch(str(value.get("runner_binary_digest"))) is None
-        or isinstance(value.get("started_at_ns"), bool)
-        or not isinstance(value.get("started_at_ns"), int)
-        or not 1 <= int(value["started_at_ns"]) <= 2**63 - 1
-        or not isinstance(authentication, str)
-        or _DIGEST.fullmatch(authentication) is None
-        or not hmac.compare_digest(authentication, expected_authentication)
-    ):
-        raise RunnerHostError("Runner process record is invalid.")
-    return dict(value)
 
 
 def read_process_record(
@@ -209,6 +138,8 @@ def serve_managed_runner(
             enrollment_root,
             secret_provider=secret_provider,
         )
+        from .service_launch import ConfiguredServiceLaunchAuthority
+
         transport = runner or SubprocessRustRunner(
             binary,
             work_root,
@@ -216,6 +147,9 @@ def serve_managed_runner(
             receiver_task_key_factory=lambda task_id: _receiver_task_key(
                 enrollment,
                 task_id,
+            ),
+            service_launch_authority=ConfiguredServiceLaunchAuthority(
+                enrollment.root, secret_provider
             ),
         )
         server = AuthenticatedRunnerServer(

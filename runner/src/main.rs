@@ -47,6 +47,12 @@ fn execute_command(args: &[String]) -> Result<i32, String> {
     }
     let manifest_path = take_flag_value(args, "--manifest")?;
     let profile_path = take_flag_value(args, "--profile")?;
+    if bluefire_runner::service_admission::verify_inherited_files(&manifest_path, &profile_path)?
+        .is_some()
+    {
+        // No reservation may imply possible effects for an unavailable adapter.
+        return Err("the fixed owned-service adapter is not registered in this runner".into());
+    }
     let result = execute_files(&manifest_path, &profile_path).map_err(|error| error.to_string())?;
     println!(
         "{}",
@@ -101,6 +107,7 @@ fn real_main() -> Result<i32, String> {
         "inspect-native-tool" => inspect_command(&args[1..]),
         "inspect-native-tool-candidate" => inspect_candidate_command(&args[1..]),
         "execute" => execute_command(&args[1..]),
+        "owned-service-payload" => bluefire_runner::service_payload::run_fixed_wait(&args[1..]),
         _ => Err(usage().to_string()),
     }
 }

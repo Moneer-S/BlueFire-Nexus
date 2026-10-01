@@ -19,6 +19,7 @@ import pytest
 import bluefire.runner_lifecycle as lifecycle_module
 from bluefire import __version__
 from bluefire.config import load_config
+from bluefire.owned_service_authority import OwnedServiceGrant
 from bluefire.registry import load_builtin_registry
 from bluefire.runner_bootstrap import (
     BootstrappedRunner,
@@ -34,7 +35,7 @@ from bluefire.runner_contracts import (
     seal_profile,
 )
 from bluefire.runner_lifecycle import ManagedRunnerLifecycle, RunnerLifecycleError
-from bluefire.runner_transport import runner_result_namespace_path
+from bluefire.runner_transport import AuthenticatedRunnerServer, runner_result_namespace_path
 from bluefire.runner_trust import load_local_enrollment
 from bluefire.util import canonical_json_bytes, content_hash, file_hash
 from tests_platform.runner_lifecycle_host_helper import ProcessTestSecretProvider
@@ -276,6 +277,33 @@ def test_placeholder_execute_row_is_not_accepted_as_settled_history(
             (canonical_json_bytes({"request": 0}),),
         )
     _assert_review_refused(history)
+
+
+def test_validated_service_grant_is_not_discarded_during_history_review(
+    history: _HistoryFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = json.loads(
+        (ROOT / "tests_platform/fixtures/owned_service_admission_v1.json").read_text()
+    )
+    grant = OwnedServiceGrant.from_mapping(fixture["admission"]["grant"])
+    decode = AuthenticatedRunnerServer._stored_execute_payload
+
+    def service_payload(row):
+        manifest, profile, absent_grant = decode(row)
+        assert absent_grant is None
+        # Isolate the upgrade caller's handling of the typed decoder result.
+        # Request/grant binding validation remains the transport's contract.
+        return manifest, profile, grant
+
+    monkeypatch.setattr(
+        AuthenticatedRunnerServer, "_stored_execute_payload", staticmethod(service_payload)
+    )
+    bootstrap = history.lifecycle.bootstrap_record_path.read_bytes()
+    preserved = _preserved_bytes(history)
+    with pytest.raises(RunnerLifecycleError, match="owned-service history"):
+        history.review()
+    assert history.lifecycle.bootstrap_record_path.read_bytes() == bootstrap
+    assert _preserved_bytes(history) == preserved
 
 
 @pytest.mark.parametrize("document", ["manifest", "profile"])

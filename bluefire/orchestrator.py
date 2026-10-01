@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import json
 import os
 import threading
 import time
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .adaptive_dispatch import (
@@ -74,6 +73,20 @@ from .execution_progress import (
 from .job_runtime import JobCancelled
 from .native_tool_execution_readiness import inspected_tool_rows
 from .observation_integrity import evaluate_observation_integrity
+from .owned_service_authority import (
+    OwnedServiceScope,
+)
+from .owned_service_orchestration import (
+    compile_run_scope_orchestrator,
+    mint_step_grant,
+    owned_service_digest,
+    owned_service_policy,
+    plan_has_owned_service,
+    recheck_pending_service_operation_binding,
+    service_grant_kwargs,
+    validate_approval_scope_binding,
+    validate_run_options,
+)
 from .permission_method import existing_cleanup_receipts, permission_objective_evidence
 from .planned_runner_inventory import (
     PlannedRunnerInventoryError,
@@ -122,6 +135,24 @@ from .runner_inventory import (
     validate_builtin_action_inventory,
 )
 from .runner_receipt_authority import validate_result_receipts
+from .runner_receipt_validation import (
+    MAX_DISCOVERED_RECEIPTS as _MAX_DISCOVERED_RECEIPTS,
+)
+from .runner_receipt_validation import (
+    MAX_RECEIPT_BYTES as _MAX_RECEIPT_BYTES,
+)
+from .runner_receipt_validation import (
+    RECEIPT_COMMIT_FIELDS as _RECEIPT_COMMIT_FIELDS,
+)
+from .runner_receipt_validation import (
+    RECEIPT_FIELDS as _RECEIPT_FIELDS,
+)
+from .runner_receipt_validation import (
+    _decode_receipt_document,
+    _is_lower_hex_digest,
+    _safe_receipt_path,
+    _valid_owned_receipt_paths,
+)
 from .runtime_proposals import (
     RuntimeProposalError,
     RuntimeProposals,
@@ -129,33 +160,10 @@ from .runtime_proposals import (
     approved_replay_transition,
 )
 from .simulation import SimulationError, SimulationRegistry
+from .tool_adapters.service_journal import ServiceIntentJournal
+from .tool_adapters.service_operation_binding import ServiceOperationBinding
 from .util import content_hash, parse_iso8601_datetime
 
-_RECEIPT_FIELDS = frozenset(
-    {
-        "schema_version",
-        "receipt_id",
-        "request_hash",
-        "action_id",
-        "runner_profile_id",
-        "workspace_id",
-        "created_at",
-        "paths",
-    }
-)
-_RECEIPT_COMMIT_FIELDS = frozenset(
-    {
-        "schema_version",
-        "receipt_id",
-        "runner_profile_id",
-        "workspace_id",
-        "committed_at",
-    }
-)
-_OWNED_PATH_FIELDS = frozenset({"relative_path", "kind", "sha256", "size"})
-_LOWER_HEX_DIGEST = frozenset("0123456789abcdef")
-_MAX_DISCOVERED_RECEIPTS = 512
-_MAX_RECEIPT_BYTES = 256 * 1024
 _MAX_RECOVERY_FILES = 512
 _MAX_RECOVERY_FILE_BYTES = 1024 * 1024 * 1024 * 1024
 _CHECKPOINTABLE_PREFIX_ACTIONS = frozenset(
@@ -174,44 +182,6 @@ _CHECKPOINT_FILE_ARTIFACTS = frozenset(
     }
 )
 _CHECKPOINT_TRANSIENT_ARTIFACT_KEYS = frozenset({"receipt_id", "receipt_ids"})
-
-
-def _is_lower_hex_digest(value: Any) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in _LOWER_HEX_DIGEST for character in value)
-    )
-
-
-def _safe_receipt_path(value: Any) -> str | None:
-    if (
-        not isinstance(value, str)
-        or not 1 <= len(value) <= 4096
-        or "\\" in value
-        or ":" in value
-        or any(ord(character) < 32 for character in value)
-    ):
-        return None
-    candidate = PurePosixPath(value)
-    if candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts):
-        return None
-    for component in candidate.parts:
-        trimmed = component.rstrip(". ")
-        base = trimmed.split(".", 1)[0].upper()
-        if (
-            component.casefold() == ".bluefire"
-            or component.endswith((".", " "))
-            or base in {"CON", "PRN", "AUX", "NUL"}
-            or (
-                len(base) == 4
-                and (base.startswith("COM") or base.startswith("LPT"))
-                and base[-1] in "123456789"
-            )
-        ):
-            return None
-    normalized = candidate.as_posix()
-    return normalized if normalized == value else None
 
 
 def _checkpoint_artifact_value(value: Any, *, depth: int = 0) -> Any:
@@ -266,67 +236,6 @@ def _checkpoint_material_paths(value: Any, *, depth: int = 0) -> tuple[str, ...]
         for item in value:
             paths.extend(_checkpoint_material_paths(item, depth=depth + 1))
     return tuple(dict.fromkeys(paths))
-
-
-def _valid_owned_receipt_paths(paths: Any, *, max_files: int, max_bytes: int) -> bool:
-    if not isinstance(paths, list) or not paths or len(paths) > min(max_files * 8, 4096):
-        return False
-    seen: set[str] = set()
-    files: list[str] = []
-    directories: list[str] = []
-    total_size = 0
-    for raw in paths:
-        if not isinstance(raw, dict) or set(raw) != _OWNED_PATH_FIELDS:
-            return False
-        relative = _safe_receipt_path(raw.get("relative_path"))
-        kind = raw.get("kind")
-        if relative is None or relative in seen or kind not in {"file", "directory"}:
-            return False
-        seen.add(relative)
-        if kind == "file":
-            digest = raw.get("sha256")
-            size = raw.get("size")
-            if (
-                not _is_lower_hex_digest(digest)
-                or isinstance(size, bool)
-                or not isinstance(size, int)
-                or not 0 <= size <= max_bytes
-            ):
-                return False
-            files.append(relative)
-            total_size += size
-        else:
-            if raw.get("sha256") is not None or raw.get("size") is not None:
-                return False
-            directories.append(relative)
-    if not files or len(files) > max_files or total_size > max_files * max_bytes:
-        return False
-    return all(any(file.startswith(directory + "/") for file in files) for directory in directories)
-
-
-def _decode_receipt_document(payload: bytes) -> dict[str, Any]:
-    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError("duplicate JSON key")
-            result[key] = value
-        return result
-
-    def reject_non_finite(value: str) -> None:
-        raise ValueError(f"non-finite JSON number: {value}")
-
-    try:
-        document = json.loads(
-            payload.decode("utf-8"),
-            object_pairs_hook=reject_duplicate_keys,
-            parse_constant=reject_non_finite,
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
-        raise RunnerTransportError("runner receipt could not be decoded") from exc
-    if not isinstance(document, dict):
-        raise RunnerTransportError("runner receipt record is invalid")
-    return document
 
 
 def _workspace_id_candidates(sandbox_root: Path) -> frozenset[str]:
@@ -424,6 +333,7 @@ class Orchestrator:
         collector_registry: CollectorRegistry | None = None,
         receiver_authority: Mapping[str, Any] | None = None,
         before_receiver_task: Callable[..., None] | None = None,
+        service_intent_journal: ServiceIntentJournal | None = None,
     ) -> None:
         self.registry = registry
         self.store = store
@@ -432,6 +342,7 @@ class Orchestrator:
         self.approval_store = approval_store
         self.receiver_authority = dict(receiver_authority or {})
         self.before_receiver_task = before_receiver_task
+        self.service_intent_journal = service_intent_journal
         self.catalog_authority = dict(catalog_authority) if catalog_authority is not None else None
         self.action_bindings = {
             (str(behavior_id), str(action_id)): dict(binding)
@@ -594,6 +505,7 @@ class Orchestrator:
         collector_ids: Sequence[str] = (),
         collector_runtime_settings: CollectorRuntimeSettings | None = None,
         collector_registry_authority: Mapping[str, Any] | None = None,
+        owned_service_scope: Mapping[str, Any] | OwnedServiceScope | None = None,
     ) -> Mapping[str, Any]:
         execution_started = time.monotonic()
         if collector_ids and collector_runtime_settings is not None:
@@ -617,6 +529,18 @@ class Orchestrator:
             raise OrchestrationError("materialized checkpoint replay requires Execute mode")
         if replay_checkpoint is not None and resume_from_step_id is None:
             raise OrchestrationError("materialized checkpoint replay requires a restart node")
+        try:
+            validate_run_options(
+                owned_service_scope,
+                self.service_intent_journal is not None,
+                mode=mode,
+                execute_mode=ExecutionMode.EXECUTE,
+                replay=replay,
+                replay_checkpoint=replay_checkpoint,
+                resume_from_step_id=resume_from_step_id,
+            )
+        except ContractError as exc:
+            raise OrchestrationError(str(exc)) from exc
         if mode is ExecutionMode.EXECUTE and resume_from_step_id is not None and seed_artifacts:
             raise OrchestrationError("Execute restart cannot trust metadata-seeded artifacts")
         if checkpoint is not None:
@@ -653,6 +577,8 @@ class Orchestrator:
         observer: SandboxObserver | None = None
         authorized_target_scope: Mapping[str, Any] = {"scope_refs": []}
         adaptive_authorization: Mapping[str, Any] | None = None
+        compiled_owned_service_scope: OwnedServiceScope | None = None
+        compiled_owned_service_operation_binding: ServiceOperationBinding | None = None
         validated_approval: Mapping[str, Any] | None = None
         approval_binding: Mapping[str, str] | None = None
         approval_context: dict[str, Any] = dict(self.receiver_authority)
@@ -662,6 +588,20 @@ class Orchestrator:
                     "Execute requires an explicit profile, sandbox root, and Rust runner"
                 )
             authorized_target_scope = self._validated_target_scope(target_scope, profile)
+            try:
+                (
+                    compiled_owned_service_scope,
+                    compiled_owned_service_operation_binding,
+                ) = compile_run_scope_orchestrator(
+                    owned_service_scope,
+                    profile=profile,
+                    scenario_id=scenario.id,
+                    plan_steps=plan.steps,
+                    target_scope=authorized_target_scope,
+                    service_journal=self.service_intent_journal,
+                )
+            except ContractError as exc:
+                raise OrchestrationError(str(exc)) from exc
             adaptive_authorization = compile_adaptive_authorization(
                 registry=self.registry,
                 scenario=scenario,
@@ -720,7 +660,12 @@ class Orchestrator:
                 runner_readiness=runner_readiness,
                 catalog_authority=self.catalog_authority,
                 adaptive_authorization=adaptive_authorization,
+                owned_service_scope_digest=owned_service_digest(compiled_owned_service_scope),
             )
+            try:
+                validate_approval_scope_binding(approval_binding, compiled_owned_service_scope)
+            except ContractError as exc:
+                raise OrchestrationError(str(exc)) from exc
             if self.approval_store is None:
                 raise OrchestrationError("Execute requires a durable approval verifier")
             approval_id = approval_record.get("approval_id") if approval_record else None
@@ -831,6 +776,7 @@ class Orchestrator:
                 "catalog_authority": (
                     dict(self.catalog_authority) if self.catalog_authority is not None else None
                 ),
+                **owned_service_policy(compiled_owned_service_scope),
             },
             profile=profile.to_dict() if profile else None,
             replay=replay,
@@ -877,6 +823,8 @@ class Orchestrator:
                 collector_sandbox_root=(Path(sandbox_root) if sandbox_root is not None else None),
                 simulation=simulation,
                 adaptive_authorization=adaptive_authorization,
+                owned_service_scope=compiled_owned_service_scope,
+                owned_service_operation_binding=compiled_owned_service_operation_binding,
             )
         except BaseException as exc:
             if simulation is not None and isinstance(
@@ -927,6 +875,7 @@ class Orchestrator:
                 and runner_profile_doc is not None
                 and observer is not None
                 and receipt_ids
+                and compiled_owned_service_scope is None
             ):
                 self._attempt_emergency_cleanup(
                     run_id=handle.run_id,
@@ -974,6 +923,8 @@ class Orchestrator:
         collector_sandbox_root: Path | None = None,
         simulation: _SimulationProgress | None = None,
         adaptive_authorization: Mapping[str, Any] | None = None,
+        owned_service_scope: OwnedServiceScope | None = None,
+        owned_service_operation_binding: ServiceOperationBinding | None = None,
     ) -> Mapping[str, Any]:
         evidence = simulation.evidence if simulation is not None else EvidenceGraph()
         artifacts: dict[str, Any] = dict(seed_artifacts or {})
@@ -1223,6 +1174,9 @@ class Orchestrator:
                     observer=observer,
                     approved_by=approved_by,
                     approval_record=approval_record,
+                    approval_binding=approval_binding,
+                    owned_service_scope=owned_service_scope,
+                    owned_service_operation_binding=owned_service_operation_binding,
                     authorized_target_scope=authorized_target_scope,
                     receipt_ids=receipt_ids,
                     action_timeout_ms=action_timeout_ms,
@@ -1733,6 +1687,7 @@ class Orchestrator:
                             runner_readiness=runner_readiness,
                             catalog_authority=self.catalog_authority,
                             adaptive_authorization=adaptive_authorization,
+                            owned_service_scope_digest=owned_service_digest(owned_service_scope),
                         ),
                     )
                 for draft in checkpoint_drafts:
@@ -1888,6 +1843,10 @@ class Orchestrator:
             ai_provider=ai_provider,
             action_implementations=action_implementations,
         )
+        if plan_has_owned_service(plan.steps):
+            raise OrchestrationError(
+                "owned-service cleanup recovery requires its separate authenticated cleanup grant"
+            )
         authorized_scope = self._validated_target_scope(target_scope, profile)
         adaptive_authorization = compile_adaptive_authorization(
             registry=self.registry,
@@ -2604,6 +2563,9 @@ class Orchestrator:
         collector_ids: Sequence[str] = (),
         collector_runtime_active: bool = False,
         reviewed_step_check: Callable[[], None] | None = None,
+        approval_binding: Mapping[str, Any] | None = None,
+        owned_service_scope: OwnedServiceScope | None = None,
+        owned_service_operation_binding: ServiceOperationBinding | None = None,
     ) -> tuple[dict[str, Any], tuple[EvidenceRecord, ...], PolicyDecision, tuple[str, ...]]:
         action = self.registry.get_action(str(step.action_id))
         if reviewed_step_check is not None:
@@ -2732,6 +2694,12 @@ class Orchestrator:
             return row, (record,), decision, ()
 
         assert self.runner is not None
+        task_id = self._execution_task_id(manifest, runner_profile)
+        service_step = (
+            owned_service_scope is not None
+            and owned_service_scope.to_dict()["step_id"] == step.step_id
+            and owned_service_scope.to_dict()["action_id"] == step.action_id
+        )
         receipt_limits = manifest.get("limits")
         if not isinstance(receipt_limits, Mapping):
             raise OrchestrationError("runner manifest has no receipt recovery limits")
@@ -2784,10 +2752,6 @@ class Orchestrator:
                 getattr(wrapped_runner, "execute_task", None)
             )
             if callable(execute_task) and wrapped_supports_tasks:
-                task_id = self._execution_task_id(
-                    manifest,
-                    runner_profile,
-                )
                 runner_task_id = task_id
                 if self.before_receiver_task is not None:
                     self.before_receiver_task(step, bound_inputs, manifest, task_id)
@@ -2797,6 +2761,35 @@ class Orchestrator:
                         )
                 if reviewed_step_check is not None:
                     reviewed_step_check()
+                service_grant = None
+                if service_step:
+                    try:
+                        current_binding = recheck_pending_service_operation_binding(
+                            self.service_intent_journal,
+                            owned_service_scope,
+                            owned_service_operation_binding,
+                        )
+                        service_grant = mint_step_grant(
+                            owned_service_scope,
+                            approval_record=approval_record,
+                            approval_binding=approval_binding,
+                            operation_binding=current_binding,
+                            run_id=run_id,
+                            step=step,
+                            manifest=manifest,
+                            sealed_profile=runner_profile,
+                            task_id=task_id,
+                        )
+                        service_kwargs = service_grant_kwargs(
+                            self.runner, execute_task, service_grant
+                        )
+                    except ContractError as exc:
+                        raise OrchestrationError(str(exc)) from exc
+                else:
+                    try:
+                        service_kwargs = service_grant_kwargs(self.runner, execute_task, None)
+                    except ContractError as exc:
+                        raise OrchestrationError(str(exc)) from exc
                 dispatch_requested = True
                 runner_result = execute_task(
                     manifest,
@@ -2806,8 +2799,13 @@ class Orchestrator:
                     durable_result_path=(
                         self.store.root / ".bluefire-runner-results" / f"{task_id}.json"
                     ),
+                    **service_kwargs,
                 )
             else:
+                if service_step:
+                    raise OrchestrationError(
+                        "owned-service dispatch requires authenticated task transport"
+                    )
                 if self.before_receiver_task is not None:
                     raise RunnerTransportError(
                         "Receiver-bound execution requires the native single-task transport."
