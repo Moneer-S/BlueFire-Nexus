@@ -105,7 +105,9 @@ fn components(
                 || *part == "."
                 || *part == ".."
                 || part.len() > 255
-                || !part.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._-@".contains(&byte))
+                || !part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._-@".contains(&byte))
         })
     {
         return Err(CgroupReadIssue::ScopeIdentity);
@@ -127,15 +129,29 @@ pub(crate) fn acquire_cgroup_events(
     let manager = admission
         .observation_manager()
         .ok_or(CgroupReadIssue::AdmissionUnavailable)?;
-    let budget = Budget { deadline: manager.deadline(), cancelled };
+    let budget = Budget {
+        deadline: manager.deadline(),
+        cancelled,
+    };
     budget.check()?;
-    let parts = components(admission.operation_binding(), admission.owner_uid(), admission.unit_nonce(), scope)?;
+    let parts = components(
+        admission.operation_binding(),
+        admission.owner_uid(),
+        admission.unit_nonce(),
+        scope,
+    )?;
     let recheck_admission = || {
         budget.check()?;
         recheck_admission_identity(admission, manager.deadline()).map_err(|issue| {
-            if issue == QueryReadIssue::Deadline { CgroupReadIssue::Deadline } else { CgroupReadIssue::ScopeIdentity }
+            if issue == QueryReadIssue::Deadline {
+                CgroupReadIssue::Deadline
+            } else {
+                CgroupReadIssue::ScopeIdentity
+            }
         })?;
-        manager.recheck().map_err(|_| CgroupReadIssue::ScopeIdentity)?;
+        manager
+            .recheck()
+            .map_err(|_| CgroupReadIssue::ScopeIdentity)?;
         budget.check()
     };
     recheck_admission()?;
@@ -150,7 +166,10 @@ pub(crate) fn acquire_cgroup_events(
     attachment.recheck(&budget)?;
     attachment.recheck_absolute_root(&budget)?;
     recheck_admission()?;
-    Ok(AcquiredCgroupEvents { binding: scope.binding().clone(), bytes })
+    Ok(AcquiredCgroupEvents {
+        binding: scope.binding().clone(),
+        bytes,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,22 +186,30 @@ fn filesystem(file: &File) -> Result<Filesystem, CgroupReadIssue> {
     // and the file is held. An empty name with AT_EMPTY_PATH inspects that FD.
     let (fs, stat) = unsafe {
         if libc::fstatfs(file.as_raw_fd(), fs.as_mut_ptr()) != 0
-            || libc::statx(file.as_raw_fd(), c"".as_ptr(), libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
-                           libc::STATX_MNT_ID, stat.as_mut_ptr()) != 0
+            || libc::statx(
+                file.as_raw_fd(),
+                c"".as_ptr(),
+                libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
+                libc::STATX_MNT_ID,
+                stat.as_mut_ptr(),
+            ) != 0
         {
             return Err(CgroupReadIssue::UnsupportedFilesystem);
         }
         (fs.assume_init(), stat.assume_init())
     };
-    if stat.stx_mask & libc::STATX_MNT_ID == 0 || stat.stx_mnt_id == 0
-        || stat.stx_attributes_mask & libc::STATX_ATTR_MOUNT_ROOT == 0
+    let mount_root_mask = u64::try_from(libc::STATX_ATTR_MOUNT_ROOT)
+        .map_err(|_| CgroupReadIssue::UnsupportedFilesystem)?;
+    if stat.stx_mask & libc::STATX_MNT_ID == 0
+        || stat.stx_mnt_id == 0
+        || stat.stx_attributes_mask & mount_root_mask == 0
     {
         return Err(CgroupReadIssue::UnsupportedFilesystem);
     }
     Ok(Filesystem {
         kind: i128::from(fs.f_type),
         mount: stat.stx_mnt_id,
-        mount_root: stat.stx_attributes & libc::STATX_ATTR_MOUNT_ROOT != 0,
+        mount_root: stat.stx_attributes & mount_root_mask != 0,
     })
 }
 
@@ -199,11 +226,18 @@ struct Identity {
 
 fn metadata_identity(metadata: &Metadata, fs: Filesystem) -> Identity {
     Identity {
-        device: metadata.dev(), inode: metadata.ino(), mode: metadata.mode(),
-        uid: metadata.uid(), gid: metadata.gid(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        mode: metadata.mode(),
+        uid: metadata.uid(),
+        gid: metadata.gid(),
         // Directory timestamps and child-link counts change with unrelated
         // siblings. A held inode pins identity; only deletion matters here.
-        links: if metadata.is_dir() { u64::from(metadata.nlink() != 0) } else { metadata.nlink() },
+        links: if metadata.is_dir() {
+            u64::from(metadata.nlink() != 0)
+        } else {
+            metadata.nlink()
+        },
         filesystem: fs,
     }
 }
@@ -214,15 +248,26 @@ fn identity(file: &File, probe: Probe) -> Result<Identity, CgroupReadIssue> {
     let before = file.metadata().map_err(|_| CgroupReadIssue::Unavailable)?;
     let fs = probe(file)?;
     let before = metadata_identity(&before, fs);
-    let after = metadata_identity(&file.metadata().map_err(|_| CgroupReadIssue::Unavailable)?, fs);
-    if before != after { return Err(CgroupReadIssue::Changed); }
+    let after = metadata_identity(
+        &file.metadata().map_err(|_| CgroupReadIssue::Unavailable)?,
+        fs,
+    );
+    if before != after {
+        return Err(CgroupReadIssue::Changed);
+    }
     Ok(before)
 }
 
 fn protected(value: &Identity, directory: bool, owner: u32) -> Result<(), CgroupReadIssue> {
-    let kind = if directory { libc::S_IFDIR } else { libc::S_IFREG };
-    if value.mode & libc::S_IFMT != kind || value.mode & 0o7022 != 0
-        || (value.uid != 0 && value.uid != owner) || value.links == 0
+    let kind = if directory {
+        libc::S_IFDIR
+    } else {
+        libc::S_IFREG
+    };
+    if value.mode & libc::S_IFMT != kind
+        || value.mode & 0o7022 != 0
+        || (value.uid != 0 && value.uid != owner)
+        || value.links == 0
         || (!directory && (value.links != 1 || value.mode & 0o222 != 0))
     {
         return Err(CgroupReadIssue::ScopeIdentity);
@@ -242,12 +287,18 @@ impl Attachment {
     fn fixed_root(budget: &Budget<'_>) -> Result<Self, CgroupReadIssue> {
         budget.check()?;
         let mut attachment = Self {
-            files: vec![open_root()?], names: Vec::new(), identities: Vec::new(),
-            cgroup_root: 3, probe: filesystem,
+            files: vec![open_root()?],
+            names: Vec::new(),
+            identities: Vec::new(),
+            cgroup_root: 3,
+            probe: filesystem,
         };
         for name in ["sys", "fs", "cgroup"] {
             budget.check()?;
-            let last = attachment.files.last().ok_or(CgroupReadIssue::Unavailable)?;
+            let last = attachment
+                .files
+                .last()
+                .ok_or(CgroupReadIssue::Unavailable)?;
             let observed = identity(last, attachment.probe)?;
             protected(&observed, true, 0)?;
             attachment.identities.push(observed);
@@ -256,9 +307,17 @@ impl Attachment {
             attachment.files.push(child);
             attachment.names.push(name);
         }
-        let root = identity(attachment.files.last().ok_or(CgroupReadIssue::Unavailable)?, attachment.probe)?;
+        let root = identity(
+            attachment
+                .files
+                .last()
+                .ok_or(CgroupReadIssue::Unavailable)?,
+            attachment.probe,
+        )?;
         protected(&root, true, 0)?;
-        if root.filesystem.kind != i128::from(libc::CGROUP2_SUPER_MAGIC) || !root.filesystem.mount_root {
+        if root.filesystem.kind != i128::from(libc::CGROUP2_SUPER_MAGIC)
+            || !root.filesystem.mount_root
+        {
             return Err(CgroupReadIssue::UnsupportedFilesystem);
         }
         attachment.identities.push(root);
@@ -266,16 +325,29 @@ impl Attachment {
         Ok(attachment)
     }
 
-    fn append(&mut self, name: &str, directory: bool, owner: u32, budget: &Budget<'_>) -> Result<(), CgroupReadIssue> {
+    fn append(
+        &mut self,
+        name: &str,
+        directory: bool,
+        owner: u32,
+        budget: &Budget<'_>,
+    ) -> Result<(), CgroupReadIssue> {
         budget.check()?;
         let name = CString::new(name).map_err(|_| CgroupReadIssue::ScopeIdentity)?;
-        let child = open_child(self.files.last().ok_or(CgroupReadIssue::Unavailable)?, &name, directory)?;
+        let child = open_child(
+            self.files.last().ok_or(CgroupReadIssue::Unavailable)?,
+            &name,
+            directory,
+        )?;
         let observed = identity(&child, self.probe)?;
         protected(&observed, directory, owner)?;
         let root = &self.identities[self.cgroup_root];
         if observed.filesystem.kind != i128::from(libc::CGROUP2_SUPER_MAGIC)
-            || observed.filesystem.mount != root.filesystem.mount || observed.device != root.device
-        { return Err(CgroupReadIssue::UnsupportedFilesystem); }
+            || observed.filesystem.mount != root.filesystem.mount
+            || observed.device != root.device
+        {
+            return Err(CgroupReadIssue::UnsupportedFilesystem);
+        }
         self.files.push(child);
         self.names.push(name);
         self.identities.push(observed);
@@ -313,7 +385,9 @@ impl Attachment {
         let expected = self.identities.last().ok_or(CgroupReadIssue::Unavailable)?;
         // The O_PATH leaf is already a regular cgroup2 file. Reopen that held
         // object, never an unchecked replacement at its previous pathname.
-        let mut events = OpenOptions::new().read(true).custom_flags(libc::O_CLOEXEC | libc::O_NONBLOCK)
+        let mut events = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NONBLOCK)
             .open(format!("/proc/self/fd/{}", held.as_raw_fd()))
             .map_err(|_| CgroupReadIssue::Unavailable)?;
         if identity(&events, self.probe)? != *expected {
@@ -329,22 +403,33 @@ impl Attachment {
 }
 
 fn open_root() -> Result<File, CgroupReadIssue> {
-    OpenOptions::new().read(true)
+    OpenOptions::new()
+        .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open("/").map_err(|_| CgroupReadIssue::Unavailable)
+        .open("/")
+        .map_err(|_| CgroupReadIssue::Unavailable)
 }
 
 fn open_child(parent: &File, name: &CString, directory: bool) -> Result<File, CgroupReadIssue> {
-    let flags = libc::O_NOFOLLOW | libc::O_CLOEXEC
-        | if directory { libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NONBLOCK } else { libc::O_PATH };
+    let flags = libc::O_NOFOLLOW
+        | libc::O_CLOEXEC
+        | if directory {
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NONBLOCK
+        } else {
+            libc::O_PATH
+        };
     // SAFETY: held directory descriptor and a bounded NUL-terminated single
     // component. An O_PATH leaf cannot trigger FIFO/device opening behavior;
     // its type and actual filesystem are verified before a read handle opens.
     let fd = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) };
     if fd < 0 {
-        return Err(if io::Error::last_os_error().kind() == io::ErrorKind::NotFound {
-            CgroupReadIssue::Missing
-        } else { CgroupReadIssue::Unavailable });
+        return Err(
+            if io::Error::last_os_error().kind() == io::ErrorKind::NotFound {
+                CgroupReadIssue::Missing
+            } else {
+                CgroupReadIssue::Unavailable
+            },
+        );
     }
     // SAFETY: openat returned a new owned descriptor.
     Ok(unsafe { File::from_raw_fd(fd) })
@@ -356,13 +441,21 @@ fn read_complete(reader: &mut impl Read, budget: &Budget<'_>) -> Result<Vec<u8>,
     loop {
         budget.check()?;
         let remaining = chunk.len() - bytes.len();
-        let size = reader.read(&mut chunk[..remaining]).map_err(|_: io::Error| CgroupReadIssue::Unavailable)?;
-        if size == 0 { break; }
+        let size = reader
+            .read(&mut chunk[..remaining])
+            .map_err(|_: io::Error| CgroupReadIssue::Unavailable)?;
+        if size == 0 {
+            break;
+        }
         bytes.extend_from_slice(&chunk[..size]);
-        if bytes.len() > MAX_CGROUP_BYTES { return Err(CgroupReadIssue::OutputLimit); }
+        if bytes.len() > MAX_CGROUP_BYTES {
+            return Err(CgroupReadIssue::OutputLimit);
+        }
     }
     budget.check()?;
-    if bytes.is_empty() || !bytes.ends_with(b"\n") { return Err(CgroupReadIssue::Incomplete); }
+    if bytes.is_empty() || !bytes.ends_with(b"\n") {
+        return Err(CgroupReadIssue::Incomplete);
+    }
     Ok(bytes)
 }
 
