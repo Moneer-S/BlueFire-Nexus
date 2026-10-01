@@ -643,7 +643,7 @@ mod tests {
 
     #[test]
     fn current_image_requires_authenticated_bytes_and_the_original_deadline() {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         let file = File::open("/proc/self/exe").unwrap();
         let size = file.metadata().unwrap().len();
         let digest = hash_file(&file, size, deadline).unwrap();

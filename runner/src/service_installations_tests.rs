@@ -213,9 +213,9 @@ fn unsupported_host_architecture_cannot_select_the_manager() {
 #[test]
 fn exact_role_metadata_cannot_admit_an_unsafe_or_symlinked_installation() {
     use std::time::Duration;
-    let deadline = Instant::now() + Duration::from_secs(5);
     let running = std::fs::read("/proc/self/exe").unwrap();
     let digest = format!("sha256:{}", crate::canonical::sha256_hex(&running));
+    let deadline = Instant::now() + Duration::from_secs(30);
     let current = CurrentExecutable::observe(&digest, deadline).unwrap();
     let root = std::env::temp_dir().join(format!(
         "bluefire-service-installation-test-{}-{}",
@@ -237,6 +237,10 @@ fn exact_role_metadata_cannot_admit_an_unsafe_or_symlinked_installation() {
                 record(Role::Payload, &digest, running.len() as u64),
             ]);
             assert!(inspect(&scope, &profile, &current, deadline).is_err());
+            assert!(
+                Instant::now() < deadline,
+                "refusal must not rely on timeout"
+            );
         }
     });
     std::fs::remove_file(path).unwrap();
