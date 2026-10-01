@@ -11,6 +11,7 @@ import json
 import os
 import re
 import selectors
+import signal
 import stat
 import subprocess
 import sys
@@ -223,6 +224,32 @@ def _rpath(value: str, path: Path, prefix: Path) -> str:
     return ":".join(result)
 
 
+def _exit_code_without_reaping(pid: int, deadline: float) -> int:
+    """Keep the leader PID reserved until its entire process group is signalled."""
+    while True:
+        _remaining(deadline)
+        status = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        if status is not None:
+            _require(status.si_pid == pid, "child_identity")
+            return status.si_status if status.si_code == os.CLD_EXITED else -1
+        time.sleep(min(0.01, _remaining(deadline)))
+
+
+def _terminate_group(child: subprocess.Popen[bytes], deadline: float) -> None:
+    # No poll()/wait() may release the leader PID before killpg: a departed
+    # leader can leave descendants holding the pipe or running without it.
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError as error:
+        raise Refusal("child_cleanup_unknown") from error
+    try:
+        child.wait(timeout=max(0.0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired as error:
+        raise Refusal("child_cleanup_unknown") from error
+
+
 def _run(
     args: list[str],
     root: Path,
@@ -232,7 +259,10 @@ def _run(
     pass_fds: tuple[int, ...] = (),
 ) -> bytes:
     child_deadline = time.monotonic() + _remaining(deadline)
-    with subprocess.Popen(
+    # Reserve cleanup inside the same finite child/global budget.
+    execution_deadline = child_deadline - 0.25
+    _remaining(execution_deadline)
+    child = subprocess.Popen(
         args,
         executable=executable,
         env=CLEAN_ENV,
@@ -241,29 +271,32 @@ def _run(
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         pass_fds=pass_fds,
-    ) as child:
+        start_new_session=True,
+    )
+    try:
+        _require(child.stdout is not None, "child_output_unavailable")
+        assert child.stdout is not None
+        os.set_blocking(child.stdout.fileno(), False)
+        output = bytearray()
+        with selectors.DefaultSelector() as selector:
+            selector.register(child.stdout, selectors.EVENT_READ)
+            while True:
+                _require(execution_deadline > time.monotonic(), "child_deadline")
+                if not selector.select(execution_deadline - time.monotonic()):
+                    raise Refusal("child_deadline")
+                chunk = os.read(child.stdout.fileno(), MAX_OUTPUT_BYTES + 1)
+                if not chunk:
+                    break
+                output.extend(chunk)
+                _require(len(output) <= MAX_OUTPUT_BYTES, "child_output_limit")
+        _require(_exit_code_without_reaping(child.pid, execution_deadline) == 0, "child_failed")
+        return bytes(output)
+    finally:
         try:
-            _require(child.stdout is not None, "child_output_unavailable")
-            assert child.stdout is not None
-            os.set_blocking(child.stdout.fileno(), False)
-            output = bytearray()
-            with selectors.DefaultSelector() as selector:
-                selector.register(child.stdout, selectors.EVENT_READ)
-                while True:
-                    _require(child_deadline > time.monotonic(), "child_deadline")
-                    if not selector.select(child_deadline - time.monotonic()):
-                        raise Refusal("child_deadline")
-                    chunk = os.read(child.stdout.fileno(), MAX_OUTPUT_BYTES + 1)
-                    if not chunk:
-                        break
-                    output.extend(chunk)
-                    _require(len(output) <= MAX_OUTPUT_BYTES, "child_output_limit")
-            _require(child.wait(timeout=_remaining(child_deadline)) == 0, "child_failed")
-            return bytes(output)
+            _terminate_group(child, child_deadline)
         finally:
-            if child.poll() is None:
-                child.kill()
-                child.wait(timeout=5)
+            if child.stdout is not None:
+                child.stdout.close()
 
 
 PROBE = r"""
