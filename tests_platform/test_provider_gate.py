@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 from dataclasses import replace
@@ -160,9 +161,22 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/cli.py",
         "bluefire/job_runtime.py",
         "bluefire/runner_host.py",
+        "bluefire/runner_host_identity.py",
+        "bluefire/runner_receipt_validation.py",
+        "bluefire/runner_transport_client.py",
+        "bluefire/owned_service_authority.py",
+        "bluefire/owned_service_orchestration.py",
+        "bluefire/owned_service_transport.py",
+        "bluefire/service_launch.py",
         "runner/src/providers.rs",
         "runner/src/provider_action.rs",
         "runner/src/runner.rs",
+        "runner/src/service_admission.rs",
+        "runner/src/service_admission_wire.rs",
+        "runner/src/service_admission_channel.rs",
+        "runner/src/service_reservation.rs",
+        "runner/src/service_reservation_storage.rs",
+        "runner/src/service_payload.rs",
         "bluefire/runner_client.py",
         "bluefire/runner_bootstrap.py",
         "bluefire/runner_darwin_containment.py",
@@ -184,6 +198,7 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/prepared_lab_ui_bootstrap.py",
         "bluefire/prepared_lab_product.py",
         "bluefire/browser_launch.py",
+        "bluefire/runner_python_environment.py",
         "runner/src/cancellation_witness.rs",
         "runner/src/process.rs",
         "runner/src/atomic_gzip.rs",
@@ -499,6 +514,38 @@ def _structural_report() -> dict[str, Any]:
     }
 
 
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ("or self._kill_child_on_job_close", "or False"),
+        (
+            "argv, watchdog_executable, inherited_descriptors",
+            "argv, argv[0], inherited_descriptors",
+        ),
+        ('options["executable"] = watchdog_executable', 'options["executable"] = argv[0]'),
+    ],
+)
+def test_watchdog_executable_audit_refuses_unverified_override(old: str, new: str) -> None:
+    import ast
+
+    source = (REPOSITORY / "bluefire/runner_client.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    spawn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_spawn"
+    )
+    assert provider_gate_source_audit._watchdog_executable_contract(spawn)
+    changed = ast.unparse(spawn).replace(old, new, 1)
+    # unparse uses single quotes for string constants.
+    if changed == ast.unparse(spawn):
+        changed = ast.unparse(spawn).replace(old.replace('"', "'"), new.replace('"', "'"), 1)
+    assert changed != ast.unparse(spawn)
+    altered = ast.parse(changed).body[0]
+    assert isinstance(altered, ast.FunctionDef)
+    assert not provider_gate_source_audit._watchdog_executable_contract(altered)
+
+
 def test_live_source_audit_round_trips_locked_structural_validator() -> None:
     index, trusts, packages = _fixture_set(REPOSITORY)
     report = _live_structural_report(REPOSITORY, index, trusts, packages)
@@ -541,6 +588,20 @@ def test_live_source_audit_round_trips_locked_structural_validator() -> None:
         "bluefire/run_submissions.py",
         "bluefire/product_store_assistance_run.py",
         "bluefire/product_store_run_submissions.py",
+        "bluefire/runner_host_identity.py",
+        "bluefire/runner_python_environment.py",
+        "bluefire/runner_receipt_validation.py",
+        "bluefire/runner_transport_client.py",
+        "bluefire/owned_service_authority.py",
+        "bluefire/owned_service_orchestration.py",
+        "bluefire/owned_service_transport.py",
+        "bluefire/service_launch.py",
+        "runner/src/service_admission.rs",
+        "runner/src/service_admission_wire.rs",
+        "runner/src/service_admission_channel.rs",
+        "runner/src/service_reservation.rs",
+        "runner/src/service_reservation_storage.rs",
+        "runner/src/service_payload.rs",
     ],
 )
 def test_structural_validator_requires_each_saved_run_source(relative: str) -> None:
@@ -580,6 +641,55 @@ def test_containment_owner_remains_pinned_without_new_process_launches(
     candidate.write_text(changed[relative], encoding="utf-8")
     findings = provider_gate_source_audit._python_shell_findings(candidate, tmp_path)
     assert any(item.get("kind") == "dynamic_execution_call" for item in findings)
+
+
+def test_runner_python_environment_source_pin_refuses_noop_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    relative = "bluefire/runner_python_environment.py"
+    assert relative in provider_gate_source_audit.TRUSTED_PROCESS_BOUNDARY_PATHS
+    sources = {
+        name: (REPOSITORY / name).read_text(encoding="utf-8")
+        for name in provider_gate_source_audit._REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES
+    }
+    assert provider_gate_source_audit._reviewed_python_process_boundary_sources(sources)
+
+    tree = ast.parse(sources[relative])
+    environment_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "ActivePythonEnvironment"
+    )
+    validate_exec = next(
+        node
+        for node in environment_class.body
+        if isinstance(node, ast.FunctionDef) and node.name == "validate_exec"
+    )
+    validate_exec.body = [ast.Pass()]
+    sources[relative] = ast.unparse(tree) + "\n"
+
+    # The previous inventory omitted this helper, so a no-op mutation was invisible.
+    old_sources = {name: source for name, source in sources.items() if name != relative}
+    old_inventory = {
+        name: digest
+        for name, digest in provider_gate_source_audit._REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES.items()
+        if name != relative
+    }
+    with monkeypatch.context() as old_audit:
+        old_audit.setattr(
+            provider_boundary_inventory,
+            "_REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES",
+            old_inventory,
+        )
+        old_audit.setattr(
+            provider_gate_source_audit,
+            "_REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES",
+            old_inventory,
+        )
+        assert provider_gate_source_audit._reviewed_python_process_boundary_sources(old_sources)
+
+    sources[relative] = ast.unparse(tree) + "\n"
+    assert not provider_gate_source_audit._reviewed_python_process_boundary_sources(sources)
 
 
 @pytest.mark.parametrize(
@@ -633,6 +743,13 @@ def test_containment_owner_remains_pinned_without_new_process_launches(
         "bluefire/prepared_lab_enrollment.py",
         "bluefire/prepared_lab_inference_input.py",
         "bluefire/prepared_lab_installation.py",
+        "bluefire/runner_host_identity.py",
+        "bluefire/runner_receipt_validation.py",
+        "bluefire/runner_transport_client.py",
+        "bluefire/owned_service_authority.py",
+        "bluefire/owned_service_orchestration.py",
+        "bluefire/owned_service_transport.py",
+        "bluefire/service_launch.py",
     ],
 )
 def test_extracted_boundaries_retain_strict_process_source_auditing(
@@ -1221,6 +1338,7 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
     assert not provider_gate_source_audit._reviewed_python_process_boundary_sources(
         hidden_lifecycle_launcher
     )
+
     for unreviewed_alias in (
         "bluefire/runner_private_files.py",
         "bluefire/runner_private_files.PY",

@@ -1,9 +1,10 @@
 # Owned user-service lifecycle prerequisite
 
-Status: internal identity, durable recovery journal and deterministic software tests. No systemd method,
-observer, setup control, profile capability or execution path is registered by this
-change. It does not establish service execution, persistence, cleanup or detection
-coverage on any platform.
+Status: internal identity, authorization, durable reservation/recovery and software
+tests. The fixed service action is unavailable: it is not registered in the catalog
+or ordinary runner action registry, and native dispatch refuses it. There is no
+service observer or setup control. These prerequisites do not establish service
+execution, persistence, cleanup or detection coverage on any platform.
 
 The next proposed endpoint method creates, enables and starts a reviewed user
 service, then stops, disables and removes its owned resources. A user manager can
@@ -48,7 +49,74 @@ cleanup dispatcher. Hash verification protects recorded consistency; the eventua
 collector integration must establish source authenticity and actual observations.
 The observer ID is reserved here and is not advertised as an available collector.
 
-## Required integration before admission
+## Authorization and resource lifetime
+
+The separate `bluefire.owned-user-service-scope.v1` contract defines the experiment
+before approval is consumed. It binds the exact scenario and step, fixed action,
+profile policy, target, workspace, non-root UID, boot and user-manager instance.
+It also binds both reviewed installations, generated unit identity, fixed template
+and rendered content, setup/cleanup operations, parameters and resource ceilings.
+This is additional authority; a legacy exact-plan approval cannot acquire it by
+adding a scope after approval.
+
+The only payload is a fixed BlueFire workload that waits once for 1–120 seconds.
+It accepts no command, script or extra arguments and creates no files, sockets or
+child processes. Its successful exit is not evidence that a service ran or that
+cleanup succeeded. The unit's memory limit uses the selected parameter, which
+cannot exceed the reviewed ceiling. Each operation's manifest timeout must fit
+its reviewed setup or cleanup limit even when the runner profile permits longer.
+
+Setup authority expires within five minutes of scope creation. Cleanup has a
+separate reviewed deadline within the existing one-hour identity ceiling. After
+setup expires, only receipt-owned cleanup for that same identity may proceed
+within its cleanup window. The approval must have been valid when claimed; this
+does not renew it, authorize another unit or allow new setup. Expired cleanup
+authority leaves an unresolved obligation requiring a new reviewed recovery
+decision, never a claim of successful removal.
+
+`bluefire.owned-user-service-grant.v1` ties that scope to the coordinator's consumed
+approval, exact execution manifest/profile/task, and committed pending journal
+binding. The authenticated transport covers the complete grant-bearing payload;
+the manifest/profile task identifier retains its existing meaning. Ledger replay
+must validate both bindings and cannot drop a grant or reinterpret a legacy task
+as a service request. Deserializing a grant is not issuer authentication.
+
+Orchestration obtains the pending binding from its configured
+`ServiceIntentJournal`, rather than accepting a binding from a run request. It
+captures the committed record before claiming approval and rechecks the same
+revision and full binding immediately before grant creation and dispatch.
+Missing, completed, replaced or advanced records refuse dispatch; a correctly
+formatted invented binding is not journal authority.
+
+The protected host-to-watchdog-to-native launch boundary has an additional
+provenance requirement: expected code identity must be pinned independently of
+the supplied context, and the trusted watchdog must revalidate the configured
+host's actual enrollment. A self-signed document, even in sealed descriptors,
+cannot establish that authority. The configured account and installed trusted
+code remain trust anchors; this is not a defense against that account replacing
+its own software or a privileged attacker. The native source pin covers the
+watchdog entrypoint, not its entire Python import closure; those imported modules
+remain trusted installed software. Full installation-backed admission
+and the effect adapter remain prerequisites to enabling this action.
+
+On Linux, a watchdog launched from an application virtual environment retains
+that environment for enrollment validation. Its argument identity comes from
+the active application interpreter, while the actual executable remains the
+verified inherited descriptor. The virtual environment configuration and
+identity are checked before launch and again at readiness; ambient Python
+launcher and module-path variables are not inherited. These checks preserve the
+trusted installed dependency context, not independent authentication of every
+imported package.
+
+Launcher and interpreter-target directories are checked through their full
+ancestor chains without following directory symlinks. Each component must have
+trusted ownership and protected entries; only outer root-owned sticky directories
+may be writable by other users. The virtual environment and its `bin` directory
+must remain non-writable by other users. Interpreter links containing parent
+traversal are refused. Ordinary sibling-file changes do not invalidate directory
+identity, while replacement, ownership or permission changes do.
+
+## Durable coordination and admission prerequisites
 
 ### Durable intent and recovery
 
@@ -124,12 +192,13 @@ payload-installation digests supplied by the future reviewed setup. Changing
 any pin changes the canonical binding digest. Python and Rust validate the same
 closed, bounded UTF-8 document; authored shared vectors cover both parsers.
 Unknown fields, duplicate JSON keys, malformed identities, completed revisions
-and unregistered operation names are refused. The Rust decoder is an unregistered
-library contract: it adds no command, action, profile authority or execution path.
+and unregistered operation names are refused. The Rust decoder supplies validated
+consistency metadata to protected admission and reservation layers. By itself it
+adds no command, action, profile authority or execution permission.
 
 Neither the journal hash nor successful decoding authenticates an approval,
 installation or current resource. The opaque scope digest is not a wildcard or
-a substitute for a future explicit service-scope contract. Before any effect,
+a substitute for the explicit service-scope contract. Before any effect,
 the runner still must authenticate that reviewed scope, resolve both protected
 installations, recheck the live manager/resource identity, and durably reserve an
 effect receipt bound to the exact handoff. The coordinator transaction does not
@@ -142,12 +211,35 @@ retain their v1 semantics; changing setup or cleanup order requires a new protoc
 not reinterpretation of old records. Actual service observation, cancellation,
 cleanup and reconciliation remain required integration work.
 
+### Native reservation and interruption
+
+The native reservation store uses a trusted enrollment-owned location, never a
+path supplied by a task. It pins owner-private directories, files and lock
+identities, rejects unsafe links or replacements, and retains an append-only,
+bounded history with durable writes. Within that stable enrollment, the resource
+key includes UID and unit nonce; changing the boot or manager cannot bypass an
+unresolved reservation for the same unit.
+
+A new reservation provides a single dispatch permit. An identical repeated
+request returns the retained record without a new permit; changed contents or an
+uncertain earlier operation are refused. Process success, failure and unknown
+outcomes do not resolve uncertainty. A separate trusted observation is required
+before progression or retry. Completed identities remain reserved, and storage
+exhaustion refuses new work without evicting cleanup obligations. Hashes detect
+inconsistency, not same-account forgery or restoration of an older filesystem.
+
+These are software contracts, not proof of manager state. The production observer
+and effect path are still unavailable. Ordinary library dispatch explicitly
+refuses the fixed action and aliases that try to reach it, so adding a catalog
+entry cannot silently bypass protected admission.
+
 ### Remaining runtime and observation work
 
-A concrete adapter must still supply the fixed unit contents and executable
-identity, sanitized unit environment, manager and cgroup readiness, trusted
-installation binding, resource-specific target/capability review, pre-effect
-rechecks, and a durable intent/receipt protocol. Start, enable, stop, disable,
+A concrete adapter must still connect the fixed unit and protected executable to
+sanitized unit environment, observed manager and cgroup readiness, resource-specific
+target/capability review, pre-effect rechecks, and the durable intent/reservation
+protocol. Unit directives alone do not prove that an unprivileged manager can
+enforce the requested namespaces or resource limits. Start, enable, stop, disable,
 removal and manager reload require separate truthful outcomes and interruption
 reconciliation. Stop must cover the owned cgroup, not only a remembered PID.
 Removal must verify exact file/link identities and never remove unrelated units.
@@ -176,9 +268,12 @@ A future user-service method is an explicitly constrained adaptation, not execut
 of that system-wide test unchanged. No user-level Atomic test exists at this pin.
 
 The pinned Atomic license is MIT; the existing Red Canary notice is retained.
-Systemd and any separately installed payload utility have their own terms and must
-be reviewed before adoption or redistribution. No dependency is installed, bundled
-or made required by this prerequisite. BlueFire's license remains MIT.
+The upstream [systemctl v255.4 source](https://github.com/systemd/systemd-stable/blob/v255.4/src/systemctl/systemctl.c)
+identifies its license as LGPL-2.1-or-later. The proposed integration invokes a
+separately installed executable; it does not copy, link or bundle systemd code.
+Each admitted distribution build still requires exact provenance, readiness and
+license review. No systemd dependency is installed or made required by this
+prerequisite. The fixed payload is BlueFire code, and BlueFire's license remains MIT.
 
 Rollback removes this unused prerequisite without changing existing receipts or
 execution. Once an adapter is admitted, its own rollback must retain the ability

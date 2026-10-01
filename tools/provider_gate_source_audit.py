@@ -66,7 +66,7 @@ _REVIEWED_RUNNER_CLIENT_LAUNCH_SECTIONS = {
     "_run_darwin_launch_worker": "sha256:a969f6e5c14c2bc0b150be268321faf33dd00da035548706cb9eded992ac01aa",
 }
 _REVIEWED_RUNNER_CLIENT_SOURCE_SHA256 = (
-    "sha256:39bd46db877565b638fdbbc803ba6eba8c5158700706307c1907f4339a1ee9ec"
+    "sha256:948d6f56768f44b81d92eaa3db40a21e06ac78cbc6cc9dc0b364166f7fe8e079"
 )
 _REVIEWED_DARWIN_CONTAINMENT_SECTIONS = {
     "_validate_macos_launch_parent": "sha256:244beadfd89a4f2e6731109cd100042ba2a1ef8ea40e81bbd98f55211e7ebfb6",
@@ -172,6 +172,31 @@ def _expression_matches(node: ast.AST | None, expression: str) -> bool:
     return ast.dump(node, include_attributes=False) == ast.dump(
         expected.body,
         include_attributes=False,
+    )
+
+
+def _watchdog_executable_contract(spawn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Keep the venv argv identity separate from one verified descriptor exec."""
+    expected = ast.parse("""if watchdog_executable is not None:
+    if (
+        not sys.platform.startswith("linux")
+        or self._kill_child_on_job_close
+        or self._watchdog_python_environment is None
+    ):
+        raise RunnerTransportError("Runner watchdog executable context is unavailable.")
+    self._watchdog_python_environment.validate_exec(
+        argv, watchdog_executable, inherited_descriptors, self._watchdog_interpreter
+    )
+    options["executable"] = watchdog_executable
+""").body[0]
+    guards = [
+        node
+        for node in ast.walk(spawn)
+        if isinstance(node, ast.If)
+        and _expression_matches(node.test, "watchdog_executable is not None")
+    ]
+    return len(guards) == 1 and ast.dump(guards[0], include_attributes=False) == ast.dump(
+        expected, include_attributes=False
     )
 
 
@@ -577,6 +602,7 @@ def _runner_client_popen_contract(path: Path) -> bool:
         len(spawn_call.args) == 1
         and _expression_matches(spawn_call.args[0], "argv")
         and _function_parameter_is_unmodified(spawn, "argv")
+        and _watchdog_executable_contract(spawn)
         and _keyword_expressions_match(
             spawn_call,
             (
@@ -654,6 +680,7 @@ def _runner_client_popen_contract(path: Path) -> bool:
                 "start_new_session",
                 "pass_fds",
                 "_bluefire_descriptor_argument_indexes",
+                "executable",
             },
             forwarded_to=(
                 ("self._spawn_linux_parent_death", "options"),

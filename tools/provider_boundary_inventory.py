@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from tools.provider_gate_common import TRUSTED_PROCESS_BOUNDARY_PATHS, _sha256_bytes
 
 _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
-    "bluefire/runner_client.py": "sha256:39bd46db877565b638fdbbc803ba6eba8c5158700706307c1907f4339a1ee9ec",
+    "bluefire/runner_client.py": "sha256:948d6f56768f44b81d92eaa3db40a21e06ac78cbc6cc9dc0b364166f7fe8e079",
     "bluefire/runner_bootstrap.py": "sha256:b9225650c4fdc4c18a698d613c7370312dfd29bd89feb97d88784ca7696d7ca1",
     "bluefire/runner_darwin_containment.py": "sha256:f02533a6cba3c29bc95d5aef5fbd4bfc0e30a830af4005fb6c1bf76a0b57353c",
     "bluefire/runner_windows_containment.py": "sha256:937456440a3c2dce94d24af695951ce19ca682b7752aa7437a5fae1f86bfb733",
@@ -19,7 +19,7 @@ _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
     "bluefire/runner_lifecycle.py": "sha256:9952e5fcea119dcbb2f8a9b6e191a1203a34c988d9316e60b59d955daf37b6a6",
     "bluefire/runner_parent_death.py": "sha256:7a0443b986e18025a748775e18a3fc6cc539713c2cfbb0cc04cce44e3eb277df",
     "bluefire/runner_trust.py": "sha256:fc8811d61e0684b480ceb0a88a1124d0b8829363d5c10caa3513febfbb697c67",
-    "bluefire/runner_watchdog.py": "sha256:9e6d4b9e4c4b3d64e17b0b138fc8a1b7910aed48a7849563f15ed8abe3fca542",
+    "bluefire/runner_watchdog.py": "sha256:c4f2469cbc314a7c18402ed0a7220d2b63b62c212f8afbb2b10266158d69a107",
     "bluefire/receiver_session.py": "sha256:06f5587707cbddb40aa5a310be24ec1fd89375b89a82e60d966b9c6af6451a37",
     "bluefire/receiver_session_worker.py": "sha256:015594b6309e52de966bc09258638551ae23f70f451bd88ef3903a361b2f1b09",
     "bluefire/ai_transport.py": "sha256:b806740e5ab11b6d10d771b57a08230d666483115782b30ced443f5cec0be507",
@@ -32,6 +32,7 @@ _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
     "bluefire/prepared_lab_ui_bootstrap.py": "sha256:7de08b08b2dbf7120e679f5cc1c81446a125dcddc205b69f244b0c6d4ed50b4c",
     "bluefire/prepared_lab_product.py": "sha256:3a5e38cfa1eb8c7b23c88fe2d8ab89f98cbeb00f27357c7af21c61fa95df7ea9",
     "bluefire/browser_launch.py": "sha256:c19b3d5ebfe9b51378d77ce5fd285ada78cc43898690699477d04f4c0862dbf1",
+    "bluefire/runner_python_environment.py": "sha256:b023313301c4c9f41cc494e3e6f4658c3afacd8af23ae3d7906dcb46b854dfcc",
 }
 _REVIEWED_RUST_PROCESS_BOUNDARY_SOURCES = (
     "runner/src/cancellation_witness.rs",

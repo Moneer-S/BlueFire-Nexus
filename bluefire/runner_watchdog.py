@@ -43,6 +43,7 @@ if __package__ in {None, ""}:
         _read_descriptor_bounded,
     )
     from bluefire.runner_trust import _is_link_or_reparse
+    from bluefire.service_launch import ServiceLaunch, consume_service_launch
     from bluefire.util import canonical_json_bytes, file_hash
 else:
     from .runner_client import (
@@ -61,6 +62,7 @@ else:
     )
     from .runner_private_files import _PrivateFileCleanupError, _read_descriptor_bounded
     from .runner_trust import _is_link_or_reparse
+    from .service_launch import ServiceLaunch, consume_service_launch
     from .util import canonical_json_bytes, file_hash
 
 _CONFIG_SCHEMA = "bluefire.runner-watchdog-config.v5"
@@ -828,6 +830,7 @@ def _run(
     config: _WatchdogConfig,
     *,
     receiver_environment: Mapping[str, str],
+    service_launch: ServiceLaunch | None = None,
     darwin_proof_descriptor: int | None = None,
     darwin_proof_nonce: str | None = None,
 ) -> tuple[str, str | None, Mapping[str, bool] | None]:
@@ -925,6 +928,7 @@ def _run(
             cancellation_lease_token=config.cancellation_lease_token,
             darwin_launch_started=mark_darwin_launch_started,
             darwin_launch_sealed=publish_darwin_proof,
+            **({"service_launch": service_launch} if service_launch is not None else {}),
         )
         return "succeeded", None, None
     except RunnerTaskCancelled as exc:
@@ -997,6 +1001,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return fail_before_launch(65)
     try:
         receiver_environment = _consume_receiver_task_environment(expected_task_id=config.task_id)
+        service_launch = consume_service_launch(
+            config.manifest,
+            config.profile,
+            task_id=config.task_id,
+            runner_digest=config.runner_binary_digest,
+            watchdog_digest=config.watchdog_script_digest,
+            interpreter_digest=config.watchdog_interpreter_digest,
+        )
     except RunnerTransportError:
         try:
             _close_config(config)
@@ -1016,6 +1028,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except RunnerTransportError:
         _cleanup_private_inputs(config)
+        if service_launch is not None:
+            try:
+                service_launch.close()
+            except RunnerTransportError:
+                pass
         try:
             _close_config(config)
         except RunnerTransportError:
@@ -1030,6 +1047,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         state, error_code, cancellation_facts = _run(
             config,
             receiver_environment=receiver_environment,
+            **({"service_launch": service_launch} if service_launch is not None else {}),
             darwin_proof_descriptor=darwin_proof_descriptor,
             darwin_proof_nonce=darwin_proof_nonce,
         )
@@ -1053,6 +1071,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, RunnerTransportError):
         execution_failed = True
     finally:
+        if service_launch is not None:
+            try:
+                service_launch.close()
+            except RunnerTransportError:
+                execution_failed = True
         try:
             _cleanup_private_inputs(config)
         except (OSError, RunnerTransportError):

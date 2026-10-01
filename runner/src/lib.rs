@@ -21,7 +21,10 @@ mod receiver_auth;
 mod reviewed_chmod_builds;
 pub mod runner;
 pub mod safety;
+pub mod service_admission;
 pub mod service_operation_binding;
+pub mod service_payload;
+pub mod service_reservation;
 
 pub use actions::{inventory, ActionDescriptor, ACTION_SDK_SCHEMA_VERSION};
 pub use cancellation_witness::{run_internal_cancellation_descendant, INTERNAL_DESCENDANT_VERB};
