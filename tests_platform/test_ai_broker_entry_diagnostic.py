@@ -198,7 +198,10 @@ def test_original_entry_assertion_and_cleanup_survive_reporter_failure(
     if wait_failure == "original_assertion":
         assert refused.value is original
     else:
-        assert str(refused.value) == "normal job did not reach broker proposal request"
+        # Pytest adds assertion introspection after the unchanged authored message.
+        assert (
+            str(refused.value).splitlines()[0] == "normal job did not reach broker proposal request"
+        )
     assert closed == [True] and reported == [True]
 
 
