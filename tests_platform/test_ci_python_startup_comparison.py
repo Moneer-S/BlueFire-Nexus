@@ -217,7 +217,9 @@ def test_pair_changes_only_target_argv0_and_reuses_the_held_fd_and_deadline(runt
     assert first[1:] == second[1:] == (pair.root, pair.deadline, first[3])
     assert len(first[0]) == len(second[0])
     assert [
-        index for index, values in enumerate(zip(first[0], second[0])) if values[0] != values[1]
+        index
+        for index, values in enumerate(zip(first[0], second[0], strict=True))
+        if values[0] != values[1]
     ] == [6]
     descriptor = pair.opened[0]
     assert first[0] == [
