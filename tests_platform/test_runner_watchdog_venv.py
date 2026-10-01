@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
 import venv
 from pathlib import Path
@@ -117,6 +118,141 @@ def test_changed_venv_configuration_refuses_before_spawn(
         runner._spawn_watchdog(
             tmp_path / "config.json", receiver_environment={}, task_id="test-venv", process_sink=[]
         )
+
+
+def test_writable_launcher_ancestor_refuses_before_spawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, installed_environment
+) -> None:
+    _, _, _ = installed_environment
+    runner = SubprocessRustRunner(Path(sys._base_executable), tmp_path / "work")
+    original_mode = tmp_path.stat().st_mode
+    tmp_path.chmod(0o777)
+
+    def forbidden_spawn(*_args, **_kwargs):
+        pytest.fail("writable launcher ancestor reached process creation")
+
+    monkeypatch.setattr(runner, "_spawn", forbidden_spawn)
+    try:
+        with pytest.raises(RunnerTransportError, match="application environment"):
+            runner._spawn_watchdog(
+                tmp_path / "config.json",
+                receiver_environment={},
+                task_id="test-venv",
+                process_sink=[],
+            )
+    finally:
+        tmp_path.chmod(stat.S_IMODE(original_mode))
+
+
+def test_replaced_launcher_ancestor_refuses_before_spawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ancestor = tmp_path / "launcher-parent"
+    ancestor.mkdir(mode=0o700)
+    environment = ancestor / "installed environment"
+    venv.EnvBuilder(with_pip=False, symlinks=True).create(environment)
+    monkeypatch.setattr(sys, "executable", str(environment / "bin/python"))
+    monkeypatch.setattr(sys, "prefix", str(environment))
+    runner = SubprocessRustRunner(Path(sys._base_executable), tmp_path / "work")
+
+    displaced = tmp_path / "displaced-parent"
+    ancestor.rename(displaced)
+    ancestor.mkdir(mode=0o700)
+    os.rename(displaced / environment.name, ancestor / environment.name)
+
+    def forbidden_spawn(*_args, **_kwargs):
+        pytest.fail("replaced launcher ancestor reached process creation")
+
+    monkeypatch.setattr(runner, "_spawn", forbidden_spawn)
+    with pytest.raises(RunnerTransportError, match="application environment"):
+        runner._spawn_watchdog(
+            tmp_path / "config.json",
+            receiver_environment={},
+            task_id="test-venv",
+            process_sink=[],
+        )
+
+
+def test_replaced_interpreter_symlink_refuses_before_spawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, installed_environment
+) -> None:
+    _, launcher, _ = installed_environment
+    runtime = Path(sys._base_executable).resolve(strict=True)
+    intermediate = tmp_path / "interpreter-target"
+    intermediate.symlink_to(runtime)
+    launcher.unlink()
+    launcher.symlink_to(intermediate)
+    runner = SubprocessRustRunner(Path(sys._base_executable), tmp_path / "work")
+    replacement = tmp_path / "interpreter-target-replacement"
+    replacement.symlink_to(runtime)
+    os.replace(replacement, intermediate)
+
+    def forbidden_spawn(*_args, **_kwargs):
+        pytest.fail("replaced interpreter symlink reached process creation")
+
+    monkeypatch.setattr(runner, "_spawn", forbidden_spawn)
+    with pytest.raises(RunnerTransportError, match="application environment"):
+        runner._spawn_watchdog(
+            tmp_path / "config.json",
+            receiver_environment={},
+            task_id="test-venv",
+            process_sink=[],
+        )
+
+
+def test_symlinked_launcher_ancestor_refuses_before_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, installed_environment
+) -> None:
+    environment, _, _ = installed_environment
+    alias = tmp_path / "launcher-alias"
+    alias.symlink_to(environment, target_is_directory=True)
+    monkeypatch.setattr(sys, "executable", str(alias / "bin/python"))
+    monkeypatch.setattr(sys, "prefix", str(environment))
+
+    with pytest.raises(RunnerTransportError, match="application environment"):
+        SubprocessRustRunner(Path(sys._base_executable), tmp_path / "work")
+
+
+def test_interpreter_symlink_target_ancestor_must_be_protected(
+    tmp_path: Path, installed_environment
+) -> None:
+    _, launcher, _ = installed_environment
+    runtime = Path(sys._base_executable).resolve(strict=True)
+    unsafe_parent = tmp_path / "unsafe-runtime-parent"
+    unsafe_parent.mkdir(mode=0o777)
+    unsafe_parent.chmod(0o777)
+    target = unsafe_parent / "python-target"
+    target.symlink_to(runtime)
+    launcher.unlink()
+    launcher.symlink_to(target)
+
+    with pytest.raises(RunnerTransportError, match="application environment"):
+        SubprocessRustRunner(runtime, tmp_path / "work")
+
+
+def test_interpreter_symlink_with_parent_component_refuses_before_capture(
+    tmp_path: Path, installed_environment
+) -> None:
+    _, launcher, _ = installed_environment
+    runtime = Path(sys._base_executable).resolve(strict=True)
+    intermediate = launcher.parent / "runtime-parent"
+    intermediate.symlink_to(runtime.parent, target_is_directory=True)
+    launcher.unlink()
+    launcher.symlink_to(f"runtime-parent/../{runtime.parent.name}/{runtime.name}")
+
+    with pytest.raises(RunnerTransportError, match="application environment"):
+        SubprocessRustRunner(runtime, tmp_path / "work")
+
+
+def test_unrelated_sibling_change_keeps_environment_identity(
+    tmp_path: Path, installed_environment
+) -> None:
+    _, _, _ = installed_environment
+    runtime = Path(sys._base_executable).resolve(strict=True)
+    environment = ActivePythonEnvironment.capture(runtime)
+    assert environment is not None
+    (tmp_path / "unrelated-sibling").write_text("unrelated\n", encoding="utf-8")
+    assert environment.recheck(runtime) == str(environment.launcher)
 
 
 @pytest.mark.parametrize("change", ["launcher", "path", "descriptor", "grammar", "script"])
