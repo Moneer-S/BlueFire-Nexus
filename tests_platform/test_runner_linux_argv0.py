@@ -2,19 +2,50 @@
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
 import pytest
 
 from bluefire import runner_client
 from bluefire.runner_client import RunnerTransportError, SubprocessRustRunner
+
+IDENTITY_FIELDS = (
+    "st_dev",
+    "st_ino",
+    "st_mode",
+    "st_nlink",
+    "st_uid",
+    "st_gid",
+    "st_size",
+    "st_mtime_ns",
+    "st_ctime_ns",
+)
+
+
+def _launch_diagnostic(state):
+    views = state.identity_diagnostic
+    record = {
+        "phase": "prego" if "armed" in state.events else "prelaunch",
+        "role": "watchdog" if state.selected == state.runner._watchdog_interpreter else "runner",
+        "mutation_applied": state.changed is True,
+    }
+    for name in ("absolute", "regular", "single_link", "held_observed", "named_observed"):
+        value = views.get(name)
+        record[name] = value if type(value) is bool else None
+    for side in ("held", "named"):
+        record[side + "_differing_fields"] = [
+            name for name in IDENTITY_FIELDS if name in views.get(side, ())
+        ]
+    record["read_failed"] = [name for name in ("held", "named") if name in views["read_failed"]]
+    print("linux-launch-fixture-diagnostic " + json.dumps(record, sort_keys=True), flush=True)
 
 
 @pytest.fixture
@@ -42,6 +73,29 @@ def launch_boundary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         path: os.open(path, os.O_RDONLY)
         for path in (runner.runner_binary, runner._watchdog_interpreter)
     }
+    # Authored Linux records model unit identities, not native metadata evidence.
+    # CPython 3.12.10 gives Windows lstat/fstat different ctime sources:
+    # https://github.com/python/cpython/blob/v3.12.10/Modules/posixmodule.c#L2009-L2018
+    # https://github.com/python/cpython/blob/v3.12.10/Python/fileutils.c#L1036-L1040
+    path_identities = MappingProxyType(
+        {
+            runner.runner_binary: (1, 101, stat.S_IFREG | 0o700, 1, 1000, 1000, 64, 100, 100),
+            runner._watchdog_interpreter: (
+                1,
+                102,
+                stat.S_IFREG | 0o700,
+                1,
+                1000,
+                1000,
+                64,
+                100,
+                100,
+            ),
+        }
+    )
+    descriptor_identities = MappingProxyType(
+        {descriptors[path]: identity for path, identity in path_identities.items()}
+    )
     state = SimpleNamespace(
         runner=runner,
         descriptors=descriptors,
@@ -50,16 +104,52 @@ def launch_boundary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         mutation=None,
         changed=False,
         selected=runner.runner_binary,
+        identity_diagnostic={
+            "held": (),
+            "named": (),
+            "read_failed": set(),
+            "held_observed": False,
+            "named_observed": False,
+        },
     )
     real_lstat = Path.lstat
     real_fstat = os.fstat
+    initial_identity = None
+
+    def observe(side, details):
+        nonlocal initial_identity
+        state.identity_diagnostic[side + "_observed"] = False
+        observed = tuple(getattr(details, name) for name in IDENTITY_FIELDS)
+        if side == "held" and initial_identity is None:
+            # Observe the first returned fixture view, before explicit mutations.
+            initial_identity = observed
+        if initial_identity is not None:
+            state.identity_diagnostic[side] = tuple(
+                name
+                for name, actual, initial in zip(
+                    IDENTITY_FIELDS, observed, initial_identity, strict=True
+                )
+                if actual != initial
+            )
+            state.identity_diagnostic[side + "_observed"] = True
 
     def changed_details(details, **changes):
         values = {name: getattr(details, name) for name in dir(details) if name.startswith("st_")}
         return SimpleNamespace(**(values | changes))
 
+    def identity_view(identity):
+        return SimpleNamespace(**dict(zip(IDENTITY_FIELDS, identity, strict=True)))
+
+    def changed_field(details, field):
+        value = getattr(details, field)
+        return changed_details(
+            details, **{field: value ^ 0o100 if field == "st_mode" else value + 1}
+        )
+
     def visible(path):
-        details = real_lstat(path)
+        if path not in path_identities:
+            return real_lstat(path)
+        details = identity_view(path_identities[path])
         if state.changed and path == state.selected:
             if state.mutation[1] == "missing":
                 raise FileNotFoundError("authored missing canonical path")
@@ -69,12 +159,60 @@ def launch_boundary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                 return changed_details(details, st_ino=details.st_ino + 1)
             if state.mutation[1] == "mode":
                 return changed_details(details, st_mode=details.st_mode ^ 0o100)
+            if state.mutation[1] == "named":
+                return changed_field(details, state.mutation[2])
         return details
 
     def opened(descriptor):
-        details = real_fstat(descriptor)
-        if state.changed and state.mutation[1] == "fd":
-            return changed_details(details, st_ino=details.st_ino + 1)
+        if descriptor not in descriptor_identities:
+            return real_fstat(descriptor)
+        details = identity_view(descriptor_identities[descriptor])
+        if state.changed and descriptor == descriptors[state.selected]:
+            if state.mutation[1] == "fd":
+                return changed_details(details, st_ino=details.st_ino + 1)
+            if state.mutation[1] == "held":
+                return changed_field(details, state.mutation[2])
+        return details
+
+    def observed_visible(path):
+        try:
+            details = visible(path)
+        except OSError:
+            try:
+                if path == state.selected:
+                    state.identity_diagnostic["named_observed"] = False
+                    state.identity_diagnostic["read_failed"].add("named")
+            except BaseException:
+                pass
+            raise
+        try:
+            if path == state.selected:
+                observe("named", details)
+                state.identity_diagnostic.update(
+                    absolute=path.is_absolute(),
+                    regular=stat.S_ISREG(details.st_mode),
+                    single_link=details.st_nlink == 1,
+                )
+        except BaseException:
+            pass
+        return details
+
+    def observed_opened(descriptor):
+        try:
+            details = opened(descriptor)
+        except OSError:
+            try:
+                if descriptor == descriptors[state.selected]:
+                    state.identity_diagnostic["held_observed"] = False
+                    state.identity_diagnostic["read_failed"].add("held")
+            except BaseException:
+                pass
+            raise
+        try:
+            if descriptor == descriptors[state.selected]:
+                observe("held", details)
+        except BaseException:
+            pass
         return details
 
     class Process:
@@ -130,8 +268,10 @@ def launch_boundary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         state.calls.append((arguments, options))
         return process
 
-    monkeypatch.setattr(Path, "lstat", visible)
-    monkeypatch.setattr(runner_client, "os", SimpleNamespace(**(vars(os) | {"fstat": opened})))
+    monkeypatch.setattr(Path, "lstat", observed_visible)
+    monkeypatch.setattr(
+        runner_client, "os", SimpleNamespace(**(vars(os) | {"fstat": observed_opened}))
+    )
     monkeypatch.setattr(runner_client, "sys", SimpleNamespace(platform="linux"))
     monkeypatch.setattr(
         runner_client,
@@ -167,15 +307,84 @@ def launch_boundary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def _launch(state, canonical=None, *, inherited=True, argv0=None):
     descriptor = state.descriptors[state.selected]
-    return state.runner._spawn_linux_parent_death(
-        [argv0 or f"/proc/self/fd/{descriptor}", "fixed", "argument with spaces"],
-        stdout=-1,
-        stderr=-1,
-        canonical_argv0=canonical,
-        environment={"LC_ALL": "C", "LANG": "C"},
-        inherited_descriptors=(descriptor,) if inherited else (),
-        options={"pass_fds": (descriptor,)},
-    )
+    try:
+        return state.runner._spawn_linux_parent_death(
+            [argv0 or f"/proc/self/fd/{descriptor}", "fixed", "argument with spaces"],
+            stdout=-1,
+            stderr=-1,
+            canonical_argv0=canonical,
+            environment={"LC_ALL": "C", "LANG": "C"},
+            inherited_descriptors=(descriptor,) if inherited else (),
+            options={"pass_fds": (descriptor,)},
+        )
+    except RunnerTransportError:
+        try:
+            _launch_diagnostic(state)
+        except BaseException:
+            pass
+        raise
+
+
+def test_launch_diagnostic_reports_only_fixed_conditions_and_field_names(launch_boundary, capsys):
+    state = launch_boundary
+    state.mutation = ("prelaunch", "symlink")
+    private = "synthetic-private-stat-detail:/fixture/private/identity"
+    state.identity_diagnostic["private"] = private
+    with pytest.raises(RunnerTransportError, match="containment failed"):
+        _launch(state, state.selected)
+    output = capsys.readouterr().out
+    prefix = "linux-launch-fixture-diagnostic "
+    assert output.startswith(prefix) and len(output) < 1024
+    record = json.loads(output[len(prefix) :])
+    assert set(record) == {
+        "phase",
+        "role",
+        "mutation_applied",
+        "absolute",
+        "regular",
+        "single_link",
+        "held_differing_fields",
+        "named_differing_fields",
+        "read_failed",
+        "held_observed",
+        "named_observed",
+    }
+    assert record["phase"] == "prelaunch" and record["role"] == "runner"
+    assert record["mutation_applied"] is True and record["regular"] is False
+    assert record["held_observed"] is True and record["named_observed"] is True
+    assert "st_mode" in record["named_differing_fields"]
+    assert record["read_failed"] == []
+    for side in ("held", "named"):
+        assert set(record[side + "_differing_fields"]) <= set(IDENTITY_FIELDS)
+        assert len(record[side + "_differing_fields"]) <= 9
+    assert private not in output and str(state.selected) not in output
+    assert not state.calls and "go" not in state.events
+
+
+@pytest.mark.parametrize("failure", ("diagnostic", "output"))
+def test_launch_diagnostic_failure_preserves_original_refusal(
+    launch_boundary, monkeypatch, capsys, failure
+):
+    state = launch_boundary
+    private = "synthetic-private-refusal:/fixture/private/identity"
+    original = RunnerTransportError(private)
+
+    def refuse(*_args, **_kwargs):
+        raise original
+
+    def broken(*_args, **_kwargs):
+        raise OSError(private)
+
+    monkeypatch.setattr(state.runner, "_spawn_linux_parent_death", refuse)
+    if failure == "diagnostic":
+        monkeypatch.setattr(sys.modules[__name__], "_launch_diagnostic", broken)
+    else:
+        monkeypatch.setattr(sys.modules[__name__], "print", broken, raising=False)
+    with pytest.raises(RunnerTransportError) as raised:
+        _launch(state, state.selected)
+    assert raised.value is original
+    assert capsys.readouterr().out == ""
+    assert not state.calls and not state.events
 
 
 @pytest.mark.parametrize("role", ("runner", "watchdog"))
@@ -247,6 +456,43 @@ def test_identity_changes_refuse_before_target_execution_and_reap_started_helper
     else:
         assert len(state.calls) == 1
         assert state.events.index("armed") < state.events.index("kill") < state.events.index("reap")
+
+
+@pytest.mark.parametrize("phase", ("prelaunch", "prego"))
+@pytest.mark.parametrize("side", ("held", "named"))
+@pytest.mark.parametrize("field", IDENTITY_FIELDS)
+def test_each_identity_field_refuses_before_go_and_preserves_cleanup(
+    launch_boundary, capsys, phase, side, field
+):
+    state = launch_boundary
+    state.mutation = phase, side, field
+    with pytest.raises(RunnerTransportError, match="containment failed"):
+        _launch(state, state.selected)
+    record = json.loads(capsys.readouterr().out.removeprefix("linux-launch-fixture-diagnostic "))
+    assert state.changed is True and record["mutation_applied"] is True
+    assert record["phase"] == phase and record["role"] == "runner"
+    assert record[side + "_differing_fields"] == [field]
+    other_side = "named" if side == "held" else "held"
+    assert record[other_side + "_differing_fields"] == []
+    assert record["held_observed"] is True and record["named_observed"] is True
+    assert record["absolute"] is True and record["regular"] is True
+    assert record["single_link"] is (not (side == "named" and field == "st_nlink"))
+    assert record["read_failed"] == []
+    assert "go" not in state.events
+    if phase == "prelaunch":
+        assert not state.calls
+        assert state.events == ["control-close", "control-close"]
+    else:
+        assert len(state.calls) == 1
+        assert state.events == [
+            "spawn",
+            "control-close",
+            "armed",
+            "kill",
+            "reap",
+            "control-close",
+            "control-close",
+        ]
 
 
 @pytest.mark.parametrize("method", ("watchdog", "invoke", "invoke-task"))
