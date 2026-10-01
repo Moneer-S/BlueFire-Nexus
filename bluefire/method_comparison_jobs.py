@@ -121,6 +121,7 @@ class MethodComparisonJobs:
                 raise _fail("The source has no reconstructable canonical authorized scope.")
             scope = recorded_scope
         options: list[Mapping[str, Any]] = []
+        preflight_blocked = False
         for step in scenario.steps:
             if selected_step_id is not None and step.id != selected_step_id:
                 continue
@@ -165,6 +166,7 @@ class MethodComparisonJobs:
                     if item != "Explicit operator approval is required."
                 ]
                 if problems:
+                    preflight_blocked = True
                     continue
                 behavior = next(
                     value for value in self.service.registry.behaviors if value.id == alternate
@@ -183,6 +185,11 @@ class MethodComparisonJobs:
                 )
                 if len(options) > 8:
                     raise _fail("Select a step with at most eight compatible method alternatives.")
+        if not options and preflight_blocked:
+            raise _fail(
+                "Compatible registered alternatives exist, but none currently passes replay "
+                "preflight. Review the original environment's readiness and retry method preparation."
+            )
         return options
 
     @staticmethod
