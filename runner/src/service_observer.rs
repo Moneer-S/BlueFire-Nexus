@@ -183,6 +183,12 @@ impl ObservationTarget {
         if manager["Id"] != format!("user@{}.service", self.identity.owner_uid) {
             return Err(ObservationIssue::IdentityMismatch("manager_unit"));
         }
+        // A reported replacement remains a mismatch after it stops. Unset or
+        // noncanonical values cannot establish a different invocation identity.
+        let canonical_invocation = nonce(manager["InvocationID"]);
+        if canonical_invocation && manager["InvocationID"] != self.identity.manager_id {
+            return Err(ObservationIssue::IdentityMismatch("manager_invocation"));
+        }
         match (manager["LoadState"], manager["ActiveState"]) {
             ("loaded", "active") => {}
             ("not-found", "inactive") | ("loaded", "inactive" | "failed") => {
@@ -190,11 +196,8 @@ impl ObservationTarget {
             }
             _ => return Err(ObservationIssue::Unknown("manager_state")),
         }
-        if !nonce(manager["InvocationID"]) {
+        if !canonical_invocation {
             return Err(ObservationIssue::Unknown("manager_invocation"));
-        }
-        if manager["InvocationID"] != self.identity.manager_id {
-            return Err(ObservationIssue::IdentityMismatch("manager_invocation"));
         }
         let manager_pid = manager["MainPID"]
             .parse::<u32>()

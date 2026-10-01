@@ -354,6 +354,95 @@ fn unavailable_manager_is_distinct_from_a_replaced_or_indeterminate_manager() {
 }
 
 #[test]
+fn canonical_manager_replacement_is_not_hidden_by_inactive_or_indeterminate_state() {
+    let target = target(&document());
+    for (load, active) in [
+        ("loaded", "active"),
+        ("loaded", "inactive"),
+        ("loaded", "failed"),
+        ("not-found", "inactive"),
+        ("loaded", "activating"),
+    ] {
+        let mut data = absent();
+        replace(&mut data[0], "LoadState", load);
+        replace(&mut data[0], "ActiveState", active);
+        replace(
+            &mut data[0],
+            "InvocationID",
+            "cccccccccccccccccccccccccccccccc",
+        );
+        replace(&mut data[0], "MainPID", "0");
+        replace(&mut data[0], "ControlGroup", "");
+        assert_eq!(
+            target.parse_reported_properties(
+                complete(&data[0]),
+                ReadOutcome::Unavailable,
+                ReadOutcome::Unavailable,
+                ReadOutcome::Unavailable,
+            ),
+            Err(ObservationIssue::IdentityMismatch("manager_invocation")),
+            "{load}/{active}"
+        );
+    }
+}
+
+#[test]
+fn inactive_manager_without_a_canonical_replacement_keeps_unavailable_semantics() {
+    let target = target(&document());
+    for (load, active) in [
+        ("loaded", "inactive"),
+        ("loaded", "failed"),
+        ("not-found", "inactive"),
+    ] {
+        for invocation in [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "",
+            "00000000000000000000000000000000",
+            "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "ccccccccccccccccccccccccccccccc",
+            "cccccccccccccccccccccccccccccccg",
+        ] {
+            let mut data = absent();
+            replace(&mut data[0], "LoadState", load);
+            replace(&mut data[0], "ActiveState", active);
+            replace(&mut data[0], "InvocationID", invocation);
+            replace(&mut data[0], "MainPID", "0");
+            replace(&mut data[0], "ControlGroup", "");
+            assert_eq!(
+                parse(&target, &data),
+                Err(ObservationIssue::Unavailable("manager_inactive")),
+                "{load}/{active}/{invocation}"
+            );
+            data[0] = String::from_utf8(data[0].clone())
+                .unwrap()
+                .lines()
+                .filter(|line| !line.starts_with("InvocationID="))
+                .map(|line| format!("{line}\n"))
+                .collect::<String>()
+                .into_bytes();
+            assert_eq!(
+                parse(&target, &data),
+                Err(ObservationIssue::Unknown("manager"))
+            );
+        }
+    }
+    for invocation in [
+        "",
+        "00000000000000000000000000000000",
+        "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+        "ccccccccccccccccccccccccccccccc",
+        "cccccccccccccccccccccccccccccccg",
+    ] {
+        let mut data = absent();
+        replace(&mut data[0], "InvocationID", invocation);
+        assert_eq!(
+            parse(&target, &data),
+            Err(ObservationIssue::Unknown("manager_invocation"))
+        );
+    }
+}
+
+#[test]
 fn manager_namespace_and_unit_search_paths_cannot_be_substituted() {
     let target = target(&document());
     let mut changed = absent();
