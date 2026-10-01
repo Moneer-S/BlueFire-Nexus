@@ -27,6 +27,8 @@ mod service_installations;
 pub mod service_observer;
 pub mod service_operation_binding;
 pub mod service_payload;
+#[cfg(target_os = "linux")]
+pub mod service_query_reader;
 pub mod service_reservation;
 
 pub use actions::{inventory, ActionDescriptor, ACTION_SDK_SCHEMA_VERSION};

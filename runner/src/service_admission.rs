@@ -59,6 +59,22 @@ macro_rules! string_getters {
 }
 
 impl VerifiedServiceAdmission {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn observation_manager(
+        &self,
+    ) -> Option<&crate::native_tool_inspection::InspectedNativeTool> {
+        let [manager, payload] = self.installations.as_slice() else {
+            return None;
+        };
+        (manager.installation_digest == self.manager_installation_digest
+            && payload.installation_digest == self.payload_installation_digest
+            && crate::service_installations::is_reviewed_manager(manager)
+            && self.operation_binding.as_ref().is_some_and(|binding| {
+                binding.digest() == self.operation_binding_digest
+            }))
+        .then_some(manager)
+    }
+
     string_getters!(
         scope_digest,
         grant_digest,
