@@ -231,17 +231,80 @@ def _read_record(process: subprocess.Popen[str]) -> dict[str, Any]:
     return value
 
 
+def _copied_supervisor_runtime(tmp_path: Path) -> Path:
+    runtime = tmp_path / "python-runtime"
+    launch = tmp_path / (".bluefire-verified-launch-" + "b" * 64)
+    shutil.copyfile(sys.executable, runtime)
+    runtime.chmod(0o700)
+    os.link(runtime, launch)
+    # A copied interpreter cannot locate a relocated stdlib from its private
+    # argv[0]. CPython's venv discovery uses this actual base executable's
+    # directory for its prefix searches, including before importing encodings.
+    # Match venv's lexical parent; a macOS framework bin stub may be a symlink.
+    base_executable = Path(os.path.abspath(sys._base_executable))
+    (tmp_path / "pyvenv.cfg").write_text(
+        f"home = {base_executable.parent}\ninclude-system-site-packages = false\n",
+        encoding="utf-8",
+    )
+    return launch
+
+
+def test_copied_supervisor_runtime_imports_from_the_active_base(tmp_path: Path) -> None:
+    import encodings
+    import pathlib
+
+    launch = _copied_supervisor_runtime(tmp_path)
+    expected = {
+        "base_prefix": str(Path(sys.base_prefix).resolve()),
+        "base_exec_prefix": str(Path(sys.base_exec_prefix).resolve()),
+        "executable": str(launch.resolve()),
+        "modules": [
+            str(Path(module.__file__).resolve()) for module in (encodings, pathlib, subprocess)
+        ],
+    }
+    code = """
+import encodings, json, pathlib, subprocess, sys
+expected = json.loads(sys.argv[1])
+actual = {
+    "base_prefix": str(pathlib.Path(sys.base_prefix).resolve()),
+    "base_exec_prefix": str(pathlib.Path(sys.base_exec_prefix).resolve()),
+    "executable": str(pathlib.Path(sys.executable).resolve()),
+    "modules": [str(pathlib.Path(module.__file__).resolve())
+                for module in (encodings, pathlib, subprocess)],
+}
+print(json.dumps({key: actual[key] == value for key, value in expected.items()},
+                 sort_keys=True))
+"""
+    descriptor = os.open(launch, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        before = os.fstat(descriptor)
+        assert parent_death._private_darwin_target(str(launch), descriptor)
+        assert os.path.samestat(before, (tmp_path / "python-runtime").stat())
+        assert stat.S_IMODE(before.st_mode) == 0o700
+        result = subprocess.run(  # nosec B603
+            [str(launch), "-I", "-B", "-c", code, json.dumps(expected)],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        assert result.returncode == 0
+        assert json.loads(result.stdout) == dict.fromkeys(expected, True)
+        assert result.stderr == ""
+        assert os.path.samestat(before, os.fstat(descriptor))
+        assert parent_death._private_darwin_target(str(launch), descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _launch_supervisor(
     tmp_path: Path,
     target_code: str,
     *,
     capture_failure_stderr: bool = False,
 ) -> tuple[subprocess.Popen[str], Path, dict[str, Any]]:
-    runtime = tmp_path / "python-runtime"
-    launch = tmp_path / (".bluefire-verified-launch-" + "b" * 64)
-    shutil.copyfile(sys.executable, runtime)
-    runtime.chmod(0o700)
-    os.link(runtime, launch)
+    launch = _copied_supervisor_runtime(tmp_path)
     process = subprocess.Popen(  # nosec B603
         [
             sys.executable,
