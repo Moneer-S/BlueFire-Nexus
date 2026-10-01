@@ -1,4 +1,4 @@
-"""Protected CI runtime policy tests; no runtime download, relocation, or execution."""
+"""CI runtime guards and authored child fixtures; no download or relocation."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import math
 import os
 import stat
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -227,31 +228,28 @@ def test_rpath_refuses_outside_bridge_even_when_final_target_is_private(runtime,
 @pytest.mark.parametrize("failure", [None, "output_limit", "deadline", "exit_status"])
 def test_child_uses_clean_environment_and_bounded_output_waits(runtime, monkeypatch, failure):
     calls = []
-    child = SimpleNamespace(stdout=SimpleNamespace(fileno=lambda: 42), finished=False)
+    child = SimpleNamespace(
+        pid=73,
+        stdout=SimpleNamespace(fileno=lambda: 42, close=lambda: calls.append(("close",))),
+        finished=False,
+    )
 
     def wait(timeout):
         calls.append(("wait", timeout))
         child.finished = True
         return 1 if failure == "exit_status" else 0
 
-    def kill():
-        calls.append(("kill",))
-        child.finished = True
-
     child.wait = wait
-    child.kill = kill
-    child.poll = lambda: 0 if child.finished else None
-
-    class ManagedChild:
-        def __enter__(self):
-            return child
-
-        def __exit__(self, *_args):
-            return None
+    child.poll = lambda: pytest.fail("Leader must not be reaped before group cleanup")
 
     def popen(args, **kwargs):
         calls.append(("spawn", args, kwargs))
-        return ManagedChild()
+        return child
+
+    def waitid(kind, pid, flags):
+        assert (kind, pid, flags) == (1, 73, 2 | 4 | 8)
+        calls.append(("observe_without_reap",))
+        return SimpleNamespace(si_pid=73, si_code=1, si_status=1 if failure == "exit_status" else 0)
 
     class Selector:
         def __enter__(self):
@@ -274,8 +272,21 @@ def test_child_uses_clean_environment_and_bounded_output_waits(runtime, monkeypa
     monkeypatch.setenv("LD_LIBRARY_PATH", "untrusted-parent-value")
     monkeypatch.setattr(runtime, "time", SimpleNamespace(monotonic=lambda: 100.0))
     monkeypatch.setattr(
-        runtime, "os", SimpleNamespace(set_blocking=lambda *_: None, read=lambda *_: next(chunks))
+        runtime,
+        "os",
+        SimpleNamespace(
+            set_blocking=lambda *_: None,
+            read=lambda *_: next(chunks),
+            P_PID=1,
+            WEXITED=2,
+            WNOHANG=4,
+            WNOWAIT=8,
+            CLD_EXITED=1,
+            waitid=waitid,
+            killpg=lambda pid, signal: calls.append(("killpg", pid, signal)),
+        ),
     )
+    monkeypatch.setattr(runtime, "signal", SimpleNamespace(SIGKILL=9))
     monkeypatch.setattr(runtime, "subprocess", SimpleNamespace(Popen=popen, DEVNULL=-3, PIPE=-1))
     monkeypatch.setattr(
         runtime, "selectors", SimpleNamespace(DefaultSelector=Selector, EVENT_READ=1)
@@ -292,9 +303,97 @@ def test_child_uses_clean_environment_and_bounded_output_waits(runtime, monkeypa
         assert runtime._run(["owned-child"], Path.cwd(), 104.0) == b"ok"
     environment = calls[0][2]["env"]
     assert environment == {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
+    assert calls[0][2]["start_new_session"] is True
     assert all(0 < call[1] <= 5 for call in calls if call[0] == "wait")
-    if failure in ("output_limit", "deadline"):
-        assert ("kill",) in calls and child.finished
+    assert ("killpg", 73, 9) in calls and child.finished
+    assert next(i for i, call in enumerate(calls) if call[0] == "killpg") < next(
+        i for i, call in enumerate(calls) if call[0] == "wait"
+    )
+
+
+def test_cleanup_timeout_is_unknown_and_does_not_renew_budget(runtime, monkeypatch):
+    calls = []
+
+    def wait(timeout):
+        assert timeout == pytest.approx(0.125)
+        calls.append("wait")
+        raise runtime.subprocess.TimeoutExpired("authored-child", timeout)
+
+    monkeypatch.setattr(runtime, "time", SimpleNamespace(monotonic=lambda: 103.875))
+    monkeypatch.setattr(runtime, "os", SimpleNamespace(killpg=lambda *_: calls.append("killpg")))
+    monkeypatch.setattr(runtime, "signal", SimpleNamespace(SIGKILL=9))
+    with pytest.raises(runtime.Refusal, match="^child_cleanup_unknown$"):
+        runtime._terminate_group(SimpleNamespace(pid=73, wait=wait), 104.0)
+    assert calls == ["killpg", "wait"]
+
+
+@LINUX
+@pytest.mark.parametrize("keep_pipe", [False, True])
+def test_run_kills_descendant_after_leader_exits(runtime, tmp_path, keep_pipe):
+    """A real authored fork cannot survive successful EOF or retained-pipe refusal."""
+    receipt = tmp_path / "child.json"
+    script = r"""
+import json, os, pathlib, sys, time
+r, w = os.pipe()
+if os.fork() == 0:
+    os.close(r)
+    fields = pathlib.Path('/proc/self/stat').read_text().rsplit(')', 1)[1].split()
+    pathlib.Path(sys.argv[1]).write_text(json.dumps({'pid': os.getpid(), 'start': fields[19]}))
+    os.write(w, b'1')
+    os.close(w)
+    if sys.argv[2] == 'close':
+        os.close(1)
+    time.sleep(20)
+    os._exit(0)
+os.close(w)
+assert os.read(r, 1) == b'1'
+os.close(r)
+os.write(1, b'ok\n')
+os._exit(0)
+"""
+    arguments = [
+        sys.executable,
+        "-I",
+        "-B",
+        "-c",
+        script,
+        str(receipt),
+        "keep" if keep_pipe else "close",
+    ]
+    began = time.monotonic()
+
+    def live_owned_child():
+        if not receipt.exists():
+            return None
+        identity = json.loads(receipt.read_text())
+        try:
+            fields = (
+                (Path("/proc") / str(identity["pid"]) / "stat")
+                .read_text()
+                .rsplit(")", 1)[1]
+                .split()
+            )
+        except FileNotFoundError:
+            return None
+        return identity["pid"] if fields[19] == identity["start"] and fields[0] != "Z" else None
+
+    try:
+        if keep_pipe:
+            with pytest.raises(runtime.Refusal, match="^child_deadline$"):
+                runtime._run(arguments, tmp_path, began + 3)
+        else:
+            assert runtime._run(arguments, tmp_path, began + 3) == b"ok\n"
+        assert time.monotonic() - began < 4
+        assert receipt.exists()
+        stop = time.monotonic() + 1
+        while live_owned_child() is not None:
+            assert time.monotonic() < stop, "Owned child survived process-group cleanup"
+            time.sleep(0.01)
+    finally:
+        # Preserve test cleanup even if a regression leaves the authored child alive.
+        pid = live_owned_child()
+        if pid is not None:
+            os.kill(pid, 9)
 
 
 @LINUX

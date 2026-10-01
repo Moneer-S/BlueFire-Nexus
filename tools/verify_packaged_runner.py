@@ -821,11 +821,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _cli(argv: Sequence[str] | None = None) -> int:
     try:
         return main(argv)
-    except (OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
+    except Exception as exc:
+        # Installed application errors also need sanitizing. Keep this copied
+        # CLI independent of BlueFire imports and preserve process-control exits.
         print("packaged runner verification failed", file=sys.stderr)
         try:
             diagnostic = _failure_diagnostic(_VERIFICATION_STAGE, exc, _BOOTSTRAP_FAILURE_STATUS)
-        except BaseException:
+        except Exception:
             diagnostic = (
                 '{"schema_version":"bluefire.packaged-runner-failure.v1","capture":"failed"}'
             )
