@@ -63,9 +63,9 @@ it("filters unrelated runs without hiding requested runs that have no retained e
 function resource(id: string, root: string, revision: number): DetectionResource {
   return { kind: "detections", id, status: "parsed", digest: id, created_at: "2026-09-06", updated_at: "2026-09-06", document: { candidate_id: id, title: id, state: "parsed", revision, revision_root_id: root, target_language: "sqlite", rule_source: "SELECT fixture_id FROM logs" } };
 }
-function mount() {
+function mount(selection?: { baselineId: string; revisedId: string }) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}><MemoryRouter><DetectorEvaluationComparison runIds={["attack", "heldout"]} /></MemoryRouter></QueryClientProvider>);
+  return { client, ...render(<QueryClientProvider client={client}><MemoryRouter><DetectorEvaluationComparison runIds={["attack", "heldout"]} selection={selection} /></MemoryRouter></QueryClientProvider>) };
 }
 it("compares internal revision results and offers the real structured definition", async () => {
   const user = userEvent.setup();
@@ -120,4 +120,89 @@ it("loads only the chosen revision family and exposes missing held-out evaluatio
   expect(screen.getByRole("combobox", { name: "Revised detector" })).toHaveValue("");
   expect(screen.queryByText("New match")).not.toBeInTheDocument();
   await waitFor(() => expect(fetchReports).toHaveBeenCalledWith("unrelated"));
+});
+
+it.each(["missing original", "missing revision", "unrelated revision", "duplicate original", "duplicate revision", "mismatched document"])("refuses a restored %s without substituting another detector", async state => {
+  const resources = [resource("original", "original", 1), resource("revised", "original", 2)];
+  if (state === "missing original") resources.shift();
+  if (state === "missing revision") resources.pop();
+  if (state === "unrelated revision") resources[1]!.document.revision_root_id = "other-family";
+  if (state === "duplicate original") resources.push(resource("original", "original", 1));
+  if (state === "duplicate revision") resources.push(resource("revised", "original", 2));
+  if (state === "mismatched document") resources[1]!.document.candidate_id = "other-revision";
+  vi.spyOn(api, "detections").mockResolvedValue({ schema_version: "v1", candidates: resources });
+  const reports = vi.spyOn(api, "detectionRunEvaluations").mockResolvedValue({ evaluations: [] });
+  const evaluate = vi.spyOn(api, "evaluateDetectionRun");
+  mount({ baselineId: "original", revisedId: "revised" });
+  await screen.findByRole("button", { name: "Clear detector selection" });
+  expect(screen.getByRole("combobox", { name: "Original detector" })).toHaveValue("original");
+  expect(screen.getByRole("combobox", { name: "Revised detector" })).toHaveValue("revised");
+  expect(screen.queryByRole("button", { name: "Export comparison and evidence" })).not.toBeInTheDocument();
+  expect(reports).not.toHaveBeenCalledWith("revised");
+  expect(evaluate).not.toHaveBeenCalled();
+});
+
+it.each(["candidate", "lineage", "revision", "definition"])("does not export retained results with a different %s identity", async field => {
+  const resources = [resource("original", "original", 1), resource("revised", "original", 2)];
+  resources[1]!.document.definition_digest = "expected-definition";
+  vi.spyOn(api, "detections").mockResolvedValue({ schema_version: "v1", candidates: resources });
+  vi.spyOn(api, "detectionRunEvaluations").mockImplementation(async id => {
+    const value = report(id, "attack", "matched");
+    if (id === "revised") {
+      value.candidate.definition_digest = "expected-definition";
+      if (field === "candidate") value.candidate.candidate_id = "other";
+      if (field === "lineage") value.candidate.revision_root_id = "other";
+      if (field === "revision") value.candidate.revision = 3;
+      if (field === "definition") value.candidate.definition_digest = "other";
+    }
+    return { evaluations: [value] };
+  });
+  mount({ baselineId: "original", revisedId: "revised" });
+  await screen.findByText("Detector evaluation identity mismatch");
+  expect(screen.queryByRole("button", { name: "Export comparison and evidence" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Measured detector comparison" })).not.toBeInTheDocument();
+});
+
+it.each(["registry", "evaluations"])("withholds a restored export while %s are refreshing and after refresh fails", async kind => {
+  vi.spyOn(api, "detections").mockResolvedValue({ schema_version: "v1", candidates: [resource("original", "original", 1), resource("revised", "original", 2)] });
+  vi.spyOn(api, "detectionRunEvaluations").mockImplementation(async id => ({ evaluations: [report(id, "attack", "matched")] }));
+  const { client } = mount({ baselineId: "original", revisedId: "revised" });
+  await screen.findByRole("button", { name: "Export comparison and evidence" });
+  let fail!: (reason: Error) => void;
+  if (kind === "registry") vi.mocked(api.detections).mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
+  else vi.mocked(api.detectionRunEvaluations).mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
+  void client.invalidateQueries({ queryKey: kind === "registry" ? ["detections"] : ["detection-evaluations", "revised"] });
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Export comparison and evidence" })).not.toBeInTheDocument());
+  fail(new Error("Authored unavailable response"));
+  await screen.findByText(kind === "registry" ? "Detector revisions unavailable" : "Detector evaluations unavailable");
+  expect(screen.queryByRole("button", { name: "Export comparison and evidence" })).not.toBeInTheDocument();
+});
+
+it("refreshes only the selected records to repair an evaluation identity mismatch", async () => {
+  const user = userEvent.setup();
+  vi.spyOn(api, "detections").mockResolvedValue({ schema_version: "v1", candidates: [resource("original", "original", 1), resource("revised", "original", 2)] });
+  let mismatch = true;
+  const reports = vi.spyOn(api, "detectionRunEvaluations").mockImplementation(async id => ({ evaluations: [report(mismatch && id === "revised" ? "different" : id, "attack", "matched")] }));
+  const evaluate = vi.spyOn(api, "evaluateDetectionRun");
+  mount({ baselineId: "original", revisedId: "revised" });
+  await screen.findByText("Detector evaluation identity mismatch");
+  mismatch = false;
+  await user.click(screen.getByRole("button", { name: "Refresh detector records" }));
+  await screen.findByRole("button", { name: "Export comparison and evidence" });
+  expect(api.detections).toHaveBeenCalledTimes(2);
+  expect(reports.mock.calls.map(call => call[0]).sort()).toEqual(["original", "original", "revised", "revised"]);
+  expect(evaluate).not.toHaveBeenCalled();
+});
+
+it("retains legacy origin defaults and does not confuse resource history with definition identity", async () => {
+  const original = resource("original", "original", 1);
+  delete original.document.revision_root_id;
+  delete original.document.revision;
+  const revised = resource("revised", "original", 2);
+  revised.digest = "current-lifecycle-resource-digest";
+  vi.spyOn(api, "detections").mockResolvedValue({ schema_version: "v1", candidates: [original, revised] });
+  vi.spyOn(api, "detectionRunEvaluations").mockImplementation(async id => ({ evaluations: [Object.assign(report(id, "attack", "matched"), { candidate: { ...report(id, "attack", "matched").candidate, resource_digest_at_evaluation: "historical-resource-digest" } })] }));
+  mount({ baselineId: "original", revisedId: "revised" });
+  await screen.findByRole("button", { name: "Export comparison and evidence" });
+  expect(screen.queryByText("Detector evaluation identity mismatch")).not.toBeInTheDocument();
 });
