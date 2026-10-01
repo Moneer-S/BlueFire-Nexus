@@ -1,12 +1,25 @@
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { AdaptiveRunPath } from "../src/components/AdaptiveRunPath";
-import { decisionProvenance, recordedPathNodes, selectedAttempt } from "../src/lib/adaptive-run";
+import { decisionObservations, decisionProvenance, recordedPathNodes, selectedAttempt } from "../src/lib/adaptive-run";
 import { demoCatalog } from "../src/lib/demo";
 import type { AIProposal, CatalogResponse, RunRecord } from "../src/types";
 
 // Authored component fixtures exercise presentation; they are not observed runs.
 const primary = "sandbox.discovery.list.v1", alternate = "sandbox.discovery.metadata.v1";
+const evidenceId = `evidence-${"a".repeat(20)}`, recordHash = `sha256:${"b".repeat(64)}`;
+function projection() {
+  return { schema_version: "bluefire.runtime-observations.v1", omitted_attempt_count: 0,
+    attempts: [{ attempt_index: 0, step_id: "discover", behavior_id: primary, action_id: primary, outcome: "failed",
+      failure: { classification: "execution_failure", telemetry_gap: false }, missing_evidence_count: 0, omitted_evidence_count: 0,
+      evidence: [{ evidence_id: evidenceId, record_hash: recordHash, provenance: "observed", facts: {
+        artifact_type: "collector_observation", observation_kind: "filesystem", size_bytes: 64,
+        permission_status: "available", effective_access: "not_evaluated", permission_mode_octal: "0660",
+        group_write_bit: true, other_write_bit: false, non_owner_write_bit: true,
+      } as Record<string, unknown> }],
+    }], remaining_budgets: { steps: 3, seconds: 20, retries: 1 }, unknowns: ["Target prevention is not established by a product refusal."] };
+}
 const catalog: CatalogResponse = { ...demoCatalog, behaviors: [
   ...demoCatalog.behaviors, { ...demoCatalog.behaviors[0]!, id: primary, title: "Discover records" },
 ], actions: [
@@ -16,14 +29,14 @@ const catalog: CatalogResponse = { ...demoCatalog, behaviors: [
 function fixture(): RunRecord {
   return { run_id: "authored-run", mode: "execute", status: "completed", objective: "Verify the original collection objective", objective_reached: false,
     steps: [
-      { step_id: "discover", behavior_id: primary, action_id: primary, status: "failed", runner_status: "failed", request_hash: "original-request", execution_disposition: "execute", planner_decision_id: "decision-original", evidence_ids: ["original-evidence"] },
+      { step_id: "discover", behavior_id: primary, action_id: primary, status: "failed", runner_status: "failed", request_hash: "original-request", execution_disposition: "execute", planner_decision_id: "decision-original", evidence_ids: [evidenceId] },
       { step_id: "discover", behavior_id: alternate, action_id: alternate, status: "success", runner_status: "success", request_hash: "retry-request", execution_disposition: "execute", planner_decision_id: "decision-retry", evidence_ids: [] },
     ], ai_proposals: [{ schema_version: "bluefire.ai-proposal-record.v4", run_id: "authored-run", current_step_id: "discover", deterministic_decision_id: "decision-original", outcome: "failed",
       application_status: "applied_reviewed_method", application_reason: "Reviewed method selected.",
       proposal: { schema_version: "bluefire.ai-proposal.v2", proposal_id: "authored-choice", proposal_type: "select_registered_action", selected_step_id: "discover", selected_behavior_id: alternate, selected_action_id: alternate, rationale: "The file list failed; metadata can inspect the same input.", parameter_changes: [], alternatives: [], confidence: .8, requires_operator_review: false } as AIProposal,
       applied_step: { step_id: "discover", behavior_id: alternate, action_id: alternate },
       provider: { effective_provider_id: "deterministic-offline.v1", model: "software-test-model", used_fallback: false }, provider_attempt: { provider_id: "deterministic-offline.v1", kind: "deterministic", model: "software-test-model" }, provider_called: true, decision_source: "deterministic_provider",
-      planner_state: { observations: { attempts: [{ step_id: "discover", failure: { classification: "execution_failure" }, evidence: [{ evidence_id: "original-evidence" }] }], remaining_budgets: { steps: 3, seconds: 20, retries: 1 }, unknowns: ["Target prevention has not been established."] } },
+      planner_state: { observations: projection() },
     }] };
 }
 
@@ -101,5 +114,136 @@ describe("recorded adaptive path", () => {
     expect(decisionProvenance(record).label).toBe("Configured fallback · not live model evidence");
     Object.assign(record, { provider: null, proposal: null, decision_source: "none" });
     expect(decisionProvenance(record).label).toBe("Provider request did not produce a permitted choice");
+  });
+});
+
+function observationsFixture() {
+  const run = fixture(), view = projection(), record = run.ai_proposals![0]!;
+  record.planner_state = { observations: view };
+  return { run, record, view, attempt: view.attempts[0]!, row: view.attempts[0]!.evidence[0]! };
+}
+async function openObservations(run: RunRecord) {
+  render(<AdaptiveRunPath run={run} catalog={catalog}/>);
+  const panel = screen.getByLabelText("Recorded observations at this decision");
+  await userEvent.setup().click(within(panel).getByText("Recorded observations at this decision"));
+  return within(panel);
+}
+
+describe("retained observations at the exact adaptive decision", () => {
+  it("shows permission facts, reported output and separate omissions without claiming effective access or provider receipt", async () => {
+    const { run, attempt } = observationsFixture();
+    const reported = `evidence-${"c".repeat(20)}`;
+    run.steps[0]!.evidence_ids!.push(reported, `evidence-${"d".repeat(20)}`, `evidence-${"e".repeat(20)}`);
+    attempt.evidence.push({ evidence_id: reported, record_hash: recordHash, provenance: "executed", facts: { reported_size_bytes: 32 } });
+    attempt.missing_evidence_count = 1;
+    attempt.omitted_evidence_count = 1;
+    attempt.failure.telemetry_gap = true;
+    const panel = await openObservations(run);
+    expect(panel.getByText("Record 1 · Independent observation")).toBeVisible();
+    expect(panel.getByText("0660")).toBeVisible();
+    expect(panel.getByText("Group write bit")).toBeVisible();
+    expect(panel.getByText("Record 2 · Reported execution")).toBeVisible();
+    expect(panel.getByText("Reported size in bytes")).toBeVisible();
+    expect(panel.getByText("32")).toBeVisible();
+    expect(panel.getByText("Missing evidence records").nextElementSibling).toHaveTextContent("1");
+    expect(panel.getByText("Evidence records omitted from this summary").nextElementSibling).toHaveTextContent("1");
+    expect(panel.getByText("Telemetry gap").nextElementSibling).toHaveTextContent("Reported");
+    expect(panel.getByText(/Not evaluated; mode bits/)).toBeVisible();
+    expect(panel.getByText(/do not establish what a provider received or whether the objective was achieved/)).toBeVisible();
+    expect(run.objective_reached).toBe(false);
+  });
+
+  it("matches the global attempt index when a step has repeated methods", () => {
+    const { run, record, view, attempt } = observationsFixture();
+    run.steps[1] = { ...run.steps[0]!, status: "success", planner_decision_id: "decision-retry" };
+    Object.assign(record, { deterministic_decision_id: "decision-retry", outcome: "success" });
+    view.attempts.push({ ...attempt, attempt_index: 1, outcome: "success", evidence: [{ ...attempt.evidence[0]!, facts: { file_count: 7 } }] });
+    const result = decisionObservations(run, record);
+    expect(result.available).toBe(true);
+    expect(result.evidence[0]!.facts).toEqual([{ label: "Files", value: "7" }]);
+  });
+
+  it.each([
+    ["synthetic", "Simulated evidence"], ["control_blocked", "BlueFire control record"],
+    ["counterfactual", "Counterfactual evidence"], ["unknown", "Observation unavailable"],
+  ])("keeps %s counts distinct from independent observations", async (provenance, label) => {
+    const { run, row } = observationsFixture();
+    row.provenance = provenance;
+    row.facts = { file_count: 2 };
+    const panel = await openObservations(run);
+    expect(panel.getByText(`Record 1 · ${label}`)).toBeVisible();
+    expect(panel.queryByText(/Independent observation/)).not.toBeInTheDocument();
+  });
+
+  it.each(["run", "decision", "duplicate-origin", "index", "duplicate-index", "step", "behavior", "action", "outcome", "record-outcome"])("refuses a mismatched %s without borrowing another attempt", async field => {
+    const { run, record, view, attempt } = observationsFixture();
+    if (field === "run") record.run_id = "other-run";
+    if (field === "decision") record.deterministic_decision_id = "other-decision";
+    if (field === "duplicate-origin") run.steps.push({ ...run.steps[0]! });
+    if (field === "index") attempt.attempt_index = 1;
+    if (field === "duplicate-index") view.attempts.push({ ...attempt });
+    if (field === "step") attempt.step_id = "other-step";
+    if (field === "behavior") attempt.behavior_id = alternate;
+    if (field === "action") attempt.action_id = alternate;
+    if (field === "outcome") attempt.outcome = "success";
+    if (field === "record-outcome") record.outcome = "success";
+    const panel = await openObservations(run);
+    expect(panel.getByText(/does not contain a matching, readable observation summary/)).toBeVisible();
+    expect(panel.queryByText("0660")).not.toBeInTheDocument();
+  });
+
+  it.each(["legacy", "missing-count", "negative-count", "boolean-count", "infinite-count", "unsafe-count", "inconsistent-count", "too-many-attempts", "too-many-records", "duplicate-record", "reference", "hash", "provenance"])("keeps %s unavailable instead of inventing complete evidence", field => {
+    const { run, record, view, attempt, row } = observationsFixture();
+    if (field === "legacy") Reflect.deleteProperty(view, "schema_version");
+    if (field === "missing-count") Reflect.deleteProperty(attempt, "missing_evidence_count");
+    if (field === "negative-count") attempt.omitted_evidence_count = -1;
+    if (field === "boolean-count") Object.assign(attempt, { omitted_evidence_count: true });
+    if (field === "infinite-count") attempt.omitted_evidence_count = Infinity;
+    if (field === "unsafe-count") attempt.omitted_evidence_count = 2 ** 53;
+    if (field === "inconsistent-count") attempt.missing_evidence_count = 1;
+    if (field === "too-many-attempts") view.attempts = Array.from({ length: 17 }, () => attempt);
+    if (field === "too-many-records") attempt.evidence = Array.from({ length: 33 }, () => row);
+    if (field === "duplicate-record") { attempt.evidence.push({ ...row }); run.steps[0]!.evidence_ids!.push(`evidence-${"c".repeat(20)}`); }
+    if (field === "reference") row.evidence_id = "private-path-not-an-identity";
+    if (field === "hash") row.record_hash = "private-value-not-a-hash";
+    if (field === "provenance") row.provenance = "private-provenance";
+    expect(decisionObservations(run, record)).toMatchObject({ available: false, evidence: [] });
+  });
+
+  it("keeps a valid empty summary and absent telemetry flag distinct from verified absence", async () => {
+    const { run, attempt } = observationsFixture();
+    run.steps[0]!.evidence_ids = [];
+    attempt.evidence = [];
+    Reflect.deleteProperty(attempt.failure, "telemetry_gap");
+    const panel = await openObservations(run);
+    expect(panel.getByText(/does not establish that nothing happened/)).toBeVisible();
+    expect(panel.getByText("Unknown; not recorded")).toBeVisible();
+  });
+
+  it.each(["extra", "enum", "negative", "boolean", "unsafe", "permission-bits", "permission-shape", "effective-access", "executed-permissions"])("does not render unsupported %s facts or raw values", async field => {
+    const { run, row } = observationsFixture();
+    const unsupportedValue = "synthetic-private-value:/private/operator/file";
+    if (field === "extra") row.facts.raw_log = unsupportedValue;
+    if (field === "enum") row.facts.observation_kind = unsupportedValue;
+    if (field === "negative") row.facts.size_bytes = -1;
+    if (field === "boolean") row.facts.size_bytes = true;
+    if (field === "unsafe") row.facts.size_bytes = 2 ** 53;
+    if (field === "permission-bits") row.facts.other_write_bit = true;
+    if (field === "permission-shape") delete row.facts.non_owner_write_bit;
+    if (field === "effective-access") row.facts.effective_access = "verified";
+    if (field === "executed-permissions") row.provenance = "executed";
+    const panel = await openObservations(run);
+    expect(panel.getByText(/facts are unreadable or outside the supported format/)).toBeVisible();
+    expect(panel.queryByText("0660")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Recorded observations at this decision")).not.toHaveTextContent(unsupportedValue);
+  });
+
+  it.each(["unavailable_windows", "unsupported_platform", "invalid_metadata"])("keeps %s permission metadata unavailable without invented bits", async status => {
+    const { run, row } = observationsFixture();
+    row.facts = { artifact_type: "file_observation", permission_status: status, effective_access: "not_evaluated" };
+    const panel = await openObservations(run);
+    expect(panel.getByText("File permissions")).toBeVisible();
+    expect(panel.queryByText("Group write bit")).not.toBeInTheDocument();
+    expect(panel.getByText(/Not evaluated; mode bits/)).toBeVisible();
   });
 });

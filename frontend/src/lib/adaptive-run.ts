@@ -1,5 +1,6 @@
 import type { CatalogResponse, RunRecord, RunStep } from "../types";
 import { displayTitle } from "./display-title";
+import { observationCount, observationFacts, type ObservationFact } from "./adaptive-observation-facts";
 
 export type RuntimeRecord = NonNullable<RunRecord["ai_proposals"]>[number];
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -8,8 +9,9 @@ export const recordedMethodName = (catalog: CatalogResponse, behavior?: string |
   displayTitle(catalog.actions.find(item => item.id === action)?.title ?? catalog.behaviors.find(item => item.id === behavior)?.title ?? "Method unavailable in this catalog");
 
 export function decisionOrigin(run: RunRecord, record: RuntimeRecord): number {
-  if (record.run_id !== run.run_id || typeof record.deterministic_decision_id !== "string") return -1;
-  return run.steps.findIndex(step => step.step_id === record.current_step_id && step.planner_decision_id === record.deterministic_decision_id);
+  if (record.run_id !== run.run_id || typeof record.deterministic_decision_id !== "string" || !record.deterministic_decision_id) return -1;
+  const matches = run.steps.flatMap((step, index) => step.step_id === record.current_step_id && step.planner_decision_id === record.deterministic_decision_id ? [index] : []);
+  return matches.length === 1 ? matches[0]! : -1;
 }
 
 /** Selection is not dispatch. Only a later exact step result can establish an attempt. */
@@ -46,13 +48,59 @@ export function decisionProvenance(record: RuntimeRecord): { label: string; prov
   return { label: record.provider_called === true ? "Provider request did not produce a permitted choice" : "Provider provenance not established", provider, model };
 }
 
-export function decisionObservations(record: RuntimeRecord) {
+const provenanceLabels: Record<string, string> = {
+  observed: "Independent observation", executed: "Reported execution", synthetic: "Simulated evidence",
+  control_blocked: "BlueFire control record", counterfactual: "Counterfactual evidence", unknown: "Observation unavailable",
+};
+const classifications = ["platform_mismatch", "bluefire_authorization_refusal", "bluefire_control_refusal", "resource_limit", "prerequisite_failure", "execution_timeout", "execution_failure", "runner_transport_failure", "missing_telemetry", "none", "unknown"];
+const limitations = [
+  "Target prevention is not established by a product refusal.",
+  "Reported execution alone does not independently verify the objective.",
+  "Method availability does not establish success or external prerequisites.",
+  "permission mode bits only; ACLs, parent-directory traversal and effective access are not evaluated",
+];
+export type DecisionObservations = {
+  available: boolean; classification?: string; budgets: Record<string, number>;
+  evidence: Array<{ evidence_id: string; record_hash: string; label: string; facts: ObservationFact[] | null }>;
+  unknowns: string[]; missing?: number; omitted?: number; omittedAttempts?: number; telemetryGap?: boolean;
+};
+
+/** The saved projection is not proof of provider wire contents or objective completion. */
+export function decisionObservations(run: RunRecord, record: RuntimeRecord): DecisionObservations {
+  const unavailable: DecisionObservations = { available: false, budgets: {}, evidence: [], unknowns: [] };
+  const origin = decisionOrigin(run, record), step = run.steps[origin];
   const projection = object(object(record.planner_state).observations);
-  const attempts = Array.isArray(projection.attempts) ? projection.attempts.map(object) : [];
-  const latest = attempts.filter(attempt => attempt.step_id === record.current_step_id).at(-1);
-  return { classification: object(latest?.failure).classification, budgets: object(projection.remaining_budgets),
-    evidence: Array.isArray(latest?.evidence) ? latest.evidence.map(object).filter(item => typeof item.evidence_id === "string") : [],
-    unknowns: Array.isArray(projection.unknowns) ? projection.unknowns.filter((item): item is string => typeof item === "string") : [] };
+  if (!step || record.schema_version !== "bluefire.ai-proposal-record.v4" || projection.schema_version !== "bluefire.runtime-observations.v1"
+    || !Array.isArray(projection.attempts) || projection.attempts.length > 16) return unavailable;
+  const attempts = projection.attempts.map(object), indices = attempts.map(attempt => attempt.attempt_index);
+  if (indices.some(index => !observationCount(index) || index > origin) || new Set(indices).size !== indices.length) return unavailable;
+  const matched = attempts.filter(attempt => attempt.attempt_index === origin);
+  if (matched.length !== 1) return unavailable;
+  const attempt = matched[0]!;
+  if (attempt.step_id !== step.step_id || attempt.behavior_id !== step.behavior_id || attempt.action_id !== step.action_id
+    || attempt.outcome !== step.status || attempt.outcome !== record.outcome
+    || !observationCount(attempt.missing_evidence_count) || !observationCount(attempt.omitted_evidence_count)
+    || !observationCount(projection.omitted_attempt_count) || !Array.isArray(attempt.evidence) || attempt.evidence.length > 32) return unavailable;
+  if (!Array.isArray(step.evidence_ids) || attempt.evidence.length + attempt.missing_evidence_count + attempt.omitted_evidence_count !== new Set(step.evidence_ids).size) return unavailable;
+  const evidence: DecisionObservations["evidence"] = [];
+  for (const value of attempt.evidence) {
+    const row = object(value);
+    if (typeof row.evidence_id !== "string" || !/^evidence-[0-9a-f]{20}$/.test(row.evidence_id)
+      || typeof row.record_hash !== "string" || !/^sha256:[0-9a-f]{64}$/.test(row.record_hash)
+      || typeof row.provenance !== "string" || !Object.hasOwn(provenanceLabels, row.provenance)
+      || !step.evidence_ids?.includes(row.evidence_id) || evidence.some(item => item.evidence_id === row.evidence_id)) return unavailable;
+    evidence.push({ evidence_id: row.evidence_id, record_hash: row.record_hash, label: provenanceLabels[row.provenance]!, facts: observationFacts(row.facts, row.provenance) });
+  }
+  const budgets: Record<string, number> = {};
+  for (const [key, value] of Object.entries(object(projection.remaining_budgets))) {
+    if (["steps", "retries"].includes(key) && observationCount(value)) budgets[key] = value;
+    if (key === "seconds" && typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER) budgets[key] = value;
+  }
+  const failure = object(attempt.failure), classification = failure.classification, unknowns = projection.unknowns;
+  return { available: true, classification: typeof classification === "string" && classifications.includes(classification) ? classification : undefined,
+    budgets, evidence, missing: attempt.missing_evidence_count, omitted: attempt.omitted_evidence_count, omittedAttempts: projection.omitted_attempt_count,
+    telemetryGap: typeof failure.telemetry_gap === "boolean" ? failure.telemetry_gap : undefined,
+    unknowns: Array.isArray(unknowns) ? limitations.filter(value => unknowns.includes(value)) : [] };
 }
 
 export function recordedPathNodes(run: RunRecord) {
