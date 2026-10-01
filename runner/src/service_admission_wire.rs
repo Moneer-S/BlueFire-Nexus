@@ -134,11 +134,17 @@ fn unit(value: &Value) -> Result<(), String> {
 }
 
 fn scope(value: &Value) -> Result<(), String> {
-    fields(value, "schema_version scenario_id step_id action_id profile_id profile_policy_digest target_scope_digest workspace target manager unit template installations effects parameters limits created_at setup_expires_at cleanup_expires_at")?;
-    require(
-        value["schema_version"] == "bluefire.owned-user-service-scope.v1"
-            && value["action_id"] == SERVICE_ACTION_ID,
+    let names = "schema_version scenario_id step_id action_id profile_id profile_policy_digest target_scope_digest workspace target manager unit template installations effects parameters limits created_at setup_expires_at cleanup_expires_at";
+    let version = scope_version(value)?;
+    fields(
+        value,
+        &if version == 2 {
+            format!("{names} observation_runtime")
+        } else {
+            names.into()
+        },
     )?;
+    require(value["action_id"] == SERVICE_ACTION_ID)?;
     for key in ["scenario_id", "step_id", "action_id", "profile_id"] {
         identifier(&value[key])?;
     }
@@ -249,6 +255,14 @@ fn binding(grant: &Value) -> Result<ServiceOperationBinding, String> {
     Ok(parsed)
 }
 
+fn scope_version(scope: &Value) -> Result<u8, String> {
+    match scope["schema_version"].as_str() {
+        Some("bluefire.owned-user-service-scope.v1") => Ok(1),
+        Some("bluefire.owned-user-service-scope.v2") => Ok(2),
+        _ => Err(REFUSAL.into()),
+    }
+}
+
 pub(super) fn validate(
     admission: &Value,
     expected_issuer: &Value,
@@ -257,7 +271,10 @@ pub(super) fn validate(
     now: DateTime<FixedOffset>,
 ) -> Result<VerifiedServiceAdmission, String> {
     fields(admission, "schema_version grant grant_digest issuer")?;
-    require(admission["schema_version"] == "bluefire.owned-user-service-admission.v1")?;
+    let version = scope_version(&admission["grant"]["scope"])?;
+    require(
+        admission["schema_version"] == format!("bluefire.owned-user-service-admission.v{version}"),
+    )?;
     fields(
         &admission["issuer"],
         "runner_id client_id enrollment_generation peer_fingerprint server_instance_id",
@@ -280,12 +297,20 @@ pub(super) fn validate(
     let grant = &admission["grant"];
     fields(grant, "schema_version scope scope_digest claim run_id step_id action_id manifest_request_hash execution operation_binding")?;
     require(
-        grant["schema_version"] == "bluefire.owned-user-service-grant.v1"
+        grant["schema_version"] == format!("bluefire.owned-user-service-grant.v{version}")
             && admission["grant_digest"] == canonical_hash(grant),
     )?;
     scope(&grant["scope"])?;
     let scope = &grant["scope"];
     require(grant["scope_digest"] == canonical_hash(scope))?;
+    let observation_runtime = if version == 2 {
+        Some(super::observation_runtime::parse(
+            &scope["observation_runtime"],
+            profile,
+        )?)
+    } else {
+        None
+    };
     fields(
         &grant["execution"],
         "task_id manifest_digest profile_digest operation_binding_digest",
@@ -349,6 +374,7 @@ pub(super) fn validate(
         created_at: created,
         setup_expires_at: setup,
         cleanup_expires_at: cleanup,
+        observation_runtime,
         #[cfg(target_os = "linux")]
         scope: scope.clone(),
         #[cfg(target_os = "linux")]

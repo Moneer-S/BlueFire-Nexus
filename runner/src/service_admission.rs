@@ -20,6 +20,10 @@ mod channel;
 #[path = "service_admission_wire.rs"]
 mod wire;
 
+#[cfg(any(target_os = "linux", test))]
+#[path = "service_observation_runtime.rs"]
+mod observation_runtime;
+
 pub const SERVICE_ACTION_ID: &str = "owned.user_service.fixed_wait.v1";
 const CONTEXT_ENV: &str = "BLUEFIRE_SERVICE_CONTEXT_FD";
 const ENVELOPE_ENV: &str = "BLUEFIRE_SERVICE_ENVELOPE_FD";
@@ -46,6 +50,8 @@ pub struct VerifiedServiceAdmission {
     created_at: DateTime<FixedOffset>,
     setup_expires_at: DateTime<FixedOffset>,
     cleanup_expires_at: DateTime<FixedOffset>,
+    #[cfg(any(target_os = "linux", test))]
+    observation_runtime: Option<observation_runtime::RequestedObservationRuntime>,
     #[cfg(target_os = "linux")]
     scope: Value,
     #[cfg(target_os = "linux")]
@@ -163,6 +169,7 @@ pub(crate) fn reservation_test_admission(
         created_at: DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z").unwrap(),
         setup_expires_at: DateTime::parse_from_rfc3339("2026-01-01T00:05:00Z").unwrap(),
         cleanup_expires_at: DateTime::parse_from_rfc3339("2026-01-01T01:00:00Z").unwrap(),
+        observation_runtime: None,
         #[cfg(target_os = "linux")]
         scope: Value::Null,
         #[cfg(target_os = "linux")]

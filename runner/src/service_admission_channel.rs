@@ -223,6 +223,10 @@ pub(super) fn verify(
         &profile,
         crate::contract::utc_now().fixed_offset(),
     )?;
+    if let Some(runtime) = &checked.observation_runtime {
+        require(runtime.matches(&checked.scope["observation_runtime"]))?;
+        runtime.require_supported(deadline)?;
+    }
     require(
         checked.owner_uid() == uid
             && admission["issuer"]["runner_id"] == manifest["runner_id"]

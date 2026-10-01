@@ -1,6 +1,6 @@
 # Owned-service installation inspection contracts
 
-Protected service admission has two closed installation roles. They are read-only
+Protected v1 service admission has two closed installation roles. They are read-only
 inspection contracts, not registered actions, adaptive methods, or legacy
 `bluefire.tool-adapter.v1` contracts. They add no command, installer, arbitrary
 executable input, or service-manager invocation. The native CLI still refuses an
@@ -62,3 +62,33 @@ This establishes installation identity only. Live manager instance/bus identity,
 independent resource observations, reservation, action registration, and service
 effects remain separate boundaries. An uninstalled test binary in an owned home
 directory remains unavailable as a protected payload.
+
+## Explicit observation-runtime requests
+
+The additive scope, grant and admission v2 schemas bind an `observation_runtime`
+request. All three versions must match. V1 retains its exact two-installation
+meaning and rejects the additional field. A runner that advertises only the v1
+grant or admission protocol cannot receive v2 through that capability.
+
+The request contains the runtime schema, a contract digest, the explicitly
+reviewed system-broker UID, and exact `broker` and `systemd_daemon` installation
+references. The references use the existing tool ID, path, record digest and
+content-hash fields. Their installation-only adapter IDs are
+`owned.service.observation.broker.v1` and
+`owned.service.observation.systemd.v1`, respectively, with adapter version
+`1.0.0` and Linux x86-64 metadata. They do not replace the existing `manager`
+role, which continues to mean the `systemctl` executable.
+
+The whole runtime request participates in the existing canonical scope digest,
+approval, journal identity and execution binding. It cannot add caller-chosen
+endpoints, process IDs, commands, fallback providers or dependency lists. A future
+reviewed contract must fix the broker/daemon builds, dependency and configuration
+trust limits, and system/session topology. The non-root session UID comes from
+the existing target; the system-broker account must be explicitly reviewed.
+
+**No production observation-runtime contract is supported yet.** Well-formed
+metadata can be validated and bound, but the native admission path refuses v2
+runtime support before returning installation authority. A familiar executable,
+root ownership or a syntactically valid contract digest cannot bypass that
+refusal. Exact provider provenance, protected runtime inspection and authenticated
+peer acquisition remain required. The fixed service action remains unregistered.

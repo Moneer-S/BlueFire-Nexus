@@ -7,6 +7,9 @@ from typing import Any, Callable, Mapping, cast
 
 from .owned_service_authority import (
     ADMISSION_SCHEMA,
+    ADMISSION_SCHEMA_V2,
+    GRANT_SCHEMA,
+    GRANT_SCHEMA_V2,
     SERVICE_ACTION_ID,
     OwnedServiceAdmission,
     OwnedServiceAuthorityError,
@@ -154,13 +157,19 @@ def make_authenticated_admission(
     except (TypeError, ValueError):
         parameters = {}
     parameter = parameters.get("owned_service_admission")
+    expected_protocol = {
+        GRANT_SCHEMA: ADMISSION_SCHEMA,
+        GRANT_SCHEMA_V2: ADMISSION_SCHEMA_V2,
+    }[grant.to_dict()["schema_version"]]
     if (
-        getattr(runner, "owned_service_admission_protocol", None) != ADMISSION_SCHEMA
+        getattr(runner, "owned_service_admission_protocol", None) != expected_protocol
         or parameter is None
         or parameter.kind
         not in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
     ):
-        raise OwnedServiceAuthorityError("runner has no authenticated service admission")
+        raise OwnedServiceAuthorityError(
+            "runner has no authenticated service admission for the reviewed version"
+        )
     return OwnedServiceAdmission.create(grant, issuer=issuer)
 
 

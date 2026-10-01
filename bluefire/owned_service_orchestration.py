@@ -7,7 +7,6 @@ from typing import Any, Mapping
 
 from .contracts import ContractError
 from .owned_service_authority import (
-    GRANT_SCHEMA,
     OwnedServiceGrant,
     OwnedServiceScope,
     compile_owned_service_scope,
@@ -193,12 +192,14 @@ def service_grant_kwargs(
         parameters = {}
     parameter = parameters.get("owned_service_grant")
     if (
-        getattr(runner, "owned_service_grant_protocol", None) != GRANT_SCHEMA
+        getattr(runner, "owned_service_grant_protocol", None) != grant.to_dict()["schema_version"]
         or parameter is None
         or parameter.kind
         not in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
     ):
-        raise ContractError("runner has no authenticated owned-service grant admission")
+        raise ContractError(
+            "runner has no authenticated owned-service grant admission for the reviewed version"
+        )
     return {"owned_service_grant": grant.to_dict()}
 
 

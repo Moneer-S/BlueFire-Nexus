@@ -18,13 +18,20 @@ from pathlib import PurePosixPath
 from typing import Any, Mapping, cast
 
 from .contracts import ContractError
-from .native_tool_installations import NativeToolInstallation
+from .service_observation_runtime import (
+    canonical_installation_reference,
+    canonical_observation_runtime,
+    validate_scope_installations,
+)
 from .tool_adapters.service_operation_binding import ServiceOperationBinding
 from .util import canonical_json_bytes, content_hash
 
 SCOPE_SCHEMA = "bluefire.owned-user-service-scope.v1"
 GRANT_SCHEMA = "bluefire.owned-user-service-grant.v1"
 ADMISSION_SCHEMA = "bluefire.owned-user-service-admission.v1"
+SCOPE_SCHEMA_V2 = "bluefire.owned-user-service-scope.v2"
+GRANT_SCHEMA_V2 = "bluefire.owned-user-service-grant.v2"
+ADMISSION_SCHEMA_V2 = "bluefire.owned-user-service-admission.v2"
 PROFILE_POLICY_FIELDS = (
     "id",
     "mode",
@@ -190,26 +197,23 @@ def profile_policy_digest(profile: Any) -> str:
 
 
 def _installation(value: Any, label: str) -> dict[str, str]:
-    data = _object(
-        value,
-        frozenset({"installation_id", "path", "digest", "content_sha256"}),
-        label,
-    )
-    path = _absolute_posix_path(data["path"], f"{label} path")
-    if not re.fullmatch(r"/[A-Za-z0-9._+/-]+", path):
-        raise _fail(f"{label} path contains unsupported systemd ExecStart characters")
-    result = {
-        "installation_id": _text(data["installation_id"], _ID, f"{label} ID"),
-        "path": path,
-        "digest": _text(data["digest"], _DIGEST, f"{label} digest"),
-        "content_sha256": _text(data["content_sha256"], _DIGEST, f"{label} content digest"),
-    }
-    return result
+    try:
+        return canonical_installation_reference(value, label)
+    except ContractError as exc:
+        raise _fail(str(exc)) from exc
+
+
+def _check_installations(scope: Mapping[str, Any], records: Any, *, configured: bool) -> None:
+    try:
+        validate_scope_installations(scope, records, configured=configured)
+    except ContractError as exc:
+        raise _fail(str(exc)) from exc
 
 
 def _scope_document(value: Any) -> dict[str, Any]:
-    data = _object(value, _SCOPE_FIELDS, "scope")
-    if data["schema_version"] != SCOPE_SCHEMA:
+    v2 = isinstance(value, Mapping) and value.get("schema_version") == SCOPE_SCHEMA_V2
+    data = _object(value, _SCOPE_FIELDS | {"observation_runtime"} if v2 else _SCOPE_FIELDS, "scope")
+    if data["schema_version"] not in (SCOPE_SCHEMA, SCOPE_SCHEMA_V2):
         raise _fail("unsupported scope schema")
     for field in ("scenario_id", "step_id", "action_id", "profile_id"):
         _text(data[field], _ID, field)
@@ -335,7 +339,7 @@ def _scope_document(value: Any) -> dict[str, Any]:
         raise _fail("cleanup authority must have a separate finite expiry within one hour")
 
     document = {
-        "schema_version": SCOPE_SCHEMA,
+        "schema_version": data["schema_version"],
         "scenario_id": str(data["scenario_id"]),
         "step_id": str(data["step_id"]),
         "action_id": str(data["action_id"]),
@@ -355,6 +359,13 @@ def _scope_document(value: Any) -> dict[str, Any]:
         "setup_expires_at": setup_expires_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "cleanup_expires_at": cleanup_expires_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    if v2:
+        try:
+            document["observation_runtime"] = canonical_observation_runtime(
+                data["observation_runtime"]
+            )
+        except ContractError as exc:
+            raise _fail(str(exc)) from exc
     if unit_document["content_digest"] != _unit_content_digest(document):
         raise _fail("rendered unit bytes differ from the reviewed content digest")
     encoded = canonical_json_bytes(document)
@@ -443,29 +454,9 @@ def compile_owned_service_scope(value: Any, *, profile: Any) -> OwnedServiceScop
         "id"
     ):
         raise _fail("scope runner profile identity does not match")
-    installations = profile_document.get("native_tool_installations")
-    if not isinstance(installations, (tuple, list)):
-        raise _fail("configured profile has no native installation records")
-    for kind in ("manager", "payload"):
-        requested = document["installations"][kind]
-        matches = []
-        for raw in installations:
-            try:
-                configured = NativeToolInstallation.from_mapping(raw)
-            except ContractError as exc:
-                raise _fail("configured native installation is invalid") from exc
-            configured_document = configured.to_dict()
-            if (
-                configured_document["tool_id"] == requested["installation_id"]
-                and configured_document["installation_location"] == requested["path"]
-                and configured.digest == requested["digest"]
-                and configured_document["content_sha256"] == requested["content_sha256"]
-            ):
-                matches.append(configured)
-        if len(matches) != 1:
-            raise _fail(
-                f"{kind} installation does not exactly match one configured protected install"
-            )
+    _check_installations(
+        document, profile_document.get("native_tool_installations"), configured=True
+    )
     return scope
 
 
@@ -568,9 +559,13 @@ def _claim_document(value: Any) -> dict[str, str]:
 
 def _grant_document(value: Any) -> dict[str, Any]:
     data = _object(value, _GRANT_FIELDS, "grant")
-    if data["schema_version"] != GRANT_SCHEMA:
+    if data["schema_version"] not in (GRANT_SCHEMA, GRANT_SCHEMA_V2):
         raise _fail("unsupported grant schema")
     scope = OwnedServiceScope.from_mapping(data["scope"])
+    if (data["schema_version"] == GRANT_SCHEMA_V2) != (
+        scope.to_dict()["schema_version"] == SCOPE_SCHEMA_V2
+    ):
+        raise _fail("grant and scope schema families differ")
     if _text(data["scope_digest"], _DIGEST, "scope digest") != scope.digest:
         raise _fail("grant scope digest mismatch")
     claim = _claim_document(data["claim"])
@@ -625,7 +620,7 @@ def _grant_document(value: Any) -> dict[str, Any]:
     ):
         raise _fail("grant claim does not match its reviewed scope")
     return {
-        "schema_version": GRANT_SCHEMA,
+        "schema_version": data["schema_version"],
         "scope": scope_doc,
         "scope_digest": scope.digest,
         "claim": claim,
@@ -767,8 +762,14 @@ def mint_owned_service_grant(
         raise _fail("manifest or sealed profile differs from reviewed scope")
     _check_operation_timeout(manifest, scope_doc, operation)
     checked_task_id = _text(task_id, re.compile(r"execute-[0-9a-f]{64}"), "task ID")
+    if scope_doc["schema_version"] == SCOPE_SCHEMA_V2:
+        _check_installations(
+            scope_doc, sealed_profile.get("native_tool_installations"), configured=False
+        )
     value = {
-        "schema_version": GRANT_SCHEMA,
+        "schema_version": (
+            GRANT_SCHEMA_V2 if scope_doc["schema_version"] == SCOPE_SCHEMA_V2 else GRANT_SCHEMA
+        ),
         "scope": scope_doc,
         "scope_digest": scope.digest,
         "claim": claim,
@@ -820,27 +821,7 @@ def validate_owned_service_grant_for_request(
     operation_expiry = setup_expiry if setup_authority else cleanup_expiry
     if not created_at <= consumed < setup_expiry or current < consumed:
         raise _fail("claimed approval was not consumed inside its reviewed setup window")
-    installed_tools = profile.get("native_tool_installations")
-    if not isinstance(installed_tools, list):
-        raise _fail("sealed profile has no protected native installations")
-    for kind in ("manager", "payload"):
-        expected = scope["installations"][kind]
-        matches = []
-        for raw in installed_tools:
-            try:
-                installed = NativeToolInstallation.from_mapping(raw)
-            except ContractError:
-                continue
-            actual = installed.to_dict()
-            if (
-                actual["tool_id"] == expected["installation_id"]
-                and actual["installation_location"] == expected["path"]
-                and installed.digest == expected["digest"]
-                and actual["content_sha256"] == expected["content_sha256"]
-            ):
-                matches.append(installed)
-        if len(matches) != 1:
-            raise _fail(f"sealed profile does not contain the exact {kind} installation")
+    _check_installations(scope, profile.get("native_tool_installations"), configured=False)
     if check_expiry and (
         current >= operation_expiry or (setup_authority and current >= claim_expiry)
     ):
@@ -866,9 +847,13 @@ def _admission_document(value: Any) -> dict[str, Any]:
     data = _object(
         value, frozenset({"schema_version", "grant", "grant_digest", "issuer"}), "admission"
     )
-    if data["schema_version"] != ADMISSION_SCHEMA:
+    if data["schema_version"] not in (ADMISSION_SCHEMA, ADMISSION_SCHEMA_V2):
         raise _fail("unsupported admission schema")
     grant = OwnedServiceGrant.from_mapping(data["grant"])
+    if (data["schema_version"] == ADMISSION_SCHEMA_V2) != (
+        grant.to_dict()["schema_version"] == GRANT_SCHEMA_V2
+    ):
+        raise _fail("admission and grant schema families differ")
     if _text(data["grant_digest"], _DIGEST, "grant digest") != grant.digest:
         raise _fail("admission grant digest mismatch")
     issuer = _object(
@@ -894,7 +879,7 @@ def _admission_document(value: Any) -> dict[str, Any]:
         "server_instance_id": _text(issuer["server_instance_id"], _ID, "server instance ID"),
     }
     result = {
-        "schema_version": ADMISSION_SCHEMA,
+        "schema_version": data["schema_version"],
         "grant": grant.to_dict(),
         "grant_digest": grant.digest,
         "issuer": issuer_document,
@@ -930,7 +915,11 @@ class OwnedServiceAdmission:
             canonical_json_bytes(
                 _admission_document(
                     {
-                        "schema_version": ADMISSION_SCHEMA,
+                        "schema_version": (
+                            ADMISSION_SCHEMA_V2
+                            if grant.to_dict()["schema_version"] == GRANT_SCHEMA_V2
+                            else ADMISSION_SCHEMA
+                        ),
                         "grant": grant.to_dict(),
                         "grant_digest": grant.digest,
                         "issuer": dict(issuer),
@@ -956,13 +945,16 @@ class OwnedServiceAdmission:
 
 __all__ = [
     "ADMISSION_SCHEMA",
+    "ADMISSION_SCHEMA_V2",
     "CLEANUP_EFFECTS",
     "GRANT_SCHEMA",
+    "GRANT_SCHEMA_V2",
     "OwnedServiceAdmission",
     "OwnedServiceAuthorityError",
     "OwnedServiceGrant",
     "OwnedServiceScope",
     "SCOPE_SCHEMA",
+    "SCOPE_SCHEMA_V2",
     "SETUP_EFFECTS",
     "SERVICE_ACTION_ID",
     "compile_owned_service_scope",
