@@ -537,6 +537,8 @@
     "receipt_store": "safety",
     "service_operation_binding": "foundation",
     "service_operation_binding_tests": "foundation",
+    "service_installations": "safety",
+    "service_installations_tests": "execution",
     "service_admission": "safety",
     "service_admission_wire": "safety",
     "service_admission_channel": "safety",

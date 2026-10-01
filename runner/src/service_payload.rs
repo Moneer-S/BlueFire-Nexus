@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-pub const MAX_DURATION_SECONDS: u64 = 120;
+pub use crate::contract::OWNED_SERVICE_MAX_DURATION_SECONDS as MAX_DURATION_SECONDS;
 
 fn duration(args: &[String]) -> Result<Duration, String> {
     let [flag, value] = args else {
