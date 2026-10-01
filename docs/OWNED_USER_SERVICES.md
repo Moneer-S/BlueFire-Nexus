@@ -108,6 +108,14 @@ launcher and module-path variables are not inherited. These checks preserve the
 trusted installed dependency context, not independent authentication of every
 imported package.
 
+Launcher and interpreter-target directories are checked through their full
+ancestor chains without following directory symlinks. Each component must have
+trusted ownership and protected entries; only outer root-owned sticky directories
+may be writable by other users. The virtual environment and its `bin` directory
+must remain non-writable by other users. Interpreter links containing parent
+traversal are refused. Ordinary sibling-file changes do not invalidate directory
+identity, while replacement, ownership or permission changes do.
+
 ## Durable coordination and admission prerequisites
 
 ### Durable intent and recovery
