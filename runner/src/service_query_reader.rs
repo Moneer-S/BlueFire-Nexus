@@ -104,6 +104,14 @@ fn query_deadlines(deadline: Instant, now: Instant) -> Result<(Instant, Instant)
     Ok((query_end, cleanup_end))
 }
 
+/// Share only the existing read-only UID, boot and admission-window check.
+pub(crate) fn recheck_admission_identity(
+    admission: &VerifiedServiceAdmission,
+    deadline: Instant,
+) -> Result<(), QueryReadIssue> {
+    scope::check_identity(admission, deadline)
+}
+
 /// Consume only the remaining admission inspection budget. The sole selection
 /// is a closed property-query enum; command, endpoint, environment, limits and
 /// timeout cannot be supplied by a caller. Cancellation grants no authority.

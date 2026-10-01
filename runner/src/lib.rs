@@ -22,6 +22,8 @@ mod reviewed_chmod_builds;
 pub mod runner;
 pub mod safety;
 pub mod service_admission;
+#[cfg(target_os = "linux")]
+pub mod service_cgroup_reader;
 #[cfg(any(target_os = "linux", test))]
 mod service_installations;
 pub mod service_observer;

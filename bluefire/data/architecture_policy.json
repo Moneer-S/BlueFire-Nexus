@@ -546,6 +546,8 @@
     "service_admission_channel": "safety",
     "service_admission_tests": "safety",
     "service_query_reader": "safety",
+    "service_cgroup_reader": "safety",
+    "service_cgroup_reader_tests": "safety",
     "service_query_process": "safety",
     "service_query_process_tests": "safety",
     "service_query_scope": "safety",

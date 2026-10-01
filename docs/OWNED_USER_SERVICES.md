@@ -294,12 +294,50 @@ prevents the captured bytes from becoming a successful parser input.
 The result reports captured properties and query-child cleanup only. A reaped
 child and absent process group do not prove service cleanup or the absence of
 descendants that escaped that group. The retained bus pathname is not proof of
-the bus peer or manager owner. Cross-query consistency, cgroup and resource
+the bus peer or manager owner. Cross-query consistency, other resource
 acquisition, authenticated manager identity and independent evidence issuance
 remain required. This reader produces no reconciliation token and enables no
 ordinary service dispatch. Tests execute an authored child from the held test
 binary to exercise pipes, deadlines and cleanup; they do not query a live service
 manager or establish installed viability of the shared deadline.
+
+### Bounded cgroup acquisition
+
+`runner/src/service_cgroup_reader.rs` adds an unused Linux read-only prerequisite
+for the parsed unit's actual `cgroup.events`. It requires the complete retained
+operation binding, the verified admission's original inspection deadline and
+cancellation; callers gain no path or budget selection. The supported location
+is the cgroup v2 mount at `/sys/fs/cgroup`, beneath the exact
+`user.slice/user-UID.slice/user@UID.service` hierarchy and bound unit name.
+Retained no-follow component descriptors, held-versus-named identity checks,
+filesystem type and mount IDs reject traversal, symlinks, replacement and nested
+mount substitution. Mutable directory timestamps and sibling link counts are
+not resource identity. The reader verifies the regular read-only events file
+before reopening its retained descriptor and requires bounded complete bytes and
+EOF, followed by identity and deadline rechecks. Unsupported mount identity,
+missing resources, cancellation, incomplete data and expiry produce refusal;
+missing cgroups never generate fabricated empty events or prove service absence.
+
+The implementation uses Linux-only `libc` 0.2.189 for
+[fstatfs](https://man7.org/linux/man-pages/man2/statfs.2.html) and the fixed syscall
+entry, plus pinned `linux-raw-sys` 0.12.1 for the generated Linux
+[statx ABI](https://docs.rs/linux-raw-sys/0.12.1/linux_raw_sys/general/struct.statx.html).
+This avoids depending on a libc wrapper unavailable in the packaged musl target.
+Only the `general` and `no_std` binding features are enabled; no code generator or
+build script runs. The syscall retains the held descriptor, empty name, exact
+flags and mount-ID request. A kernel must report both mount IDs and supported
+mount-root attributes; unsupported kernels still refuse. The existing libc
+terms remain applicable. The generated bindings are used under their MIT option;
+the full notice and exact source checksum are in `THIRD_PARTY_NOTICES.md`.
+Authored tests use ordinary temporary files with an explicit private filesystem
+witness, plus a real wrong-filesystem refusal, without mounting or modifying
+any cgroup. They do not establish live manager or installed-runtime viability.
+
+These acquired bytes still do not authenticate the source of parsed manager
+properties or bind them to a live manager peer. Cross-query consistency, stable
+manager-to-cgroup identity, other resource checks and independent observation
+remain future work. This reader grants no service dispatch, cleanup authority,
+verified-absence assessment or reconciliation token.
 
 ### Remaining runtime and observation work
 
