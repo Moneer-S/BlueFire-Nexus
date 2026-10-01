@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 SUMMARY_SCHEMA = "bluefire.gate01-helper-summary.v1"
-PACKAGE_SCHEMA = "bluefire.gate01-installed-package.v1"
+PACKAGE_SCHEMA = "bluefire.gate01-installed-package.v2"
 UI_SCHEMA = "bluefire.gate01-ui-health.v1"
 JOURNEY_SCHEMA = "bluefire.gate01-journey.v1"
 PROFILE_ID = "sandbox-restricted-owned.v1"
@@ -136,6 +136,10 @@ def _installed_package_report(forbid_root: Path) -> dict[str, Any]:
         "cryptography": cryptography,
         "PyNaCl": nacl,
     }
+    if sys.version_info < (3, 11):
+        import tomli
+
+        dependency_modules["tomli"] = tomli
     dependency_versions = {name: importlib.metadata.version(name) for name in dependency_modules}
     _require(sys.flags.isolated == 1, "fresh_python_not_isolated", "fresh Python is not isolated")
     _require(
@@ -173,6 +177,7 @@ def _installed_package_report(forbid_root: Path) -> dict[str, Any]:
     )
     return {
         "schema_version": PACKAGE_SCHEMA,
+        "python_version": list(sys.version_info[:2]),
         "verified": True,
         "package_version": distribution.version,
         "fresh_environment": {

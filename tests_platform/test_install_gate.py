@@ -524,12 +524,17 @@ def test_wheel_requires_dist_is_read_from_the_built_artifact(tmp_path: Path) -> 
 name = "bluefire-nexus"
 version = "3.0.0"
 requires-python = ">=3.10"
-dependencies = ["PyYAML>=6.0.1,<7", "cryptography>=50,<51", "PyNaCl>=1.5,<2"]
+dependencies = ["PyYAML>=6.0.1,<7", "cryptography>=50,<51", "PyNaCl>=1.5,<2", "tomli==2.4.1; python_version < '3.11'"]
 """,
         encoding="utf-8",
     )
     wheel = tmp_path / "bluefire_nexus-3.0.0-py3-none-win_amd64.whl"
-    requirements = ["PyYAML<7,>=6.0.1", "cryptography<51,>=50", "PyNaCl<2,>=1.5"]
+    requirements = [
+        "PyYAML<7,>=6.0.1",
+        "cryptography<51,>=50",
+        "PyNaCl<2,>=1.5",
+        'tomli==2.4.1; python_version < "3.11"',
+    ]
     _write_metadata_wheel(wheel, requirements + ['pytest>=8; extra == "dev"'])
 
     report = install_gate._wheel_dependency_metadata_report(source, wheel)

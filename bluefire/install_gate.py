@@ -37,7 +37,6 @@ from .runner_trust import _is_link_or_reparse, _owner_private
 from .runtime_paths import runtime_temp_parent as _runtime_temp_parent
 from .runtime_paths import trusted_git_environment, trusted_git_executable
 
-_REQUIRED_DISTRIBUTIONS = ("PyYAML", "cryptography", "PyNaCl", "cffi", "pycparser")
 _WINDOWS = os.name == "nt"
 _WORKSPACE_DIRECTORY = re.compile(r"^a[0-9a-f]{8}$")
 _RUNTIME_DIRECTORY = re.compile(r"^b[0-9a-f]{8}$")
@@ -568,12 +567,15 @@ def _create_fresh_environment(
     )
     if not python.is_file() or not site_packages.is_dir():
         raise ValueError("fresh virtual environment is incomplete")
+    python_version = list(sys.version_info[:2])
     distributions = {
-        name: _provision_distribution(name, site_packages) for name in _REQUIRED_DISTRIBUTIONS
+        name: _provision_distribution(name, site_packages)
+        for name in sorted(validation.required_distributions(python_version))
     }
     dependency_metadata = _load_json(evidence_dir / "gate01-wheel-dependency-metadata-report.json")
     provision_report = {
-        "schema_version": "bluefire.gate01-dependency-provision.v1",
+        "schema_version": "bluefire.gate01-dependency-provision.v2",
+        "python_version": python_version,
         "verified": True,
         "method": "copied-verified-installed-distributions",
         "isolated_environment": True,

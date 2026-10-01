@@ -11,11 +11,17 @@ import ast
 import hashlib
 import json
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 import yaml
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
 
 POLICY_RELATIVE_PATH = Path("bluefire/data/release_rights_policy.json")
 
@@ -304,7 +310,40 @@ def _verify_python(
     _require(
         actual_wheels == classified, "locked Python dependency inventory is unclassified or stale"
     )
-    return len(classified), len(expected_optional_rows), runtime_licenses | optional_licenses
+    backports = _verify_python_backports(repository, python_policy, actual_runtime)
+    return (
+        len(classified) + len(backports),
+        len(expected_optional_rows),
+        runtime_licenses | optional_licenses | {str(row["license"]) for row in backports},
+    )
+
+
+def _verify_python_backports(
+    repository: Path, python_policy: Mapping[str, Any], requirements: list[str]
+) -> list[dict[str, Any]]:
+    source = repository / "bluefire/data/python_runtime_backports.json"
+    _require(
+        _reviewed_text_sha256(source) == python_policy.get("runtime_backports_sha256"),
+        "Python runtime backport inventory changed without review",
+    )
+    try:
+        inventory = json.loads(source.read_text(encoding="utf-8"), object_pairs_hook=_strict_object)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RightsAuditError("Python runtime backport inventory is unreadable") from exc
+    _require(
+        isinstance(inventory, dict)
+        and set(inventory) == {"schema_version", "distributions"}
+        and inventory["schema_version"] == "bluefire.python-runtime-backports.v1"
+        and isinstance(inventory["distributions"], list),
+        "Python runtime backport inventory is invalid",
+    )
+    rows = [_mapping(row, "Python runtime backport") for row in inventory["distributions"]]
+    conditional = [requirement for requirement in requirements if ";" in requirement]
+    _require(
+        [row.get("requirement") for row in rows] == conditional,
+        "conditional Python dependencies are unclassified or stale",
+    )
+    return rows
 
 
 def _frontend_identity(snapshot_key: str) -> str:
@@ -409,100 +448,60 @@ def _cargo_packages(document: str) -> dict[tuple[str, str], dict[str, Any]]:
     return packages
 
 
-# TOML single-line keys only; do not decode Python-only escapes or split quoted dots.
-_CARGO_KEY = (
-    r"[A-Za-z0-9_-]+|'[^'\x00-\x08\x0a-\x1f\x7f]*'|"
-    r'"(?:[^"\\\x00-\x08\x0a-\x1f\x7f]|\\(?:["\\bfnrt]|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}))*"'
-)
-
-
-def _cargo_key_path(value: str) -> list[str]:
+def _verify_cargo_dependency(value: Any) -> None:
+    if isinstance(value, str):
+        _require(bool(value), "Cargo dependency version requires review")
+        return
+    declaration = _mapping(value, "Cargo dependency declaration")
     _require(
-        re.fullmatch(rf"[ \t]*(?:{_CARGO_KEY})(?:[ \t]*\.[ \t]*(?:{_CARGO_KEY}))*[ \t]*", value)
-        is not None,
-        "Cargo.toml key syntax requires review",
+        not {"package", "workspace"}.intersection(declaration),
+        "Cargo dependency aliases or workspace inheritance require review",
     )
-    keys = []
-    for match in re.finditer(_CARGO_KEY, value):
-        token = match.group()
-        try:
-            key = ast.literal_eval(token) if token.startswith('"') else token.strip("'")
-        except (SyntaxError, ValueError) as exc:
-            raise RightsAuditError("Cargo.toml quoted key is invalid") from exc
-        _require(not any(0xD800 <= ord(char) <= 0xDFFF for char in key), "invalid key scalar")
-        keys.append(key)
-    return keys
+    string_fields = {"version", "path", "git", "branch", "tag", "rev", "registry", "registry-index"}
+    boolean_fields = {"optional", "default-features", "default_features"}
+    _require(
+        bool({"version", "path", "git"}.intersection(declaration))
+        and set(declaration) <= string_fields | boolean_fields | {"features"},
+        "Cargo dependency declaration requires review",
+    )
+    for key, item in declaration.items():
+        if key in string_fields:
+            valid = isinstance(item, str) and bool(item)
+        elif key in boolean_fields:
+            valid = type(item) is bool
+        else:
+            valid = isinstance(item, list) and all(
+                isinstance(feature, str) and bool(feature) for feature in item
+            )
+        _require(valid, "Cargo dependency attribute requires review")
 
 
 def _cargo_direct_dependencies(document: str) -> list[str]:
-    # This is a constrained root inventory, not a replacement TOML validator.
-    # Refuse multiline strings, which could disguise table-looking source lines.
-    _require(
-        '"""' not in document and "'''" not in document,
-        "Cargo.toml multiline strings require review",
-    )
-    header = re.compile(
-        r"(?m)^[ \t]*\[(?P<array>\[)?(?P<key>.*?)\](?(array)\])[ \t]*(?:#[^\r\n]*)?\r?$"
-    )
-    assignment = re.compile(
-        rf"(?m)^[ \t]*((?:{_CARGO_KEY})(?:[ \t]*\.[ \t]*(?:{_CARGO_KEY}))*)[ \t]*=(.*)$"
-    )
-    headers = list(header.finditer(document))
-    blocks = [([], False, document[: headers[0].start()] if headers else document)]
-    for index, match in enumerate(headers):
-        end = headers[index + 1].start() if index + 1 < len(headers) else len(document)
-        blocks.append(
-            (_cargo_key_path(match["key"]), bool(match["array"]), document[match.end() : end])
-        )
+    # Parse complete values before deriving roots: an alias may occur on a later
+    # physical line. Syntax newer than the active parser supports is refused.
+    try:
+        manifest = tomllib.loads(document)
+    except tomllib.TOMLDecodeError as exc:
+        raise RightsAuditError("Cargo.toml is invalid or uses unsupported TOML syntax") from exc
+    scopes = [manifest]
+    if "target" in manifest:
+        targets = _mapping(manifest["target"], "Cargo target table")
+        scopes.extend(_mapping(value, "Cargo target entry") for value in targets.values())
     names: list[str] = []
     found = False
-
-    def production_path(keys: list[str]) -> list[str] | None:
-        if keys[:1] == ["dependencies"]:
-            return keys[1:]
-        if len(keys) >= 3 and keys[0] == "target" and keys[2] == "dependencies":
-            return keys[3:]
-        return None
-
-    def add_name(name: str) -> None:
-        _require(
-            re.fullmatch(r"[A-Za-z0-9_-]+", name) is not None,
-            "Cargo dependency name requires review",
-        )
-        if name not in names:
-            names.append(name)
-
-    for table, array, body in blocks:
-        detailed = production_path(table)
-        if detailed is not None:
-            found = True
-            _require(not array and len(detailed) <= 1, "Cargo dependency table requires review")
-            if detailed:
-                add_name(detailed[0])
-        for match in assignment.finditer(body):
-            keys = table + _cargo_key_path(match[1])
-            dependency = production_path(keys)
+    for scope in scopes:
+        if "dependencies" not in scope:
+            continue
+        found = True
+        dependencies = _mapping(scope["dependencies"], "Cargo dependencies")
+        for name, declaration in dependencies.items():
             _require(
-                not (keys[:1] == ["target"] and len(keys) <= 2),
-                "inline Cargo target tables require review",
+                re.fullmatch(r"[A-Za-z0-9_-]+", name) is not None,
+                "Cargo dependency name requires review",
             )
-            if dependency is None:
-                continue
-            found = True
-            _require(
-                not array and 1 <= len(dependency) <= 2,
-                "Cargo dependency declaration requires review",
-            )
-            add_name(dependency[0])
-            attributes = dependency[1:]
-            attributes += [
-                _cargo_key_path(item[1])[0]
-                for item in re.finditer(rf"(?:^|[{{,])[ \t]*({_CARGO_KEY})[ \t]*=", match[2])
-            ]
-            _require(
-                not {"package", "workspace"}.intersection(attributes),
-                "Cargo dependency aliases or workspace inheritance require review",
-            )
+            _verify_cargo_dependency(declaration)
+            if name not in names:
+                names.append(name)
     _require(found, "Cargo.toml dependencies are missing")
     _require(bool(names), "Cargo.toml release dependencies are empty")
     return names

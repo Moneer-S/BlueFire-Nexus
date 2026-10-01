@@ -117,10 +117,37 @@ dependency or asset is not silently accepted: it requires an updated classificat
 `unresolved_items` list fails the review.
 
 The base Python artifact declares PyYAML (MIT), cryptography (Apache-2.0 or BSD-3-Clause), and
-PyNaCl (Apache-2.0). Its locked Linux release set additionally contains cffi (MIT-0) and pycparser
+PyNaCl (Apache-2.0), plus Tomli 2.4.1 (MIT) on Python 3.10. Python 3.11 and newer use the
+standard-library TOML parser; unsupported TOML syntax fails the audit. The separate
+`bluefire/data/python_runtime_backports.json` pins the reviewed, dependency-free Tomli wheel.
+Its locked Python 3.12 Linux release set additionally contains cffi (MIT-0) and pycparser
 (BSD-3-Clause). The exact five wheel versions and SHA-256 values are part of the committed
 inventory. PyNaCl wheels can incorporate libsodium (ISC); that nested notice must be retained
 from the resolved wheel.
+
+### Tomli 2.4.1 notice
+
+MIT License
+
+Copyright (c) 2021 Taneli Hukkinen
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 The packaged web application has 69 packages in its production lock closure: 58 MIT packages;
 the ISC-licensed D3 modules `d3-color`, `d3-dispatch`, `d3-drag`, `d3-interpolate`,
