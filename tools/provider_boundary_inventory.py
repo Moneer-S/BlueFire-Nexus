@@ -23,7 +23,7 @@ _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
     "bluefire/receiver_session.py": "sha256:06f5587707cbddb40aa5a310be24ec1fd89375b89a82e60d966b9c6af6451a37",
     "bluefire/receiver_session_worker.py": "sha256:015594b6309e52de966bc09258638551ae23f70f451bd88ef3903a361b2f1b09",
     "bluefire/ai_transport.py": "sha256:b806740e5ab11b6d10d771b57a08230d666483115782b30ced443f5cec0be507",
-    "bluefire/_ai_transport_worker.py": "sha256:812f45cf12dfba5f4d125e1b0a629a0ebace4c6c4b24dedee937ae466dd26d7a",
+    "bluefire/_ai_transport_worker.py": "sha256:dcc9d4d1d677756215b702c5c060ffd611b9b47645d3109cc13c649c449313ff",
     "bluefire/prepared_lab.py": "sha256:f821f76f025ee830e864358fed5db6abaad607691d31476469a8c6c20e385c54",
     "bluefire/prepared_lab_guest.py": "sha256:db87ca32a31a34d12761a033369991774c90c044c268e1ec5e85aa3b6c67318f",
     "bluefire/prepared_lab_runtime.py": "sha256:c2aea180c4a89c2a4234eda9bcb350e53e4e6d109ac23479437c28d6b9bc7a66",
