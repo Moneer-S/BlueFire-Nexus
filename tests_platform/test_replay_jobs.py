@@ -18,6 +18,7 @@ from bluefire.product_store import ProductStoreError
 from bluefire.runner_transport_errors import RunnerTaskCancelled
 from bluefire.service import BlueFireService
 from bluefire.util import content_hash
+from tests_platform.job_wait_diagnostics import diagnose_job_wait
 from tests_platform.test_replay_preparation import ROOT, SCOPE, forbid, source_run
 from tests_platform.test_replay_preparation import service as service
 
@@ -51,7 +52,8 @@ def test_simulate_replay_job_returns_finalized_result_with_original_lineage(serv
     job_id = created["job"]["job_id"]
     assert created["job"]["kind"] == "scenario.replay"
     assert created["approval_request"] is None
-    completed = service.job_controller.wait(job_id, timeout=10)
+    with diagnose_job_wait("replay_terminal"):
+        completed = service.job_controller.wait(job_id, timeout=10)
     assert completed["state"] == "completed"
     result = service.detail(completed["result_ref"])
     assert service.store.validate_bundle(result["run_id"])["valid"] is True
