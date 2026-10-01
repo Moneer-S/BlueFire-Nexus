@@ -104,6 +104,11 @@ impl InspectedNativeTool {
 
 #[cfg(target_os = "linux")]
 impl InspectedNativeTool {
+    /// Observation may consume this budget, but cannot renew the inspection.
+    pub(crate) fn deadline(&self) -> Instant {
+        self.deadline
+    }
+
     #[cfg(target_os = "linux")]
     pub(crate) fn fd(&self) -> std::os::fd::RawFd {
         use std::os::fd::AsRawFd;

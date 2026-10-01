@@ -18,6 +18,12 @@ const MANAGER_VERSION: &str = "255.4-1ubuntu8.12";
 const MANAGER_SHA256: &str =
     "sha256:d03995d5d2ce6a5dd1822854f80c40cdf3d92c7a008179d89e80e5ffcd1a9aa2";
 const MANAGER_SIZE: u64 = 1_501_304;
+
+#[cfg(target_os = "linux")]
+pub(crate) fn is_reviewed_manager(tool: &InspectedNativeTool) -> bool {
+    tool.observed_identity() == (MANAGER_SHA256, MANAGER_SIZE)
+}
+
 const MANAGER_BINDING: NativeToolBinding = NativeToolBinding {
     adapter_id: "owned.service.manager.v1",
     adapter_version: "1.0.0",
