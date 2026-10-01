@@ -120,6 +120,11 @@ pub(crate) struct ReportedPropertyScope {
 }
 
 impl ReportedPropertyScope {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn binding(&self) -> &ServiceOperationBinding {
+        &self.binding
+    }
+
     pub(crate) fn with_cgroup_events(
         self,
         cgroup_events: ReadOutcome<'_>,

@@ -30,6 +30,7 @@ dependencies = [
  "chrono",
  "hex",
  "hmac",
+ "libc",
  "serde",
  "serde_json",
  "sha2",
