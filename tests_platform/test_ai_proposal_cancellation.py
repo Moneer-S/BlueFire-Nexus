@@ -164,13 +164,13 @@ def test_cancellation_diagnostic_is_bounded_and_omits_unapproved_values() -> Non
     assert _safe_stack([(unapproved_value, 1)]) == []
 
 
-def test_cancellation_diagnostic_preserves_the_original_assertion() -> None:
+def test_postcondition_diagnostic_preserves_the_original_assertion() -> None:
     stream = io.StringIO()
     original = AssertionError("original assertion")
     with pytest.raises(AssertionError) as raised:
         with _diagnose_cancellation_assertions(
             lambda: _format_cancellation_diagnostic(
-                stage="before_endpoint",
+                stage="postconditions",
                 timings_ms={},
                 job_state="queued",
                 endpoint_entered=False,
@@ -190,6 +190,7 @@ def test_cancellation_diagnostic_preserves_the_original_assertion() -> None:
 
     assert raised.value is original
     assert stream.getvalue().startswith("provider-cancellation-diagnostic=")
+    assert '"stage":"postconditions"' in stream.getvalue()
 
 
 @pytest.mark.parametrize("kind", KINDS)
@@ -404,40 +405,41 @@ def test_in_flight_job_proposal_is_cancelled_and_reaped_without_fallback(
         with _diagnose_cancellation_assertions(diagnostic_payload, sys.stderr):
             assert time.monotonic() - started < 3
         stage["name"] = "postconditions"
-        assert result["state"] == "cancelled"
-        assert not errors
-        assert len(workers) == 1 and workers[0].poll() is not None
-        assert paths == ["/slow-body"]
-        retained = service.ai_authorizations()["authorizations"][0]
-        assert retained["authorization_id"] == grant["authorization_id"]
-        assert retained["usage"]["requests"] == 1
-        run = service.store.get_run(result["progress"]["run_id"])
-        assert result["result_ref"] == run["run_id"]
-        assert result["progress"]["run_status"] == "cancelled"
-        assert run["status"] == "cancelled"
-        assert run["finalized_at"] and run["manifest"]
-        assert service.store.validate_bundle(run["run_id"])["valid"]
-        assert run["steps"] and run["evidence"]["records"]
-        assert result["progress"]["completed_steps"] == len(run["steps"])
-        assert "objective_reached" not in run
-        assert run["objective_evaluation"]["status"] == "not_evaluated"
-        assert any(row["run_id"] == run["run_id"] for row in service.product_store.list_runs())
-        assert not any(event["event_type"] == "ai.proposal" for event in run["events"])
-        if signal == "cancel":
-            # A job signal must not poison the service's other provider operations.
-            success_provider = replace(
-                _provider_config(AIProviderKind.OPENAI_RESPONSES), endpoint=f"{url}/success"
-            )
-            service.authorize_ai(
-                authorization_request(success_provider, local_endpoint_authorized=True)
-            )
-            checked = service.check_ai_provider(
-                {
-                    "provider": success_provider.to_dict(),
-                    "connect": True,
-                }
-            )
-            assert checked["code"] == "probe_passed"
+        with _diagnose_cancellation_assertions(diagnostic_payload, sys.stderr):
+            assert result["state"] == "cancelled"
+            assert not errors
+            assert len(workers) == 1 and workers[0].poll() is not None
+            assert paths == ["/slow-body"]
+            retained = service.ai_authorizations()["authorizations"][0]
+            assert retained["authorization_id"] == grant["authorization_id"]
+            assert retained["usage"]["requests"] == 1
+            run = service.store.get_run(result["progress"]["run_id"])
+            assert result["result_ref"] == run["run_id"]
+            assert result["progress"]["run_status"] == "cancelled"
+            assert run["status"] == "cancelled"
+            assert run["finalized_at"] and run["manifest"]
+            assert service.store.validate_bundle(run["run_id"])["valid"]
+            assert run["steps"] and run["evidence"]["records"]
+            assert result["progress"]["completed_steps"] == len(run["steps"])
+            assert "objective_reached" not in run
+            assert run["objective_evaluation"]["status"] == "not_evaluated"
+            assert any(row["run_id"] == run["run_id"] for row in service.product_store.list_runs())
+            assert not any(event["event_type"] == "ai.proposal" for event in run["events"])
+            if signal == "cancel":
+                # A job signal must not poison the service's other provider operations.
+                success_provider = replace(
+                    _provider_config(AIProviderKind.OPENAI_RESPONSES), endpoint=f"{url}/success"
+                )
+                service.authorize_ai(
+                    authorization_request(success_provider, local_endpoint_authorized=True)
+                )
+                checked = service.check_ai_provider(
+                    {
+                        "provider": success_provider.to_dict(),
+                        "connect": True,
+                    }
+                )
+                assert checked["code"] == "probe_passed"
     finally:
         # Even a regression must not leave a configured 300-second child behind.
         def refuse(*args: Any, **kwargs: Any) -> bytes:
