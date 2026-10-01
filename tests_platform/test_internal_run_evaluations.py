@@ -203,6 +203,49 @@ def test_known_present_permission_mismatch_excludes_incomplete_group_gap(service
     assert result["matched_evidence_ids"] == [matched.evidence_id]
 
 
+def test_statusless_partial_permission_group_is_insufficient_evidence(service):
+    candidate = candidate_document(service, internal_candidate(service, {"other_write_bit": True}))
+    partial = record({"other_write_bit": True})
+
+    result = engine.execute_internal(candidate, [partial])
+
+    assert result["missing_fields"] == [
+        "effective_access",
+        "group_write_bit",
+        "non_owner_write_bit",
+        "permission_mode_octal",
+        "permission_status",
+    ]
+    assert result["matched_evidence_ids"] == []
+
+
+@pytest.mark.parametrize(
+    "partial",
+    [
+        {"other_write_bit": "true"},
+        {"group_write_bit": True, "non_owner_write_bit": False},
+        {"other_write_bit": True, "effective_access": "allowed"},
+        {"other_write_bit": True, "permission_mode_octal": "0640"},
+    ],
+)
+def test_invalid_statusless_partial_permission_facts_still_refuse(service, partial):
+    candidate = candidate_document(service, internal_candidate(service, {"other_write_bit": True}))
+
+    with pytest.raises(DetectionError, match="permission facts"):
+        engine.execute_internal(candidate, [record(partial)])
+
+
+def test_statusless_partial_permission_mismatch_excludes_the_row(service):
+    candidate = candidate_document(service, internal_candidate(service, {"other_write_bit": True}))
+    partial_mismatch = record({"other_write_bit": False})
+    matched = record(permission_content("0666"), 1)
+
+    result = engine.execute_internal(candidate, [partial_mismatch, matched])
+
+    assert result["missing_fields"] == []
+    assert result["matched_evidence_ids"] == [matched.evidence_id]
+
+
 def test_missing_effective_access_remains_a_gap_when_known_fields_match(service):
     candidate = candidate_document(service, internal_candidate(service, {"group_write_bit": True}))
     incomplete = permission_content("0660")

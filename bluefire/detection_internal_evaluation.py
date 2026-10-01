@@ -36,12 +36,10 @@ def validate_internal_candidate(candidate: DetectionCandidate) -> None:
         raise DetectionError("the structured selection or parser identity is invalid")
 
 
-def _partial_available_permission_fields_valid(fields: Mapping[str, Any]) -> bool:
-    """Validate known permission facts before using one to exclude an incomplete row."""
-    if (
-        not set(fields) <= set(PERMISSION_FIELDS)
-        or fields.get("permission_status") != "available"
-        or ("effective_access" in fields and fields["effective_access"] != "not_evaluated")
+def _partial_permission_values_valid(fields: Mapping[str, Any]) -> bool:
+    """Validate supplied permission values without requiring a complete group."""
+    if not set(fields) <= set(PERMISSION_FIELDS) or (
+        "effective_access" in fields and fields["effective_access"] != "not_evaluated"
     ):
         return False
 
@@ -76,6 +74,12 @@ def _partial_available_permission_fields_valid(fields: Mapping[str, Any]) -> boo
         if non_owner is not (group or other):
             return False
     return True
+
+
+def _partial_available_permission_fields_valid(fields: Mapping[str, Any]) -> bool:
+    return fields.get("permission_status") == "available" and _partial_permission_values_valid(
+        fields
+    )
 
 
 def execute_internal(
@@ -225,6 +229,15 @@ def execute_internal(
             status = permissions.get("permission_status")
             if status == "available" and set(permissions) != set(PERMISSION_FIELDS):
                 if not _partial_available_permission_fields_valid(permissions):
+                    raise DetectionError("structured evaluation permission facts are invalid")
+                permission_missing, mismatch = compare_fields(record.content, permissions=True)
+                if mismatch:
+                    continue
+                record_missing.update(permission_missing)
+                missing.update(record_missing | (set(PERMISSION_FIELDS) - set(permissions)))
+                continue
+            if "permission_status" not in permissions:
+                if not _partial_permission_values_valid(permissions):
                     raise DetectionError("structured evaluation permission facts are invalid")
                 permission_missing, mismatch = compare_fields(record.content, permissions=True)
                 if mismatch:
