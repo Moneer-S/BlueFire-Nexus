@@ -226,15 +226,20 @@ def execute_internal(
             if status != "available" and (
                 requires_available or permission_keys - {"permission_status", "effective_access"}
             ):
-                # A validated unavailable group still has a known not_evaluated
-                # access literal. Its mismatch can exclude the row, but status
-                # availability and absent permission bits remain unknown.
+                # A validated unavailable group retains its status and access
+                # literal. Selectors accepting available still need permission
+                # evidence; absent bits remain unknown unless a known fact disagrees.
+                known_unavailable_fields = {"effective_access"}
+                if not requires_available:
+                    known_unavailable_fields.add("permission_status")
                 _, mismatch = compare_fields(
-                    record.content, permissions=True, only=frozenset({"effective_access"})
+                    record.content,
+                    permissions=True,
+                    only=frozenset(known_unavailable_fields),
                 )
                 if mismatch:
                     continue
-                missing.update(record_missing | (permission_keys - {"effective_access"}))
+                missing.update(record_missing | (permission_keys - known_unavailable_fields))
                 continue
         permission_missing, mismatch = compare_fields(record.content, permissions=True)
         record_missing.update(permission_missing)

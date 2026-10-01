@@ -473,6 +473,50 @@ def test_permission_unavailable_is_insufficient_even_when_status_disagrees(servi
     assert result["matched_evidence_ids"] == []
 
 
+def test_known_unavailable_status_mismatch_excludes_permission_bit_gap(service):
+    candidate = candidate_document(
+        service,
+        internal_candidate(
+            service,
+            {"permission_status": "unsupported_platform", "other_write_bit": True},
+        ),
+    )
+    unavailable_windows = record(
+        {"permission_status": "unavailable_windows", "effective_access": "not_evaluated"}
+    )
+
+    result = engine.execute_internal(candidate, [unavailable_windows])
+
+    assert result["missing_fields"] == []
+    assert result["matched_evidence_ids"] == []
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        "permission_status|contains",
+        "permission_status|startswith",
+        "permission_status|endswith",
+    ],
+)
+def test_unavailable_status_operators_accepting_available_stay_unknown(service, selector):
+    candidate = candidate_document(
+        service,
+        internal_candidate(
+            service,
+            {selector: "available", "other_write_bit": True},
+        ),
+    )
+    unavailable_windows = record(
+        {"permission_status": "unavailable_windows", "effective_access": "not_evaluated"}
+    )
+
+    result = engine.execute_internal(candidate, [unavailable_windows])
+
+    assert result["missing_fields"] == ["other_write_bit", "permission_status"]
+    assert result["matched_evidence_ids"] == []
+
+
 @pytest.mark.parametrize(
     "selector,expected,requires_available,unavailable_matches",
     [
