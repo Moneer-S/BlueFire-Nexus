@@ -341,6 +341,152 @@ def _probe(interpreter: Path, prefix: Path, root: Path, deadline: float, pinned:
         os.close(descriptor)
 
 
+STARTUP_LAUNCHER = r"""
+import os, sys
+descriptor = int(sys.argv[1])
+os.set_inheritable(descriptor, False)
+assert not os.get_inheritable(descriptor)
+os.execve(descriptor, [sys.argv[2], *sys.argv[3:]], dict(os.environ))
+"""
+
+STARTUP_PROBE = r"""
+import os, sys
+prefix, executable, descriptor, device, inode = sys.argv[1:]
+def private(value):
+    return bool(value) and os.path.realpath(value).startswith(prefix + '/') and os.path.isfile(value)
+def exact_prefix(value):
+    info = os.stat(value)
+    return os.path.realpath(value) == prefix and (info.st_dev, info.st_ino) == (int(device), int(inode))
+try:
+    os.fstat(int(descriptor))
+    closed = False
+except OSError as error:
+    if error.errno != 9:
+        raise
+    closed = True
+with open('/proc/self/maps', 'rb') as source:
+    data = source.read(2 * 1024 * 1024 + 1)
+if len(data) > 2 * 1024 * 1024:
+    print('{"error":"maps_limit"}')
+    sys.exit(0)
+maps = [line.split(None, 5)[5].decode() for line in data.splitlines() if len(line.split(None, 5)) == 6]
+libraries = [value for value in maps if os.path.basename(value).startswith('libpython')]
+report = {
+    'prefix_private': exact_prefix(sys.prefix),
+    'base_prefix_private': exact_prefix(sys.base_prefix),
+    'stdlib_private': private(os.__file__),
+    'modules_private': all(private(module.__file__) for module in tuple(sys.modules.values()) if getattr(module, '__file__', None)),
+    'executable_matches': os.path.samefile('/proc/self/exe', executable),
+    'libpython_private': bool(libraries) and all(private(value) and os.path.dirname(os.path.realpath(value)) == prefix + '/lib' for value in libraries),
+    'old_cache_unmapped': not any('/opt/hostedtoolcache/' in value for value in maps),
+    'target_fd_closed': closed,
+}
+# Only fixed field names and booleans reach the public diagnostic. No stdlib
+# encoder import is needed before reporting a misplaced module search path.
+print('{' + ','.join('"' + key + '":' + str(value).lower() for key, value in report.items()) + '}')
+"""
+
+STARTUP_FIELDS = frozenset(
+    (
+        "prefix_private",
+        "base_prefix_private",
+        "stdlib_private",
+        "modules_private",
+        "executable_matches",
+        "libpython_private",
+        "old_cache_unmapped",
+        "target_fd_closed",
+    )
+)
+
+
+def _startup_result(output: bytes) -> dict[str, bool]:
+    try:
+        result = json.loads(output)
+    except (ValueError, UnicodeError) as error:
+        raise Refusal("startup_probe_output") from error
+    _require(
+        type(result) is dict
+        and set(result) == STARTUP_FIELDS
+        and all(type(value) is bool for value in result.values()),
+        "startup_probe_output",
+    )
+    return {key: result[key] is True for key in STARTUP_FIELDS}
+
+
+def _startup_comparison(interpreter: Path, prefix: Path, root: Path, deadline: float) -> None:
+    """Compare only target argv[0]; the same held ELF is executed with CLOEXEC."""
+    canonical = interpreter.resolve(strict=True)
+    _require(_inside(canonical, prefix), "probe_interpreter_escape")
+    before = _identity(canonical.lstat())
+    prefix_before = _identity(prefix.lstat())
+    descriptor = os.open(canonical, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        for variant, argv0 in (
+            ("procfd", f"/proc/self/fd/{descriptor}"),
+            ("canonical", str(canonical)),
+        ):
+            _remaining(deadline)
+            _require(_identity(os.fstat(descriptor)) == before, "probe_identity")
+            _require(_identity(canonical.lstat()) == before, "probe_identity")
+            _require(_identity(prefix.lstat()) == prefix_before, "probe_identity")
+            arguments = [
+                str(canonical),
+                "-I",
+                "-B",
+                "-c",
+                STARTUP_LAUNCHER,
+                str(descriptor),
+                argv0,
+                "-I",
+                "-B",
+                "-c",
+                STARTUP_PROBE,
+                str(prefix),
+                str(canonical),
+                str(descriptor),
+                str(prefix_before[0]),
+                str(prefix_before[1]),
+            ]
+            result: dict[str, bool] | None = None
+            try:
+                output = _run(
+                    arguments,
+                    root,
+                    deadline,
+                    executable=f"/proc/self/fd/{descriptor}",
+                    pass_fds=(descriptor,),
+                )
+            except Refusal as error:
+                # _run has already completed owned-group cleanup. Every other
+                # refusal, including uncertain cleanup, remains authoritative.
+                if str(error) != "child_failed":
+                    raise
+            else:
+                result = _startup_result(output)
+            _require(_identity(os.fstat(descriptor)) == before, "probe_identity")
+            _require(_identity(canonical.lstat()) == before, "probe_identity")
+            _require(_identity(prefix.lstat()) == prefix_before, "probe_identity")
+            print(
+                json.dumps(
+                    {
+                        "stage": "startup_comparison",
+                        "argv0": variant,
+                        "startup": "failed" if result is None else "completed",
+                        "identity": result,
+                    }
+                )
+            )
+            _require(
+                result is None or (result["executable_matches"] and result["target_fd_closed"]),
+                "startup_comparison_identity",
+            )
+            if variant == "canonical":
+                _require(result is not None and all(result.values()), "startup_control_failed")
+    finally:
+        os.close(descriptor)
+
+
 def relocate() -> None:
     deadline = time.monotonic() + MAX_SECONDS
     root = _path(os.environ["AGENT_TOOLSDIRECTORY"])
@@ -389,6 +535,7 @@ def relocate() -> None:
     _probe(interpreter, prefix, root, deadline, pinned=False)
     print('{"stage":"descriptor_probe"}')
     _probe(interpreter, prefix, root, deadline, pinned=True)
+    _startup_comparison(interpreter, prefix, root, deadline)
     _root(root, token)
     _exports(
         {
