@@ -66,7 +66,7 @@ _REVIEWED_RUNNER_CLIENT_LAUNCH_SECTIONS = {
     "_run_darwin_launch_worker": "sha256:a969f6e5c14c2bc0b150be268321faf33dd00da035548706cb9eded992ac01aa",
 }
 _REVIEWED_RUNNER_CLIENT_SOURCE_SHA256 = (
-    "sha256:948d6f56768f44b81d92eaa3db40a21e06ac78cbc6cc9dc0b364166f7fe8e079"
+    "sha256:276641de9b824628126b7125a98360a79d1d46375631309b098e0d8bc799ed22"
 )
 _REVIEWED_DARWIN_CONTAINMENT_SECTIONS = {
     "_validate_macos_launch_parent": "sha256:244beadfd89a4f2e6731109cd100042ba2a1ef8ea40e81bbd98f55211e7ebfb6",
@@ -603,6 +603,7 @@ def _runner_client_popen_contract(path: Path) -> bool:
         and _expression_matches(spawn_call.args[0], "argv")
         and _function_parameter_is_unmodified(spawn, "argv")
         and _watchdog_executable_contract(spawn)
+        and _function_parameter_is_unmodified(spawn, "canonical_argv0")
         and _keyword_expressions_match(
             spawn_call,
             (
@@ -622,6 +623,7 @@ def _runner_client_popen_contract(path: Path) -> bool:
             (
                 ("stdout", "stdout"),
                 ("stderr", "stderr"),
+                ("canonical_argv0", "canonical_argv0"),
                 ("environment", "environment"),
                 ("inherited_descriptors", "inherited_descriptors"),
                 ("options", "options"),
@@ -709,10 +711,12 @@ def _runner_client_popen_contract(path: Path) -> bool:
                 str(target_descriptor),
                 nonce,
                 ",".join(str(value) for value in helper_descriptors),
-                *argv,
+                str(canonical_argv0),
+                *argv[1:],
             ]""",
         )
         and _function_parameter_is_unmodified(parent_death, "argv")
+        and _function_parameter_is_unmodified(parent_death, "canonical_argv0")
         and _keyword_expressions_match(
             parent_death_call,
             (

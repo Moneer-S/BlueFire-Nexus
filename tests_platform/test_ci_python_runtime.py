@@ -422,7 +422,7 @@ def test_probe_isolated_arguments_and_owned_descriptor_are_closed(
             os.fstat(observed["pass_fds"][0])
 
 
-@pytest.mark.parametrize("failed_probe", [None, False, True])
+@pytest.mark.parametrize("failed_probe", [None, False, True, "comparison"])
 def test_relocation_exports_only_after_both_probes_succeed(
     runtime, tree, monkeypatch, failed_probe
 ):
@@ -460,15 +460,25 @@ def test_relocation_exports_only_after_both_probes_succeed(
         assert values["LD_LIBRARY_PATH"] == ""
         assert paths == (tree.prefix, tree.prefix / "bin")
 
+    def comparison(*_args):
+        events.append("comparison")
+        if failed_probe == "comparison":
+            raise runtime.Refusal("startup_control_failed")
+
     monkeypatch.setattr(runtime, "_probe", probe)
+    monkeypatch.setattr(runtime, "_startup_comparison", comparison)
     monkeypatch.setattr(runtime, "_exports", exports)
     if failed_probe is None:
         runtime.relocate()
-        assert events == ["normal", "pinned", "exports"]
+        assert events == ["normal", "pinned", "comparison", "exports"]
     else:
-        with pytest.raises(runtime.Refusal, match="^probe_output$"):
+        code = "startup_control_failed" if failed_probe == "comparison" else "probe_output"
+        with pytest.raises(runtime.Refusal, match=f"^{code}$"):
             runtime.relocate()
-        assert events == (["normal"] if failed_probe is False else ["normal", "pinned"])
+        expected = ["normal"] if failed_probe is False else ["normal", "pinned"]
+        if failed_probe == "comparison":
+            expected.append("comparison")
+        assert events == expected
 
 
 @LINUX
