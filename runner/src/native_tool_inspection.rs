@@ -43,6 +43,59 @@ pub(crate) struct InspectedNativeTool {
     deadline: Instant,
 }
 
+/// The executing image is authenticated by the inherited launch context, not by
+/// a requested installation record. It need not itself be an installed payload.
+#[cfg(target_os = "linux")]
+pub(crate) struct CurrentExecutable {
+    file: File,
+    identity: MetadataIdentity,
+    content_sha256: String,
+    deadline: Instant,
+}
+
+#[cfg(target_os = "linux")]
+impl CurrentExecutable {
+    pub(crate) fn observe(
+        authenticated_digest: &str,
+        deadline: Instant,
+    ) -> Result<Self, NativeToolInspectionError> {
+        check_deadline(deadline)?;
+        let file = File::open("/proc/self/exe").map_err(|_| unavailable())?;
+        let metadata = file.metadata().map_err(|_| unavailable())?;
+        if !metadata.is_file()
+            || !(1..=crate::native_tool_installations::MAX_SIZE_BYTES).contains(&metadata.len())
+        {
+            return Err(invalid());
+        }
+        let observed = Self {
+            content_sha256: hash_file(&file, metadata.len(), deadline)?,
+            identity: identity(&metadata),
+            file,
+            deadline,
+        };
+        if observed.content_sha256 != authenticated_digest {
+            return Err(digest_mismatch());
+        }
+        observed.recheck()?;
+        Ok(observed)
+    }
+
+    pub(crate) fn observed_identity(&self) -> (&str, u64) {
+        (&self.content_sha256, self.identity.size)
+    }
+
+    pub(crate) fn recheck(&self) -> Result<(), NativeToolInspectionError> {
+        check_deadline(self.deadline)?;
+        if identity(&self.file.metadata().map_err(|_| unavailable())?) != self.identity
+            || hash_file(&self.file, self.identity.size, self.deadline)? != self.content_sha256
+            || identity(&self.file.metadata().map_err(|_| unavailable())?) != self.identity
+        {
+            return Err(changed());
+        }
+        check_deadline(self.deadline)
+    }
+}
+
 impl InspectedNativeTool {
     pub(crate) fn observed_identity(&self) -> (&str, u64) {
         (&self.content_sha256, self.size_bytes)
@@ -128,7 +181,7 @@ pub(crate) fn inspect_candidate(
             architecture,
             None,
             candidate_digest,
-            timeout,
+            inspection_deadline(timeout),
         )
     }
     #[cfg(not(target_os = "linux"))]
@@ -148,25 +201,7 @@ fn inspect_linux(
     installation: &NativeToolInstallation,
     timeout: Duration,
 ) -> Result<InspectedNativeTool, NativeToolInspectionError> {
-    installation.validate().map_err(|_| invalid())?;
-    let host_arch = match std::env::consts::ARCH {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        _ => return Err(unsupported()),
-    };
-    if installation.platform != "linux" || installation.architecture != host_arch {
-        return Err(unsupported());
-    }
-    let inspected = inspect_linux_core(
-        &installation.installation_location,
-        &installation.architecture,
-        Some((
-            installation.size_bytes,
-            installation.content_sha256.as_str(),
-        )),
-        installation.digest(),
-        timeout,
-    )?;
+    let inspected = inspect_protected_record(installation, inspection_deadline(timeout))?;
     // The observed bytes must also be a known GNU build. A stable, protected
     // ELF and an operator-declared version alone do not establish tool identity.
     crate::reviewed_chmod_builds::verify(installation).map_err(|error| {
@@ -178,13 +213,41 @@ fn inspect_linux(
     Ok(inspected)
 }
 
+/// Shared mechanism only: the caller must enforce its compiled tool identity.
+/// Unlike candidate observation, this always binds the full declared size/hash.
+#[cfg(target_os = "linux")]
+pub(crate) fn inspect_protected_record(
+    installation: &NativeToolInstallation,
+    deadline: Instant,
+) -> Result<InspectedNativeTool, NativeToolInspectionError> {
+    installation.validate().map_err(|_| invalid())?;
+    let host_arch = match std::env::consts::ARCH {
+        "x86_64" => "x86_64",
+        "aarch64" => "aarch64",
+        _ => return Err(unsupported()),
+    };
+    if installation.platform != "linux" || installation.architecture != host_arch {
+        return Err(unsupported());
+    }
+    inspect_linux_core(
+        &installation.installation_location,
+        &installation.architecture,
+        Some((
+            installation.size_bytes,
+            installation.content_sha256.as_str(),
+        )),
+        installation.digest(),
+        deadline,
+    )
+}
+
 #[cfg(target_os = "linux")]
 fn inspect_linux_core(
     installation_location: &str,
     architecture: &str,
     expected: Option<(u64, &str)>,
     installation_digest: String,
-    timeout: Duration,
+    deadline: Instant,
 ) -> Result<InspectedNativeTool, NativeToolInspectionError> {
     let host_arch = match std::env::consts::ARCH {
         "x86_64" => "x86_64",
@@ -194,8 +257,7 @@ fn inspect_linux_core(
     if architecture != host_arch {
         return Err(unsupported());
     }
-    let started = Instant::now();
-    check_deadline(started, timeout)?;
+    check_deadline(deadline)?;
     let root = open_root().map_err(|_| unavailable())?;
     protected(&root, true)?;
     if !installation_location.starts_with('/') {
@@ -212,7 +274,7 @@ fn inspect_linux_core(
     let mut parent = root.try_clone().map_err(|_| unavailable())?;
     let mut edges = Vec::new();
     for component in &components[..components.len() - 1] {
-        check_deadline(started, timeout)?;
+        check_deadline(deadline)?;
         let child = openat_file(&parent, component, true).map_err(|_| unavailable())?;
         let metadata = child.metadata().map_err(|_| unavailable())?;
         protected(&child, true)?;
@@ -242,11 +304,7 @@ fn inspect_linux_core(
         }
     }
     without_capabilities(&file)?;
-    let digest = hash_file(
-        &file,
-        before.len(),
-        started.checked_add(timeout).unwrap_or(started),
-    )?;
+    let digest = hash_file(&file, before.len(), deadline)?;
     let after = file.metadata().map_err(|_| unavailable())?;
     if identity(&before) != identity(&after) {
         return Err(changed());
@@ -271,7 +329,7 @@ fn inspect_linux_core(
         false,
     ));
     protected(&root, true)?;
-    check_deadline(started, timeout)?;
+    check_deadline(deadline)?;
     let inspected = InspectedNativeTool {
         file,
         installation_digest,
@@ -279,7 +337,7 @@ fn inspect_linux_core(
         size_bytes: before.len(),
         edges,
         identity: identity(&before),
-        deadline: started.checked_add(timeout).unwrap_or(started),
+        deadline,
     };
     inspected.recheck()?;
     Ok(inspected)
@@ -321,8 +379,14 @@ fn hash_file(
 }
 
 #[cfg(target_os = "linux")]
-fn check_deadline(started: Instant, timeout: Duration) -> Result<(), NativeToolInspectionError> {
-    if started.elapsed() >= timeout {
+fn inspection_deadline(timeout: Duration) -> Instant {
+    let started = Instant::now();
+    started.checked_add(timeout).unwrap_or(started)
+}
+
+#[cfg(target_os = "linux")]
+fn check_deadline(deadline: Instant) -> Result<(), NativeToolInspectionError> {
+    if Instant::now() >= deadline {
         Err(timeout_error())
     } else {
         Ok(())
@@ -575,6 +639,45 @@ mod tests {
         .unwrap();
         assert_ne!(actual, expected);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn current_image_requires_authenticated_bytes_and_the_original_deadline() {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let file = File::open("/proc/self/exe").unwrap();
+        let size = file.metadata().unwrap().len();
+        let digest = hash_file(&file, size, deadline).unwrap();
+        let current = CurrentExecutable::observe(&digest, deadline).unwrap();
+        assert_eq!(current.observed_identity(), (digest.as_str(), size));
+        current.recheck().unwrap();
+        assert_eq!(
+            CurrentExecutable::observe("sha256:untrusted", deadline).err().unwrap().code,
+            "digest_mismatch"
+        );
+        assert_eq!(
+            CurrentExecutable::observe(&digest, Instant::now()).err().unwrap().code,
+            "inspection_timeout"
+        );
+    }
+
+    #[test]
+    fn held_current_image_fixture_detects_mutation_and_deadline_expiry() {
+        let path = temp_path("current-image-guard");
+        std::fs::write(&path, b"before").unwrap();
+        let file = File::open(&path).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut current = CurrentExecutable {
+            content_sha256: hash_file(&file, 6, deadline).unwrap(),
+            identity: identity(&file.metadata().unwrap()),
+            file,
+            deadline,
+        };
+        current.recheck().unwrap();
+        std::fs::write(&path, b"after!").unwrap();
+        assert_eq!(current.recheck().unwrap_err().code, "installation_changed");
+        current.deadline = Instant::now();
+        assert_eq!(current.recheck().unwrap_err().code, "inspection_timeout");
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::io::Read;
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
@@ -16,7 +16,7 @@ use sha2::Sha256;
 use super::wire::require;
 use super::{wire, VerifiedServiceAdmission, REFUSAL};
 use crate::canonical::{canonical_hash, canonical_json, sha256_hex};
-use crate::native_tool_installations::NativeToolInstallation;
+use crate::native_tool_inspection::CurrentExecutable;
 
 const MAX_CHANNEL: u64 = 64 * 1024;
 const PROTOCOL: &str = "bluefire.owned-user-service-launch.v1";
@@ -191,34 +191,6 @@ fn authenticate(context: &Context, raw: &[u8]) -> Result<Value, String> {
     Ok(envelope.admission)
 }
 
-fn installations(admission: &mut VerifiedServiceAdmission, profile: &Value) -> Result<(), String> {
-    let declared = profile["native_tool_installations"]
-        .as_array()
-        .ok_or(REFUSAL)?;
-    for kind in ["manager", "payload"] {
-        let required = &admission.scope["installations"][kind];
-        let mut matches = Vec::new();
-        for item in declared {
-            let install: NativeToolInstallation =
-                serde_json::from_value(item.clone()).map_err(|_| REFUSAL)?;
-            install.validate().map_err(|_| REFUSAL)?;
-            if required["digest"] == install.digest()
-                && required["path"] == install.installation_location
-                && required["installation_id"] == install.tool_id
-                && required["content_sha256"] == install.content_sha256
-            {
-                matches.push(install);
-            }
-        }
-        require(matches.len() == 1)?;
-        let inspected = crate::native_tool_inspection::inspect(&matches[0], Duration::from_secs(2))
-            .map_err(|_| REFUSAL)?;
-        inspected.recheck().map_err(|_| REFUSAL)?;
-        admission.installations.push(inspected);
-    }
-    Ok(())
-}
-
 pub(super) fn verify(
     context_fd: Option<OsString>,
     envelope_fd: Option<OsString>,
@@ -234,13 +206,9 @@ pub(super) fn verify(
     let context: Context =
         serde_json::from_slice(&contents(&context_file)?).map_err(|_| REFUSAL)?;
     let interpreter = check_parent(&context, parent)?;
-    require(
-        context.runner_digest
-            == format!(
-                "sha256:{}",
-                sha256_hex(&bounded("/proc/self/exe", 256 * 1024 * 1024)?)
-            ),
-    )?;
+    let deadline = Instant::now().checked_add(Duration::from_secs(2)).ok_or(REFUSAL)?;
+    let current_runner =
+        CurrentExecutable::observe(&context.runner_digest, deadline).map_err(|_| REFUSAL)?;
     let admission = authenticate(&context, &contents(&envelope_file)?)?;
     let manifest =
         serde_json::from_slice(&bounded(manifest_path, 1024 * 1024)?).map_err(|_| REFUSAL)?;
@@ -260,13 +228,17 @@ pub(super) fn verify(
     )?;
     let boot = bounded("/proc/sys/kernel/random/boot_id", 64)?;
     require(std::str::from_utf8(&boot).map_err(|_| REFUSAL)?.trim() == checked.boot_id())?;
-    installations(&mut checked, &profile)?;
+    checked.installations =
+        crate::service_installations::inspect(&checked.scope, &profile, &current_runner, deadline)?
+            .into_iter()
+            .collect();
     check_parent(&context, parent)?;
     interpreter.recheck().map_err(|_| REFUSAL)?;
     require(unsafe { getppid() } as u32 == parent)?;
     for installation in &checked.installations {
         installation.recheck().map_err(|_| REFUSAL)?;
     }
+    current_runner.recheck().map_err(|_| REFUSAL)?;
     Ok(checked)
 }
 
