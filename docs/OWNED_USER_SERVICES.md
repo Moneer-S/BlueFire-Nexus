@@ -225,6 +225,46 @@ and effect path are still unavailable. Ordinary library dispatch explicitly
 refuses the fixed action and aliases that try to reach it, so adding a catalog
 entry cannot silently bypass protected admission.
 
+### Bounded observation parsing
+
+`runner/src/service_observer.rs` is a pure parsing prerequisite. It derives three fixed
+property queries from an already validated operation binding: the owner's
+`user@UID.service`, the user manager, and the exact nonce-derived service. It
+retains the complete binding, including authorization, profile, target, boot and
+operation identities. Query descriptions accept no executable, unit, path or
+endpoint choice and perform no process or D-Bus operation.
+
+For this method, `manager_id` denotes the system manager's `InvocationID` for
+`user@UID.service`: the user manager's runtime invocation, not the workload's
+invocation, a PID, bus GUID or D-Bus unique name. Systemd assigns a new 128-bit
+invocation ID when a unit enters a new runtime cycle. See the pinned
+[invocation documentation](https://github.com/systemd/systemd-stable/blob/v255.4/man/systemd.exec.xml)
+and [unit D-Bus interface](https://github.com/systemd/systemd-stable/blob/v255.4/man/org.freedesktop.systemd1.xml).
+Comparing a parsed value does not authenticate its source or establish live
+manager identity; the future observer must independently bind the bus name owner,
+UID, process identity and boot and recheck them within its collection window.
+
+The user-query environment description fixes the existing reviewed session-bus
+address and `SYSTEMCTL_FORCE_BUS=1`. This matters because the pinned systemctl
+otherwise prefers the user's private manager socket before falling back to the
+session bus. See the pinned [transport selection](https://github.com/systemd/systemd-stable/blob/v255.4/src/systemctl/systemctl-util.c)
+and [user-manager connection implementation](https://github.com/systemd/systemd-stable/blob/v255.4/src/shared/bus-util.c).
+
+Parsing requires bounded complete successful reads, exact unique property fields,
+canonical values and matching manager/unit/cgroup relationships. Failure,
+truncation, omitted or duplicate fields, unsupported states and ambiguous path
+encoding cannot establish absence. Unavailable inputs and known identity changes
+remain distinct from unknown data. `cgroup.events` parsing retains both
+`populated` and `frozen`; population covers the entire descendant hierarchy,
+not merely the main PID. See the [kernel's cgroup v2 interface](https://docs.kernel.org/admin-guide/cgroup-v2.html#un-populated-notification).
+
+The result is reported property data only. Manager-reported `absent` and
+cgroup-reported `empty` are not verified cleanup. Unit-file and enable-link
+identities, cgroup location provenance, authenticated acquisition, stable timing
+and independent evidence issuance remain unimplemented. This parser emits no
+observer evidence or reconciliation token and registers no action or collector.
+Its authored vectors test software interpretation, never live service behavior.
+
 ### Remaining runtime and observation work
 
 A concrete adapter must still connect the fixed unit and protected executable to
