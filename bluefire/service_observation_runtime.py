@@ -105,7 +105,7 @@ def require_supported_observation_runtime(value: Any) -> None:
 
 def _matches(reference: Mapping[str, Any], record: NativeToolInstallation) -> bool:
     actual = record.to_dict()
-    return (
+    return bool(
         actual["tool_id"] == reference["installation_id"]
         and actual["installation_location"] == reference["path"]
         and record.digest == reference["digest"]
