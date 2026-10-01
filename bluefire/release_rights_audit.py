@@ -409,23 +409,101 @@ def _cargo_packages(document: str) -> dict[tuple[str, str], dict[str, Any]]:
     return packages
 
 
+# TOML single-line keys only; do not decode Python-only escapes or split quoted dots.
+_CARGO_KEY = (
+    r"[A-Za-z0-9_-]+|'[^'\x00-\x08\x0a-\x1f\x7f]*'|"
+    r'"(?:[^"\\\x00-\x08\x0a-\x1f\x7f]|\\(?:["\\bfnrt]|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}))*"'
+)
+
+
+def _cargo_key_path(value: str) -> list[str]:
+    _require(
+        re.fullmatch(rf"[ \t]*(?:{_CARGO_KEY})(?:[ \t]*\.[ \t]*(?:{_CARGO_KEY}))*[ \t]*", value)
+        is not None,
+        "Cargo.toml key syntax requires review",
+    )
+    keys = []
+    for match in re.finditer(_CARGO_KEY, value):
+        token = match.group()
+        try:
+            key = ast.literal_eval(token) if token.startswith('"') else token.strip("'")
+        except (SyntaxError, ValueError) as exc:
+            raise RightsAuditError("Cargo.toml quoted key is invalid") from exc
+        _require(not any(0xD800 <= ord(char) <= 0xDFFF for char in key), "invalid key scalar")
+        keys.append(key)
+    return keys
+
+
 def _cargo_direct_dependencies(document: str) -> list[str]:
-    # Audit every target's production roots without evaluating the current host's cfg.
-    target = r"""(?:[A-Za-z0-9_-]+|'[^'\r\n]+'|"(?:[^"\\\r\n]|\\.)+")"""
-    table = rf"(?:dependencies|target[ \t]*\.[ \t]*{target}[ \t]*\.[ \t]*dependencies)"
-    blocks = re.findall(
-        rf"(?ms)^[ \t]*\[[ \t]*{table}[ \t]*\][ \t]*(?:#[^\r\n]*)?\r?$\n" r"(.*?)(?=^[ \t]*\[|\Z)",
-        document,
+    # This is a constrained root inventory, not a replacement TOML validator.
+    # Refuse multiline strings, which could disguise table-looking source lines.
+    _require(
+        '"""' not in document and "'''" not in document,
+        "Cargo.toml multiline strings require review",
     )
-    if not blocks:
-        raise RightsAuditError("Cargo.toml dependencies are missing")
-    names = list(
-        dict.fromkeys(
-            name
-            for block in blocks
-            for name in re.findall(r"(?m)^[ \t]*([A-Za-z0-9_-]+)[ \t]*=", block)
+    header = re.compile(
+        r"(?m)^[ \t]*\[(?P<array>\[)?(?P<key>.*?)\](?(array)\])[ \t]*(?:#[^\r\n]*)?\r?$"
+    )
+    assignment = re.compile(
+        rf"(?m)^[ \t]*((?:{_CARGO_KEY})(?:[ \t]*\.[ \t]*(?:{_CARGO_KEY}))*)[ \t]*=(.*)$"
+    )
+    headers = list(header.finditer(document))
+    blocks = [([], False, document[: headers[0].start()] if headers else document)]
+    for index, match in enumerate(headers):
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(document)
+        blocks.append(
+            (_cargo_key_path(match["key"]), bool(match["array"]), document[match.end() : end])
         )
-    )
+    names: list[str] = []
+    found = False
+
+    def production_path(keys: list[str]) -> list[str] | None:
+        if keys[:1] == ["dependencies"]:
+            return keys[1:]
+        if len(keys) >= 3 and keys[0] == "target" and keys[2] == "dependencies":
+            return keys[3:]
+        return None
+
+    def add_name(name: str) -> None:
+        _require(
+            re.fullmatch(r"[A-Za-z0-9_-]+", name) is not None,
+            "Cargo dependency name requires review",
+        )
+        if name not in names:
+            names.append(name)
+
+    for table, array, body in blocks:
+        detailed = production_path(table)
+        if detailed is not None:
+            found = True
+            _require(not array and len(detailed) <= 1, "Cargo dependency table requires review")
+            if detailed:
+                add_name(detailed[0])
+        for match in assignment.finditer(body):
+            keys = table + _cargo_key_path(match[1])
+            dependency = production_path(keys)
+            _require(
+                not (keys[:1] == ["target"] and len(keys) <= 2),
+                "inline Cargo target tables require review",
+            )
+            if dependency is None:
+                continue
+            found = True
+            _require(
+                not array and 1 <= len(dependency) <= 2,
+                "Cargo dependency declaration requires review",
+            )
+            add_name(dependency[0])
+            attributes = dependency[1:]
+            attributes += [
+                _cargo_key_path(item[1])[0]
+                for item in re.finditer(rf"(?:^|[{{,])[ \t]*({_CARGO_KEY})[ \t]*=", match[2])
+            ]
+            _require(
+                not {"package", "workspace"}.intersection(attributes),
+                "Cargo dependency aliases or workspace inheritance require review",
+            )
+    _require(found, "Cargo.toml dependencies are missing")
     _require(bool(names), "Cargo.toml release dependencies are empty")
     return names
 

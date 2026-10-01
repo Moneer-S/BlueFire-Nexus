@@ -170,6 +170,122 @@ def test_rust_target_dependency_requires_reviewed_release_graph_entry(
         release_rights_audit._verify_rust(repository, policy)
 
 
+@pytest.fixture(params=["dependencies", "target.'cfg(unix)'.dependencies"])
+def detailed_cargo_repository(
+    request: pytest.FixtureRequest,
+    target_cargo_repository: tuple[Path, dict[str, Any]],
+) -> tuple[Path, dict[str, Any]]:
+    repository, policy = target_cargo_repository
+    manifest = f"""[dependencies]
+base = "1"
+[{request.param}.target]
+version = "1"
+features = [
+    "first",
+    "second",
+]
+[dev-dependencies.development]
+version = "1"
+[target.'cfg(windows)'.dev-dependencies.development]
+version = "1"
+"""
+    (repository / "runner/Cargo.toml").write_text(manifest, encoding="utf-8")
+    return repository, policy
+
+
+def test_rust_detailed_dependency_includes_full_closure_and_excludes_development(
+    detailed_cargo_repository: tuple[Path, dict[str, Any]],
+) -> None:
+    repository, policy = detailed_cargo_repository
+
+    assert release_rights_audit._verify_rust(repository, policy) == (3, 4, {"MIT"})
+
+
+@pytest.mark.parametrize("missing", ["target@1.0.0", "target-leaf@1.0.0", "both"])
+def test_rust_detailed_dependency_cannot_be_omitted_despite_an_ordinary_root(
+    detailed_cargo_repository: tuple[Path, dict[str, Any]], missing: str
+) -> None:
+    repository, policy = detailed_cargo_repository
+    policy["rust"]["release_graph"] = [
+        package
+        for package in policy["rust"]["release_graph"]
+        if package != missing and (missing != "both" or package == "base@1.0.0")
+    ]
+
+    with pytest.raises(RightsAuditError, match="Rust release dependency graph drifted"):
+        release_rights_audit._verify_rust(repository, policy)
+
+
+@pytest.mark.parametrize("package", ["target@1.0.0", "target-leaf@1.0.0"])
+def test_rust_detailed_dependency_requires_license_classification(
+    detailed_cargo_repository: tuple[Path, dict[str, Any]], package: str
+) -> None:
+    repository, policy = detailed_cargo_repository
+    policy["rust"]["locked_crates_by_license"]["MIT"].remove(package)
+
+    with pytest.raises(RightsAuditError, match="Rust locked crate is unclassified or stale"):
+        release_rights_audit._verify_rust(repository, policy)
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "[ 'dependencies' . 'target' ]\nversion = '1'",
+        r'["target"."cfg(target_os = \"linux\")"."dependencies"."tar\u0067et"]' '\nversion = "1"',
+        "[target.'cfg(unix)'.'dependencies']\n\"target\".version = '1'",
+        '"target"."cfg(unix)"."dependencies"."target".version = "1"',
+    ],
+)
+def test_rust_detailed_dependency_accepts_quoted_and_dotted_keys(
+    target_cargo_repository: tuple[Path, dict[str, Any]], declaration: str
+) -> None:
+    repository, policy = target_cargo_repository
+    # The root dotted form must precede any table header; ordinary roots still exist.
+    manifest = declaration + '\n[dependencies]\n"base" = "1"\n'
+    if declaration.startswith("["):
+        manifest = '[dependencies]\n"base" = "1"\n' + declaration
+    (repository / "runner/Cargo.toml").write_text(manifest, encoding="utf-8")
+
+    assert release_rights_audit._verify_rust(repository, policy) == (3, 4, {"MIT"})
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        '[dependencies.development]\npackage = "target"\nversion = "1"',
+        "[target.'cfg(unix)'.dependencies.development]\n'package' = 'target'\nversion = '1'",
+        r'[target."cfg(unix)".dependencies]'
+        "\n" + r'development = { "pac\u006bage" = "target", version = "1" }',
+    ],
+)
+def test_rust_dependency_alias_is_refused_even_when_alias_name_is_locked(
+    target_cargo_repository: tuple[Path, dict[str, Any]], declaration: str
+) -> None:
+    repository, policy = target_cargo_repository
+    (repository / "runner/Cargo.toml").write_text(
+        '[dependencies]\nbase = "1"\n' + declaration, encoding="utf-8"
+    )
+    policy["rust"]["release_graph"] = ["base@1.0.0", "development@1.0.0"]
+
+    with pytest.raises(RightsAuditError, match="aliases or workspace inheritance"):
+        release_rights_audit._verify_rust(repository, policy)
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "[dependencies.target]\nworkspace = true",
+        '[target."cfg(unix)".dependencies]\ntarget.workspace = true',
+        '[dependencies.target.extra]\nversion = "1"',
+    ],
+)
+def test_cargo_unsupported_dependency_shapes_require_review(declaration: str) -> None:
+    with pytest.raises(RightsAuditError, match="require.*review"):
+        release_rights_audit._cargo_direct_dependencies(
+            '[dependencies]\nbase = "1"\n' + declaration
+        )
+
+
 def test_reviewed_text_hash_is_stable_across_git_line_endings(tmp_path: Path) -> None:
     lockfile = tmp_path / "reviewed.lock"
     lockfile.write_bytes(b"first\nsecond\n")
