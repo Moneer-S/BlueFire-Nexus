@@ -1669,6 +1669,25 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
     chmod_source = (REPOSITORY / "runner" / "src" / "atomic_chmod.rs").read_bytes()
     chmod_copy = command_inventory / "runner" / "src" / "atomic_chmod.rs"
     chmod_copy.write_bytes(chmod_source)
+    # Both reviewed query sources are required. Retain a refusal for the old
+    # four-file fixture and for either independently omitted new source.
+    assert not provider_gate_source_audit._native_command_source_inventory_is_fixed(
+        command_inventory
+    )
+    query_source = (REPOSITORY / "runner" / "src" / "service_query_process.rs").read_bytes()
+    query_fixture = (REPOSITORY / "runner" / "src" / "service_query_process_tests.rs").read_bytes()
+    query_copy = command_inventory / "runner" / "src" / "service_query_process.rs"
+    query_fixture_copy = command_inventory / "runner" / "src" / "service_query_process_tests.rs"
+    query_copy.write_bytes(query_source)
+    assert not provider_gate_source_audit._native_command_source_inventory_is_fixed(
+        command_inventory
+    )
+    query_copy.unlink()
+    query_fixture_copy.write_bytes(query_fixture)
+    assert not provider_gate_source_audit._native_command_source_inventory_is_fixed(
+        command_inventory
+    )
+    query_copy.write_bytes(query_source)
     assert provider_gate_source_audit._native_command_source_inventory_is_fixed(command_inventory)
     chmod_copy.write_bytes(
         chmod_source + b'\nfn unreviewed() { let _ = std::process::Command::new("unreviewed"); }\n'
