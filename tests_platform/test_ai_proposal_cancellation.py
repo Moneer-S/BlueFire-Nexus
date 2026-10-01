@@ -137,11 +137,11 @@ def _diagnose_cancellation_assertions(render: Callable[[], str], stream: TextIO)
 
 
 def test_cancellation_diagnostic_is_bounded_and_omits_unapproved_values() -> None:
-    secret = "provider response must never appear in diagnostics"
+    unapproved_value = "provider response must never appear in diagnostics"
     payload = _format_cancellation_diagnostic(
         stage="shutdown_wait",
         timings_ms={"endpoint_wait_ms": 4000},
-        job_state=secret,
+        job_state=unapproved_value,
         endpoint_entered=True,
         endpoint_path_count=1,
         slow_body_seen=True,
@@ -155,13 +155,13 @@ def test_cancellation_diagnostic_is_bounded_and_omits_unapproved_values() -> Non
     )
 
     assert len(payload.encode("utf-8")) <= _DIAGNOSTIC_LIMIT_BYTES
-    assert secret not in payload
+    assert unapproved_value not in payload
     assert '"job_state":"unknown"' in payload
     assert payload.count('"pid"') == 2
     assert payload.count('"function"') <= 32
     assert '"stage":"shutdown_wait"' in payload
     assert '"thread_name":"ThreadPoolExecutor-0_0"' in payload
-    assert _safe_stack([(secret, 1)]) == []
+    assert _safe_stack([(unapproved_value, 1)]) == []
 
 
 def test_cancellation_diagnostic_preserves_the_original_assertion() -> None:
