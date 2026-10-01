@@ -27,10 +27,24 @@ def _package_job():
     workflow = yaml.safe_load(
         (REPOSITORY / ".github/workflows/tests.yml").read_text(encoding="utf-8")
     )
-    assert (
-        workflow["jobs"]["python"]["name"]
-        == "Python ${{ matrix.python-version }} \u00b7 ${{ matrix.os }}"
+    python_job = workflow["jobs"]["python"]
+    assert python_job["name"] == (
+        "Python ${{ matrix.python-version }} \u00b7 ${{ matrix.os }}"
+        "${{ matrix.partition && format(' \u00b7 {0}', matrix.partition) || '' }}"
     )
+    matrix = python_job["strategy"]["matrix"]
+    assert set(matrix) == {"os", "python-version", "include"}
+    assert matrix["os"] == ["ubuntu-latest", "macos-latest"]
+    assert matrix["python-version"] == ["3.10", "3.12"]
+    windows = matrix["include"]
+    assert len(windows) == 4
+    assert all(set(entry) == {"os", "python-version", "partition"} for entry in windows)
+    assert {(entry["os"], entry["python-version"], entry["partition"]) for entry in windows} == {
+        ("windows-latest", version, partition)
+        for version in ("3.10", "3.12")
+        for partition in ("a-d", "remainder")
+    }
+    assert python_job["timeout-minutes"] == 120
     assert workflow["jobs"]["rust"]["name"] == "Rust runner \u00b7 ${{ matrix.os }}"
     return workflow["jobs"]["package"]
 
