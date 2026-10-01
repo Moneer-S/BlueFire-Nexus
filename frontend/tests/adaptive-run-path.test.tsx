@@ -222,9 +222,9 @@ describe("retained observations at the exact adaptive decision", () => {
 
   it.each(["extra", "enum", "negative", "boolean", "unsafe", "permission-bits", "permission-shape", "effective-access", "executed-permissions"])("does not render unsupported %s facts or raw values", async field => {
     const { run, row } = observationsFixture();
-    const secret = "synthetic-private-value:/private/operator/file";
-    if (field === "extra") row.facts.raw_log = secret;
-    if (field === "enum") row.facts.observation_kind = secret;
+    const unsupportedValue = "synthetic-private-value:/private/operator/file";
+    if (field === "extra") row.facts.raw_log = unsupportedValue;
+    if (field === "enum") row.facts.observation_kind = unsupportedValue;
     if (field === "negative") row.facts.size_bytes = -1;
     if (field === "boolean") row.facts.size_bytes = true;
     if (field === "unsafe") row.facts.size_bytes = 2 ** 53;
@@ -235,7 +235,7 @@ describe("retained observations at the exact adaptive decision", () => {
     const panel = await openObservations(run);
     expect(panel.getByText(/facts are unreadable or outside the supported format/)).toBeVisible();
     expect(panel.queryByText("0660")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Recorded observations at this decision")).not.toHaveTextContent(secret);
+    expect(screen.getByLabelText("Recorded observations at this decision")).not.toHaveTextContent(unsupportedValue);
   });
 
   it.each(["unavailable_windows", "unsupported_platform", "invalid_metadata"])("keeps %s permission metadata unavailable without invented bits", async status => {
