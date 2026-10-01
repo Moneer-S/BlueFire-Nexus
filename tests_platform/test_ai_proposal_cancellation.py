@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 KINDS = (AIProviderKind.OPENAI_RESPONSES, AIProviderKind.CHAT_COMPLETIONS)
 _DIAGNOSTIC_LIMIT_BYTES = 4096
 _DIAGNOSTIC_STAGES = {
+    "before_transport",
     "before_endpoint",
     "request_active",
     "shutdown_wait",
@@ -262,14 +263,47 @@ def test_in_flight_job_proposal_is_cancelled_and_reaped_without_fallback(
                 callback_observation["finished_at"] = time.monotonic()
 
     monkeypatch.setattr(service.job_controller, "_default_callback", observed_callback)
-    submission = service.submit_run(
-        {
-            "scenario_id": "scenario.sandbox.research.chain.v1",
-            "mode": "simulate",
-            "autonomy": autonomy,
-            "ai_provider_id": provider.id,
-        }
-    )
+    transport_ready = threading.Event()
+    release_transport = threading.Event()
+    abort_transport = threading.Event()
+    original_post = UrllibAIJSONTransport.post
+
+    # Coordinate setup in the parent, then invoke the shipped transport unchanged.
+    # The provider and every HTTP result still come from the original composition.
+    def observed_post(
+        transport: UrllibAIJSONTransport,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        body: bytes,
+        timeout_seconds: float,
+    ) -> bytes:
+        if url == provider.endpoint:
+            transport_ready.set()
+            if not release_transport.wait(30) or abort_transport.is_set():
+                raise AIProviderCancelled()
+        return original_post(
+            transport, url, headers=headers, body=body, timeout_seconds=timeout_seconds
+        )
+
+    monkeypatch.setattr(UrllibAIJSONTransport, "post", observed_post)
+    try:
+        submission = service.submit_run(
+            {
+                "scenario_id": "scenario.sandbox.research.chain.v1",
+                "mode": "simulate",
+                "autonomy": autonomy,
+                "ai_provider_id": provider.id,
+            }
+        )
+    except BaseException:
+        abort_transport.set()
+        release_transport.set()
+        try:
+            service.close()
+        except BaseException:
+            pass
+        raise
     job_id = submission["job"]["job_id"]
     initial_job_state = submission["job"].get("state")
     original_cancel = service.job_controller.cancel
@@ -285,7 +319,7 @@ def test_in_flight_job_proposal_is_cancelled_and_reaped_without_fallback(
 
     monkeypatch.setattr(service.job_controller, "cancel", observed_cancel)
     errors: list[BaseException] = []
-    stage = {"name": "before_endpoint"}
+    stage = {"name": "before_transport"}
     marks: dict[str, float] = {}
 
     def mark(name: str) -> None:
@@ -318,6 +352,10 @@ def test_in_flight_job_proposal_is_cancelled_and_reaped_without_fallback(
         callback_thread_id = observed.get("thread_id")
         callback_thread_id = callback_thread_id if type(callback_thread_id) is int else None
         timings_ms = {}
+        if "setup_wait_started" in marks and "setup_wait_finished" in marks:
+            timings_ms["setup_wait_ms"] = (
+                marks["setup_wait_finished"] - marks["setup_wait_started"]
+            ) * 1000
         if "endpoint_wait_started" in marks and "endpoint_wait_finished" in marks:
             timings_ms["endpoint_wait_ms"] = (
                 marks["endpoint_wait_finished"] - marks["endpoint_wait_started"]
@@ -377,7 +415,16 @@ def test_in_flight_job_proposal_is_cancelled_and_reaped_without_fallback(
 
     closer = threading.Thread(target=close, daemon=True)
     try:
+        # Durable job setup precedes the original transport's worker-start budget.
+        # This setup watchdog remains inside the suite's 180-second test timeout.
+        mark("setup_wait_started")
+        ready = transport_ready.wait(30)
+        mark("setup_wait_finished")
+        with _diagnose_cancellation_assertions(diagnostic_payload, sys.stderr):
+            assert ready, "proposal never reached the transport boundary"
+        stage["name"] = "before_endpoint"
         mark("endpoint_wait_started")
+        release_transport.set()
         endpoint_reached = entered.wait(4)
         mark("endpoint_wait_finished")
         with _diagnose_cancellation_assertions(diagnostic_payload, sys.stderr):
@@ -441,6 +488,9 @@ def test_in_flight_job_proposal_is_cancelled_and_reaped_without_fallback(
                 )
                 assert checked["code"] == "probe_passed"
     finally:
+        abort_transport.set()
+        release_transport.set()
+
         # Even a regression must not leave a configured 300-second child behind.
         def refuse(*args: Any, **kwargs: Any) -> bytes:
             raise AIProviderCancelled()
