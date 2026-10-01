@@ -2295,6 +2295,7 @@ class SubprocessRustRunner:
                         watchdog_arguments,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
+                        canonical_argv0=interpreter,
                         receiver_environment=receiver_environment,
                         inherited_descriptors=inherited_descriptors,
                         darwin_allow_fork=sys.platform == "darwin",
@@ -2609,6 +2610,7 @@ class SubprocessRustRunner:
                 process = self._spawn(
                     [launch[0], *argv[1:]],
                     stdout=subprocess.PIPE,
+                    canonical_argv0=self.runner_binary,
                     inherited_descriptors=launch[1],
                     process_sink=spawned_processes,
                 )
@@ -2675,6 +2677,7 @@ class SubprocessRustRunner:
                 process = self._spawn(
                     [launch[0], *argv[1:]],
                     stdout=output,
+                    canonical_argv0=self.runner_binary,
                     receiver_environment=receiver_environment,
                     cancellation_lease_token=cancellation_lease_token,
                     inherited_descriptors=launch[1],
@@ -2751,6 +2754,7 @@ class SubprocessRustRunner:
         *,
         stdout: int | BinaryIO | None,
         stderr: int | BinaryIO | None,
+        canonical_argv0: Path | None,
         environment: Mapping[str, str],
         inherited_descriptors: tuple[int, ...],
         options: Mapping[str, Any],
@@ -2761,7 +2765,39 @@ class SubprocessRustRunner:
         target_descriptor = int(target_match.group(1)) if target_match is not None else -1
         if target_descriptor not in inherited_descriptors:
             raise RunnerTransportError("Linux parent-death target is not descriptor-bound")
+        if canonical_argv0 is None or canonical_argv0 not in (
+            self.runner_binary,
+            self._watchdog_interpreter,
+        ):
+            raise RunnerTransportError("Linux parent-death target identity is unavailable")
         try:
+            identity_fields = (
+                "st_dev",
+                "st_ino",
+                "st_mode",
+                "st_nlink",
+                "st_uid",
+                "st_gid",
+                "st_size",
+                "st_mtime_ns",
+                "st_ctime_ns",
+            )
+            target_details = os.fstat(target_descriptor)
+            target_identity = tuple(getattr(target_details, field) for field in identity_fields)
+
+            def recheck_target() -> None:
+                opened = os.fstat(target_descriptor)
+                visible = canonical_argv0.lstat()
+                if (
+                    not canonical_argv0.is_absolute()
+                    or not stat.S_ISREG(visible.st_mode)
+                    or visible.st_nlink != 1
+                    or tuple(getattr(opened, field) for field in identity_fields) != target_identity
+                    or tuple(getattr(visible, field) for field in identity_fields)
+                    != target_identity
+                ):
+                    raise OSError("parent-death target identity changed")
+
             runtime = self._watchdog_interpreter
             runtime_digest = self._watchdog_interpreter_digest
             if file_hash(runtime) != runtime_digest:
@@ -2792,6 +2828,9 @@ class SubprocessRustRunner:
                     )
                     launch_options = dict(options)
                     launch_options["pass_fds"] = pass_fds
+                    # argv[0] is startup metadata, never the executable selector.
+                    # The helper still executes the verified FD with CLOEXEC.
+                    recheck_target()
                     process = subprocess.Popen(  # nosec B603
                         [
                             interpreter_launch[0],
@@ -2805,7 +2844,8 @@ class SubprocessRustRunner:
                             str(target_descriptor),
                             nonce,
                             ",".join(str(value) for value in helper_descriptors),
-                            *argv,
+                            str(canonical_argv0),
+                            *argv[1:],
                         ],
                         cwd=self.work_root,
                         env=dict(environment),
@@ -2826,6 +2866,7 @@ class SubprocessRustRunner:
                         or _GET_SESSION_ID(process.pid) != os.getpid()
                     ):
                         raise OSError("parent-death handshake is invalid")
+                    recheck_target()
                     parent_socket.sendall(f"go-v1:{nonce}".encode("ascii"))
                     if parent_socket.recv(256) != b"":
                         raise OSError("parent-death target execution failed")
@@ -3072,6 +3113,7 @@ class SubprocessRustRunner:
         *,
         stdout: int | BinaryIO | None,
         stderr: int | BinaryIO | None = subprocess.PIPE,
+        canonical_argv0: Path | None = None,
         receiver_environment: Mapping[str, str] | None = None,
         cancellation_lease_token: str | None = None,
         inherited_descriptors: tuple[int, ...] = (),
@@ -3151,6 +3193,7 @@ class SubprocessRustRunner:
                     argv,
                     stdout=stdout,
                     stderr=stderr,
+                    canonical_argv0=canonical_argv0,
                     environment=environment,
                     inherited_descriptors=inherited_descriptors,
                     options=options,

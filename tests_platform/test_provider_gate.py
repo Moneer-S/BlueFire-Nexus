@@ -1289,6 +1289,46 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
     mutated_client.write_text(dynamic_parent_death_command, encoding="utf-8")
     assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
 
+    for original, replacement in (
+        (
+            "                            str(canonical_argv0),\n",
+            "                            argv[0],\n",
+        ),
+        ("                            *argv[1:],\n", "                            *argv,\n"),
+        (
+            "                            str(target_descriptor),\n",
+            "                            str(canonical_argv0),\n",
+        ),
+        (
+            "                        canonical_argv0=interpreter,\n",
+            "                        canonical_argv0=self.runner_binary,\n",
+        ),
+        (
+            "                    canonical_argv0=self.runner_binary,\n",
+            "                    canonical_argv0=self._watchdog_interpreter,\n",
+        ),
+        (
+            "                    recheck_target()\n                    process = subprocess.Popen",
+            "                    process = subprocess.Popen",
+        ),
+        (
+            "                    recheck_target()\n                    parent_socket.sendall",
+            "                    parent_socket.sendall",
+        ),
+        (
+            "                visible = canonical_argv0.lstat()\n",
+            "                visible = canonical_argv0.stat()\n",
+        ),
+        (
+            "        if canonical_argv0 is None or canonical_argv0 not in (\n",
+            "        if False and canonical_argv0 not in (\n",
+        ),
+    ):
+        assert original in client_source
+        changed = client_source.replace(original, replacement, 1)
+        mutated_client.write_text(changed, encoding="utf-8")
+        assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
     factory_binding = "                popen_factory=registered_popen,\n"
     factory_bypass = "                popen_factory=subprocess.Popen,\n"
     assert client_source.count(factory_binding) == 2
