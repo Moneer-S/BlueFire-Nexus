@@ -108,6 +108,40 @@ boundary must still enforce exact authority and identity before each operation,
 and bind its resource receipts to these persisted intents before this can become
 an executable method. The journal is not registered in a product execution path.
 
+### Pending-operation handoff
+
+`ServiceIntentJournal.pending_binding` captures the current committed pending
+operation under the journal's existing private transaction. It requires the
+expected revision and refuses empty, completed, stale or corrupt history. Its
+`bluefire.service-operation-binding.v1` document binds the immutable service
+identity, request and operation IDs, odd pending revision, and exact stored
+document hash. The derived `recovery_state` presentation field is not part of
+that stored hash. Capturing the binding does not change history or resolve an
+interrupted operation.
+
+The handoff also includes explicit reviewed-scope, manager-installation and
+payload-installation digests supplied by the future reviewed setup. Changing
+any pin changes the canonical binding digest. Python and Rust validate the same
+closed, bounded UTF-8 document; authored shared vectors cover both parsers.
+Unknown fields, duplicate JSON keys, malformed identities, completed revisions
+and unregistered operation names are refused. The Rust decoder is an unregistered
+library contract: it adds no command, action, profile authority or execution path.
+
+Neither the journal hash nor successful decoding authenticates an approval,
+installation or current resource. The opaque scope digest is not a wildcard or
+a substitute for a future explicit service-scope contract. Before any effect,
+the runner still must authenticate that reviewed scope, resolve both protected
+installations, recheck the live manager/resource identity, and durably reserve an
+effect receipt bound to the exact handoff. The coordinator transaction does not
+hold an effect lock across transport or provide runner replay protection.
+
+A reopened pending operation remains `inspection_required` even when its handoff
+can be reconstructed. Historical bindings remain readable after completion or
+expiry and cannot release an effect. The existing nine journal operation names
+retain their v1 semantics; changing setup or cleanup order requires a new protocol,
+not reinterpretation of old records. Actual service observation, cancellation,
+cleanup and reconciliation remain required integration work.
+
 ### Remaining runtime and observation work
 
 A concrete adapter must still supply the fixed unit contents and executable
