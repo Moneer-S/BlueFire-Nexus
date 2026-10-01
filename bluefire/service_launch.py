@@ -205,14 +205,30 @@ def _read_sealed(fd: int, *, parent: int | None = None) -> bytes:
     return value
 
 
+def _resolved_secret_state_home() -> str:
+    from .secret_store import _posix_managed_product_root
+
+    try:
+        state_home = _posix_managed_product_root(platform_name="linux").parent
+        if (
+            not state_home.is_absolute()
+            or ".." in state_home.parts
+            or b"\0" in os.fsencode(state_home)
+        ):
+            raise _refuse()
+        return str(state_home)
+    except (OSError, RuntimeError, TypeError, UnicodeError, ValueError):
+        raise _refuse() from None
+
+
 class ServiceLaunch:
     """Owned inherited descriptors; never serialize this object or its secret."""
 
-    def __init__(self, context_fd: int, envelope_fd: int) -> None:
+    def __init__(self, context_fd: int, envelope_fd: int, secret_state_home: str) -> None:
         self._fds = (context_fd, envelope_fd)
         # Preserve only this normal product configuration for the watchdog's
         # independent OS-protected enrollment read. No secret value is inherited.
-        self._secret_state_home = os.environ.get("XDG_STATE_HOME")
+        self._secret_state_home = secret_state_home
 
     @property
     def descriptors(self) -> tuple[int, int]:
@@ -225,12 +241,11 @@ class ServiceLaunch:
     @property
     def environment(self) -> dict[str, str]:
         first, second = self.descriptors
-        environment = {_CONTEXT_ENV: str(first), _ENVELOPE_ENV: str(second)}
-        if self._secret_state_home:
-            if not Path(self._secret_state_home).is_absolute():
-                raise _refuse()
-            environment["XDG_STATE_HOME"] = self._secret_state_home
-        return environment
+        return {
+            _CONTEXT_ENV: str(first),
+            _ENVELOPE_ENV: str(second),
+            "XDG_STATE_HOME": self._secret_state_home,
+        }
 
     def close(self) -> None:
         descriptors, self._fds = self._fds, (-1, -1)
@@ -246,9 +261,12 @@ class ServiceLaunch:
 
 
 def _channels(context: Mapping[str, Any], envelope: bytes) -> ServiceLaunch:
+    # Resolve HOME fallback before allocating either descriptor: the watchdog's
+    # cleared environment must reopen the same normal product secret store.
+    secret_state_home = _resolved_secret_state_home()
     first = _sealed_descriptor(canonical_json_bytes(context))
     try:
-        return ServiceLaunch(first, _sealed_descriptor(envelope))
+        return ServiceLaunch(first, _sealed_descriptor(envelope), secret_state_home)
     except BaseException:
         os.close(first)
         raise

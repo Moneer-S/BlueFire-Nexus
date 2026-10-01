@@ -79,7 +79,7 @@ impl Role {
                     "project": "bluefire-runner", "version": env!("CARGO_PKG_VERSION"),
                     "authority": "authenticated-current-runner-bytes-and-size",
                     "entrypoint": "owned-service-payload",
-                    "duration_seconds": {"minimum": 1, "maximum": crate::service_payload::MAX_DURATION_SECONDS}
+                    "duration_seconds": {"minimum": 1, "maximum": crate::contract::OWNED_SERVICE_MAX_DURATION_SECONDS}
                 }),
             ),
         };
