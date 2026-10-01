@@ -23,6 +23,7 @@ wasmi = { version = "=1.1.0", default-features = false, features = ["std", "extr
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "=0.2.189"
+linux-raw-sys = { version = "=0.12.1", default-features = false, features = ["general", "no_std"] }
 
 [dev-dependencies]
 wat = "=1.239.0"

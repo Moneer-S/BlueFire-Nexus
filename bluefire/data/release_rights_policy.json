@@ -1,6 +1,6 @@
 {
   "schema_version": "bluefire.release-rights-policy.v1",
-  "reviewed_at": "2026-08-30",
+  "reviewed_at": "2026-10-01",
   "review_scope": "base Python wheel, packaged web UI, native runner, committed data and documentation assets",
   "allowed_license_expressions": [
     "0BSD",
@@ -41,11 +41,12 @@
       "© 2026 The MITRE Corporation.",
       "cffi (MIT-0)",
       "69 packages in its production lock closure",
-      "48 external crates in `Cargo.lock`",
+      "49 external crates in `Cargo.lock`",
       "pySigma 1.5.0 (LGPL-2.1-only)",
       "BlueFire Nexus remains MIT licensed",
       "does not contain contributor assignments",
-      "Atomic gzip collection adapter"
+      "Atomic gzip collection adapter",
+      "linux-raw-sys 0.12.1 notice"
     ]
   },
   "python": {
@@ -238,7 +239,7 @@
     }
   },
   "rust": {
-    "lockfile_sha256": "335d895468dc5daa6c83d3bd1f131f9115f9d68624b8794687c14042ba04e7d5",
+    "lockfile_sha256": "46a6f2d1f5301b7a51cfc3d5608d37e50e89b68aa3afe43ab5408a29cffa2a71",
     "release_graph": [
       "autocfg@1.5.1",
       "bitflags@2.13.1",
@@ -259,6 +260,7 @@
       "itoa@1.0.18",
       "libc@0.2.189",
       "libm@0.2.16",
+      "linux-raw-sys@0.12.1",
       "memchr@2.8.3",
       "num-traits@0.2.19",
       "proc-macro2@1.0.107",
@@ -293,6 +295,7 @@
         "indexmap@2.14.0"
       ],
       "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT": [
+        "linux-raw-sys@0.12.1",
         "wasm-encoder@0.239.0",
         "wasmparser@0.239.0",
         "wast@239.0.0",

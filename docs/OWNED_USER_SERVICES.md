@@ -318,13 +318,17 @@ EOF, followed by identity and deadline rechecks. Unsupported mount identity,
 missing resources, cancellation, incomplete data and expiry produce refusal;
 missing cgroups never generate fabricated empty events or prove service absence.
 
-The implementation uses the already-locked `libc` 0.2.189 as a Linux-only direct
-dependency for target-correct [fstatfs](https://man7.org/linux/man-pages/man2/statfs.2.html)
-and [statx](https://man7.org/linux/man-pages/man2/statx.2.html) ABI layouts. A kernel
-must report mount IDs and mount-root attributes; unsupported kernels refuse.
-The existing upstream [MIT](https://github.com/rust-lang/libc/blob/main/LICENSE-MIT)
-and [Apache-2.0](https://github.com/rust-lang/libc/blob/main/LICENSE-APACHE) terms
-remain applicable; no package version or bundled upstream source changes.
+The implementation uses Linux-only `libc` 0.2.189 for
+[fstatfs](https://man7.org/linux/man-pages/man2/statfs.2.html) and the fixed syscall
+entry, plus pinned `linux-raw-sys` 0.12.1 for the generated Linux
+[statx ABI](https://docs.rs/linux-raw-sys/0.12.1/linux_raw_sys/general/struct.statx.html).
+This avoids depending on a libc wrapper unavailable in the packaged musl target.
+Only the `general` and `no_std` binding features are enabled; no code generator or
+build script runs. The syscall retains the held descriptor, empty name, exact
+flags and mount-ID request. A kernel must report both mount IDs and supported
+mount-root attributes; unsupported kernels still refuse. The existing libc
+terms remain applicable. The generated bindings are used under their MIT option;
+the full notice and exact source checksum are in `THIRD_PARTY_NOTICES.md`.
 Authored tests use ordinary temporary files with an explicit private filesystem
 witness, plus a real wrong-filesystem refusal, without mounting or modifying
 any cgroup. They do not establish live manager or installed-runtime viability.

@@ -410,10 +410,22 @@ def _cargo_packages(document: str) -> dict[tuple[str, str], dict[str, Any]]:
 
 
 def _cargo_direct_dependencies(document: str) -> list[str]:
-    match = re.search(r"(?ms)^\[dependencies\]\s*$\n(.*?)(?=^\[|\Z)", document)
-    if match is None:
+    # Audit every target's production roots without evaluating the current host's cfg.
+    target = r"""(?:[A-Za-z0-9_-]+|'[^'\r\n]+'|"(?:[^"\\\r\n]|\\.)+")"""
+    table = rf"(?:dependencies|target[ \t]*\.[ \t]*{target}[ \t]*\.[ \t]*dependencies)"
+    blocks = re.findall(
+        rf"(?ms)^[ \t]*\[[ \t]*{table}[ \t]*\][ \t]*(?:#[^\r\n]*)?\r?$\n" r"(.*?)(?=^[ \t]*\[|\Z)",
+        document,
+    )
+    if not blocks:
         raise RightsAuditError("Cargo.toml dependencies are missing")
-    names = re.findall(r"(?m)^([A-Za-z0-9_-]+)\s*=", match.group(1))
+    names = list(
+        dict.fromkeys(
+            name
+            for block in blocks
+            for name in re.findall(r"(?m)^[ \t]*([A-Za-z0-9_-]+)[ \t]*=", block)
+        )
+    )
     _require(bool(names), "Cargo.toml release dependencies are empty")
     return names
 

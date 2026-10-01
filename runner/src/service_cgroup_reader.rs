@@ -12,6 +12,8 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+use linux_raw_sys::general::{statx, STATX_ATTR_MOUNT_ROOT, STATX_MNT_ID};
+
 use crate::service_admission::VerifiedServiceAdmission;
 use crate::service_observer::{ReadOutcome, ReportedPropertyScope, MAX_CGROUP_BYTES};
 use crate::service_operation_binding::ServiceOperationBinding;
@@ -181,16 +183,19 @@ struct Filesystem {
 
 fn filesystem(file: &File) -> Result<Filesystem, CgroupReadIssue> {
     let mut fs = std::mem::MaybeUninit::<libc::statfs>::zeroed();
-    let mut stat = std::mem::MaybeUninit::<libc::statx>::zeroed();
-    // SAFETY: libc supplies target-correct ABI layouts; both outputs are writable
-    // and the file is held. An empty name with AT_EMPTY_PATH inspects that FD.
+    let mut stat = std::mem::MaybeUninit::<statx>::zeroed();
+    // SAFETY: libc supplies the target statfs ABI; linux-raw-sys supplies the
+    // generated target Linux UAPI statx layout. Both outputs are writable and
+    // initialized only after success. The held FD and empty name with
+    // AT_EMPTY_PATH inspect that object through the fixed SYS_statx syscall.
     let (fs, stat) = unsafe {
         if libc::fstatfs(file.as_raw_fd(), fs.as_mut_ptr()) != 0
-            || libc::statx(
+            || libc::syscall(
+                libc::SYS_statx,
                 file.as_raw_fd(),
                 c"".as_ptr(),
                 libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
-                libc::STATX_MNT_ID,
+                STATX_MNT_ID,
                 stat.as_mut_ptr(),
             ) != 0
         {
@@ -198,16 +203,19 @@ fn filesystem(file: &File) -> Result<Filesystem, CgroupReadIssue> {
         }
         (fs.assume_init(), stat.assume_init())
     };
-    let mount_root_mask = u64::try_from(libc::STATX_ATTR_MOUNT_ROOT)
-        .map_err(|_| CgroupReadIssue::UnsupportedFilesystem)?;
-    if stat.stx_mask & libc::STATX_MNT_ID == 0
+    filesystem_metadata(i128::from(fs.f_type), &stat)
+}
+
+fn filesystem_metadata(kind: i128, stat: &statx) -> Result<Filesystem, CgroupReadIssue> {
+    let mount_root_mask = u64::from(STATX_ATTR_MOUNT_ROOT);
+    if stat.stx_mask & STATX_MNT_ID == 0
         || stat.stx_mnt_id == 0
         || stat.stx_attributes_mask & mount_root_mask == 0
     {
         return Err(CgroupReadIssue::UnsupportedFilesystem);
     }
     Ok(Filesystem {
-        kind: i128::from(fs.f_type),
+        kind,
         mount: stat.stx_mnt_id,
         mount_root: stat.stx_attributes & mount_root_mask != 0,
     })

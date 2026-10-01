@@ -223,7 +223,7 @@ fn cancelled_or_spent_budget_never_reads_or_renews_and_late_cancellation_refuses
 
 // A closed test-only filesystem witness lets ordinary temporary files exercise
 // the real no-follow opens, descriptor reads and rechecks without mounting or
-// writing any cgroup. Production always uses libc fstatfs/statx instead.
+// writing any cgroup. Production always uses fstatfs and the fixed statx syscall.
 fn fixture_filesystem(_: &File) -> Result<Filesystem, CgroupReadIssue> {
     Ok(Filesystem {
         kind: i128::from(libc::CGROUP2_SUPER_MAGIC),
@@ -300,6 +300,85 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         std::fs::remove_dir_all(&self.root).unwrap();
     }
+}
+
+#[test]
+fn statx_requires_supported_mount_fields_and_preserves_the_mount_root_flag() {
+    // SAFETY: the generated UAPI record contains only scalar integer fields and
+    // arrays; zero is valid for each. This is synthetic metadata, not a capture.
+    let mut stat = unsafe { std::mem::zeroed::<statx>() };
+    stat.stx_mask = STATX_MNT_ID;
+    stat.stx_mnt_id = 7;
+    stat.stx_attributes_mask = u64::from(STATX_ATTR_MOUNT_ROOT);
+    for mount_root in [false, true] {
+        stat.stx_attributes = if mount_root {
+            stat.stx_attributes_mask
+        } else {
+            0
+        };
+        assert_eq!(
+            filesystem_metadata(19, &stat),
+            Ok(Filesystem {
+                kind: 19,
+                mount: 7,
+                mount_root
+            })
+        );
+    }
+    for missing in [
+        statx {
+            stx_mask: 0,
+            ..stat
+        },
+        statx {
+            stx_mask: linux_raw_sys::general::STATX_TYPE,
+            ..stat
+        },
+        statx {
+            stx_mnt_id: 0,
+            ..stat
+        },
+        statx {
+            stx_attributes_mask: 0,
+            ..stat
+        },
+        statx {
+            stx_attributes_mask: u64::from(linux_raw_sys::general::STATX_ATTR_COMPRESSED),
+            ..stat
+        },
+    ] {
+        assert_eq!(
+            filesystem_metadata(19, &missing),
+            Err(CgroupReadIssue::UnsupportedFilesystem)
+        );
+    }
+}
+
+#[test]
+fn actual_statx_reads_the_held_ordinary_file_after_rename_and_unlink() {
+    let fixture = Fixture::new();
+    let path = fixture.root.join("statx-input");
+    let renamed = fixture.root.join("statx-retained");
+    std::fs::write(&path, b"authored ordinary file").unwrap();
+    let held = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&path)
+        .unwrap();
+    let inode = held.metadata().unwrap().ino();
+    let before = filesystem(&held).unwrap();
+    assert_ne!(before.kind, i128::from(libc::CGROUP2_SUPER_MAGIC));
+    assert_ne!(before.mount, 0);
+    assert!(!before.mount_root);
+    std::fs::rename(&path, &renamed).unwrap();
+    std::fs::write(&path, b"different authored file").unwrap();
+    assert_ne!(std::fs::metadata(&path).unwrap().ino(), inode);
+    std::fs::remove_file(&renamed).unwrap();
+    assert_eq!(held.metadata().unwrap().ino(), inode);
+    assert_eq!(held.metadata().unwrap().nlink(), 0);
+    assert_eq!(filesystem(&held).unwrap(), before);
+    // Only the syscall ABI and held ordinary-file metadata were exercised.
+    // No cgroup path, manager, acquisition, or reconciliation was invoked.
 }
 
 #[test]
