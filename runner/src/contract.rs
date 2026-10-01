@@ -18,6 +18,9 @@ pub const PROVIDER_EXECUTION_BINDING_SCHEMA_VERSION: &str =
 pub const ACTION_PROGRAM_SCHEMA_VERSION: &str = "bluefire.action-program.v1";
 pub const ACTION_PROGRAM_ADAPTER: &str = "bluefire.builtin-runner-adapter.v1";
 
+/// Shared limit for the fixed owned-service payload and its installation contract.
+pub const OWNED_SERVICE_MAX_DURATION_SECONDS: u64 = 120;
+
 fn normalize_wire_datetime(value: DateTime<Utc>) -> DateTime<Utc> {
     value
         .with_nanosecond((value.nanosecond() / 1_000) * 1_000)
