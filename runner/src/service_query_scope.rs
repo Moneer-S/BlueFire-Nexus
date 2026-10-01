@@ -16,21 +16,38 @@ const O_CLOEXEC: i32 = 0x80000;
 const O_PATH: i32 = 0x200000;
 
 fn budget(deadline: Instant) -> Result<(), QueryReadIssue> {
-    if Instant::now() >= deadline { Err(QueryReadIssue::Deadline) } else { Ok(()) }
+    if Instant::now() >= deadline {
+        Err(QueryReadIssue::Deadline)
+    } else {
+        Ok(())
+    }
 }
 
-pub(super) fn validate_identity(owner: u32, real: u32, effective: u32, boot: &[u8], expected: &str) -> Result<(), QueryReadIssue> {
-    if owner == 0 || owner != real || owner != effective
-        || boot != format!("{expected}\n").as_bytes() {
+pub(super) fn validate_identity(
+    owner: u32,
+    real: u32,
+    effective: u32,
+    boot: &[u8],
+    expected: &str,
+) -> Result<(), QueryReadIssue> {
+    if owner == 0
+        || owner != real
+        || owner != effective
+        || boot != format!("{expected}\n").as_bytes()
+    {
         return Err(QueryReadIssue::ScopeIdentity);
     }
     Ok(())
 }
 
-pub(super) fn check_identity(admission: &VerifiedServiceAdmission, deadline: Instant) -> Result<(), QueryReadIssue> {
+pub(super) fn check_identity(
+    admission: &VerifiedServiceAdmission,
+    deadline: Instant,
+) -> Result<(), QueryReadIssue> {
     budget(deadline)?;
-    let binding: serde_json::Value = serde_json::from_str(admission.operation_binding().canonical_json())
-        .map_err(|_| QueryReadIssue::ScopeIdentity)?;
+    let binding: serde_json::Value =
+        serde_json::from_str(admission.operation_binding().canonical_json())
+            .map_err(|_| QueryReadIssue::ScopeIdentity)?;
     let identity = &binding["identity"];
     let matches = identity["owner_uid"] == admission.owner_uid()
         && identity["boot_id"] == admission.boot_id()
@@ -47,32 +64,55 @@ pub(super) fn check_identity(admission: &VerifiedServiceAdmission, deadline: Ins
     let now = crate::contract::utc_now().fixed_offset();
     let expires = match binding["operation"].as_str() {
         Some("create_unit" | "reload" | "enable" | "start") => admission.setup_expires_at(),
-        Some("stop" | "disable" | "remove_links" | "remove_unit" | "reload_after_cleanup") => admission.cleanup_expires_at(),
+        Some("stop" | "disable" | "remove_links" | "remove_unit" | "reload_after_cleanup") => {
+            admission.cleanup_expires_at()
+        }
         _ => return Err(QueryReadIssue::ScopeIdentity),
     };
     if !matches || now < admission.created_at() || now >= expires {
         return Err(QueryReadIssue::ScopeIdentity);
     }
     let mut boot = Vec::new();
-    OpenOptions::new().read(true).custom_flags(O_NOFOLLOW | O_CLOEXEC)
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW | O_CLOEXEC)
         .open("/proc/sys/kernel/random/boot_id")
         .and_then(|file| file.take(65).read_to_end(&mut boot))
         .map_err(|_| QueryReadIssue::ScopeIdentity)?;
     // SAFETY: fixed, read-only process identity syscalls.
-    validate_identity(admission.owner_uid(), unsafe { getuid() }, unsafe { geteuid() }, &boot, admission.boot_id())?;
+    validate_identity(
+        admission.owner_uid(),
+        unsafe { getuid() },
+        unsafe { geteuid() },
+        &boot,
+        admission.boot_id(),
+    )?;
     budget(deadline)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Identity {
-    device: u64, inode: u64, mode: u32, uid: u32, gid: u32, links: u64,
-    ctime: i64, ctime_ns: i64,
+    device: u64,
+    inode: u64,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    links: u64,
+    ctime: i64,
+    ctime_ns: i64,
 }
 
 fn identity(metadata: &Metadata) -> Identity {
-    Identity { device: metadata.dev(), inode: metadata.ino(), mode: metadata.mode(),
-        uid: metadata.uid(), gid: metadata.gid(), links: metadata.nlink(),
-        ctime: metadata.ctime(), ctime_ns: metadata.ctime_nsec() }
+    Identity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        mode: metadata.mode(),
+        uid: metadata.uid(),
+        gid: metadata.gid(),
+        links: metadata.nlink(),
+        ctime: metadata.ctime(),
+        ctime_ns: metadata.ctime_nsec(),
+    }
 }
 
 pub(super) struct BusAttachment {
@@ -85,17 +125,32 @@ pub(super) struct BusAttachment {
 impl BusAttachment {
     pub(super) fn observe(owner: u32, deadline: Instant) -> Result<Self, QueryReadIssue> {
         budget(deadline)?;
-        let root = OpenOptions::new().read(true).custom_flags(O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-            .open("/").map_err(|_| QueryReadIssue::BusUnavailable)?;
+        let root = OpenOptions::new()
+            .read(true)
+            .custom_flags(O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            .open("/")
+            .map_err(|_| QueryReadIssue::BusUnavailable)?;
         Self::from_root(root, owner, deadline)
     }
 
     fn from_root(root: File, owner: u32, deadline: Instant) -> Result<Self, QueryReadIssue> {
-        let mut attachment = Self { files: vec![root], identities: Vec::new(), names: Vec::new(), deadline };
-        let names = ["run".to_string(), "user".to_string(), owner.to_string(), "bus".to_string()];
+        let mut attachment = Self {
+            files: vec![root],
+            identities: Vec::new(),
+            names: Vec::new(),
+            deadline,
+        };
+        let names = [
+            "run".to_string(),
+            "user".to_string(),
+            owner.to_string(),
+            "bus".to_string(),
+        ];
         for index in 0..=names.len() {
             budget(deadline)?;
-            let metadata = attachment.files[index].metadata().map_err(|_| QueryReadIssue::BusUnavailable)?;
+            let metadata = attachment.files[index]
+                .metadata()
+                .map_err(|_| QueryReadIssue::BusUnavailable)?;
             let protected = if index == 4 {
                 metadata.file_type().is_socket() && metadata.uid() == owner && metadata.nlink() == 1
             } else if index == 3 {
@@ -103,10 +158,13 @@ impl BusAttachment {
             } else {
                 metadata.is_dir() && metadata.uid() == 0 && metadata.mode() & 0o022 == 0
             };
-            if !protected { return Err(QueryReadIssue::BusUnavailable); }
+            if !protected {
+                return Err(QueryReadIssue::BusUnavailable);
+            }
             attachment.identities.push(identity(&metadata));
             if index < names.len() {
-                let name = CString::new(names[index].as_str()).map_err(|_| QueryReadIssue::BusUnavailable)?;
+                let name = CString::new(names[index].as_str())
+                    .map_err(|_| QueryReadIssue::BusUnavailable)?;
                 let child = open_child(&attachment.files[index], &name, index == 3)?;
                 attachment.files.push(child);
                 attachment.names.push(name);
@@ -121,11 +179,19 @@ impl BusAttachment {
         for (index, held) in self.files.iter().enumerate() {
             budget(self.deadline)?;
             let metadata = held.metadata().map_err(|_| QueryReadIssue::BusChanged)?;
-            if identity(&metadata) != self.identities[index] { return Err(QueryReadIssue::BusChanged); }
+            if identity(&metadata) != self.identities[index] {
+                return Err(QueryReadIssue::BusChanged);
+            }
             if index > 0 {
-                let attached = open_child(&self.files[index - 1], &self.names[index - 1], index == 4)
-                    .map_err(|_| QueryReadIssue::BusChanged)?;
-                if identity(&attached.metadata().map_err(|_| QueryReadIssue::BusChanged)?) != self.identities[index] {
+                let attached =
+                    open_child(&self.files[index - 1], &self.names[index - 1], index == 4)
+                        .map_err(|_| QueryReadIssue::BusChanged)?;
+                if identity(
+                    &attached
+                        .metadata()
+                        .map_err(|_| QueryReadIssue::BusChanged)?,
+                ) != self.identities[index]
+                {
                     return Err(QueryReadIssue::BusChanged);
                 }
             }
@@ -139,7 +205,9 @@ fn open_child(parent: &File, name: &CString, socket: bool) -> Result<File, Query
     // SAFETY: the held parent fd and bounded NUL-terminated component are valid;
     // O_PATH observes the socket without connecting or sending any bus message.
     let fd = unsafe { openat(parent.as_raw_fd(), name.as_ptr(), flags) };
-    if fd < 0 { return Err(QueryReadIssue::BusUnavailable); }
+    if fd < 0 {
+        return Err(QueryReadIssue::BusUnavailable);
+    }
     // SAFETY: openat returned a newly owned descriptor.
     Ok(unsafe { File::from_raw_fd(fd) })
 }

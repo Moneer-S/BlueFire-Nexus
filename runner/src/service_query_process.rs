@@ -48,25 +48,29 @@ fn drain(
     // One bounded read per pipe per turn prevents a busy writer from starving
     // the cancellation/deadline checks or the other pipe.
     for (index, stderr) in [false, true].into_iter().enumerate() {
-        if ended[index] { continue; }
+        if ended[index] {
+            continue;
+        }
         match child.read(stderr)? {
             Chunk::Eof => ended[index] = true,
-            Chunk::Pending => {},
+            Chunk::Pending => {}
             Chunk::Bytes(bytes) if stderr => {
                 capture.stderr_bytes = capture.stderr_bytes.saturating_add(bytes.len());
                 if capture.stderr_bytes > STDERR_LIMIT {
                     capture.truncated = true;
                     return Err(QueryReadIssue::OutputLimit);
                 }
-            },
+            }
             Chunk::Bytes(bytes) => {
                 let remaining = MAX_QUERY_BYTES.saturating_sub(capture.bytes.len());
-                capture.bytes.extend_from_slice(&bytes[..bytes.len().min(remaining)]);
+                capture
+                    .bytes
+                    .extend_from_slice(&bytes[..bytes.len().min(remaining)]);
                 if bytes.len() > remaining {
                     capture.truncated = true;
                     return Err(QueryReadIssue::OutputLimit);
                 }
-            },
+            }
         }
     }
     Ok(())
@@ -79,8 +83,12 @@ pub(super) fn capture(
     cancelled: &AtomicBool,
 ) -> Capture {
     let mut result = Capture {
-        bytes: Vec::new(), stderr_bytes: 0, exit_code: None, truncated: false,
-        issue: None, cleanup: QueryChildCleanup::Unknown,
+        bytes: Vec::new(),
+        stderr_bytes: 0,
+        exit_code: None,
+        truncated: false,
+        issue: None,
+        cleanup: QueryChildCleanup::Unknown,
     };
     let mut ended = [false; 2];
     loop {
@@ -97,8 +105,13 @@ pub(super) fn capture(
         }
         match child.exited() {
             Ok(true) => break,
-            Ok(false) => child.pause(POLL_INTERVAL.min(query_end.saturating_duration_since(child.now()))),
-            Err(issue) => { result.issue = Some(issue); break; },
+            Ok(false) => {
+                child.pause(POLL_INTERVAL.min(query_end.saturating_duration_since(child.now())))
+            }
+            Err(issue) => {
+                result.issue = Some(issue);
+                break;
+            }
         }
     }
     // The child has not been reaped: its PID still pins the group identifier.
@@ -111,9 +124,14 @@ pub(super) fn capture(
         }
         if !reaped {
             match child.reap() {
-                Ok(Some(code)) => { result.exit_code = code; reaped = true; },
-                Ok(None) => {},
-                Err(issue) => { result.issue.get_or_insert(issue); },
+                Ok(Some(code)) => {
+                    result.exit_code = code;
+                    reaped = true;
+                }
+                Ok(None) => {}
+                Err(issue) => {
+                    result.issue.get_or_insert(issue);
+                }
             }
         }
         // This is a read-only absence check after reaping; PID reuse can only
@@ -147,9 +165,15 @@ impl LinuxChild {
         query: PropertyQuery,
     ) -> Result<Self, QueryReadIssue> {
         let mut command = Command::new(format!("/proc/self/fd/{}", manager.fd()));
-        command.arg0("systemctl").args(target.query_arguments(query))
-            .env_clear().env("LC_ALL", "C").current_dir("/")
-            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        command
+            .arg0("systemctl")
+            .args(target.query_arguments(query))
+            .env_clear()
+            .env("LC_ALL", "C")
+            .current_dir("/")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         if query != PropertyQuery::OwnerManager {
             command.envs(target.user_bus_environment());
         }
@@ -161,10 +185,12 @@ impl LinuxChild {
         // SAFETY: only fixed async-signal-safe syscalls occur before exec.
         unsafe {
             command.pre_exec(move || {
-                if getppid() != expected_parent || setpgid(0, 0) != 0
+                if getppid() != expected_parent
+                    || setpgid(0, 0) != 0
                     || prctl(1, 9, 0_usize, 0_usize, 0_usize) != 0
                     || prctl(38, 1, 0_usize, 0_usize, 0_usize) != 0
-                    || getppid() != expected_parent {
+                    || getppid() != expected_parent
+                {
                     return Err(io::Error::from_raw_os_error(3));
                 }
                 Ok(())
@@ -173,10 +199,20 @@ impl LinuxChild {
         if Instant::now() >= deadline {
             return Err(QueryReadIssue::Deadline);
         }
-        let mut child = command.spawn().map_err(|_| QueryReadIssue::SpawnUnavailable)?;
+        let mut child = command
+            .spawn()
+            .map_err(|_| QueryReadIssue::SpawnUnavailable)?;
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
-        let mut owned = Self { child, stdout, stderr, start_ticks: None, signalled: false, reaped: false, output_ready: true };
+        let mut owned = Self {
+            child,
+            stdout,
+            stderr,
+            start_ticks: None,
+            signalled: false,
+            reaped: false,
+            output_ready: true,
+        };
         for fd in [owned.stdout.as_raw_fd(), owned.stderr.as_raw_fd()] {
             if !nonblocking(fd) {
                 owned.output_ready = false;
@@ -187,16 +223,33 @@ impl LinuxChild {
 }
 
 impl Driver for LinuxChild {
-    fn now(&self) -> Instant { Instant::now() }
-    fn pause(&mut self, duration: Duration) { std::thread::sleep(duration); }
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+    fn pause(&mut self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
     fn read(&mut self, stderr: bool) -> Result<Chunk, QueryReadIssue> {
-        if !self.output_ready { return Err(QueryReadIssue::OutputUnavailable); }
+        if !self.output_ready {
+            return Err(QueryReadIssue::OutputUnavailable);
+        }
         let mut bytes = [0_u8; 4096];
-        let result = if stderr { self.stderr.read(&mut bytes) } else { self.stdout.read(&mut bytes) };
+        let result = if stderr {
+            self.stderr.read(&mut bytes)
+        } else {
+            self.stdout.read(&mut bytes)
+        };
         match result {
             Ok(0) => Ok(Chunk::Eof),
             Ok(size) => Ok(Chunk::Bytes(bytes[..size].to_vec())),
-            Err(issue) if matches!(issue.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => Ok(Chunk::Pending),
+            Err(issue)
+                if matches!(
+                    issue.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) =>
+            {
+                Ok(Chunk::Pending)
+            }
             Err(_) => Err(QueryReadIssue::OutputUnavailable),
         }
     }
@@ -213,7 +266,9 @@ impl Driver for LinuxChild {
         Ok(exited)
     }
     fn terminate_group(&mut self) -> bool {
-        if self.signalled || self.reaped { return false; }
+        if self.signalled || self.reaped {
+            return false;
+        }
         self.signalled = true;
         // SAFETY: pre_exec established this group, and the unreaped Child pins
         // its PID. No external PID or group is accepted by this private driver.
@@ -229,8 +284,15 @@ impl Driver for LinuxChild {
         group_signalled && child_signalled
     }
     fn reap(&mut self) -> Result<Option<Option<i32>>, QueryReadIssue> {
-        match self.child.try_wait().map_err(|_| QueryReadIssue::CleanupUnknown)? {
-            Some(status) => { self.reaped = true; Ok(Some(status.code())) },
+        match self
+            .child
+            .try_wait()
+            .map_err(|_| QueryReadIssue::CleanupUnknown)?
+        {
+            Some(status) => {
+                self.reaped = true;
+                Ok(Some(status.code()))
+            }
             None => Ok(None),
         }
     }
@@ -244,7 +306,9 @@ impl Driver for LinuxChild {
 impl Drop for LinuxChild {
     fn drop(&mut self) {
         if !self.reaped {
-            if !self.signalled { self.terminate_group(); }
+            if !self.signalled {
+                self.terminate_group();
+            }
             // No wait(), reader-thread join, or new cleanup deadline in Drop.
             // Failure to reap within capture's budget remains explicitly unknown.
             let _ = self.child.try_wait();
@@ -252,25 +316,48 @@ impl Drop for LinuxChild {
     }
 }
 
-pub(super) fn child_identity(bytes: &[u8], pid: u32, parent: u32) -> Result<(bool, u64), QueryReadIssue> {
-    if bytes.len() > 4096 { return Err(QueryReadIssue::ProcessIdentity); }
-    let text = std::str::from_utf8(bytes).map_err(|_| QueryReadIssue::ProcessIdentity)?;
-    let prefix = format!("{pid} (");
-    let fields: Vec<_> = text.strip_prefix(&prefix)
-        .and_then(|text| text.rsplit_once(") "))
-        .ok_or(QueryReadIssue::ProcessIdentity)?.1.split_whitespace().collect();
-    if fields.len() < 20 || fields[1] != parent.to_string() || fields[2] != pid.to_string()
-        || !matches!(fields[0], "R" | "S" | "D" | "Z" | "T" | "t" | "X" | "x" | "K" | "W" | "P" | "I") {
+pub(super) fn child_identity(
+    bytes: &[u8],
+    pid: u32,
+    parent: u32,
+) -> Result<(bool, u64), QueryReadIssue> {
+    if bytes.len() > 4096 {
         return Err(QueryReadIssue::ProcessIdentity);
     }
-    let ticks: u64 = fields[19].parse().map_err(|_| QueryReadIssue::ProcessIdentity)?;
-    if ticks == 0 || ticks.to_string() != fields[19] { return Err(QueryReadIssue::ProcessIdentity); }
+    let text = std::str::from_utf8(bytes).map_err(|_| QueryReadIssue::ProcessIdentity)?;
+    let prefix = format!("{pid} (");
+    let fields: Vec<_> = text
+        .strip_prefix(&prefix)
+        .and_then(|text| text.rsplit_once(") "))
+        .ok_or(QueryReadIssue::ProcessIdentity)?
+        .1
+        .split_whitespace()
+        .collect();
+    if fields.len() < 20
+        || fields[1] != parent.to_string()
+        || fields[2] != pid.to_string()
+        || !matches!(
+            fields[0],
+            "R" | "S" | "D" | "Z" | "T" | "t" | "X" | "x" | "K" | "W" | "P" | "I"
+        )
+    {
+        return Err(QueryReadIssue::ProcessIdentity);
+    }
+    let ticks: u64 = fields[19]
+        .parse()
+        .map_err(|_| QueryReadIssue::ProcessIdentity)?;
+    if ticks == 0 || ticks.to_string() != fields[19] {
+        return Err(QueryReadIssue::ProcessIdentity);
+    }
     Ok((matches!(fields[0], "Z" | "X" | "x"), ticks))
 }
 
 fn nonblocking(fd: RawFd) -> bool {
     // SAFETY: fd is a held pipe; these fixed commands preserve existing flags.
-    unsafe { let flags = fcntl(fd, 3); flags >= 0 && fcntl(fd, 4, flags | 0x800) >= 0 }
+    unsafe {
+        let flags = fcntl(fd, 3);
+        flags >= 0 && fcntl(fd, 4, flags | 0x800) >= 0
+    }
 }
 
 unsafe extern "C" {

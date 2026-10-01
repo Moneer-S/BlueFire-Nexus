@@ -273,6 +273,34 @@ and independent evidence issuance remain unimplemented. This parser emits no
 observer evidence or reconciliation token and registers no action or collector.
 Its authored vectors test software interpretation, never live service behavior.
 
+### Bounded property acquisition
+
+`runner/src/service_query_reader.rs` adds a Linux acquisition prerequisite for
+those three fixed queries. Its only inputs are a verified service admission, the
+closed query choice and cancellation. Callers cannot supply a command, path,
+environment, timeout or new authority. The reader retains the reviewed manager
+descriptor and complete operation binding, checks the current UID and boot, and
+observes and rechecks the protected session-bus pathname without connecting
+during that inspection. It runs the fixed query through the retained executable
+descriptor with a scrubbed environment.
+
+Acquisition consumes the original installation-inspection deadline; it cannot
+renew admission. Cleanup and final identity rechecks reserve time inside that
+same budget. Nonblocking pipe reads have explicit size limits and cancellation
+checks. The query starts in an owned process group; group and direct-child
+termination precede reaping. An unknown exit, pipe state, identity or cleanup
+prevents the captured bytes from becoming a successful parser input.
+
+The result reports captured properties and query-child cleanup only. A reaped
+child and absent process group do not prove service cleanup or the absence of
+descendants that escaped that group. The retained bus pathname is not proof of
+the bus peer or manager owner. Cross-query consistency, cgroup and resource
+acquisition, authenticated manager identity and independent evidence issuance
+remain required. This reader produces no reconciliation token and enables no
+ordinary service dispatch. Tests execute an authored child from the held test
+binary to exercise pipes, deadlines and cleanup; they do not query a live service
+manager or establish installed viability of the shared deadline.
+
 ### Remaining runtime and observation work
 
 A concrete adapter must still connect the fixed unit and protected executable to

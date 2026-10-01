@@ -74,20 +74,30 @@ impl AcquiredPropertyQuery {
         self.capture.cleanup
     }
     pub fn parser_outcome(&self) -> ReadOutcome<'_> {
-        match (self.capture.issue, self.capture.cleanup, self.capture.exit_code) {
-            (None, QueryChildCleanup::ReapedGroupAbsent, Some(exit_code)) => ReadOutcome::Finished {
-                bytes: &self.capture.bytes,
-                exit_code,
-                truncated: self.capture.truncated,
-            },
+        match (
+            self.capture.issue,
+            self.capture.cleanup,
+            self.capture.exit_code,
+        ) {
+            (None, QueryChildCleanup::ReapedGroupAbsent, Some(exit_code)) => {
+                ReadOutcome::Finished {
+                    bytes: &self.capture.bytes,
+                    exit_code,
+                    truncated: self.capture.truncated,
+                }
+            }
             _ => ReadOutcome::Unavailable,
         }
     }
 }
 
 fn query_deadlines(deadline: Instant, now: Instant) -> Result<(Instant, Instant), QueryReadIssue> {
-    let cleanup_end = deadline.checked_sub(RECHECK_RESERVE).ok_or(QueryReadIssue::Deadline)?;
-    let query_end = cleanup_end.checked_sub(CLEANUP_RESERVE).ok_or(QueryReadIssue::Deadline)?;
+    let cleanup_end = deadline
+        .checked_sub(RECHECK_RESERVE)
+        .ok_or(QueryReadIssue::Deadline)?;
+    let query_end = cleanup_end
+        .checked_sub(CLEANUP_RESERVE)
+        .ok_or(QueryReadIssue::Deadline)?;
     if now >= query_end {
         return Err(QueryReadIssue::Deadline);
     }
@@ -105,15 +115,21 @@ pub fn acquire_property_query(
     if cancelled.load(Ordering::Acquire) {
         return Err(QueryReadIssue::Cancelled);
     }
-    let manager = admission.observation_manager().ok_or(QueryReadIssue::AdmissionUnavailable)?;
+    let manager = admission
+        .observation_manager()
+        .ok_or(QueryReadIssue::AdmissionUnavailable)?;
     let (query_end, cleanup_end) = query_deadlines(manager.deadline(), Instant::now())?;
-    manager.recheck().map_err(|_| QueryReadIssue::ManagerChanged)?;
+    manager
+        .recheck()
+        .map_err(|_| QueryReadIssue::ManagerChanged)?;
     scope::check_identity(admission, manager.deadline())?;
     let bus = scope::BusAttachment::observe(admission.owner_uid(), manager.deadline())?;
     let target = ObservationTarget::from_binding(admission.operation_binding())
         .map_err(|_| QueryReadIssue::ScopeIdentity)?;
     bus.recheck()?;
-    manager.recheck().map_err(|_| QueryReadIssue::ManagerChanged)?;
+    manager
+        .recheck()
+        .map_err(|_| QueryReadIssue::ManagerChanged)?;
     scope::check_identity(admission, manager.deadline())?;
     if cancelled.load(Ordering::Acquire) {
         return Err(QueryReadIssue::Cancelled);
@@ -128,7 +144,11 @@ pub fn acquire_property_query(
     // parser input, even when the query itself exited successfully.
     let recheck = scope::check_identity(admission, manager.deadline())
         .and_then(|_| bus.recheck())
-        .and_then(|_| manager.recheck().map_err(|_| QueryReadIssue::ManagerChanged));
+        .and_then(|_| {
+            manager
+                .recheck()
+                .map_err(|_| QueryReadIssue::ManagerChanged)
+        });
     if let Err(issue) = recheck {
         capture.issue = Some(issue);
     }
@@ -138,7 +158,11 @@ pub fn acquire_property_query(
     if cancelled.load(Ordering::Acquire) {
         capture.issue.get_or_insert(QueryReadIssue::Cancelled);
     }
-    Ok(AcquiredPropertyQuery { binding: target.binding().clone(), query, capture })
+    Ok(AcquiredPropertyQuery {
+        binding: target.binding().clone(),
+        query,
+        capture,
+    })
 }
 
 #[cfg(test)]
