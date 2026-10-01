@@ -62,14 +62,27 @@ jobs:
         run: pnpm test:e2e
 
   python:
-    name: Python ${{ matrix.python-version }} · ${{ matrix.os }}
+    name: Python ${{ matrix.python-version }} · ${{ matrix.os }}${{ matrix.partition && format(' · {0}', matrix.partition) || '' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest]
         python-version: ["3.10", "3.12"]
+        include:
+          - os: windows-latest
+            python-version: "3.10"
+            partition: a-d
+          - os: windows-latest
+            python-version: "3.10"
+            partition: remainder
+          - os: windows-latest
+            python-version: "3.12"
+            partition: a-d
+          - os: windows-latest
+            python-version: "3.12"
+            partition: remainder
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -114,9 +127,33 @@ jobs:
         run: python -m compileall -q bluefire tests_platform
 
       - name: Test
+        if: runner.os != 'Windows'
         env:
           BLUEFIRE_E2E_RUNNER: ${{ runner.temp }}/bluefire-python-e2e-runner/bluefire-runner${{ runner.os == 'Windows' && '.exe' || '' }}
         run: python -m pytest -vv --durations=50
+
+      - name: Test Windows partition
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          BLUEFIRE_E2E_RUNNER: ${{ runner.temp }}/bluefire-python-e2e-runner/bluefire-runner.exe
+          BLUEFIRE_TEST_PARTITION: ${{ matrix.partition }}
+        run: |
+          switch -CaseSensitive ($env:BLUEFIRE_TEST_PARTITION) {
+            'a-d' {
+              $testFiles = @(Get-ChildItem -LiteralPath tests_platform -File |
+                Where-Object { $_.Name -cmatch '^test_[a-d].*\.py$' } |
+                Sort-Object Name |
+                ForEach-Object { "tests_platform/$($_.Name)" })
+              if ($testFiles.Count -eq 0) { throw 'Empty a-d test partition' }
+              python -m pytest -vv --durations=50 @testFiles
+            }
+            'remainder' {
+              python -m pytest -vv --durations=50 '--ignore-glob=tests_platform/test_[a-d]*.py'
+            }
+            default { throw "Unknown Windows test partition: $env:BLUEFIRE_TEST_PARTITION" }
+          }
+          exit $LASTEXITCODE
 
       - name: Lint
         run: python -m ruff check bluefire tests_platform
