@@ -1028,7 +1028,14 @@ def test_darwin_watchdog_main_prelaunch_failures_publish_no_fork_proof(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     nonce = "b" * 64
-    config = SimpleNamespace(task_id="task-darwin-proof-01")
+    config = SimpleNamespace(
+        task_id="task-darwin-proof-01",
+        manifest={"action_id": "fixture.non-service"},
+        profile={},
+        runner_binary_digest="sha256:" + "a" * 64,
+        watchdog_script_digest="sha256:" + "b" * 64,
+        watchdog_interpreter_digest="sha256:" + "c" * 64,
+    )
     published: list[tuple[int | None, str | None]] = []
     monkeypatch.setattr(runner_watchdog_module.sys, "platform", "darwin")
     monkeypatch.setattr(

@@ -15,18 +15,19 @@ import os
 import stat
 import sys
 from pathlib import Path
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from .owned_service_authority import (
     OwnedServiceAdmission,
     OwnedServiceGrant,
     validate_owned_service_grant_for_request,
 )
-from .runner_host_identity import read_pinned_process_record
 from .runner_transport_errors import RunnerTransportError
-from .runner_trust import RunnerEnrollment, load_local_enrollment
-from .secret_store import SecretProvider
 from .util import canonical_json_bytes, content_hash, file_hash
+
+if TYPE_CHECKING:
+    from .runner_trust import RunnerEnrollment
+    from .secret_store import SecretProvider
 
 SERVICE_ACTION_ID = "owned.user_service.fixed_wait.v1"
 PROTOCOL = "bluefire.owned-user-service-launch.v1"
@@ -94,6 +95,9 @@ def _configured_host_enrollment(
     expected_root: Path | None = None,
     secret_provider: SecretProvider | None = None,
 ) -> RunnerEnrollment:
+    from .runner_host_identity import read_pinned_process_record
+    from .runner_trust import load_local_enrollment
+
     before = _process_identity(pid)
     arguments = _configured_host_arguments(pid)
     enrollment = load_local_enrollment(
