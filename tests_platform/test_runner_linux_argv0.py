@@ -22,6 +22,7 @@ def launch_boundary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     runner = object.__new__(SubprocessRustRunner)
     runner.runner_binary = tmp_path / "runner"
     runner._watchdog_interpreter = tmp_path / "python"
+    runner._watchdog_python_environment = None
     runner.parent_death_script = tmp_path / "runner_parent_death.py"
     runner.watchdog_script = tmp_path / "runner_watchdog.py"
     runner.work_root = tmp_path
