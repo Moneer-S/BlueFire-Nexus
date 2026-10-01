@@ -24,6 +24,7 @@ pub mod safety;
 pub mod service_admission;
 #[cfg(any(target_os = "linux", test))]
 mod service_installations;
+pub mod service_observer;
 pub mod service_operation_binding;
 pub mod service_payload;
 pub mod service_reservation;
