@@ -190,9 +190,7 @@ fn property_scope_exposes_validated_paths_without_inventing_cgroup_data() {
     ));
     assert_eq!(
         scope.fragment_path.as_deref(),
-        Some(
-            "/synthetic/config/systemd/user/bluefire-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.service"
-        )
+        Some("/synthetic/config/systemd/user/bluefire-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.service")
     );
     assert_eq!(
         scope.with_cgroup_events(ReadOutcome::Unavailable),
