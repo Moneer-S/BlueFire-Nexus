@@ -626,8 +626,8 @@ def _wait_for_proposal_approval(
     ],
 )
 def test_assist_approval_wait_reports_before_failure_and_keeps_five_second_bound(stage, sink_fails):
-    secret = "PRIVATE_ASSIST_JOB_AND_PROPOSAL_ID"
-    timeout = JobWaitTimeout(secret)
+    private_marker = "PRIVATE_ASSIST_JOB_AND_PROPOSAL_ID"
+    timeout = JobWaitTimeout(private_marker)
     wait_calls = []
     snapshots = []
 
@@ -647,14 +647,14 @@ def test_assist_approval_wait_reports_before_failure_and_keeps_five_second_bound
 
     def add_report_section(*args):
         if sink_fails:
-            raise OSError(secret)
+            raise OSError(private_marker)
         report_sections.append(args)
 
     try:
         with pytest.raises(pytest.fail.Exception, match="Approval wait failed: limit=5s") as caught:
             _wait_for_proposal_approval(
                 service,
-                secret,
+                private_marker,
                 diagnostic_stage=stage,
                 add_report_section=add_report_section,
             )
@@ -662,9 +662,9 @@ def test_assist_approval_wait_reports_before_failure_and_keeps_five_second_bound
         cleanup.append("service-close")
 
     assert "state=running; phase=running" in str(caught.value)
-    assert secret not in str(caught.value)
-    assert wait_calls == [(secret, {JobState.AWAITING_APPROVAL}, 5)]
-    assert snapshots == [secret]
+    assert private_marker not in str(caught.value)
+    assert wait_calls == [(private_marker, {JobState.AWAITING_APPROVAL}, 5)]
+    assert snapshots == [private_marker]
     assert cleanup == ["service-close"]
     if sink_fails:
         assert report_sections == []
@@ -672,7 +672,7 @@ def test_assist_approval_wait_reports_before_failure_and_keeps_five_second_bound
     assert len(report_sections) == 1
     when, title, payload = report_sections[0]
     assert (when, title) == ("call", "Job wait diagnostic")
-    assert secret not in payload
+    assert private_marker not in payload
     assert json.loads(payload)["stage"] == stage
 
 
