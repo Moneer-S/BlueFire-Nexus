@@ -1,4 +1,5 @@
 import { retainedObservations, type RetainedRunRecord } from "./retained-run-record";
+import type { NativeToolActionId } from "./native-tool-setup";
 import type { AssistanceRunEnvelope, RunPreparationDecision, SavedRunSelection } from "./run-assistance";
 import type { AILiveAuthorization, AILiveAuthorizationList, AILiveAuthorizationRequest, PublicAIProviderConfig, NativeToolCandidateInspection } from "../types";
 import type { RunnerUpgradeReview } from "./runner-upgrade";
@@ -568,11 +569,11 @@ export const api = {
     const body = kind === "plugins" ? { document } : { document, status };
     return request(`/resources/${kind}/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(body) });
   },
-  async inspectNativeToolCandidate(profileId: string, installationLocation: string, toolVersion: string): Promise<NativeToolCandidateInspection> {
+  async inspectNativeToolCandidate(profileId: string, installationLocation: string, toolVersion: string, actionId: NativeToolActionId = "sandbox.permission.chmod.v1"): Promise<NativeToolCandidateInspection> {
     if (DEMO_MODE) throw new ApiError("Demo mode cannot inspect a local native tool.", "demo_native_tool_inspection_refused", undefined, 409);
     return request(`/resources/runner-profiles/${encodeURIComponent(profileId)}/inspect-native-tool`, {
       method: "POST",
-      body: JSON.stringify({ schema_version: "bluefire.native-tool-candidate.v1", action_id: "sandbox.permission.chmod.v1", installation_location: installationLocation, tool_version: toolVersion }),
+      body: JSON.stringify({ schema_version: "bluefire.native-tool-candidate.v1", action_id: actionId, installation_location: installationLocation, tool_version: toolVersion }),
     });
   },
   async activateResource(kind: "runner-profiles" | "model-providers" | "plugins", id: string): Promise<RuntimeResourceResult> {

@@ -209,7 +209,7 @@ fn inspect_linux(
     let inspected = inspect_protected_record(installation, inspection_deadline(timeout))?;
     // The observed bytes must also be a known GNU build. A stable, protected
     // ELF and an operator-declared version alone do not establish tool identity.
-    crate::reviewed_chmod_builds::verify(installation).map_err(|error| {
+    crate::reviewed_native_builds::verify(installation).map_err(|error| {
         NativeToolInspectionError {
             code: error.code,
             message: error.message,

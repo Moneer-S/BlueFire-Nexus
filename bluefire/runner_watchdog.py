@@ -39,10 +39,10 @@ if __package__ in {None, ""}:
         apply_macos_no_fork_sandbox,
     )
     from bluefire.runner_private_files import (
+        _is_link_or_reparse,
         _PrivateFileCleanupError,
         _read_descriptor_bounded,
     )
-    from bluefire.runner_trust import _is_link_or_reparse
     from bluefire.service_launch import ServiceLaunch, consume_service_launch
     from bluefire.util import canonical_json_bytes, file_hash
 else:
@@ -60,8 +60,11 @@ else:
         _validate_macos_launch_parent,
         apply_macos_no_fork_sandbox,
     )
-    from .runner_private_files import _PrivateFileCleanupError, _read_descriptor_bounded
-    from .runner_trust import _is_link_or_reparse
+    from .runner_private_files import (
+        _is_link_or_reparse,
+        _PrivateFileCleanupError,
+        _read_descriptor_bounded,
+    )
     from .service_launch import ServiceLaunch, consume_service_launch
     from .util import canonical_json_bytes, file_hash
 

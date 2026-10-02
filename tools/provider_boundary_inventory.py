@@ -12,14 +12,14 @@ from tools.provider_gate_common import TRUSTED_PROCESS_BOUNDARY_PATHS, _sha256_b
 
 _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
     "bluefire/runner_client.py": "sha256:276641de9b824628126b7125a98360a79d1d46375631309b098e0d8bc799ed22",
-    "bluefire/runner_bootstrap.py": "sha256:b9225650c4fdc4c18a698d613c7370312dfd29bd89feb97d88784ca7696d7ca1",
+    "bluefire/runner_bootstrap.py": "sha256:0cdec225f25e4b5e980bca0c297685f9050eb1f503dce1803212de065bb3110a",
     "bluefire/runner_darwin_containment.py": "sha256:f02533a6cba3c29bc95d5aef5fbd4bfc0e30a830af4005fb6c1bf76a0b57353c",
     "bluefire/runner_windows_containment.py": "sha256:937456440a3c2dce94d24af695951ce19ca682b7752aa7437a5fae1f86bfb733",
     "bluefire/runner_linux_containment.py": "sha256:7b0f3cf3cd36304ba3c400439586efba98f682d34aa4053a12f478ef02eaea3a",
     "bluefire/runner_lifecycle.py": "sha256:9952e5fcea119dcbb2f8a9b6e191a1203a34c988d9316e60b59d955daf37b6a6",
     "bluefire/runner_parent_death.py": "sha256:7a0443b986e18025a748775e18a3fc6cc539713c2cfbb0cc04cce44e3eb277df",
     "bluefire/runner_trust.py": "sha256:fc8811d61e0684b480ceb0a88a1124d0b8829363d5c10caa3513febfbb697c67",
-    "bluefire/runner_watchdog.py": "sha256:c4f2469cbc314a7c18402ed0a7220d2b63b62c212f8afbb2b10266158d69a107",
+    "bluefire/runner_watchdog.py": "sha256:b196eb772b1f69226b9b828d918938e63ee40822dc3393a313a5f3590200e9f9",
     "bluefire/receiver_session.py": "sha256:06f5587707cbddb40aa5a310be24ec1fd89375b89a82e60d966b9c6af6451a37",
     "bluefire/receiver_session_worker.py": "sha256:015594b6309e52de966bc09258638551ae23f70f451bd88ef3903a361b2f1b09",
     "bluefire/ai_transport.py": "sha256:b806740e5ab11b6d10d771b57a08230d666483115782b30ced443f5cec0be507",

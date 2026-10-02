@@ -13,3 +13,8 @@
 .adaptive-path-decision p { font-size: .78rem; }
 .adaptive-path-decision details { margin-top: 10px; }
 .adaptive-path-decision pre { max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.adaptive-permission-observations { margin-top: 16px; }
+.adaptive-permission-observations h4 { font-size: .86rem; margin: 0 0 8px; }
+.adaptive-permission-observations > ol { list-style: none; margin: 0; padding: 0; }
+.adaptive-permission-observations > ol > li { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.adaptive-permission-observations code { overflow-wrap: anywhere; }

@@ -1,18 +1,27 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 import { ComparePage } from "../src/pages/Compare";
 import { DetectionLabPage } from "../src/pages/DetectionLab";
 import { api } from "../src/lib/api";
 import { registeredDetectionLink } from "../src/lib/run-handoffs";
+import { writeComparisonContext } from "../src/lib/comparison-context";
 import { compareDemoRuns, demoCatalog, demoRuns, demoScenario } from "../src/lib/demo";
 import type { ComparisonResponse, DetectionResource } from "../src/types";
 
 function mount(path: string, page: React.ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}>{page}</MemoryRouter></QueryClientProvider>);
+}
+function NavigationProbe() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  return <><output aria-label="Comparison route">{location.search}</output><button onClick={() => navigate(-1)}>Back to prior selection</button><button onClick={() => navigate(contextPath(demoRuns.map(run => run.run_id).reverse()))}>Reverse selected run order</button></>;
+}
+function contextPath(runIds: string[], baselineId = "", revisedId = "") {
+  return `/compare?${writeComparisonContext(new URLSearchParams(), { runIds, baselineId, revisedId })}`;
 }
 function baseMocks() {
   vi.spyOn(api, "runs").mockResolvedValue({ schema_version: "v1", runs: demoRuns, unavailable_run_count: 0 });
@@ -67,6 +76,110 @@ it("reports a comparison whose returned run identities do not match the request"
   mount("/compare", <ComparePage />);
   await screen.findByRole("heading", { name: "Compare runs" });
   for (const box of screen.getAllByRole("checkbox")) await user.click(box);
+  await user.click(screen.getByRole("button", { name: "Compare selected" }));
+  expect(await screen.findByText(/returned comparison does not match/)).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Compare detector results" })).not.toBeInTheDocument();
+});
+
+it("restores ordered runs and exact detector revisions only after an explicit comparison", async () => {
+  const user = userEvent.setup();
+  baseMocks();
+  const resources: DetectionResource[] = [1, 2].map(revision => ({ kind: "detections", id: `detector-${revision}`, digest: `digest-${revision}`, status: "parsed", created_at: "2026-09-06", updated_at: "2026-09-06", document: { candidate_id: `detector-${revision}`, title: revision === 1 ? "Permission baseline" : "Revised permission rule", revision, revision_root_id: "detector-1", state: "parsed", target_language: "internal" } }));
+  vi.mocked(api.detections).mockResolvedValue({ schema_version: "v1", candidates: resources });
+  const evaluations = vi.spyOn(api, "detectionRunEvaluations").mockResolvedValue({ evaluations: [] });
+  const compare = vi.spyOn(api, "compare").mockImplementation(async ids => compareDemoRuns(ids));
+  const evaluate = vi.spyOn(api, "evaluateDetectionRun");
+  const prepare = vi.spyOn(api, "prepareReplay");
+  const submit = vi.spyOn(api, "submitReplay");
+  const ids = [demoRuns[1]!.run_id, demoRuns[0]!.run_id];
+  const view = mount(contextPath(ids, "detector-1", "detector-2"), <><NavigationProbe /><ComparePage /></>);
+  await screen.findByRole("heading", { name: "Compare runs" });
+  expect(compare).not.toHaveBeenCalled();
+  expect(evaluations).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Compare selected" }));
+  expect(compare).toHaveBeenCalledExactlyOnceWith(ids);
+  expect(await screen.findByRole("combobox", { name: "Original detector" })).toHaveValue("detector-1");
+  expect(screen.getByRole("combobox", { name: "Revised detector" })).toHaveValue("detector-2");
+  expect(screen.getByRole("option", { name: "Permission baseline · revision 1" })).toBeInTheDocument();
+  await screen.findByRole("button", { name: "Export comparison and evidence" });
+  await user.selectOptions(screen.getByRole("combobox", { name: "Revised detector" }), "");
+  expect(screen.getByRole("region", { name: "Comparison results" })).toBeInTheDocument();
+  expect(compare).toHaveBeenCalledTimes(1);
+  await user.click(screen.getByRole("button", { name: "Back to prior selection" }));
+  expect(screen.getByRole("combobox", { name: "Revised detector" })).toHaveValue("detector-2");
+  expect(compare).toHaveBeenCalledTimes(1);
+  const reloadedPath = `/compare${screen.getByLabelText("Comparison route").textContent}`;
+  view.unmount();
+  mount(reloadedPath, <ComparePage />);
+  await screen.findByRole("heading", { name: "Compare runs" });
+  expect(screen.queryByRole("region", { name: "Comparison results" })).not.toBeInTheDocument();
+  expect(compare).toHaveBeenCalledTimes(1);
+  await user.click(screen.getByRole("button", { name: "Compare selected" }));
+  expect(await screen.findByRole("combobox", { name: "Revised detector" })).toHaveValue("detector-2");
+  expect(compare.mock.calls.map(call => call[0])).toEqual([ids, ids]);
+  expect(evaluate).not.toHaveBeenCalled();
+  expect(prepare).not.toHaveBeenCalled();
+  expect(submit).not.toHaveBeenCalled();
+});
+
+it.each(["missing", "ambiguous"])("retains an unavailable %s run selection until explicit repair", async state => {
+  const user = userEvent.setup();
+  baseMocks();
+  const unavailableId = state === "missing" ? "missing-run" : demoRuns[1]!.run_id;
+  if (state === "ambiguous") vi.mocked(api.runs).mockResolvedValue({ schema_version: "v1", runs: [...demoRuns, demoRuns[1]!], unavailable_run_count: 0 });
+  const compare = vi.spyOn(api, "compare");
+  mount(contextPath([demoRuns[0]!.run_id, unavailableId]), <><NavigationProbe /><ComparePage /></>);
+  await screen.findByText("Selected runs unavailable");
+  expect(screen.getByRole("button", { name: "Compare selected" })).toBeDisabled();
+  expect(screen.getByLabelText("Comparison route")).toHaveTextContent(encodeURIComponent(unavailableId));
+  expect(compare).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Remove unavailable selections" }));
+  expect(screen.queryByText("Selected runs unavailable")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Compare selected" })).toBeDisabled();
+  expect(compare).not.toHaveBeenCalled();
+});
+
+it("discards a late result after only the ordered run selection changes", async () => {
+  const user = userEvent.setup();
+  baseMocks();
+  const ids = demoRuns.map(run => run.run_id);
+  let finish!: (result: ComparisonResponse) => void;
+  const pending = new Promise<ComparisonResponse>(resolve => { finish = resolve; });
+  const compare = vi.spyOn(api, "compare").mockReturnValue(pending);
+  mount(contextPath(ids), <><NavigationProbe /><ComparePage /></>);
+  await screen.findByRole("heading", { name: "Compare runs" });
+  await user.click(screen.getByRole("button", { name: "Compare selected" }));
+  await user.click(screen.getByRole("button", { name: "Reverse selected run order" }));
+  await act(async () => { finish(compareDemoRuns(ids)); await pending; });
+  expect(screen.queryByRole("region", { name: "Comparison results" })).not.toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "Compare selected" })).toBeEnabled();
+  expect(compare).toHaveBeenCalledTimes(1);
+  expect(new URLSearchParams(screen.getByLabelText("Comparison route").textContent!).getAll("compare_run")).toEqual([...ids].reverse());
+});
+
+it("keeps malformed context explicit and repairs it without falling back to legacy runs", async () => {
+  const user = userEvent.setup();
+  baseMocks();
+  const compare = vi.spyOn(api, "compare");
+  mount(`/compare?source=${demoRuns[0]!.run_id}&replay=${demoRuns[1]!.run_id}&compare_context=2`, <ComparePage />);
+  await screen.findByText("Comparison selection unavailable");
+  expect(screen.getAllByRole("checkbox").every(box => !(box as HTMLInputElement).checked)).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Clear comparison selection" }));
+  expect(screen.queryByText("Comparison selection unavailable")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Compare selected" })).toBeDisabled();
+  expect(compare).not.toHaveBeenCalled();
+});
+
+it.each(["run list", "baseline"])("rejects a restored comparison with a mismatched %s", async field => {
+  const user = userEvent.setup();
+  baseMocks();
+  const ids = demoRuns.map(run => run.run_id);
+  const result = compareDemoRuns(ids);
+  if (field === "run list") result.run_ids = [...ids].reverse();
+  else result.baseline_run_id = ids[1]!;
+  vi.spyOn(api, "compare").mockResolvedValue(result);
+  mount(contextPath(ids), <ComparePage />);
+  await screen.findByRole("heading", { name: "Compare runs" });
   await user.click(screen.getByRole("button", { name: "Compare selected" }));
   expect(await screen.findByText(/returned comparison does not match/)).toBeInTheDocument();
   expect(screen.queryByRole("heading", { name: "Compare detector results" })).not.toBeInTheDocument();

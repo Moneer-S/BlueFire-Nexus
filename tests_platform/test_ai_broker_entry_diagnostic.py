@@ -101,7 +101,8 @@ def test_worker_evidence_requires_exact_code_and_both_object_identities(monkeypa
         assert observed["selected_worker_functions"][0] == "_run_job"
 
 
-def test_scan_and_request_bounds_omit_private_values(monkeypatch, capsys):
+@pytest.mark.parametrize("report_section", [False, True])
+def test_scan_and_request_bounds_omit_private_values(monkeypatch, capsys, report_section):
     args = specimen()
     private_value = "synthetic-private-value:/operator/provider-request"
     args[3].future._state = private_value
@@ -115,11 +116,21 @@ def test_scan_and_request_bounds_omit_private_values(monkeypatch, capsys):
     for _ in range(25):
         frame = SimpleNamespace(f_code=SimpleNamespace(co_name=private_value), f_back=frame)
     monkeypatch.setattr(broker.sys, "_current_frames", lambda: {i: frame for i in range(9)})
-    broker._report_broker_entry(*args)
-    output = capsys.readouterr().out
+    sections = []
+    sink = (lambda *row: sections.append(row)) if report_section else None
+    broker._report_broker_entry(*args, add_report_section=sink)
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    if report_section:
+        assert captured.out == "" and len(sections) == 1
+        when, title, output = sections[0]
+        assert (when, title) == ("call", "Broker entry diagnostic")
+    else:
+        assert sections == []
+        output = captured.out.removeprefix("Broker entry diagnostic: ")
     assert len(output) <= 4096
     assert private_value not in output and args[4] not in output
-    observed = json.loads(output.removeprefix("Broker entry diagnostic: "))
+    observed = json.loads(output)
     assert observed["future_state_cached"] == "unknown"
     assert observed["cancel_requested"] is None and observed["control_cancel_flag"] is None
     assert observed["channel_closed"] is None
@@ -153,13 +164,21 @@ def test_expiry_is_only_a_current_boolean_and_unsupported_lists_are_unknown(monk
 @pytest.mark.parametrize("report_failure", ["none", "inspection", "output"])
 @pytest.mark.parametrize("wait_failure", ["false", "original_assertion"])
 def test_original_entry_assertion_and_cleanup_survive_reporter_failure(
-    monkeypatch, tmp_path, report_failure, wait_failure
+    monkeypatch, tmp_path, report_failure, wait_failure, capsys
 ):
     service, access, channel, control, job_id = specimen()
     original = AssertionError("original authored assertion")
     closed = []
     reported = []
     real_report = broker._report_broker_entry
+    sections = []
+
+    def add_report_section(*args):
+        if report_failure == "output":
+            raise OSError("synthetic diagnostic output failure")
+        sections.append(args)
+
+    request = SimpleNamespace(node=SimpleNamespace(add_report_section=add_report_section))
 
     def wait(seconds):
         assert seconds == 3
@@ -167,16 +186,14 @@ def test_original_entry_assertion_and_cleanup_survive_reporter_failure(
             raise original
         return False
 
-    def report(*args):
+    def report(*args, **kwargs):
         assert args == (service, access, channel, control, job_id)
+        assert kwargs == {"add_report_section": add_report_section}
         reported.append(True)
-        real_report(*args)
+        real_report(*args, **kwargs)
 
     def broken_inspection(*_args):
         raise KeyboardInterrupt("synthetic diagnostic failure")
-
-    def broken_output(*_args, **_kwargs):
-        raise OSError("synthetic diagnostic output failure")
 
     channel.entered = SimpleNamespace(wait=wait)
     service.submit_run = lambda _request: {"job": {"job_id": job_id}}
@@ -189,11 +206,9 @@ def test_original_entry_assertion_and_cleanup_survive_reporter_failure(
     monkeypatch.setattr(broker, "_report_broker_entry", report)
     if report_failure == "inspection":
         monkeypatch.setattr(broker, "_broker_entry_evidence", broken_inspection)
-    elif report_failure == "output":
-        monkeypatch.setattr(broker, "print", broken_output, raising=False)
     with pytest.raises(AssertionError) as refused:
         broker.test_normal_job_cancellation_drains_broker_without_publishing_a_late_proposal(
-            tmp_path, "close"
+            tmp_path, "close", request, monkeypatch
         )
     if wait_failure == "original_assertion":
         assert refused.value is original
@@ -203,11 +218,17 @@ def test_original_entry_assertion_and_cleanup_survive_reporter_failure(
             str(refused.value).splitlines()[0] == "normal job did not reach broker proposal request"
         )
     assert closed == [True] and reported == [True]
+    assert capsys.readouterr() == ("", "")
+    assert [row[1] for row in sections] == {
+        "none": ["Broker entry diagnostic", "Broker job startup"],
+        "inspection": ["Broker job startup"],
+        "output": [],
+    }[report_failure]
 
 
 @pytest.mark.parametrize("signal", ["cancel", "close"])
 def test_successful_original_caller_keeps_assertions_without_reporting(
-    monkeypatch, tmp_path, signal
+    monkeypatch, tmp_path, signal, capsys
 ):
     service, access, channel, control, job_id = specimen()
     closed, cancelled, waits = [], [], []
@@ -239,9 +260,14 @@ def test_successful_original_caller_keeps_assertions_without_reporting(
         "_report_broker_entry",
         lambda *_args: pytest.fail("successful entry must not report"),
     )
-    broker.test_normal_job_cancellation_drains_broker_without_publishing_a_late_proposal(
-        tmp_path, signal
+    sections = []
+    request = SimpleNamespace(
+        node=SimpleNamespace(add_report_section=lambda *args: sections.append(args))
     )
+    broker.test_normal_job_cancellation_drains_broker_without_publishing_a_late_proposal(
+        tmp_path, signal, request, monkeypatch
+    )
+    assert sections == [] and capsys.readouterr() == ("", "")
     assert waits == [(job_id, 3)]
     assert cancelled == ([job_id] if signal == "cancel" else [])
     assert closed == ([True] if signal == "cancel" else [True, True])

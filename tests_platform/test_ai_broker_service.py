@@ -29,6 +29,10 @@ from bluefire.runner_lifecycle import ManagedRunnerLifecycle
 from bluefire.service import BlueFireService
 from bluefire.util import canonical_json_bytes, content_hash
 from tests_platform.ai_live_authorization_support import authorize_service
+from tests_platform.broker_startup_diagnostics import (
+    BrokerStartupRecorder,
+    broker_startup_assertion,
+)
 from tests_platform.job_wait_diagnostics import FUNCTIONS, _label
 from tests_platform.test_ai import CONFIG_PATH
 from tests_platform.test_ai import _request as proposal_request
@@ -458,33 +462,50 @@ def _broker_entry_evidence(service, access, channel, control, job_id):
     return evidence
 
 
-def _report_broker_entry(service, access, channel, control, job_id):
+def _report_broker_entry(service, access, channel, control, job_id, *, add_report_section=None):
     encoded = json.dumps(
         _broker_entry_evidence(service, access, channel, control, job_id), sort_keys=True
     )
     output = "Broker entry diagnostic: " + encoded
     if len(output) <= 4095:
-        print(output, flush=True)
+        if add_report_section is None:
+            print(output, flush=True)
+        else:
+            add_report_section("call", "Broker entry diagnostic", encoded)
 
 
 @pytest.mark.parametrize("signal", ["cancel", "close"])
-def test_normal_job_cancellation_drains_broker_without_publishing_a_late_proposal(tmp_path, signal):
+def test_normal_job_cancellation_drains_broker_without_publishing_a_late_proposal(
+    tmp_path, signal, request, monkeypatch
+):
     provider, service, _access, channel = setup(tmp_path)
     channel.block = True
+    recorder = BrokerStartupRecorder()
+    controller = service.job_controller
+    monkeypatch.setattr(controller, "_transition", recorder.wrap_transition(controller._transition))
     submitted = service.submit_run(run_request("assist", provider.id))
     job_id = submitted["job"]["job_id"]
     try:
+        recorder.record_submission(submitted["job"])
         controls = service.job_controller._controls
         control = controls.get(job_id) if type(controls) is dict else None
-        try:
-            assert channel.entered.wait(3), "normal job did not reach broker proposal request"
-        except AssertionError:
+        with broker_startup_assertion(request.node, recorder, channel):
             try:
-                _report_broker_entry(service, _access, channel, control, job_id)
-            except BaseException:
-                # Diagnostics must not replace this assertion or prevent finally cleanup.
-                pass
-            raise
+                assert channel.entered.wait(3), "normal job did not reach broker proposal request"
+            except AssertionError:
+                try:
+                    _report_broker_entry(
+                        service,
+                        _access,
+                        channel,
+                        control,
+                        job_id,
+                        add_report_section=request.node.add_report_section,
+                    )
+                except BaseException:
+                    # Neither diagnostic may replace the assertion or delay cleanup with I/O.
+                    pass
+                raise
         if signal == "cancel":
             service.cancel_job(job_id)
         else:

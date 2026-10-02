@@ -48,14 +48,17 @@ def awaiting(service, job_id):
         {"from_step_id": "discover_records"},
     ],
 )
-def test_simulate_replay_job_returns_finalized_result_with_original_lineage(service, options):
+def test_simulate_replay_job_returns_finalized_result_with_original_lineage(
+    service, options, request
+):
     source = source_run(service)
     payload = submission(service, source, options=options)
     created = service.submit_replay(source["run_id"], payload)
     job_id = created["job"]["job_id"]
     assert created["job"]["kind"] == "scenario.replay"
     assert created["approval_request"] is None
-    completed = service.job_controller.wait(job_id, timeout=10)
+    with diagnose_job_wait("replay_terminal", request.node.add_report_section):
+        completed = service.job_controller.wait(job_id, timeout=10)
     assert completed["state"] == "completed"
     result = service.detail(completed["result_ref"])
     assert service.store.validate_bundle(result["run_id"])["valid"] is True
@@ -286,7 +289,7 @@ def test_retry_refuses_unsettled_execute_workspace(service, monkeypatch):
 
 
 def test_replay_proposal_review_retains_intermediate_result_until_continuation_finishes(
-    service, monkeypatch
+    service, monkeypatch, request
 ):
     from tests_platform.test_ai_integration import AlternateProposalProvider
 
@@ -317,7 +320,8 @@ def test_replay_proposal_review_retains_intermediate_result_until_continuation_f
             "proposal_digest": review["proposal_digest"],
         },
     )
-    completed = service.job_controller.wait(job_id, timeout=10)
+    with diagnose_job_wait("replay_terminal", request.node.add_report_section):
+        completed = service.job_controller.wait(job_id, timeout=10)
     assert completed["state"] == "completed", completed["error"]
     assert completed["result_ref"] != pending["result_ref"]
     final = service.detail(completed["result_ref"])
