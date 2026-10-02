@@ -178,6 +178,27 @@ inspectable under **Advanced structured inputs → Tuned selection JSON**. The v
 editor reports **Visual editing unavailable** rather than dropping predicates.
 Invalid supported condition values must be repaired before applying them.
 
+## Authoring benign samples
+
+For an internal rule, open **Fixtures** to enter synthetic benign samples using
+typed fields. Add a sample, choose the fields that were available, and enter their
+values. Counts stay numbers, Yes/No choices stay booleans, and permission modes
+keep their leading zeros. Removing a field omits it from the sample; it does not
+substitute zero, No, or an empty string. Samples are authored examples, not
+collector-verified observations.
+
+Apply the sample edits, add notes explaining the representative activity, then
+choose **Evaluate benign fixtures**. Applying or restoring edits performs no
+evaluation. A benign label never suppresses a measured match. Missing fields can
+cause a nonmatch, so review field availability before drawing conclusions about
+false positives or detection coverage.
+
+Pending sample edits stay with the exact candidate revision in the same browser
+tab. Apply or discard them before evaluating or editing advanced JSON. The visual
+editor supports a limited set of fields and values; other JSON samples remain
+unchanged under the advanced controls. Use those controls for complex records.
+Browser storage failures are reported, and local inputs remain exportable.
+
 ## Predicted versus observed fields
 
 Field drift reports:

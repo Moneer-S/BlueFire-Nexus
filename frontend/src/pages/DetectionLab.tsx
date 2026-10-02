@@ -15,6 +15,8 @@ import { DetectionAICreation } from "../components/DetectionAICreation";
 import { PermissionConditionControl, isLegacyPermissionSelection, isPermissionCondition, permissionConditionForSelection, permissionPredictedFields, permissionSelection, type PermissionCondition } from "../components/PermissionConditionControl";
 import { StructuredRuleEditor } from "../components/StructuredRuleEditor";
 import { NewInternalRuleConditions } from "../components/NewInternalRuleConditions";
+import { InternalBenignFixtureEditor } from "../components/InternalBenignFixtureEditor";
+import { isInternalBenignFixtureDraftText, readInternalBenignFixtureDraft, type InternalBenignFixtureDraft } from "../lib/internal-benign-fixtures";
 import { initialManualInternalConditions, isManualInternalConditionsText, manualDetectionDefinition, readManualInternalConditions } from "../lib/manual-detection-definition";
 import { isStructuredRuleDraftText, readStructuredRuleDraft, type StructuredRuleDraft } from "../lib/structured-rule-selection";
 import { detectionCreationPath } from "../lib/detection-creation";
@@ -611,15 +613,18 @@ function CandidateWorkspace({
     fixtures: syntheticSelectionExample(language, candidate.selection), benign: "", notes: "", reason: "",
     revisionKind: (language === "internal" ? "tune" : "clone") as RevisionKind, revisionReason: "", revisionTitle: candidate.title ?? "",
     selectionJson: JSON.stringify(candidate.selection ?? {}, null, 2), logsourceJson: JSON.stringify(candidate.logsource ?? {}, null, 2),
-    structuredSelectionDraft: "",
+    structuredSelectionDraft: "", structuredBenignDraft: "",
     selectedBaselineIds: candidate.public_baselines?.map(item => item.research_source_id) ?? [], compareId: comparisonChoices[0]?.resourceId ?? "",
   }), [candidate, language, comparisonChoices]);
-  const draft = useDetectionDraft(binding, defaults, ["structuredSelectionDraft"], { structuredSelectionDraft: isStructuredRuleDraftText });
+  const draft = useDetectionDraft(binding, defaults, ["structuredSelectionDraft", "structuredBenignDraft"], { structuredSelectionDraft: isStructuredRuleDraftText, structuredBenignDraft: isInternalBenignFixtureDraftText });
   const observed = useDetectionDraft(binding + ":observed:" + sourceRunId, { runId: sourceRunId, evidenceIds: "" });
   const { tab, source, fixtures, benign, notes, reason, revisionKind, revisionReason, revisionTitle, selectionJson, logsourceJson, selectedBaselineIds, compareId } = draft.value;
   const structuredDraft = readStructuredRuleDraft(draft.value.structuredSelectionDraft);
   const setStructuredDraft = (value: StructuredRuleDraft | null) => draft.update("structuredSelectionDraft", value ? JSON.stringify(value) : "");
   const structuredPending = language === "internal" && structuredDraft !== null;
+  const benignDraft = readInternalBenignFixtureDraft(draft.value.structuredBenignDraft);
+  const benignPending = language === "internal" && benignDraft !== null;
+  const setBenignDraft = (value: InternalBenignFixtureDraft | null) => draft.update("structuredBenignDraft", value ? JSON.stringify(value) : "");
   const livePermissionCondition = useMemo(() => {
     if (language !== "internal") return undefined;
     try { return permissionConditionForSelection(JSON.parse(selectionJson)); } catch { return undefined; }
@@ -670,6 +675,7 @@ function CandidateWorkspace({
 
   const submitFixtures = (action: "exercise-fixtures" | "evaluate-benign") => {
     try {
+      if (action === "evaluate-benign" && benignPending) throw new Error("Apply or discard the sample edits before evaluating benign fixtures.");
       const value = JSON.parse(action === "exercise-fixtures" ? fixtures : benign) as unknown;
       if (!Array.isArray(value) || !value.length) throw new Error("Supply a nonempty JSON array of explicit synthetic examples.");
       setLocalError(undefined);
@@ -812,9 +818,14 @@ function CandidateWorkspace({
         <Callout title="Synthetic fixture prerequisites">{defaults.fixtures ? "The positive example is generated from this internal selection. Review and edit it before exercise; a match checks the matcher, not observed behavior." : "Supply explicit bounded examples that exercise this rule source. Generic file metadata cannot predict whether arbitrary SQLite, Sigma, or YARA source will match."} Benign samples and notes must be supplied explicitly. Fixture examples never become independently observed evidence.{["sqlite", "sigma"].includes(language) ? <Button size="small" onClick={() => setTab("evaluations")}>Evaluate observed runs without fixtures</Button> : null}</Callout>
         <Field label="Malicious fixtures JSON" hint={language === "yara" ? "Synthetic YARA examples require exactly fixture_id and bounded text data." : "Explicit synthetic examples need fixture_id and fields referenced by the candidate."}><textarea rows={8} value={fixtures} onChange={(event) => setFixtures(event.target.value)} disabled={!canFixture} /></Field>
         <Button size="small" onClick={() => submitFixtures("exercise-fixtures")} disabled={!canFixture || lifecyclePending || !fixtures.trim()}><Beaker />Exercise malicious fixtures</Button>
-        <Field label="Benign fixtures JSON" hint="Use representative benign examples; a benign label cannot suppress a measured match."><textarea rows={8} value={benign} onChange={(event) => setBenign(event.target.value)} disabled={!canBenign} /></Field>
+        {language === "internal" ? <>
+          <InternalBenignFixtureEditor source={benign} draft={benignDraft} onDraft={setBenignDraft} onApply={source => { setBenign(source); setBenignDraft(null); }} selection={candidate.selection} disabled={!canBenign || lifecyclePending} />
+          <details><summary>Advanced benign samples JSON</summary>
+            <Field label="Benign fixtures JSON" hint="Complex examples remain unchanged here. Apply or discard visual edits first; a benign label cannot suppress a measured match."><textarea rows={8} value={benign} onChange={(event) => setBenign(event.target.value)} disabled={!canBenign || lifecyclePending || benignPending} /></Field>
+          </details>
+        </> : <Field label="Benign fixtures JSON" hint="Use representative benign examples; a benign label cannot suppress a measured match."><textarea rows={8} value={benign} onChange={(event) => setBenign(event.target.value)} disabled={!canBenign || lifecyclePending} /></Field>}
         <Field label="Benign evaluation notes"><textarea rows={3} value={notes} onChange={(event) => setNotes(event.target.value)} disabled={!canBenign} /></Field>
-        <Button size="small" onClick={() => submitFixtures("evaluate-benign")} disabled={!canBenign || lifecyclePending || !benign.trim() || !notes.trim()}><CheckCircle2 />Evaluate benign fixtures</Button>
+        <Button size="small" onClick={() => submitFixtures("evaluate-benign")} disabled={!canBenign || lifecyclePending || benignPending || !benign.trim() || !notes.trim()}><CheckCircle2 />Evaluate benign fixtures</Button>
         <div className="fixture-grid"><article><Beaker /><strong>Malicious fixtures</strong><Badge tone={candidate.malicious_fixtures?.length ? "success" : "neutral"}>{candidate.malicious_fixtures?.length ?? 0} retained</Badge></article><article><CheckCircle2 /><strong>Benign fixtures</strong><Badge tone={candidate.benign_fixtures?.length ? "success" : "neutral"}>{candidate.benign_fixtures?.length ?? 0} retained</Badge></article></div>
       </> : tab === "observed" ? <>
         <Callout title="Immutable observed evidence only">The control plane verifies the finalized run bundle and independently observed provenance. Evidence content cannot be pasted here.{!["internal", "sigma", "sqlite"].includes(language) ? " This language has no normalized observed-JSON evaluator." : ""}</Callout>

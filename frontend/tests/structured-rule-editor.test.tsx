@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -66,6 +66,36 @@ it("keeps unknown and complex selectors intact with no partial visual controls",
   expect(screen.queryByRole("button", { name: "Apply conditions" })).not.toBeInTheDocument();
   expect(JSON.parse(screen.getByTestId("selection").textContent!)).toEqual(original);
   expect(apply).not.toHaveBeenCalled();
+});
+
+it("refreshes supported and unsupported source changes without stale controls or callbacks", () => {
+  const onDraft = vi.fn();
+  const onApply = vi.fn();
+  const first = '{"path":"first"}';
+  const unsupported = '{"custom":{"keep":"unchanged"}}';
+  const current = '{"record_count":8}';
+  const view = render(<StructuredRuleEditor source={first} draft={null} onDraft={onDraft} onApply={onApply} />);
+  expect(screen.getByLabelText("Value for condition 1")).toHaveValue("first");
+  fireEvent.change(screen.getByLabelText("Value for condition 1"), { target: { value: "unapplied" } });
+  expect(onDraft).toHaveBeenLastCalledWith({ source: first, conditions: [{ field: "path", operator: "equals", value: "unapplied" }] });
+  view.rerender(<StructuredRuleEditor source={unsupported} draft={null} onDraft={onDraft} onApply={onApply} />);
+  expect(screen.getByText("Visual editing unavailable")).toBeVisible();
+  expect(screen.queryByLabelText("Value for condition 1")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Apply conditions" })).not.toBeInTheDocument();
+  expect(onDraft).toHaveBeenCalledTimes(1);
+  expect(onApply).not.toHaveBeenCalled();
+  view.rerender(<StructuredRuleEditor source={current} draft={null} onDraft={onDraft} onApply={onApply} />);
+  expect(screen.getByLabelText("Field for condition 1")).toHaveValue("record_count");
+  expect(screen.getByLabelText("Value for condition 1")).toHaveValue("8");
+  expect(screen.getByRole("button", { name: "Apply conditions" })).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("Value for condition 1"), { target: { value: "9" } });
+  const pending: StructuredRuleDraft = { source: current, conditions: [{ field: "record_count", operator: "equals", value: "9" }] };
+  expect(onDraft).toHaveBeenCalledTimes(2);
+  expect(onDraft).toHaveBeenLastCalledWith(pending);
+  view.rerender(<StructuredRuleEditor source={current} draft={pending} onDraft={onDraft} onApply={onApply} />);
+  expect(onApply).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Apply conditions" }));
+  expect(onApply).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ record_count: 9 }, null, 2));
 });
 
 it("refuses empty rules while allowing a supported condition to be added", async () => {

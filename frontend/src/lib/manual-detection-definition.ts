@@ -17,7 +17,9 @@ export function readManualInternalConditions(text: string): ManualInternalCondit
     if (record.draft === null) return { source: record.source, draft: null };
     if (!record.draft || typeof record.draft !== "object" || Array.isArray(record.draft)) return null;
     const pending = record.draft as Record<string, unknown>;
-    if (Object.keys(pending).length !== 2 || typeof pending.source !== "string" || !readStructuredSelection(pending.source).supported) return null;
+    // Identical source text has already passed the same reader above.
+    if (Object.keys(pending).length !== 2 || typeof pending.source !== "string"
+      || (pending.source !== record.source && !readStructuredSelection(pending.source).supported)) return null;
     // Validate the original source separately so duplicating it in the envelope
     // cannot exhaust the shared draft parser's combined text budget. Its field,
     // operator, shape and value checks still apply to every pending condition.
@@ -35,9 +37,10 @@ export function initialManualInternalConditions(condition: PermissionCondition):
 }
 
 export function manualDetectionDefinition(language: string, internal: ManualInternalConditions) {
+  if (language === "internal" && internal.draft !== null) return null;
   const original = readStructuredSelection(internal.source);
   const checked = original.supported ? buildStructuredSelection(original.conditions) : null;
-  if (language === "internal" && (internal.draft !== null || !checked?.ok)) return null;
+  if (language === "internal" && !checked?.ok) return null;
   const selection = language === "internal" && checked?.ok ? checked.selection : permissionSelection("staged");
   return {
     selection,

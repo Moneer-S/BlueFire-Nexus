@@ -229,6 +229,7 @@ describe("run journey handoffs", () => {
     await user.click(await screen.findByRole("tab", { name: "Fixtures" }));
     expect(JSON.parse(String((screen.getByRole("textbox", { name: /^Malicious fixtures JSON/ }) as HTMLTextAreaElement).value))).toEqual([{ fixture_id: "synthetic-selection-example", ...selection }]);
     expect(screen.getByText(/positive example is generated from this internal selection/)).toBeInTheDocument();
+    await user.click(screen.getByText("Advanced benign samples JSON", { selector: "summary" }));
     expect(screen.getByRole("textbox", { name: /^Benign fixtures JSON/ })).toHaveValue("");
     expect(screen.getByRole("textbox", { name: "Benign evaluation notes" })).toHaveValue("");
   });

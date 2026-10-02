@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { buildStructuredSelection, readStructuredSelection, structuredRuleFields, structuredRuleLimits, structuredRuleOperators, structuredRuleSuggestions, type StructuredRuleCondition, type StructuredRuleDraft } from "../lib/structured-rule-selection";
 import { Button, Field } from "./Primitives";
 import "./StructuredRuleEditor.css";
@@ -8,8 +9,8 @@ export function StructuredRuleEditor({ source, draft, onDraft, onApply, disabled
   source: string; draft: StructuredRuleDraft | null; onDraft: (value: StructuredRuleDraft | null) => void;
   onApply: (source: string) => void; disabled?: boolean; purpose?: "creation" | "revision"; applyError?: string;
 }) {
+  const original = useMemo(() => readStructuredSelection(source), [source]);
   if (draft && draft.source !== source) return <div role="alert"><p>The retained condition edits belong to a different selection. The current selection has not been changed.</p><details><summary>Inspect retained condition edits</summary><pre>{JSON.stringify(draft.conditions, null, 2)}</pre></details><Button disabled={disabled} onClick={() => onDraft(null)}>Discard condition edits</Button></div>;
-  const original = readStructuredSelection(source);
   if (!original.supported) return <div role="status"><strong>Visual editing unavailable</strong><p>{original.reason}</p></div>;
   const activeDraft = draft?.source === source ? draft : null;
   const pending = activeDraft !== null;

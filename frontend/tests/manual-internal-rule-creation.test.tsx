@@ -7,7 +7,7 @@ import { api, ApiError } from "../src/lib/api";
 import { demoCatalog } from "../src/lib/demo";
 import { DetectionLabPage } from "../src/pages/DetectionLab";
 import { permissionSelection } from "../src/components/PermissionConditionControl";
-import { isManualInternalConditionsText, readManualInternalConditions } from "../src/lib/manual-detection-definition";
+import { isManualInternalConditionsText, manualDetectionDefinition, readManualInternalConditions } from "../src/lib/manual-detection-definition";
 import { buildStructuredSelection, structuredRuleFields, structuredRuleOperators } from "../src/lib/structured-rule-selection";
 import { NewInternalRuleConditions } from "../src/components/NewInternalRuleConditions";
 import type { DetectionResource } from "../src/types";
@@ -39,11 +39,23 @@ async function internal(user: ReturnType<typeof userEvent.setup>) {
 
 async function add(user: ReturnType<typeof userEvent.setup>, index: number, field: string, value: string, operator = "equals") {
   await user.click(screen.getByRole("button", { name: "Add condition" }));
-  await user.selectOptions(screen.getByRole("combobox", { name: `Field for condition ${index}` }), field);
-  if (operator !== "equals") await user.selectOptions(screen.getByRole("combobox", { name: `Operator for condition ${index}` }), operator);
-  const input = screen.queryByRole("textbox", { name: `Value for condition ${index}` });
-  if (input) { await user.clear(input); await user.type(input, value); }
-  else await user.selectOptions(screen.getByRole("combobox", { name: `Value for condition ${index}` }), value);
+  const fieldControl = screen.getByLabelText(`Field for condition ${index}`);
+  expect(fieldControl).toBeVisible();
+  expect(fieldControl.tagName).toBe("SELECT");
+  await user.selectOptions(fieldControl, field);
+  if (operator !== "equals") {
+    const operatorControl = screen.getByLabelText(`Operator for condition ${index}`);
+    expect(operatorControl).toBeVisible();
+    expect(operatorControl.tagName).toBe("SELECT");
+    await user.selectOptions(operatorControl, operator);
+  }
+  const input = screen.getByLabelText(`Value for condition ${index}`);
+  expect(input).toBeVisible();
+  if (input.tagName === "INPUT") { await user.clear(input); await user.type(input, value); }
+  else {
+    expect(input.tagName).toBe("SELECT");
+    await user.selectOptions(input, value);
+  }
 }
 
 it("applies typed collection conditions before first save and submits the exact definition without side effects", async () => {
@@ -266,4 +278,51 @@ it("refuses an oversized Apply without hiding or replacing the editable pending 
   await userEvent.setup().click(screen.getByRole("button", { name: "Apply conditions" }));
   expect(onChange).not.toHaveBeenCalled();
   expect(screen.getByRole("textbox", { name: "Value for condition 1" })).toHaveValue("\u0001".repeat(4096));
+});
+
+it.each([
+  ["malformed", "{"],
+  ["unsupported", '{"unknown":true}'],
+  ["oversized", '{"path":"other"}'.padEnd(262145, " ")],
+])("still refuses a differing %s pending source after validating the applied source", (_label, pendingSource) => {
+  const source = JSON.stringify(collection);
+  const text = JSON.stringify({ source, draft: { source: pendingSource, conditions: [{ field: "path", operator: "equals", value: "pending" }] } });
+  expect(readManualInternalConditions(text)).toBeNull();
+  expect(isManualInternalConditionsText(text)).toBe(false);
+});
+
+it.each([
+  { field: "path", operator: "equals", value: false },
+  { field: "unknown", operator: "equals", value: "pending" },
+  { field: "path", operator: "regex", value: "pending" },
+])("does not let identical source text bypass pending-condition schema validation: %j", condition => {
+  const source = JSON.stringify(collection);
+  const text = JSON.stringify({ source, draft: { source, conditions: [condition] } });
+  expect(readManualInternalConditions(text)).toBeNull();
+  expect(isManualInternalConditionsText(text)).toBe(false);
+});
+
+it("requires valid applied conditions and refuses a usable definition while edits remain pending", () => {
+  const source = JSON.stringify(collection);
+  expect(manualDetectionDefinition("internal", { source, draft: null })?.selection).toEqual(collection);
+  expect(manualDetectionDefinition("internal", { source, draft: { source, conditions: [{ field: "path", operator: "equals", value: "pending" }] } })).toBeNull();
+  for (const invalidSource of ["{", "{}", '{"unknown":true}']) {
+    expect(manualDetectionDefinition("internal", { source: invalidSource, draft: null })).toBeNull();
+  }
+});
+
+it("retains a differing supported pending source as a mismatch without granting Save", async () => {
+  const conditions = { source: JSON.stringify(collection), draft: { source: '{"path":"other"}', conditions: [{ field: "path", operator: "equals", value: "pending" }] } };
+  const internalConditions = JSON.stringify(conditions);
+  expect(readManualInternalConditions(internalConditions)).toEqual(conditions);
+  const raw = JSON.stringify({ binding: "manual-new-rule", value: { title: "Mismatched source", behaviorId: "sandbox.collection.stage.v1", language: "internal", internalConditions } });
+  sessionStorage.setItem(key, raw);
+  const { user, save, effects } = setup();
+  expect(await screen.findByRole("alert")).toHaveTextContent("different selection");
+  expect(screen.getByRole("button", { name: "Save rule draft" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Apply conditions" })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Save rule draft" }));
+  expect(sessionStorage.getItem(key)).toBe(raw);
+  expect(save).not.toHaveBeenCalled();
+  for (const effect of effects) expect(effect).not.toHaveBeenCalled();
 });
