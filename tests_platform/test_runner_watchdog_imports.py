@@ -11,6 +11,9 @@ from pathlib import Path
 import pytest
 
 _IMPORT_PROBE = r"""
+# CPython 3.10's stdlib copy probes optional Jython support. Initialize it
+# before the dependency guard; do not allow that package during watchdog imports.
+import copy
 import importlib
 import importlib.abc
 import json
@@ -24,6 +27,7 @@ script = root / "bluefire" / "runner_watchdog.py"
 assert sys.flags.isolated == 1 and sys.flags.no_site == 1
 assert "site" not in sys.modules
 assert "cryptography" not in sys.modules
+assert "org" not in sys.modules
 blocked = []
 
 class LocalAndStdlibOnly(importlib.abc.MetaPathFinder):
