@@ -45,14 +45,16 @@ def awaiting(service, job_id):
         {"from_step_id": "discover_records"},
     ],
 )
-def test_simulate_replay_job_returns_finalized_result_with_original_lineage(service, options):
+def test_simulate_replay_job_returns_finalized_result_with_original_lineage(
+    service, options, request
+):
     source = source_run(service)
     payload = submission(service, source, options=options)
     created = service.submit_replay(source["run_id"], payload)
     job_id = created["job"]["job_id"]
     assert created["job"]["kind"] == "scenario.replay"
     assert created["approval_request"] is None
-    with diagnose_job_wait("replay_terminal"):
+    with diagnose_job_wait("replay_terminal", request.node.add_report_section):
         completed = service.job_controller.wait(job_id, timeout=10)
     assert completed["state"] == "completed"
     result = service.detail(completed["result_ref"])

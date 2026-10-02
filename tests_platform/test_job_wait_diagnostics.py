@@ -32,13 +32,18 @@ def actual_timeout(snapshot):
 
 
 def emit(timeout, capsys, *, stage="replay_approval"):
+    sections = []
     with pytest.raises(JobWaitTimeout) as caught:
-        with diagnostic.diagnose_job_wait(stage):
+        with diagnostic.diagnose_job_wait(stage, lambda *args: sections.append(args)):
             raise timeout
     assert caught.value is timeout
-    output = capsys.readouterr().out
-    assert PRIVATE not in output
-    return json.loads(output.removeprefix("Job wait diagnostic: "))
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+    assert len(sections) == 1
+    when, title, payload = sections[0]
+    assert (when, title) == ("call", "Job wait diagnostic")
+    assert PRIVATE not in payload
+    return json.loads(payload)
 
 
 @pytest.mark.parametrize("state", ["queued", "running", "failed", "completed"])
@@ -143,13 +148,10 @@ def test_process_thread_labels_and_error_fields_are_private_and_bounded(monkeypa
     monkeypatch.setattr(
         diagnostic.sys, "_current_frames", lambda: {index: frame for index in range(100)}
     )
-    with pytest.raises(JobWaitTimeout):
-        with diagnostic.diagnose_job_wait(PRIVATE):
-            raise timeout
-    output = capsys.readouterr().out
+    report = emit(timeout, capsys, stage=PRIVATE)
+    output = json.dumps(report, sort_keys=True)
     assert PRIVATE not in output and "credential" not in output
     assert len(output.encode()) < 8192
-    report = json.loads(output.removeprefix("Job wait diagnostic: "))
     assert report["stage"] == "unknown"
     assert report["last_wait_job"]["phase"] == "unknown"
     assert report["last_wait_job"]["error_code"] == "unknown"
@@ -192,6 +194,10 @@ def test_actual_terminal_wait_preserves_deadline_options_and_caller_cleanup(
 
     original = timeout
     original_options = options
+    sections = []
+    request = SimpleNamespace(
+        node=SimpleNamespace(add_report_section=lambda *args: sections.append(args))
+    )
     service = SimpleNamespace(
         submit_replay=submit_replay,
         job_controller=SimpleNamespace(wait=wait),
@@ -209,33 +215,59 @@ def test_actual_terminal_wait_preserves_deadline_options_and_caller_cleanup(
     with pytest.raises(JobWaitTimeout) as caught:
         try:
             replay.test_simulate_replay_job_returns_finalized_result_with_original_lineage(
-                service, options
+                service, options, request
             )
         finally:
             service.close()
     assert caught.value is original
     assert order == ["replay", "close"]
-    output = capsys.readouterr().out
-    assert PRIVATE not in output
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
     if diagnostic_fails:
-        assert output == ""
+        assert sections == []
     else:
-        assert (
-            json.loads(output.removeprefix("Job wait diagnostic: "))["stage"] == "replay_terminal"
-        )
+        assert len(sections) == 1
+        when, title, payload = sections[0]
+        assert (when, title) == ("call", "Job wait diagnostic")
+        assert PRIVATE not in payload
+        assert json.loads(payload)["stage"] == "replay_terminal"
 
 
-def test_output_failure_cannot_replace_original_timeout(monkeypatch):
+def test_report_sink_failure_cannot_replace_original_timeout_or_cleanup(monkeypatch, capsys):
     timeout, _ = actual_timeout({"state": "running"})
+    order = []
 
-    def failed_print(*_args, **_kwargs):
+    def failed_report(*_args):
+        order.append("sink")
         raise OSError(PRIVATE)
 
-    monkeypatch.setattr(diagnostic, "print", failed_print, raising=False)
+    monkeypatch.setattr(diagnostic.sys, "_current_frames", lambda: {})
     with pytest.raises(JobWaitTimeout) as caught:
-        with diagnostic.diagnose_job_wait("graph_parent"):
+        try:
+            with diagnostic.diagnose_job_wait("graph_parent", failed_report):
+                raise timeout
+        finally:
+            order.append("cleanup")
+    assert caught.value is timeout
+    assert order == ["sink", "cleanup"]
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+
+
+def test_pytest_report_section_retains_exact_payload_without_stdout(monkeypatch, request, capsys):
+    timeout, reads = actual_timeout({"state": "running", "progress": {"phase": "planning"}})
+    monkeypatch.setattr(diagnostic.sys, "_current_frames", lambda: {})
+    before = len(request.node._report_sections)
+    expected = diagnostic._report(timeout, "replay_terminal")
+    with pytest.raises(JobWaitTimeout) as caught:
+        with diagnostic.diagnose_job_wait("replay_terminal", request.node.add_report_section):
             raise timeout
     assert caught.value is timeout
+    assert reads == [PRIVATE]
+    assert request.node._report_sections[before:] == [("call", "Job wait diagnostic", expected)]
+    assert PRIVATE not in expected
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
 
 
 def test_success_and_other_exceptions_do_not_run_diagnostics(monkeypatch):
@@ -243,11 +275,11 @@ def test_success_and_other_exceptions_do_not_run_diagnostics(monkeypatch):
         pytest.fail("diagnostics reached without a job wait timeout")
 
     monkeypatch.setattr(diagnostic, "_report", unexpected)
-    with diagnostic.diagnose_job_wait("graph_parent"):
+    with diagnostic.diagnose_job_wait("graph_parent", unexpected):
         result = "unchanged"
     assert result == "unchanged"
     original = ValueError(PRIVATE)
     with pytest.raises(ValueError) as caught:
-        with diagnostic.diagnose_job_wait("graph_parent"):
+        with diagnostic.diagnose_job_wait("graph_parent", unexpected):
             raise original
     assert caught.value is original

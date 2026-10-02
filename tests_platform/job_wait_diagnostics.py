@@ -118,16 +118,16 @@ def _report(timeout, stage):
         stacks.append(functions)
     evidence["process_thread_functions"] = stacks
     evidence["process_threads_truncated"] = len(process_frames) > 8
-    print("Job wait diagnostic: " + json.dumps(evidence, sort_keys=True), flush=True)
+    return json.dumps(evidence, sort_keys=True)
 
 
 @contextmanager
-def diagnose_job_wait(stage):
+def diagnose_job_wait(stage, add_report_section):
     try:
         yield
     except JobWaitTimeout as timeout:
         try:
-            _report(timeout, stage)
+            add_report_section("call", "Job wait diagnostic", _report(timeout, stage))
         except BaseException:
             # Even a failed diagnostic must preserve the original wait exception.
             pass
