@@ -3971,6 +3971,8 @@ mod tests {
                 bytes: b"synthetic compressed output".to_vec(),
                 executable: "/usr/bin/gzip".into(),
                 executable_sha256: "c".repeat(64),
+                installation_digest: format!("sha256:{}", "e".repeat(64)),
+                tool_version: "1.12-1ubuntu3.2".into(),
             },
             &"d".repeat(64),
             Instant::now(),
@@ -4055,7 +4057,7 @@ mod tests {
             let value = serde_json::to_value(&descriptor).unwrap();
             assert_eq!(value["schema_version"], ACTION_SDK_SCHEMA_VERSION);
             let expected_version = match descriptor.action_id {
-                "sandbox.cleanup.v1" => "1.1.0",
+                "sandbox.cleanup.v1" | "sandbox.collection.atomic-gzip.v1" => "1.1.0",
                 "sandbox.collection.stage.v1"
                 | "sandbox.discovery.list.v1"
                 | "sandbox.discovery.metadata.v1"
@@ -4074,11 +4076,18 @@ mod tests {
             assert!(value["observation_hints"]
                 .as_array()
                 .is_some_and(|rows| !rows.is_empty()));
-            if descriptor.action_id == "sandbox.permission.chmod.v1" {
+            if matches!(
+                descriptor.action_id,
+                "sandbox.permission.chmod.v1" | "sandbox.collection.atomic-gzip.v1"
+            ) {
                 assert_eq!(value["readiness"], "structural");
                 assert_eq!(
                     value["native_tool_binding"]["tool_id"],
-                    "gnu.coreutils.chmod.v1"
+                    if descriptor.action_id == "sandbox.permission.chmod.v1" {
+                        "gnu.coreutils.chmod.v1"
+                    } else {
+                        "gnu.gzip.v1"
+                    }
                 );
                 assert_eq!(
                     value["native_tool_binding"]["adapter_id"],
