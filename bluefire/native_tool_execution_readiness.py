@@ -8,7 +8,7 @@ from typing import Any, Mapping
 from .contracts import ContractError
 from .native_tool_installations import NativeToolInstallation
 from .native_tool_readiness import validate_native_tool_inspection
-from .tool_adapters.chmod import ADAPTER_ID, CONTRACT, TOOL_ID, VERSION
+from .tool_adapters.registry import adapter_for
 from .util import content_hash
 
 _BINDING_FIELDS = frozenset({"adapter_id", "adapter_version", "adapter_contract_digest", "tool_id"})
@@ -25,21 +25,21 @@ def validated_compiled_tool_row(
 ) -> tuple[dict[str, Any], Mapping[str, Any]]:
     """Validate the fixed compiled chmod binding without inspecting the host."""
 
-    if installation is not None and not isinstance(installation, NativeToolInstallation):
-        raise _refuse("installation record is invalid")
-    descriptor, canonical = reviewed_native_tool_descriptor(
-        raw_inventory, canonical_rows, action_id=ADAPTER_ID
-    )
-    if installation is None:
+    if not isinstance(installation, NativeToolInstallation):
         raise _refuse("installation record is invalid")
     record = installation.to_dict()
-    if record["adapter_id"] != ADAPTER_ID or record["platform"] != "linux":
+    adapter_id = record["adapter_id"]
+    descriptor, canonical = reviewed_native_tool_descriptor(
+        raw_inventory, canonical_rows, action_id=adapter_id
+    )
+    spec = adapter_for(record["adapter_id"])
+    if record["platform"] != "linux":
         raise _refuse("installation binding is unsupported")
     installation.check_binding(
-        expected_adapter_id=ADAPTER_ID,
-        expected_adapter_version=VERSION,
-        expected_adapter_contract_digest=CONTRACT.digest,
-        expected_tool_id=TOOL_ID,
+        expected_adapter_id=spec.ADAPTER_ID,
+        expected_adapter_version=spec.VERSION,
+        expected_adapter_contract_digest=spec.CONTRACT.digest,
+        expected_tool_id=spec.TOOL_ID,
         expected_platform="linux",
         expected_architecture=record["architecture"],
     )
@@ -54,8 +54,10 @@ def reviewed_native_tool_descriptor(
 ) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
     """Validate the exact compiled descriptor before setup identity is known."""
 
-    if action_id != ADAPTER_ID:
-        raise _refuse("compiled native action is unsupported")
+    try:
+        spec = adapter_for(action_id)
+    except ContractError:
+        raise _refuse("compiled native action is unsupported") from None
     if not isinstance(raw_inventory, Mapping) or raw_inventory.get("platform") != "linux":
         raise _refuse("runner inventory platform is unsupported")
     raw_actions = raw_inventory.get("actions")
@@ -66,7 +68,7 @@ def reviewed_native_tool_descriptor(
     descriptors = [
         action
         for action in raw_actions
-        if isinstance(action, Mapping) and action.get("action_id") == ADAPTER_ID
+        if isinstance(action, Mapping) and action.get("action_id") == action_id
     ]
     if len(descriptors) != 1:
         raise _refuse("compiled native action is missing or duplicated")
@@ -77,16 +79,16 @@ def reviewed_native_tool_descriptor(
         or set(binding) != _BINDING_FIELDS
         or dict(binding)
         != {
-            "adapter_id": ADAPTER_ID,
-            "adapter_version": VERSION,
-            "adapter_contract_digest": CONTRACT.digest,
-            "tool_id": TOOL_ID,
+            "adapter_id": spec.ADAPTER_ID,
+            "adapter_version": spec.VERSION,
+            "adapter_contract_digest": spec.CONTRACT.digest,
+            "tool_id": spec.TOOL_ID,
         }
     ):
         raise _refuse("compiled native action binding is invalid")
     raw_readiness = descriptor.get("readiness")
     if (
-        descriptor.get("action_version") != VERSION
+        descriptor.get("action_version") != spec.VERSION
         or not isinstance(raw_readiness, str)
         or raw_readiness not in {"structural", "ready"}
     ):
@@ -94,13 +96,13 @@ def reviewed_native_tool_descriptor(
     matching_rows = [
         row
         for row in canonical_rows
-        if isinstance(row, Mapping) and row.get("action_id") == ADAPTER_ID
+        if isinstance(row, Mapping) and row.get("action_id") == action_id
     ]
     if len(matching_rows) != 1:
         raise _refuse("canonical native action row is missing or duplicated")
     canonical = matching_rows[0]
     if (
-        canonical.get("action_version") != VERSION
+        canonical.get("action_version") != spec.VERSION
         or canonical.get("readiness") != raw_readiness
         or canonical.get("readiness") not in {"structural", "ready"}
         or canonical.get("contract_digest") != content_hash(dict(descriptor))
@@ -148,7 +150,7 @@ def inspected_tool_rows(
             raise _refuse("native tool inspection failed") from None
         if inspected.get("status") != "ready" or inspected.get("code") != "verified":
             raise _refuse("native tool inspection did not verify the installation")
-        rows[ADAPTER_ID] = {
+        rows[record["adapter_id"]] = {
             **dict(canonical),
             "readiness": "ready",
             "native_tool_installation_digest": installation.digest,
