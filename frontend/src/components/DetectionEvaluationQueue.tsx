@@ -1,4 +1,4 @@
-import { useIsMutating, useMutation, useQueryClient } from "@tanstack/react-query";
+import { skipToken, useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
@@ -23,6 +23,7 @@ interface QueueSelection extends QueueProps { targetSide: EvaluationTargetSide; 
 interface CaseOutcome { runId: string; state: "checking" | "pending" | "retained" | "unconfirmed" | "not-submitted"; report?: DetectionRunEvaluation; message?: string }
 interface Attempt { plan: DetectionEvaluationPlan; selectionKey: string; stop: boolean }
 const mutationKey = ["comparison-evaluation-queue"];
+const unconfirmedCasesKey = ["comparison-evaluation-queue-unconfirmed"];
 const selectionIdentity = (props: QueueSelection) => JSON.stringify([props.runIds, props.baselineId, props.revisedId, props.targetSide]);
 const selectionKey = (props: QueueSelection) => JSON.stringify([selectionIdentity(props), props.selectionVersion]);
 const unconfirmedCaseKey = (target: EvaluationTarget, item: EvaluationPlanCase) => JSON.stringify([target, item.runId, item.source.manifestDigest]);
@@ -46,7 +47,12 @@ export function DetectionEvaluationQueue(props: QueueProps) {
   const [notice, setNotice] = useState("");
   const [started, setStarted] = useState(false);
   const [stopping, setStopping] = useState(false);
-  const [unconfirmedCases, setUnconfirmedCases] = useState<string[]>([]);
+  // Retain uncertainty with the pending request's QueryClient, even if this
+  // view unmounts before settlement. This cache never fetches or survives reload.
+  const { data: unconfirmedCases = [] } = useQuery<readonly string[]>({
+    queryKey: unconfirmedCasesKey, queryFn: skipToken, initialData: [],
+    staleTime: Infinity, gcTime: Infinity,
+  });
 
   useLayoutEffect(() => {
     const next = { ...props, targetSide, selectionVersion: live.current.selectionVersion };
@@ -116,7 +122,8 @@ export function DetectionEvaluationQueue(props: QueueProps) {
           if (["Engine error", "Not enough evidence"].includes(evaluationLabel(report))) return "Stopped after a retained result that needs review. Remaining runs were not submitted.";
         } catch (error) {
           updateOutcome({ runId: item.runId, state: "unconfirmed", message: error instanceof Error ? error.message : "The evaluation response was unavailable." });
-          if (mounted.current) setUnconfirmedCases(current => [...new Set([...current, unconfirmedCaseKey(plan.target, item)])]);
+          const key = unconfirmedCaseKey(plan.target, item);
+          client.setQueryData<readonly string[]>(unconfirmedCasesKey, current => current?.includes(key) ? current : [...(current ?? []), key]);
           return "Stopped. The submitted outcome is unconfirmed; a report may already be retained. Check retained history before considering another evaluation. Nothing will retry automatically.";
         }
       }

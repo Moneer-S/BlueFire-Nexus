@@ -68,13 +68,28 @@ function report(runId: string, overrides: Partial<DetectionRunEvaluation> = {}, 
   };
 }
 
+function queueTree(
+  client: QueryClient,
+  props: Partial<Parameters<typeof DetectionEvaluationQueue>[0]> = {},
+) {
+  const defaults = { runIds, baselineId, revisedId, resources, baselineReports: [], revisedReports: [], ready: true };
+  return (
+    <QueryClientProvider client={client}>
+      <MemoryRouter><DetectionEvaluationQueue {...defaults} {...props} /></MemoryRouter>
+    </QueryClientProvider>
+  );
+}
+
+function renderWithClient(
+  client: QueryClient,
+  props: Partial<Parameters<typeof DetectionEvaluationQueue>[0]> = {},
+) {
+  return render(queueTree(client, props));
+}
+
 function mount(props: Partial<Parameters<typeof DetectionEvaluationQueue>[0]> = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  const defaults = { runIds, baselineId, revisedId, resources, baselineReports: [], revisedReports: [], ready: true };
-  return {
-    client,
-    ...render(<QueryClientProvider client={client}><MemoryRouter><DetectionEvaluationQueue {...defaults} {...props} /></MemoryRouter></QueryClientProvider>),
-  };
+  return { client, ...renderWithClient(client, props) };
 }
 
 function mockReads(reports: DetectionRunEvaluation[] = []) {
@@ -375,4 +390,130 @@ it.each(["changed definition", "ambiguous revision"] as const)("blocks dispatch 
   await user.click(await screen.findByRole("button", { name: "Start evaluations" }));
   expect(await screen.findByText(/Stopped before submission/)).toBeInTheDocument();
   expect(evaluate).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["original", "request rejection"],
+  ["original", "wrong target response"],
+  ["revised", "request rejection"],
+  ["revised", "wrong target response"],
+] as const)("retains %s-side uncertainty after unmount and %s settlement", async (targetSide, settlement) => {
+  const user = userEvent.setup();
+  mockReads();
+  let resolveFirst!: (value: { evaluation: DetectionRunEvaluation }) => void;
+  let rejectFirst!: (reason: Error) => void;
+  const first = new Promise<{ evaluation: DetectionRunEvaluation }>((resolve, reject) => {
+    resolveFirst = resolve;
+    rejectFirst = reject;
+  });
+  const wrongCandidate = targetSide === "original" ? revisedId : baselineId;
+  const evaluate = vi.spyOn(api, "evaluateDetectionRun").mockReturnValueOnce(first);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const props = { runIds: ["attack-run", "heldout-run"], baselineReports: [], revisedReports: [] };
+  let view = renderWithClient(client, props);
+  if (targetSide === "original") {
+    await user.selectOptions(screen.getByRole("combobox", { name: "Evaluate missing results for" }), "original");
+  }
+  await user.click(screen.getByRole("button", { name: `Review missing ${targetSide} evaluations` }));
+  await user.click(await screen.findByRole("button", { name: "Start evaluations" }));
+  await waitFor(() => expect(evaluate).toHaveBeenCalledOnce());
+  expect(evaluate).toHaveBeenCalledWith(
+    targetSide === "original" ? baselineId : revisedId,
+    expect.objectContaining({ run_id: "attack-run" }),
+  );
+
+  view.unmount();
+  const replacement = renderWithClient(client, props);
+  expect(screen.getByRole("combobox", { name: "Evaluate missing results for" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Review missing revised evaluations" })).toBeDisabled();
+  expect(await screen.findByText(/earlier evaluation sequence is still settling/)).toBeInTheDocument();
+  expect(evaluate).toHaveBeenCalledOnce();
+  replacement.unmount();
+
+  if (settlement === "request rejection") rejectFirst(new Error("private request detail"));
+  else resolveFirst({ evaluation: report("attack-run", {}, wrongCandidate) });
+  await waitFor(() => expect(client.isMutating({ mutationKey: ["comparison-evaluation-queue"] })).toBe(0));
+  expect(evaluate).toHaveBeenCalledOnce();
+  view = renderWithClient(client, props);
+
+  const reviewSide = async (side: "original" | "revised") => {
+    const selector = screen.getByRole("combobox", { name: "Evaluate missing results for" });
+    if ((selector as HTMLSelectElement).value !== side) await user.selectOptions(selector, side);
+    await user.click(screen.getByRole("button", { name: `Review missing ${side} evaluations` }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start evaluations" })).toBeEnabled());
+  };
+
+  await reviewSide(targetSide);
+  expect(await screen.findByRole("alert")).toHaveTextContent(/earlier submission .* still unconfirmed/);
+  await reviewSide(targetSide === "original" ? "revised" : "original");
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  await reviewSide(targetSide);
+  expect(await screen.findByRole("alert")).toHaveTextContent(/fresh history read does not prove it failed to persist/);
+  expect(evaluate).toHaveBeenCalledOnce();
+  view.unmount();
+});
+
+it.each([
+  ["original", "other target"],
+  ["original", "other run"],
+  ["original", "changed manifest"],
+  ["original", "retained run"],
+  ["revised", "other target"],
+  ["revised", "other run"],
+  ["revised", "changed manifest"],
+  ["revised", "retained run"],
+] as const)("does not carry %s-side uncertainty to an %s identity", async (targetSide, identityChange) => {
+  const user = userEvent.setup();
+  mockReads();
+  const evaluate = vi.spyOn(api, "evaluateDetectionRun").mockRejectedValue(new Error("private timeout detail"));
+  const view = mount({ runIds: ["attack-run", "heldout-run"], baselineReports: [], revisedReports: [] });
+  if (targetSide === "original") {
+    await user.selectOptions(screen.getByRole("combobox", { name: "Evaluate missing results for" }), "original");
+  }
+  await user.click(screen.getByRole("button", { name: `Review missing ${targetSide} evaluations` }));
+  await user.click(await screen.findByRole("button", { name: "Start evaluations" }));
+  expect(await screen.findByText(/Submitted outcome unconfirmed/)).toBeInTheDocument();
+  await waitFor(() => expect(view.client.isMutating({ mutationKey: ["comparison-evaluation-queue"] })).toBe(0));
+  await user.click(screen.getByRole("button", { name: "Review remaining evaluations" }));
+  await screen.findByRole("alert");
+  expect(evaluate).toHaveBeenCalledOnce();
+
+  const targetId = targetSide === "original" ? baselineId : revisedId;
+  const reviewCurrentSide = async () => {
+    await user.click(screen.getByRole("button", { name: `Review missing ${targetSide} evaluations` }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start evaluations" })).toBeEnabled());
+  };
+
+  if (identityChange === "other target") {
+    const otherSide = targetSide === "original" ? "revised" : "original";
+    await user.selectOptions(screen.getByRole("combobox", { name: "Evaluate missing results for" }), otherSide);
+    await user.click(screen.getByRole("button", { name: `Review missing ${otherSide} evaluations` }));
+  } else if (identityChange === "other run") {
+    view.rerender(queueTree(view.client, {
+      runIds: ["benign-run", "heldout-run"], baselineReports: [], revisedReports: [],
+    }));
+    await waitFor(() => expect(screen.getByText(/selection or evaluation side changed/)).toBeInTheDocument());
+    await reviewCurrentSide();
+  } else if (identityChange === "changed manifest") {
+    vi.mocked(api.runDetail).mockImplementation(async id => {
+      const current = source(id);
+      return id === "attack-run"
+        ? { ...current, manifest: { ...current.manifest, bundle_hash: `sha256:${"c".repeat(64)}` } }
+        : current;
+    });
+    await reviewCurrentSide();
+    expect(within(screen.getByRole("list")).getByText(/Attack evidence case/)).toBeInTheDocument();
+  } else {
+    vi.mocked(api.detectionRunEvaluations).mockImplementation(async id => ({
+      evaluations: id === targetId ? [report("attack-run", {}, targetId)] : [],
+    }));
+    await reviewCurrentSide();
+    expect(within(screen.getByRole("list")).queryByText(/Attack evidence case/)).not.toBeInTheDocument();
+  }
+  if (identityChange === "other target") {
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start evaluations" })).toBeEnabled());
+  }
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(evaluate).toHaveBeenCalledOnce();
+  view.unmount();
 });
