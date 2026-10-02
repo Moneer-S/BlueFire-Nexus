@@ -16,6 +16,10 @@ from bluefire.config import AIProviderKind, AutonomyLevel, load_config
 from bluefire.runner_lifecycle import ManagedRunnerLifecycle
 from bluefire.service import BlueFireService
 from bluefire.util import canonical_json_bytes
+from tests_platform.ai_proposal_startup_diagnostics import (
+    ProposalStartupRecorder,
+    proposal_startup_assertion,
+)
 from tests_platform.test_ai import FakeTransport, _proposal, _request
 from tests_platform.test_ai_live_authorization import request as authorization_request
 from tests_platform.test_ai_transport_deadline import endpoint as endpoint
@@ -30,6 +34,7 @@ KINDS = (AIProviderKind.OPENAI_RESPONSES, AIProviderKind.CHAT_COMPLETIONS)
 @pytest.mark.parametrize("autonomy", ["assist", "auto"])
 @pytest.mark.parametrize("signal", ["cancel", "close"])
 def test_in_flight_job_proposal_is_cancelled_and_reaped_without_fallback(
+    request: pytest.FixtureRequest,
     tmp_path: Path,
     endpoint: tuple[str, threading.Event, list[str]],
     workers: list[subprocess.Popen[bytes]],
@@ -65,6 +70,13 @@ def test_in_flight_job_proposal_is_cancelled_and_reaped_without_fallback(
             },
         )
     )["authorization"]
+    startup = ProposalStartupRecorder()
+    monkeypatch.setattr(subprocess, "Popen", startup.wrap_popen(subprocess.Popen))
+    monkeypatch.setattr(
+        service.product_store,
+        "transition_job",
+        startup.wrap_transition(service.product_store.transition_job),
+    )
     # The shipped composition is under test: no injected provider or HTTP transport.
     submission = service.submit_run(
         {
@@ -85,7 +97,8 @@ def test_in_flight_job_proposal_is_cancelled_and_reaped_without_fallback(
 
     closer = threading.Thread(target=close, daemon=True)
     try:
-        assert entered.wait(4), "proposal never reached the local endpoint"
+        with proposal_startup_assertion(request.node, startup):
+            assert entered.wait(4), "proposal never reached the local endpoint"
         started = time.monotonic()
         if signal == "close":
             closer.start()
