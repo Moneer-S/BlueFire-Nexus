@@ -35,7 +35,10 @@ def submission(service, source, *, options=None):
 
 
 def awaiting(service, job_id):
-    return service.job_controller.wait_for_state(job_id, {JobState.AWAITING_APPROVAL}, timeout=10)
+    with diagnose_job_wait("replay_approval"):
+        return service.job_controller.wait_for_state(
+            job_id, {JobState.AWAITING_APPROVAL}, timeout=10
+        )
 
 
 @pytest.mark.parametrize(
