@@ -250,6 +250,32 @@ def test_profile_candidate_inspection_does_not_save_activate_or_approve(setup_se
     assert runner.inspect_calls == 1 and runner.execute_calls == 0
 
 
+def test_missing_setup_host_explains_authenticated_runner_prerequisite(setup_service):
+    service, runner, document = setup_service
+    before = deepcopy(service.product_store.get_resource("runner_profile", document["id"]))
+
+    class UnavailableHost:
+        def status(self):
+            return {"state": "stopped", "enrollment": "active", "process": "absent"}
+
+        def client_for_profile(self, profile_id):
+            raise AssertionError(f"Unavailable host must not open profile {profile_id!r}.")
+
+    service._native_tool_setup_runner_factory = None
+    service.runner_lifecycle = UnavailableHost()
+
+    with pytest.raises(APIError) as error:
+        service.inspect_runner_profile_tool(document["id"], candidate())
+
+    assert error.value.code == "native_tool_runner_unavailable"
+    assert "authenticated local runner" in error.value.message
+    assert "active Execute profile" in error.value.message
+    assert "does not activate or authorize this draft" in error.value.message
+    assert service.product_store.get_resource("runner_profile", document["id"]) == before
+    assert service.store.list_runs() == []
+    assert runner.inspect_calls == 0 and runner.execute_calls == 0
+
+
 @pytest.mark.parametrize("change", ["inventory", "profile", "invalid-result"])
 def test_candidate_inspection_refuses_changed_authority_or_invalid_output(setup_service, change):
     service, runner, document = setup_service
