@@ -14,7 +14,7 @@ from tests_platform.ai_proposal_startup_diagnostics import (
 def test_launch_wrapper_preserves_arguments_return_and_cached_phases() -> None:
     recorder = ProposalStartupRecorder()
     command = ["private-command"]
-    environment = {"PRIVATE_SECRET": "private-value"}
+    environment = {"AUTHORED_TEST_CONTEXT": "private-value"}
     process = object()
     assert recorder.snapshot()["launch_state"] == "absent"
 
