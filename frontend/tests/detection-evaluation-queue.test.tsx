@@ -44,7 +44,7 @@ function manifestDigest(runId: string): string {
   return `sha256:${createHash("sha256").update(identity, "utf8").digest("hex")}`;
 }
 
-function report(runId: string, overrides: Partial<DetectionRunEvaluation> = {}): DetectionRunEvaluation {
+function report(runId: string, overrides: Partial<DetectionRunEvaluation> = {}, candidateId = revisedId): DetectionRunEvaluation {
   const activity = overrides.classification?.activity_label
     ?? (overrides.case_role === "attack" || overrides.case_role === "benign" ? overrides.case_role : "unknown");
   const evaluationUse = overrides.classification?.evaluation_use ?? "unspecified";
@@ -53,7 +53,7 @@ function report(runId: string, overrides: Partial<DetectionRunEvaluation> = {}):
     schema_version: "bluefire.detection-run-evaluation.v1", evaluation_id: `evaluation-${runId}`, question, case_role: activity,
     case_role_basis: "operator_declared", created_at: "2026-09-06T12:02:00Z", limitations: [],
     candidate: {
-      candidate_id: revisedId, revision_root_id: "rule-family", revision: 2, definition_digest: digest,
+      candidate_id: candidateId, revision_root_id: "rule-family", revision: candidateId === baselineId ? 1 : 2, definition_digest: digest,
       query_sha256: digest, source_sha256: digest, target_language: "sqlite", parser_backend: { name: "SQLite", version: "3.45.1" },
     },
     source: { run_id: runId, manifest_digest: manifestDigest(runId), evidence_digest: digest, observed_count: 1, evidence_count: 1, excluded_provenance_counts: {} },
@@ -70,7 +70,7 @@ function report(runId: string, overrides: Partial<DetectionRunEvaluation> = {}):
 
 function mount(props: Partial<Parameters<typeof DetectionEvaluationQueue>[0]> = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  const defaults = { runIds, baselineId, revisedId, resources, reports: [], ready: true };
+  const defaults = { runIds, baselineId, revisedId, resources, baselineReports: [], revisedReports: [], ready: true };
   return {
     client,
     ...render(<QueryClientProvider client={client}><MemoryRouter><DetectionEvaluationQueue {...defaults} {...props} /></MemoryRouter></QueryClientProvider>),
@@ -91,7 +91,7 @@ it("previews two missing cases in comparison order and sends no request before e
   const retained = [report("benign-run", { result: { ...report("benign-run").result, state: "insufficient_evidence", match_count: null } })];
   mockReads(retained);
   const evaluate = vi.spyOn(api, "evaluateDetectionRun").mockResolvedValue({ evaluation: report("attack-run") });
-  mount({ reports: retained });
+  mount({ revisedReports: retained });
   expect(evaluate).not.toHaveBeenCalled();
   await user.click(screen.getByRole("button", { name: "Review missing revised evaluations" }));
   const preview = await screen.findByRole("list", { name: "" }).catch(() => screen.getByRole("list"));
@@ -100,6 +100,79 @@ it("previews two missing cases in comparison order and sends no request before e
   ]);
   expect(screen.getAllByRole("combobox", { name: "Activity label" }).map(select => (select as HTMLSelectElement).value)).toEqual(["unknown", "unknown"]);
   expect(screen.getAllByRole("combobox", { name: "Use of this data" }).map(select => (select as HTMLSelectElement).value)).toEqual(["unspecified", "unspecified"]);
+  expect(evaluate).not.toHaveBeenCalled();
+});
+
+it("queues only missing original-rule cases and binds history, POST, and response identity to the original revision", async () => {
+  const user = userEvent.setup();
+  const retained = [
+    report("benign-run", { result: { ...report("benign-run").result, state: "insufficient_evidence", match_count: null } }, baselineId),
+    report("heldout-run", { result: { ...report("heldout-run").result, state: "backend_error", match_count: null } }, baselineId),
+  ];
+  mockReads();
+  vi.mocked(api.detectionRunEvaluations).mockImplementation(async id => ({ evaluations: id === baselineId ? retained : [] }));
+  const response = report("attack-run", {}, baselineId);
+  response.question = "Does the original rule identify the observed attack?";
+  response.case_role = "attack";
+  response.classification = { ...response.classification!, activity_label: "attack", evaluation_use: "development", requested_use: "development" };
+  const evaluate = vi.spyOn(api, "evaluateDetectionRun").mockResolvedValue({ evaluation: response });
+  mount({ runIds, baselineReports: retained, revisedReports: [] });
+  await user.selectOptions(screen.getByRole("combobox", { name: "Evaluate missing results for" }), "original");
+  await user.click(screen.getByRole("button", { name: "Review missing original evaluations" }));
+  const start = await screen.findByRole("button", { name: "Start evaluations" });
+  const cases = screen.getByRole("list");
+  expect(within(cases).getAllByRole("listitem")).toHaveLength(1);
+  expect(within(cases).getByRole("group", { name: "Case 1 · Attack evidence case" })).toBeVisible();
+  await user.type(screen.getByRole("textbox", { name: /^Experiment question/ }), response.question);
+  await user.selectOptions(screen.getByRole("combobox", { name: "Activity label" }), "attack");
+  await user.selectOptions(screen.getByRole("combobox", { name: "Use of this data" }), "development");
+  expect(evaluate).not.toHaveBeenCalled();
+  await user.click(start);
+  await waitFor(() => expect(evaluate).toHaveBeenCalledOnce());
+  expect(api.detectionRunEvaluations).toHaveBeenCalledWith(baselineId);
+  expect(evaluate).toHaveBeenCalledWith(baselineId, {
+    run_id: "attack-run", question: response.question, case_role: "attack", activity_label: "attack", evaluation_use: "development",
+  });
+  expect(await screen.findByText(/Evaluation retained: No matches/)).toBeInTheDocument();
+});
+
+it("refuses a revised-rule response when the frozen target is the original rule", async () => {
+  const user = userEvent.setup();
+  mockReads();
+  const evaluate = vi.spyOn(api, "evaluateDetectionRun").mockResolvedValue({ evaluation: report("attack-run") });
+  mount({ runIds: ["attack-run", "heldout-run"], baselineReports: [], revisedReports: [] });
+  await user.selectOptions(screen.getByRole("combobox", { name: "Evaluate missing results for" }), "original");
+  await user.click(screen.getByRole("button", { name: "Review missing original evaluations" }));
+  await user.click(await screen.findByRole("button", { name: "Start evaluations" }));
+  expect(await screen.findByText(/Submitted outcome unconfirmed/)).toBeInTheDocument();
+  expect(evaluate).toHaveBeenCalledOnce();
+  expect(evaluate).toHaveBeenCalledWith(baselineId, expect.objectContaining({ run_id: "attack-run" }));
+  expect(screen.queryByText(/Evaluation retained/)).not.toBeInTheDocument();
+});
+
+it("invalidates A-to-B-to-A previews and resets case inputs on a fresh review", async () => {
+  const user = userEvent.setup();
+  mockReads();
+  const evaluate = vi.spyOn(api, "evaluateDetectionRun");
+  mount({ runIds: ["attack-run", "heldout-run"], baselineReports: [], revisedReports: [] });
+  await user.click(screen.getByRole("button", { name: "Review missing revised evaluations" }));
+  await screen.findByRole("button", { name: "Start evaluations" });
+  const cases = screen.getAllByRole("listitem");
+  const firstCase = within(cases[0]!);
+  const question = firstCase.getByRole("textbox", { name: /^Experiment question/ });
+  await user.type(question, "Do not carry this question across revisions");
+  await user.selectOptions(firstCase.getByRole("combobox", { name: "Activity label" }), "benign");
+  await user.selectOptions(firstCase.getByRole("combobox", { name: "Use of this data" }), "development");
+  const side = screen.getByRole("combobox", { name: "Evaluate missing results for" });
+  await user.selectOptions(side, "original");
+  await user.selectOptions(side, "revised");
+  expect(await screen.findByText(/evaluation side changed/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Start evaluations" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Review missing revised evaluations" }));
+  await waitFor(() => expect(screen.getAllByRole("textbox", { name: /^Experiment question/ }).map(input => (input as HTMLTextAreaElement).value)).toEqual(["", ""]));
+  expect(screen.getAllByRole("combobox", { name: "Activity label" }).map(select => (select as HTMLSelectElement).value)).toEqual(["unknown", "unknown"]);
+  expect(screen.getAllByRole("combobox", { name: "Use of this data" }).map(select => (select as HTMLSelectElement).value)).toEqual(["unspecified", "unspecified"]);
+  expect(screen.getByRole("button", { name: "Start evaluations" })).toBeEnabled();
   expect(evaluate).not.toHaveBeenCalled();
 });
 
@@ -112,7 +185,7 @@ it("sends explicit per-case choices sequentially and keeps the pending lock agai
   const evaluate = vi.spyOn(api, "evaluateDetectionRun")
     .mockReturnValueOnce(first)
     .mockImplementationOnce(async (_id, body) => ({ evaluation: report(body.run_id, { question: body.question, case_role: body.case_role, classification: report(body.run_id, { case_role: body.case_role }).classification }) }));
-  mount({ reports: retained });
+  mount({ revisedReports: retained });
   await user.click(screen.getByRole("button", { name: "Review missing revised evaluations" }));
   await screen.findByRole("button", { name: "Start evaluations" });
   const fields = screen.getAllByRole("group");
@@ -151,6 +224,40 @@ it("stops future dispatch after Stop while preserving the settled request result
   expect(screen.getByText(/Evaluation retained: No matches/)).toBeInTheDocument();
 });
 
+it("keeps an in-flight original target fixed, stops later cases, then requires fresh history review", async () => {
+  const user = userEvent.setup();
+  mockReads();
+  let resolveFirst!: (value: { evaluation: DetectionRunEvaluation }) => void;
+  const first = new Promise<{ evaluation: DetectionRunEvaluation }>(resolve => { resolveFirst = resolve; });
+  const originalResult = report("attack-run", {}, baselineId);
+  const evaluate = vi.spyOn(api, "evaluateDetectionRun").mockReturnValueOnce(first);
+  mount({ runIds: ["attack-run", "heldout-run"], baselineReports: [], revisedReports: [] });
+  const side = screen.getByRole("combobox", { name: "Evaluate missing results for" });
+  await user.selectOptions(side, "original");
+  await user.click(screen.getByRole("button", { name: "Review missing original evaluations" }));
+  await user.click(await screen.findByRole("button", { name: "Start evaluations" }));
+  await waitFor(() => expect(evaluate).toHaveBeenCalledOnce());
+  expect(evaluate).toHaveBeenCalledWith(baselineId, expect.objectContaining({ run_id: "attack-run" }));
+  expect(side).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Stop after current evaluation" }));
+  resolveFirst({ evaluation: originalResult });
+  expect(await screen.findByText(/Stopped\. No further evaluations were submitted/)).toBeInTheDocument();
+  expect(screen.getByText(/Evaluation retained: No matches/)).toBeInTheDocument();
+  expect(evaluate).toHaveBeenCalledOnce();
+
+  vi.mocked(api.detectionRunEvaluations).mockImplementation(async id => ({
+    evaluations: id === baselineId ? [originalResult] : [],
+  }));
+  await user.click(screen.getByRole("button", { name: "Review remaining evaluations" }));
+  const freshStart = await screen.findByRole("button", { name: "Start evaluations" });
+  expect(screen.getByText("Original · Collection detector · revision 1")).toBeVisible();
+  const cases = screen.getByRole("list");
+  expect(within(cases).getAllByRole("listitem")).toHaveLength(1);
+  expect(within(cases).getByRole("group", { name: "Case 1 · Held-out evidence case" })).toBeVisible();
+  expect(freshStart).toBeEnabled();
+  expect(evaluate).toHaveBeenCalledOnce();
+});
+
 it.each(["request rejection", "wrong run response", "wrong candidate response", "wrong manifest digest"] as const)("halts after %s and preserves earlier submitted status", async failure => {
   const user = userEvent.setup();
   mockReads();
@@ -184,6 +291,29 @@ it("requires a fresh explicit remaining-case review after an unconfirmed respons
   expect(evaluate).toHaveBeenCalledTimes(1);
 });
 
+it("keeps an unconfirmed original-result warning bound across side changes", async () => {
+  const user = userEvent.setup();
+  mockReads();
+  const evaluate = vi.spyOn(api, "evaluateDetectionRun").mockRejectedValue(new Error("Request timed out"));
+  mount({ runIds: ["attack-run", "heldout-run"], baselineReports: [], revisedReports: [] });
+  const side = screen.getByRole("combobox", { name: "Evaluate missing results for" });
+  await user.selectOptions(side, "original");
+  await user.click(screen.getByRole("button", { name: "Review missing original evaluations" }));
+  await user.click(await screen.findByRole("button", { name: "Start evaluations" }));
+  expect(await screen.findByText(/Submitted outcome unconfirmed/)).toBeInTheDocument();
+  expect(evaluate).toHaveBeenCalledOnce();
+
+  await user.click(screen.getByRole("button", { name: "Review remaining evaluations" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(/fresh history read does not prove it failed to persist/);
+  await user.selectOptions(side, "revised");
+  expect(screen.getByText(/evaluation side changed/)).toBeInTheDocument();
+  await user.selectOptions(side, "original");
+  expect(screen.getByText(/evaluation side changed/)).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Review missing original evaluations" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(/fresh history read does not prove it failed to persist/);
+  expect(evaluate).toHaveBeenCalledOnce();
+});
+
 it.each(["unmount", "selection change"] as const)("does not dispatch another run after %s during an in-flight request", async action => {
   const user = userEvent.setup();
   mockReads();
@@ -196,10 +326,12 @@ it.each(["unmount", "selection change"] as const)("does not dispatch another run
   await waitFor(() => expect(evaluate).toHaveBeenCalledTimes(1));
   if (action === "unmount") {
     view.unmount();
-    render(<QueryClientProvider client={view.client}><MemoryRouter><DetectionEvaluationQueue runIds={["attack-run", "heldout-run"]} baselineId={baselineId} revisedId={revisedId} resources={resources} reports={[]} ready /></MemoryRouter></QueryClientProvider>);
+    render(<QueryClientProvider client={view.client}><MemoryRouter><DetectionEvaluationQueue runIds={["attack-run", "heldout-run"]} baselineId={baselineId} revisedId={revisedId} resources={resources} baselineReports={[]} revisedReports={[]} ready /></MemoryRouter></QueryClientProvider>);
     expect(screen.getByRole("button", { name: "Review missing revised evaluations" })).toBeDisabled();
+    expect(screen.getByText(/earlier evaluation sequence is still settling/)).toBeInTheDocument();
   }
-  else view.rerender(<QueryClientProvider client={view.client}><MemoryRouter><DetectionEvaluationQueue runIds={["heldout-run", "attack-run"]} baselineId={baselineId} revisedId={revisedId} resources={resources} reports={[]} ready /></MemoryRouter></QueryClientProvider>);
+  else view.rerender(<QueryClientProvider client={view.client}><MemoryRouter><DetectionEvaluationQueue runIds={["heldout-run", "attack-run"]} baselineId={baselineId} revisedId={revisedId} resources={resources} baselineReports={[]} revisedReports={[]} ready /></MemoryRouter></QueryClientProvider>);
+  expect(screen.getByRole("combobox", { name: "Evaluate missing results for" })).toBeDisabled();
   resolveFirst({ evaluation: report("attack-run") });
   await waitFor(() => expect(view.client.isMutating({ mutationKey: ["comparison-evaluation-queue"] })).toBe(0));
   expect(evaluate).toHaveBeenCalledTimes(1);

@@ -6,4 +6,4 @@
 .evaluation-queue-cases > li { min-width: 0; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 .evaluation-queue-cases fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
 .evaluation-queue-cases legend { max-width: 100%; padding: 0; margin-bottom: 10px; }
-.evaluation-queue-cases input:disabled, .evaluation-queue-cases select:disabled, .evaluation-queue-cases textarea:disabled { opacity: 1; color: var(--muted-strong); }
+.evaluation-queue input:disabled, .evaluation-queue select:disabled, .evaluation-queue textarea:disabled { opacity: 1; color: var(--muted-strong); }

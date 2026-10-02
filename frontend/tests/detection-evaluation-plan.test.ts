@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import {
   buildDetectionEvaluationPlan, evaluationReportMatches, evaluationSource, evaluationTarget,
-  missingRevisedEvaluationRuns,
+  missingEvaluationRuns, missingRevisedEvaluationRuns,
 } from "../src/lib/detection-evaluation-plan";
 import type { DetectionResource, DetectionRunEvaluation, RunRecord } from "../src/types";
 
@@ -65,6 +65,8 @@ it("plans only missing revised cases in selected order, regardless of report ord
   expect(missingRevisedEvaluationRuns(selection.runIds, retained)).toEqual(["attack", "benign"]);
   const plan = buildDetectionEvaluationPlan({ ...selection, resources, reports: retained, sources: selection.runIds.map(source), manifestDigests });
   expect(plan.runIds).toEqual(selection.runIds);
+  expect(plan.targetSide).toBe("revised");
+  expect(plan.target).toMatchObject({ id: "revised", revision: 2 });
   expect(plan.cases.map(item => item.runId)).toEqual(["attack", "benign"]);
   expect(plan.cases.map(item => [item.activity, item.evaluationUse, item.question])).toEqual([
     ["unknown", "unspecified", ""], ["unknown", "unspecified", ""],
@@ -74,6 +76,25 @@ it("plans only missing revised cases in selected order, regardless of report ord
 it("treats every retained state, including insufficient evidence, as already evaluated", () => {
   const retained = [report("revised", "benign", "insufficient_evidence"), report("revised", "attack", "backend_error")];
   expect(missingRevisedEvaluationRuns(selection.runIds, retained)).toEqual(["heldout"]);
+});
+
+it("plans original-only gaps in comparison order and rejects revised-side reports for that target", () => {
+  const retained = [report("original", "heldout", "backend_error"), report("original", "benign", "insufficient_evidence")];
+  expect(missingEvaluationRuns(selection.runIds, retained)).toEqual(["attack"]);
+  const plan = buildDetectionEvaluationPlan({ ...selection, targetSide: "original", resources,
+    reports: retained, sources: selection.runIds.map(source), manifestDigests });
+  expect(plan.targetSide).toBe("original");
+  expect(plan.target).toMatchObject({ id: "original", revision: 1 });
+  expect(plan.revised).toMatchObject({ id: "revised", revision: 2 });
+  expect(plan.cases.map(item => item.runId)).toEqual(["attack"]);
+
+  const item = plan.cases[0]!;
+  expect(evaluationReportMatches(report("original", "attack"), plan.target, item)).toBe(true);
+  expect(evaluationReportMatches(report("revised", "attack"), plan.target, item)).toBe(false);
+  expect(() => buildDetectionEvaluationPlan({ ...selection, targetSide: "original", resources,
+    reports: [report("revised", "attack")], sources: selection.runIds.map(source), manifestDigests })).toThrow(/original/);
+  expect(() => buildDetectionEvaluationPlan({ ...selection, targetSide: "either" as never, resources,
+    reports: [], sources: selection.runIds.map(source), manifestDigests })).toThrow(/original or revised/);
 });
 
 it.each([

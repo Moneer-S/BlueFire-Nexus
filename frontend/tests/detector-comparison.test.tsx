@@ -164,7 +164,7 @@ it("loads only the chosen revision family and exposes missing held-out evaluatio
   await waitFor(() => expect(fetchReports).toHaveBeenCalledWith("unrelated"));
 });
 
-it("exposes an explicit queue for missing revised results without submitting on comparison load", async () => {
+it("exposes either revision through one evaluation queue without submitting on comparison load", async () => {
   const user = userEvent.setup();
   vi.stubGlobal("crypto", webcrypto);
   const digest = `sha256:${"c".repeat(64)}`;
@@ -174,7 +174,12 @@ it("exposes an explicit queue for missing revised results without submitting on 
       validation: { query_sha256: digest, source_sha256: digest } },
   }));
   vi.spyOn(api, "detections").mockResolvedValue({ schema_version: "v1", candidates });
-  vi.spyOn(api, "detectionRunEvaluations").mockResolvedValue({ evaluations: [] });
+  const originalRetained = report("original", "attack", "backend_error");
+  originalRetained.candidate.definition_digest = digest;
+  originalRetained.candidate.query_sha256 = digest;
+  originalRetained.candidate.source_sha256 = digest;
+  originalRetained.candidate.parser_backend = { name: "SQLite", version: "3.45.1" };
+  vi.spyOn(api, "detectionRunEvaluations").mockImplementation(async id => ({ evaluations: id === "original" ? [originalRetained] : [] }));
   vi.spyOn(api, "runDetail").mockImplementation(async runId => ({
     run_id: runId, scenario_title: runId === "attack" ? "Attack evidence case" : "Held-out evidence case",
     mode: "execute", status: "completed", finalized_at: "2026-09-06T12:00:00Z", steps: [],
@@ -183,13 +188,21 @@ it("exposes an explicit queue for missing revised results without submitting on 
   const evaluate = vi.spyOn(api, "evaluateDetectionRun");
   mount({ baselineId: "original", revisedId: "revised" });
   await screen.findByRole("region", { name: "Measured detector comparison" });
-  expect(screen.getByRole("region", { name: "Evaluate missing revised results" })).toBeVisible();
+  expect(screen.getByRole("region", { name: "Evaluate missing results" })).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Review missing revised evaluations" }));
   expect(await screen.findByRole("button", { name: "Start evaluations" })).toBeVisible();
   const cases = screen.getByRole("list");
   expect(within(cases).getAllByRole("listitem").map(item => item.textContent)).toEqual([
     expect.stringContaining("Attack evidence case"), expect.stringContaining("Held-out evidence case"),
   ]);
+  expect(evaluate).not.toHaveBeenCalled();
+
+  await user.selectOptions(screen.getByRole("combobox", { name: "Evaluate missing results for" }), "original");
+  await user.click(screen.getByRole("button", { name: "Review missing original evaluations" }));
+  expect(await screen.findByText("Original · original · revision 1")).toBeVisible();
+  const originalCases = screen.getByRole("list");
+  expect(within(originalCases).getAllByRole("listitem")).toHaveLength(1);
+  expect(within(originalCases).getByRole("group", { name: "Case 1 · Held-out evidence case" })).toBeVisible();
   expect(evaluate).not.toHaveBeenCalled();
 });
 

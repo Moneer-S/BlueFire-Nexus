@@ -20,10 +20,13 @@ export interface EvaluationCaseInputs {
   evaluationUse: "unspecified" | "development" | "independent";
 }
 export interface EvaluationPlanCase extends EvaluationCaseInputs { source: EvaluationSource & { manifestDigest: string }; runId: string }
+export type EvaluationTargetSide = "original" | "revised";
 export interface DetectionEvaluationPlan {
   runIds: string[];
   baseline: EvaluationTarget;
+  revised: EvaluationTarget;
   target: EvaluationTarget;
+  targetSide: EvaluationTargetSide;
   title: string;
   cases: EvaluationPlanCase[];
 }
@@ -31,6 +34,7 @@ export interface EvaluationPlanOptions {
   runIds: string[];
   baselineId: string;
   revisedId: string;
+  targetSide?: EvaluationTargetSide;
   resources: DetectionResource[];
   reports: DetectionRunEvaluation[];
   sources: RunRecord[];
@@ -71,13 +75,15 @@ export function sameEvaluationTarget(left: EvaluationTarget, right: EvaluationTa
   return stable(left) === stable(right);
 }
 
-export function missingRevisedEvaluationRuns(runIds: string[], reports: DetectionRunEvaluation[]): string[] {
+export function missingEvaluationRuns(runIds: string[], reports: DetectionRunEvaluation[]): string[] {
   if (!runIds.length || runIds.length > MAX_COMPARISON_RUNS) fail("Choose between one and 32 runs.");
   // Reuse the navigation contract for bounded, unique ordered IDs.
   writeComparisonContext(new URLSearchParams(), { runIds, baselineId: "", revisedId: "" });
   const evaluated = new Set(reports.map(report => report.source.run_id));
   return runIds.filter(id => !evaluated.has(id));
 }
+
+export const missingRevisedEvaluationRuns = missingEvaluationRuns;
 
 export function evaluationSource(run: RunRecord, runId: string): EvaluationSource | undefined {
   const manifest = run.manifest;
@@ -104,21 +110,24 @@ function reportTargetMatches(report: DetectionRunEvaluation, target: EvaluationT
     && candidate.source_sha256 === target.sourceSha256 && stable(candidate.parser_backend) === stable(target.parserBackend);
 }
 
-export function evaluationPlanTargets({ baselineId, revisedId, resources, reports }: Pick<EvaluationPlanOptions, "baselineId" | "revisedId" | "resources" | "reports">): Pick<DetectionEvaluationPlan, "baseline" | "target" | "title"> {
+export function evaluationPlanTargets({ baselineId, revisedId, targetSide = "revised", resources, reports }: Pick<EvaluationPlanOptions, "baselineId" | "revisedId" | "targetSide" | "resources" | "reports">): Pick<DetectionEvaluationPlan, "baseline" | "revised" | "target" | "targetSide" | "title"> {
+  if (targetSide !== "original" && targetSide !== "revised") return fail("Choose the original or revised rule for evaluation.");
   const original = resources.filter(resource => resource.id === baselineId);
   const revisions = resources.filter(resource => resource.id === revisedId);
   const baseline = original.length === 1 ? evaluationTarget(original[0]!) : undefined;
-  const target = revisions.length === 1 ? evaluationTarget(revisions[0]!) : undefined;
-  if (!baseline || !target || baseline.id === target.id || baseline.rootId !== target.rootId) return fail("The selected saved revisions are unavailable or do not share one lineage.");
-  if (reports.some(report => !reportTargetMatches(report, target))) fail("Retained results do not match the selected revised rule.");
-  return { baseline, target, title: revisions[0]!.document.title ?? "Revised rule" };
+  const revised = revisions.length === 1 ? evaluationTarget(revisions[0]!) : undefined;
+  if (!baseline || !revised || baseline.id === revised.id || baseline.rootId !== revised.rootId) return fail("The selected saved revisions are unavailable or do not share one lineage.");
+  const target = targetSide === "original" ? baseline : revised;
+  const resource = targetSide === "original" ? original[0]! : revisions[0]!;
+  if (reports.some(report => !reportTargetMatches(report, target))) fail(`Retained results do not match the selected ${targetSide} rule.`);
+  return { baseline, revised, target, targetSide, title: resource.document.title ?? (targetSide === "original" ? "Original rule" : "Revised rule") };
 }
 
 export function buildDetectionEvaluationPlan(options: EvaluationPlanOptions): DetectionEvaluationPlan {
   const { runIds, baselineId, revisedId, reports, sources, manifestDigests, inputs = {} } = options;
   writeComparisonContext(new URLSearchParams(), { runIds, baselineId, revisedId });
-  const { baseline, target, title } = evaluationPlanTargets(options);
-  const cases = missingRevisedEvaluationRuns(runIds, reports).map(runId => {
+  const { baseline, revised, target, targetSide, title } = evaluationPlanTargets(options);
+  const cases = missingEvaluationRuns(runIds, reports).map(runId => {
     const matches = sources.filter(source => source.run_id === runId);
     const source = matches.length === 1 ? evaluationSource(matches[0]!, runId) : undefined;
     if (!source) return fail("A selected source is unavailable, ambiguous or not a finalized run.");
@@ -131,7 +140,7 @@ export function buildDetectionEvaluationPlan(options: EvaluationPlanOptions): De
       || !["unspecified", "development", "independent"].includes(values.evaluationUse)) fail("Review each question and classification before starting. Questions allow up to 1,000 printable characters.");
     return { runId, source: { ...source, manifestDigest }, question: values.question.trim(), activity: values.activity, evaluationUse: values.evaluationUse };
   });
-  return { runIds: [...runIds], baseline, target, title, cases };
+  return { runIds: [...runIds], baseline, revised, target, targetSide, title, cases };
 }
 
 export function evaluationReportMatches(report: DetectionRunEvaluation, target: EvaluationTarget, item: EvaluationPlanCase): boolean {
