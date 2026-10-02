@@ -72,6 +72,25 @@ impl Runner {
 
     pub fn execute(&self, manifest: ExecutionManifest, profile: RunnerProfile) -> TaskResult {
         let started_at = utc_now();
+        if manifest.action_id == crate::service_admission::SERVICE_ACTION_ID
+            || manifest.execution_binding.as_ref().is_some_and(|binding| {
+                binding.runner_opcode == crate::service_admission::SERVICE_ACTION_ID
+            })
+        {
+            // The ordinary registry never grants service authority, even if a
+            // future release registers this name. Typed admission needs its own
+            // service dispatch path before reservation and live identity checks.
+            return failure_result(
+                &manifest,
+                &profile,
+                started_at,
+                ActionFailure {
+                    status: TaskStatus::Refused,
+                    code: "service_admission_required",
+                    message: "Owned-service execution requires protected host admission.".into(),
+                },
+            );
+        }
         let execution = match validate_policy(&manifest, &profile) {
             Ok(execution) => execution,
             Err(failure) => return failure_result(&manifest, &profile, started_at, failure),

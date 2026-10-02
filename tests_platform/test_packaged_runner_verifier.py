@@ -1,9 +1,179 @@
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 import pytest
 
 from bluefire.cross_platform_wheel import _write_member
+from tools import verify_packaged_runner as verifier
 from tools.verify_packaged_runner import _disposable_workspace_proof, _native_runner_members
+
+
+def test_failure_diagnostic_is_bounded_and_never_emits_unapproved_values():
+    sensitive = "private path credential environment subprocess output"
+    unapproved_type = type(sensitive, (RuntimeError,), {})
+    error = unapproved_type(sensitive * 10_000)
+    error.__cause__ = RuntimeError(sensitive)
+    error.__cause__.__context__ = ValueError(sensitive)
+    error.__cause__.__context__.__cause__ = error
+    payload = verifier._failure_diagnostic(sensitive, error, {"state": sensitive})
+
+    assert sensitive not in payload
+    assert len(payload.encode("utf-8")) < 1024
+    assert json.loads(payload) == {
+        "schema_version": "bluefire.packaged-runner-failure.v1",
+        "phase": "unknown",
+        "reason": "verification_failed",
+        "exception_types": ["other", "RuntimeError", "ValueError"],
+    }
+
+
+@pytest.mark.parametrize("failure", ["exception", "status"])
+def test_smoke_bootstrap_failure_reports_safe_phase_without_starting_runner(
+    monkeypatch, tmp_path, capsys, failure
+):
+    import bluefire.runner_bootstrap as bootstrap
+    import bluefire.runner_client as client
+
+    sensitive = "private credential or local path"
+
+    def refused_bootstrap(**_kwargs):
+        if failure == "exception":
+            try:
+                raise client.RunnerTransportError(sensitive)
+            except client.RunnerTransportError as exc:
+                raise bootstrap.RunnerBootstrapError(sensitive) from exc
+        return SimpleNamespace(
+            public_status=lambda: {
+                "state": sensitive,
+                "source": "environment_override",
+                "code": sensitive,
+                "path": sensitive,
+            }
+        )
+
+    monkeypatch.setattr(bootstrap, "bootstrap_runner", refused_bootstrap)
+    monkeypatch.setattr(
+        client, "SubprocessRustRunner", lambda *_a, **_k: pytest.fail("runner must not start")
+    )
+    monkeypatch.delenv("BLUEFIRE_RUNNER_BINARY", raising=False)
+    monkeypatch.delenv("BLUEFIRE_SANDBOX_ROOT", raising=False)
+    checkout = tmp_path / "unused-checkout"
+    checkout.mkdir()
+    code = verifier._cli(
+        ["smoke", "--work-root", str(tmp_path / "work"), "--forbid-root", str(checkout)]
+    )
+
+    captured = capsys.readouterr()
+    assert code == 2 and not captured.out
+    assert sensitive not in captured.err and str(tmp_path) not in captured.err
+    lines = captured.err.splitlines()
+    assert lines[0] == "packaged runner verification failed"
+    diagnostic = json.loads(lines[1])
+    assert diagnostic["phase"] == "bootstrap"
+    if failure == "exception":
+        assert diagnostic["reason"] == "bootstrap_failed"
+        assert diagnostic["exception_types"] == ["RunnerBootstrapError", "RunnerTransportError"]
+        assert "bootstrap" not in diagnostic
+    else:
+        assert diagnostic["reason"] == "packaged_readiness_invalid"
+        assert diagnostic["bootstrap"] == {
+            "state": "unknown",
+            "source": "environment_override",
+        }
+
+
+def test_diagnostic_capture_failure_preserves_cli_refusal(monkeypatch, capsys):
+    def refused(_argv):
+        raise ValueError("private original failure")
+
+    def broken_diagnostic(*_args):
+        raise RuntimeError("private diagnostic failure")
+
+    monkeypatch.setattr(verifier, "main", refused)
+    monkeypatch.setattr(verifier, "_failure_diagnostic", broken_diagnostic)
+    assert verifier._cli([]) == 2
+    captured = capsys.readouterr()
+    assert not captured.out and "private" not in captured.err
+    assert json.loads(captured.err.splitlines()[1])["capture"] == "failed"
+
+
+def test_cli_sanitizes_actual_api_error_from_signed_alias_stage(monkeypatch, tmp_path, capsys):
+    from bluefire.application_errors import APIError
+
+    sensitive = "private credential and subprocess output"
+    private_path = str(tmp_path / "private-store")
+
+    def refused_smoke(_args):
+        verifier._stage("alias_execute")
+        raise APIError(
+            403,
+            sensitive,
+            sensitive + private_path,
+            details={"path": private_path, "output": sensitive * 10_000},
+        ) from ValueError(private_path)
+
+    monkeypatch.setattr(verifier, "smoke_installed_runner", refused_smoke)
+    code = verifier._cli(
+        ["smoke", "--work-root", str(tmp_path / "work"), "--forbid-root", private_path]
+    )
+
+    captured = capsys.readouterr()
+    assert code == 2 and not captured.out
+    assert sensitive not in captured.err and str(tmp_path) not in captured.err
+    assert "Traceback" not in captured.err and len(captured.err.encode("utf-8")) < 1024
+    lines = captured.err.splitlines()
+    assert len(lines) == 2 and lines[0] == "packaged runner verification failed"
+    assert json.loads(lines[1]) == {
+        "schema_version": "bluefire.packaged-runner-failure.v1",
+        "phase": "signed_alias",
+        "reason": "alias_execution_failed",
+        "exception_types": ["APIError", "ValueError"],
+    }
+
+
+@pytest.mark.parametrize("boundary", ["main", "diagnostic"])
+@pytest.mark.parametrize("control", [KeyboardInterrupt(), SystemExit(7)])
+def test_cli_preserves_process_control_exceptions(monkeypatch, capsys, boundary, control):
+    def interrupted(*_args):
+        raise control
+
+    def refused(_argv):
+        raise ValueError("private original failure")
+
+    monkeypatch.setattr(verifier, "main", interrupted if boundary == "main" else refused)
+    monkeypatch.setattr(verifier, "_failure_diagnostic", interrupted)
+    with pytest.raises(type(control)) as raised:
+        verifier._cli([])
+    assert raised.value is control
+    captured = capsys.readouterr()
+    assert not captured.out
+    assert captured.err == ("" if boundary == "main" else "packaged runner verification failed\n")
+
+
+def test_cli_preserves_argument_parser_exit(monkeypatch, capsys):
+    monkeypatch.setattr(
+        verifier, "smoke_installed_runner", lambda _args: pytest.fail("handler must not run")
+    )
+    with pytest.raises(SystemExit) as raised:
+        verifier._cli(["smoke"])
+    assert raised.value.code == 2
+    captured = capsys.readouterr()
+    assert not captured.out and "usage:" in captured.err
+    assert "packaged runner verification failed" not in captured.err
+
+
+def test_successful_cli_keeps_the_original_report_and_exit_status(monkeypatch, capsys):
+    def successful(_argv):
+        verifier._write_report(None, {"verified": True})
+        return 0
+
+    monkeypatch.setattr(verifier, "main", successful)
+    assert verifier._cli([]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {"verified": True}
+    assert not captured.err
 
 
 def test_packaged_wheel_refuses_foreign_native_runner_sibling() -> None:

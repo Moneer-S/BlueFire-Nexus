@@ -95,3 +95,47 @@ uses additional GFDL and FSF-manpages terms. BlueFire does not bundle the execut
 or package documentation. Its existing MIT license and Atomic Red Team notices
 remain unchanged. These package checks establish provenance, not an observed run
 or a detection result.
+
+## Owned-service manager: Ubuntu Noble amd64
+
+The closed owned-service installation inspector recognizes **systemd
+255.4-1ubuntu8.12**, architecture **x86_64** (Debian amd64), as its systemctl
+manager binary. This is installation identity metadata only: the service action
+remains unregistered, and no installer or manager invocation is added. Its compiled
+role bindings are documented in [owned-service installation contracts](OWNED_SERVICE_INSTALLATIONS.md).
+
+Provenance comes from [official Launchpad build 31559902](https://launchpad.net/ubuntu/+source/systemd/255.4-1ubuntu8.12/+build/31559902),
+the [binary package](https://launchpadlibrarian.net/835611282/systemd_255.4-1ubuntu8.12_amd64.deb),
+and its [published changes metadata](https://launchpadlibrarian.net/835611224/systemd_255.4-1ubuntu8.12_amd64.changes).
+The package's control record identifies that version and amd64 architecture.
+Its systemctl member is ELF64 little-endian, machine 62/x86-64.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `systemd_255.4-1ubuntu8.12_amd64.deb` | 3474856 | `f4bfc1162fe45590c5422935323e324616aba72fd42771a0b4beb5d74e4d2689` |
+| `usr/bin/systemctl` in that package | 1501304 | `d03995d5d2ce6a5dd1822854f80c40cdf3d92c7a008179d89e80e5ffcd1a9aa2` |
+| `systemd_255.4.orig.tar.gz` | 14952427 | `96e75bd08c57ad401677456fb88ef54a9f05bb1695693013bc6ecce839640fd5` |
+| `systemd_255.4-1ubuntu8.12.debian.tar.xz` | 257724 | `74c143cbd1e1c3aea57726171cb0810534bc957d863a31aff91aa956a1ea76c9` |
+
+The [source publication](https://launchpad.net/ubuntu/+source/systemd/255.4-1ubuntu8.12)
+and [source descriptor](https://launchpadlibrarian.net/833625632/systemd_255.4-1ubuntu8.12.dsc)
+bind the [upstream source archive](https://launchpadlibrarian.net/833625626/systemd_255.4.orig.tar.gz)
+and [Ubuntu packaging archive](https://launchpadlibrarian.net/833625630/systemd_255.4-1ubuntu8.12.debian.tar.xz)
+to these source hashes and sizes. To reproduce the review, compare the complete
+package to its changes metadata and the sources to the descriptor, then read the
+Debian package's `data.tar.zst` member and hash `usr/bin/systemctl`. Do not install
+or execute package content to establish identity. This review used official HTTPS
+artifacts and checksum comparisons; it does not claim independent signing-key
+verification or a reproducible rebuild.
+
+The exact upstream [systemctl source](https://github.com/systemd/systemd-stable/blob/v255.4/src/systemctl/systemctl.c)
+declares `LGPL-2.1-or-later`, with the
+[license text](https://github.com/systemd/systemd-stable/blob/v255.4/LICENSE.LGPL2.1).
+The Ubuntu packaging `debian/copyright` declares the default LGPL-2.1+ license and
+file-specific exceptions. It is identical to the binary package's
+`usr/share/doc/systemd/copyright` (SHA-256
+`a7d06854714a1ca99f6dbd1a1641dde5bcf28635be149f6554449618f8f427f3`).
+BlueFire includes identity metadata only, without the executable or archives.
+Unknown builds require a reviewed source update. A matching package member does
+not relax protected installation checks or establish a running manager identity,
+dependency closure, service execution, or completed cleanup.

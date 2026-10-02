@@ -24,20 +24,36 @@ from bluefire.ai_probe import check_provider
 from bluefire.ai_transport import UrllibAIJSONTransport
 from bluefire.ai_wire import AIProviderTransportError
 from bluefire.config import AIProviderKind
+from tests_platform.http_deadline_diagnostics import diagnose_http_deadline, new_phases
 from tests_platform.test_ai_wire_runtime import _envelope, _provider_config
+
+_HTTP_DEADLINE_PHASES = pytest.StashKey[dict[str, bool]]()
+
+
+def _http_deadline_phases(request: pytest.FixtureRequest) -> dict[str, bool]:
+    phases = request.node.stash.get(_HTTP_DEADLINE_PHASES, None)
+    if phases is None:
+        phases = new_phases()
+        request.node.stash[_HTTP_DEADLINE_PHASES] = phases
+    return phases
 
 
 @pytest.fixture
-def workers(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[subprocess.Popen[bytes]]]:
+def workers(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> Iterator[list[subprocess.Popen[bytes]]]:
     processes: list[subprocess.Popen[bytes]] = []
     real_popen = subprocess.Popen
+    phases = _http_deadline_phases(request)
 
     def capture(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
         assert args[0][0] == getattr(sys, "_base_executable", sys.executable)
         assert "test-only-value" not in repr(args)
         assert "test-only-value" not in repr(kwargs.get("env"))
         assert kwargs["shell"] is False
+        phases["spawn_called"] = True
         process = real_popen(*args, **kwargs)
+        phases["spawn_returned"] = True
         processes.append(process)
         return process
 
@@ -54,18 +70,21 @@ def workers(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[subprocess.Popen[b
 
 
 @pytest.fixture
-def endpoint() -> Iterator[tuple[str, threading.Event, list[str]]]:
+def endpoint(request: pytest.FixtureRequest) -> Iterator[tuple[str, threading.Event, list[str]]]:
     stopped = threading.Event()
     entered = threading.Event()
     paths: list[str] = []
+    phases = _http_deadline_phases(request)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args: Any) -> None:
             pass
 
         def do_POST(self) -> None:
+            phases["handler_entered"] = True
             self.connection.settimeout(2)
             self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            phases["request_body_read"] = True
             paths.append(self.path)
             entered.set()
             try:
@@ -74,6 +93,7 @@ def endpoint() -> Iterator[tuple[str, threading.Event, list[str]]]:
                     for byte in response:
                         self.wfile.write(bytes([byte]))
                         self.wfile.flush()
+                        phases["slow_header_write_completed"] = True
                         if stopped.wait(0.04):
                             return
                     return
@@ -101,10 +121,12 @@ def endpoint() -> Iterator[tuple[str, threading.Event, list[str]]]:
                 )
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
+                phases["non_drip_headers_completed"] = True
                 if self.path == "/slow-body":
                     for byte in body:
                         self.wfile.write(bytes([byte]))
                         self.wfile.flush()
+                        phases["slow_body_write_completed"] = True
                         if stopped.wait(0.04):
                             return
                 else:
@@ -143,16 +165,21 @@ def test_deadline_covers_drip_headers_and_body(
     route: str,
     endpoint: tuple[str, threading.Event, list[str]],
     workers: list[subprocess.Popen[bytes]],
+    request: pytest.FixtureRequest,
 ) -> None:
     url, entered, paths = endpoint
+    phases = _http_deadline_phases(request)
     started = time.monotonic()
     with pytest.raises(AIProviderTransportError) as caught:
         _post(f"{url}/{route}", timeout=0.8)
-    assert caught.value.code == "request_timed_out"
-    assert time.monotonic() - started < 1.6
-    assert entered.is_set()
-    assert paths == [f"/{route}"]
-    assert len(workers) == 1
+    with diagnose_http_deadline(
+        request.node.add_report_section, route, phases, workers, entered, paths
+    ):
+        assert caught.value.code == "request_timed_out"
+        assert time.monotonic() - started < 1.6
+        assert entered.is_set()
+        assert paths == [f"/{route}"]
+        assert len(workers) == 1
 
 
 def test_startup_deadline_releases_a_blocked_stdin_writer(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Mapping, Protocol
 
@@ -52,6 +53,7 @@ def execution_approval_state(
     runner_readiness: Mapping[str, Any] | None = None,
     catalog_authority: Mapping[str, Any] | None = None,
     adaptive_authorization: Mapping[str, Any] | None = None,
+    owned_service_scope_digest: str | None = None,
 ) -> Mapping[str, Any]:
     """Reconstruct every operator-reviewed input before hashing its authority."""
 
@@ -99,6 +101,13 @@ def execution_approval_state(
         state["runner_readiness"] = dict(runner_readiness)
     if catalog_authority is not None:
         state["catalog_authority"] = dict(catalog_authority)
+    if owned_service_scope_digest is not None:
+        if (
+            not isinstance(owned_service_scope_digest, str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", owned_service_scope_digest) is None
+        ):
+            raise ApprovalError("owned-service scope digest is invalid")
+        state["owned_service_scope_digest"] = owned_service_scope_digest
     return state
 
 
@@ -115,6 +124,7 @@ def execution_approval_binding(
     runner_readiness: Mapping[str, Any] | None = None,
     catalog_authority: Mapping[str, Any] | None = None,
     adaptive_authorization: Mapping[str, Any] | None = None,
+    owned_service_scope_digest: str | None = None,
 ) -> Mapping[str, str]:
     """Hash every operator-reviewed input that may affect an Execute plan."""
     state = execution_approval_state(
@@ -129,6 +139,7 @@ def execution_approval_binding(
         runner_readiness=runner_readiness,
         catalog_authority=catalog_authority,
         adaptive_authorization=adaptive_authorization,
+        owned_service_scope_digest=owned_service_scope_digest,
     )
     ranks = {"safe": 1, "controlled": 2, "restricted": 3}
     tiers: list[str] = []
@@ -141,13 +152,16 @@ def execution_approval_binding(
                 for action_id in behavior.action_ids
             )
     maximum_tier = max(tiers, key=ranks.__getitem__) if tiers else "safe"
-    return {
+    binding = {
         "state_digest": content_hash(state),
         "plan_digest": content_hash(plan),
         "target_scope_digest": content_hash(target_scope),
         "profile_id": profile.id,
         "maximum_tier": maximum_tier,
     }
+    if owned_service_scope_digest is not None:
+        binding["owned_service_scope_digest"] = owned_service_scope_digest
+    return binding
 
 
 def execution_approval_envelope(
