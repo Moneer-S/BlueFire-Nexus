@@ -286,7 +286,7 @@ def test_retry_refuses_unsettled_execute_workspace(service, monkeypatch):
 
 
 def test_replay_proposal_review_retains_intermediate_result_until_continuation_finishes(
-    service, monkeypatch
+    service, monkeypatch, request
 ):
     from tests_platform.test_ai_integration import AlternateProposalProvider
 
@@ -317,7 +317,8 @@ def test_replay_proposal_review_retains_intermediate_result_until_continuation_f
             "proposal_digest": review["proposal_digest"],
         },
     )
-    completed = service.job_controller.wait(job_id, timeout=10)
+    with diagnose_job_wait("replay_terminal", request.node.add_report_section):
+        completed = service.job_controller.wait(job_id, timeout=10)
     assert completed["state"] == "completed", completed["error"]
     assert completed["result_ref"] != pending["result_ref"]
     final = service.detail(completed["result_ref"])
