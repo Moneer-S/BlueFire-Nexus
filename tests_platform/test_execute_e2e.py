@@ -27,6 +27,7 @@ from bluefire.runner_bootstrap import managed_product_root
 from bluefire.runner_client import SubprocessRustRunner
 from bluefire.runner_trust import create_local_enrollment
 from bluefire.service import BlueFireService
+from tests_platform.runner_failure_diagnostics import transport_error_labels
 from tests_platform.test_action_package_lifecycle import (
     ACTION_ID as PACKAGE_ACTION_ID,
 )
@@ -539,7 +540,10 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
             "objective_evaluation": result.get("objective_evaluation"),
             "cleanup": result.get("cleanup"),
             "steps": [
-                {key: row.get(key) for key in ("step_id", "status", "reason")}
+                {
+                    **{key: row.get(key) for key in ("step_id", "status", "reason")},
+                    "transport_error": transport_error_labels(row.get("error", {})),
+                }
                 for row in result["steps"]
             ],
             "evidence_gaps": [
@@ -547,6 +551,9 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
                     "step_id": record.get("step_id"),
                     "producer": record.get("producer"),
                     "reason": record.get("content", {}).get("reason"),
+                    "transport_error": transport_error_labels(
+                        record.get("content", {}), evidence=True
+                    ),
                 }
                 for record in result["evidence"]["records"]
                 if record.get("provenance") == "unknown"
