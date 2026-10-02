@@ -688,11 +688,19 @@ def validate_persisted_proposal_record(record: Mapping[str, Any]) -> AIProposal:
         if not isinstance(policy, Mapping) or policy_digest != content_hash(policy):
             raise AIProviderError("persisted AI proposal policy digest is mismatched")
         schema_version = record.get("schema_version")
-        if schema_version == "bluefire.ai-proposal-record.v4":
-            from .adaptive_record_validation import validate_v4_proposal_record
+        if schema_version in {"bluefire.ai-proposal-record.v4", "bluefire.ai-proposal-record.v5"}:
+            from .adaptive_record_validation import (
+                validate_v4_proposal_record,
+                validate_v5_proposal_record,
+            )
 
             try:
-                planner_context = validate_v4_proposal_record(record)
+                validator = (
+                    validate_v5_proposal_record
+                    if schema_version.endswith(".v5")
+                    else validate_v4_proposal_record
+                )
+                planner_context = validator(record)
             except DurableProposalRecordError as exc:
                 raise AIProviderError(str(exc)) from exc
         elif schema_version == "bluefire.ai-proposal-record.v3":
@@ -708,7 +716,11 @@ def validate_persisted_proposal_record(record: Mapping[str, Any]) -> AIProposal:
         else:
             raise AIProviderError("persisted AI proposal record schema is unsupported")
         proposal = AIProposal.from_persisted_mapping(record.get("proposal"))
-        if schema_version in {"bluefire.ai-proposal-record.v3", "bluefire.ai-proposal-record.v4"}:
+        if schema_version in {
+            "bluefire.ai-proposal-record.v3",
+            "bluefire.ai-proposal-record.v4",
+            "bluefire.ai-proposal-record.v5",
+        }:
             provider = record.get("provider")
             if (
                 not isinstance(provider, Mapping)

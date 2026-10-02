@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { AdaptiveMethodEditor, AdaptiveRepair } from "../src/components/AdaptiveMethodEditor";
 import { CanonicalPlanReview } from "../src/components/CanonicalPlanReview";
-import { adaptiveExecutionIssues, applyAdaptiveStep, parseAdaptiveExecution, type AdaptiveAuthorization, type AdaptiveExecution } from "../src/lib/adaptive-execution";
+import { adaptiveExecutionIssues, applyAdaptiveStep, applyAdaptiveV2Step, parseAdaptiveExecution, type AdaptiveAuthorization, type AdaptiveExecution, type AdaptiveExecutionV1 } from "../src/lib/adaptive-execution";
 import { hasUsableStoredApprovalReview, storedRunApprovalPreflight } from "../src/lib/approvalReview";
 import { demoCatalog, demoScenario } from "../src/lib/demo";
 import { hasExecutePlanReview } from "../src/lib/run-configuration";
@@ -14,11 +14,13 @@ import type { ActionDefinition, ApprovalEnvelope, Behavior, PreflightReport, Run
 const base = demoCatalog.behaviors.find(behavior => behavior.id === "sandbox.collection.stage.v1")!;
 const primary: Behavior = { ...base, id: "sandbox.collection.records.v1", title: "Collect selected records", action_ids: ["sandbox.collection.records.v1"], compatible_behaviors: ["sandbox.collection.archive.v1"] };
 const alternate: Behavior = { ...base, id: "sandbox.collection.archive.v1", title: "Archive selected records", action_ids: ["sandbox.collection.archive.v1"], compatible_behaviors: [primary.id] };
-const behaviors = new Map([...demoCatalog.behaviors, primary, alternate].map(behavior => [behavior.id, behavior]));
-const actions = new Map([primary, alternate].map(behavior => [behavior.id, { ...demoCatalog.actions[0]!, id: behavior.id, title: behavior.title, platforms: ["linux", "windows"], mutates: true, cleanup_action_id: "sandbox.cleanup.v1" } as ActionDefinition]));
+const third: Behavior = { ...base, id: "sandbox.collection.verify.v1", title: "Verify selected records", action_ids: ["sandbox.collection.verify.v1"], compatible_behaviors: [primary.id] };
+primary.compatible_behaviors = [alternate.id, third.id];
+const behaviors = new Map([...demoCatalog.behaviors, primary, alternate, third].map(behavior => [behavior.id, behavior]));
+const actions = new Map([primary, alternate, third].map(behavior => [behavior.id, { ...demoCatalog.actions[0]!, id: behavior.id, title: behavior.title, platforms: ["linux", "windows"], mutates: true, cleanup_action_id: "sandbox.cleanup.v1" } as ActionDefinition]));
 const scenario: Scenario = { ...structuredClone(demoScenario), steps: demoScenario.steps.map(step => step.id === "stage" ? { ...step, behavior_id: primary.id, parameters: { stage_variant: "primary" }, alternates: [alternate.id] } : step) };
 const methods = [primary, alternate].map(behavior => ({ behavior_id: behavior.id, action_id: behavior.id }));
-const policy: AdaptiveExecution = { schema_version: "bluefire.adaptive-execution.v1", steps: [{ step_id: "stage", methods }], eligible_outcomes: ["blocked", "failed", "partial"], max_retries: 1, on_provider_failure: "stop" };
+const policy: AdaptiveExecutionV1 = { schema_version: "bluefire.adaptive-execution.v1", steps: [{ step_id: "stage", methods }], eligible_outcomes: ["blocked", "failed", "partial"], max_retries: 1, on_provider_failure: "stop" };
 const saved: Scenario = { ...scenario, adaptive_execution: policy };
 const digest = `sha256:${"a".repeat(64)}`;
 
@@ -55,6 +57,32 @@ describe("explicit adaptive method authoring", () => {
     await user.click(screen.getByRole("checkbox", { name: /Collect selected records/ }));
     expect(screen.getByRole("button", { name: "Apply retry choices" })).toBeDisabled();
     expect(current()).toEqual(applied);
+  });
+
+  it("keeps v1 as the normal save path and only writes explicit v2 budgets after opt-in", async () => {
+    const user = userEvent.setup(); render(<Harness />);
+    await user.click(screen.getByRole("button", { name: "Configure adaptive retry" }));
+    await user.click(screen.getByRole("checkbox", { name: /Archive selected records/ }));
+    await user.click(screen.getByRole("button", { name: "Apply retry choices" }));
+    expect(current().adaptive_execution).toEqual(policy);
+
+    await user.click(screen.getByRole("radio", { name: /Set limits for more alternatives/ }));
+    expect(screen.getByRole("spinbutton", { name: /Maximum extra tries across this experiment/ })).toHaveValue(1);
+    expect(screen.getByRole("spinbutton", { name: /Maximum extra tries for this step/ })).toHaveValue(1);
+    await user.click(screen.getByRole("checkbox", { name: /Verify selected records/ }));
+    await user.clear(screen.getByRole("spinbutton", { name: /Maximum extra tries across this experiment/ }));
+    await user.type(screen.getByRole("spinbutton", { name: /Maximum extra tries across this experiment/ }), "2");
+    await user.clear(screen.getByRole("spinbutton", { name: /Maximum extra tries for this step/ }));
+    await user.type(screen.getByRole("spinbutton", { name: /Maximum extra tries for this step/ }), "2");
+    expect(screen.getByText(/still need fresh Execute approval/)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Apply retry choices" }));
+    const applied = current();
+    expect(applied.adaptive_execution).toEqual({ ...policy, schema_version: "bluefire.adaptive-execution.v2", max_retries: 2,
+      steps: [{ step_id: "stage", methods: [methods[0]!, methods[1]!, { behavior_id: third.id, action_id: third.id }], max_retries: 2 }] });
+    await user.click(screen.getByRole("button", { name: "Reopen working graph" }));
+    expect(current()).toEqual(applied);
+    expect(screen.getByRole("spinbutton", { name: /Maximum extra tries across this experiment/ })).toHaveValue(2);
+    expect(screen.getByRole("spinbutton", { name: /Maximum extra tries for this step/ })).toHaveValue(2);
   });
 
   it("keeps removed alternatives visible until explicit repair and never widens an unchanged policy", async () => {
@@ -99,6 +127,60 @@ describe("explicit adaptive method authoring", () => {
     expect(() => parseScenarioDocument({ ...scenario, adaptive_execution: value })).toThrow();
     expect(parseScenarioDocument(scenario)).not.toHaveProperty("adaptive_execution");
   });
+
+  it.each([
+    ["zero experiment cap", { ...policy, schema_version: "bluefire.adaptive-execution.v2", max_retries: 0, steps: [{ step_id: "stage", methods, max_retries: 1 }] }],
+    ["experiment cap above eight", { ...policy, schema_version: "bluefire.adaptive-execution.v2", max_retries: 9, steps: [{ step_id: "stage", methods, max_retries: 1 }] }],
+    ["per-step cap above distinct methods", { ...policy, schema_version: "bluefire.adaptive-execution.v2", max_retries: 2, steps: [{ step_id: "stage", methods, max_retries: 2 }] }],
+    ["per-step cap above three", { ...policy, schema_version: "bluefire.adaptive-execution.v2", max_retries: 4, steps: [{ step_id: "stage", methods: [methods[0]!, methods[1]!, { behavior_id: third.id, action_id: third.id }, { behavior_id: "sandbox.collection.stage.v1", action_id: "sandbox.collection.stage.v1" }], max_retries: 4 }] }],
+    ["experiment cap above step-cap sum", { ...policy, schema_version: "bluefire.adaptive-execution.v2", max_retries: 2, steps: [{ step_id: "stage", methods, max_retries: 1 }] }],
+  ])("rejects invalid v2 retry authority: %s", (_case, value) => {
+    expect(() => parseAdaptiveExecution(value)).toThrow();
+  });
+
+  it("preserves the explicitly selected v2 caps when editing one of several steps", () => {
+    const broadMethods = [...methods, { behavior_id: third.id, action_id: third.id },
+      { behavior_id: "sandbox.collection.stage.v1", action_id: "sandbox.collection.stage.v1" }];
+    const second = { step_id: "verify", methods: broadMethods, max_retries: 2 };
+    const multi: Scenario = { ...scenario, steps: [...scenario.steps, { ...scenario.steps[0]!, id: "verify" }],
+      adaptive_execution: { ...policy, schema_version: "bluefire.adaptive-execution.v2", max_retries: 3,
+        steps: [{ step_id: "stage", methods, max_retries: 1 }, second] } };
+    const next = applyAdaptiveV2Step(multi, "stage", methods, { eligible_outcomes: ["failed"], on_provider_failure: "stop", max_retries: 3, step_max_retries: 1 }, behaviors, actions);
+    expect(next.adaptive_execution).toMatchObject({ schema_version: "bluefire.adaptive-execution.v2", max_retries: 3,
+      steps: [{ step_id: "stage", max_retries: 1 }, { step_id: "verify", max_retries: 2 }] });
+  });
+
+  it("accepts the documented maximum when per-step capacity covers it", () => {
+    const fourMethods = [...methods, { behavior_id: third.id, action_id: third.id },
+      { behavior_id: "sandbox.collection.stage.v1", action_id: "sandbox.collection.stage.v1" }];
+    const maximum: AdaptiveExecution = { schema_version: "bluefire.adaptive-execution.v2",
+      steps: [{ step_id: "stage", methods: fourMethods, max_retries: 3 }, { step_id: "verify", methods: fourMethods, max_retries: 3 },
+        { step_id: "archive", methods: fourMethods, max_retries: 2 }], eligible_outcomes: ["failed"], max_retries: 8, on_provider_failure: "stop" };
+    expect(parseAdaptiveExecution(maximum)).toEqual(maximum);
+  });
+
+  it("removes v2 caps only when the operator explicitly applies the v1 option", () => {
+    const v2: Scenario = { ...scenario, adaptive_execution: { schema_version: "bluefire.adaptive-execution.v2", steps: [
+      { step_id: "stage", methods, max_retries: 1 }, { step_id: "verify", methods, max_retries: 1 }],
+      eligible_outcomes: ["failed"], max_retries: 2, on_provider_failure: "stop" } };
+    const v1 = applyAdaptiveStep(v2, "stage", methods, { eligible_outcomes: ["failed"], on_provider_failure: "stop" }, behaviors, actions);
+    expect(v1.adaptive_execution).toMatchObject({ schema_version: "bluefire.adaptive-execution.v1", max_retries: 1,
+      steps: [{ step_id: "stage", methods }, { step_id: "verify", methods }] });
+    expect(v1.adaptive_execution!.steps.every(step => !("max_retries" in step))).toBe(true);
+  });
+
+  it("removes retained v2 caps when the v1 option adds a newly configured step", () => {
+    const stage = scenario.steps.find(item => item.id === "stage")!;
+    const v2: Scenario = { ...scenario, steps: [...scenario.steps, { ...stage, id: "verify" }],
+      adaptive_execution: { schema_version: "bluefire.adaptive-execution.v2", steps: [
+        { step_id: "stage", methods, max_retries: 1 }], eligible_outcomes: ["failed"], max_retries: 1, on_provider_failure: "stop" } };
+    const v1 = applyAdaptiveStep(v2, "verify", methods,
+      { eligible_outcomes: ["failed"], on_provider_failure: "stop" }, behaviors, actions);
+    expect(v1.adaptive_execution).toEqual({ schema_version: "bluefire.adaptive-execution.v1", max_retries: 1,
+      eligible_outcomes: ["failed"], on_provider_failure: "stop", steps: [
+        { step_id: "stage", methods }, { step_id: "verify", methods }] });
+    expect(v1.adaptive_execution!.steps.every(step => !("max_retries" in step))).toBe(true);
+  });
 });
 
 function reviewed(): { authorization: AdaptiveAuthorization; envelope: ApprovalEnvelope; report: PreflightReport } {
@@ -138,6 +220,17 @@ describe("reviewed adaptive authority", () => {
     const review = screen.getByRole("region", { name: "Reviewed adaptive execution" });
     expect(within(review).getByText(/Off follows the saved primary methods/)).toBeVisible();
     expect(within(review).getByText(/record deterministic fallback, not live-model success/)).toBeVisible();
+  });
+
+  it("shows the v2 experiment and per-step caps in the fresh Execute review", () => {
+    const { authorization, envelope, report } = reviewed();
+    authorization.schema_version = "bluefire.adaptive-authorization.v2";
+    authorization.policy = { ...policy, schema_version: "bluefire.adaptive-execution.v2", max_retries: 1,
+      steps: [{ step_id: "stage", methods, max_retries: 1 }] };
+    render(<CanonicalPlanReview plan={report.plan!} adaptiveAuthorization={authorization} envelope={envelope} binding={report.approval_binding} />);
+    const review = screen.getByRole("region", { name: "Reviewed adaptive execution" });
+    expect(within(review).getByText(/Up to 1 extra try across the experiment/)).toBeVisible();
+    expect(within(review).getByText(/Step retry cap: up to 1 extra try after the initial method/)).toBeVisible();
   });
 
   it("requires the current adaptive review when restoring an opted-in pending approval", () => {

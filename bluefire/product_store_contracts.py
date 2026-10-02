@@ -139,7 +139,11 @@ def safe_document(value: Any, *, context: str = "document") -> Any:
                     key == "adaptive_authorization"
                     and isinstance(child, dict)
                     and (
-                        child.get("schema_version") == "bluefire.adaptive-authorization.v1"
+                        child.get("schema_version")
+                        in {
+                            "bluefire.adaptive-authorization.v1",
+                            "bluefire.adaptive-authorization.v2",
+                        }
                         and child.get("authorization_digest")
                         == content_hash(
                             {

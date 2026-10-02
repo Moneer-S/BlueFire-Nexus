@@ -440,6 +440,7 @@
         "bluefire._ai_transport_worker",
         "bluefire.approvals",
         "bluefire.adaptive_execution",
+        "bluefire.adaptive_budget",
         "bluefire.adaptive_approval_binding",
         "bluefire.adaptive_dispatch",
         "bluefire.adaptive_observations",

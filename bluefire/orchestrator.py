@@ -14,14 +14,15 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
+from .adaptive_budget import initial_budget, record_attempt, reserve_method
 from .adaptive_dispatch import (
+    ReviewedStepChecks,
     execution_steps,
     operation_identity,
     reviewed_operation,
     runner_authorization,
-    validate_dispatch,
 )
-from .adaptive_execution import compile_adaptive_authorization, validate_selected_method
+from .adaptive_execution import compile_adaptive_authorization
 from .adaptive_runtime import propose_reviewed_method
 from .ai import AIProvider, ProposalType
 from .ai_wire import AIProviderCancelled
@@ -70,6 +71,7 @@ from .execution_progress import (
     emergency_cleanup,
     persist_progress,
     record_interrupted_dispatch,
+    validate_cleanup_result,
 )
 from .job_runtime import JobCancelled
 from .native_tool_execution_readiness import inspected_tool_rows
@@ -838,6 +840,22 @@ class Orchestrator:
         simulation = _SimulationProgress() if mode is ExecutionMode.SIMULATE else None
         receipt_ids: list[str] = []
         try:
+            starting_budget = (
+                initial_budget(scenario.adaptive_execution, replay)
+                if mode is ExecutionMode.EXECUTE
+                else None
+            )
+            if starting_budget is not None:
+                persist_progress(
+                    self.store,
+                    handle.run_id,
+                    steps=[],
+                    decisions=[],
+                    proposals=[],
+                    evidence=[],
+                    retries_used=starting_budget["used"],
+                    adaptive_budget=starting_budget,
+                )
             if checkpoint is not None:
                 checkpoint(
                     {
@@ -986,7 +1004,14 @@ class Orchestrator:
         ai_proposals: list[dict[str, Any]] = simulation.proposals if simulation is not None else []
         step_overrides: dict[str, PlanStep] = {}
         visited: set[str] = set()
-        retries_used = self._adaptive_retry_count(replay)
+        pivot_budget = (
+            initial_budget(scenario.adaptive_execution, replay)
+            if mode is ExecutionMode.EXECUTE
+            else None
+        )
+        retries_used = (
+            pivot_budget["used"] if pivot_budget is not None else self._adaptive_retry_count(replay)
+        )
 
         def persist_execution_progress(reserved_retry: bool = False) -> None:
             if mode is ExecutionMode.EXECUTE:
@@ -998,6 +1023,7 @@ class Orchestrator:
                     proposals=ai_proposals,
                     evidence=evidence.records(),
                     retries_used=retries_used + int(reserved_retry),
+                    adaptive_budget=pivot_budget,
                 )
 
         current_step_id: str | None = resume_from_step_id or scenario.start
@@ -1019,6 +1045,19 @@ class Orchestrator:
             min(5.0, max(0.25, total_seconds * 0.1), total_seconds / 2.0)
             if total_seconds is not None
             else 0.0
+        )
+        reviewed_checks = ReviewedStepChecks(
+            plan=plan,
+            authorization=adaptive_authorization,
+            expected_digest=adaptive_digest,
+            registry=self.registry,
+            profile=profile,
+            target_scope=authorized_target_scope,
+            platform=current_platform(),
+            catalog_authority=self.catalog_authority,
+            approval=approval_record,
+            deadline=deadline,
+            cleanup_reserve=cleanup_reserve,
         )
         budget_exhausted = False
         collector_elapsed_seconds = 0.0
@@ -1189,30 +1228,19 @@ class Orchestrator:
                 step_budget_exhausted = action_timeout_ms < 1
                 budget_exhausted = budget_exhausted or step_budget_exhausted
 
-                def recheck_reviewed_step(
-                    selected: PlanStep = plan_step, reserved_retries: int = retries_used
-                ) -> None:
-                    if adaptive_authorization is None:
-                        return
-                    assert adaptive_digest is not None and approval_record is not None
-                    validate_dispatch(
-                        step=selected,
-                        plan=plan,
-                        authorization=adaptive_authorization,
-                        expected_digest=adaptive_digest,
-                        registry=self.registry,
-                        profile=profile,
-                        target_scope=authorized_target_scope,
-                        platform=current_platform(),
-                        catalog_authority=self.catalog_authority,
-                        remaining_steps=max_steps - len(step_rows) - len(materialization_rows),
-                        remaining_seconds=max(
-                            (deadline or time.monotonic()) - time.monotonic() - cleanup_reserve, 0.0
-                        ),
-                        retries_used=reserved_retries,
-                        approval_expires_at=str(approval_record["expires_at"]),
-                    )
+                recheck_reviewed_step = reviewed_checks.bind(
+                    step=plan_step,
+                    retries_used=retries_used,
+                    budget=pivot_budget,
+                    remaining_steps=max_steps - len(step_rows) - len(materialization_rows),
+                )
 
+                if pivot_budget is not None:
+                    assert scenario.adaptive_execution is not None
+                    pivot_budget = record_attempt(
+                        pivot_budget, scenario.adaptive_execution, plan_step.to_dict()
+                    )
+                    persist_execution_progress()
                 row, records, decision, _returned_receipts = self._execute_step(
                     run_id=handle.run_id,
                     step=plan_step,
@@ -1430,7 +1458,7 @@ class Orchestrator:
                         "selected_step_id": replay_transition,
                     },
                 )
-            else:
+            if not replay_transition_applied or pivot_budget is not None:
                 adaptive_policy = scenario.adaptive_execution
                 if (
                     adaptive_authorization is not None
@@ -1438,7 +1466,7 @@ class Orchestrator:
                     and plan.autonomy is not AutonomyLevel.OFF
                     and self.proposal_provider is not None
                     and outcome.value in adaptive_policy.eligible_outcomes
-                    and retries_used < adaptive_policy.max_retries
+                    and (pivot_budget is not None or retries_used < adaptive_policy.max_retries)
                     and any(group.step_id == current_step_id for group in adaptive_policy.steps)
                     and not forced_cleanup
                 ):
@@ -1452,27 +1480,12 @@ class Orchestrator:
                         if cancel_event is not None and cancel_event.is_set():
                             raise AIProviderCancelled()
 
-                    def validate_choice(
-                        selected: PlanStep, reserved_retries: int = retries_used
-                    ) -> None:
-                        validate_selected_method(
-                            authorization=adaptive_authorization,
-                            expected_authorization_digest=adaptive_digest,
-                            step=selected,
-                            profile=profile,
-                            target_scope=authorized_target_scope,
-                            platform=current_platform(),
-                            registry=self.registry,
-                            remaining_steps=max_steps - len(step_rows) - len(materialization_rows),
-                            remaining_seconds=max(
-                                (deadline or time.monotonic()) - time.monotonic() - cleanup_reserve,
-                                0.0,
-                            ),
-                            retries_used=reserved_retries,
-                            approval_expires_at=str(approval_record["expires_at"]),
-                            is_retry=True,
-                            catalog_authority=self.catalog_authority,
-                        )
+                    validate_choice = reviewed_checks.bind(
+                        retries_used=retries_used,
+                        budget=pivot_budget,
+                        is_retry=True,
+                        remaining_steps=max_steps - len(step_rows) - len(materialization_rows),
+                    )
 
                     adaptive = propose_reviewed_method(
                         run_id=handle.run_id,
@@ -1492,6 +1505,14 @@ class Orchestrator:
                             (deadline or time.monotonic()) - time.monotonic() - cleanup_reserve, 0.0
                         ),
                         retries_used=retries_used,
+                        step_retries_used=(
+                            pivot_budget["per_step"][current_step_id]["used"]
+                            if pivot_budget is not None
+                            else None
+                        ),
+                        attempted_methods=(
+                            pivot_budget["attempted_methods"] if pivot_budget is not None else None
+                        ),
                         validate_choice=validate_choice,
                         check_cancelled=check_planning_cancelled,
                     )
@@ -1500,7 +1521,7 @@ class Orchestrator:
                     adaptive_next_step_id = (
                         alternate_step.step_id if alternate_step is not None else None
                     )
-                else:
+                elif pivot_budget is None:
                     proposal_record, alternate_step, adaptive_next_step_id, retry_applied = (
                         self._propose_next_step(
                             run_id=handle.run_id,
@@ -1519,6 +1540,11 @@ class Orchestrator:
                     )
             if proposal_record is not None:
                 ai_proposals.append(proposal_record)
+                if pivot_budget is not None and retry_applied:
+                    assert scenario.adaptive_execution is not None and alternate_step is not None
+                    pivot_budget = reserve_method(
+                        pivot_budget, scenario.adaptive_execution, alternate_step.to_dict()
+                    )
                 persist_execution_progress(reserved_retry=retry_applied)
                 self.store.append_event(handle.run_id, "ai.proposal", proposal_record)
                 planning_stopped = (
@@ -1817,11 +1843,15 @@ class Orchestrator:
                 "collector_elapsed_seconds": round(collector_elapsed_seconds, 3),
                 "exhausted": budget_exhausted,
             },
-            "adaptive_retry": {
-                "maximum": 1,
-                "used": retries_used,
-                "remaining": max(1 - retries_used, 0),
-            },
+            "adaptive_retry": (
+                pivot_budget
+                if pivot_budget is not None
+                else {
+                    "maximum": 1,
+                    "used": retries_used,
+                    "remaining": max(1 - retries_used, 0),
+                }
+            ),
         }
         self.store.write_json(
             handle.run_id,
@@ -3897,72 +3927,7 @@ class Orchestrator:
         receipt_rows.sort()
         return tuple(receipt_id for _created_at, receipt_id in receipt_rows)
 
-    @staticmethod
-    def _validate_cleanup_result(
-        manifest: Mapping[str, Any],
-        result: Mapping[str, Any],
-    ) -> None:
-        execution_binding = manifest.get("execution_binding")
-        bound_opcode = (
-            execution_binding.get("runner_opcode")
-            if isinstance(execution_binding, Mapping)
-            else None
-        )
-        if manifest.get("action_id") != "sandbox.cleanup.v1" and bound_opcode != (
-            "sandbox.cleanup.v1"
-        ):
-            return
-        cleanup = result.get("cleanup")
-        if not isinstance(cleanup, Mapping):
-            raise RunnerTransportError("cleanup result is missing its cleanup report")
-        expected_cleanup_fields = {
-            "requested_receipts",
-            "removed_paths",
-            "already_absent_receipts",
-            "retained_paths",
-            "errors",
-            "verification_performed",
-            "verified_removed_paths",
-            "verified_absent_paths",
-            "verified_receipts",
-        }
-        if set(cleanup) != expected_cleanup_fields:
-            raise RunnerTransportError("cleanup report shape is invalid")
-        for field in (
-            "removed_paths",
-            "already_absent_receipts",
-            "retained_paths",
-            "errors",
-        ):
-            values = cleanup.get(field)
-            if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
-                raise RunnerTransportError("cleanup report lists are invalid")
-        for field in (
-            "requested_receipts",
-            "verified_removed_paths",
-            "verified_absent_paths",
-            "verified_receipts",
-        ):
-            value = cleanup.get(field)
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                raise RunnerTransportError("cleanup verification counters are invalid")
-        output = result.get("output")
-        if not isinstance(output, Mapping) or dict(output) != dict(cleanup):
-            raise RunnerTransportError("cleanup output does not match its authoritative report")
-        params = manifest.get("params")
-        requested = params.get("receipt_ids") if isinstance(params, Mapping) else None
-        if not isinstance(requested, list):
-            raise RunnerTransportError("cleanup manifest has no receipt list")
-        if result.get("status") != "success":
-            return
-        if cleanup.get("requested_receipts") != len(requested):
-            raise RunnerTransportError("cleanup report does not cover every requested receipt")
-        if cleanup.get("errors") != [] or cleanup.get("retained_paths") != []:
-            raise RunnerTransportError("cleanup reported success with retained artifacts")
-        if cleanup.get("verification_performed") is not True:
-            raise RunnerTransportError("cleanup success lacks verified postconditions")
-        if cleanup.get("verified_receipts") != len(requested):
-            raise RunnerTransportError("cleanup did not verify every requested receipt")
+    _validate_cleanup_result = staticmethod(validate_cleanup_result)
 
     @staticmethod
     def _build_detections(records: Sequence[EvidenceRecord]) -> tuple[DetectionCandidate, ...]:
