@@ -23,7 +23,7 @@ const PROTOCOL: &str = "bluefire.owned-user-service-launch.v1";
 // Reviewed packaged source, independent of the launch document. A source test
 // checks this pin; keeping only its digest leaves Cargo/sdist builds standalone.
 const WATCHDOG_SOURCE_SHA256: &str =
-    "c4f2469cbc314a7c18402ed0a7220d2b63b62c212f8afbb2b10266158d69a107"; // pragma: allowlist secret -- public watchdog source checksum, regression-tested
+    "b196eb772b1f69226b9b828d918938e63ee40822dc3393a313a5f3590200e9f9"; // pragma: allowlist secret -- public watchdog source checksum, regression-tested
 
 extern "C" {
     fn fcntl(fd: i32, command: i32, ...) -> i32;
