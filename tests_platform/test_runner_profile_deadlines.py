@@ -275,12 +275,16 @@ def test_service_uses_activated_current_profile_budget_for_start_status_and_clie
 
 
 @pytest.mark.parametrize("mode", ["automatic", "lower_override", "cancel"])
-def test_managed_host_real_watchdog_respects_scaled_deadlines(tmp_path, mode):
+def test_managed_host_real_watchdog_respects_scaled_deadlines(tmp_path, mode, monkeypatch, request):
     import socket
     import time
     from concurrent.futures import ThreadPoolExecutor
 
     from bluefire.runner_client import RunnerTaskCancelled, RunnerTaskTimedOut
+    from tests_platform.runner_cancellation_wait_diagnostics import (
+        CancellationWaitRecorder,
+        cancellation_future_wait,
+    )
     from tests_platform.runner_deadline_host_helper import deadline_bootstrap
     from tests_platform.runner_lifecycle_host_helper import ProcessTestSecretProvider
     from tests_platform.test_authenticated_runner_transport import _result
@@ -337,9 +341,17 @@ def test_managed_host_real_watchdog_respects_scaled_deadlines(tmp_path, mode):
         else:
             task_id, _ = client.execution_identity(manifest, profile)
             cancellation = threading.Event()
+            recorder = CancellationWaitRecorder()
+            for phase, method_name in (
+                ("execute", "execute"),
+                ("cancel", "_cancel_for_execute_task"),
+                ("recover", "recover"),
+            ):
+                original = getattr(client, method_name)
+                monkeypatch.setattr(client, method_name, recorder.wrap(phase, original))
             with ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(
-                    client.execute_task,
+                    recorder.wrap("worker", client.execute_task),
                     manifest,
                     profile,
                     task_id=task_id,
@@ -354,7 +366,8 @@ def test_managed_host_real_watchdog_respects_scaled_deadlines(tmp_path, mode):
                         cancellation.wait(0.01)
                     cancellation.set()
                     with pytest.raises(RunnerTaskCancelled):
-                        future.result(timeout=10)
+                        with cancellation_future_wait(request.node, recorder):
+                            future.result(timeout=10)
                 finally:
                     cancellation.set()
         assert time.monotonic() - started < 12
