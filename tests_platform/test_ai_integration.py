@@ -5,6 +5,7 @@ import shutil
 import tempfile
 from dataclasses import replace
 from pathlib import Path
+from time import monotonic
 from typing import Any, Mapping
 
 import pytest
@@ -20,8 +21,9 @@ from bluefire.ai import (
 from bluefire.api import APIError
 from bluefire.config import AIConfig, AIProviderConfig, AutonomyLevel, load_config
 from bluefire.contracts import ExecutionMode, load_scenario
-from bluefire.job_runtime import JobState
+from bluefire.job_runtime import JobRuntimeError, JobState, JobWaitTimeout
 from bluefire.orchestrator import OrchestrationError, Orchestrator
+from bluefire.product_store import ProductStoreError
 from bluefire.registry import BehaviorRegistry, load_builtin_registry
 from bluefire.run_store import RunStore
 from bluefire.runner_contracts import current_platform
@@ -568,6 +570,36 @@ def _request(autonomy: str, provider_id: str = "deterministic-offline.v1") -> di
     }
 
 
+def _wait_for_proposal_approval(service: BlueFireService, job_id: str) -> Mapping[str, Any]:
+    started = monotonic()
+    try:
+        return service.job_controller.wait_for_state(
+            job_id,
+            {JobState.AWAITING_APPROVAL},
+            timeout=5,
+        )
+    except JobWaitTimeout:
+        elapsed = monotonic() - started
+        state = phase = "unavailable"
+        try:
+            snapshot = service.job_controller.snapshot(job_id)
+        except (JobRuntimeError, ProductStoreError):
+            pass
+        else:
+            known_states = {item.value for item in JobState}
+            observed_state = snapshot.get("state")
+            progress = snapshot.get("progress")
+            observed_phase = progress.get("phase") if isinstance(progress, Mapping) else None
+            if isinstance(observed_state, str) and observed_state in known_states:
+                state = observed_state
+            if isinstance(observed_phase, str) and observed_phase in known_states:
+                phase = observed_phase
+    pytest.fail(
+        f"Approval wait failed: limit=5s; elapsed={elapsed:.2f}s; state={state}; phase={phase}.",
+        pytrace=False,
+    )
+
+
 def test_off_never_constructs_or_calls_a_proposal_provider(tmp_path: Path) -> None:
     factory_calls = 0
 
@@ -788,23 +820,21 @@ def test_auto_review_required_job_remains_at_durable_proposal_gate(tmp_path: Pat
         runs_dir=tmp_path / "runs",
         ai_provider_factory=factory,
     )
-    submission = service.submit_run(_request("auto"))
-    job_id = str(submission["job"]["job_id"])
-    awaiting = service.job_controller.wait_for_state(
-        job_id,
-        {JobState.AWAITING_APPROVAL},
-        timeout=5,
-    )
+    try:
+        submission = service.submit_run(_request("auto"))
+        job_id = str(submission["job"]["job_id"])
+        awaiting = _wait_for_proposal_approval(service, job_id)
 
-    assert awaiting["state"] == "awaiting_approval"
-    review = service.proposal_review(
-        job_id,
-        str(awaiting["progress"]["proposal_record_id"]),
-    )
-    assert review["status"] == "pending"
-    service.cancel_job(job_id)
-    assert service.job_controller.wait(job_id, timeout=5)["state"] == "cancelled"
-    service.close()
+        assert awaiting["state"] == "awaiting_approval"
+        review = service.proposal_review(
+            job_id,
+            str(awaiting["progress"]["proposal_record_id"]),
+        )
+        assert review["status"] == "pending"
+        service.cancel_job(job_id)
+        assert service.job_controller.wait(job_id, timeout=5)["state"] == "cancelled"
+    finally:
+        service.close()
 
 
 def test_assist_proposal_acceptance_replans_and_resumes_simulate_job(tmp_path: Path) -> None:
@@ -816,44 +846,47 @@ def test_assist_proposal_acceptance_replans_and_resumes_simulate_job(tmp_path: P
         runs_dir=tmp_path / "runs",
         ai_provider_factory=factory,
     )
-    submission = service.submit_run(_request("assist"))
-    job_id = str(submission["job"]["job_id"])
-    awaiting = service.job_controller.wait_for_state(
-        job_id,
-        {JobState.AWAITING_APPROVAL},
-        timeout=5,
-    )
-    proposal_record_id = str(awaiting["progress"]["proposal_record_id"])
-    review = service.proposal_review(job_id, proposal_record_id)
-    decision = {
-        "decided_by": "simulation-reviewer",
-        "state_digest": review["state_digest"],
-        "plan_digest": review["plan_digest"],
-        "proposal_digest": review["proposal_digest"],
-    }
+    try:
+        submission = service.submit_run(_request("assist"))
+        job_id = str(submission["job"]["job_id"])
+        awaiting = _wait_for_proposal_approval(service, job_id)
+        proposal_record_id = str(awaiting["progress"]["proposal_record_id"])
+        review = service.proposal_review(job_id, proposal_record_id)
+        decision = {
+            "decided_by": "simulation-reviewer",
+            "state_digest": review["state_digest"],
+            "plan_digest": review["plan_digest"],
+            "proposal_digest": review["proposal_digest"],
+        }
 
-    with pytest.raises(APIError) as tampered:
-        service.accept_proposal_review(
-            job_id,
-            proposal_record_id,
-            {**decision, "proposal_digest": "sha256:" + "0" * 64},
+        with pytest.raises(APIError) as tampered:
+            service.accept_proposal_review(
+                job_id,
+                proposal_record_id,
+                {**decision, "proposal_digest": "sha256:" + "0" * 64},
+            )
+        assert tampered.value.code == "proposal_acceptance_refused"
+        assert service.job(job_id)["state"] == "awaiting_approval"
+
+        accepted = service.accept_proposal_review(job_id, proposal_record_id, decision)
+        assert accepted["proposal"]["status"] == "accepted"
+        assert accepted["approval_request"] is None
+        completed = service.job_controller.wait(job_id, timeout=5)
+        assert completed["state"] == "completed", completed["error"]
+        continuation = service.detail(str(completed["result_ref"]))
+        discovery = next(
+            row for row in continuation["steps"] if row["step_id"] == "discover_records"
         )
-    assert tampered.value.code == "proposal_acceptance_refused"
-    assert service.job(job_id)["state"] == "awaiting_approval"
-
-    accepted = service.accept_proposal_review(job_id, proposal_record_id, decision)
-    assert accepted["proposal"]["status"] == "accepted"
-    assert accepted["approval_request"] is None
-    completed = service.job_controller.wait(job_id, timeout=5)
-    assert completed["state"] == "completed", completed["error"]
-    continuation = service.detail(str(completed["result_ref"]))
-    discovery = next(row for row in continuation["steps"] if row["step_id"] == "discover_records")
-    assert discovery["behavior_id"] == "sandbox.discovery.metadata.v1"
-    assert continuation["replay"]["proposal_resolution"]["proposal_record_id"] == proposal_record_id
-    with pytest.raises(APIError) as stale:
-        service.accept_proposal_review(job_id, proposal_record_id, decision)
-    assert stale.value.code == "proposal_acceptance_refused"
-    service.close()
+        assert discovery["behavior_id"] == "sandbox.discovery.metadata.v1"
+        assert (
+            continuation["replay"]["proposal_resolution"]["proposal_record_id"]
+            == proposal_record_id
+        )
+        with pytest.raises(APIError) as stale:
+            service.accept_proposal_review(job_id, proposal_record_id, decision)
+        assert stale.value.code == "proposal_acceptance_refused"
+    finally:
+        service.close()
 
 
 def test_assist_proposal_rejection_and_cancellation_do_not_resume(tmp_path: Path) -> None:
@@ -866,48 +899,47 @@ def test_assist_proposal_rejection_and_cancellation_do_not_resume(tmp_path: Path
         ai_provider_factory=factory,
     )
 
-    def pending_job() -> tuple[str, Mapping[str, Any]]:
-        submission = service.submit_run(_request("assist"))
-        job_id = str(submission["job"]["job_id"])
-        awaiting = service.job_controller.wait_for_state(
-            job_id,
-            {JobState.AWAITING_APPROVAL},
-            timeout=5,
-        )
-        review = service.proposal_review(
-            job_id,
-            str(awaiting["progress"]["proposal_record_id"]),
-        )
-        return job_id, review
+    try:
 
-    rejected_job_id, review = pending_job()
-    rejected = service.reject_proposal_review(
-        rejected_job_id,
-        str(review["proposal_record_id"]),
-        {
-            "decided_by": "simulation-reviewer",
-            "state_digest": review["state_digest"],
-            "plan_digest": review["plan_digest"],
-            "proposal_digest": review["proposal_digest"],
-        },
-    )
-    assert rejected["proposal"]["status"] == "rejected"
-    finished = service.job_controller.wait(rejected_job_id, timeout=5)
-    assert finished["state"] == "completed"
-    assert finished["result_ref"] == review["source_run_id"]
+        def pending_job() -> tuple[str, Mapping[str, Any]]:
+            submission = service.submit_run(_request("assist"))
+            job_id = str(submission["job"]["job_id"])
+            awaiting = _wait_for_proposal_approval(service, job_id)
+            review = service.proposal_review(
+                job_id,
+                str(awaiting["progress"]["proposal_record_id"]),
+            )
+            return job_id, review
 
-    cancelled_job_id, cancelled_review = pending_job()
-    service.cancel_job(cancelled_job_id)
-    cancelled = service.job_controller.wait(cancelled_job_id, timeout=5)
-    assert cancelled["state"] == "cancelled"
-    assert (
-        service.proposal_review(
-            cancelled_job_id,
-            str(cancelled_review["proposal_record_id"]),
-        )["status"]
-        == "pending"
-    )
-    service.close()
+        rejected_job_id, review = pending_job()
+        rejected = service.reject_proposal_review(
+            rejected_job_id,
+            str(review["proposal_record_id"]),
+            {
+                "decided_by": "simulation-reviewer",
+                "state_digest": review["state_digest"],
+                "plan_digest": review["plan_digest"],
+                "proposal_digest": review["proposal_digest"],
+            },
+        )
+        assert rejected["proposal"]["status"] == "rejected"
+        finished = service.job_controller.wait(rejected_job_id, timeout=5)
+        assert finished["state"] == "completed"
+        assert finished["result_ref"] == review["source_run_id"]
+
+        cancelled_job_id, cancelled_review = pending_job()
+        service.cancel_job(cancelled_job_id)
+        cancelled = service.job_controller.wait(cancelled_job_id, timeout=5)
+        assert cancelled["state"] == "cancelled"
+        assert (
+            service.proposal_review(
+                cancelled_job_id,
+                str(cancelled_review["proposal_record_id"]),
+            )["status"]
+            == "pending"
+        )
+    finally:
+        service.close()
 
 
 def test_execute_proposal_acceptance_requires_a_fresh_exact_approval(
