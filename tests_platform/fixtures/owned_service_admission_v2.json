@@ -13,15 +13,15 @@
         "target_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
       },
       "execution": {
-        "manifest_digest": "sha256:f9c3d876c5378a13e410b24f02487142dea0cf245e7601916535a243288d0a40",
-        "operation_binding_digest": "sha256:ac4e73d8cef95e98efbf8aeff74f8f1e42317b885b947a3f93e31169651153e4",
-        "profile_digest": "sha256:3f313470db650525e6a5f805fd16566664b67e1e4361e4715faae574209e98ca",
-        "task_id": "execute-4508ebb113ae6cc22737385cc4c06d495af89aaa5f61cba0d62c2024576fa21f"
+        "manifest_digest": "sha256:e3518b78938cbd71c4c18d69c58dff703861754d61ba8eb26e591057865abc42",
+        "operation_binding_digest": "sha256:f3445a742adfc541f23f7523d4d0de40e363b1a1c3f7508bc05ca7cf727cda73",
+        "profile_digest": "sha256:1adc8c7522c50ff18737bb3938cb82410b625b541d2cc2564a715c78b0b53dbf",
+        "task_id": "execute-59c70bf33fc6a0fc0a2461b6f03182b2acf1dc4ff35974f6ca090b65853c9c1d"
       },
-      "manifest_request_hash": "sha256:8579f40c5ed442eecaee13fc6583c0442fb1421b27f658d5d9b50b5f454bdf31",
+      "manifest_request_hash": "sha256:9929092463500ae10a11258a2292788e3df7703602d2ac9efde964830abb46ea",
       "operation_binding": {
         "identity": {
-          "authorization_digest": "sha256:1fd76a9bffae8bd957ba4f62b70ae130dff58f07974e4f85eacd1867f48b1fa1",
+          "authorization_digest": "sha256:969435d221379f968b813a98e577b33335cea163268006cc2902604c53edb0a8",
           "boot_id": "12345678-1234-1234-1234-123456789abc",
           "cleanup_due_at": "2026-01-01T12:30:00Z",
           "created_at": "2026-01-01T12:00:00Z",
@@ -34,7 +34,7 @@
           "unit_nonce": "ffffffffffffffffffffffffffffffff",
           "workspace_id": "workspace-owned-service.v1"
         },
-        "identity_digest": "sha256:92bb4a011a1beee4102644469a2d5384eb5ea3f02c6d6d27c743a6cace53fa2a",
+        "identity_digest": "sha256:7f4a7f30889e89ba55b61d2d6293fa9369c27f30d1647026d8a1427eeb34eba5",
         "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
         "journal_request_id": "request-owned-service.v1",
         "journal_revision": 1,
@@ -42,7 +42,7 @@
         "operation": "create_unit",
         "operation_id": "op-22222222222222222222222222222222",
         "payload_installation_digest": "sha256:bb1aff6500c24ae2baba19a0641a0bfc32baa5dc6cf990931935b9a485425965",
-        "reviewed_scope_digest": "sha256:1fd76a9bffae8bd957ba4f62b70ae130dff58f07974e4f85eacd1867f48b1fa1",
+        "reviewed_scope_digest": "sha256:969435d221379f968b813a98e577b33335cea163268006cc2902604c53edb0a8",
         "schema_version": "bluefire.service-operation-binding.v1"
       },
       "run_id": "run-owned-service.v1",
@@ -116,7 +116,7 @@
           "memory_max_bytes": 67108864
         },
         "profile_id": "sandbox-execute.v1",
-        "profile_policy_digest": "sha256:5c86b9bf140174339c318fba6faad77aa2de258bf0ec89eba314787d0bd47449",
+        "profile_policy_digest": "sha256:73dff6a7e5d0bf1976ead8e9a66e2db55f213559951db0d865cf3ab49f62163a",
         "scenario_id": "owned-service-scenario.v1",
         "schema_version": "bluefire.owned-user-service-scope.v2",
         "setup_expires_at": "2026-01-01T12:05:00Z",
@@ -141,10 +141,10 @@
           "workspace_id": "workspace-owned-service.v1"
         }
       },
-      "scope_digest": "sha256:1fd76a9bffae8bd957ba4f62b70ae130dff58f07974e4f85eacd1867f48b1fa1",
+      "scope_digest": "sha256:969435d221379f968b813a98e577b33335cea163268006cc2902604c53edb0a8",
       "step_id": "owned-service-step.v1"
     },
-    "grant_digest": "sha256:523638859e2221d20709455309677e32676991fe6c18335dc5802d6fed9a6341",
+    "grant_digest": "sha256:0f87ee09d66ad6ba731d1f7180a51dd118ee1cd52973badf6d06daef61df8217",
     "issuer": {
       "client_id": "bluefire-client.v1",
       "enrollment_generation": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
@@ -160,7 +160,7 @@
       "approved_at": "2026-01-01T12:01:00Z",
       "approved_by": "synthetic-operator",
       "expires_at": "2026-01-01T12:10:00Z",
-      "request_hash": "sha256:8579f40c5ed442eecaee13fc6583c0442fb1421b27f658d5d9b50b5f454bdf31"
+      "request_hash": "sha256:9929092463500ae10a11258a2292788e3df7703602d2ac9efde964830abb46ea"
     },
     "behavior_id": "owned.service.behavior.v1",
     "cleanup_action_id": "sandbox.cleanup.v1",
@@ -179,8 +179,8 @@
       "memory_max_bytes": 67108864
     },
     "platform": "linux",
-    "policy_digest": "sha256:1f4a0fc160b98b822d5b57be1348dd0fa3de80d49de68e344960e9cc1b59bbb5",
-    "request_hash": "sha256:8579f40c5ed442eecaee13fc6583c0442fb1421b27f658d5d9b50b5f454bdf31",
+    "policy_digest": "sha256:2a3496c56951a625f4695071818b266dbe290206bbac2686d569623c6b100e77",
+    "request_hash": "sha256:9929092463500ae10a11258a2292788e3df7703602d2ac9efde964830abb46ea",
     "request_id": "request-7a50cca718904b0b89691aaa5347bd66",
     "requested_at": "2026-01-01T12:02:00Z",
     "required_capabilities": [
@@ -212,7 +212,6 @@
       "sandbox.archive.tar.v1",
       "sandbox.cleanup.v1",
       "sandbox.collection.archive.v1",
-      "sandbox.collection.atomic-gzip.v1",
       "sandbox.collection.records.v1",
       "sandbox.collection.stage.v1",
       "sandbox.discovery.list.v1",
@@ -304,7 +303,7 @@
       }
     ],
     "platform": "linux",
-    "policy_digest": "sha256:1f4a0fc160b98b822d5b57be1348dd0fa3de80d49de68e344960e9cc1b59bbb5",
+    "policy_digest": "sha256:2a3496c56951a625f4695071818b266dbe290206bbac2686d569623c6b100e77",
     "profile_id": "sandbox-execute.v1",
     "runner_id": "bluefire-rust-runner.v1",
     "sandbox_root": "/tmp/bluefire-owned-service-workspace",
