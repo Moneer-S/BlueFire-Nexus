@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { registeredDetectionLink } from "../lib/run-handoffs";
+import { registeredDetectionEvaluationLink, registeredDetectionLink } from "../lib/run-handoffs";
 import { api } from "../lib/api";
 import { compareDetectorEvaluations, evaluationLabel } from "../lib/detection-results";
 import type { DetectionResource, DetectionRunEvaluation } from "../types";
@@ -18,24 +18,30 @@ function download(name: string, content: string, type: string) {
   URL.revokeObjectURL(url);
 }
 
-export function DetectorEvaluationTable({ baseline, revised, baselineLabel, revisedLabel, runIds }: {
+export function DetectorEvaluationTable({ baseline, revised, baselineLabel, revisedLabel, runIds, baselineResource, revisedResource }: {
   baseline: DetectionRunEvaluation[];
   revised: DetectionRunEvaluation[];
   baselineLabel: string;
   revisedLabel: string;
   runIds?: string[];
+  baselineResource?: DetectionResource;
+  revisedResource?: DetectionResource;
 }) {
   const rows = compareDetectorEvaluations(baseline, revised, runIds);
+  // Only the comparison's verified registry selection can supply a missing side.
+  // A report from the opposite side is never a source of candidate identity.
+  const missingLink = (runId: string, resource?: DetectionResource) => resource && resource.document.candidate_id === resource.id
+    ? registeredDetectionEvaluationLink(runId, resource.id) : undefined;
   return rows.length ? <div className="detector-comparison-table" role="region" aria-label="Measured detector comparison" tabIndex={0}>
     <table><caption>Retained detector evaluations by run and revision</caption><thead><tr><th scope="col">Run / case</th><th scope="col">{baselineLabel}</th><th scope="col">{revisedLabel}</th><th scope="col">Measured change</th></tr></thead>
       <tbody>{rows.map((row) => <tr key={row.runId}><th scope="row"><RunReference runId={row.runId} /><small>{row.roles.length ? row.roles.map(sentence).join(" / ") : "Case not assigned"}</small></th>
-        <td><EvaluationCell reports={row.baseline} /></td><td><EvaluationCell reports={row.revised} /></td><td>{row.change}</td></tr>)}</tbody>
+        <td><EvaluationCell reports={row.baseline} missingLink={missingLink(row.runId, baselineResource)} missingLabel="Evaluate original on this run" /></td><td><EvaluationCell reports={row.revised} missingLink={missingLink(row.runId, revisedResource)} missingLabel="Evaluate revised on this run" /></td><td>{row.change}</td></tr>)}</tbody>
     </table>
   </div> : <EmptyState title="No run evaluations yet" description="Evaluate both revisions in Detection Lab on separate attack, benign, and replay runs. Their actual results will appear here." />;
 }
 
-function EvaluationCell({ reports }: { reports: DetectionRunEvaluation[] }) {
-  if (!reports.length) return <span>Not evaluated</span>;
+function EvaluationCell({ reports, missingLink, missingLabel }: { reports: DetectionRunEvaluation[]; missingLink?: string; missingLabel?: string }) {
+  if (!reports.length) return <><span>Not evaluated</span>{missingLink ? <small><Link to={missingLink}>{missingLabel}</Link></small> : null}</>;
   const labels = [...new Set(reports.map(evaluationLabel))];
   return <><strong>{labels.length === 1 ? labels[0] : "Mixed results"}</strong><small>{reports.length} retained evaluation{reports.length === 1 ? "" : "s"}</small>
     {reports.some((report) => report.development_case) ? <small>Includes development data; not an untouched independent test</small> : null}
@@ -109,7 +115,7 @@ export function DetectorEvaluationComparison({ runIds, selection, onSelectionCha
           <Field label="Revised detector"><select value={revisedId} disabled={!baseline || !revisionsReady} onChange={(event) => changeSelection({ baselineId, revisedId: event.target.value })}><option value="">Choose a revision</option>{revisedId && !revised ? <option value={revisedId}>Unavailable revised detector</option> : null}{revisions.map((item) => <option key={item.id} value={item.id}>{label(item)}</option>)}</select></Field></div>
         {baseline && !revisions.length ? <p>This detector has no saved revisions yet. Create one in Detection Lab.</p> : null}
         {left.isError || right.isError ? <ErrorState title="Detector evaluations unavailable" error={left.error ?? right.error} retry={() => { if (baseline) void left.refetch(); if (revised) void right.refetch(); }} /> : identityMismatch ? <Callout tone="warning" title="Detector evaluation identity mismatch"><p>Retained evaluations do not match the selected saved revisions. Refresh the detector records before comparing or exporting.</p><Button disabled={candidates.isFetching || left.isFetching || right.isFetching} onClick={() => { void candidates.refetch(); if (baseline) void left.refetch(); if (revised) void right.refetch(); }}>Refresh detector records</Button></Callout> : baseline && revised && !ready ? <LoadingState label="Loading retained detector results" /> : ready ? <>
-          <DetectorEvaluationTable baseline={left.data.evaluations} revised={right.data.evaluations} baselineLabel={`Original · revision ${baseline.document.revision ?? 1}`} revisedLabel={`Revised · revision ${revised.document.revision ?? 1}`} runIds={runIds} />
+          <DetectorEvaluationTable baseline={left.data.evaluations} revised={right.data.evaluations} baselineLabel={`Original · revision ${baseline.document.revision ?? 1}`} revisedLabel={`Revised · revision ${revised.document.revision ?? 1}`} runIds={runIds} baselineResource={baseline} revisedResource={revised} />
           <p className="field-note">Case labels describe the operator's test setup. Counts are matched observed events. Detector evaluation does not establish deployed prevention.</p>
           <div className="candidate-actions"><Button onClick={exportResults}>Export comparison and evidence</Button><Button onClick={() => exportRule(revised)} disabled={revised.document.target_language !== "internal" && !revised.document.rule_source}>Download revised rule</Button></div>
         </> : null}

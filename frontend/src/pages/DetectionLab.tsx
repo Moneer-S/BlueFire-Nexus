@@ -20,7 +20,7 @@ import { isInternalBenignFixtureDraftText, readInternalBenignFixtureDraft, type 
 import { initialManualInternalConditions, isManualInternalConditionsText, manualDetectionDefinition, readManualInternalConditions } from "../lib/manual-detection-definition";
 import { isStructuredRuleDraftText, readStructuredRuleDraft, type StructuredRuleDraft } from "../lib/structured-rule-selection";
 import { detectionCreationPath } from "../lib/detection-creation";
-import { runCandidateKey, sourceObservedRecords, sourceRunParam } from "../lib/run-handoffs";
+import { detectionEvaluationHandoff, runCandidateKey, sourceObservedRecords, sourceRunParam } from "../lib/run-handoffs";
 import type {
   DetectionCandidate,
   CatalogResponse,
@@ -189,7 +189,8 @@ export function DetectionLabPage() {
       const value: unknown = JSON.parse(raw);
       if (typeof value !== "string") throw new Error("invalid");
       const stored = new URLSearchParams(value);
-      if ([...stored.keys()].some(key => !["run", "candidate", "candidate_scope", "q"].includes(key))) throw new Error("invalid");
+      if ([...stored.keys()].some(key => !["run", "candidate", "candidate_scope", "q", "view"].includes(key))
+        || (stored.has("view") && !detectionEvaluationHandoff(stored))) throw new Error("invalid");
       return { query: stored.toString(), error: "" };
     } catch { return { query: "", error: "The previous Detection Lab location could not be read. Its stored record was left untouched." }; }
   });
@@ -203,8 +204,9 @@ export function DetectionLabPage() {
       if (!query && initial.query) { setParams(initial.query, { replace: true }); return; }
     }
     if (params.has("create") || params.has("create_job") || (initial.error && query === originalQuery.current)) return;
+    if (params.has("view") && !detectionEvaluationHandoff(params)) return;
     const retained = new URLSearchParams();
-    for (const key of ["run", "candidate", "candidate_scope", "q"]) if (params.has(key)) retained.set(key, params.get(key)!);
+    for (const key of ["run", "candidate", "candidate_scope", "q", "view"]) if (params.has(key)) retained.set(key, params.get(key)!);
     try { const record = JSON.stringify(retained.toString()); if (record.length > 8192) throw new Error("oversized"); sessionStorage.setItem(navigationKey, record); setNavigationError(""); }
     catch { setNavigationError("The current selection and search cannot be kept after reload. This page remains usable."); }
   }, [query, params, setParams, initial]);
@@ -231,6 +233,9 @@ function DetectionCreationPage() {
 
 function DetectionRegistryPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const evaluationHandoff = detectionEvaluationHandoff(searchParams);
+  const handoffRequested = searchParams.has("view");
+  const cancelEvaluationHandoff = () => setSearchParams(old => { const next = new URLSearchParams(old); next.delete("view"); return next; }, { replace: true });
   const sourceRunId = sourceRunParam(searchParams, "run");
   const linkedCandidateId = sourceRunParam(searchParams, "candidate");
   const registryCandidate = searchParams.get("candidate_scope") === "registry";
@@ -251,7 +256,7 @@ function DetectionRegistryPage() {
   const search = searchParams.get("q") ?? "";
   const setSearch = (value: string) => setSearchParams(old => { const next = new URLSearchParams(old); if (value) next.set("q", value); else next.delete("q"); return next; }, { replace: true });
   const selectedId = linkedSelectionId;
-  const setSelectedId = (value: string) => setSearchParams(old => { const next = new URLSearchParams(old); next.set("candidate", value); next.set("candidate_scope", "registry"); return next; });
+  const setSelectedId = (value: string) => setSearchParams(old => { const next = new URLSearchParams(old); next.delete("view"); next.set("candidate", value); next.set("candidate_scope", "registry"); return next; });
   const [notice, setNotice] = useState<string>();
   // Manual hypothesis inputs contain no run evidence or candidate authority.
   const manualDraft = useDetectionDraft("manual-new-rule", manualRuleDefaults, ["permissionCondition", "internalConditions"], { permissionCondition: isPermissionCondition, internalConditions: isManualInternalConditionsText });
@@ -414,7 +419,7 @@ function DetectionRegistryPage() {
   if (runsQuery.isPending || catalogQuery.isPending || candidatesQuery.isPending || healthQuery.isPending) return <LoadingState label="Opening Detection Lab" />;
   if (runsQuery.isError) return <ErrorState error={runsQuery.error} retry={() => { void runsQuery.refetch(); }} />;
   if (catalogQuery.isError) return <ErrorState error={catalogQuery.error} retry={() => { void catalogQuery.refetch(); }} />;
-  if (candidatesQuery.isError) return <ErrorState title="Detection registry unavailable" error={candidatesQuery.error} retry={() => { void candidatesQuery.refetch(); }} />;
+  if (!candidatesQuery.data || (candidatesQuery.isError && !handoffRequested)) return <ErrorState title="Detection registry unavailable" error={candidatesQuery.error} retry={() => { void candidatesQuery.refetch(); }} />;
   if (healthQuery.isError) return <ErrorState title="Detection health unavailable" error={healthQuery.error} retry={() => { void healthQuery.refetch(); }} />;
 
   const persisted: CandidateView[] = candidatesQuery.data.candidates.map((resource) => ({
@@ -424,7 +429,7 @@ function DetectionRegistryPage() {
     resolvedId: resource.id,
     resourceId: resource.id,
   }));
-  const sourceRun = sourceQuery.data;
+  const sourceRun = evaluationHandoff && sourceQuery.data?.run_id !== evaluationHandoff.runId ? undefined : sourceQuery.data;
   const linked: CandidateView[] = sourceRun ? (sourceRun.detections?.candidates ?? []).map((candidate, index) => ({
     ...candidate,
     resolvedId: runCandidateKey(sourceRun.run_id, candidate.candidate_id ?? candidate.id ?? String(index)),
@@ -434,6 +439,15 @@ function DetectionRegistryPage() {
   const candidates = [...new Map([...persisted, ...linked].map((item) => [item.resolvedId, item])).values()];
   const filtered = candidates.filter((item) => `${item.resolvedId} ${item.title ?? ""} ${item.behavior_id ?? ""} ${item.target_language ?? item.language ?? ""}`.toLowerCase().includes(search.toLowerCase()));
   const selected = candidates.find((item) => item.resolvedId === selectedId) ?? (selectedId ? undefined : filtered.find((item) => item.runId === sourceRunId) ?? filtered[0]);
+  const handoffResources = evaluationHandoff ? candidatesQuery.data.candidates.filter(item => item.id === evaluationHandoff.candidateId) : [];
+  // Refreshing an unchanged registry must not unmount an in-flight evaluation.
+  // Cached identity controls rendering; fresh registry/source reads gate new work.
+  const handoffIdentityMatches = Boolean(evaluationHandoff && handoffResources.length === 1
+    && handoffResources[0]!.document.candidate_id === evaluationHandoff.candidateId
+    && selected?.resourceId === evaluationHandoff.candidateId
+    && ["internal", "sqlite", "sigma"].includes(handoffResources[0]!.document.target_language ?? handoffResources[0]!.document.language ?? ""));
+  const handoffSourceReady = Boolean(evaluationHandoff && candidatesQuery.isSuccess && !candidatesQuery.isFetching && sourceQuery.isSuccess && !sourceQuery.isFetching
+    && sourceRun?.run_id === evaluationHandoff.runId && (sourceRun.finalized_at || sourceRun.status === "completed"));
   activeSelection.current = JSON.stringify([sourceRunId, selected?.resolvedId]);
   const counts = Object.fromEntries(lifecycle.map((state) => [state, candidates.filter((item) => item.state === state).length]));
   const finalizedRuns = runsQuery.data.runs.filter((run) => Boolean(run.finalized_at) || run.status === "completed");
@@ -448,10 +462,11 @@ function DetectionRegistryPage() {
 
   return <div className="page detection-page">
     <PageHeader title="Detection Lab" actions={<Link className="button button-secondary button-medium" to={detectionCreationPath(sourceRunId)}>Create from run evidence</Link>} />
+    {handoffRequested && candidatesQuery.isError ? <ErrorState title="Detection registry unavailable" error={candidatesQuery.error} retry={() => { void candidatesQuery.refetch(); }} /> : null}
     {notice ? <Callout title="Detection update">{notice}</Callout> : null}
     <section className="detection-context" aria-label="Source run and evidence">
       <div className="detection-context-controls">
-        <Field label="Detection source run"><select value={sourceRunId} onChange={(event) => { const run = event.target.value; setSearchParams((old) => { const next = new URLSearchParams(old); if (selected?.resourceId) { next.set("candidate", selected.resourceId); next.set("candidate_scope", "registry"); } else { next.delete("candidate"); next.delete("candidate_scope"); } if (run) next.set("run", run); else next.delete("run"); return next; }); }}><option value="">Choose a run to bring in its evidence</option>{sourceRunId && !runsQuery.data.runs.some((run) => run.run_id === sourceRunId) ? <option value={sourceRunId}>Selected source run · Date unavailable</option> : null}{runsQuery.data.runs.map((run) => <option key={run.run_id} value={run.run_id}>{sourceRunLabel(run)}</option>)}</select></Field>
+        <Field label="Detection source run"><select value={sourceRunId} onChange={(event) => { const run = event.target.value; setSearchParams((old) => { const next = new URLSearchParams(old); next.delete("view"); if (selected?.resourceId) { next.set("candidate", selected.resourceId); next.set("candidate_scope", "registry"); } else { next.delete("candidate"); next.delete("candidate_scope"); } if (run) next.set("run", run); else next.delete("run"); return next; }); }}><option value="">Choose a run to bring in its evidence</option>{sourceRunId && !runsQuery.data.runs.some((run) => run.run_id === sourceRunId) ? <option value={sourceRunId}>Selected source run · Date unavailable</option> : null}{runsQuery.data.runs.map((run) => <option key={run.run_id} value={run.run_id}>{sourceRunLabel(run)}</option>)}</select></Field>
         {sourceRun ? <Link className="button button-secondary" to={`/runs/${encodeURIComponent(sourceRun.run_id)}`}>Review source run</Link> : null}
       </div>
       {sourceRunId && sourceQuery.isPending ? <LoadingState label="Loading source run evidence" /> : sourceQuery.isError ? <ErrorState title="Source run unavailable" error={sourceQuery.error} retry={() => { void sourceQuery.refetch(); }} /> : sourceRun ? <details className="detection-source-details"><summary>{sourceObservedRecords(sourceRun).length} independent observations · inspect source evidence</summary><SourceRunEvidence run={sourceRun} /></details> : null}
@@ -510,10 +525,10 @@ function DetectionRegistryPage() {
     <div className="detection-layout">
       <Panel className="candidate-list">
         <div className="history-search"><Search /><input aria-label="Search detection candidates" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search candidate, behavior, language" /></div>
-        <div>{filtered.map((item) => <button key={item.resolvedId} aria-label={`${item.title ? displayTitle(item.title) : item.resolvedId} · ${revisionLabel(item)} · ${languageLabel(item.target_language ?? item.language ?? "unknown")} · ${sentence(item.state)}`} aria-pressed={selected?.resolvedId === item.resolvedId} className={selected?.resolvedId === item.resolvedId ? "selected" : ""} onClick={() => { setSearchParams(old => { const next = new URLSearchParams(old); next.set("candidate", item.candidate_id ?? item.id ?? item.resolvedId); if (item.resourceId) next.set("candidate_scope", "registry"); else { next.delete("candidate_scope"); if (item.runId) next.set("run", item.runId); } return next; }); comparisonMutation.reset(); }}><span className="candidate-icon"><ShieldQuestion /></span><span><strong>{item.title ? displayTitle(item.title) : item.resolvedId}</strong><small>{revisionLabel(item)} · {languageLabel(item.target_language ?? item.language ?? "unknown")}</small><small>{displayTitle(catalogQuery.data.behaviors.find(behavior => behavior.id === item.behavior_id)?.title ?? "Behavior not recorded")}</small></span><span><Badge tone={item.state === "rejected" ? "danger" : item.state === "hypothesis" ? "neutral" : "success"}>{sentence(item.state)}</Badge>{item.demo ? <Badge tone="violet">Demo</Badge> : null}</span></button>)}</div>
+        <div>{filtered.map((item) => <button key={item.resolvedId} aria-label={`${item.title ? displayTitle(item.title) : item.resolvedId} · ${revisionLabel(item)} · ${languageLabel(item.target_language ?? item.language ?? "unknown")} · ${sentence(item.state)}`} aria-pressed={selected?.resolvedId === item.resolvedId} className={selected?.resolvedId === item.resolvedId ? "selected" : ""} onClick={() => { setSearchParams(old => { const next = new URLSearchParams(old); next.delete("view"); next.set("candidate", item.candidate_id ?? item.id ?? item.resolvedId); if (item.resourceId) next.set("candidate_scope", "registry"); else { next.delete("candidate_scope"); if (item.runId) next.set("run", item.runId); } return next; }); comparisonMutation.reset(); }}><span className="candidate-icon"><ShieldQuestion /></span><span><strong>{item.title ? displayTitle(item.title) : item.resolvedId}</strong><small>{revisionLabel(item)} · {languageLabel(item.target_language ?? item.language ?? "unknown")}</small><small>{displayTitle(catalogQuery.data.behaviors.find(behavior => behavior.id === item.behavior_id)?.title ?? "Behavior not recorded")}</small></span><span><Badge tone={item.state === "rejected" ? "danger" : item.state === "hypothesis" ? "neutral" : "success"}>{sentence(item.state)}</Badge>{item.demo ? <Badge tone="violet">Demo</Badge> : null}</span></button>)}</div>
         {!filtered.length ? <EmptyState title="No candidates" description="Create a hypothesis or complete a run that generates detection research records." /> : null}
       </Panel>
-      {selected ? <CandidateWorkspace
+      {handoffRequested && !handoffIdentityMatches ? <Panel>{candidatesQuery.isFetching ? <LoadingState label="Checking requested saved revision" /> : <Callout tone="warning" title="Requested saved revision unavailable">The comparison link must identify one available saved revision. It may be missing, ambiguous or unsupported; no other candidate has been substituted.</Callout>}<Button onClick={cancelEvaluationHandoff}>Leave comparison setup</Button></Panel> : selected ? <CandidateWorkspace
         key={candidateDraftBinding(selected, candidatesQuery.data.candidates.find(item => item.id === selected.resourceId))}
         candidate={selected}
         resource={candidatesQuery.data.candidates.find((item) => item.id === selected.resourceId)}
@@ -521,6 +536,8 @@ function DetectionRegistryPage() {
         finalizedRuns={finalizedRuns}
         sourceRunId={sourceRunId}
         sourceRun={sourceRun}
+        evaluationHandoff={evaluationHandoff ? { runId: evaluationHandoff.runId, ready: handoffSourceReady } : undefined}
+        onCancelEvaluationHandoff={cancelEvaluationHandoff}
         ai={catalogQuery.data.ai}
         saveLinkedPending={saveLinkedMutation.isPending}
         onSaveLinked={() => sourceRun && selected.runId === sourceRun.run_id && saveLinkedMutation.mutate({ candidate: selected, run: sourceRun, navigation: manualNavigation })}
@@ -566,6 +583,8 @@ function CandidateWorkspace({
   finalizedRuns,
   sourceRunId,
   sourceRun,
+  evaluationHandoff,
+  onCancelEvaluationHandoff,
   ai,
   saveLinkedPending,
   onSaveLinked,
@@ -587,6 +606,8 @@ function CandidateWorkspace({
   finalizedRuns: RunRecord[];
   sourceRunId: string;
   sourceRun?: RunRecord;
+  evaluationHandoff?: { runId: string; ready: boolean };
+  onCancelEvaluationHandoff: () => void;
   ai: CatalogResponse["ai"];
   saveLinkedPending: boolean;
   onSaveLinked: () => void;
@@ -618,7 +639,9 @@ function CandidateWorkspace({
   }), [candidate, language, comparisonChoices]);
   const draft = useDetectionDraft(binding, defaults, ["structuredSelectionDraft", "structuredBenignDraft"], { structuredSelectionDraft: isStructuredRuleDraftText, structuredBenignDraft: isInternalBenignFixtureDraftText });
   const observed = useDetectionDraft(binding + ":observed:" + sourceRunId, { runId: sourceRunId, evidenceIds: "" });
-  const { tab, source, fixtures, benign, notes, reason, revisionKind, revisionReason, revisionTitle, selectionJson, logsourceJson, selectedBaselineIds, compareId } = draft.value;
+  const { source, fixtures, benign, notes, reason, revisionKind, revisionReason, revisionTitle, selectionJson, logsourceJson, selectedBaselineIds, compareId } = draft.value;
+  // A comparison opens this view without overwriting the retained workspace tab.
+  const tab = evaluationHandoff ? "evaluations" : draft.value.tab;
   const structuredDraft = readStructuredRuleDraft(draft.value.structuredSelectionDraft);
   const setStructuredDraft = (value: StructuredRuleDraft | null) => draft.update("structuredSelectionDraft", value ? JSON.stringify(value) : "");
   const structuredPending = language === "internal" && structuredDraft !== null;
@@ -629,7 +652,11 @@ function CandidateWorkspace({
     if (language !== "internal") return undefined;
     try { return permissionConditionForSelection(JSON.parse(selectionJson)); } catch { return undefined; }
   }, [language, selectionJson]);
-  const setTab = (value: typeof defaults.tab) => draft.update("tab", value);
+  const setTab = (value: typeof defaults.tab) => {
+    if (evaluationHandoff && value === "evaluations") return;
+    if (evaluationHandoff) onCancelEvaluationHandoff();
+    draft.update("tab", value);
+  };
   const setSource = (value: typeof defaults.source) => draft.update("source", value);
   const setFixtures = (value: typeof defaults.fixtures) => draft.update("fixtures", value);
   const setBenign = (value: typeof defaults.benign) => draft.update("benign", value);
@@ -812,6 +839,8 @@ function CandidateWorkspace({
         resourceId={resource?.id}
         resourceDigest={resource?.digest}
         sourceRunId={sourceRunId}
+        comparisonHandoff={evaluationHandoff}
+        onCancelComparisonHandoff={onCancelEvaluationHandoff}
         runs={finalizedRuns}
         revisions={lineage.filter((item) => item.resourceId).map((item) => ({ id: item.resourceId!, label: `Revision ${item.revision ?? 1} · ${item.resourceId}` }))}
       /> : tab === "fixtures" ? <>

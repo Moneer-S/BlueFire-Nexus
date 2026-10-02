@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
-import { DetectorEvaluationComparison } from "../src/components/DetectorEvaluationComparison";
+import { DetectorEvaluationComparison, DetectorEvaluationTable } from "../src/components/DetectorEvaluationComparison";
 import { api } from "../src/lib/api";
 import { compareDetectorEvaluations, evaluationLabel } from "../src/lib/detection-results";
 import type { DetectionResource, DetectionRunEvaluation } from "../src/types";
@@ -67,6 +67,33 @@ function mount(selection?: { baselineId: string; revisedId: string }) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return { client, ...render(<QueryClientProvider client={client}><MemoryRouter><DetectorEvaluationComparison runIds={["attack", "heldout"]} selection={selection} /></MemoryRouter></QueryClientProvider>) };
 }
+it.each(["original", "revised", "both"] as const)("offers the exact saved revision and run for missing %s evaluations", async missing => {
+  vi.spyOn(api, "detections").mockResolvedValue({ schema_version: "v1", candidates: [resource("original", "original", 1), resource("revised", "original", 2)] });
+  vi.spyOn(api, "detectionRunEvaluations").mockImplementation(async id => ({ evaluations: missing === "both" || missing === id ? [] : [report(id, "attack", "matched")] }));
+  const evaluate = vi.spyOn(api, "evaluateDetectionRun");
+  mount({ baselineId: "original", revisedId: "revised" });
+  const table = await screen.findByRole("region", { name: "Measured detector comparison" });
+  const row = within(table).getAllByRole("row").find(item => item.textContent?.includes("attack"))!;
+  for (const side of ["original", "revised"] as const) {
+    const link = within(row).queryByRole("link", { name: `Evaluate ${side} on this run` });
+    if (missing === "both" || missing === side) {
+      expect(link).toBeVisible();
+      const destination = new URL(link!.getAttribute("href")!, "http://localhost");
+      expect(destination.pathname).toBe("/detection-lab");
+      expect(Object.fromEntries(destination.searchParams)).toEqual({ run: "attack", candidate: side, candidate_scope: "registry", view: "evaluations" });
+    } else expect(link).not.toBeInTheDocument();
+  }
+  const heldout = within(table).getAllByRole("row").find(item => item.textContent?.includes("heldout"))!;
+  expect(within(heldout).getAllByText("Not evaluated")).toHaveLength(2);
+  expect(within(heldout).getAllByRole("link", { name: /^Evaluate (original|revised) on this run$/ })).toHaveLength(2);
+  expect(evaluate).not.toHaveBeenCalled();
+});
+it("does not invent a saved revision handoff for a table without validated resources", () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><MemoryRouter><DetectorEvaluationTable baseline={[]} revised={[]} baselineLabel="Original" revisedLabel="Revised" runIds={["attack"]} /></MemoryRouter></QueryClientProvider>);
+  expect(screen.getAllByText("Not evaluated")).toHaveLength(2);
+  expect(screen.queryByRole("link", { name: /^Evaluate (original|revised) on this run$/ })).not.toBeInTheDocument();
+});
 it("compares internal revision results and offers the real structured definition", async () => {
   const user = userEvent.setup();
   const resources = [resource("original", "original", 1), resource("revised", "original", 2)].map(item => ({ ...item, document: { ...item.document, target_language: "internal", rule_source: undefined, selection: { other_write_bit: true } } }));
@@ -139,6 +166,7 @@ it.each(["missing original", "missing revision", "unrelated revision", "duplicat
   expect(screen.getByRole("combobox", { name: "Revised detector" })).toHaveValue("revised");
   expect(screen.queryByRole("button", { name: "Export comparison and evidence" })).not.toBeInTheDocument();
   expect(reports).not.toHaveBeenCalledWith("revised");
+  expect(screen.queryByRole("link", { name: /^Evaluate (original|revised) on this run$/ })).not.toBeInTheDocument();
   expect(evaluate).not.toHaveBeenCalled();
 });
 
@@ -161,6 +189,7 @@ it.each(["candidate", "lineage", "revision", "definition"])("does not export ret
   await screen.findByText("Detector evaluation identity mismatch");
   expect(screen.queryByRole("button", { name: "Export comparison and evidence" })).not.toBeInTheDocument();
   expect(screen.queryByRole("region", { name: "Measured detector comparison" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: /^Evaluate (original|revised) on this run$/ })).not.toBeInTheDocument();
 });
 
 it.each(["registry", "evaluations"])("withholds a restored export while %s are refreshing and after refresh fails", async kind => {
@@ -173,9 +202,11 @@ it.each(["registry", "evaluations"])("withholds a restored export while %s are r
   else vi.mocked(api.detectionRunEvaluations).mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
   void client.invalidateQueries({ queryKey: kind === "registry" ? ["detections"] : ["detection-evaluations", "revised"] });
   await waitFor(() => expect(screen.queryByRole("button", { name: "Export comparison and evidence" })).not.toBeInTheDocument());
+  expect(screen.queryByRole("link", { name: /^Evaluate (original|revised) on this run$/ })).not.toBeInTheDocument();
   fail(new Error("Authored unavailable response"));
   await screen.findByText(kind === "registry" ? "Detector revisions unavailable" : "Detector evaluations unavailable");
   expect(screen.queryByRole("button", { name: "Export comparison and evidence" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: /^Evaluate (original|revised) on this run$/ })).not.toBeInTheDocument();
 });
 
 it("refreshes only the selected records to repair an evaluation identity mismatch", async () => {
