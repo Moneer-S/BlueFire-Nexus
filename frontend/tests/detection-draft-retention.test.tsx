@@ -350,11 +350,13 @@ it("loads a legacy manual draft without permissionCondition as staged", async ()
   await screen.findByRole("heading", { name: "Baseline SQL" });
   expect(screen.getByRole("textbox", { name: "Title" })).toBeVisible();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-  expect(screen.getByRole("combobox", { name: "Detection condition" })).toHaveValue("staged");
+  expect(screen.getByRole("textbox", { name: "Value for condition 1" })).toHaveValue("file_observation");
+  expect(screen.getByRole("textbox", { name: "Value for condition 2" })).toHaveValue("staged/");
+  expect(screen.getByRole("button", { name: "Save rule draft" })).toBeDisabled();
   expect(sessionStorage.getItem(manualKey)).toBe(raw);
-  await user.selectOptions(screen.getByRole("combobox", { name: "Detection condition" }), "world_writable");
+  await user.selectOptions(screen.getByRole("combobox", { name: "Condition starter" }), "world_writable");
   expect(sessionStorage.getItem(manualKey)).not.toBe(raw);
-  expect(JSON.parse(sessionStorage.getItem(manualKey)!).value.permissionCondition).toBe("world_writable");
+  expect(JSON.parse(JSON.parse(sessionStorage.getItem(manualKey)!).value.internalConditions).draft.conditions).toContainEqual({ field: "other_write_bit", operator: "equals", value: "true" });
   expect(JSON.parse(sessionStorage.getItem(manualKey)!).value).toMatchObject(value);
 });
 

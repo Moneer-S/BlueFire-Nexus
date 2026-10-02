@@ -4,9 +4,9 @@ import "./StructuredRuleEditor.css";
 
 const operatorLabels = { equals: "Equals (exact type and value)", contains: "Contains (ignore case)", startswith: "Starts with (ignore case)", endswith: "Ends with (ignore case)" };
 
-export function StructuredRuleEditor({ source, draft, onDraft, onApply, disabled = false }: {
+export function StructuredRuleEditor({ source, draft, onDraft, onApply, disabled = false, purpose = "revision", applyError }: {
   source: string; draft: StructuredRuleDraft | null; onDraft: (value: StructuredRuleDraft | null) => void;
-  onApply: (source: string) => void; disabled?: boolean;
+  onApply: (source: string) => void; disabled?: boolean; purpose?: "creation" | "revision"; applyError?: string;
 }) {
   if (draft && draft.source !== source) return <div role="alert"><p>The retained condition edits belong to a different selection. The current selection has not been changed.</p><details><summary>Inspect retained condition edits</summary><pre>{JSON.stringify(draft.conditions, null, 2)}</pre></details><Button disabled={disabled} onClick={() => onDraft(null)}>Discard condition edits</Button></div>;
   const original = readStructuredSelection(source);
@@ -15,6 +15,12 @@ export function StructuredRuleEditor({ source, draft, onDraft, onApply, disabled
   const pending = activeDraft !== null;
   const conditions = activeDraft?.conditions ?? original.conditions;
   const checked = buildStructuredSelection(conditions);
+  const pendingMessage = purpose === "creation"
+    ? "Condition edits have not been applied. Apply or discard them before saving this rule draft."
+    : "Condition edits have not been applied. Apply or discard them before saving a revision or editing advanced JSON.";
+  const appliedMessage = purpose === "creation"
+    ? "These conditions match the current definition. Editing them does not save the rule or evaluate a run. Suggested values are optional; custom text is preserved."
+    : "These conditions match the current selection. Editing them does not save a revision or evaluate a run. Suggested values are optional; custom text is preserved.";
   const change = (next: StructuredRuleCondition[]) => onDraft({ source, conditions: next });
   const update = (index: number, next: Partial<StructuredRuleCondition>) => change(conditions.map((condition, at) => at === index ? { ...condition, ...next } : condition));
   return <section className="structured-rule-editor" aria-label="Visual rule conditions">
@@ -36,10 +42,11 @@ export function StructuredRuleEditor({ source, draft, onDraft, onApply, disabled
       </fieldset>;
     })}
     {!checked.ok ? <p role="alert">{checked.error}</p> : null}
-    <p role="status">{pending ? "Condition edits have not been applied. Apply or discard them before saving a revision or editing advanced JSON." : "These conditions match the current selection. Editing them does not save a revision or evaluate a run. Suggested values are optional; custom text is preserved."}</p>
+    {applyError ? <p role="alert">{applyError}</p> : null}
+    <p role="status">{pending ? pendingMessage : appliedMessage}</p>
     <div className="candidate-actions">
       <Button size="small" disabled={disabled || conditions.length >= structuredRuleLimits.conditions} onClick={() => change([...conditions, { field: "observation_kind", operator: "equals", value: "" }])}>Add condition</Button>
-      <Button size="small" disabled={disabled || !pending || !checked.ok} onClick={() => { if (checked.ok) onApply(JSON.stringify(checked.selection, null, 2)); }}>Apply conditions</Button>
+      <Button size="small" disabled={disabled || !pending || !checked.ok || Boolean(applyError)} onClick={() => { if (checked.ok && !applyError) onApply(JSON.stringify(checked.selection, null, 2)); }}>Apply conditions</Button>
       {pending ? <Button size="small" disabled={disabled} onClick={() => onDraft(null)}>Discard condition edits</Button> : null}
     </div>
   </section>;

@@ -135,6 +135,24 @@ This internal matcher validates its own structured predicate only. It is not a r
 
 ### Edit internal rule conditions
 
+To author an internal rule before its first save, open **New rule**, choose the
+registered behavior and **Internal structured matcher**, then edit **Match all
+these conditions**. The optional **Collection contents** starter selects independent
+collection observations; add a format, path or record count as needed. Permission
+and staged-file starters are also available. Choosing a starter replaces the
+pending conditions. **Apply conditions** keeps the selection in this form;
+**Save rule draft** submits that exact selection and its predicted fields as a
+hypothesis. Neither action parses, evaluates, runs a scenario or requests AI.
+
+Apply or discard pending edits before saving an internal rule. Both applied and
+pending conditions survive navigation and reload in the same browser tab. Switching
+languages keeps the internal definition for when you return to Internal; other
+languages continue to start from their staged-file definition. Pending internal
+edits must still be applied or discarded before saving. **Discard New rule
+inputs** resets the entire manual draft after confirmation. If this exact internal
+definition already exists, review the matching rule and explicitly choose
+**Start another draft** to create a separate draft.
+
 Select a saved internal rule and open **Revisions → Revise this rule**. With
 **Tune rule behavior** selected, **Match all these conditions** provides field,
 operator and value controls for supported collection and permission conditions.
