@@ -9,6 +9,7 @@ import type { DetectionResource, DetectionRunEvaluation } from "../types";
 import { Badge, Button, Callout, EmptyState, ErrorState, Field, LoadingState, Panel, PanelHeader, sentence } from "./Primitives";
 import { MatchedObservations } from "./MatchedObservations";
 import { RunReference } from "./RunReference";
+import { DetectionEvaluationQueue } from "./DetectionEvaluationQueue";
 
 function download(name: string, content: string, type: string) {
   const url = URL.createObjectURL(new Blob([content], { type }));
@@ -125,6 +126,7 @@ export function DetectorEvaluationComparison({ runIds, selection, onSelectionCha
           <div className="candidate-actions"><Button onClick={exportResults}>Export comparison and evidence</Button><Button onClick={() => exportRule(revised)} disabled={revised.document.target_language !== "internal" && !revised.document.rule_source}>Download revised rule</Button></div>
         </> : null}
       </>}
+      <DetectionEvaluationQueue runIds={runIds} baselineId={baselineId} revisedId={revisedId} resources={candidates.data?.candidates ?? []} reports={right.data?.evaluations ?? []} ready={Boolean(ready)} />
     </div>
   </Panel>;
 }

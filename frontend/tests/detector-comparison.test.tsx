@@ -3,6 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
+import { webcrypto } from "node:crypto";
 import { DetectorEvaluationComparison, DetectorEvaluationTable } from "../src/components/DetectorEvaluationComparison";
 import { api } from "../src/lib/api";
 import { compareDetectorEvaluations, evaluationLabel } from "../src/lib/detection-results";
@@ -18,7 +19,7 @@ function report(candidateId: string, runId: string, state: DetectionRunEvaluatio
   };
 }
 function compare(left: DetectionRunEvaluation[], right: DetectionRunEvaluation[], ids?: string[]) { return compareDetectorEvaluations(left, right, ids); }
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 it("compares measured events on identical evidence and retains untested selected runs", () => {
   const rows = compare([report("original", "attack", "not_matched"), report("original", "benign", "matched", "benign")], [report("revised", "attack", "matched"), report("revised", "benign", "not_matched", "benign")], ["attack", "benign", "heldout"]);
@@ -161,6 +162,35 @@ it("loads only the chosen revision family and exposes missing held-out evaluatio
   expect(screen.getByRole("combobox", { name: "Revised detector" })).toHaveValue("");
   expect(screen.queryByText("New match")).not.toBeInTheDocument();
   await waitFor(() => expect(fetchReports).toHaveBeenCalledWith("unrelated"));
+});
+
+it("exposes an explicit queue for missing revised results without submitting on comparison load", async () => {
+  const user = userEvent.setup();
+  vi.stubGlobal("crypto", webcrypto);
+  const digest = `sha256:${"c".repeat(64)}`;
+  const candidates = [resource("original", "original", 1), resource("revised", "original", 2)].map(item => ({
+    ...item, digest,
+    document: { ...item.document, definition_digest: digest, parser_backend: { name: "SQLite", version: "3.45.1" },
+      validation: { query_sha256: digest, source_sha256: digest } },
+  }));
+  vi.spyOn(api, "detections").mockResolvedValue({ schema_version: "v1", candidates });
+  vi.spyOn(api, "detectionRunEvaluations").mockResolvedValue({ evaluations: [] });
+  vi.spyOn(api, "runDetail").mockImplementation(async runId => ({
+    run_id: runId, scenario_title: runId === "attack" ? "Attack evidence case" : "Held-out evidence case",
+    mode: "execute", status: "completed", finalized_at: "2026-09-06T12:00:00Z", steps: [],
+    manifest: { schema_version: "1.0", run_id: runId, bundle_hash: digest, files: { "evidence.json": { hash: digest, size_bytes: 123 } } },
+  }));
+  const evaluate = vi.spyOn(api, "evaluateDetectionRun");
+  mount({ baselineId: "original", revisedId: "revised" });
+  await screen.findByRole("region", { name: "Measured detector comparison" });
+  expect(screen.getByRole("region", { name: "Evaluate missing revised results" })).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Review missing revised evaluations" }));
+  expect(await screen.findByRole("button", { name: "Start evaluations" })).toBeVisible();
+  const cases = screen.getByRole("list");
+  expect(within(cases).getAllByRole("listitem").map(item => item.textContent)).toEqual([
+    expect.stringContaining("Attack evidence case"), expect.stringContaining("Held-out evidence case"),
+  ]);
+  expect(evaluate).not.toHaveBeenCalled();
 });
 
 it.each(["missing original", "missing revision", "unrelated revision", "duplicate original", "duplicate revision", "mismatched document"])("refuses a restored %s without substituting another detector", async state => {
