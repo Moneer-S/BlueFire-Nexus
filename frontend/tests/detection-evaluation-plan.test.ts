@@ -175,5 +175,5 @@ it("matches a fixed canonical SHA-256 manifest vector", () => {
   const expectedCanonical = `{"bundle_hash":"${digest}","files":{"10":{"hash":"sha256:${"1".repeat(64)}","size_bytes":10},"2":{"hash":"sha256:${"2".repeat(64)}","size_bytes":2},"evidence.json":{"hash":"sha256:${"e".repeat(64)}","size_bytes":123}},"run_id":"${vectorRunId}","schema_version":"1.0"}`;
   const binding = evaluationSource({ run_id: vectorRunId, mode: "execute", status: "completed", finalized_at: "2026-09-06", steps: [], manifest: vectorManifest }, vectorRunId);
   expect(binding?.manifestIdentity).toBe(expectedCanonical);
-  expect(createHash("sha256").update(expectedCanonical, "utf8").digest("hex")).toBe("39eadde111ab04fcdd49fed88270d9a6f3ba2dfdb6bda956871f0e939bbdee83");
+  expect(createHash("sha256").update(expectedCanonical, "utf8").digest("hex")).toBe("39eadde111ab04fcdd49fed88270d9a6f3ba2dfdb6bda956871f0e939bbdee83"); // pragma: allowlist secret -- independently verified SHA-256 of the authored canonical manifest above
 });
