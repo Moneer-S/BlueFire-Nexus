@@ -13,19 +13,27 @@ struct ReviewedBuild {
     size_bytes: u64,
 }
 
-// Ubuntu Noble, Launchpad build 31108836. Package identity and reproducible
+// Ubuntu Noble gzip 1.12-1ubuntu3.2, official security archive. Package identity and reproducible
 // extraction procedure: docs/REVIEWED_NATIVE_BUILDS.md. Never execute a candidate
 // to determine its identity. Unknown builds require a reviewed source update.
-const BUILDS: &[ReviewedBuild] = &[ReviewedBuild {
-    version: "9.4-3ubuntu6.1",
-    architecture: "x86_64",
-    content_sha256: "sha256:4158cfdb26fb11602bebf64dc585bea557f2b7287eb49ad51c54f1f8897acada",
-    size_bytes: 55816,
-}];
+const BUILDS: &[ReviewedBuild] = &[
+    ReviewedBuild {
+        version: "1.12-1ubuntu3.2",
+        architecture: "x86_64",
+        content_sha256: "sha256:afea077ce127d4fa9ad410d3066ba2b54dea19c0b44f04adf56c72d5f7b7a9bb",
+        size_bytes: 93424,
+    },
+    ReviewedBuild {
+        version: "1.12-1ubuntu3.1",
+        architecture: "x86_64",
+        content_sha256: "sha256:16f1f8dbe5b47b3c1160b9066bd15bfdd80548b1b878b1a025c462fec0ca02b1",
+        size_bytes: 93424,
+    },
+];
 
 pub(crate) fn verify(installation: &NativeToolInstallation) -> Result<(), UnrecognizedToolBuild> {
-    if installation.adapter_id == "sandbox.permission.chmod.v1"
-        && installation.tool_id == "gnu.coreutils.chmod.v1"
+    if installation.adapter_id == "sandbox.collection.atomic-gzip.v1"
+        && installation.tool_id == "gnu.gzip.v1"
         && installation.platform == "linux"
         && BUILDS.iter().any(|build| {
             build.version == installation.tool_version
@@ -38,7 +46,7 @@ pub(crate) fn verify(installation: &NativeToolInstallation) -> Result<(), Unreco
     } else {
         Err(UnrecognizedToolBuild {
             code: "unrecognized_tool_build",
-            message: "This executable and version do not match a reviewed GNU chmod build.",
+            message: "This executable and version do not match a reviewed GNU gzip build.",
         })
     }
 }
@@ -51,16 +59,16 @@ mod tests {
         let build = &BUILDS[0];
         NativeToolInstallation {
             schema_version: crate::native_tool_installations::SCHEMA.into(),
-            adapter_id: "sandbox.permission.chmod.v1".into(),
-            adapter_version: "1.0.0".into(),
+            adapter_id: "sandbox.collection.atomic-gzip.v1".into(),
+            adapter_version: "1.1.0".into(),
             adapter_contract_digest: format!("sha256:{}", "a".repeat(64)),
-            tool_id: "gnu.coreutils.chmod.v1".into(),
+            tool_id: "gnu.gzip.v1".into(),
             tool_version: build.version.into(),
             platform: "linux".into(),
             architecture: build.architecture.into(),
             content_sha256: build.content_sha256.into(),
             size_bytes: build.size_bytes,
-            installation_location: "/usr/bin/chmod".into(),
+            installation_location: "/usr/bin/gzip".into(),
         }
     }
 
@@ -68,7 +76,7 @@ mod tests {
     fn reviewed_bytes_can_have_a_nondefault_setup_location() {
         let mut installation = reviewed();
         assert!(verify(&installation).is_ok());
-        installation.installation_location = "/opt/reviewed-tools/chmod".into();
+        installation.installation_location = "/opt/reviewed-tools/gzip".into();
         assert!(verify(&installation).is_ok());
         // Path protection and observation still occur in native_tool_inspection.
     }
@@ -83,7 +91,7 @@ mod tests {
         changed.size_bytes += 1;
         variants.push(changed);
         let mut changed = reviewed();
-        changed.tool_version = "9.4".into();
+        changed.tool_version = "1.12".into();
         variants.push(changed);
         let mut changed = reviewed();
         changed.architecture = "aarch64".into();

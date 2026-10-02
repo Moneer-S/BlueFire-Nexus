@@ -8,8 +8,18 @@ methods available as compatible alternatives.
 Choose the example in Builder, inspect its five steps, and select an owned Linux
 environment. It creates eight synthetic records, optionally redacts their values,
 selects the exact transformed file, collects it, and cleans up receipt-owned files.
-The gzip method requires an already-installed, protected system gzip executable.
-An unavailable or untrusted tool stops that method; BlueFire does not install it.
+The gzip method requires an already-installed, protected GNU gzip build listed in
+[Reviewed native tool builds](REVIEWED_NATIVE_BUILDS.md). In Settings, open the
+inactive Execute profile, choose **Configure methods**, select Linux and the gzip
+collection method, and save the draft. Then choose **Set up GNU gzip**. Inspect the exact
+package version and installation location, review the result, then save its
+binding. Inspection does not run gzip or activate the profile. An unavailable or
+untrusted tool stops that method; BlueFire does not install it.
+
+New default profiles leave optional external tools unselected so native methods
+can run before tool setup. Existing saved profiles keep their selections: if an
+older profile enables unbound gzip, deactivate it and either finish this setup or
+unselect gzip in **Configure methods**. Saving that draft does not approve a run.
 
 In Run review, leave **Collection contents** enabled. This normal control selects
 the semantic observer; BlueFire derives the exact collection paths and schedule.
@@ -47,13 +57,28 @@ bindings, bounded process handling, receipt-bound output publication and normal
 verified cleanup. The native JSONL and USTAR implementations are not relabeled as
 upstream work.
 
-The Linux adapter accepts only the protected `/usr/bin/gzip` or `/bin/gzip` ELF,
-opens and hashes it before execution through its pinned descriptor, clears its
-environment and uses no filename arguments. Its result records the selected
-executable, digest, fixed arguments and source-test identity. It bounds input,
-stdout, stderr and elapsed time, kills and reaps timed-out children, and arms a
-parent-death signal. There are no network effects, arbitrary command controls,
+The Linux adapter accepts only a setup-bound executable whose version, architecture,
+size and digest match a reviewed GNU gzip package. The default location is
+`/usr/bin/gzip`; a protected nondefault location may contain the same reviewed bytes.
+The runner holds and rechecks the protected ELF and its parent directories, then
+executes through its open descriptor. Runtime parameters cannot select a tool path
+or argument list. It clears the environment, sets only `LC_ALL=C`, uses the approved
+workspace as its working directory and supplies no filename arguments. Its result
+records the executable identity, fixed arguments, source test, adapter version,
+contract and installation digests, package version and successful exit status.
+Input and compressed output are each limited to 1 MiB, diagnostics to 8 KiB, and
+the entire method to five seconds or the shorter approved deadline. The adapter
+kills and reaps timed-out children, arms a parent-death signal and prevents gaining
+new privileges. There are no network effects, arbitrary command controls,
 dependency installers, elevation, or personal-file inputs.
+
+Adapter version **1.1.0** requires this installation binding. A previous unbound
+profile or exact-plan approval does not acquire it automatically. Reopen the saved
+experiment with the current runner, finish setup and review a fresh approval.
+Historical version 1.0.0 output remains readable with its original identity fields;
+it is not upgraded into proof of a bound installation. The graph, collection
+objective, input digest, independent observer and receipt-based cleanup remain the
+same. Native JSONL and USTAR methods do not require an external tool installation.
 
 GNU gzip remains an external system dependency under GPL-3.0-or-later; it is not
 copied into BlueFire's source or wheel. Atomic Red Team's adapted test is MIT.
@@ -66,5 +91,8 @@ Use of these project names describes provenance and does not imply endorsement.
 typed parameters, input binding and receipt-backed artifact publication. The
 registry in `runner/src/actions.rs` composes it with the other reviewed actions.
 `runner/src/atomic_gzip.rs` owns the fixed system-process boundary described above.
-Keeping these responsibilities separate does not change the method's approval,
-limits, execution or cleanup behavior and does not add a generic command API.
+The shared installation inspector and closed reviewed-build registry establish
+dependency readiness. The adapter repeats the binding and executable checks before
+effects; the shared inspector cannot register arbitrary native code. The immutable
+Python contract is in `bluefire/tool_adapters/gzip.py`. Simulation remains a labeled
+synthetic result and does not inspect or execute an external utility.

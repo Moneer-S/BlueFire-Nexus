@@ -1,0 +1,182 @@
+{
+  "schema_version": "bluefire.native-tool-descriptor-expectations.v1",
+  "description": "Authored contract expectations checked against compiled source and host-native committed artifacts; not evidence of execution or installation.",
+  "actions": [
+    {
+      "action_id": "sandbox.collection.atomic-gzip.v1",
+      "action_version": "1.1.0",
+      "behavior_ids": [
+        "sandbox.collection.atomic-gzip.v1"
+      ],
+      "capabilities": [
+        "filesystem_read",
+        "filesystem_write",
+        "process_spawn"
+      ],
+      "cleanup_action_id": "sandbox.cleanup.v1",
+      "cleanup_receipt": true,
+      "declared_limits": {
+        "max_artifact_bytes": true,
+        "max_depth": null,
+        "max_files": true,
+        "max_stderr_bytes": true,
+        "max_stdout_bytes": true,
+        "timeout_ms": true
+      },
+      "filesystem_effect": true,
+      "native_tool_binding": {
+        "adapter_contract_digest": "sha256:dd6aec4a80857571f54097f0e8814f3e4307f50c90f8517bff2714381e1ee4ad",
+        "adapter_id": "sandbox.collection.atomic-gzip.v1",
+        "adapter_version": "1.1.0",
+        "tool_id": "gnu.gzip.v1"
+      },
+      "network_effect": false,
+      "observation_hints": [
+        {
+          "signal": "archive_create",
+          "source": "filesystem"
+        }
+      ],
+      "parameter_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "input": {
+            "const": "fixtures/transformed.jsonl",
+            "type": "string"
+          },
+          "max_collection_bytes": {
+            "maximum": 1048576,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "stage_variant": {
+            "enum": [
+              "primary",
+              "heldout"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "input",
+          "expected_sha256",
+          "stage_variant"
+        ],
+        "type": "object"
+      },
+      "platforms": [
+        "linux"
+      ],
+      "process_effect": true,
+      "provenance": {
+        "license": "MIT",
+        "reference": "388942adbd9641f4dfdcf079d7efe9a75ec0ac43:cde3c2af-3485-49eb-9c1f-0ed60e9cc0af",
+        "source": "Atomic Red Team single-file gzip method, constrained BlueFire adaptation"
+      },
+      "readiness": "structural",
+      "safety_tier": "controlled",
+      "schema_version": "bluefire.runner-action-sdk.v1",
+      "summary": "Compress the bound synthetic fixture through one fixed Linux system gzip adapter.",
+      "target_types": [
+        "sandbox"
+      ]
+    },
+    {
+      "action_id": "sandbox.permission.chmod.v1",
+      "action_version": "1.0.0",
+      "behavior_ids": [
+        "sandbox.permission.relax.v1"
+      ],
+      "capabilities": [
+        "filesystem_read",
+        "filesystem_write",
+        "process_spawn"
+      ],
+      "cleanup_action_id": "sandbox.cleanup.v1",
+      "cleanup_receipt": true,
+      "declared_limits": {
+        "max_artifact_bytes": true,
+        "max_depth": null,
+        "max_files": true,
+        "max_stderr_bytes": true,
+        "max_stdout_bytes": true,
+        "timeout_ms": true
+      },
+      "filesystem_effect": true,
+      "native_tool_binding": {
+        "adapter_contract_digest": "sha256:db1c271df09ccd2c781e8b7df4e042fb33e76c90ab8cd621dc8f52dcd3a57dd8",
+        "adapter_id": "sandbox.permission.chmod.v1",
+        "adapter_version": "1.0.0",
+        "tool_id": "gnu.coreutils.chmod.v1"
+      },
+      "network_effect": false,
+      "observation_hints": [
+        {
+          "signal": "permission_change",
+          "source": "filesystem"
+        }
+      ],
+      "parameter_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "enum": [
+              "0600",
+              "0640",
+              "0660",
+              "0666"
+            ],
+            "type": "string"
+          },
+          "source_fixture_id": {
+            "const": "transformed",
+            "type": "string"
+          },
+          "source_receipt_id": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "source_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "source_size": {
+            "maximum": 67108864,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "source_fixture_id",
+          "source_sha256",
+          "source_receipt_id",
+          "source_size",
+          "mode"
+        ],
+        "type": "object"
+      },
+      "platforms": [
+        "linux"
+      ],
+      "process_effect": true,
+      "provenance": {
+        "license": "MIT",
+        "reference": "6132b92779873cb0d05bef07ba0a480d47eb1cc8:34ca1464-de9d-40c6-8c77-690adf36a135",
+        "source": "Atomic Red Team numeric chmod method, constrained BlueFire adaptation"
+      },
+      "readiness": "structural",
+      "safety_tier": "controlled",
+      "schema_version": "bluefire.runner-action-sdk.v1",
+      "summary": "Change numeric permission bits on one receipt-owned sample with reviewed GNU chmod.",
+      "target_types": [
+        "sandbox"
+      ]
+    }
+  ]
+}

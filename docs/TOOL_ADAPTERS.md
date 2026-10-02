@@ -1,11 +1,10 @@
 # Reviewed tool adapters
 
 The Python `bluefire.tool_adapters` package validates review metadata and logical
-inputs. The [GNU chmod permission method](ATOMIC_CHMOD.md) connects that contract
-to protected installation setup, approval binding, a fixed Rust adapter, receipt
-cleanup and permission observations. Its software validation is separate from
-live lab proof. The existing [Atomic gzip method](ATOMIC_GZIP.md) remains its own
-fixed Rust adapter.
+inputs. The [GNU chmod permission method](ATOMIC_CHMOD.md) and
+[Atomic gzip method](ATOMIC_GZIP.md) connect that contract to protected installation
+setup, approval binding, fixed Rust adapters, receipt cleanup and independent
+observations. Their software validation is separate from installed lab proof.
 
 ## Decision
 
@@ -65,12 +64,16 @@ Do not wire a generic descriptor-to-command dispatcher into `runner_transport.py
 keeps explicit invocation and parsing code. Do not append per-tool persistence cases
 to `product_store.py`; reuse durable artifact/evidence records.
 
-The existing gzip adapter already pins a protected ELF inode, uses fixed arguments,
-captures bounded output, and publishes receipt-owned artifacts. It records its
-executable digest but does not bind a separately configured expected tool version and
-digest; it also uses `/` as its working directory. It therefore is not advertised as
-implementing this new contract. Migration must preserve its current negative tests
-and receipt guarantees while adding the missing installation/supervision binding.
+The gzip adapter version **1.1.0** uses the shared reviewed installation flow.
+Setup binds the expected GNU gzip package version, architecture, executable size
+and digest to an independently reviewed build. Rust rechecks the adapter and
+installation binding and the protected ELF, then executes its held descriptor with
+fixed `-n -c` arguments and a cleared environment. Its working directory is the
+approved sandbox workspace supplied by `context.root.path()`, not a newly created
+per-invocation directory. Bounded output and receipt-owned artifact publication
+remain in place. Legacy unbound profiles and approvals gain no authority;
+historical 1.0.0 records retain their original identities. See
+[Atomic gzip collection](ATOMIC_GZIP.md) for setup, limits and compatibility.
 
 ## Outcome and evidence contract
 
