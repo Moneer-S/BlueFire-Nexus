@@ -38,6 +38,7 @@ from bluefire.runner_client import (
     runner_watchdog_status_path,
 )
 from bluefire.runner_linux_containment import LinuxPrivateProcessContainment
+from tests_platform.runner_failure_diagnostics import darwin_governor_snapshot
 
 _HELPER = r"""
 import json
@@ -1241,12 +1242,34 @@ def test_darwin_spawn_rechecks_child_status_ownership(
 def test_darwin_process_slots_reject_before_exceeding_governor(tmp_path: Path) -> None:
     runner = _runner(tmp_path)
     slots: list[object] = []
+
+    def snapshot() -> dict[str, Any]:
+        # The caller holds the same RLock as reservation; never poll or reap here.
+        return darwin_governor_snapshot(
+            runner_client_module._DARWIN_ACTIVE_PROCESSES,
+            runner_client_module._DARWIN_INDETERMINATE_PROCESSES,
+            runner_client_module._DARWIN_PENDING_PROCESS_SLOTS,
+            owner=runner,
+        )
+
+    with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+        initial = snapshot()
     try:
         for _index in range(runner_client_module._DARWIN_INDETERMINATE_LIMIT):
             slot = object()
-            assert runner._reserve_darwin_process_slot(slot) is True
+            with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+                assert runner._reserve_darwin_process_slot(slot) is True, {
+                    "initial": initial,
+                    "at_failure": snapshot(),
+                    "reserved_here": len(slots),
+                }
             slots.append(slot)
-        assert runner._reserve_darwin_process_slot(object()) is False
+        with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+            assert runner._reserve_darwin_process_slot(object()) is False, {
+                "initial": initial,
+                "at_failure": snapshot(),
+                "reserved_here": len(slots),
+            }
     finally:
         for slot in slots:
             runner._cancel_darwin_process_slot(slot)
