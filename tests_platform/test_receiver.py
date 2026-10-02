@@ -124,10 +124,10 @@ def _read_response(connection: socket.socket) -> tuple[int, dict[str, str], dict
     while True:
         try:
             chunk = connection.recv(64 * 1024)
-        except ConnectionResetError:
-            # BSD sockets may reset after delivering the complete response when
-            # the server closes with unread request bytes. Parsing below still
-            # requires a complete HTTP response and body.
+        except (ConnectionResetError, ConnectionAbortedError):
+            # Some socket stacks reset or abort after delivering the complete
+            # response when the server closes with unread request bytes.
+            # Parsing below still requires a complete HTTP response and body.
             if not response:
                 raise
             break
@@ -156,32 +156,41 @@ def _read_response(connection: socket.socket) -> tuple[int, dict[str, str], dict
     return status, headers, json.loads(body)
 
 
-class _ResettingConnection:
-    def __init__(self, payload: bytes) -> None:
+class _ClosingConnection:
+    def __init__(self, payload: bytes, close_error: type[OSError]) -> None:
         self._payload = payload
+        self._close_error = close_error
 
     def recv(self, maximum: int) -> bytes:
         if self._payload:
             chunk = self._payload[:maximum]
             self._payload = self._payload[maximum:]
             return chunk
-        raise ConnectionResetError("peer reset")
+        raise self._close_error("peer closed")
 
 
-def test_response_parser_accepts_only_complete_body_before_peer_reset() -> None:
+@pytest.mark.parametrize("close_error", [ConnectionResetError, ConnectionAbortedError])
+def test_response_parser_accepts_only_complete_body_before_peer_close(
+    close_error: type[OSError],
+) -> None:
     payload = receiver_module._json_response(
         408,
         {"accepted": False, "error": "request_timeout"},
     )
 
-    status, _headers, body = _read_response(_ResettingConnection(payload))  # type: ignore[arg-type]
+    status, _headers, body = _read_response(
+        _ClosingConnection(payload, close_error)
+    )  # type: ignore[arg-type]
 
     assert status == 408
     assert body == {"accepted": False, "error": "request_timeout"}
 
     truncated = payload[:-1]
     with pytest.raises(ValueError, match="content length"):
-        _read_response(_ResettingConnection(truncated))  # type: ignore[arg-type]
+        _read_response(_ClosingConnection(truncated, close_error))  # type: ignore[arg-type]
+
+    with pytest.raises(close_error, match="peer closed"):
+        _read_response(_ClosingConnection(b"", close_error))  # type: ignore[arg-type]
 
 
 def _serve_in_thread(

@@ -94,12 +94,16 @@ export function decisionProvenance(record: RuntimeRecord): { label: string; prov
 
 export function decisionObservations(record: RuntimeRecord) {
   const projection = object(object(record.planner_state).observations);
+  // Recorded observations, not policy attempted_methods (which includes reserved choices).
   const attempts = Array.isArray(projection.attempts) ? projection.attempts.map(object) : [];
   const latest = attempts.filter(attempt => attempt.step_id === record.current_step_id).at(-1);
+  const failure = object(latest?.failure);
   const budgets = record.schema_version === "bluefire.ai-proposal-record.v5" ? v5BudgetProjection(record) : object(projection.remaining_budgets);
   const unknowns = Array.isArray(projection.unknowns) ? projection.unknowns.filter((item): item is string => typeof item === "string") : [];
   if (record.schema_version === "bluefire.ai-proposal-record.v5" && !budgets) unknowns.push("The retained v5 retry budget projection is inconsistent; remaining adaptive allowance is unknown.");
-  return { classification: object(latest?.failure).classification, budgets: budgets ?? {},
+  return { attempts, classification: failure.classification,
+    telemetryGap: typeof failure.telemetry_gap === "boolean" ? failure.telemetry_gap : undefined,
+    budgets: budgets ?? {},
     evidence: Array.isArray(latest?.evidence) ? latest.evidence.map(object).filter(item => typeof item.evidence_id === "string") : [],
     unknowns };
 }

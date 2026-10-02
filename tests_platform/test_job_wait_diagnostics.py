@@ -8,6 +8,7 @@ import pytest
 
 from bluefire.job_runtime import JobState, JobWaitTimeout, RunJobController
 from tests_platform import job_wait_diagnostics as diagnostic
+from tests_platform import test_graph_ai_jobs as graph
 from tests_platform import test_replay_jobs as replay
 
 PRIVATE = "PRIVATE_PROVIDER_PATH_JOB_ID_ERROR_MUST_NOT_APPEAR"
@@ -31,17 +32,25 @@ def actual_timeout(snapshot):
     pytest.fail("the authored job must time out")
 
 
-def emit(timeout, capsys, *, stage="replay_approval"):
+def emit(timeout, capsys, *, stage="replay_approval", report_section=True):
     sections = []
+    sink = (lambda *args: sections.append(args)) if report_section else None
     with pytest.raises(JobWaitTimeout) as caught:
-        with diagnostic.diagnose_job_wait(stage, lambda *args: sections.append(args)):
+        with diagnostic.diagnose_job_wait(stage, sink):
             raise timeout
     assert caught.value is timeout
     captured = capsys.readouterr()
-    assert captured.out == captured.err == ""
-    assert len(sections) == 1
-    when, title, payload = sections[0]
-    assert (when, title) == ("call", "Job wait diagnostic")
+    assert captured.err == ""
+    if report_section:
+        assert captured.out == ""
+        assert len(sections) == 1
+        when, title, payload = sections[0]
+        assert (when, title) == ("call", "Job wait diagnostic")
+    else:
+        assert sections == []
+        assert captured.out.startswith("Job wait diagnostic: ")
+        assert len(captured.out.encode()) < 8192
+        payload = captured.out.removeprefix("Job wait diagnostic: ")
     assert PRIVATE not in payload
     return json.loads(payload)
 
@@ -128,7 +137,10 @@ def test_missing_or_malformed_snapshot_fields_emit_only_unknowns(monkeypatch, ca
     }
 
 
-def test_process_thread_labels_and_error_fields_are_private_and_bounded(monkeypatch, capsys):
+@pytest.mark.parametrize("report_section", [False, True])
+def test_process_thread_labels_and_error_fields_are_private_and_bounded(
+    monkeypatch, capsys, report_section
+):
     snapshot = {
         "state": "running",
         "error": {"code": PRIVATE, "exception_type": PRIVATE, "message": PRIVATE},
@@ -148,7 +160,7 @@ def test_process_thread_labels_and_error_fields_are_private_and_bounded(monkeypa
     monkeypatch.setattr(
         diagnostic.sys, "_current_frames", lambda: {index: frame for index in range(100)}
     )
-    report = emit(timeout, capsys, stage=PRIVATE)
+    report = emit(timeout, capsys, stage=PRIVATE, report_section=report_section)
     output = json.dumps(report, sort_keys=True)
     assert PRIVATE not in output and "credential" not in output
     assert len(output.encode()) < 8192
@@ -233,6 +245,82 @@ def test_actual_terminal_wait_preserves_deadline_options_and_caller_cleanup(
         assert json.loads(payload)["stage"] == "replay_terminal"
 
 
+@pytest.mark.parametrize("stage", ["graph_parent", "graph_child", "replay_approval"])
+@pytest.mark.parametrize("diagnostic_fails", [False, True])
+def test_actual_wait_helpers_preserve_timeout_deadlines_and_caller_cleanup(
+    monkeypatch, capsys, stage, diagnostic_fails
+):
+    timeout, _ = actual_timeout({"state": "running", "progress": {"phase": "running"}})
+    order = []
+    parent = {
+        "job_id": "parent",
+        "state": "completed",
+        "progress": {"children": {"step-1": {"job_id": "child"}}},
+    }
+
+    def wait(job_id, *, timeout):
+        assert timeout == 15
+        order.append(job_id)
+        if stage == "graph_child" and job_id == "parent":
+            return parent
+        raise original
+
+    def wait_for_state(job_id, states, *, timeout):
+        assert timeout == 10 and states == {JobState.AWAITING_APPROVAL}
+        order.append(job_id)
+        raise original
+
+    original = timeout
+    service = SimpleNamespace(
+        submit_assistance_turn=lambda _body: {"job": parent},
+        job_controller=SimpleNamespace(wait=wait, wait_for_state=wait_for_state),
+        close=lambda: order.append("close"),
+    )
+    monkeypatch.setattr(diagnostic.sys, "_current_frames", lambda: {})
+    if diagnostic_fails:
+
+        def unavailable(*_args):
+            raise KeyboardInterrupt(PRIVATE)
+
+        monkeypatch.setattr(diagnostic, "_report", unavailable)
+    with pytest.raises(JobWaitTimeout) as caught:
+        try:
+            if stage == "replay_approval":
+                replay.awaiting(service, "replay")
+            else:
+                graph.proposed(service, {})
+        finally:
+            service.close()
+    assert caught.value is original
+    assert (
+        order
+        == {
+            "graph_parent": ["parent", "close"],
+            "graph_child": ["parent", "child", "close"],
+            "replay_approval": ["replay", "close"],
+        }[stage]
+    )
+    output = capsys.readouterr().out
+    assert PRIVATE not in output
+    if diagnostic_fails:
+        assert output == ""
+    else:
+        assert json.loads(output.removeprefix("Job wait diagnostic: "))["stage"] == stage
+
+
+def test_output_failure_cannot_replace_original_timeout(monkeypatch):
+    timeout, _ = actual_timeout({"state": "running"})
+
+    def failed_print(*_args, **_kwargs):
+        raise OSError(PRIVATE)
+
+    monkeypatch.setattr(diagnostic, "print", failed_print, raising=False)
+    with pytest.raises(JobWaitTimeout) as caught:
+        with diagnostic.diagnose_job_wait("graph_parent"):
+            raise timeout
+    assert caught.value is timeout
+
+
 def test_report_sink_failure_cannot_replace_original_timeout_or_cleanup(monkeypatch, capsys):
     timeout, _ = actual_timeout({"state": "running"})
     order = []
@@ -270,16 +358,17 @@ def test_pytest_report_section_retains_exact_payload_without_stdout(monkeypatch,
     assert captured.out == captured.err == ""
 
 
-def test_success_and_other_exceptions_do_not_run_diagnostics(monkeypatch):
+@pytest.mark.parametrize("report_section", [False, True])
+def test_success_and_other_exceptions_do_not_run_diagnostics(monkeypatch, report_section):
     def unexpected(*_args):
         pytest.fail("diagnostics reached without a job wait timeout")
 
     monkeypatch.setattr(diagnostic, "_report", unexpected)
-    with diagnostic.diagnose_job_wait("graph_parent", unexpected):
+    with diagnostic.diagnose_job_wait("graph_parent", unexpected if report_section else None):
         result = "unchanged"
     assert result == "unchanged"
     original = ValueError(PRIVATE)
     with pytest.raises(ValueError) as caught:
-        with diagnostic.diagnose_job_wait("graph_parent", unexpected):
+        with diagnostic.diagnose_job_wait("graph_parent", unexpected if report_section else None):
             raise original
     assert caught.value is original

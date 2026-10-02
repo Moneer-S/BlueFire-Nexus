@@ -192,6 +192,57 @@ describe("recorded adaptive path", () => {
     expect(within(decision).getByText(/Unknown retries for this step/)).toBeVisible();
   });
 
+  it.each([
+    { budget: "coherent", remainingStepRetries: 1 },
+    { budget: "inconsistent", remainingStepRetries: 0 },
+  ])("preserves observed permissions and coverage with a $budget v5 budget without turning a reservation into an attempt", ({ budget, remainingStepRetries }) => {
+    const run = v5Fixture();
+    run.steps.pop(); // The alternate was reserved, but no runner result was recorded.
+    const record = run.ai_proposals![0]!;
+    const policy = record.proposal_policy as Record<string, unknown>;
+    Object.assign(policy, { adaptive_retries_used: 1, step_retries_used: 1, attempted_methods: [
+      { step_id: "discover", behavior_id: primary, action_id: primary },
+      { step_id: "discover", behavior_id: alternate, action_id: alternate },
+    ] });
+    const state = record.planner_state as Record<string, unknown>;
+    const observations = state.observations as Record<string, unknown>;
+    observations.remaining_budgets = { steps: 3, seconds: 20, retries: 1, step_retries: remainingStepRetries };
+    const facts = { artifact_type: "file_observation", permission_status: "available", effective_access: "not_evaluated",
+      permission_mode_octal: "0660", group_write_bit: true, other_write_bit: false, non_owner_write_bit: true };
+    observations.attempts = [{ attempt_index: 0, step_id: "discover",
+      failure: { classification: "execution_timeout", telemetry_gap: true },
+      evidence: [{ evidence_id: "original-evidence", provenance: "observed", facts }] }];
+    run.evidence = { records: [{ evidence_id: "original-evidence", provenance: "observed", producer: "authored-fixture", content: facts }] };
+    const before = JSON.stringify(run);
+
+    render(<AdaptiveRunPath run={run} catalog={catalog}/>);
+    const path = screen.getByRole("region", { name: "Recorded adaptive path" });
+    expect(within(path).getByText("Attempt 1 · run position 1")).toBeVisible();
+    expect(within(path).queryByText("Attempt 2 · run position 2")).not.toBeInTheDocument();
+    expect(within(path).getByText("1 independently observed records")).toBeVisible();
+    const decision = within(path).getByRole("region", { name: "Recorded adaptive decision" });
+    expect(within(decision).getByText("Selection applied; no matching attempt is recorded.")).toBeVisible();
+    openDetails(decision);
+    expect(within(decision).getByText("Execution timeout", { selector: "dd" })).toBeVisible();
+    expect(within(decision).getByText("Some observations are unavailable.")).toBeVisible();
+    const evidenceRow = within(decision).getByText("Current attempt evidence", { selector: "dt" }).parentElement!;
+    expect(within(evidenceRow).getByText("original-evidence", { selector: "dd" })).toBeVisible();
+    const permissions = within(decision).getByRole("region", { name: "Observed file permissions" });
+    expect(within(permissions).getByText("0660", { selector: "dd" })).toBeVisible();
+    expect(within(permissions).getByText("From run position 1")).toBeVisible();
+    expect(within(permissions).getByText("Effective access not evaluated.")).toBeVisible();
+    expect(within(permissions).queryByText("Observation 2", { selector: "strong" })).not.toBeInTheDocument();
+    const warning = "The retained v5 retry budget projection is inconsistent; remaining adaptive allowance is unknown.";
+    if (budget === "coherent") {
+      expect(within(decision).getByText("3 steps · 20 seconds · 1 retry · 1 retry for this step")).toBeVisible();
+      expect(within(decision).queryByText(warning)).not.toBeInTheDocument();
+    } else {
+      expect(within(decision).getByText(warning)).toBeVisible();
+      expect(within(decision).getByText(/Unknown retries for this step/)).toBeVisible();
+    }
+    expect(JSON.stringify(run)).toBe(before);
+  });
+
   it("routes v5 records through the adaptive decision trail in the full run review", () => {
     const run = multipleV5Fixture();
     render(<RunReview run={run} catalog={catalog}/>);

@@ -23,6 +23,10 @@ test("Detection Lab creates an honest hypothesis without simulating validation",
   if (await newRule.getAttribute("open") === null) await page.getByText("New rule", { exact: true }).click();
   await page.getByRole("textbox", { name: "Title", exact: true }).fill("Internal matcher hypothesis");
   await page.getByRole("combobox", { name: "Target language" }).selectOption("internal");
+  await expect(page.getByRole("button", { name: "Save rule draft" })).toBeDisabled();
+  await newRule.getByRole("button", { name: "Apply conditions", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Internal matcher hypothesis", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Save rule draft" })).toBeEnabled();
   await page.getByRole("button", { name: "Save rule draft" }).click();
   await expect(page.getByRole("heading", { name: "Internal matcher hypothesis", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Validate source" })).toBeEnabled();

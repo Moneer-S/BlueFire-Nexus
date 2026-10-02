@@ -13,8 +13,14 @@ import { DetectionRunEvaluations } from "../components/DetectionRunEvaluations";
 import { DetectionAIRevision } from "../components/DetectionAIRevision";
 import { DetectionAICreation } from "../components/DetectionAICreation";
 import { PermissionConditionControl, isLegacyPermissionSelection, isPermissionCondition, permissionConditionForSelection, permissionPredictedFields, permissionSelection, type PermissionCondition } from "../components/PermissionConditionControl";
+import { StructuredRuleEditor } from "../components/StructuredRuleEditor";
+import { NewInternalRuleConditions } from "../components/NewInternalRuleConditions";
+import { InternalBenignFixtureEditor } from "../components/InternalBenignFixtureEditor";
+import { isInternalBenignFixtureDraftText, readInternalBenignFixtureDraft, type InternalBenignFixtureDraft } from "../lib/internal-benign-fixtures";
+import { initialManualInternalConditions, isManualInternalConditionsText, manualDetectionDefinition, readManualInternalConditions } from "../lib/manual-detection-definition";
+import { isStructuredRuleDraftText, readStructuredRuleDraft, type StructuredRuleDraft } from "../lib/structured-rule-selection";
 import { detectionCreationPath } from "../lib/detection-creation";
-import { runCandidateKey, sourceObservedRecords, sourceRunParam } from "../lib/run-handoffs";
+import { detectionEvaluationHandoff, runCandidateKey, sourceObservedRecords, sourceRunParam } from "../lib/run-handoffs";
 import type {
   DetectionCandidate,
   CatalogResponse,
@@ -32,8 +38,7 @@ import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, Loadin
 
 const lifecycle = ["hypothesis", "parsed", "fixture_exercised", "observed_exercised", "benign_evaluated", "rejected"];
 const emptyAIProviders: NonNullable<CatalogResponse["ai"]["providers"]> = [];
-const manualRuleDefaults = { title: "", behaviorId: "sandbox.collection.stage.v1", language: "sqlite", permissionCondition: "staged" as PermissionCondition };
-const manualLogsource = { category: "file_event", product: "generic" };
+const manualRuleDefaults = { title: "", behaviorId: "sandbox.collection.stage.v1", language: "sqlite", permissionCondition: "staged" as PermissionCondition, internalConditions: "" };
 function matchesManualFields(value: unknown, expected: Record<string, unknown>) {
   return !!value && typeof value === "object" && !Array.isArray(value)
     && Object.keys(value).length === Object.keys(expected).length
@@ -184,7 +189,8 @@ export function DetectionLabPage() {
       const value: unknown = JSON.parse(raw);
       if (typeof value !== "string") throw new Error("invalid");
       const stored = new URLSearchParams(value);
-      if ([...stored.keys()].some(key => !["run", "candidate", "candidate_scope", "q"].includes(key))) throw new Error("invalid");
+      if ([...stored.keys()].some(key => !["run", "candidate", "candidate_scope", "q", "view"].includes(key))
+        || (stored.has("view") && !detectionEvaluationHandoff(stored))) throw new Error("invalid");
       return { query: stored.toString(), error: "" };
     } catch { return { query: "", error: "The previous Detection Lab location could not be read. Its stored record was left untouched." }; }
   });
@@ -198,8 +204,9 @@ export function DetectionLabPage() {
       if (!query && initial.query) { setParams(initial.query, { replace: true }); return; }
     }
     if (params.has("create") || params.has("create_job") || (initial.error && query === originalQuery.current)) return;
+    if (params.has("view") && !detectionEvaluationHandoff(params)) return;
     const retained = new URLSearchParams();
-    for (const key of ["run", "candidate", "candidate_scope", "q"]) if (params.has(key)) retained.set(key, params.get(key)!);
+    for (const key of ["run", "candidate", "candidate_scope", "q", "view"]) if (params.has(key)) retained.set(key, params.get(key)!);
     try { const record = JSON.stringify(retained.toString()); if (record.length > 8192) throw new Error("oversized"); sessionStorage.setItem(navigationKey, record); setNavigationError(""); }
     catch { setNavigationError("The current selection and search cannot be kept after reload. This page remains usable."); }
   }, [query, params, setParams, initial]);
@@ -226,6 +233,9 @@ function DetectionCreationPage() {
 
 function DetectionRegistryPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const evaluationHandoff = detectionEvaluationHandoff(searchParams);
+  const handoffRequested = searchParams.has("view");
+  const cancelEvaluationHandoff = () => setSearchParams(old => { const next = new URLSearchParams(old); next.delete("view"); return next; }, { replace: true });
   const sourceRunId = sourceRunParam(searchParams, "run");
   const linkedCandidateId = sourceRunParam(searchParams, "candidate");
   const registryCandidate = searchParams.get("candidate_scope") === "registry";
@@ -246,12 +256,15 @@ function DetectionRegistryPage() {
   const search = searchParams.get("q") ?? "";
   const setSearch = (value: string) => setSearchParams(old => { const next = new URLSearchParams(old); if (value) next.set("q", value); else next.delete("q"); return next; }, { replace: true });
   const selectedId = linkedSelectionId;
-  const setSelectedId = (value: string) => setSearchParams(old => { const next = new URLSearchParams(old); next.set("candidate", value); next.set("candidate_scope", "registry"); return next; });
+  const setSelectedId = (value: string) => setSearchParams(old => { const next = new URLSearchParams(old); next.delete("view"); next.set("candidate", value); next.set("candidate_scope", "registry"); return next; });
   const [notice, setNotice] = useState<string>();
   // Manual hypothesis inputs contain no run evidence or candidate authority.
-  const manualDraft = useDetectionDraft("manual-new-rule", manualRuleDefaults, ["permissionCondition"], { permissionCondition: isPermissionCondition });
+  const manualDraft = useDetectionDraft("manual-new-rule", manualRuleDefaults, ["permissionCondition", "internalConditions"], { permissionCondition: isPermissionCondition, internalConditions: isManualInternalConditionsText });
   const { title, behaviorId, language } = manualDraft.value;
   const manualPermissionCondition = isPermissionCondition(manualDraft.value.permissionCondition) ? manualDraft.value.permissionCondition : "staged";
+  const manualInternalConditions = readManualInternalConditions(manualDraft.value.internalConditions) ?? initialManualInternalConditions(manualPermissionCondition);
+  const retainedInternalPending = Boolean(manualDraft.value.internalConditions && manualInternalConditions.draft);
+  const manualDefinition = manualDetectionDefinition(language, manualInternalConditions);
   const manualChanged = detectionDraftIdentity(manualDraft.value) !== detectionDraftIdentity(manualRuleDefaults);
   const [manualOpen, setManualOpen] = useState(Boolean(manualDraft.retained || manualDraft.warning || manualChanged));
   const [manualDiscardOpen, setManualDiscardOpen] = useState(false);
@@ -266,7 +279,7 @@ function DetectionRegistryPage() {
     manualGeneration.current += 1;
     manualDraft.update(field, value);
   };
-  type ManualSubmission = { inputs: typeof manualRuleDefaults; generation: number; navigation: typeof manualNavigation };
+  type ManualSubmission = { inputs: typeof manualRuleDefaults; definition: NonNullable<typeof manualDefinition>; generation: number; navigation: typeof manualNavigation };
   const manualSavePending = useRef(false);
   const [manualConflict, setManualConflict] = useState<{ id: string; submitted: ManualSubmission }>();
   const currentManualSubmission = (submitted: ManualSubmission) => manualMounted.current
@@ -284,8 +297,8 @@ function DetectionRegistryPage() {
         || definition.behavior_id !== currentConflict.submitted.inputs.behaviorId
         || definition.target_language !== currentConflict.submitted.inputs.language
         || definition.revision_kind !== "origin" || definition.revision_root_id !== currentConflict.id
-        || !matchesManualFields(definition.logsource, manualLogsource)
-        || !matchesManualFields(definition.selection, permissionSelection(currentConflict.submitted.inputs.language === "internal" && isPermissionCondition(currentConflict.submitted.inputs.permissionCondition) ? currentConflict.submitted.inputs.permissionCondition : "staged"))) {
+        || !matchesManualFields(definition.logsource, currentConflict.submitted.definition.logsource)
+        || !matchesManualFields(definition.selection, currentConflict.submitted.definition.selection)) {
         throw new Error("The saved rule does not match this starter definition. No new draft was created.");
       }
       return candidate;
@@ -298,15 +311,13 @@ function DetectionRegistryPage() {
     void client.invalidateQueries({ queryKey: ["detection-health"] });
   };
   const createMutation = useMutation({
-    mutationFn: ({ inputs }: ManualSubmission) => api.upsertDetection({
+    mutationFn: ({ inputs, definition }: ManualSubmission) => api.upsertDetection({
       behavior_id: inputs.behaviorId,
       title: inputs.title,
       target_language: inputs.language,
-      logsource: manualLogsource,
-      selection: permissionSelection(inputs.language === "internal" && isPermissionCondition(inputs.permissionCondition) ? inputs.permissionCondition : "staged"),
+      ...definition,
       provenance: { source: "operator-authored", license: "Review required" },
       known_misses: ["Requires declared observation fields."],
-      predicted_fields: permissionPredictedFields(inputs.language === "internal" && isPermissionCondition(inputs.permissionCondition) ? inputs.permissionCondition : "staged"),
     }),
     onSuccess: ({ candidate }, submitted) => {
       refreshDetections();
@@ -334,6 +345,7 @@ function DetectionRegistryPage() {
     mutationFn: (conflict: NonNullable<typeof manualConflict>) => api.cloneDetection(conflict.id, {
       title: conflict.submitted.inputs.title,
       reason: "Start another operator-authored draft from the same starter definition.",
+      ...(conflict.submitted.inputs.language === "internal" ? { predicted_fields: conflict.submitted.definition.predicted_fields } : {}),
     }),
     onSuccess: ({ candidate }, conflict) => {
       refreshDetections();
@@ -407,7 +419,7 @@ function DetectionRegistryPage() {
   if (runsQuery.isPending || catalogQuery.isPending || candidatesQuery.isPending || healthQuery.isPending) return <LoadingState label="Opening Detection Lab" />;
   if (runsQuery.isError) return <ErrorState error={runsQuery.error} retry={() => { void runsQuery.refetch(); }} />;
   if (catalogQuery.isError) return <ErrorState error={catalogQuery.error} retry={() => { void catalogQuery.refetch(); }} />;
-  if (candidatesQuery.isError) return <ErrorState title="Detection registry unavailable" error={candidatesQuery.error} retry={() => { void candidatesQuery.refetch(); }} />;
+  if (!candidatesQuery.data || (candidatesQuery.isError && !handoffRequested)) return <ErrorState title="Detection registry unavailable" error={candidatesQuery.error} retry={() => { void candidatesQuery.refetch(); }} />;
   if (healthQuery.isError) return <ErrorState title="Detection health unavailable" error={healthQuery.error} retry={() => { void healthQuery.refetch(); }} />;
 
   const persisted: CandidateView[] = candidatesQuery.data.candidates.map((resource) => ({
@@ -417,7 +429,7 @@ function DetectionRegistryPage() {
     resolvedId: resource.id,
     resourceId: resource.id,
   }));
-  const sourceRun = sourceQuery.data;
+  const sourceRun = evaluationHandoff && sourceQuery.data?.run_id !== evaluationHandoff.runId ? undefined : sourceQuery.data;
   const linked: CandidateView[] = sourceRun ? (sourceRun.detections?.candidates ?? []).map((candidate, index) => ({
     ...candidate,
     resolvedId: runCandidateKey(sourceRun.run_id, candidate.candidate_id ?? candidate.id ?? String(index)),
@@ -427,6 +439,15 @@ function DetectionRegistryPage() {
   const candidates = [...new Map([...persisted, ...linked].map((item) => [item.resolvedId, item])).values()];
   const filtered = candidates.filter((item) => `${item.resolvedId} ${item.title ?? ""} ${item.behavior_id ?? ""} ${item.target_language ?? item.language ?? ""}`.toLowerCase().includes(search.toLowerCase()));
   const selected = candidates.find((item) => item.resolvedId === selectedId) ?? (selectedId ? undefined : filtered.find((item) => item.runId === sourceRunId) ?? filtered[0]);
+  const handoffResources = evaluationHandoff ? candidatesQuery.data.candidates.filter(item => item.id === evaluationHandoff.candidateId) : [];
+  // Refreshing an unchanged registry must not unmount an in-flight evaluation.
+  // Cached identity controls rendering; fresh registry/source reads gate new work.
+  const handoffIdentityMatches = Boolean(evaluationHandoff && handoffResources.length === 1
+    && handoffResources[0]!.document.candidate_id === evaluationHandoff.candidateId
+    && selected?.resourceId === evaluationHandoff.candidateId
+    && ["internal", "sqlite", "sigma"].includes(handoffResources[0]!.document.target_language ?? handoffResources[0]!.document.language ?? ""));
+  const handoffSourceReady = Boolean(evaluationHandoff && candidatesQuery.isSuccess && !candidatesQuery.isFetching && sourceQuery.isSuccess && !sourceQuery.isFetching
+    && sourceRun?.run_id === evaluationHandoff.runId && (sourceRun.finalized_at || sourceRun.status === "completed"));
   activeSelection.current = JSON.stringify([sourceRunId, selected?.resolvedId]);
   const counts = Object.fromEntries(lifecycle.map((state) => [state, candidates.filter((item) => item.state === state).length]));
   const finalizedRuns = runsQuery.data.runs.filter((run) => Boolean(run.finalized_at) || run.status === "completed");
@@ -437,14 +458,15 @@ function DetectionRegistryPage() {
   const sources = researchSourcesQuery.data?.resources ?? [];
   const manualBehaviorAvailable = catalogQuery.data.behaviors.some(behavior => behavior.id === behaviorId);
   const manualLanguageAvailable = manualRuleLanguages.some(([value]) => value === language);
-  const manualCanSave = Boolean(title.trim()) && title.length <= 200 && manualBehaviorAvailable && manualLanguageAvailable;
+  const manualCanSave = Boolean(title.trim()) && title.length <= 200 && manualBehaviorAvailable && manualLanguageAvailable && manualDefinition !== null && !retainedInternalPending;
 
   return <div className="page detection-page">
     <PageHeader title="Detection Lab" actions={<Link className="button button-secondary button-medium" to={detectionCreationPath(sourceRunId)}>Create from run evidence</Link>} />
+    {handoffRequested && candidatesQuery.isError ? <ErrorState title="Detection registry unavailable" error={candidatesQuery.error} retry={() => { void candidatesQuery.refetch(); }} /> : null}
     {notice ? <Callout title="Detection update">{notice}</Callout> : null}
     <section className="detection-context" aria-label="Source run and evidence">
       <div className="detection-context-controls">
-        <Field label="Detection source run"><select value={sourceRunId} onChange={(event) => { const run = event.target.value; setSearchParams((old) => { const next = new URLSearchParams(old); if (selected?.resourceId) { next.set("candidate", selected.resourceId); next.set("candidate_scope", "registry"); } else { next.delete("candidate"); next.delete("candidate_scope"); } if (run) next.set("run", run); else next.delete("run"); return next; }); }}><option value="">Choose a run to bring in its evidence</option>{sourceRunId && !runsQuery.data.runs.some((run) => run.run_id === sourceRunId) ? <option value={sourceRunId}>Selected source run · Date unavailable</option> : null}{runsQuery.data.runs.map((run) => <option key={run.run_id} value={run.run_id}>{sourceRunLabel(run)}</option>)}</select></Field>
+        <Field label="Detection source run"><select value={sourceRunId} onChange={(event) => { const run = event.target.value; setSearchParams((old) => { const next = new URLSearchParams(old); next.delete("view"); if (selected?.resourceId) { next.set("candidate", selected.resourceId); next.set("candidate_scope", "registry"); } else { next.delete("candidate"); next.delete("candidate_scope"); } if (run) next.set("run", run); else next.delete("run"); return next; }); }}><option value="">Choose a run to bring in its evidence</option>{sourceRunId && !runsQuery.data.runs.some((run) => run.run_id === sourceRunId) ? <option value={sourceRunId}>Selected source run · Date unavailable</option> : null}{runsQuery.data.runs.map((run) => <option key={run.run_id} value={run.run_id}>{sourceRunLabel(run)}</option>)}</select></Field>
         {sourceRun ? <Link className="button button-secondary" to={`/runs/${encodeURIComponent(sourceRun.run_id)}`}>Review source run</Link> : null}
       </div>
       {sourceRunId && sourceQuery.isPending ? <LoadingState label="Loading source run evidence" /> : sourceQuery.isError ? <ErrorState title="Source run unavailable" error={sourceQuery.error} retry={() => { void sourceQuery.refetch(); }} /> : sourceRun ? <details className="detection-source-details"><summary>{sourceObservedRecords(sourceRun).length} independent observations · inspect source evidence</summary><SourceRunEvidence run={sourceRun} /></details> : null}
@@ -461,9 +483,9 @@ function DetectionRegistryPage() {
           <Field label="Title"><input value={title} onChange={(event) => updateManual("title", event.target.value)} maxLength={200} /></Field>
           <Field label="Registered behavior"><select value={behaviorId} onChange={(event) => updateManual("behaviorId", event.target.value)}>{!manualBehaviorAvailable ? <option value={behaviorId}>Unavailable behavior</option> : null}{catalogQuery.data.behaviors.map((behavior) => <option key={behavior.id} value={behavior.id}>{displayTitle(behavior.title)}</option>)}</select></Field>
           <Field label="Target language"><select value={language} onChange={(event) => updateManual("language", event.target.value)}>{!manualLanguageAvailable ? <option value={language}>Unavailable language</option> : null}{manualRuleLanguages.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
-          {language === "internal" ? <PermissionConditionControl value={manualPermissionCondition} onChange={(value) => updateManual("permissionCondition", value)} /> : null}
+          {language === "internal" ? <NewInternalRuleConditions value={manualInternalConditions} onChange={value => updateManual("internalConditions", JSON.stringify(value))} /> : manualDraft.value.internalConditions ? <div><p role="status">Your internal conditions are kept for Internal. {retainedInternalPending ? "Return to Internal and apply or discard condition edits before saving. " : ""}This language starts with a staged-file definition; edit and validate its source after saving.</p><Button size="small" onClick={() => updateManual("language", "internal")}>Review internal conditions</Button></div> : null}
           <QueryEvaluator language={language} ready={healthQuery.data.languages[language]?.ready} />
-          <div className="candidate-actions"><Button variant="primary" onClick={() => { if (manualCanSave && !manualSavePending.current) { manualSavePending.current = true; setManualConflict(undefined); createMutation.mutate({ inputs: { ...manualDraft.value }, generation: manualGeneration.current, navigation: manualNavigation }); } }} disabled={createMutation.isPending || anotherDraftMutation.isPending || !manualCanSave}><Plus />Save rule draft</Button>
+          <div className="candidate-actions"><Button variant="primary" onClick={() => { if (manualCanSave && manualDefinition && !manualSavePending.current) { manualSavePending.current = true; setManualConflict(undefined); createMutation.mutate({ inputs: { ...manualDraft.value }, definition: manualDefinition, generation: manualGeneration.current, navigation: manualNavigation }); } }} disabled={createMutation.isPending || anotherDraftMutation.isPending || !manualCanSave}><Plus />Save rule draft</Button>
           <Dialog.Root open={manualDiscardOpen} onOpenChange={setManualDiscardOpen}>
             <Dialog.Trigger asChild><Button variant="ghost" size="small" disabled={createMutation.isPending || anotherDraftMutation.isPending}>Discard New rule inputs</Button></Dialog.Trigger>
             <Dialog.Portal><Dialog.Overlay className="dialog-overlay"/><Dialog.Content className="dialog-content">
@@ -503,10 +525,10 @@ function DetectionRegistryPage() {
     <div className="detection-layout">
       <Panel className="candidate-list">
         <div className="history-search"><Search /><input aria-label="Search detection candidates" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search candidate, behavior, language" /></div>
-        <div>{filtered.map((item) => <button key={item.resolvedId} aria-label={`${item.title ? displayTitle(item.title) : item.resolvedId} · ${revisionLabel(item)} · ${languageLabel(item.target_language ?? item.language ?? "unknown")} · ${sentence(item.state)}`} aria-pressed={selected?.resolvedId === item.resolvedId} className={selected?.resolvedId === item.resolvedId ? "selected" : ""} onClick={() => { setSearchParams(old => { const next = new URLSearchParams(old); next.set("candidate", item.candidate_id ?? item.id ?? item.resolvedId); if (item.resourceId) next.set("candidate_scope", "registry"); else { next.delete("candidate_scope"); if (item.runId) next.set("run", item.runId); } return next; }); comparisonMutation.reset(); }}><span className="candidate-icon"><ShieldQuestion /></span><span><strong>{item.title ? displayTitle(item.title) : item.resolvedId}</strong><small>{revisionLabel(item)} · {languageLabel(item.target_language ?? item.language ?? "unknown")}</small><small>{displayTitle(catalogQuery.data.behaviors.find(behavior => behavior.id === item.behavior_id)?.title ?? "Behavior not recorded")}</small></span><span><Badge tone={item.state === "rejected" ? "danger" : item.state === "hypothesis" ? "neutral" : "success"}>{sentence(item.state)}</Badge>{item.demo ? <Badge tone="violet">Demo</Badge> : null}</span></button>)}</div>
+        <div>{filtered.map((item) => <button key={item.resolvedId} aria-label={`${item.title ? displayTitle(item.title) : item.resolvedId} · ${revisionLabel(item)} · ${languageLabel(item.target_language ?? item.language ?? "unknown")} · ${sentence(item.state)}`} aria-pressed={selected?.resolvedId === item.resolvedId} className={selected?.resolvedId === item.resolvedId ? "selected" : ""} onClick={() => { setSearchParams(old => { const next = new URLSearchParams(old); next.delete("view"); next.set("candidate", item.candidate_id ?? item.id ?? item.resolvedId); if (item.resourceId) next.set("candidate_scope", "registry"); else { next.delete("candidate_scope"); if (item.runId) next.set("run", item.runId); } return next; }); comparisonMutation.reset(); }}><span className="candidate-icon"><ShieldQuestion /></span><span><strong>{item.title ? displayTitle(item.title) : item.resolvedId}</strong><small>{revisionLabel(item)} · {languageLabel(item.target_language ?? item.language ?? "unknown")}</small><small>{displayTitle(catalogQuery.data.behaviors.find(behavior => behavior.id === item.behavior_id)?.title ?? "Behavior not recorded")}</small></span><span><Badge tone={item.state === "rejected" ? "danger" : item.state === "hypothesis" ? "neutral" : "success"}>{sentence(item.state)}</Badge>{item.demo ? <Badge tone="violet">Demo</Badge> : null}</span></button>)}</div>
         {!filtered.length ? <EmptyState title="No candidates" description="Create a hypothesis or complete a run that generates detection research records." /> : null}
       </Panel>
-      {selected ? <CandidateWorkspace
+      {handoffRequested && !handoffIdentityMatches ? <Panel>{candidatesQuery.isFetching ? <LoadingState label="Checking requested saved revision" /> : <Callout tone="warning" title="Requested saved revision unavailable">The comparison link must identify one available saved revision. It may be missing, ambiguous or unsupported; no other candidate has been substituted.</Callout>}<Button onClick={cancelEvaluationHandoff}>Leave comparison setup</Button></Panel> : selected ? <CandidateWorkspace
         key={candidateDraftBinding(selected, candidatesQuery.data.candidates.find(item => item.id === selected.resourceId))}
         candidate={selected}
         resource={candidatesQuery.data.candidates.find((item) => item.id === selected.resourceId)}
@@ -514,6 +536,8 @@ function DetectionRegistryPage() {
         finalizedRuns={finalizedRuns}
         sourceRunId={sourceRunId}
         sourceRun={sourceRun}
+        evaluationHandoff={evaluationHandoff ? { runId: evaluationHandoff.runId, ready: handoffSourceReady } : undefined}
+        onCancelEvaluationHandoff={cancelEvaluationHandoff}
         ai={catalogQuery.data.ai}
         saveLinkedPending={saveLinkedMutation.isPending}
         onSaveLinked={() => sourceRun && selected.runId === sourceRun.run_id && saveLinkedMutation.mutate({ candidate: selected, run: sourceRun, navigation: manualNavigation })}
@@ -559,6 +583,8 @@ function CandidateWorkspace({
   finalizedRuns,
   sourceRunId,
   sourceRun,
+  evaluationHandoff,
+  onCancelEvaluationHandoff,
   ai,
   saveLinkedPending,
   onSaveLinked,
@@ -580,6 +606,8 @@ function CandidateWorkspace({
   finalizedRuns: RunRecord[];
   sourceRunId: string;
   sourceRun?: RunRecord;
+  evaluationHandoff?: { runId: string; ready: boolean };
+  onCancelEvaluationHandoff: () => void;
   ai: CatalogResponse["ai"];
   saveLinkedPending: boolean;
   onSaveLinked: () => void;
@@ -604,18 +632,31 @@ function CandidateWorkspace({
   const defaults = useMemo(() => ({
     tab: "candidate" as CandidateTab, source: candidate.rule_source ?? "",
     fixtures: syntheticSelectionExample(language, candidate.selection), benign: "", notes: "", reason: "",
-    revisionKind: "clone" as RevisionKind, revisionReason: "", revisionTitle: candidate.title ?? "",
+    revisionKind: (language === "internal" ? "tune" : "clone") as RevisionKind, revisionReason: "", revisionTitle: candidate.title ?? "",
     selectionJson: JSON.stringify(candidate.selection ?? {}, null, 2), logsourceJson: JSON.stringify(candidate.logsource ?? {}, null, 2),
+    structuredSelectionDraft: "", structuredBenignDraft: "",
     selectedBaselineIds: candidate.public_baselines?.map(item => item.research_source_id) ?? [], compareId: comparisonChoices[0]?.resourceId ?? "",
   }), [candidate, language, comparisonChoices]);
-  const draft = useDetectionDraft(binding, defaults);
+  const draft = useDetectionDraft(binding, defaults, ["structuredSelectionDraft", "structuredBenignDraft"], { structuredSelectionDraft: isStructuredRuleDraftText, structuredBenignDraft: isInternalBenignFixtureDraftText });
   const observed = useDetectionDraft(binding + ":observed:" + sourceRunId, { runId: sourceRunId, evidenceIds: "" });
-  const { tab, source, fixtures, benign, notes, reason, revisionKind, revisionReason, revisionTitle, selectionJson, logsourceJson, selectedBaselineIds, compareId } = draft.value;
+  const { source, fixtures, benign, notes, reason, revisionKind, revisionReason, revisionTitle, selectionJson, logsourceJson, selectedBaselineIds, compareId } = draft.value;
+  // A comparison opens this view without overwriting the retained workspace tab.
+  const tab = evaluationHandoff ? "evaluations" : draft.value.tab;
+  const structuredDraft = readStructuredRuleDraft(draft.value.structuredSelectionDraft);
+  const setStructuredDraft = (value: StructuredRuleDraft | null) => draft.update("structuredSelectionDraft", value ? JSON.stringify(value) : "");
+  const structuredPending = language === "internal" && structuredDraft !== null;
+  const benignDraft = readInternalBenignFixtureDraft(draft.value.structuredBenignDraft);
+  const benignPending = language === "internal" && benignDraft !== null;
+  const setBenignDraft = (value: InternalBenignFixtureDraft | null) => draft.update("structuredBenignDraft", value ? JSON.stringify(value) : "");
   const livePermissionCondition = useMemo(() => {
     if (language !== "internal") return undefined;
     try { return permissionConditionForSelection(JSON.parse(selectionJson)); } catch { return undefined; }
   }, [language, selectionJson]);
-  const setTab = (value: typeof defaults.tab) => draft.update("tab", value);
+  const setTab = (value: typeof defaults.tab) => {
+    if (evaluationHandoff && value === "evaluations") return;
+    if (evaluationHandoff) onCancelEvaluationHandoff();
+    draft.update("tab", value);
+  };
   const setSource = (value: typeof defaults.source) => draft.update("source", value);
   const setFixtures = (value: typeof defaults.fixtures) => draft.update("fixtures", value);
   const setBenign = (value: typeof defaults.benign) => draft.update("benign", value);
@@ -624,7 +665,7 @@ function CandidateWorkspace({
   const setRevisionKind = (value: typeof defaults.revisionKind) => draft.update("revisionKind", value);
   const setRevisionReason = (value: typeof defaults.revisionReason) => draft.update("revisionReason", value);
   const setRevisionTitle = (value: typeof defaults.revisionTitle) => draft.update("revisionTitle", value);
-  const setSelectionJson = (value: typeof defaults.selectionJson) => draft.update("selectionJson", value);
+  const setSelectionJson = (value: typeof defaults.selectionJson) => { setStructuredDraft(null); draft.update("selectionJson", value); };
   const setLogsourceJson = (value: typeof defaults.logsourceJson) => draft.update("logsourceJson", value);
   const setSelectedBaselineIds = (value: typeof defaults.selectedBaselineIds) => draft.update("selectedBaselineIds", value);
   const setCompareId = (value: typeof defaults.compareId) => draft.update("compareId", value);
@@ -661,6 +702,7 @@ function CandidateWorkspace({
 
   const submitFixtures = (action: "exercise-fixtures" | "evaluate-benign") => {
     try {
+      if (action === "evaluate-benign" && benignPending) throw new Error("Apply or discard the sample edits before evaluating benign fixtures.");
       const value = JSON.parse(action === "exercise-fixtures" ? fixtures : benign) as unknown;
       if (!Array.isArray(value) || !value.length) throw new Error("Supply a nonempty JSON array of explicit synthetic examples.");
       setLocalError(undefined);
@@ -671,6 +713,7 @@ function CandidateWorkspace({
   };
   const submitRevision = () => {
     try {
+      if (revisionKind === "tune" && structuredPending) throw new Error("Apply or discard the visual condition edits before creating an immutable tune.");
       if (!revisionReason.trim()) throw new Error("Explain why this immutable revision is needed.");
       const selectedBaselines = selectableBaselines.filter((item) => selectedBaselineIds.includes(item.research_source_id));
       const common: DetectionCloneRequest = {
@@ -775,6 +818,9 @@ function CandidateWorkspace({
         setRevisionTitle={setRevisionTitle}
         selectionJson={selectionJson}
         setSelectionJson={setSelectionJson}
+        structuredDraft={structuredDraft}
+        setStructuredDraft={setStructuredDraft}
+        structuredPending={structuredPending}
         logsourceJson={logsourceJson}
         setLogsourceJson={setLogsourceJson}
         selectableBaselines={selectableBaselines}
@@ -793,15 +839,22 @@ function CandidateWorkspace({
         resourceId={resource?.id}
         resourceDigest={resource?.digest}
         sourceRunId={sourceRunId}
+        comparisonHandoff={evaluationHandoff}
+        onCancelComparisonHandoff={onCancelEvaluationHandoff}
         runs={finalizedRuns}
         revisions={lineage.filter((item) => item.resourceId).map((item) => ({ id: item.resourceId!, label: `Revision ${item.revision ?? 1} · ${item.resourceId}` }))}
       /> : tab === "fixtures" ? <>
         <Callout title="Synthetic fixture prerequisites">{defaults.fixtures ? "The positive example is generated from this internal selection. Review and edit it before exercise; a match checks the matcher, not observed behavior." : "Supply explicit bounded examples that exercise this rule source. Generic file metadata cannot predict whether arbitrary SQLite, Sigma, or YARA source will match."} Benign samples and notes must be supplied explicitly. Fixture examples never become independently observed evidence.{["sqlite", "sigma"].includes(language) ? <Button size="small" onClick={() => setTab("evaluations")}>Evaluate observed runs without fixtures</Button> : null}</Callout>
         <Field label="Malicious fixtures JSON" hint={language === "yara" ? "Synthetic YARA examples require exactly fixture_id and bounded text data." : "Explicit synthetic examples need fixture_id and fields referenced by the candidate."}><textarea rows={8} value={fixtures} onChange={(event) => setFixtures(event.target.value)} disabled={!canFixture} /></Field>
         <Button size="small" onClick={() => submitFixtures("exercise-fixtures")} disabled={!canFixture || lifecyclePending || !fixtures.trim()}><Beaker />Exercise malicious fixtures</Button>
-        <Field label="Benign fixtures JSON" hint="Use representative benign examples; a benign label cannot suppress a measured match."><textarea rows={8} value={benign} onChange={(event) => setBenign(event.target.value)} disabled={!canBenign} /></Field>
+        {language === "internal" ? <>
+          <InternalBenignFixtureEditor source={benign} draft={benignDraft} onDraft={setBenignDraft} onApply={source => { setBenign(source); setBenignDraft(null); }} selection={candidate.selection} disabled={!canBenign || lifecyclePending} />
+          <details><summary>Advanced benign samples JSON</summary>
+            <Field label="Benign fixtures JSON" hint="Complex examples remain unchanged here. Apply or discard visual edits first; a benign label cannot suppress a measured match."><textarea rows={8} value={benign} onChange={(event) => setBenign(event.target.value)} disabled={!canBenign || lifecyclePending || benignPending} /></Field>
+          </details>
+        </> : <Field label="Benign fixtures JSON" hint="Use representative benign examples; a benign label cannot suppress a measured match."><textarea rows={8} value={benign} onChange={(event) => setBenign(event.target.value)} disabled={!canBenign || lifecyclePending} /></Field>}
         <Field label="Benign evaluation notes"><textarea rows={3} value={notes} onChange={(event) => setNotes(event.target.value)} disabled={!canBenign} /></Field>
-        <Button size="small" onClick={() => submitFixtures("evaluate-benign")} disabled={!canBenign || lifecyclePending || !benign.trim() || !notes.trim()}><CheckCircle2 />Evaluate benign fixtures</Button>
+        <Button size="small" onClick={() => submitFixtures("evaluate-benign")} disabled={!canBenign || lifecyclePending || benignPending || !benign.trim() || !notes.trim()}><CheckCircle2 />Evaluate benign fixtures</Button>
         <div className="fixture-grid"><article><Beaker /><strong>Malicious fixtures</strong><Badge tone={candidate.malicious_fixtures?.length ? "success" : "neutral"}>{candidate.malicious_fixtures?.length ?? 0} retained</Badge></article><article><CheckCircle2 /><strong>Benign fixtures</strong><Badge tone={candidate.benign_fixtures?.length ? "success" : "neutral"}>{candidate.benign_fixtures?.length ?? 0} retained</Badge></article></div>
       </> : tab === "observed" ? <>
         <Callout title="Immutable observed evidence only">The control plane verifies the finalized run bundle and independently observed provenance. Evidence content cannot be pasted here.{!["internal", "sigma", "sqlite"].includes(language) ? " This language has no normalized observed-JSON evaluator." : ""}</Callout>
@@ -833,6 +886,9 @@ function RevisionWorkspace({
   setRevisionTitle,
   selectionJson,
   setSelectionJson,
+  structuredDraft,
+  setStructuredDraft,
+  structuredPending,
   logsourceJson,
   setLogsourceJson,
   selectableBaselines,
@@ -862,6 +918,9 @@ function RevisionWorkspace({
   setRevisionTitle: (value: string) => void;
   selectionJson: string;
   setSelectionJson: (value: string) => void;
+  structuredDraft: StructuredRuleDraft | null;
+  setStructuredDraft: (value: StructuredRuleDraft | null) => void;
+  structuredPending: boolean;
   logsourceJson: string;
   setLogsourceJson: (value: string) => void;
   selectableBaselines: PublicBaselineReference[];
@@ -875,6 +934,7 @@ function RevisionWorkspace({
   onSubmit: () => void;
   onCompare: (candidateId: string) => void;
 }) {
+  const internal = (candidate.target_language ?? candidate.language ?? "internal") === "internal";
   return <div className="review-stack">
 
     <div>
@@ -887,8 +947,8 @@ function RevisionWorkspace({
       <div className="candidate-actions"><Button onClick={() => onCompare(compareId)} disabled={!persisted || !compareId || comparisonPending}>{comparisonPending ? "Comparing revisions…" : "Compare immutable revisions"}</Button></div>
     </div>
     {comparison ? <DetectionComparisonView review={comparison} sourcesById={sourcesById} /> : <Callout title="No comparison loaded">Choose another revision from this lineage to inspect source, rule, field, lifecycle, fixture, observed, and benign deltas.</Callout>}
-    <details className="detection-advanced-revisions"><summary>Advanced clone and tune</summary>
-    <Callout title="Advanced definition revisions">Clone copies the structured definition into an unparsed hypothesis; it does not copy compiled source or results. Tune changes structured selection or log source. To edit SQLite or Sigma, use the source editor in the Rule tab. Each revision receives a new ID and parent link.</Callout>
+    <details className="detection-advanced-revisions"><summary>{internal ? "Revise this rule" : "Advanced clone and tune"}</summary>
+    {internal ? <div><h4>Save a separate revision</h4><p>Change the conditions below, then save the revised rule with a reason. The original rule and its results stay unchanged. A copy without changes does not copy compiled source or results. Validate the new revision before evaluating it.</p></div> : <Callout title="Advanced definition revisions">Clone copies the structured definition into an unparsed hypothesis; it does not copy compiled source or results. Tune changes structured selection or log source. To edit SQLite or Sigma, use the source editor in the Rule tab. Each revision receives a new ID and parent link.</Callout>}
     <fieldset>
       <legend>Revision intent</legend>
       <div className="choice-grid two">{(["clone", "tune"] as const).map((kind) => <label key={kind}><input type="radio" name="detection-revision-kind" checked={revisionKind === kind} onChange={() => setRevisionKind(kind)} disabled={!persisted} /><span><strong>{kind === "clone" ? "Clone unchanged rule behavior" : "Tune rule behavior"}</strong><small>{kind === "clone" ? "Branch attribution, title, known misses, fields, or public baselines." : "Change the structured selection or log source and retain a durable reason."}</small></span></label>)}</div>
@@ -899,11 +959,12 @@ function RevisionWorkspace({
     </div>
     {revisionKind === "tune" ? <>
       {permissionCondition ? <>
-        <PermissionConditionControl value={permissionCondition} onChange={setPermissionCondition} disabled={!persisted || revisionPending} />
-        {isLegacyPermissionSelection(JSON.parse(selectionJson)) ? <div><p>This saved rule uses the earlier file-observation fields. Independent filesystem collectors use different fields. Updating the draft preserves the saved rule and its results.</p><Button size="small" disabled={!persisted || revisionPending} onClick={() => setPermissionCondition(permissionCondition)}>Use current observation fields</Button></div> : null}
+        <PermissionConditionControl value={permissionCondition} onChange={setPermissionCondition} disabled={!persisted || revisionPending || structuredPending} />
+        {isLegacyPermissionSelection(JSON.parse(selectionJson)) ? <div><p>This saved rule uses the earlier file-observation fields. Independent filesystem collectors use different fields. Updating the draft preserves the saved rule and its results.</p><Button size="small" disabled={!persisted || revisionPending || structuredPending} onClick={() => setPermissionCondition(permissionCondition)}>Use current observation fields</Button></div> : null}
       </> : null}
+      {internal ? <StructuredRuleEditor source={selectionJson} draft={structuredDraft} onDraft={setStructuredDraft} onApply={setSelectionJson} disabled={!persisted || revisionPending} /> : null}
       <details><summary>Advanced structured inputs</summary><div className="config-grid">
-        <Field label="Tuned selection JSON" hint="Must remain a non-empty structured object."><textarea rows={9} value={selectionJson} onChange={(event) => setSelectionJson(event.target.value)} disabled={!persisted} /></Field>
+        <Field label="Tuned selection JSON" hint="Unsupported selectors stay here unchanged. Apply or discard visual edits before editing JSON."><textarea rows={9} value={selectionJson} onChange={(event) => setSelectionJson(event.target.value)} disabled={!persisted || structuredPending || revisionPending} /></Field>
         <Field label="Tuned log source JSON" hint="Change selection, log source, or both."><textarea rows={9} value={logsourceJson} onChange={(event) => setLogsourceJson(event.target.value)} disabled={!persisted} /></Field>
       </div></details>
     </> : null}
@@ -917,7 +978,7 @@ function RevisionWorkspace({
       })}</div> : <p className="field-note">No pinned, comparison-authorized public research source is registered.</p>}
       <PublicBaselineList baselines={selectableBaselines.filter((item) => selectedBaselineIds.includes(item.research_source_id))} sourcesById={sourcesById} empty="No public baseline will be attached to the new revision." />
     </fieldset>
-    <div className="candidate-actions"><Button variant="primary" onClick={onSubmit} disabled={!persisted || revisionPending || !revisionReason.trim()}>{revisionKind === "clone" ? "Create immutable clone" : "Create immutable tune"}</Button></div>
+    <div className="candidate-actions"><Button variant="primary" onClick={onSubmit} disabled={!persisted || revisionPending || !revisionReason.trim() || (revisionKind === "tune" && structuredPending)}>{revisionKind === "clone" ? "Create immutable clone" : internal ? "Save revised rule" : "Create immutable tune"}</Button></div>
     </details>
   </div>;
 }
