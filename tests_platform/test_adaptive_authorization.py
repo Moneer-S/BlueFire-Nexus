@@ -48,7 +48,13 @@ POLICY = {
 }
 
 
-def setup(*, policy=POLICY, scenario_name="sandbox_research_chain.yaml", platform="windows"):
+def setup(
+    *,
+    policy=POLICY,
+    scenario_name="sandbox_research_chain.yaml",
+    platform="windows",
+    additional_actions=(),
+):
     registry = load_builtin_registry()
     raw = load_scenario(ROOT / "scenarios" / scenario_name).to_dict()
     if policy is not None:
@@ -59,6 +65,7 @@ def setup(*, policy=POLICY, scenario_name="sandbox_research_chain.yaml", platfor
         for profile in load_config(ROOT / "config/bluefire.example.yaml").runner_profiles
         if profile.id == "sandbox-execute.v1"
     )
+    profile = replace(profile, enabled_actions=(*profile.enabled_actions, *additional_actions))
     planner = DeterministicPlanner(registry)
     plan = planner.compile(
         scenario, mode=ExecutionMode.EXECUTE, profile=profile, autonomy=AutonomyLevel.AUTO
@@ -333,7 +340,10 @@ def test_real_collection_choices_pin_exact_values_cleanup_and_linux_compatibilit
         }
     ]
     arguments, authorization = setup(
-        policy=policy, scenario_name="atomic_gzip_collection.yaml", platform="linux"
+        policy=policy,
+        scenario_name="atomic_gzip_collection.yaml",
+        platform="linux",
+        additional_actions=("sandbox.collection.atomic-gzip.v1",),
     )
     for method in authorization["steps"][0]["methods"]:
         assert method["plan_step"]["parameters"] == {

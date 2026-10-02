@@ -1,6 +1,6 @@
 # Reviewed native tool builds
 
-GNU chmod setup accepts the builds listed below. The runner compares the exact
+GNU chmod and GNU gzip setup accept the builds listed below. The runner compares the exact
 package version, architecture, executable size and SHA-256 with its compiled
 allowlist, in addition to its protected-path, ownership, ELF and privilege checks.
 It repeats the check immediately before execution on the held executable.
@@ -39,3 +39,59 @@ GNU Coreutils is GPL-3.0-or-later. BlueFire records identity metadata only; it d
 not bundle this executable. Existing third-party notices and the MIT license for
 BlueFire remain in effect. Package identity is prerequisite evidence, not evidence
 that a security experiment executed or achieved its objective.
+
+## GNU gzip: Ubuntu Noble amd64
+
+Supported package versions: **1.12-1ubuntu3.1** and **1.12-1ubuntu3.2**, architecture **x86_64** (Debian
+amd64). Other versions and aarch64 builds require a reviewed identity update;
+an installation path or an operator's version assertion is insufficient.
+
+The [official Ubuntu package](https://security.ubuntu.com/ubuntu/pool/main/g/gzip/gzip_1.12-1ubuntu3.2_amd64.deb)
+matches its size and SHA-256 in the
+[Noble security package metadata](https://security.ubuntu.com/ubuntu/dists/noble-security/main/binary-amd64/Packages.gz).
+The executable and copyright below were extracted as inert archive members. No
+package scripts or candidate executables were run to identify the build. As with
+the chmod review, official HTTPS provenance is not an independently verified
+archive signing-key chain.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `gzip_1.12-1ubuntu3.2_amd64.deb` | 99204 | `4067522fbffe22672e4cf683bfc32e4a304bc872cf76f10049ab36d1a9eedb91` |
+| `usr/bin/gzip` extracted from that package | 93424 | `afea077ce127d4fa9ad410d3066ba2b54dea19c0b44f04adf56c72d5f7b7a9bb` |
+| `usr/share/doc/gzip/copyright` | 2895 | `1ca5dd5098fe2e1c0f0d05196f5b3da8b414a807702e6ca8b536eb5fd3059130` |
+
+The historical **1.12-1ubuntu3.1** build is independently verified through
+[Launchpad build 30376309](https://launchpad.net/ubuntu/+source/gzip/1.12-1ubuntu3.1/+build/30376309).
+Its [package](https://launchpad.net/ubuntu/+source/gzip/1.12-1ubuntu3.1/+build/30376309/+files/gzip_1.12-1ubuntu3.1_amd64.deb)
+matches the size and SHA-256 in both its
+[changes metadata](https://launchpad.net/ubuntu/+source/gzip/1.12-1ubuntu3.1/+build/30376309/+files/gzip_1.12-1ubuntu3.1_amd64.changes)
+and [build metadata](https://launchpad.net/ubuntu/+source/gzip/1.12-1ubuntu3.1/+build/30376309/+files/gzip_1.12-1ubuntu3.1_amd64.buildinfo).
+This supports an existing reviewed lab image, not a recommendation to downgrade.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `gzip_1.12-1ubuntu3.1_amd64.deb` | 98982 | `d3ea567e3c25ebcd272e541ad49c447bc1d7f3720b8081132177ddb3ca9b1f96` |
+| `usr/bin/gzip` extracted from that package | 93424 | `16f1f8dbe5b47b3c1160b9066bd15bfdd80548b1b878b1a025c462fec0ca02b1` |
+
+Linux Rust CI prepares the pinned 1.12-1ubuntu3.2 executable under a fresh
+root-owned directory in `/usr/lib`, after verifying its existing ancestors are
+root-owned, non-symlink directories without group or other write access. It does
+not change existing directory permissions. The disposable job exposes this
+protected path only to the test fixture via
+`BLUEFIRE_TEST_GZIP`. Product execution does not read this variable. This keeps
+real gzip positive tests enabled without trusting an image's changing system
+package. The dependency is neither included in uploaded runner assets nor bundled
+into BlueFire wheels.
+
+To reproduce the review, verify the complete Debian package against official
+metadata, unpack `data.tar.zst` without installing it, and hash `usr/bin/gzip`.
+Changes to `runner/src/reviewed_gzip_builds.rs` require review of that tuple.
+Protected nondefault locations may bind identical bytes. Read-only setup checks
+ownership, permissions, parent directories, ELF architecture and file capabilities;
+the runner repeats identity checks immediately before effects.
+
+GNU gzip remains an external GPL-3.0-or-later dependency. The package's documentation
+uses additional GFDL and FSF-manpages terms. BlueFire does not bundle the executable
+or package documentation. Its existing MIT license and Atomic Red Team notices
+remain unchanged. These package checks establish provenance, not an observed run
+or a detection result.
