@@ -23,6 +23,10 @@ from bluefire.runner_lifecycle import ManagedRunnerLifecycle
 from bluefire.service import BlueFireService
 from bluefire.util import canonical_json_bytes, content_hash
 from tests_platform.ai_live_authorization_support import authorize_service
+from tests_platform.broker_startup_diagnostics import (
+    BrokerStartupRecorder,
+    broker_startup_assertion,
+)
 from tests_platform.test_ai import CONFIG_PATH
 from tests_platform.test_ai import _request as proposal_request
 from tests_platform.test_ai_drafts import _model_draft
@@ -312,13 +316,20 @@ def test_mismatched_response_identity_never_reaches_provider_parser_as_success(t
 
 
 @pytest.mark.parametrize("signal", ["cancel", "close"])
-def test_normal_job_cancellation_drains_broker_without_publishing_a_late_proposal(tmp_path, signal):
+def test_normal_job_cancellation_drains_broker_without_publishing_a_late_proposal(
+    tmp_path, signal, request, monkeypatch
+):
     provider, service, _access, channel = setup(tmp_path)
     channel.block = True
+    recorder = BrokerStartupRecorder()
+    controller = service.job_controller
+    monkeypatch.setattr(controller, "_transition", recorder.wrap_transition(controller._transition))
     submitted = service.submit_run(run_request("assist", provider.id))
     job_id = submitted["job"]["job_id"]
     try:
-        assert channel.entered.wait(3), "normal job did not reach broker proposal request"
+        recorder.record_submission(submitted["job"])
+        with broker_startup_assertion(request.node, recorder, channel):
+            assert channel.entered.wait(3), "normal job did not reach broker proposal request"
         if signal == "cancel":
             service.cancel_job(job_id)
         else:

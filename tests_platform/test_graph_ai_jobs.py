@@ -19,6 +19,7 @@ from bluefire.product_store_errors import ProductStoreError
 from bluefire.service import BlueFireService
 from bluefire.util import content_hash
 from tests_platform.ai_live_authorization_support import authorize_service
+from tests_platform.job_wait_diagnostics import diagnose_job_wait
 from tests_platform.test_ai_drafts import _model_draft
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -124,11 +125,13 @@ def setup(tmp_path, request):
 
 def proposed(service, body):
     parent = service.submit_assistance_turn(body)["job"]
-    parent = service.job_controller.wait(parent["job_id"], timeout=15)
+    with diagnose_job_wait("graph_parent"):
+        parent = service.job_controller.wait(parent["job_id"], timeout=15)
     assert parent["state"] == "completed", parent
-    child = service.job_controller.wait(
-        parent["progress"]["children"]["step-1"]["job_id"], timeout=15
-    )
+    with diagnose_job_wait("graph_child"):
+        child = service.job_controller.wait(
+            parent["progress"]["children"]["step-1"]["job_id"], timeout=15
+        )
     assert child["state"] == "completed", child
     return parent, child, service.graph_ai_job(child["job_id"])["proposal"]
 

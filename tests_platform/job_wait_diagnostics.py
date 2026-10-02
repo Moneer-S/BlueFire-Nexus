@@ -122,12 +122,16 @@ def _report(timeout, stage):
 
 
 @contextmanager
-def diagnose_job_wait(stage, add_report_section):
+def diagnose_job_wait(stage, add_report_section=None):
     try:
         yield
     except JobWaitTimeout as timeout:
         try:
-            add_report_section("call", "Job wait diagnostic", _report(timeout, stage))
+            payload = _report(timeout, stage)
+            if add_report_section is None:
+                print("Job wait diagnostic: " + payload, flush=True)
+            else:
+                add_report_section("call", "Job wait diagnostic", payload)
         except BaseException:
             # Even a failed diagnostic must preserve the original wait exception.
             pass

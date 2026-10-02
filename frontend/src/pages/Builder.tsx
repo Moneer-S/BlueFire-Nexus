@@ -355,7 +355,14 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
     })));
     applyScenario(next);
     if (deletedNodeIds.includes(selectedId)) {
-      const replacementId = next.steps[0]?.id ?? "";
+      const remaining = graphView(next, allBranches, expandedBranches).ordered;
+      const remainingSections = graphSections(remaining);
+      const nextSection = Math.min(sectionIndex, remainingSections.length - 1);
+      const candidates = viewMode === "graph" && focusedSection !== null ? remainingSections[nextSection]!.steps : remaining;
+      const replacementId = candidates.find((step) => shownIds.has(step.id))?.id ?? candidates[0]?.id ?? "";
+      // Select within the resulting visible section, falling back to the last
+      // section only when this deletion removes the operator's current one.
+      if (viewMode === "graph" && focusedSection !== null) setFocusedSection(nextSection);
       // Keep the canvas and inspector on the same remaining step. Otherwise the
       // graph refresh preserves its old unselected flag and clears the inspector.
       selectionForGraphRefresh.current = replacementId;
