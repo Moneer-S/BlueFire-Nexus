@@ -28,6 +28,8 @@ from tests_platform.test_adaptive_authorization import (
     setup,
 )
 
+GZIP = "sandbox.collection.atomic-gzip.v1"
+
 
 def budget_policy():
     return {
@@ -62,7 +64,12 @@ def budget_policy():
 
 
 def compiled(policy=None):
-    arguments, _ = setup(policy=None, scenario_name="atomic_gzip_collection.yaml", platform="linux")
+    arguments, _ = setup(
+        policy=None,
+        scenario_name="atomic_gzip_collection.yaml",
+        platform="linux",
+        additional_actions=(GZIP,),
+    )
     raw = arguments["scenario"].to_dict()
     next(step for step in raw["steps"] if step["id"] == "select_records")["alternates"] = [
         "sandbox.discovery.list.v1"

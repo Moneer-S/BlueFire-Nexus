@@ -4,19 +4,34 @@ import hashlib
 import threading
 from contextlib import contextmanager
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
 
 from bluefire.ai import AIProposal, AIProviderResult
-from bluefire.config import AutonomyLevel
+from bluefire.config import AutonomyLevel, RunnerProfile, load_config
 from bluefire.contracts import load_scenario
 from bluefire.job_runtime import JobState
-from bluefire.runner_transport_errors import RunnerTaskCancelled
+from bluefire.runner_transport_errors import RunnerReadinessError, RunnerTaskCancelled
 from bluefire.service import BlueFireService
+from bluefire.tool_adapters import gzip
 from bluefire.util import canonical_json_bytes, content_hash
 from tests_platform.test_ai_integration import ProposalLifecycleRunner
+from tests_platform.test_gzip_tool_binding import (
+    _descriptor,
+    _inspection_result,
+)
+from tests_platform.test_gzip_tool_binding import (
+    candidate as gzip_candidate,
+)
+from tests_platform.test_gzip_tool_binding import (
+    installation as gzip_installation,
+)
+from tests_platform.test_gzip_tool_binding import (
+    result as gzip_candidate_result,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 GZIP = "sandbox.collection.atomic-gzip.v1"
@@ -84,6 +99,26 @@ class BudgetRunner(ProposalLifecycleRunner):
         self.entered = threading.Event()
         self.released = threading.Event()
         self.manifests = []
+        self.native_inspections = 0
+
+    def inventory(self):
+        value = dict(super().inventory())
+        value["platform"] = "linux"
+        value["actions"] = [item for item in value["actions"] if item["action_id"] != GZIP] + [
+            _descriptor(GZIP, gzip.VERSION, gzip.CONTRACT.digest, gzip.TOOL_ID)
+        ]
+        return value
+
+    def inspect_native_tool_candidate(self, request):
+        assert request == gzip_candidate()
+        self.native_inspections += 1
+        return gzip_candidate_result()
+
+    def inspect_native_tool(self, record):
+        value = gzip_installation()
+        assert record == value.to_dict()
+        self.native_inspections += 1
+        return _inspection_result(value)
 
     def execute(self, manifest, profile):
         self.manifests.append((manifest, profile))
@@ -231,8 +266,10 @@ def authored_service(tmp_path, monkeypatch, runner):
     with TemporaryDirectory(prefix="bf-adaptive-budget-") as owned:
         sandbox = Path(owned) / "sandbox"
         sandbox.mkdir()
+        config = load_config(ROOT / "config/bluefire.example.yaml")
         service = BlueFireService(
             project_root=ROOT,
+            config=config,
             runs_dir=tmp_path / "runs",
             runner_factory=lambda profile: (runner, sandbox),
             ai_provider_factory=lambda config, provider_id: BudgetMethodProvider(
@@ -240,6 +277,41 @@ def authored_service(tmp_path, monkeypatch, runner):
             ),
         )
         try:
+            default_profile = next(
+                item for item in config.runner_profiles if item.id == "sandbox-execute.v1"
+            )
+            assert GZIP not in default_profile.enabled_actions
+            assert not default_profile.native_tool_installations
+            draft = replace(
+                default_profile,
+                id="test.adaptive-budget-gzip.v1",
+                platforms=("linux",),
+                enabled_actions=(*default_profile.enabled_actions, GZIP),
+            ).to_dict()
+            service.save_resource(
+                "runner_profile", draft["id"], {"document": draft, "status": "draft"}
+            )
+            with pytest.raises(RunnerReadinessError, match="not ready"):
+                service._execute_readiness_boundary(RunnerProfile.from_mapping(draft))
+            inspected = service.inspect_runner_profile_tool(draft["id"], gzip_candidate())
+            assert inspected == gzip_candidate_result()
+            draft["native_tool_installations"] = [inspected["installation"]]
+            service.save_resource(
+                "runner_profile", draft["id"], {"document": draft, "status": "draft"}
+            )
+            service.activate_resource("runner_profile", draft["id"], {})
+            active = service.product_store.get_resource("runner_profile", draft["id"])
+            assert active["status"] == "active"
+            profile = RunnerProfile.from_mapping(active["document"])
+            assert profile.native_tool_installations[0].digest == gzip_installation().digest
+            _, _, readiness = service._execute_readiness_boundary(profile)
+            gzip_readiness = next(
+                row for row in readiness["enabled_actions"] if row["action_id"] == GZIP
+            )
+            assert gzip_readiness["readiness"] == "ready"
+            assert gzip_readiness["native_tool_installation_digest"] == gzip_installation().digest
+            assert runner.native_inspections >= 2
+            assert runner.calls == []
             yield service, requests
         finally:
             runner.released.set()
@@ -248,7 +320,7 @@ def authored_service(tmp_path, monkeypatch, runner):
 
 def submit(service, scenario, *, autonomy="auto"):
     profile = next(
-        item for item in service.config.runner_profiles if item.id == "sandbox-execute.v1"
+        item for item in service._runner_profiles() if item.id == "test.adaptive-budget-gzip.v1"
     )
     request = {
         "scenario": scenario,
