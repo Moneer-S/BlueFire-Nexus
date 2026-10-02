@@ -4,6 +4,8 @@ import { runLabel } from "../lib/run-presentation";
 import { formatDate } from "./Primitives";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { readComparisonEvaluationNavigation } from "../lib/comparison-evaluation-navigation";
 import { detectionDraftIdentity, useDetectionDraft } from "../state/useDetectionDraft";
 import { MatchedObservations } from "./MatchedObservations";
 import { RunReference } from "./RunReference";
@@ -26,6 +28,12 @@ export function DetectionRunEvaluations({ candidate, resourceId, resourceDigest,
   onCancelComparisonHandoff?: () => void;
 }) {
   const client = useQueryClient();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const comparisonNavigation = readComparisonEvaluationNavigation(searchParams);
+  const returnPath = comparisonHandoff && comparisonNavigation && comparisonHandoff.runId === sourceRunId && comparisonNavigation.runId === sourceRunId
+    && comparisonNavigation.candidateId === resourceId && candidate.candidate_id === resourceId
+    ? comparisonNavigation.returnPath : undefined;
   const binding = useMemo(() => detectionDraftIdentity({ workspace: "evaluation-inputs", resourceId: resourceId ?? null, resourceDigest: resourceDigest ?? null, candidate, sourceRunId }), [candidate, resourceId, resourceDigest, sourceRunId]);
   const draft = useDetectionDraft(binding, { runId: sourceRunId, question: questionSeed, role: "unknown" as DetectionCaseRole, relatedId: "" });
   const { runId, question, role, relatedId } = draft.value;
@@ -82,7 +90,11 @@ export function DetectionRunEvaluations({ candidate, resourceId, resourceDigest,
   };
 
   const resultForSelection = evaluate.variables?.binding === binding && evaluate.variables?.candidateId === resourceId && evaluate.variables?.run_id === runId && evaluate.variables.question === question.trim() && evaluate.variables.case_role === role && evaluate.variables.evaluation_use === evaluationUse;
-  const comparisonActions = comparisonHandoff ? <div className="candidate-actions">{handoffConflict ? <Button disabled={!comparisonHandoff.ready || evaluate.isPending} onClick={() => { if (comparisonHandoff.ready && !evaluate.isPending) setRunId(comparisonHandoff.runId); }}>Use comparison run</Button> : null}<Button variant="ghost" size="small" disabled={evaluate.isPending} onClick={onCancelComparisonHandoff}>Leave comparison setup</Button></div> : null;
+  const comparisonActions = comparisonHandoff ? <div className="candidate-actions">
+    {handoffConflict ? <Button disabled={!comparisonHandoff.ready || evaluate.isPending} onClick={() => { if (comparisonHandoff.ready && !evaluate.isPending) setRunId(comparisonHandoff.runId); }}>Use comparison run</Button> : null}
+    {returnPath ? <Button variant="secondary" size="small" disabled={evaluate.isPending} onClick={() => { if (!evaluate.isPending) navigate(returnPath); }}>Return to comparison</Button> : null}
+    <Button variant="ghost" size="small" disabled={evaluate.isPending} onClick={onCancelComparisonHandoff}>Leave comparison setup</Button>
+  </div> : null;
   return <>
     <p>Test this rule against the entire observed dataset. Each evaluation is retained separately; the saved rule and its lifecycle stay unchanged. Up to 10,000 records and 16 MiB of normalized fields are supported, with additional engine limits; resource refusals never become partial results.</p>
     {language === "internal" ? <p>The structured matcher uses type-sensitive field comparisons. Missing fields on a potentially matching record leave the result uncertain.</p> : null}

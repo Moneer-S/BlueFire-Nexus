@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { clearComparisonContext, MAX_COMPARISON_RUNS, readComparisonContext, writeComparisonContext, type ComparisonSelection } from "../src/lib/comparison-context";
+import { comparisonEvaluationLink, readComparisonEvaluationNavigation } from "../src/lib/comparison-evaluation-navigation";
 
 const emptySelection: ComparisonSelection = { runIds: [], baselineId: "", revisedId: "" };
 
@@ -147,5 +148,49 @@ describe("comparison navigation context", () => {
     const before = input.toString();
     expect(() => writeComparisonContext(input, selection)).toThrow("Invalid comparison selection.");
     expect(input.toString()).toBe(before);
+  });
+});
+
+describe("missing-evaluation return navigation", () => {
+  const selection: ComparisonSelection = { runIds: ["run-third", "run-first", "run-second"], baselineId: "rule-original", revisedId: "rule-revised" };
+
+  it("round-trips ordered runs and both revision choices through a copied evaluation URL", () => {
+    const href = comparisonEvaluationLink("run-second", "rule-revised", selection);
+    expect(href).toBeDefined();
+    const copiedUrl = new URL(href!, "https://example.test");
+    expect(copiedUrl.pathname).toBe("/detection-lab");
+    expect(readComparisonEvaluationNavigation(copiedUrl.searchParams)).toEqual({
+      runId: "run-second", candidateId: "rule-revised", comparison: selection,
+      returnPath: expect.stringMatching(/^\/compare\?/),
+    });
+    const returned = new URL(readComparisonEvaluationNavigation(copiedUrl.searchParams)!.returnPath, "https://example.test");
+    expect(returned.origin).toBe("https://example.test");
+    expect(returned.pathname).toBe("/compare");
+    expect(readComparisonContext(returned.searchParams)).toEqual({ ...selection, explicit: true, invalid: false });
+    expect(Array.from(returned.searchParams.keys())).toEqual(["compare_context", "compare_run", "compare_run", "compare_run", "compare_baseline", "compare_revised"]);
+  });
+
+  it.each([
+    ["duplicate run key", "compare_context=1&compare_run=run-third&compare_run=run-third&compare_baseline=rule-original&compare_revised=rule-revised&run=run-third&candidate=rule-original&candidate_scope=registry&view=evaluations"],
+    ["duplicate target scalar", "compare_context=1&compare_run=run-third&compare_run=run-first&compare_run=run-second&compare_baseline=rule-original&compare_revised=rule-revised&run=run-second&run=run-third&candidate=rule-revised&candidate_scope=registry&view=evaluations"],
+    ["malformed comparison marker", "compare_context=2&compare_run=run-third&compare_run=run-first&compare_run=run-second&compare_baseline=rule-original&compare_revised=rule-revised&run=run-second&candidate=rule-revised&candidate_scope=registry&view=evaluations"],
+    ["target run outside selection", "compare_context=1&compare_run=run-third&compare_run=run-first&compare_run=run-second&compare_baseline=rule-original&compare_revised=rule-revised&run=run-outside&candidate=rule-original&candidate_scope=registry&view=evaluations"],
+    ["candidate is not a selected revision", "compare_context=1&compare_run=run-third&compare_run=run-first&compare_run=run-second&compare_baseline=rule-original&compare_revised=rule-revised&run=run-second&candidate=rule-other&candidate_scope=registry&view=evaluations"],
+    ["missing revised revision", "compare_context=1&compare_run=run-third&compare_run=run-first&compare_run=run-second&compare_baseline=rule-original&run=run-second&candidate=rule-original&candidate_scope=registry&view=evaluations"],
+    ["ambiguous view", "compare_context=1&compare_run=run-third&compare_run=run-first&compare_run=run-second&compare_baseline=rule-original&compare_revised=rule-revised&run=run-second&candidate=rule-revised&candidate_scope=registry&view=evaluations&view=candidate"],
+  ])("rejects %s without producing a return action", (_label, query) => {
+    expect(readComparisonEvaluationNavigation(new URLSearchParams(query))).toBeUndefined();
+  });
+
+  it("rebuilds a fixed comparison destination and ignores arbitrary return URL fields", () => {
+    const params = new URLSearchParams("return=https%3A%2F%2Fevil.example%2Fpath&return_path=%2Fadmin&origin=https%3A%2F%2Fevil.example&run=run-second&candidate=rule-original&candidate_scope=registry&view=evaluations");
+    const written = writeComparisonContext(params, selection);
+    const parsed = readComparisonEvaluationNavigation(written);
+    expect(parsed?.returnPath).toMatch(/^\/compare\?/);
+    const destination = new URL(parsed!.returnPath, "https://example.test");
+    expect(destination.origin).toBe("https://example.test");
+    expect(destination.pathname).toBe("/compare");
+    expect(destination.searchParams.get("return")).toBeNull();
+    expect(destination.searchParams.get("origin")).toBeNull();
   });
 });

@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { DetectorEvaluationComparison, DetectorEvaluationTable } from "../src/components/DetectorEvaluationComparison";
 import { api } from "../src/lib/api";
 import { compareDetectorEvaluations, evaluationLabel } from "../src/lib/detection-results";
+import { readComparisonContext } from "../src/lib/comparison-context";
 import type { DetectionResource, DetectionRunEvaluation } from "../src/types";
 
 function report(candidateId: string, runId: string, state: DetectionRunEvaluation["result"]["state"], role: DetectionRunEvaluation["case_role"] = "attack"): DetectionRunEvaluation {
@@ -80,12 +81,22 @@ it.each(["original", "revised", "both"] as const)("offers the exact saved revisi
       expect(link).toBeVisible();
       const destination = new URL(link!.getAttribute("href")!, "http://localhost");
       expect(destination.pathname).toBe("/detection-lab");
-      expect(Object.fromEntries(destination.searchParams)).toEqual({ run: "attack", candidate: side, candidate_scope: "registry", view: "evaluations" });
+      expect(Object.fromEntries(destination.searchParams)).toMatchObject({ run: "attack", candidate: side, candidate_scope: "registry", view: "evaluations", compare_context: "1", compare_baseline: "original", compare_revised: "revised" });
+      expect(destination.searchParams.getAll("compare_run")).toEqual(["attack", "heldout"]);
+      expect(readComparisonContext(destination.searchParams)).toEqual({ runIds: ["attack", "heldout"], baselineId: "original", revisedId: "revised", explicit: true, invalid: false });
     } else expect(link).not.toBeInTheDocument();
   }
   const heldout = within(table).getAllByRole("row").find(item => item.textContent?.includes("heldout"))!;
   expect(within(heldout).getAllByText("Not evaluated")).toHaveLength(2);
-  expect(within(heldout).getAllByRole("link", { name: /^Evaluate (original|revised) on this run$/ })).toHaveLength(2);
+  const heldoutLinks = within(heldout).getAllByRole("link", { name: /^Evaluate (original|revised) on this run$/ });
+  expect(heldoutLinks).toHaveLength(2);
+  for (const link of heldoutLinks) {
+    const destination = new URL(link.getAttribute("href")!, "http://localhost");
+    expect(destination.searchParams.get("run")).toBe("heldout");
+    expect(destination.searchParams.getAll("compare_run")).toEqual(["attack", "heldout"]);
+    expect(destination.searchParams.get("compare_baseline")).toBe("original");
+    expect(destination.searchParams.get("compare_revised")).toBe("revised");
+  }
   expect(evaluate).not.toHaveBeenCalled();
 });
 it("does not invent a saved revision handoff for a table without validated resources", () => {
@@ -136,10 +147,13 @@ it("loads only the chosen revision family and exposes missing held-out evaluatio
   expect(fetchReports).toHaveBeenCalledWith("original");
   expect(fetchReports).toHaveBeenCalledWith("revised");
   const evaluationLinks = screen.getAllByRole("link", { name: "Open detector and run" });
-  expect(evaluationLinks.map((link) => {
+  const evaluationParams = evaluationLinks.map((link) => {
     const params = new URL(link.getAttribute("href")!, "http://localhost").searchParams;
+    expect(params.has("compare_context")).toBe(false);
+    expect(params.has("compare_run")).toBe(false);
     return { run: params.get("run"), candidate: params.get("candidate"), scope: params.get("candidate_scope") };
-  })).toEqual([
+  });
+  expect(evaluationParams).toEqual([
     { run: "attack", candidate: "original", scope: "registry" },
     { run: "attack", candidate: "revised", scope: "registry" },
   ]);

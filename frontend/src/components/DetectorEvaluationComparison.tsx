@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { registeredDetectionEvaluationLink, registeredDetectionLink } from "../lib/run-handoffs";
+import { comparisonEvaluationLink } from "../lib/comparison-evaluation-navigation";
 import { api } from "../lib/api";
 import { compareDetectorEvaluations, evaluationLabel } from "../lib/detection-results";
 import type { DetectionResource, DetectionRunEvaluation } from "../types";
@@ -28,10 +29,14 @@ export function DetectorEvaluationTable({ baseline, revised, baselineLabel, revi
   revisedResource?: DetectionResource;
 }) {
   const rows = compareDetectorEvaluations(baseline, revised, runIds);
+  const comparison = runIds && baselineResource && revisedResource
+    ? { runIds, baselineId: baselineResource.id, revisedId: revisedResource.id } : undefined;
   // Only the comparison's verified registry selection can supply a missing side.
   // A report from the opposite side is never a source of candidate identity.
-  const missingLink = (runId: string, resource?: DetectionResource) => resource && resource.document.candidate_id === resource.id
-    ? registeredDetectionEvaluationLink(runId, resource.id) : undefined;
+  const missingLink = (runId: string, resource?: DetectionResource) => {
+    if (!resource || resource.document.candidate_id !== resource.id) return undefined;
+    return comparison ? comparisonEvaluationLink(runId, resource.id, comparison) : registeredDetectionEvaluationLink(runId, resource.id);
+  };
   return rows.length ? <div className="detector-comparison-table" role="region" aria-label="Measured detector comparison" tabIndex={0}>
     <table><caption>Retained detector evaluations by run and revision</caption><thead><tr><th scope="col">Run / case</th><th scope="col">{baselineLabel}</th><th scope="col">{revisedLabel}</th><th scope="col">Measured change</th></tr></thead>
       <tbody>{rows.map((row) => <tr key={row.runId}><th scope="row"><RunReference runId={row.runId} /><small>{row.roles.length ? row.roles.map(sentence).join(" / ") : "Case not assigned"}</small></th>
