@@ -168,6 +168,7 @@
 .workbench-builder .adaptive-budget-mode strong { display: block; }
 .workbench-builder .adaptive-budget-fields > p:first-child { margin: 8px 0 12px; font-size: .78rem; line-height: 1.45; }
 .workbench-builder .adaptive-editor-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.workbench-builder .adaptive-editor-actions .button { scroll-margin-block: 8px; }
 .workbench-builder .adaptive-choice-status { font-size: .76rem; }
 .workbench-builder .adaptive-repair { padding: 12px 16px; border: 1px solid var(--warning); border-radius: 8px; margin-bottom: 12px; }
 .workbench-builder .adaptive-repair p { margin: 8px 0; font-size: .82rem; }
