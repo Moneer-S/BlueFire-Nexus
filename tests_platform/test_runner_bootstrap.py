@@ -31,7 +31,12 @@ from bluefire.runner_bootstrap import (
     validate_runner_inventory,
 )
 from bluefire.runner_client import RunnerTransportError, canonical_runner_inventory
-from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_VERSIONS
+from bluefire.runner_inventory import (
+    BUILTIN_RUNNER_ACTION_VERSIONS,
+    BUILTIN_STRUCTURAL_TOOL_ACTION_IDS,
+    RunnerInventoryAuthorityError,
+    validate_builtin_action_inventory,
+)
 from tools.stage_native_runner import stage_native_runner
 
 PRODUCT_VERSION = __version__
@@ -149,7 +154,9 @@ def _inventory(**changes: Any) -> Mapping[str, Any]:
                 "schema_version": ACTION_SDK_VERSION,
                 "action_id": action_id,
                 "action_version": action_version,
-                "readiness": "ready",
+                "readiness": (
+                    "structural" if action_id in BUILTIN_STRUCTURAL_TOOL_ACTION_IDS else "ready"
+                ),
             }
             for action_id, action_version in BUILTIN_RUNNER_ACTION_VERSIONS.items()
         ],
@@ -431,6 +438,22 @@ def test_manifest_is_strict_and_duplicate_json_keys_are_refused(tmp_path: Path) 
 def test_inventory_must_match_manifest_compatibility(field: str, value: str) -> None:
     with pytest.raises(RunnerBootstrapError, match="incompatibility"):
         validate_runner_inventory(_inventory(**{field: value}), _manifest())
+
+
+@pytest.mark.parametrize("canonical", [False, True])
+def test_bootstrap_accepts_registered_tools_before_installation_binding(canonical: bool) -> None:
+    inventory = _inventory()
+    if canonical:
+        inventory = canonical_runner_inventory(inventory)
+    structural = {
+        row["action_id"] for row in inventory["actions"] if row["readiness"] == "structural"
+    }
+    assert structural == {"sandbox.permission.chmod.v1", "sandbox.collection.atomic-gzip.v1"}
+    validate_runner_inventory(inventory, _manifest())
+    # Bootstrapping the host does not grant an unbound tool execution readiness.
+    for action_id in structural:
+        with pytest.raises(RunnerInventoryAuthorityError, match="not ready"):
+            validate_builtin_action_inventory(inventory, required_action_ids={action_id})
 
 
 @pytest.mark.parametrize(
