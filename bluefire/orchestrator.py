@@ -997,18 +997,22 @@ class Orchestrator:
             if total_seconds is not None
             else 0.0
         )
-        reviewed_checks = ReviewedStepChecks(
-            plan=plan,
-            authorization=adaptive_authorization,
-            expected_digest=adaptive_digest,
-            registry=self.registry,
-            profile=profile,
-            target_scope=authorized_target_scope,
-            platform=current_platform(),
-            catalog_authority=self.catalog_authority,
-            approval=approval_record,
-            deadline=deadline,
-            cleanup_reserve=cleanup_reserve,
+        reviewed_checks = (
+            ReviewedStepChecks(
+                plan=plan,
+                authorization=adaptive_authorization,
+                expected_digest=adaptive_digest,
+                registry=self.registry,
+                profile=profile,
+                target_scope=authorized_target_scope,
+                platform=current_platform(),
+                catalog_authority=self.catalog_authority,
+                approval=approval_record,
+                deadline=deadline,
+                cleanup_reserve=cleanup_reserve,
+            )
+            if mode is ExecutionMode.EXECUTE
+            else None
         )
         budget_exhausted = False
         collector_elapsed_seconds = 0.0
@@ -1179,6 +1183,7 @@ class Orchestrator:
                 step_budget_exhausted = action_timeout_ms < 1
                 budget_exhausted = budget_exhausted or step_budget_exhausted
 
+                assert reviewed_checks is not None
                 recheck_reviewed_step = reviewed_checks.bind(
                     step=plan_step,
                     retries_used=retries_used,
@@ -1434,6 +1439,7 @@ class Orchestrator:
                         if cancel_event is not None and cancel_event.is_set():
                             raise AIProviderCancelled()
 
+                    assert reviewed_checks is not None
                     validate_choice = reviewed_checks.bind(
                         retries_used=retries_used,
                         budget=pivot_budget,
