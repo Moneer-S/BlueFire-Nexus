@@ -9,14 +9,14 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-64748b?style=flat" alt="License: MIT"></a>
   <a href="docs/INSTALLATION.md"><img src="https://img.shields.io/badge/Python-3.10%2B-64748b?style=flat" alt="Requires Python 3.10 or newer"></a>
-  <a href="https://github.com/Moneer-S/BlueFire-Nexus/issues/201"><img src="https://img.shields.io/badge/status-V3%20development-2563eb?style=flat" alt="V3 in development"></a>
+  <a href="https://github.com/Moneer-S/BlueFire-Nexus/issues/202"><img src="https://img.shields.io/badge/status-V3%20development-2563eb?style=flat" alt="V3 in development"></a>
 </p>
 
 <p align="center">
   <a href="#get-started">Get started</a> ·
   <a href="#build-the-experiment">Workflow</a> ·
   <a href="docs/OPERATOR_GUIDE.md">Documentation</a> ·
-  <a href="https://github.com/Moneer-S/BlueFire-Nexus/issues/201">Roadmap</a>
+  <a href="https://github.com/Moneer-S/BlueFire-Nexus/issues/202">Roadmap</a>
 </p>
 
 BlueFire Nexus is an open-source purple-team framework for building repeatable security tests and improving detections. Connect individual actions into an attack chain, run it in your lab, and inspect the results. Change a method or detection rule, repeat the experiment, and compare the outcome.
@@ -114,7 +114,7 @@ The framework includes native methods and reviewed external-tool adaptations, in
 
 V3 is a development build, not a stable release. The included examples focus on local endpoint and file-collection tests using generated lab data. Execution support varies by method and platform. Remote runners, broad Active Directory coverage, and production EDR/SIEM collection integrations are not shipped.
 
-Broader technique coverage, graph usability, and final release validation are active work. See the [capability reference](docs/RELEASE_CAPABILITIES.md) and [roadmap](https://github.com/Moneer-S/BlueFire-Nexus/issues/201).
+Guided setup, reusable objectives, defensive changes, and endpoint, AD, and cloud workflows are active work. See the [program phases](docs/AI_FIRST_PROGRAM.md), [capability reference](docs/RELEASE_CAPABILITIES.md), and [roadmap](https://github.com/Moneer-S/BlueFire-Nexus/issues/202).
 
 ## License
 

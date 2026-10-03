@@ -451,6 +451,10 @@ export interface RunnerLifecycleStatus {
   enrollment: "absent" | "active" | "revoked" | "unavailable" | string;
   process: "absent" | "authenticated" | "stale" | "unavailable" | string;
   upgrade_recovery_required?: true;
+  profile_enrollment?: {
+    state: "not_enrolled";
+    enrolled_profile_ids: string[];
+  };
   runner: {
     source?: string;
     product_version?: string;
