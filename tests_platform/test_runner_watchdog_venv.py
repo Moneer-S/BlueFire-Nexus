@@ -19,12 +19,13 @@ from bluefire.util import file_hash
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux FD exec")
 
 
-@pytest.fixture
-def installed_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+@pytest.fixture(params=[True, False], ids=["symlink", "copy"])
+def installed_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request):
+    symlinks = request.param
     environment = tmp_path / "installed environment"
-    venv.EnvBuilder(with_pip=False, symlinks=True).create(environment)
+    venv.EnvBuilder(with_pip=False, symlinks=symlinks).create(environment)
     launcher = environment / "bin/python"
-    assert launcher.is_symlink()
+    assert launcher.is_symlink() is symlinks
     site = (
         environment / f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
     )
@@ -33,6 +34,17 @@ def installed_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(sys, "executable", str(launcher))
     monkeypatch.setattr(sys, "prefix", str(environment))
     return environment, launcher, marker
+
+
+@pytest.fixture
+def copied_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    environment = tmp_path / "copied installed environment"
+    venv.EnvBuilder(with_pip=False, symlinks=False).create(environment)
+    launcher = environment / "bin/python"
+    assert launcher.is_file() and not launcher.is_symlink()
+    monkeypatch.setattr(sys, "executable", str(launcher))
+    monkeypatch.setattr(sys, "prefix", str(environment))
+    return environment, launcher
 
 
 def test_watchdog_preserves_venv_with_pinned_executable(
@@ -90,6 +102,41 @@ def test_watchdog_preserves_venv_with_pinned_executable(
     finally:
         for process in processes:
             assert runner._terminate_process_tree(process)
+
+
+def test_protected_copied_venv_launcher_matches_base_runtime(
+    tmp_path: Path, copied_environment
+) -> None:
+    _, launcher = copied_environment
+    runtime = Path(sys._base_executable).resolve(strict=True)
+    assert file_hash(launcher) == file_hash(runtime)
+
+    environment = ActivePythonEnvironment.capture(runtime)
+
+    assert environment is not None
+    assert environment.recheck(runtime) == str(launcher)
+
+
+def test_copied_venv_launcher_with_different_contents_refuses_before_capture(
+    copied_environment,
+) -> None:
+    _, launcher = copied_environment
+    launcher.write_bytes(b"not the protected base interpreter")
+    launcher.chmod(0o755)
+
+    with pytest.raises(RunnerTransportError, match="application environment"):
+        ActivePythonEnvironment.capture(Path(sys._base_executable).resolve(strict=True))
+
+
+def test_changed_copied_launcher_refuses_on_recheck(copied_environment) -> None:
+    _, launcher = copied_environment
+    runtime = Path(sys._base_executable).resolve(strict=True)
+    environment = ActivePythonEnvironment.capture(runtime)
+    assert environment is not None
+    launcher.write_bytes(launcher.read_bytes() + b"changed")
+
+    with pytest.raises(RunnerTransportError, match="application environment changed"):
+        environment.recheck(runtime)
 
 
 @pytest.mark.parametrize("change", ["contents", "replacement", "symlink"])
