@@ -358,6 +358,57 @@ def test_pytest_report_section_retains_exact_payload_without_stdout(monkeypatch,
     assert captured.out == captured.err == ""
 
 
+@pytest.mark.parametrize(
+    "stage",
+    ["assist_rejection_approval", "assist_cancellation_approval"],
+)
+@pytest.mark.parametrize("sink_fails", [False, True])
+def test_assist_wait_stage_labels_are_allowlisted_and_payload_stays_private(
+    monkeypatch, capsys, stage, sink_fails
+):
+    timeout, reads = actual_timeout(
+        {
+            "state": "running",
+            "job_id": PRIVATE,
+            "progress": {"phase": "running", "proposal_record_id": PRIVATE},
+        }
+    )
+    monkeypatch.setattr(diagnostic.sys, "_current_frames", lambda: {})
+    sections = []
+    cleanup = []
+
+    def report_section(*args):
+        if sink_fails:
+            raise OSError(PRIVATE)
+        sections.append(args)
+
+    with pytest.raises(JobWaitTimeout) as caught:
+        try:
+            with diagnostic.diagnose_job_wait(stage, report_section):
+                raise timeout
+        finally:
+            cleanup.append("service-close")
+
+    assert caught.value is timeout
+    assert reads == [PRIVATE]
+    assert cleanup == ["service-close"]
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+    if sink_fails:
+        assert sections == []
+        return
+    assert len(sections) == 1
+    when, title, payload = sections[0]
+    assert (when, title) == ("call", "Job wait diagnostic")
+    assert PRIVATE not in payload
+    report = json.loads(payload)
+    assert report["stage"] == stage
+    assert report["last_wait_job"]["available"] is True
+    assert report["last_wait_job"]["state"] == "running"
+    assert report["last_wait_job"]["phase"] == "running"
+    assert report["last_wait_job"]["has_proposal_review_field"] is True
+
+
 @pytest.mark.parametrize("report_section", [False, True])
 def test_success_and_other_exceptions_do_not_run_diagnostics(monkeypatch, report_section):
     def unexpected(*_args):

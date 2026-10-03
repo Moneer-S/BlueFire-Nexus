@@ -126,6 +126,17 @@ def test_fresh_review_recovers_each_remounted_phase_without_reusing_authority(
     _interrupt(history, monkeypatch, original, boundary)
     pending = _pending(history)
     assert json.loads(pending)["schema_version"] == upgrade.JOURNAL_SCHEMA
+    status = history.lifecycle.status(profile_id="new-unenrolled-profile.v1")
+    assert status["state"] == "unavailable" and status["process"] == "absent"
+    assert status["upgrade_recovery_required"] is True
+    assert status["profile_enrollment"] == {
+        "state": "not_enrolled",
+        "enrolled_profile_ids": [PROFILE_ID],
+    }
+    with pytest.raises(RunnerLifecycleError, match="profile"):
+        history.lifecycle.review_upgrade(
+            allowed_profile_ids=(PROFILE_ID, "new-unenrolled-profile.v1")
+        )
     session_identity[0] += 1
 
     with pytest.raises(RunnerLifecycleError):

@@ -12,6 +12,7 @@
 .adaptive-path-decision { margin-top: 12px; padding: 12px; background: var(--surface-raised, rgba(128, 128, 128, .06)); border: 1px dashed var(--line); border-radius: 8px; }
 .adaptive-path-decision p { font-size: .78rem; }
 .adaptive-path-decision details { margin-top: 10px; }
+.adaptive-path-decision summary { scroll-margin-block: 8px; }
 .adaptive-path-decision pre { max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .adaptive-permission-observations { margin-top: 16px; }
 .adaptive-permission-observations h4 { font-size: .86rem; margin: 0 0 8px; }

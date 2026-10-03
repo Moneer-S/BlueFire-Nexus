@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -14,9 +15,10 @@ from bluefire.collector_journey_diagnostics import (
     DiagnosticSubprocessRustRunner,
     observe,
 )
+from bluefire.owned_service_authority import SERVICE_ACTION_ID, OwnedServiceAdmission
 from bluefire.run_store import RunStore
 from bluefire.runner_client import SubprocessRustRunner
-from bluefire.runner_transport_errors import RunnerTaskTimedOut
+from bluefire.runner_transport_errors import RunnerTaskTimedOut, RunnerTransportError
 
 PRIVATE = "private-value-in-test"
 ACTION = "sandbox.fixture.create.v1"
@@ -62,9 +64,15 @@ def observed_runner(observer):
     return runner
 
 
+def service_admission():
+    path = Path(__file__).with_name("fixtures") / "owned_service_admission_v1.json"
+    return OwnedServiceAdmission.from_mapping(json.loads(path.read_text())["admission"])
+
+
 @pytest.mark.parametrize("fails", [False, True])
+@pytest.mark.parametrize("with_admission", [False, True])
 def test_observer_delegates_once_with_exact_arguments_and_original_result_or_exception(
-    tmp_path, monkeypatch, fails
+    tmp_path, monkeypatch, fails, with_admission
 ):
     observer = diagnostic()
     runner = observed_runner(observer)
@@ -85,6 +93,9 @@ def test_observer_delegates_once_with_exact_arguments_and_original_result_or_exc
 
     monkeypatch.setattr(SubprocessRustRunner, "execute_task", delegate)
     kwargs = dict(task_id=PRIVATE, cancel_event=cancel, durable_result_path=destination)
+    admission = service_admission() if with_admission else None
+    if admission is not None:
+        kwargs["owned_service_admission"] = admission
     if fails:
         with pytest.raises(RunnerTaskTimedOut) as caught:
             runner.execute_task(manifest, profile, **kwargs)
@@ -97,10 +108,31 @@ def test_observer_delegates_once_with_exact_arguments_and_original_result_or_exc
     assert len(calls) == 1
     assert calls[0][0] is runner and calls[0][1] is manifest and calls[0][2] is profile
     assert calls[0][3] == kwargs and calls[0][3]["cancel_event"] is cancel
+    if admission is not None:
+        assert calls[0][3]["owned_service_admission"] is admission
     assert observer.last_attempt["requested_timeout_ms"] == 29500
     assert observer.last_attempt["profile_timeout_ms"] == 35000
     assert observer.last_attempt["transport_timeout_ms"] == 35000
     assert PRIVATE not in json.dumps(observer.last_attempt)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("with_admission", [False, True])
+def test_observer_preserves_base_runner_service_admission_refusal(tmp_path, with_admission):
+    observer = diagnostic()
+    runner = observed_runner(observer)
+    runner._service_launch_authority = None
+    destination = tmp_path / "unused-result.json"
+    with pytest.raises(RunnerTransportError, match="Owned-service execution requires"):
+        runner.execute_task(
+            {"action_id": SERVICE_ACTION_ID},
+            {},
+            task_id="service-diagnostic-test",
+            cancel_event=threading.Event(),
+            durable_result_path=destination,
+            owned_service_admission=service_admission() if with_admission else None,
+        )
+    assert observer.last_unsuccessful_attempt["exception_type"] == "RunnerTransportError"
     assert not destination.exists()
 
 

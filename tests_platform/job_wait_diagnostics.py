@@ -7,7 +7,14 @@ from itertools import islice
 
 from bluefire.job_runtime import JobState, JobWaitTimeout, RunJobController
 
-STAGES = {"graph_parent", "graph_child", "replay_approval", "replay_terminal"}
+STAGES = {
+    "graph_parent",
+    "graph_child",
+    "replay_approval",
+    "replay_terminal",
+    "assist_rejection_approval",
+    "assist_cancellation_approval",
+}
 STATES = {state.value for state in JobState}
 ERROR_CODES = {
     "execution_callback_failed",

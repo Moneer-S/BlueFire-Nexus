@@ -1,17 +1,21 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { AdaptiveRunPath } from "../src/components/AdaptiveRunPath";
+import { RunReview } from "../src/pages/Runs";
 import { decisionProvenance, recordedPathNodes, selectedAttempt } from "../src/lib/adaptive-run";
 import { demoCatalog } from "../src/lib/demo";
 import type { AIProposal, CatalogResponse, RunRecord } from "../src/types";
 
 // Authored component fixtures exercise presentation; they are not observed runs.
-const primary = "sandbox.discovery.list.v1", alternate = "sandbox.discovery.metadata.v1";
+const primary = "sandbox.discovery.list.v1", alternate = "sandbox.discovery.metadata.v1", third = "sandbox.discovery.hash.v1";
+const digest = `sha256:${"a".repeat(64)}`;
 const catalog: CatalogResponse = { ...demoCatalog, behaviors: [
   ...demoCatalog.behaviors, { ...demoCatalog.behaviors[0]!, id: primary, title: "Discover records" },
+  { ...demoCatalog.behaviors[0]!, id: third, title: "Hash selected records" },
 ], actions: [
   ...demoCatalog.actions, { ...demoCatalog.actions[0]!, id: primary, title: "List owned files" },
   { ...demoCatalog.actions[0]!, id: alternate, title: "Inspect file metadata" },
+  { ...demoCatalog.actions[0]!, id: third, title: "Hash selected files" },
 ] };
 function fixture(): RunRecord {
   return { run_id: "authored-run", mode: "execute", status: "completed", objective: "Verify the original collection objective", objective_reached: false,
@@ -25,6 +29,54 @@ function fixture(): RunRecord {
       provider: { effective_provider_id: "deterministic-offline.v1", model: "software-test-model", used_fallback: false }, provider_attempt: { provider_id: "deterministic-offline.v1", kind: "deterministic", model: "software-test-model" }, provider_called: true, decision_source: "deterministic_provider",
       planner_state: { observations: { attempts: [{ step_id: "discover", failure: { classification: "execution_failure" }, evidence: [{ evidence_id: "original-evidence" }] }], remaining_budgets: { steps: 3, seconds: 20, retries: 1 }, unknowns: ["Target prevention has not been established."] } },
     }] };
+}
+
+function v5Fixture(): RunRecord {
+  const run = fixture();
+  const record = structuredClone(run.ai_proposals![0]!);
+  record.schema_version = "bluefire.ai-proposal-record.v5";
+  record.proposal_policy_digest = digest;
+  record.planner_state_digest = digest;
+  record.proposal_policy = { schema_version: "bluefire.ai-proposal-policy.v3", maximum_adaptive_retries: 2, adaptive_retries_used: 0,
+    maximum_step_retries: 2, step_retries_used: 0, adaptive_policy_digest: digest, remaining_steps: 3,
+    attempted_methods: [{ step_id: "discover", behavior_id: primary, action_id: primary }] };
+  const state = record.planner_state as Record<string, unknown>;
+  const observations = state.observations as Record<string, unknown>;
+  state.schema_version = "bluefire.planner-state.v3";
+  state.observations = { ...observations, schema_version: "bluefire.runtime-observations.v2",
+    remaining_budgets: { steps: 3, seconds: 20, retries: 2, step_retries: 2 } };
+  run.ai_proposals = [record];
+  return run;
+}
+
+function multipleV5Fixture(): RunRecord {
+  const run = v5Fixture();
+  const first = run.ai_proposals![0]!;
+  const second = structuredClone(first);
+  second.current_step_id = "discover";
+  second.deterministic_decision_id = "decision-retry";
+  second.outcome = "failed";
+  second.proposal = { ...first.proposal!, proposal_id: "authored-choice-2", selected_behavior_id: third, selected_action_id: third,
+    rationale: "The second method failed; the remaining reviewed method can still inspect the same input." };
+  second.applied_step = { step_id: "discover", behavior_id: third, action_id: third };
+  second.planner_state_digest = `sha256:${"b".repeat(64)}`;
+  second.planner_state = { ...(first.planner_state as Record<string, unknown>), deterministic_decision: {
+    decision_id: "decision-retry", run_id: "authored-run", current_state_digest: digest } };
+  second.proposal_policy = { schema_version: "bluefire.ai-proposal-policy.v3", maximum_adaptive_retries: 2, adaptive_retries_used: 1,
+    maximum_step_retries: 2, step_retries_used: 1, adaptive_policy_digest: digest, remaining_steps: 2,
+    attempted_methods: [{ step_id: "discover", behavior_id: primary, action_id: primary },
+      { step_id: "discover", behavior_id: alternate, action_id: alternate }] };
+  const secondState = second.planner_state as Record<string, unknown>;
+  const secondObservations = secondState.observations as Record<string, unknown>;
+  secondState.observations = { ...secondObservations,
+    remaining_budgets: { steps: 2, seconds: 10, retries: 1, step_retries: 1 } };
+  second.proposal_policy_digest = `sha256:${"c".repeat(64)}`;
+  run.steps[1]!.status = "failed";
+  run.steps[1]!.runner_status = "failed";
+  run.steps.push({ step_id: "discover", behavior_id: third, action_id: third, status: "success", runner_status: "success",
+    request_hash: "third-request", execution_disposition: "execute", planner_decision_id: "decision-final", evidence_ids: [] });
+  run.ai_proposals = [first, second];
+  return run;
 }
 
 describe("recorded adaptive path", () => {
@@ -102,4 +154,111 @@ describe("recorded adaptive path", () => {
     Object.assign(record, { provider: null, proposal: null, decision_source: "none" });
     expect(decisionProvenance(record).label).toBe("Provider request did not produce a permitted choice");
   });
+
+  it("renders coherent v5 retry projections while keeping method selection separate from recorded attempts", () => {
+    const run = multipleV5Fixture();
+    expect(recordedPathNodes(run)).toHaveLength(1);
+    expect(selectedAttempt(run, run.ai_proposals![0]!)).toBe(run.steps[1]);
+    expect(selectedAttempt(run, run.ai_proposals![1]!)).toBe(run.steps[2]);
+    render(<AdaptiveRunPath run={run} catalog={catalog}/>);
+    const path = screen.getByRole("region", { name: "Recorded adaptive path" });
+    expect(within(path).getByText("Attempt 2 · run position 2")).toBeVisible();
+    expect(within(path).getByText("Attempt 3 · run position 3")).toBeVisible();
+    const decisions = within(path).getAllByRole("region", { name: "Recorded adaptive decision" });
+    expect(decisions).toHaveLength(2);
+    const decision = decisions[1]!;
+    expect(within(decision).getByText("Chosen alternative: Hash selected files")).toBeVisible();
+    expect(within(decision).getByText(/Deterministic provider · software evidence/)).toBeVisible();
+    expect(within(decision).queryByText(/Live provider response/)).not.toBeInTheDocument();
+    openDetails(decision);
+    expect(within(decision).getByText("2 steps · 10 seconds · 1 retry · 1 retry for this step")).toBeVisible();
+  });
+
+  it("keeps v5 activity visible but reports an inconsistent retry projection as unknown", () => {
+    const run = v5Fixture();
+    const record = run.ai_proposals![0]!;
+    const state = record.planner_state as Record<string, unknown>;
+    const observations = state.observations as Record<string, unknown>;
+    const budgets = observations.remaining_budgets as Record<string, unknown>;
+    observations.remaining_budgets = { ...budgets, step_retries: 1 };
+    expect(recordedPathNodes(run)).toHaveLength(1);
+    expect(selectedAttempt(run, record)).toBe(run.steps[1]);
+    render(<AdaptiveRunPath run={run} catalog={catalog}/>);
+    const decision = screen.getByRole("region", { name: "Recorded adaptive decision" });
+    expect(within(decision).getByText("Chosen alternative: Inspect file metadata")).toBeVisible();
+    expect(within(decision).getByText(/Runner returned success/)).toBeVisible();
+    openDetails(decision);
+    expect(within(decision).getByText("The retained v5 retry budget projection is inconsistent; remaining adaptive allowance is unknown.")).toBeVisible();
+    expect(within(decision).getByText(/Unknown retries for this step/)).toBeVisible();
+  });
+
+  it.each([
+    { budget: "coherent", remainingStepRetries: 1 },
+    { budget: "inconsistent", remainingStepRetries: 0 },
+  ])("preserves observed permissions and coverage with a $budget v5 budget without turning a reservation into an attempt", ({ budget, remainingStepRetries }) => {
+    const run = v5Fixture();
+    run.steps.pop(); // The alternate was reserved, but no runner result was recorded.
+    const record = run.ai_proposals![0]!;
+    const policy = record.proposal_policy as Record<string, unknown>;
+    Object.assign(policy, { adaptive_retries_used: 1, step_retries_used: 1, attempted_methods: [
+      { step_id: "discover", behavior_id: primary, action_id: primary },
+      { step_id: "discover", behavior_id: alternate, action_id: alternate },
+    ] });
+    const state = record.planner_state as Record<string, unknown>;
+    const observations = state.observations as Record<string, unknown>;
+    observations.remaining_budgets = { steps: 3, seconds: 20, retries: 1, step_retries: remainingStepRetries };
+    const facts = { artifact_type: "file_observation", permission_status: "available", effective_access: "not_evaluated",
+      permission_mode_octal: "0660", group_write_bit: true, other_write_bit: false, non_owner_write_bit: true };
+    observations.attempts = [{ attempt_index: 0, step_id: "discover",
+      failure: { classification: "execution_timeout", telemetry_gap: true },
+      evidence: [{ evidence_id: "original-evidence", provenance: "observed", facts }] }];
+    run.evidence = { records: [{ evidence_id: "original-evidence", provenance: "observed", producer: "authored-fixture", content: facts }] };
+    const before = JSON.stringify(run);
+
+    render(<AdaptiveRunPath run={run} catalog={catalog}/>);
+    const path = screen.getByRole("region", { name: "Recorded adaptive path" });
+    expect(within(path).getByText("Attempt 1 · run position 1")).toBeVisible();
+    expect(within(path).queryByText("Attempt 2 · run position 2")).not.toBeInTheDocument();
+    expect(within(path).getByText("1 independently observed records")).toBeVisible();
+    const decision = within(path).getByRole("region", { name: "Recorded adaptive decision" });
+    expect(within(decision).getByText("Selection applied; no matching attempt is recorded.")).toBeVisible();
+    openDetails(decision);
+    expect(within(decision).getByText("Execution timeout", { selector: "dd" })).toBeVisible();
+    expect(within(decision).getByText("Some observations are unavailable.")).toBeVisible();
+    const evidenceRow = within(decision).getByText("Current attempt evidence", { selector: "dt" }).parentElement!;
+    expect(within(evidenceRow).getByText("original-evidence", { selector: "dd" })).toBeVisible();
+    const permissions = within(decision).getByRole("region", { name: "Observed file permissions" });
+    expect(within(permissions).getByText("0660", { selector: "dd" })).toBeVisible();
+    expect(within(permissions).getByText("From run position 1")).toBeVisible();
+    expect(within(permissions).getByText("Effective access not evaluated.")).toBeVisible();
+    expect(within(permissions).queryByText("Observation 2", { selector: "strong" })).not.toBeInTheDocument();
+    const warning = "The retained v5 retry budget projection is inconsistent; remaining adaptive allowance is unknown.";
+    if (budget === "coherent") {
+      expect(within(decision).getByText("3 steps · 20 seconds · 1 retry · 1 retry for this step")).toBeVisible();
+      expect(within(decision).queryByText(warning)).not.toBeInTheDocument();
+    } else {
+      expect(within(decision).getByText(warning)).toBeVisible();
+      expect(within(decision).getByText(/Unknown retries for this step/)).toBeVisible();
+    }
+    expect(JSON.stringify(run)).toBe(before);
+  });
+
+  it("routes v5 records through the adaptive decision trail in the full run review", () => {
+    const run = multipleV5Fixture();
+    render(<RunReview run={run} catalog={catalog}/>);
+    const summary = screen.getByText("AI decisions (2)");
+    const trail = summary.closest("details")!;
+    trail.open = true;
+    const decisions = within(trail).getAllByRole("region", { name: "Recorded adaptive decision" });
+    expect(decisions).toHaveLength(2);
+    expect(within(trail).getByText("Chosen alternative: Hash selected files")).toBeVisible();
+    openDetails(decisions[1]!);
+    expect(within(trail).getByText("2 steps · 10 seconds · 1 retry · 1 retry for this step")).toBeVisible();
+    expect(within(trail).queryByText("Policy not reported")).not.toBeInTheDocument();
+  });
 });
+
+function openDetails(decision: HTMLElement) {
+  const summary = within(decision).getByText("Decision, observations and limits");
+  summary.closest("details")!.open = true;
+}

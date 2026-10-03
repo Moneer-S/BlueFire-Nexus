@@ -35,6 +35,7 @@ from .execution_contracts import (
 from .native_tool_candidate import validate_candidate_inspection
 from .native_tool_readiness import validate_native_tool_inspection
 from .native_tool_transport import inspect_subprocess_tool
+from .owned_service_authority import ADMISSION_SCHEMA, OwnedServiceAdmission
 from .runner_darwin_containment import (
     _DARWIN_DESCRIPTOR_BOOTSTRAP,
     DarwinProcessContainment,
@@ -91,6 +92,7 @@ from .runner_private_files import (
 from .runner_private_files import (
     _windows_rename_descriptor as _windows_rename_descriptor,
 )
+from .runner_python_environment import ActivePythonEnvironment
 from .runner_transport_errors import (
     RunnerDurableResultExists,
     RunnerPendingResultExists,
@@ -100,6 +102,11 @@ from .runner_transport_errors import (
     RunnerTransportError,
 )
 from .runner_windows_containment import WindowsJobContainment
+from .service_launch import (
+    SERVICE_ACTION_ID,
+    ConfiguredServiceLaunchAuthority,
+    ServiceLaunch,
+)
 from .util import canonical_json_bytes, content_hash, file_hash
 
 _TASK_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
@@ -1429,6 +1436,7 @@ class SubprocessRustRunner:
         timeout_seconds: float = 35.0,
         output_limit_bytes: int = 2 * 1024 * 1024,
         receiver_task_key_factory: Callable[[str], bytes] | None = None,
+        service_launch_authority: ConfiguredServiceLaunchAuthority | None = None,
         durable_result_guard: _PinnedPrivateDirectory | None = None,
         _kill_child_on_job_close: bool = False,
         _watchdog_interpreter: str | Path | None = None,
@@ -1447,6 +1455,7 @@ class SubprocessRustRunner:
         self.timeout_seconds = timeout_seconds
         self.output_limit_bytes = output_limit_bytes
         self._receiver_task_key_factory = receiver_task_key_factory
+        self._service_launch_authority = service_launch_authority
         self._durable_result_guard = durable_result_guard
         self._durable_results = DurableRunnerResult(parent_guard=durable_result_guard)
         self._kill_child_on_job_close = bool(_kill_child_on_job_close)
@@ -1474,6 +1483,9 @@ class SubprocessRustRunner:
             raise RunnerTransportError("Runner watchdog runtime is unavailable.") from None
         self._watchdog_interpreter = runtime
         self._watchdog_interpreter_digest = runtime_digest
+        self._watchdog_python_environment = (
+            ActivePythonEnvironment.capture(runtime) if _watchdog_interpreter is None else None
+        )
         try:
             script = Path(__file__).resolve(strict=True).with_name("runner_watchdog.py")
             details = script.lstat()
@@ -1787,6 +1799,10 @@ class SubprocessRustRunner:
             )
         return self._validate_result(output, manifest, profile)
 
+    @property
+    def owned_service_admission_protocol(self) -> str | None:
+        return ADMISSION_SCHEMA if self._service_launch_authority is not None else None
+
     def execute_task(
         self,
         manifest: Mapping[str, Any],
@@ -1795,6 +1811,7 @@ class SubprocessRustRunner:
         task_id: str,
         cancel_event: threading.Event,
         durable_result_path: str | Path,
+        owned_service_admission: OwnedServiceAdmission | None = None,
     ) -> Mapping[str, Any]:
         """Run one task through an independent crash-surviving watchdog process."""
 
@@ -1807,11 +1824,33 @@ class SubprocessRustRunner:
                 "Runner task did not start because cancellation was requested."
             )
 
-        destination, pending, handoff_guard = self._durable_results.prepare(
-            durable_result_path,
-            task_id,
-            retain_parent_guard=True,
-        )
+        service_launch = None
+        if owned_service_admission is not None:
+            if self._service_launch_authority is None:
+                raise RunnerTransportError(
+                    "Owned-service execution requires configured host admission."
+                )
+            service_launch = self._service_launch_authority.prepare(
+                owned_service_admission,
+                manifest,
+                profile,
+                task_id=task_id,
+                runner_digest=self.runner_binary_digest,
+                watchdog_digest=self.watchdog_script_digest,
+                interpreter_digest=self._watchdog_interpreter_digest,
+            )
+        elif manifest.get("action_id") == SERVICE_ACTION_ID:
+            raise RunnerTransportError("Owned-service execution requires protected admission.")
+        try:
+            destination, pending, handoff_guard = self._durable_results.prepare(
+                durable_result_path,
+                task_id,
+                retain_parent_guard=True,
+            )
+        except BaseException:
+            if service_launch is not None:
+                service_launch.close()
+            raise
         if handoff_guard is None:
             raise AssertionError("durable result parent guard was not retained")
         watchdog: subprocess.Popen[bytes] | None = None
@@ -1874,6 +1913,10 @@ class SubprocessRustRunner:
                 receiver_environment=receiver_environment,
                 task_id=task_id,
                 process_sink=spawned_watchdogs,
+                **cast(
+                    dict[str, Any],
+                    {"service_launch": service_launch} if service_launch is not None else {},
+                ),
             )
             # `_spawn_watchdog` returns only after Windows job assignment. The
             # watchdog refuses to launch Rust until this exclusive gate exists.
@@ -1965,7 +2008,11 @@ class SubprocessRustRunner:
                 if containment_released and control_root is not None:
                     self._cleanup_watchdog_control(control_root)
             finally:
-                handoff_guard.__exit__(*sys.exc_info())
+                try:
+                    handoff_guard.__exit__(*sys.exc_info())
+                finally:
+                    if service_launch is not None:
+                        service_launch.close()
 
     def _execute_task_locally(
         self,
@@ -1982,9 +2029,12 @@ class SubprocessRustRunner:
         cancellation_lease_token: str | None = None,
         darwin_launch_started: Callable[[], None] | None = None,
         darwin_launch_sealed: Callable[[], None] | None = None,
+        service_launch: ServiceLaunch | None = None,
     ) -> Mapping[str, Any]:
         """Watchdog-only fixed-runner execution and durable-result commit."""
 
+        if manifest.get("action_id") == SERVICE_ACTION_ID and service_launch is None:
+            raise RunnerTransportError("Owned-service execution requires protected admission.")
         reject_forbidden_execution_keys(manifest)
         reject_forbidden_execution_keys(profile)
         if cancel_event.is_set():
@@ -2025,6 +2075,10 @@ class SubprocessRustRunner:
                     cancellation_lease_token=cancellation_lease_token,
                     darwin_launch_started=darwin_launch_started,
                     darwin_launch_sealed=darwin_launch_sealed,
+                    **cast(
+                        dict[str, Any],
+                        {"service_launch": service_launch} if service_launch is not None else {},
+                    ),
                 )
             result = self._validate_result(output, manifest, profile)
             self._durable_results.promote(
@@ -2232,6 +2286,7 @@ class SubprocessRustRunner:
         receiver_environment: Mapping[str, str],
         task_id: str,
         process_sink: list[subprocess.Popen[bytes]],
+        service_launch: ServiceLaunch | None = None,
     ) -> subprocess.Popen[bytes]:
         try:
             interpreter = self._watchdog_interpreter
@@ -2282,7 +2337,11 @@ class SubprocessRustRunner:
                         descriptor_indexes = (7, 11)
                     else:
                         watchdog_arguments = [
-                            interpreter_launch[0],
+                            (
+                                self._watchdog_python_environment.recheck(interpreter)
+                                if self._watchdog_python_environment is not None
+                                else interpreter_launch[0]
+                            ),
                             "-I",
                             "-B",
                             "-X",
@@ -2295,16 +2354,35 @@ class SubprocessRustRunner:
                         watchdog_arguments,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
+                        canonical_argv0=interpreter,
                         receiver_environment=receiver_environment,
                         inherited_descriptors=inherited_descriptors,
                         darwin_allow_fork=sys.platform == "darwin",
                         darwin_descriptor_argument_indexes=descriptor_indexes,
                         process_sink=process_sink,
+                        **cast(
+                            dict[str, Any],
+                            (
+                                {"watchdog_executable": interpreter_launch[0]}
+                                if self._watchdog_python_environment is not None
+                                else {}
+                            ),
+                        ),
+                        **cast(
+                            dict[str, Any],
+                            (
+                                {"service_launch": service_launch}
+                                if service_launch is not None
+                                else {}
+                            ),
+                        ),
                     )
                     if proof is not None:
                         self._darwin_watchdog_proofs[process] = proof
                     try:
                         self._await_watchdog_readiness(process, config_path.parent, task_id)
+                        if self._watchdog_python_environment is not None:
+                            self._watchdog_python_environment.recheck(interpreter)
                     except BaseException:
                         if not self._terminate_process_tree(process):
                             raise RunnerTransportError(
@@ -2609,6 +2687,7 @@ class SubprocessRustRunner:
                 process = self._spawn(
                     [launch[0], *argv[1:]],
                     stdout=subprocess.PIPE,
+                    canonical_argv0=self.runner_binary,
                     inherited_descriptors=launch[1],
                     process_sink=spawned_processes,
                 )
@@ -2657,6 +2736,7 @@ class SubprocessRustRunner:
         cancellation_lease_token: str | None,
         darwin_launch_started: Callable[[], None] | None,
         darwin_launch_sealed: Callable[[], None] | None,
+        service_launch: ServiceLaunch | None = None,
     ) -> tuple[bytes, tuple[int, int]]:
         output = self._durable_results.open_pending(pending_result_path)
         guarded_output = cast(_GuardedBinaryFile, output)
@@ -2675,10 +2755,15 @@ class SubprocessRustRunner:
                 process = self._spawn(
                     [launch[0], *argv[1:]],
                     stdout=output,
+                    canonical_argv0=self.runner_binary,
                     receiver_environment=receiver_environment,
                     cancellation_lease_token=cancellation_lease_token,
                     inherited_descriptors=launch[1],
                     process_sink=spawned_processes,
+                    **cast(
+                        dict[str, Any],
+                        {"service_launch": service_launch} if service_launch is not None else {},
+                    ),
                 )
                 if darwin_launch_sealed is not None:
                     darwin_launch_sealed()
@@ -2751,6 +2836,7 @@ class SubprocessRustRunner:
         *,
         stdout: int | BinaryIO | None,
         stderr: int | BinaryIO | None,
+        canonical_argv0: Path | None,
         environment: Mapping[str, str],
         inherited_descriptors: tuple[int, ...],
         options: Mapping[str, Any],
@@ -2761,7 +2847,39 @@ class SubprocessRustRunner:
         target_descriptor = int(target_match.group(1)) if target_match is not None else -1
         if target_descriptor not in inherited_descriptors:
             raise RunnerTransportError("Linux parent-death target is not descriptor-bound")
+        if canonical_argv0 is None or canonical_argv0 not in (
+            self.runner_binary,
+            self._watchdog_interpreter,
+        ):
+            raise RunnerTransportError("Linux parent-death target identity is unavailable")
         try:
+            identity_fields = (
+                "st_dev",
+                "st_ino",
+                "st_mode",
+                "st_nlink",
+                "st_uid",
+                "st_gid",
+                "st_size",
+                "st_mtime_ns",
+                "st_ctime_ns",
+            )
+            target_details = os.fstat(target_descriptor)
+            target_identity = tuple(getattr(target_details, field) for field in identity_fields)
+
+            def recheck_target() -> None:
+                opened = os.fstat(target_descriptor)
+                visible = canonical_argv0.lstat()
+                if (
+                    not canonical_argv0.is_absolute()
+                    or not stat.S_ISREG(visible.st_mode)
+                    or visible.st_nlink != 1
+                    or tuple(getattr(opened, field) for field in identity_fields) != target_identity
+                    or tuple(getattr(visible, field) for field in identity_fields)
+                    != target_identity
+                ):
+                    raise OSError("parent-death target identity changed")
+
             runtime = self._watchdog_interpreter
             runtime_digest = self._watchdog_interpreter_digest
             if file_hash(runtime) != runtime_digest:
@@ -2792,6 +2910,9 @@ class SubprocessRustRunner:
                     )
                     launch_options = dict(options)
                     launch_options["pass_fds"] = pass_fds
+                    # argv[0] is startup metadata, never the executable selector.
+                    # The helper still executes the verified FD with CLOEXEC.
+                    recheck_target()
                     process = subprocess.Popen(  # nosec B603
                         [
                             interpreter_launch[0],
@@ -2805,7 +2926,8 @@ class SubprocessRustRunner:
                             str(target_descriptor),
                             nonce,
                             ",".join(str(value) for value in helper_descriptors),
-                            *argv,
+                            str(canonical_argv0),
+                            *argv[1:],
                         ],
                         cwd=self.work_root,
                         env=dict(environment),
@@ -2826,6 +2948,7 @@ class SubprocessRustRunner:
                         or _GET_SESSION_ID(process.pid) != os.getpid()
                     ):
                         raise OSError("parent-death handshake is invalid")
+                    recheck_target()
                     parent_socket.sendall(f"go-v1:{nonce}".encode("ascii"))
                     if parent_socket.recv(256) != b"":
                         raise OSError("parent-death target execution failed")
@@ -3072,12 +3195,15 @@ class SubprocessRustRunner:
         *,
         stdout: int | BinaryIO | None,
         stderr: int | BinaryIO | None = subprocess.PIPE,
+        canonical_argv0: Path | None = None,
         receiver_environment: Mapping[str, str] | None = None,
         cancellation_lease_token: str | None = None,
         inherited_descriptors: tuple[int, ...] = (),
         darwin_allow_fork: bool = False,
         darwin_descriptor_argument_indexes: tuple[int, ...] = (),
         process_sink: list[subprocess.Popen[bytes]],
+        service_launch: ServiceLaunch | None = None,
+        watchdog_executable: str | None = None,
     ) -> subprocess.Popen[bytes]:
         if process_sink:
             raise RunnerTransportError("runner process ownership sink is not empty")
@@ -3086,11 +3212,31 @@ class SubprocessRustRunner:
         darwin_slot: object | None = object() if sys.platform == "darwin" else None
         environment: dict[str, str] = {"LC_ALL": "C", "LANG": "C"}
         environment.update(_validated_receiver_task_environment(receiver_environment))
+        if service_launch is not None:
+            if not sys.platform.startswith("linux") or not isinstance(
+                service_launch, ServiceLaunch
+            ):
+                raise RunnerTransportError("Owned-service launch channel is invalid.")
+            environment.update(service_launch.environment)
+            inherited_descriptors += service_launch.descriptors
         if cancellation_lease_token is not None:
             if _RECEIVER_TASK_KEY.fullmatch(cancellation_lease_token) is None:
                 raise RunnerTransportError("runner cancellation lease is invalid")
             environment[_CANCELLATION_LEASE_ENV] = cancellation_lease_token
         options: dict[str, Any] = {}
+        if watchdog_executable is not None:
+            if (
+                not sys.platform.startswith("linux")
+                or self._kill_child_on_job_close
+                or self._watchdog_python_environment is None
+            ):
+                raise RunnerTransportError("Runner watchdog executable context is unavailable.")
+            self._watchdog_python_environment.validate_exec(
+                argv, watchdog_executable, inherited_descriptors, self._watchdog_interpreter
+            )
+            # argv[0] preserves the verified application's venv; execve still
+            # runs the descriptor-pinned interpreter, including on Python 3.10.
+            options["executable"] = watchdog_executable
         windows_job: int | None = None
         windows_suspended = False
         process: subprocess.Popen[bytes] | None = None
@@ -3151,6 +3297,7 @@ class SubprocessRustRunner:
                     argv,
                     stdout=stdout,
                     stderr=stderr,
+                    canonical_argv0=canonical_argv0,
                     environment=environment,
                     inherited_descriptors=inherited_descriptors,
                     options=options,

@@ -28,6 +28,7 @@ from .action_catalog import (
     ActivatedActionPackage,
 )
 from .adaptive_approval_binding import reviewed_execution_approval_binding
+from .adaptive_budget import reserve_method, validate_budget
 from .adaptive_execution import compile_adaptive_authorization
 from .adaptive_replay import validate_review_source
 from .ai import (
@@ -3018,7 +3019,10 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         if not isinstance(source_scenario, Mapping):
             raise ProductStoreError("proposal source scenario is unavailable")
         scenario = ScenarioDefinition.from_mapping(source_scenario)
-        if record.get("schema_version") == "bluefire.ai-proposal-record.v4":
+        if record.get("schema_version") in {
+            "bluefire.ai-proposal-record.v4",
+            "bluefire.ai-proposal-record.v5",
+        }:
             original_approval = source.get("approval")
             if not isinstance(original_approval, Mapping):
                 raise ProductStoreError("adaptive review has no consumed source approval")
@@ -3119,7 +3123,10 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         selected_step_id = validated.selected_step_id
         selected_behavior_id = validated.selected_behavior_id
         original_step = immutable_scenario.step(selected_step_id)
-        reviewed_method = record.get("schema_version") == "bluefire.ai-proposal-record.v4"
+        budgeted_method = record.get("schema_version") == "bluefire.ai-proposal-record.v5"
+        reviewed_method = (
+            budgeted_method or record.get("schema_version") == "bluefire.ai-proposal-record.v4"
+        )
         changes_behavior = bool(
             (validated.proposal_type is ProposalType.SELECT_REGISTERED or reviewed_method)
             and selected_behavior_id != original_step.behavior_id
@@ -3151,7 +3158,20 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         adaptive_retry_count = retries_used + (
             1 if validated.proposal_type is ProposalType.RETRY_REGISTERED or reviewed_method else 0
         )
-        if not 0 <= adaptive_retry_count <= 1:
+        continuation_budget = None
+        if budgeted_method:
+            try:
+                if immutable_scenario.adaptive_execution is None:
+                    raise ValueError("Adaptive continuation has no reviewed policy")
+                continuation_budget = reserve_method(
+                    validate_budget(source_retry, immutable_scenario.adaptive_execution),
+                    immutable_scenario.adaptive_execution,
+                    record["registered_step"],
+                )
+            except ValueError as exc:
+                raise ReplayError(str(exc)) from exc
+            adaptive_retry_count = continuation_budget["used"]
+        elif not 0 <= adaptive_retry_count <= 1:
             raise ReplayError("adaptive proposal exceeds the one-retry lineage bound")
         prepared = prepare_replay(
             self.store,
@@ -3242,9 +3262,13 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         }
         proposal_resolution = {
             "schema_version": (
-                "bluefire.ai-proposal-resolution-lineage.v4"
-                if reviewed_method
-                else "bluefire.ai-proposal-resolution-lineage.v3"
+                "bluefire.ai-proposal-resolution-lineage.v5"
+                if budgeted_method
+                else (
+                    "bluefire.ai-proposal-resolution-lineage.v4"
+                    if reviewed_method
+                    else "bluefire.ai-proposal-resolution-lineage.v3"
+                )
             ),
             **(
                 {
@@ -3268,6 +3292,11 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             "selected_action_id": validated.selected_action_id,
             "selected_edge": (dict(validated.selected_edge) if validated.selected_edge else None),
             "parameter_changes": dict(validated.parameter_change_map),
+            **(
+                {"adaptive_budget_digest": content_hash(continuation_budget)}
+                if continuation_budget is not None
+                else {}
+            ),
         }
         replay_record = {
             **prepared.lineage,
@@ -3277,6 +3306,7 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
                 resolved_actions != prepared.lineage.get("action_implementations_from")
             ),
             "adaptive_retry_count": adaptive_retry_count,
+            **({"adaptive_budget": continuation_budget} if continuation_budget is not None else {}),
             "execute_fresh_workspace_full_replay": mode is ExecutionMode.EXECUTE,
             "proposal_resolution": proposal_resolution,
             "collector_settings_from": self._source_collector_settings_hash(source),
@@ -3289,12 +3319,21 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             "collector_authority_changed": (source_collector_authority != collector_authority),
         }
         continuation_policy = {
-            "schema_version": "bluefire.ai-continuation-policy.v1",
+            "schema_version": (
+                "bluefire.ai-continuation-policy.v2"
+                if budgeted_method
+                else "bluefire.ai-continuation-policy.v1"
+            ),
             "source_proposal_policy_digest": record["proposal_policy_digest"],
             "preflight_digest": content_hash(preflight.to_dict()),
             "target_scope_digest": content_hash(target_scope),
             "adaptive_retry_count": adaptive_retry_count,
             "execute_fresh_workspace_full_replay": mode is ExecutionMode.EXECUTE,
+            **(
+                {"adaptive_budget_digest": content_hash(continuation_budget)}
+                if continuation_budget is not None
+                else {}
+            ),
         }
         replay_record["continuation_policy"] = continuation_policy
         replay_record["continuation_policy_digest"] = content_hash(continuation_policy)

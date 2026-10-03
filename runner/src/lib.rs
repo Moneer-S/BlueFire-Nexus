@@ -23,6 +23,17 @@ mod reviewed_gzip_builds;
 mod reviewed_native_builds;
 pub mod runner;
 pub mod safety;
+pub mod service_admission;
+#[cfg(target_os = "linux")]
+pub mod service_cgroup_reader;
+#[cfg(any(target_os = "linux", test))]
+mod service_installations;
+pub mod service_observer;
+pub mod service_operation_binding;
+pub mod service_payload;
+#[cfg(target_os = "linux")]
+pub mod service_query_reader;
+pub mod service_reservation;
 
 pub use actions::{inventory, ActionDescriptor, ACTION_SDK_SCHEMA_VERSION};
 pub use cancellation_witness::{run_internal_cancellation_descendant, INTERNAL_DESCENDANT_VERB};

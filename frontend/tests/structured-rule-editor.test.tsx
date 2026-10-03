@@ -131,7 +131,10 @@ async function openTune(user: ReturnType<typeof userEvent.setup>, internal = tru
   await user.click(await screen.findByRole("tab", { name: "Revisions" }));
   await user.click(screen.getByText(internal ? "Revise this rule" : "Advanced clone and tune"));
   await user.click(screen.getByRole("radio", { name: /Tune rule behavior/ }));
-  await user.type(screen.getByRole("textbox", { name: /Required research reason/ }), "Compare the same content across collection formats.");
+  const reason = screen.getByRole("textbox", { name: /Required research reason/ });
+  await user.click(reason);
+  await user.paste("Compare the same content across collection formats.");
+  expect(reason).toHaveValue("Compare the same content across collection formats.");
 }
 
 it("submits the precise immutable tune payload only after applying visual edits", async () => {

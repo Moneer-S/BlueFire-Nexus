@@ -668,7 +668,7 @@ function AIProposalTrail({ proposals, run, catalog }: { proposals: NonNullable<R
   if (!proposals.length) return <Panel><PanelHeader eyebrow="AI Auto journey" title="No runtime AI proposals"/><Callout title="Deterministic path">This run did not retain any Assist or Auto proposal records; planner decisions remained deterministic.</Callout></Panel>;
   return <Panel><PanelHeader eyebrow="AI Auto journey" title="Proposal, policy, and application trail" detail="Completed records show exactly what the provider proposed and what deterministic policy permitted, reviewed, or refused." actions={<Badge tone="violet">{proposals.length} proposal{proposals.length === 1 ? "" : "s"}</Badge>}/>
     <div className="record-grid">{proposals.map((record, index) => {
-      if (record.schema_version === "bluefire.ai-proposal-record.v4") return <AdaptiveDecision key={String(record.proposal_record_id ?? index)} record={record} run={run} catalog={catalog}/>;
+      if (record.schema_version === "bluefire.ai-proposal-record.v4" || record.schema_version === "bluefire.ai-proposal-record.v5") return <AdaptiveDecision key={String(record.proposal_record_id ?? index)} record={record} run={run} catalog={catalog}/>;
       const proposal = record.proposal ?? undefined;
       const provider = record.provider ?? {};
       const policy = record.proposal_policy_evaluation ?? {};

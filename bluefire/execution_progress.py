@@ -8,7 +8,7 @@ from .contracts import StepOutcome
 from .evidence import EvidenceProvenance, EvidenceRecord
 from .planner import ExecutionPlan, PlanStep
 from .run_store import RunStore
-from .runner_transport_errors import RunnerTaskCancelled
+from .runner_transport_errors import RunnerTaskCancelled, RunnerTransportError
 
 
 class ExecutionRecordFailure(RunnerTaskCancelled):
@@ -33,6 +33,7 @@ def persist_progress(
     proposals: Sequence[Mapping[str, Any]],
     evidence: Sequence[EvidenceRecord],
     retries_used: int,
+    adaptive_budget: Mapping[str, Any] | None = None,
 ) -> None:
     """Retain completed observations before the next cancellable boundary.
 
@@ -50,7 +51,11 @@ def persist_progress(
         steps=list(steps),
         planner_decisions=list(decisions),
         ai_proposals=list(proposals),
-        adaptive_retry={"used": retries_used, "maximum": 1},
+        adaptive_retry=(
+            dict(adaptive_budget)
+            if adaptive_budget is not None
+            else {"used": retries_used, "maximum": 1}
+        ),
         objective_evaluation={"status": "not_evaluated", "reason": "execution_incomplete"},
     )
     store.write_json(run_id, "result.json", result)
@@ -182,3 +187,66 @@ def emergency_cleanup(
         )
     except BaseException:
         pass
+
+
+def validate_cleanup_result(
+    manifest: Mapping[str, Any],
+    result: Mapping[str, Any],
+) -> None:
+    execution_binding = manifest.get("execution_binding")
+    bound_opcode = (
+        execution_binding.get("runner_opcode") if isinstance(execution_binding, Mapping) else None
+    )
+    if manifest.get("action_id") != "sandbox.cleanup.v1" and bound_opcode != ("sandbox.cleanup.v1"):
+        return
+    cleanup = result.get("cleanup")
+    if not isinstance(cleanup, Mapping):
+        raise RunnerTransportError("cleanup result is missing its cleanup report")
+    expected_cleanup_fields = {
+        "requested_receipts",
+        "removed_paths",
+        "already_absent_receipts",
+        "retained_paths",
+        "errors",
+        "verification_performed",
+        "verified_removed_paths",
+        "verified_absent_paths",
+        "verified_receipts",
+    }
+    if set(cleanup) != expected_cleanup_fields:
+        raise RunnerTransportError("cleanup report shape is invalid")
+    for field in (
+        "removed_paths",
+        "already_absent_receipts",
+        "retained_paths",
+        "errors",
+    ):
+        values = cleanup.get(field)
+        if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+            raise RunnerTransportError("cleanup report lists are invalid")
+    for field in (
+        "requested_receipts",
+        "verified_removed_paths",
+        "verified_absent_paths",
+        "verified_receipts",
+    ):
+        value = cleanup.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise RunnerTransportError("cleanup verification counters are invalid")
+    output = result.get("output")
+    if not isinstance(output, Mapping) or dict(output) != dict(cleanup):
+        raise RunnerTransportError("cleanup output does not match its authoritative report")
+    params = manifest.get("params")
+    requested = params.get("receipt_ids") if isinstance(params, Mapping) else None
+    if not isinstance(requested, list):
+        raise RunnerTransportError("cleanup manifest has no receipt list")
+    if result.get("status") != "success":
+        return
+    if cleanup.get("requested_receipts") != len(requested):
+        raise RunnerTransportError("cleanup report does not cover every requested receipt")
+    if cleanup.get("errors") != [] or cleanup.get("retained_paths") != []:
+        raise RunnerTransportError("cleanup reported success with retained artifacts")
+    if cleanup.get("verification_performed") is not True:
+        raise RunnerTransportError("cleanup success lacks verified postconditions")
+    if cleanup.get("verified_receipts") != len(requested):
+        raise RunnerTransportError("cleanup did not verify every requested receipt")

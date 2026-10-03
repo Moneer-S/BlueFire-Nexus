@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Mapping
 
+from .adaptive_budget import validate_budget
 from .ai import AIProposalRequest, AIProvider, AIProviderError, ProposalType
 from .ai_wire import AIProviderCancelled
 from .config import AutonomyLevel, RunnerProfile
@@ -483,12 +484,39 @@ def approved_replay_transition(
         return False, None
     proposal_type = resolution.get("proposal_type")
     selected_step_id = resolution.get("selected_step_id")
-    if resolution.get("schema_version") == "bluefire.ai-proposal-resolution-lineage.v4":
+    if resolution.get("schema_version") in {
+        "bluefire.ai-proposal-resolution-lineage.v4",
+        "bluefire.ai-proposal-resolution-lineage.v5",
+    }:
+        budgeted_method = (
+            resolution["schema_version"] == "bluefire.ai-proposal-resolution-lineage.v5"
+        )
+        if budgeted_method:
+            try:
+                if scenario.adaptive_execution is None:
+                    raise ValueError("Adaptive replay has no reviewed policy")
+                budget = validate_budget(replay.get("adaptive_budget"), scenario.adaptive_execution)
+                selected = {
+                    "step_id": current_step_id,
+                    "behavior_id": resolution.get("selected_behavior_id"),
+                    "action_id": resolution.get("selected_action_id"),
+                }
+                if (
+                    not budget["reservations"]
+                    or budget["reservations"][-1] != selected
+                    or replay.get("adaptive_retry_count") != budget["used"]
+                    or resolution.get("adaptive_budget_digest") != content_hash(budget)
+                ):
+                    raise ValueError(
+                        "Adaptive replay reservation does not match its selected method"
+                    )
+            except ValueError as exc:
+                raise RuntimeProposalError(str(exc)) from exc
         if (
             resolution.get("method_replay_from_start") is not True
             or proposal_type != ProposalType.SELECT_REGISTERED_ACTION.value
             or selected_step_id != current_step_id
-            or replay.get("adaptive_retry_count") != 1
+            or (not budgeted_method and replay.get("adaptive_retry_count") != 1)
             or scenario.step(current_step_id).behavior_id != resolution.get("selected_behavior_id")
             or replay.get("action_implementations_to", {}).get(current_step_id)
             != resolution.get("selected_action_id")

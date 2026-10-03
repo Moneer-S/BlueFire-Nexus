@@ -11,11 +11,17 @@ import ast
 import hashlib
 import json
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 import yaml
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
 
 POLICY_RELATIVE_PATH = Path("bluefire/data/release_rights_policy.json")
 
@@ -304,7 +310,40 @@ def _verify_python(
     _require(
         actual_wheels == classified, "locked Python dependency inventory is unclassified or stale"
     )
-    return len(classified), len(expected_optional_rows), runtime_licenses | optional_licenses
+    backports = _verify_python_backports(repository, python_policy, actual_runtime)
+    return (
+        len(classified) + len(backports),
+        len(expected_optional_rows),
+        runtime_licenses | optional_licenses | {str(row["license"]) for row in backports},
+    )
+
+
+def _verify_python_backports(
+    repository: Path, python_policy: Mapping[str, Any], requirements: list[str]
+) -> list[dict[str, Any]]:
+    source = repository / "bluefire/data/python_runtime_backports.json"
+    _require(
+        _reviewed_text_sha256(source) == python_policy.get("runtime_backports_sha256"),
+        "Python runtime backport inventory changed without review",
+    )
+    try:
+        inventory = json.loads(source.read_text(encoding="utf-8"), object_pairs_hook=_strict_object)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RightsAuditError("Python runtime backport inventory is unreadable") from exc
+    _require(
+        isinstance(inventory, dict)
+        and set(inventory) == {"schema_version", "distributions"}
+        and inventory["schema_version"] == "bluefire.python-runtime-backports.v1"
+        and isinstance(inventory["distributions"], list),
+        "Python runtime backport inventory is invalid",
+    )
+    rows = [_mapping(row, "Python runtime backport") for row in inventory["distributions"]]
+    conditional = [requirement for requirement in requirements if ";" in requirement]
+    _require(
+        [row.get("requirement") for row in rows] == conditional,
+        "conditional Python dependencies are unclassified or stale",
+    )
+    return rows
 
 
 def _frontend_identity(snapshot_key: str) -> str:
@@ -409,11 +448,61 @@ def _cargo_packages(document: str) -> dict[tuple[str, str], dict[str, Any]]:
     return packages
 
 
+def _verify_cargo_dependency(value: Any) -> None:
+    if isinstance(value, str):
+        _require(bool(value), "Cargo dependency version requires review")
+        return
+    declaration = _mapping(value, "Cargo dependency declaration")
+    _require(
+        not {"package", "workspace"}.intersection(declaration),
+        "Cargo dependency aliases or workspace inheritance require review",
+    )
+    string_fields = {"version", "path", "git", "branch", "tag", "rev", "registry", "registry-index"}
+    boolean_fields = {"optional", "default-features", "default_features"}
+    _require(
+        bool({"version", "path", "git"}.intersection(declaration))
+        and set(declaration) <= string_fields | boolean_fields | {"features"},
+        "Cargo dependency declaration requires review",
+    )
+    for key, item in declaration.items():
+        if key in string_fields:
+            valid = isinstance(item, str) and bool(item)
+        elif key in boolean_fields:
+            valid = type(item) is bool
+        else:
+            valid = isinstance(item, list) and all(
+                isinstance(feature, str) and bool(feature) for feature in item
+            )
+        _require(valid, "Cargo dependency attribute requires review")
+
+
 def _cargo_direct_dependencies(document: str) -> list[str]:
-    match = re.search(r"(?ms)^\[dependencies\]\s*$\n(.*?)(?=^\[|\Z)", document)
-    if match is None:
-        raise RightsAuditError("Cargo.toml dependencies are missing")
-    names = re.findall(r"(?m)^([A-Za-z0-9_-]+)\s*=", match.group(1))
+    # Parse complete values before deriving roots: an alias may occur on a later
+    # physical line. Syntax newer than the active parser supports is refused.
+    try:
+        manifest = tomllib.loads(document)
+    except tomllib.TOMLDecodeError as exc:
+        raise RightsAuditError("Cargo.toml is invalid or uses unsupported TOML syntax") from exc
+    scopes = [manifest]
+    if "target" in manifest:
+        targets = _mapping(manifest["target"], "Cargo target table")
+        scopes.extend(_mapping(value, "Cargo target entry") for value in targets.values())
+    names: list[str] = []
+    found = False
+    for scope in scopes:
+        if "dependencies" not in scope:
+            continue
+        found = True
+        dependencies = _mapping(scope["dependencies"], "Cargo dependencies")
+        for name, declaration in dependencies.items():
+            _require(
+                re.fullmatch(r"[A-Za-z0-9_-]+", name) is not None,
+                "Cargo dependency name requires review",
+            )
+            _verify_cargo_dependency(declaration)
+            if name not in names:
+                names.append(name)
+    _require(found, "Cargo.toml dependencies are missing")
     _require(bool(names), "Cargo.toml release dependencies are empty")
     return names
 

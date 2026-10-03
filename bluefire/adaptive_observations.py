@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping, Sequence
 
 from .evidence import EvidenceProvenance, EvidenceRecord
@@ -176,6 +177,7 @@ def project_runtime_observations(
     remaining_steps: int,
     remaining_seconds: float,
     retries_remaining: int,
+    step_retries_remaining: int | None = None,
 ) -> dict[str, Any]:
     """Project allowlisted metadata and references from verified run objects.
 
@@ -183,7 +185,24 @@ def project_runtime_observations(
     Free-form messages, artifact bodies, paths, commands and output streams are
     deliberately absent even when a model's general data policy permits them.
     """
-    if remaining_steps < 0 or remaining_seconds < 0 or retries_remaining not in {0, 1}:
+    version_two = step_retries_remaining is not None
+    if version_two:
+        valid = (
+            type(remaining_steps) is int
+            and remaining_steps >= 0
+            and type(remaining_seconds) in {int, float}
+            and math.isfinite(remaining_seconds)
+            and remaining_seconds >= 0
+            and type(retries_remaining) is int
+            and 0 <= retries_remaining <= 8
+            and type(step_retries_remaining) is int
+            and 0 <= step_retries_remaining <= 3
+        )
+    else:
+        valid = not (
+            remaining_steps < 0 or remaining_seconds < 0 or retries_remaining not in {0, 1}
+        )
+    if not valid:
         raise ValueError("runtime observation budgets are invalid")
     attempts = []
     selected_rows = list(steps[-16:])
@@ -246,8 +265,12 @@ def project_runtime_observations(
                 "expected_outputs": list(step.expected_outputs),
             }
         )
-    body = {
-        "schema_version": "bluefire.runtime-observations.v1",
+    body: dict[str, Any] = {
+        "schema_version": (
+            "bluefire.runtime-observations.v2"
+            if version_two
+            else "bluefire.runtime-observations.v1"
+        ),
         "platform": platform,
         "attempts": attempts,
         "available_methods": methods,
@@ -264,4 +287,6 @@ def project_runtime_observations(
             PERMISSION_LIMITATION,
         ],
     }
+    if version_two:
+        body["remaining_budgets"]["step_retries"] = step_retries_remaining
     return {**body, "projection_digest": content_hash(body)}
