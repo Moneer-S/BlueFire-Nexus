@@ -1007,6 +1007,9 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 "review": lambda: self.platform_server.service.review_receiver_defense(
                     receiver[1], body
                 ),
+                "control": lambda: self.platform_server.service.decide_receiver_control(
+                    receiver[1], body
+                ),
             }
             if receiver[0] in operations:
                 self._dispatch(operations[receiver[0]])

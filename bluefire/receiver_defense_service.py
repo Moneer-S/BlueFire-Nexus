@@ -45,3 +45,6 @@ class ReceiverDefenseServiceMixin:
 
     def review_receiver_defense(self, job_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
         return self._receiver_call(lambda: self.receiver_defense.review(job_id, request))
+
+    def decide_receiver_control(self, job_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self._receiver_call(lambda: self.receiver_defense.control(job_id, request))

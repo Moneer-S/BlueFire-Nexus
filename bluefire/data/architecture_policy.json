@@ -328,12 +328,14 @@
         "bluefire.replay_restoration",
         "bluefire.runner_management_service",
         "bluefire.receiver_defense_context",
+        "bluefire.receiver_defense_control",
         "bluefire.receiver_defense_jobs",
         "bluefire.receiver_defense_native",
         "bluefire.receiver_defense_ownership",
         "bluefire.receiver_defense_result",
         "bluefire.receiver_defense_service",
-        "bluefire.receiver_defense_view"
+        "bluefire.receiver_defense_view",
+        "bluefire.receiver_defense_workflow"
       ]
     },
     {

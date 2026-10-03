@@ -3,7 +3,7 @@ import type { NativeToolActionId } from "./native-tool-setup";
 import type { AssistanceRunEnvelope, RunPreparationDecision, SavedRunSelection } from "./run-assistance";
 import type { AILiveAuthorization, AILiveAuthorizationList, AILiveAuthorizationRequest, PublicAIProviderConfig, NativeToolCandidateInspection } from "../types";
 import type { RunnerUpgradeReview } from "./runner-upgrade";
-import type { ReceiverContext, ReceiverContextRequest, ReceiverDecision, ReceiverDefenseEnvelope, ReceiverPhase, ReceiverTestList } from "./receiver-defense-types";
+import type { ReceiverContext, ReceiverContextRequest, ReceiverControlDecision, ReceiverDecision, ReceiverDefenseEnvelope, ReceiverPhase, ReceiverTestList } from "./receiver-defense-types";
 import type { RunDetectionSelection, DetectionCreationSource, DetectionCreationEnvelope, DetectionCreationDecision, DetectionCreationValidation } from "./detection-creation";
 import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionRunEvaluation, DetectionCaseRole, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunPresentation, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
 import { approvalDeadline, hasAdaptiveApprovalReview, requiresAdaptiveReview, storedRunApprovalPreflight } from "./approvalReview";
@@ -357,6 +357,10 @@ export const api = {
   async reviewReceiver(id: string, body: ReceiverDecision): Promise<ReceiverDefenseEnvelope> {
     if (DEMO_MODE) throw new Error("Demo mode cannot accept a receiver run review.");
     return request(`/receiver-defense/jobs/${encodeURIComponent(id)}/review`, { method: "POST", body: JSON.stringify(body) });
+  },
+  async rollbackReceiverControl(id: string, body: ReceiverControlDecision): Promise<ReceiverDefenseEnvelope> {
+    if (DEMO_MODE) throw new Error("Demo mode cannot roll back a retained receiver policy.");
+    return request(`/receiver-defense/jobs/${encodeURIComponent(id)}/control`, { method: "POST", body: JSON.stringify(body) });
   },
   async detectionCreationSource(runId: string): Promise<DetectionCreationSource> {
     if (DEMO_MODE) throw new ApiError("Detection creation requires a saved run in the connected local service.", "demo_assistance_refused", undefined, 409);

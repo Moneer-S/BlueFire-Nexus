@@ -15,6 +15,10 @@ separate process on literal loopback. It is not remote lateral movement, a newly
 discovered vulnerability, or proof of general prevention coverage. Receiver
 prevention and detection results are evaluated separately.
 
+The default **Compare and restore prior policy** workflow preserves these three
+phases. **Retain redaction and verify legitimate use** selects the separate
+workflow described below; existing saved comparisons are not converted.
+
 ## Prepare the experiment
 
 Open BlueFire in the prepared disposable Linux lab and complete its normal native
@@ -64,6 +68,49 @@ Each receiver accepts at most one policy decision. A receiver can expire during
 review. BlueFire must verify its cleanup before allowing an explicit replacement,
 which receives its own review and approval. A phase whose execution began or is
 uncertain cannot simply be retried as a new run.
+
+## Retain redaction and verify legitimate use
+
+Choose **Retain redaction and verify legitimate use** before saving a new test.
+The selected graph must stage records produced by its reviewed fixture-transform
+and discovery chain, with **redact_values** false for the baseline. The retained
+workflow uses these phases:
+
+| Phase | Receiver policy | Fresh operation |
+| --- | --- | --- |
+| Baseline | Accept reviewed records | Execute the saved experiment and observe accepted retained values. |
+| Redaction required | Require redacted records | Execute the original chain again; the authenticated staged bytes must match the baseline. |
+| Legitimate redacted use | Require redacted records | Execute a full replay with only the bound transform's redaction parameter enabled. |
+
+The final phase must independently observe acceptance of the same nonzero number
+of generated records, all explicitly redacted. Its bytes deliberately differ from
+the baseline. An empty input, a smaller record set, a missing observation, or
+incomplete cleanup cannot establish preserved legitimate use. This is a controlled
+variation of the same generated data, not unseen evaluation data.
+
+After the phases settle, BlueFire retains the desired redaction policy for this
+saved control test, selected experiment, exact profile, and scope. Each receiver still shuts down.
+**Receiver stopped** and **Policy retained** describe different facts: this is a
+saved lab configuration used by this control test's linked fresh retests, not a persistent host
+service or a claim that an external destination remains protected.
+
+Use the retained policy's retest control to start a separate test containing fresh
+protected and legitimate-use runs. The authenticated original baseline remains a
+comparison reference; it is not reported as newly executed. Both new sessions use
+the retained redaction policy and each run needs fresh review and Execute approval.
+The selection survives a service restart without adopting an old process or
+renewing an expired approval.
+
+Independently created tests, including a new test of the same saved experiment,
+do not inherit this policy. Their explicitly selected workflow can prepare its
+own permissive baseline. This control is not a global override of scenario execution.
+
+An explicit rollback returns this saved control test's desired policy to reviewed-records
+acceptance and records who made that decision. Every linked test and its cleanup
+must settle before rollback. Earlier observations remain in history. Cleanup,
+Stop, browser navigation, and replay never perform this rollback implicitly.
+The original restoration workflow and its Assistant integration are unchanged;
+retained-policy tests currently use explicit native controls with runtime AI Off.
 
 ## Coordinate with Assistant, or analyse an existing test
 

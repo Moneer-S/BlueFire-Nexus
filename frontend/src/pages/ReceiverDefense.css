@@ -4,6 +4,13 @@
 .receiver-test-help p, .receiver-current > p, .receiver-results > p { color: var(--muted-strong); line-height: 1.6; }
 .receiver-setup > h2 { margin-block: 24px 16px; }
 .receiver-setup > .field { max-width: 760px; }
+.receiver-workflow { display: flex; flex-wrap: wrap; gap: 16px 28px; border: 0; padding: 0; margin-block: 20px; }
+.receiver-workflow legend { font-weight: 600; margin-bottom: 12px; }
+.receiver-workflow label { display: flex; align-items: baseline; gap: 8px; }
+.receiver-retained-control { border-block: 1px solid var(--line); padding-block: 20px; margin-block: 20px; }
+.receiver-retained-control > p { max-width: 78ch; color: var(--muted-strong); line-height: 1.6; }
+.receiver-retained-control .field { max-width: 420px; margin-block: 16px; }
+.receiver-retained-control .receiver-control-review { border-top: 1px solid var(--line); padding-top: 16px; }
 .receiver-settings { margin-block: 24px; }
 .receiver-settings > summary { padding: 14px 0; cursor: pointer; font-weight: 600; }
 .receiver-settings .run-config { margin-top: 12px; }

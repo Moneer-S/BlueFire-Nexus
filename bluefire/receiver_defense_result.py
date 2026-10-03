@@ -1,6 +1,7 @@
 """Verify retained receiver evidence against its exact ordinary finalized run."""
 
 from . import product_store_receiver_defense as records
+from . import receiver_defense_workflow as workflow
 from .detection_evaluations import _source, _source_binding
 from .product_store_errors import ProductStoreError
 from .receiver_policy import ReceiverContentPolicy
@@ -48,6 +49,33 @@ def verified_result(coordinator, child):
     ):
         raise ProductStoreError("The receiver result differs from its finalized native source.")
     session = prepared["session"]
+    parent = coordinator._job(marker["parent_job_id"])
+    current = parent["request"]["context"]
+    if session["policy"]["policy_id"] != workflow.policy(current, marker["phase"]):
+        raise ProductStoreError("The receiver policy differs from its saved workflow.")
+    if workflow.retained(current):
+        if prepared.get("control_binding") != current["control"]:
+            raise ProductStoreError("The receiver preparation changed its retained control.")
+        baseline = None if marker["phase"] == "baseline" else coordinator.baseline(parent)
+        reference = (
+            None
+            if baseline is None
+            else {
+                "run_id": baseline["run_id"],
+                "artifact": baseline["artifact"],
+                "source_binding": baseline["source_binding"],
+            }
+        )
+        if prepared.get("baseline_reference") != reference:
+            raise ProductStoreError("The receiver test changed its baseline evidence reference.")
+        if marker["phase"] == "legitimate":
+            expected = {
+                "baseline_run_id": baseline["run_id"],
+                "established": result["decision"] == "accepted"
+                and workflow.legitimate_semantics(result, baseline),
+            }
+            if result.get("legitimate_use") != expected:
+                raise ProductStoreError("The legitimate-use summary differs from its observations.")
     policy = ReceiverContentPolicy(session["policy"]["policy_id"])
     if (
         result["policy_id"] != policy.policy_id
@@ -85,7 +113,6 @@ def verified_result(coordinator, child):
             or exit_receipt.get("creation_identity") != session["creation_identity"]
         ):
             raise ProductStoreError("The receiver result lacks its exact clean process exit.")
-        parent = coordinator._job(marker["parent_job_id"])
         handoff = parent["request"]["context"]["handoff"]
         stages = [row for row in run["steps"] if row["step_id"] == handoff["stage_step_id"]]
         peers = [row for row in run["steps"] if row["step_id"] == handoff["handoff_step_id"]]

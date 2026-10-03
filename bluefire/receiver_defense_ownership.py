@@ -8,6 +8,7 @@ import time
 from typing import Any, Mapping
 
 from . import product_store_receiver_defense as records
+from . import receiver_defense_workflow as workflow
 from .product_store_assistance import job_at
 from .product_store_errors import ProductStoreError
 from .receiver_session import OwnedReceiverSession, reconcile_retained_receiver_sessions
@@ -126,7 +127,14 @@ class ReceiverOwners:
             if prepared is None:
                 raise ProductStoreError("Receiver preparation is unavailable at handoff.")
             parent = records.owner_at(self.store, connection, binding["parent_job_id"], active=True)
-            handoff = parent["request"]["context"]["handoff"]
+            current = parent["request"]["context"]
+            if prepared["session"]["policy"]["policy_id"] != workflow.policy(
+                current, binding["phase"]
+            ):
+                raise ProductStoreError("The actual receiver policy changed before handoff.")
+            if workflow.retained(current) and prepared.get("control_binding") != current["control"]:
+                raise ProductStoreError("The retained receiver control changed before handoff.")
+            handoff = current["handoff"]
             if step.step_id != handoff["handoff_step_id"]:
                 if manifest["action_id"] == "sandbox.peer.handoff.v1":
                     raise ProductStoreError("An unreviewed second handoff is forbidden.")
