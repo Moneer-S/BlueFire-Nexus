@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { Link } from "react-router-dom";
 import { api, DEMO_MODE } from "../lib/api";
 import { runnerLifecycleFailure } from "../lib/runner-diagnostics";
 import { canReviewRunnerUpgrade, isReviewedRunnerUpgrade } from "../lib/runner-upgrade";
@@ -44,6 +45,7 @@ export function RunnerUpgradeReview({ profileId, status, disabled = false, onBus
   return <section className="detail-section" aria-label="Runner upgrade review">
     <h3>Update runner and keep history</h3>
     <p>Review the candidate and retained history before applying the runner update.</p>
+    {status?.upgrade_recovery_required ? <p>The interrupted update requires the same profiles and settings as its original review. Restore changed settings or deactivate newly added profiles in <Link to="/runner-profiles">Runner profiles</Link> before requesting a fresh review.</p> : null}
     <Button size="small" variant="secondary" disabled={!canReview} onClick={() => { apply.reset(); review.mutate({ profileId, binding: statusBinding }); }}>{review.isPending ? "Checking upgrade…" : reviewed || failure || invalidReview || staleReview ? "Refresh upgrade review" : "Review runner upgrade"}</Button>
     {busy ? <p role="status">{apply.isPending ? applyMatches ? "Applying reviewed runner upgrade…" : "Finishing the upgrade for the previous profile…" : "Verifying the candidate and retained history…"}</p> : null}
     {reviewed ? <>

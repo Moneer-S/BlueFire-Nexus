@@ -10,6 +10,7 @@ import { api } from "../lib/api";
 import type { Behavior, RunnerLifecycleStatus, RunnerProbe, RunnerProfile } from "../types";
 import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, LoadingState, PageHeader, Panel, PanelHeader, sentence } from "../components/Primitives";
 import { RunnerUpgradeReview } from "../components/RunnerUpgradeReview";
+import { RunnerEnrollmentRecovery } from "../components/RunnerEnrollmentRecovery";
 import { NativeToolSetupDialog } from "../components/NativeToolSetupDialog";
 import { NATIVE_TOOL_ACTIONS, NATIVE_TOOL_SETUP } from "../lib/native-tool-setup";
 
@@ -153,8 +154,8 @@ export function RunnersPage() {
     <Field label="Experiment runner profile" hint="Select the same profile as your experiment. This selects diagnostics only; it does not change profile permissions."><select aria-label="Experiment runner profile" value={lifecycleProfileId ?? ""} disabled={lifecycleMutation.isPending || upgradeBusy} onChange={(event) => { setSearchParams(event.target.value ? { profile: event.target.value } : {}); lifecycleMutation.reset(); setNotice(undefined); }}><option value="">Choose an Execute profile</option>{executeProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profileChoiceLabel(profile.id, executeProfiles)} · {profile.platforms.join(", ")}</option>)}</select></Field>
     {lifecycleProfileId ? <details><summary>Selected profile identity</summary><code>{lifecycleProfileId}</code></details> : null}
     {!lifecycleProfileId ? <Callout title={requestedProfile ? "Selected profile unavailable" : "Choose an experiment profile"}>{requestedProfile ? "The linked profile is not an active Execute profile. Choose an available profile explicitly." : "Choose the profile used by your experiment to inspect its runner. No default profile was selected."}</Callout> : <>
-      <ManagedRunnerPanel status={lifecycleQuery.data?.profile_id === lifecycleProfileId || lifecycleQuery.data?.state === "unbootstrapped" ? lifecycleQuery.data : undefined} loading={lifecycleQuery.isPending} failed={lifecycleQuery.isError || Boolean(lifecycleQuery.data && lifecycleQuery.data.profile_id !== lifecycleProfileId && lifecycleQuery.data.state !== "unbootstrapped")} profileId={lifecycleProfileId} busy={lifecycleMutation.isPending || upgradeBusy} onUpgradeBusy={setUpgradeBusy} onRefresh={() => { void lifecycleQuery.refetch(); }} onAction={(action, confirmation) => lifecycleMutation.mutate({ action, profileId: lifecycleProfileId, confirmation })} onRemove={(confirmation) => lifecycleMutation.mutateAsync({ action: "remove", profileId: lifecycleProfileId, confirmation })}/>
-      <p>An application update can leave the earlier runner enrolled. Stop it safely, then review the verified candidate and retained history here. After applying an upgrade, start the runner explicitly and run fresh experiment preflight.</p>
+      <ManagedRunnerPanel status={lifecycleQuery.data?.profile_id === lifecycleProfileId || lifecycleQuery.data?.state === "unbootstrapped" ? lifecycleQuery.data : undefined} loading={lifecycleQuery.isPending} failed={lifecycleQuery.isError || Boolean(lifecycleQuery.data && lifecycleQuery.data.profile_id !== lifecycleProfileId && lifecycleQuery.data.state !== "unbootstrapped")} error={lifecycleQuery.error} profiles={executeProfiles} profileId={lifecycleProfileId} busy={lifecycleMutation.isPending || upgradeBusy} onUpgradeBusy={setUpgradeBusy} onRefresh={() => { void lifecycleQuery.refetch(); }} onAction={(action, confirmation) => lifecycleMutation.mutate({ action, profileId: lifecycleProfileId, confirmation })} onRemove={(confirmation) => lifecycleMutation.mutateAsync({ action: "remove", profileId: lifecycleProfileId, confirmation })}/>
+      {lifecycleQuery.data?.profile_enrollment?.state !== "not_enrolled" ? <p>An application update can leave the earlier runner enrolled. Stop it safely, then review the verified candidate and retained history here. After applying an upgrade, start the runner explicitly and run fresh experiment preflight.</p> : null}
     </>}
     {lifecycleMutation.error && lifecycleMutation.variables?.profileId === lifecycleProfileId ? <Callout tone="warning" title="Runner operation refused"><p>{lifecycleMutation.error instanceof Error ? lifecycleMutation.error.message : "The managed runner operation was refused."}</p>{runnerLifecycleFailure(lifecycleMutation.error).map((detail, index) => <p key={index}>{detail}</p>)}<p>No automatic retry was made. Keep the runner stopped when upgrade is refused and review the stated requirement.</p></Callout> : null}
     <p>Probe health &amp; inventory checks the selected profile’s already-running authenticated local runner without starting it. Results exclude paths, credentials and raw process output.</p>
@@ -183,13 +184,14 @@ export function RunnersPage() {
 
 type ManagedRunnerAction = "bootstrap" | "start" | "stop" | "revoke" | "remove";
 
-function ManagedRunnerPanel({ status, loading, failed, profileId, busy, onUpgradeBusy, onRefresh, onAction, onRemove }: { status?: RunnerLifecycleStatus; loading: boolean; failed: boolean; profileId?: string; busy: boolean; onUpgradeBusy: (busy: boolean) => void; onRefresh: () => void; onAction: (action: ManagedRunnerAction, confirmation?: string) => void; onRemove: (confirmation: string) => Promise<unknown> }) {
+function ManagedRunnerPanel({ status, loading, failed, error, profiles, profileId, busy, onUpgradeBusy, onRefresh, onAction, onRemove }: { status?: RunnerLifecycleStatus; loading: boolean; failed: boolean; error: unknown; profiles: RunnerProfile[]; profileId?: string; busy: boolean; onUpgradeBusy: (busy: boolean) => void; onRefresh: () => void; onAction: (action: ManagedRunnerAction, confirmation?: string) => void; onRemove: (confirmation: string) => Promise<unknown> }) {
   const tone = status?.state === "ready" ? "success" as const : status?.state === "stopped" ? "info" as const : status?.state === "unbootstrapped" ? "neutral" as const : "warning" as const;
   const canStop = status?.state === "ready" || status?.state === "stale" || (status?.state === "unavailable" && status.process === "authenticated");
   const stopLabel = status?.state === "stale" ? "Reconcile stale host" : status?.state === "unavailable" ? "Retry safe stop" : "Stop safely";
   return <Panel>
     <PanelHeader eyebrow="Authenticated local host" title="Managed runner lifecycle" detail="Lifecycle actions are explicit. Status and probes never install or start the runner." actions={status ? <Badge tone={tone} dot>{status.upgrade_recovery_required ? "Update needs completion" : status.state === "ready" ? "Authenticated" : sentence(status.state)}</Badge> : null}/>
-    {loading ? <LoadingState label="Checking managed runner status"/> : failed ? <Callout tone="warning" title="Managed status unavailable">No lifecycle action was attempted. Refresh status or inspect the local service.</Callout> : status ? <>
+    {loading ? <LoadingState label="Checking managed runner status"/> : failed ? <Callout tone="warning" title="Managed status unavailable"><p>No lifecycle action was attempted. Refresh status or inspect the local service.</p>{runnerLifecycleFailure(error).map((detail, index) => <p key={index}>{detail}</p>)}</Callout> : status ? <>
+      <RunnerEnrollmentRecovery profileId={profileId} status={status} profiles={profiles}/>
       <DataList items={[
         { label: "Runner identity", value: <code>{status.runner_id}</code> },
         { label: "Profile", value: profileLabel(status.profile_id ?? profileId ?? "") },
@@ -198,14 +200,16 @@ function ManagedRunnerPanel({ status, loading, failed, profileId, busy, onUpgrad
         { label: "Transport", value: status.health?.transport ? `${status.health.transport} · ${status.health.tls ?? "authenticated TLS"}` : "Not authenticated" },
         { label: "Execute admission", value: status.health?.accepting_execute ? "Host accepting requests; experiment preflight still required" : "Unavailable" },
       ]}/>
+    </> : null}
       <footer className="dialog-actions">
-        <Button size="small" variant="ghost" disabled={busy} onClick={onRefresh}><Activity/>Refresh</Button>
+        <Button size="small" variant="ghost" disabled={busy || loading} onClick={onRefresh}><Activity/>Refresh</Button>
+        {!loading && !failed && status && !status.profile_enrollment ? <>
         {status.state === "unbootstrapped" ? <Button size="small" disabled={busy || !profileId} onClick={() => onAction("bootstrap")}><Box/>{busy ? "Working" : "Verify & enroll"}</Button> : null}
         {status.state === "stopped" && status.enrollment === "active" ? <><Button size="small" disabled={busy || !profileId} onClick={() => onAction("start")}><Power/>Start authenticated host</Button><Button size="small" variant="secondary" disabled={busy} onClick={() => onAction("revoke")}><ShieldCheck/>Revoke trust</Button></> : null}
         {canStop ? <Button size="small" variant="secondary" disabled={busy} onClick={() => onAction("stop")}><Power/>{stopLabel}</Button> : null}
         {status.enrollment === "revoked" ? <RunnerRemovalDialog runnerId={status.runner_id} busy={busy} onRemove={onRemove}/> : null}
+        </> : null}
       </footer>
-    </> : null}
     <RunnerUpgradeReview profileId={profileId} status={status} disabled={busy || loading || failed} onBusy={onUpgradeBusy}/>
   </Panel>;
 }
@@ -219,7 +223,7 @@ function RunnerRemovalDialog({ runnerId, busy, onRemove }: { runnerId: string; b
     <Dialog.Trigger asChild><Button size="small" variant="secondary" disabled={busy}><Archive/>Remove revoked trust</Button></Dialog.Trigger>
     <Dialog.Portal><Dialog.Overlay className="dialog-overlay"/><Dialog.Content className="dialog-content">
       <Dialog.Title>Remove revoked runner trust</Dialog.Title>
-      <Dialog.Description>Removal is refused while tasks, receipts, cleanup, or host ownership remain unresolved.</Dialog.Description>
+      <Dialog.Description>Removal clears runner transport history; saved experiments and profiles remain. It is refused while tasks, receipts, cleanup, or host ownership remain unresolved.</Dialog.Description>
       <Dialog.Close asChild><button className="dialog-close" aria-label="Close dialog" disabled={busy}><X/></button></Dialog.Close>
       <form className="dialog-form" onSubmit={async (event) => {
         event.preventDefault();
