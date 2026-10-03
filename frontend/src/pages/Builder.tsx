@@ -111,7 +111,7 @@ export function BuilderPage() {
   return <ReactFlowProvider>{graphJob ? <GraphProposalReview key={graphJob} jobId={graphJob} behaviors={query.data.behaviors} renderEditor={(review) => <GraphWorkspace behaviors={query.data.behaviors} actions={query.data.actions} review={review} />} /> : <GraphWorkspace key={`working:${scenario.id}`} behaviors={query.data.behaviors} actions={query.data.actions} />}</ReactFlowProvider>;
 }
 
-function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[]; actions: ActionDefinition[]; review?: GraphEditorDraft }) {
+export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[]; actions: ActionDefinition[]; review?: GraphEditorDraft }) {
   const product = useProduct();
   const assistant = useAssistancePanel();
   const { scenario, setScenario, dirty } = review ?? product;

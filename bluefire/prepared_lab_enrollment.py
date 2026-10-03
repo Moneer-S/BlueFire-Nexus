@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from .ai import PROPOSAL_JSON_SCHEMA
 from .ai_assistance import OUTPUT_SCHEMA as ASSISTANCE_SCHEMA
 from .ai_broker_contract import BrokerEnrollment, refusal
+from .ai_composition_contract import OUTPUT_SCHEMA as COMPOSITION_SCHEMA
 from .ai_detection_create import OUTPUT_SCHEMA as DETECTION_CREATION_SCHEMA
 from .ai_detection_revision import _OUTPUT_SCHEMA as DETECTION_REVISION_SCHEMA
 from .ai_drafts import AIGraphDraftRequest, graph_draft_json_schema
@@ -49,6 +50,7 @@ def enroll(
             ("bluefire_experiment_assistance", content_hash(ASSISTANCE_SCHEMA)),
             ("bluefire_run_evidence_inspection", content_hash(RUN_INSPECTION_SCHEMA)),
             ("bluefire_receiver_defense_inspection", content_hash(RECEIVER_INSPECTION_SCHEMA)),
+            ("bluefire_composition_proposal", content_hash(COMPOSITION_SCHEMA)),
         ),
     )
 

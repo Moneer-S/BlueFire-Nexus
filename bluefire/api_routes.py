@@ -673,6 +673,31 @@ class APIRoutes:
             return ("", False)
         return parts[0], len(parts) == 2
 
+    def _composition_request(self, path: str) -> tuple[str, str] | None:
+        prefix = f"{API_PREFIX}/composition/"
+        if not path.startswith(prefix):
+            return None
+        if not self._management_query_free():
+            return ("", "")
+        suffix = path[len(prefix) :]
+        if suffix in {"context", "objectives", "objective-list"}:
+            return (suffix, "")
+        proposal = re.fullmatch(r"proposals/(job-[0-9a-f]{32})(?:/(cancel))?", suffix)
+        if proposal is not None:
+            return ("proposal-cancel" if proposal.group(2) else "proposal-read", proposal.group(1))
+        match = re.fullmatch(
+            r"objectives/(job-[0-9a-f]{32})(?:/(proposal-context|proposals|attempts|stop|revoke|continue))?",
+            suffix,
+        )
+        if match is None:
+            self._error(
+                HTTPStatus.BAD_REQUEST,
+                "composition_invalid",
+                "Select a canonical saved composition objective.",
+            )
+            return ("", "")
+        return (match.group(2) or "read", match.group(1))
+
     def _receiver_defense_request(
         self, path: str, *, listing: bool = False
     ) -> tuple[str, str] | None:

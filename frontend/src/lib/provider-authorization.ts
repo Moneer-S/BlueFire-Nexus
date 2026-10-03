@@ -12,6 +12,7 @@ export const modelPurposes: Record<AIModelPurpose, string> = {
   bluefire_ai_graph_draft: "Create an experiment graph",
   bluefire_graph_step_edit: "Edit graph parameters",
   bluefire_receiver_defense_inspection: "Explain a receiver control test",
+  bluefire_composition_proposal: "Propose a bounded composition graph",
 };
 export const requiredRedactionKeys = ["api_key", "authorization", "cookie", "credential", "password", "secret", "token"];
 export const integerInRange = (value: number, low: number, high: number) => Number.isInteger(value) && value >= low && value <= high;

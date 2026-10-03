@@ -8,12 +8,14 @@ canonical serde representation.
 
 from __future__ import annotations
 
+import json
 import os
 import platform as host_platform
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
 from .config import EnvironmentReference, RunnerProfile
@@ -33,7 +35,7 @@ from .runner_reviewed_execution import (
     validate_reviewed_manifest,
     validate_reviewed_profile,
 )
-from .util import content_hash, json_clone, parse_iso8601_datetime
+from .util import canonical_json_bytes, content_hash, json_clone, parse_iso8601_datetime
 
 
 class RunnerContractError(ValueError):
@@ -66,6 +68,29 @@ _EXECUTION_BINDING_SCHEMA = "bluefire.runner-execution-binding.v1"
 _ACTION_PROGRAM_SCHEMA = "bluefire.action-program.v1"
 _ACTION_PROGRAM_ADAPTER = "bluefire.builtin-runner-adapter.v1"
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_GRANT_ATTEMPT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "issuer",
+        "grant_id",
+        "grant_digest",
+        "attempt_id",
+        "lease_digest",
+        "compiled_digest",
+        "plan_digest",
+        "native_envelope_digest",
+        "run_id",
+        "issued_at",
+        "expires_at",
+    }
+)
+_GRANT_CLEANUP_FIELDS = _GRANT_ATTEMPT_FIELDS | {
+    "obligation_digest",
+    "runner_policy_digest",
+    "workspace_id",
+    "receipts",
+    "timeout_ms",
+}
 _PACKAGE_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _STABLE_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\.v[1-9][0-9]*$")
 _SEMVER = re.compile(
@@ -143,6 +168,206 @@ def _normalize_rust_datetime(value: str, *, context: str) -> str:
     except ValueError as exc:
         raise RunnerContractError(f"{context} must be an RFC 3339 timestamp") from exc
     return _format_rust_datetime(parsed, context=context)
+
+
+def grant_attempt_authorization_digest(compiled_digest: str, plan_digest: str) -> str:
+    """Bind both immutable plans into the finite profile, before any lease is issued."""
+    for value in (compiled_digest, plan_digest):
+        if not isinstance(value, str) or _SHA256_DIGEST.fullmatch(value) is None:
+            raise RunnerContractError("grant attempt plan bindings must be exact SHA-256")
+    return content_hash(
+        {
+            "schema_version": "bluefire.grant-attempt-plan-binding.v1",
+            "compiled_digest": compiled_digest,
+            "plan_digest": plan_digest,
+        }
+    )
+
+
+def _canonical_grant_attempt(value: Mapping[str, Any], *, wire: bool) -> dict[str, str]:
+    fields = _GRANT_ATTEMPT_FIELDS | ({"request_hash"} if wire else set())
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise RunnerContractError("grant attempt must have the exact provenance fields")
+    if (
+        value.get("schema_version") != "bluefire.runner-grant-attempt.v1"
+        or value.get("issuer") != "capability-grant-controller.v1"
+    ):
+        raise RunnerContractError("grant attempt provenance is unsupported")
+    for name, prefix in (("grant_id", "grant-"), ("attempt_id", "attempt-")):
+        if (
+            not isinstance(value[name], str)
+            or re.fullmatch(prefix + r"[0-9a-f]{32}", value[name]) is None
+        ):
+            raise RunnerContractError(f"grant attempt {name} is invalid")
+    if (
+        not isinstance(value["run_id"], str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value["run_id"]) is None
+    ):
+        raise RunnerContractError("grant attempt run_id is invalid")
+    for name in (
+        "grant_digest",
+        "lease_digest",
+        "compiled_digest",
+        "plan_digest",
+        "native_envelope_digest",
+    ):
+        if not isinstance(value[name], str) or _SHA256_DIGEST.fullmatch(value[name]) is None:
+            raise RunnerContractError(f"grant attempt {name} must be exact SHA-256")
+    result = dict(value)
+    for name in ("issued_at", "expires_at"):
+        if not isinstance(value[name], str):
+            raise RunnerContractError(f"grant attempt {name} must be explicit")
+        result[name] = _normalize_rust_datetime(value[name], context="grant attempt " + name)
+    if parse_iso8601_datetime(result["issued_at"]) >= parse_iso8601_datetime(result["expires_at"]):
+        raise RunnerContractError("grant attempt deadline must follow issuance")
+    if wire and (
+        not isinstance(value["request_hash"], str)
+        or (value["request_hash"] and _SHA256_DIGEST.fullmatch(value["request_hash"]) is None)
+    ):
+        raise RunnerContractError("grant attempt request_hash is invalid")
+    return result
+
+
+class VerifiedGrantAttempt:
+    """A trusted claim adapter's provenance, not a bearer or in-process security boundary."""
+
+    __slots__ = ("_document",)
+    _document: Mapping[str, str]
+
+    def __init__(self) -> None:
+        raise TypeError("Grant attempt authority must come from the trusted lease claim adapter")
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("Verified grant attempt provenance is immutable")
+
+    def to_dict(self) -> dict[str, str]:
+        return dict(self._document)
+
+
+def _verified_grant_attempt(
+    document: Mapping[str, Any], *, expected_document_digest: str
+) -> VerifiedGrantAttempt:
+    """Called only after an atomic lease claim; the expected digest comes from its stored row.
+
+    The caller must verify grant liveness, claim identity and exact compilation
+    independently. Never supply the expected digest from client input or recompute
+    it as authority for an untrusted document. This factory performs no DB claim.
+    """
+    if (
+        not isinstance(expected_document_digest, str)
+        or _SHA256_DIGEST.fullmatch(expected_document_digest) is None
+        or content_hash(document) != expected_document_digest
+    ):
+        raise RunnerContractError("grant attempt differs from the trusted claimed document")
+    canonical = _canonical_grant_attempt(document, wire=False)
+    verified = object.__new__(VerifiedGrantAttempt)
+    object.__setattr__(verified, "_document", MappingProxyType(canonical))
+    return verified
+
+
+def _canonical_grant_cleanup(value: Mapping[str, Any], *, wire: bool) -> dict[str, Any]:
+    fields = _GRANT_CLEANUP_FIELDS | ({"request_hash"} if wire else set())
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise RunnerContractError("grant cleanup must have the exact obligation fields")
+    if value.get("schema_version") != "bluefire.runner-grant-cleanup.v1":
+        raise RunnerContractError("grant cleanup provenance is unsupported")
+    shared = {key: value[key] for key in _GRANT_ATTEMPT_FIELDS}
+    shared["schema_version"] = "bluefire.runner-grant-attempt.v1"
+    result: dict[str, Any] = _canonical_grant_attempt(shared, wire=False)
+    result["schema_version"] = value["schema_version"]
+    for name in ("obligation_digest", "runner_policy_digest"):
+        if not isinstance(value[name], str) or _SHA256_DIGEST.fullmatch(value[name]) is None:
+            raise RunnerContractError(f"grant cleanup {name} must be exact SHA-256")
+        result[name] = value[name]
+    if (
+        not isinstance(value["workspace_id"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", value["workspace_id"]) is None
+    ):
+        raise RunnerContractError("grant cleanup workspace identity is invalid")
+    receipts = value["receipts"]
+    if not isinstance(receipts, list) or not 1 <= len(receipts) <= 512:
+        raise RunnerContractError("grant cleanup receipt count is invalid")
+    seen: set[str] = set()
+    normalized = []
+    for receipt in receipts:
+        if not isinstance(receipt, Mapping) or set(receipt) != {
+            "receipt_id",
+            "source_request_hash",
+            "source_task_id",
+        }:
+            raise RunnerContractError("grant cleanup receipt lineage is invalid")
+        receipt_id = receipt["receipt_id"]
+        if (
+            not isinstance(receipt_id, str)
+            or re.fullmatch(r"[0-9a-f]{64}", receipt_id) is None
+            or receipt_id in seen
+            or not isinstance(receipt["source_request_hash"], str)
+            or _SHA256_DIGEST.fullmatch(receipt["source_request_hash"]) is None
+            or not isinstance(receipt["source_task_id"], str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}", receipt["source_task_id"]) is None
+        ):
+            raise RunnerContractError("grant cleanup receipt lineage is invalid")
+        seen.add(receipt_id)
+        normalized.append(dict(receipt))
+    duration = (
+        parse_iso8601_datetime(result["expires_at"]) - parse_iso8601_datetime(result["issued_at"])
+    ).total_seconds() * 1000
+    if (
+        type(value["timeout_ms"]) is not int
+        or not 1 <= value["timeout_ms"] <= 120_000
+        or duration > 120_000
+        or value["timeout_ms"] > duration
+    ):
+        raise RunnerContractError("grant cleanup exceeds its finite time allowance")
+    result.update(
+        workspace_id=value["workspace_id"], receipts=normalized, timeout_ms=value["timeout_ms"]
+    )
+    if wire:
+        request_hash = value["request_hash"]
+        if not isinstance(request_hash, str) or (
+            request_hash and _SHA256_DIGEST.fullmatch(request_hash) is None
+        ):
+            raise RunnerContractError("grant cleanup request_hash is invalid")
+        result["request_hash"] = request_hash
+    return result
+
+
+class VerifiedGrantCleanup:
+    """Trusted receipt-obligation provenance, not a bearer or an in-process boundary."""
+
+    __slots__ = ("_document",)
+    _document: bytes
+
+    def __init__(self) -> None:
+        raise TypeError("Grant cleanup authority must come from the trusted obligation adapter")
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("Verified grant cleanup provenance is immutable")
+
+    def to_dict(self) -> dict[str, Any]:
+        document: dict[str, Any] = json.loads(self._document)
+        return document
+
+
+def _verified_grant_cleanup(
+    document: Mapping[str, Any], *, expected_document_digest: str
+) -> VerifiedGrantCleanup:
+    """Mint after a durable cleanup claim verified against prior tasks and native receipts.
+
+    The expected digest must come from an independently stored obligation claim.
+    This validates provenance only; it does not claim a task, reopen business
+    authority, authenticate evidence, or extend the reserved cleanup deadline.
+    """
+    if (
+        not isinstance(expected_document_digest, str)
+        or _SHA256_DIGEST.fullmatch(expected_document_digest) is None
+        or content_hash(document) != expected_document_digest
+    ):
+        raise RunnerContractError("grant cleanup differs from its trusted obligation document")
+    canonical = _canonical_grant_cleanup(document, wire=False)
+    verified = object.__new__(VerifiedGrantCleanup)
+    object.__setattr__(verified, "_document", canonical_json_bytes(canonical))
+    return verified
 
 
 def _canonical_execution_binding(
@@ -527,6 +752,22 @@ def seal_manifest(document: Mapping[str, Any]) -> dict[str, Any]:
         except ReviewedExecutionError as exc:
             raise RunnerContractError(str(exc)) from exc
     approval = sealed.get("approval")
+    grant_attempt = None
+    grant_cleanup = None
+    if "grant_attempt" in sealed:
+        if approval is not None or "grant_cleanup" in sealed:
+            raise RunnerContractError("runner manifest cannot combine approval and grant authority")
+        grant_attempt = _canonical_grant_attempt(sealed["grant_attempt"], wire=True)
+        if grant_attempt["run_id"] != sealed.get("run_id"):
+            raise RunnerContractError("grant attempt belongs to another run")
+        sealed["grant_attempt"] = grant_attempt
+    if "grant_cleanup" in sealed:
+        if approval is not None:
+            raise RunnerContractError("runner manifest cannot combine approval and grant authority")
+        grant_cleanup = _canonical_grant_cleanup(sealed["grant_cleanup"], wire=True)
+        if grant_cleanup["run_id"] != sealed.get("run_id"):
+            raise RunnerContractError("grant cleanup belongs to another run")
+        sealed["grant_cleanup"] = grant_cleanup
     if approval is not None:
         if not isinstance(approval, dict):
             raise RunnerContractError("runner approval must be an object")
@@ -543,10 +784,18 @@ def seal_manifest(document: Mapping[str, Any]) -> dict[str, Any]:
                 raise RunnerContractError(f"approval {field} must be an explicit string")
             approval[field] = _normalize_rust_datetime(value, context=f"approval {field}")
         approval["request_hash"] = ""
+    if grant_attempt is not None:
+        grant_attempt["request_hash"] = ""
+    if grant_cleanup is not None:
+        grant_cleanup["request_hash"] = ""
     digest = content_hash(sealed)
     sealed["request_hash"] = digest
     if isinstance(approval, dict):
         approval["request_hash"] = digest
+    if grant_attempt is not None:
+        grant_attempt["request_hash"] = digest
+    if grant_cleanup is not None:
+        grant_cleanup["request_hash"] = digest
     return sealed
 
 
@@ -562,6 +811,8 @@ def build_execution_manifest(
     network_destinations: Sequence[Mapping[str, Any]] = (),
     evidence_refs: Sequence[str] = (),
     approval_record: Mapping[str, Any] | None,
+    grant_attempt: VerifiedGrantAttempt | None = None,
+    grant_cleanup: VerifiedGrantCleanup | None = None,
     execution_binding: Mapping[str, Any] | None = None,
     provider_binding: Mapping[str, Any] | None = None,
     reviewed_operation: Mapping[str, Any] | None = None,
@@ -574,6 +825,69 @@ def build_execution_manifest(
     requested_at = _format_rust_datetime(timestamp, context="manifest requested_at")
     expires_at = _format_rust_datetime(expires, context="manifest expires_at")
     approval = None
+    grant_document = None
+    if grant_attempt is not None:
+        if (
+            type(grant_attempt) is not VerifiedGrantAttempt
+            or approval_record is not None
+            or grant_cleanup is not None
+        ):
+            raise RunnerContractError(
+                "grant authority requires the verified claim without approval"
+            )
+        grant_document = _canonical_grant_attempt(grant_attempt.to_dict(), wire=False)
+        envelope = runner_profile.get("reviewed_execution")
+        if (
+            not isinstance(envelope, Mapping)
+            or reviewed_operation is None
+            or grant_document["run_id"] != run_id
+            or content_hash(envelope) != grant_document["native_envelope_digest"]
+            or envelope.get("authorization_digest")
+            != grant_attempt_authorization_digest(
+                grant_document["compiled_digest"], grant_document["plan_digest"]
+            )
+            or parse_iso8601_datetime(grant_document["issued_at"]) > timestamp
+            or parse_iso8601_datetime(grant_document["expires_at"]) <= timestamp
+        ):
+            raise RunnerContractError("grant attempt does not bind the current finite run envelope")
+        expires = min(expires, parse_iso8601_datetime(grant_document["expires_at"]))
+        expires_at = _format_rust_datetime(expires, context="manifest expires_at")
+        grant_document["request_hash"] = ""
+    cleanup_document = None
+    if grant_cleanup is not None:
+        if type(grant_cleanup) is not VerifiedGrantCleanup or approval_record is not None:
+            raise RunnerContractError(
+                "cleanup authority requires the verified obligation without approval"
+            )
+        cleanup_document = _canonical_grant_cleanup(grant_cleanup.to_dict(), wire=False)
+        envelope = runner_profile.get("reviewed_execution")
+        if (
+            not isinstance(envelope, Mapping)
+            or reviewed_operation is None
+            or action.id != "sandbox.cleanup.v1"
+            or behavior_id != "sandbox.cleanup.v1"
+            or execution_binding is not None
+            or provider_binding is not None
+            or filesystem_scope
+            or network_destinations
+            or dict(params)
+            != {"receipt_ids": [row["receipt_id"] for row in cleanup_document["receipts"]]}
+            or cleanup_document["run_id"] != run_id
+            or cleanup_document["runner_policy_digest"] != runner_profile.get("policy_digest")
+            or cleanup_document["native_envelope_digest"] != content_hash(envelope)
+            or envelope.get("authorization_digest")
+            != grant_attempt_authorization_digest(
+                cleanup_document["compiled_digest"], cleanup_document["plan_digest"]
+            )
+            or parse_iso8601_datetime(cleanup_document["issued_at"]) > timestamp
+            or parse_iso8601_datetime(cleanup_document["expires_at"]) <= timestamp
+        ):
+            raise RunnerContractError(
+                "grant cleanup does not bind the exact receipt-only operation"
+            )
+        expires = min(expires, parse_iso8601_datetime(cleanup_document["expires_at"]))
+        expires_at = _format_rust_datetime(expires, context="manifest expires_at")
+        cleanup_document["request_hash"] = ""
     if approval_record is not None:
         raw_identity = approval_record.get("approved_by")
         identity = raw_identity.strip() if isinstance(raw_identity, str) else ""
@@ -720,6 +1034,18 @@ def build_execution_manifest(
     if isinstance(maximum_timeout, bool) or not isinstance(maximum_timeout, int):
         raise RunnerContractError("runner profile timeout is invalid")
     effective_timeout = maximum_timeout if timeout_ms is None else timeout_ms
+    if cleanup_document is not None:
+        if (
+            type(profile_limits.get("max_files")) is not int
+            or len(cleanup_document["receipts"]) > profile_limits["max_files"]
+        ):
+            raise RunnerContractError("grant cleanup receipts exceed the runner profile file limit")
+        remaining_ms = int((expires - timestamp).total_seconds() * 1000)
+        cleanup_timeout = min(cleanup_document["timeout_ms"], remaining_ms, maximum_timeout)
+        if timeout_ms is None:
+            effective_timeout = cleanup_timeout
+        elif type(timeout_ms) is not int or not 1 <= timeout_ms <= cleanup_timeout:
+            raise RunnerContractError("manifest timeout exceeds its cleanup obligation allowance")
     if (
         isinstance(effective_timeout, bool)
         or not isinstance(effective_timeout, int)
@@ -783,17 +1109,24 @@ def build_execution_manifest(
         validate_reviewed_manifest(document, runner_profile)
     except ReviewedExecutionError as exc:
         raise RunnerContractError(str(exc)) from exc
+    if grant_document is not None:
+        document["grant_attempt"] = grant_document
+    if cleanup_document is not None:
+        document["grant_cleanup"] = cleanup_document
     return seal_manifest(document)
 
 
 __all__ = [
     "EFFECT_CAPABILITIES",
     "RunnerContractError",
+    "VerifiedGrantAttempt",
+    "VerifiedGrantCleanup",
     "build_execution_manifest",
     "build_runner_profile",
     "current_platform",
     "effect_capabilities",
     "execution_limits",
+    "grant_attempt_authorization_digest",
     "resolve_environment_path",
     "seal_manifest",
     "seal_profile",

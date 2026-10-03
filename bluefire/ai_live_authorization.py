@@ -28,6 +28,7 @@ PURPOSES = frozenset(
         "bluefire_ai_graph_draft",
         "bluefire_graph_step_edit",
         "bluefire_receiver_defense_inspection",
+        "bluefire_composition_proposal",
     }
 )
 LIMITS = {
@@ -274,6 +275,7 @@ def validate_authorization(
 def _schemas() -> Mapping[str, str]:
     from .ai import PROPOSAL_JSON_SCHEMA
     from .ai_assistance import OUTPUT_SCHEMA as assistance
+    from .ai_composition_contract import OUTPUT_SCHEMA as composition
     from .ai_detection_create import OUTPUT_SCHEMA as create
     from .ai_detection_revision import _OUTPUT_SCHEMA as revise
     from .ai_method_comparison import OUTPUT_SCHEMA as compare
@@ -283,6 +285,7 @@ def _schemas() -> Mapping[str, str]:
     from .graph_ai_edit_contract import OUTPUT_SCHEMA as edit
 
     return {
+        "bluefire_composition_proposal": content_hash(composition),
         "bluefire_receiver_defense_inspection": content_hash(receiver),
         "bluefire_graph_step_edit": content_hash(edit),
         **dict(
