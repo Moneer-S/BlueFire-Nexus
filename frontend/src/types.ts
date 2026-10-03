@@ -344,7 +344,7 @@ export interface PublicAIProviderConfig {
   max_output_tokens: number;
   redaction: { enabled: boolean; redact_keys: string[]; max_string_chars: number; include_evidence_content: boolean };
 }
-export type AIModelPurpose = "bluefire_connection_check" | "bluefire_ai_proposal" | "bluefire_experiment_assistance" | "bluefire_detection_source_creation" | "bluefire_detection_source_revision" | "bluefire_run_evidence_inspection" | "bluefire_method_comparison" | "bluefire_ai_graph_draft" | "bluefire_graph_step_edit" | "bluefire_receiver_defense_inspection";
+export type AIModelPurpose = "bluefire_connection_check" | "bluefire_ai_proposal" | "bluefire_experiment_assistance" | "bluefire_detection_source_creation" | "bluefire_detection_source_revision" | "bluefire_run_evidence_inspection" | "bluefire_method_comparison" | "bluefire_ai_graph_draft" | "bluefire_graph_step_edit" | "bluefire_receiver_defense_inspection" | "bluefire_composition_proposal";
 export interface AIUsageLimits { max_requests: number; max_request_bytes: number; max_reserved_output_tokens: number }
 export interface AILiveAuthorization {
   schema_version: "bluefire.ai-live-authorization.v1";

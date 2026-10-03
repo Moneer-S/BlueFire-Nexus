@@ -73,14 +73,7 @@ def guard_source(store, connection, parent, *, publication=False):
         or (source and original["control"]["control_digest"] != source["control_digest"])
     ):
         raise ProductStoreError("The retained receiver policy changed or was rolled back.")
-    if (
-        source
-        and publication
-        and not all(
-            control_settled(store, connection, related)
-            for related in related_control_tests(store, connection, owner["job_id"])
-        )
-    ):
+    if source and publication and not all_control_users_settled(store, connection, owner["job_id"]):
         raise ProductStoreError(
             "Settle the current test before starting another retained-policy test."
         )
@@ -93,6 +86,64 @@ def related_control_tests(store, connection, owner_id):
         (OWNER_KIND, owner_id, owner_id),
     ).fetchall()
     return [store._job_from_row(row) for row in rows]
+
+
+def all_control_users_settled(store, connection, owner_id):
+    from .product_store_capability_grants import control_usages_settled
+
+    return all(
+        control_settled(store, connection, owner)
+        for owner in related_control_tests(store, connection, owner_id)
+    ) and control_usages_settled(store, connection, owner_id)
+
+
+def composition_control_usage(store, connection, owner_id):
+    from .product_store_capability_grants import control_usage_view
+
+    return control_usage_view(store, connection, owner_id)
+
+
+def guard_capability_control(store, connection, grant):
+    environment = grant["environment"]
+    owner = owner_at(store, connection, environment["control_owner_id"])
+    context = owner["request"].get("context")
+    if not workflow.retained(context) or context.get("source_control"):
+        raise ProductStoreError("Composition requires the original retained receiver control.")
+    control = context["control"]
+    scope = control["scope"]
+    if (
+        control["control_digest"]
+        != content_hash({key: value for key, value in control.items() if key != "control_digest"})
+        or control["control_digest"] != environment["control_digest"]
+        or control["policy_id"] != environment["policy_id"]
+        or control["policy_digest"] != environment["policy_digest"]
+        or scope["profile_digest"] != environment["profile_digest"]
+        or content_hash(scope["collector_binding"]) != environment["collector_digest"]
+        or content_hash(scope["run_intent"]["target_scope"]) != environment["target_scope_digest"]
+        or owner["progress"].get("control_rollback")
+        or owner["progress"].get("receiver_completed") is not True
+        or not all(
+            control_settled(store, connection, test)
+            for test in related_control_tests(store, connection, owner["job_id"])
+        )
+    ):
+        raise ProductStoreError("The retained control changed or has unsettled tests.")
+    phases = owner["progress"].get("phases", {})
+    for phase in ("baseline", "protected", "legitimate"):
+        reservation = phases.get(phase)
+        if not isinstance(reservation, Mapping):
+            raise ProductStoreError("The retained control lacks its verified phase history.")
+        child = job_at(store, connection, reservation["receiver_job_id"])
+        if not phase_verified(child, phase):
+            raise ProductStoreError("The retained control lacks its verified phase history.")
+        if phase == "baseline":
+            count = child["progress"]["result"]["receiver_observation"]["terminal"]["decision"][
+                "semantics"
+            ]["record_count"]
+            if count != grant["objective"]["predicate"]["record_count"]:
+                raise ProductStoreError(
+                    "The objective changed the original synthetic record count."
+                )
 
 
 def control_settled(store, connection, owner):
@@ -150,10 +201,7 @@ def rollback_control(store, parent_id, request):
         child = job_at(store, connection, reservation["receiver_job_id"])
         if child["progress"].get("decision", {}).get("decision") != "accept":
             raise ProductStoreError("The receiver policy has not been accepted.")
-        if not all(
-            control_settled(store, connection, owner)
-            for owner in related_control_tests(store, connection, parent_id)
-        ):
+        if not all_control_users_settled(store, connection, parent_id):
             raise ProductStoreError("Settle every receiver test and its cleanup before rollback.")
         safe_patch(connection, parent, {"control_rollback": dict(request)})
 

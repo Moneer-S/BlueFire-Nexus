@@ -53,6 +53,46 @@ class StubService:
         self.calls.append(("catalog",))
         return {"behaviors": [{"id": "observe.host.v1"}], "runner_profiles": []}
 
+    def composition_context(self, request):
+        self.calls.append(("composition_context", request))
+        return {"saved": True}
+
+    def authorize_composition(self, request):
+        self.calls.append(("authorize_composition", request))
+        return {"saved": True}
+
+    def list_composition_objectives(self, request):
+        self.calls.append(("list_composition_objectives", request))
+        return {"saved": True}
+
+    def composition_objective(self, owner_id):
+        self.calls.append(("composition_objective", owner_id))
+        return {"saved": True}
+
+    def composition_proposal_context(self, owner_id, request):
+        self.calls.append(("composition_proposal_context", owner_id, request))
+        return {"saved": True}
+
+    def submit_composition_attempt(self, owner_id, request):
+        self.calls.append(("submit_composition_attempt", owner_id, request))
+        return {"saved": True}
+
+    def submit_composition_proposal(self, owner_id, request):
+        self.calls.append(("submit_composition_proposal", owner_id, request))
+        return {"saved": True}
+
+    def composition_proposal(self, job_id):
+        self.calls.append(("composition_proposal", job_id))
+        return {"saved": True}
+
+    def cancel_composition_proposal(self, job_id, request):
+        self.calls.append(("cancel_composition_proposal", job_id, request))
+        return {"saved": True}
+
+    def control_composition(self, owner_id, action, request):
+        self.calls.append(("control_composition", owner_id, action, request))
+        return {"saved": True}
+
     def receiver_defense_context(self, request):
         self.calls.append(("receiver_defense_context", request))
         return {"eligible": False}
