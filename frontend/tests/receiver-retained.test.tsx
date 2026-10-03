@@ -15,6 +15,14 @@ import { retainedReceiverFixture } from "./receiver-retained-fixture";
 
 const record = (value: unknown) => value as Record<string, unknown>;
 
+it("keeps the wide outcome table in a named keyboard-scrollable region", () => {
+  const envelope = retainedReceiverFixture();
+  render(<MemoryRouter><ReceiverTestProgress envelope={envelope} disabled={false} onPrepare={vi.fn()} onReview={vi.fn()} /></MemoryRouter>);
+  const region = screen.getByRole("region", { name: "Receiver outcome comparison" });
+  expect(region).toHaveAttribute("tabindex", "0");
+  expect(region).toContainElement(screen.getByRole("table", { name: "Same experiment, separately prepared receiver policies" }));
+});
+
 it.each([false, true])("validates the retained policy and changed legitimate-use bytes with linked=%s", (linked) => {
   const value = retainedReceiverFixture("legitimate", "completed", linked);
   expect(checkedReceiverTest(value, value.job.job_id)).toBe(value);

@@ -77,12 +77,6 @@ def test_receiver_prepare_uses_existing_mutation_guards(violation, status):
 )
 def test_receiver_control_uses_existing_mutation_guards(violation, status):
     with running_server() as (server, service):
-
-        def decide(job_id, body):
-            service.calls.append(("decide_receiver_control", job_id, body))
-            return {"accepted": True}
-
-        service.decide_receiver_control = decide
         actual, _, _ = request(
             server,
             "GET" if violation == "method" else "POST",

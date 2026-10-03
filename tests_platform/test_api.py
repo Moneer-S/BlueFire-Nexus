@@ -117,6 +117,10 @@ class StubService:
         self.calls.append(("review_receiver_defense", job_id, request))
         return {"job": {"job_id": job_id}}
 
+    def decide_receiver_control(self, job_id, request):
+        self.calls.append(("decide_receiver_control", job_id, request))
+        return {"accepted": True}
+
     def scenarios(self):
         self.calls.append(("scenarios",))
         return {"scenarios": []}

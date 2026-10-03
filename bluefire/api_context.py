@@ -168,6 +168,9 @@ class PlatformService(Protocol):
     def review_receiver_defense(self, job_id: str, request: JsonObject) -> JsonResult:
         """Retain native review before a separate Execute approval."""
 
+    def decide_receiver_control(self, job_id: str, request: JsonObject) -> JsonResult:
+        """Record an explicit retained receiver control decision."""
+
     def detection_health(self) -> JsonResult:
         """Return Detection Lab persistence and backend readiness."""
 

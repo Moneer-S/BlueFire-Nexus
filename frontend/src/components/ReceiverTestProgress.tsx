@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import type { ReceiverContext, ReceiverDecision, ReceiverDefenseEnvelope, ReceiverPhase, ReceiverPhaseView } from "../lib/receiver-defense-types";
 import { phaseTitle, policyTitle, receiverOutcome } from "../lib/receiver-defense";
 import { downloadArtifact } from "../lib/download";
+import { receiverControlReport } from "../lib/receiver-report";
 import { savedExperimentPath } from "../lib/receiver-navigation";
 import { CanonicalPlanReview } from "./CanonicalPlanReview";
 import { RunWorkspace } from "./RunWorkspace";
@@ -61,7 +62,7 @@ export function ReceiverTestProgress({ envelope, disabled: externalDisabled, onP
     </li>)}</ol>
     {results.length ? <section className="receiver-results" aria-label="Measured receiver outcomes"><h2>{complete ? "Measured control outcome" : "Results so far"}</h2>
       <p>Receiver acceptance and prevention are separate from detection. Missing or unverified receiver evidence leaves the outcome unknown.</p>
-      <div className="receiver-table-scroll"><table><caption>Same experiment, separately prepared receiver policies</caption><thead><tr><th scope="col">Phase</th><th scope="col">Receiver policy</th><th scope="col">Observed outcome</th><th scope="col">Cleanup</th><th scope="col">Evidence</th></tr></thead><tbody>{results.map((phase) => <tr key={phase.phase}><th scope="row">{phaseTitle[phase.phase]}</th><td>{policyTitle[phase.policy_id]}</td><td><strong>{receiverOutcome(phase)}</strong>{phase.result?.legitimate_use ? <p>{phase.result.legitimate_use.established ? "Legitimate use established" : "Legitimate use not established"}</p> : null}</td><td><CleanupSummary phase={phase} /></td><td><Link to={`/runs/${encodeURIComponent(phase.result!.run_id)}`}>Inspect run</Link></td></tr>)}</tbody></table></div>
+      <div className="receiver-table-scroll" role="region" aria-label="Receiver outcome comparison" tabIndex={0}><table><caption>Same experiment, separately prepared receiver policies</caption><thead><tr><th scope="col">Phase</th><th scope="col">Receiver policy</th><th scope="col">Observed outcome</th><th scope="col">Cleanup</th><th scope="col">Evidence</th></tr></thead><tbody>{results.map((phase) => <tr key={phase.phase}><th scope="row">{phaseTitle[phase.phase]}</th><td>{policyTitle[phase.policy_id]}</td><td><strong>{receiverOutcome(phase)}</strong>{phase.result?.legitimate_use ? <p>{phase.result.legitimate_use.established ? "Legitimate use established" : "Legitimate use not established"}</p> : null}</td><td><CleanupSummary phase={phase} /></td><td><Link to={`/runs/${encodeURIComponent(phase.result!.run_id)}`}>Inspect run</Link></td></tr>)}</tbody></table></div>
       <div className="receiver-actions"><Button variant={complete ? "primary" : "secondary"} onClick={() => downloadReceiverReport(envelope)}>Download control report</Button>{baseline && protectedResult ? <Link className="button button-secondary button-medium" to={`/compare?${new URLSearchParams({ source: baseline.run_id, replay: protectedResult.run_id })}`}>Compare baseline and protected run</Link> : null}{baseline && restored ? <Link className="button button-secondary button-medium" to={`/compare?${new URLSearchParams({ source: baseline.run_id, replay: restored.run_id })}`}>Check restoration against baseline</Link> : null}</div>
     </section> : null}
     {current ? <section className="receiver-current" aria-label="Current test phase">
@@ -102,13 +103,5 @@ function CleanupSummary({ phase }: { phase: ReceiverPhaseView }) {
 }
 
 function downloadReceiverReport(envelope: ReceiverDefenseEnvelope & { context: ReceiverContext }) {
-  const lines = ["# Receiver control test", "", envelope.context.scenario_title, "", `Status: ${envelope.status}`, "", "This local lab experiment uses a deliberately permissive baseline and fresh receiver sessions. It measures prevention separately from detection.", ""];
-  if (envelope.control) lines.push("## Retained policy", "", `Desired policy: ${policyTitle[envelope.control.desired_policy_id]}`, `Policy state: ${envelope.control.status}`, `Receiver state: ${envelope.control.receiver_state}`, `Owner: ${envelope.control.owner_job_id}`, `Control digest: ${envelope.control.control_digest}`, "", "The policy is scoped to this saved control test and its exact-bound linked retests. Independently created tests do not inherit it. A stopped receiver is not an active production defense.", "");
-  for (const phase of envelope.phases) {
-    lines.push(`## ${phaseTitle[phase.phase]}`, "", `Policy: ${policyTitle[phase.policy_id]}`, `Outcome: ${receiverOutcome(phase)}`, `Receiver cleanup: ${phase.cleanup.receiver}; run cleanup: ${phase.cleanup.run}`, "");
-    if (phase.result) lines.push(`Run: ${phase.result.run_id}`, "", "```json", JSON.stringify(phase.result, null, 2), "```", "");
-    if (phase.result?.legitimate_use) lines.push(`Legitimate use: ${phase.result.legitimate_use.established ? "established" : "not established"}`, "");
-  }
-  lines.push("## Limitations", "", ...envelope.limitations.map((item) => `- ${item}`), "", "Unverified or missing evidence is not a prevention pass. No general detection or prevention coverage is established.", "");
-  downloadArtifact(new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" }), `${envelope.job.job_id}-receiver-control.md`);
+  downloadArtifact(new Blob([receiverControlReport(envelope)], { type: "text/markdown;charset=utf-8" }), `${envelope.job.job_id}-receiver-control.md`);
 }
