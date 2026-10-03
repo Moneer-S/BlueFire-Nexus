@@ -75,7 +75,10 @@ def inspect_profile_tool(
         raise APIError(
             HTTPStatus.CONFLICT,
             "native_tool_runner_unavailable",
-            "Start the local runner in Runners, then inspect this installation. The draft does not need activation.",
+            (
+                "Tool inspection requires an authenticated local runner. Start one in Runners using an active Execute profile, "
+                "then inspect this installation. Inspection does not activate or authorize this draft."
+            ),
         ) from None
     except (ContractError, RunnerTransportError, OSError, TypeError, ValueError):
         raise APIError(

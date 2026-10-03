@@ -235,6 +235,8 @@ function longConditions(value: string) {
   return structuredRuleFields.filter(field => field.type === "string").flatMap(field => structuredRuleOperators(field.key).map(operator => ({ field: field.key, operator, value: field.key === "permission_mode_octal" && operator === "equals" ? "0660" : value })));
 }
 
+// This bulk draft test updates 28 fields with over 1 MiB of serialized data,
+// then checks storage refusal and remount retention; allow time for that UI workload.
 it("keeps a valid large applied selection and pending edits visible when browser retention exceeds its limit", async () => {
   const conditions = longConditions("\\".repeat(4096));
   const built = buildStructuredSelection(conditions);
@@ -266,7 +268,7 @@ it("keeps a valid large applied selection and pending edits visible when browser
   await user.click(screen.getByRole("button", { name: "Discard New rule inputs" }));
   await user.click(screen.getByRole("button", { name: "Discard these inputs" }));
   expect(save).not.toHaveBeenCalled();
-});
+}, 10_000);
 
 it("refuses an oversized Apply without hiding or replacing the editable pending conditions", async () => {
   const value = { source: "{}", draft: { source: "{}", conditions: longConditions("\u0001".repeat(4096)) } };

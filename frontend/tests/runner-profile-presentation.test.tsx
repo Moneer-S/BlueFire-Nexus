@@ -24,6 +24,38 @@ it("disambiguates readable custom names with their exact identities", () => {
   expect(profileChoiceLabel(profiles[1]!.id, profiles)).toBe("Custom lab · custom-lab.v2");
 });
 
+it.each(["draft", "inactive"] as const)("does not send a %s profile card to an unavailable Runners selection", async status => {
+  const profile = demoCatalog.runner_profiles.find(item => item.id === "sandbox-execute.v1")!;
+  vi.spyOn(api, "catalog").mockResolvedValue(demoCatalog);
+  const runnerStatus = vi.spyOn(api, "runnerStatus");
+  const startRunner = vi.spyOn(api, "startRunner");
+  const bootstrapRunner = vi.spyOn(api, "bootstrapRunner");
+  vi.spyOn(api, "resources").mockImplementation(async kind => ({
+    schema_version: "bluefire.resource-list.v1",
+    kind,
+    resources: kind === "runner-profiles" ? [{
+      kind,
+      id: profile.id,
+      status,
+      document: { ...profile },
+      digest: "draft-digest",
+      created_at: "",
+      updated_at: "",
+    }] : [],
+  }));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/runners"]}><RunnersPage/></MemoryRouter></QueryClientProvider>);
+
+  const title = await screen.findByRole("heading", { name: "Workspace actions" });
+  const card = within(title.closest(".runner-card")! as HTMLElement);
+  expect(card.queryByRole("link", { name: "Inspect this profile’s runner" })).not.toBeInTheDocument();
+  expect(card.getByText(/Tool inspection needs an authenticated host/)).toBeVisible();
+  expect(screen.getByRole("combobox", { name: "Experiment runner profile" })).toHaveValue("");
+  expect(runnerStatus).not.toHaveBeenCalled();
+  expect(startRunner).not.toHaveBeenCalled();
+  expect(bootstrapRunner).not.toHaveBeenCalled();
+});
+
 it.each([{ stored: false, source: "catalog baseline" }, { stored: true, source: "stored" }])("names $source profile cards and keeps exact diagnostics and probe targets", async ({ stored }) => {
   const profile = demoCatalog.runner_profiles.find(item => item.id === "sandbox-execute.v1")!;
   vi.spyOn(api, "catalog").mockResolvedValue(demoCatalog);

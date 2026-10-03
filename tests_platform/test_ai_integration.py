@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import tempfile
 from dataclasses import replace
 from pathlib import Path
 from time import monotonic
-from typing import Any, Mapping
+from types import SimpleNamespace
+from typing import Any, Callable, Mapping
 
 import pytest
 
@@ -34,6 +36,7 @@ from bluefire.runner_inventory import (
 from bluefire.service import BlueFireService
 from bluefire.simulation import SimulationError, SimulationRegistry
 from bluefire.util import canonical_json_bytes, content_hash
+from tests_platform.job_wait_diagnostics import diagnose_job_wait
 
 ROOT = Path(__file__).resolve().parents[1]
 EXECUTE_ACTIONS = {
@@ -570,14 +573,27 @@ def _request(autonomy: str, provider_id: str = "deterministic-offline.v1") -> di
     }
 
 
-def _wait_for_proposal_approval(service: BlueFireService, job_id: str) -> Mapping[str, Any]:
+def _wait_for_proposal_approval(
+    service: BlueFireService,
+    job_id: str,
+    *,
+    diagnostic_stage: str | None = None,
+    add_report_section: Callable[[str, str, str], None] | None = None,
+) -> Mapping[str, Any]:
     started = monotonic()
     try:
-        return service.job_controller.wait_for_state(
-            job_id,
-            {JobState.AWAITING_APPROVAL},
-            timeout=5,
-        )
+        if diagnostic_stage is None:
+            return service.job_controller.wait_for_state(
+                job_id,
+                {JobState.AWAITING_APPROVAL},
+                timeout=5,
+            )
+        with diagnose_job_wait(diagnostic_stage, add_report_section):
+            return service.job_controller.wait_for_state(
+                job_id,
+                {JobState.AWAITING_APPROVAL},
+                timeout=5,
+            )
     except JobWaitTimeout:
         elapsed = monotonic() - started
         state = phase = "unavailable"
@@ -598,6 +614,66 @@ def _wait_for_proposal_approval(service: BlueFireService, job_id: str) -> Mappin
         f"Approval wait failed: limit=5s; elapsed={elapsed:.2f}s; state={state}; phase={phase}.",
         pytrace=False,
     )
+
+
+@pytest.mark.parametrize(
+    ("stage", "sink_fails"),
+    [
+        ("assist_rejection_approval", False),
+        ("assist_cancellation_approval", False),
+        ("assist_rejection_approval", True),
+        ("assist_cancellation_approval", True),
+    ],
+)
+def test_assist_approval_wait_reports_before_failure_and_keeps_five_second_bound(stage, sink_fails):
+    private_marker = "PRIVATE_ASSIST_JOB_AND_PROPOSAL_ID"
+    timeout = JobWaitTimeout(private_marker)
+    wait_calls = []
+    snapshots = []
+
+    class Controller:
+        def wait_for_state(self, job_id, states, *, timeout):
+            wait_calls.append((job_id, states, timeout))
+            raise timeout_error
+
+        def snapshot(self, job_id):
+            snapshots.append(job_id)
+            return {"state": "running", "progress": {"phase": "running"}}
+
+    timeout_error = timeout
+    service = SimpleNamespace(job_controller=Controller())
+    report_sections = []
+    cleanup = []
+
+    def add_report_section(*args):
+        if sink_fails:
+            raise OSError(private_marker)
+        report_sections.append(args)
+
+    try:
+        with pytest.raises(pytest.fail.Exception, match="Approval wait failed: limit=5s") as caught:
+            _wait_for_proposal_approval(
+                service,
+                private_marker,
+                diagnostic_stage=stage,
+                add_report_section=add_report_section,
+            )
+    finally:
+        cleanup.append("service-close")
+
+    assert "state=running; phase=running" in str(caught.value)
+    assert private_marker not in str(caught.value)
+    assert wait_calls == [(private_marker, {JobState.AWAITING_APPROVAL}, 5)]
+    assert snapshots == [private_marker]
+    assert cleanup == ["service-close"]
+    if sink_fails:
+        assert report_sections == []
+        return
+    assert len(report_sections) == 1
+    when, title, payload = report_sections[0]
+    assert (when, title) == ("call", "Job wait diagnostic")
+    assert private_marker not in payload
+    assert json.loads(payload)["stage"] == stage
 
 
 def test_off_never_constructs_or_calls_a_proposal_provider(tmp_path: Path) -> None:
@@ -889,7 +965,10 @@ def test_assist_proposal_acceptance_replans_and_resumes_simulate_job(tmp_path: P
         service.close()
 
 
-def test_assist_proposal_rejection_and_cancellation_do_not_resume(tmp_path: Path) -> None:
+def test_assist_proposal_rejection_and_cancellation_do_not_resume(
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+) -> None:
     def factory(config: AIConfig, provider_id: str) -> AlternateProposalProvider:
         return AlternateProposalProvider(config.provider(provider_id))
 
@@ -901,17 +980,22 @@ def test_assist_proposal_rejection_and_cancellation_do_not_resume(tmp_path: Path
 
     try:
 
-        def pending_job() -> tuple[str, Mapping[str, Any]]:
+        def pending_job(diagnostic_stage: str) -> tuple[str, Mapping[str, Any]]:
             submission = service.submit_run(_request("assist"))
             job_id = str(submission["job"]["job_id"])
-            awaiting = _wait_for_proposal_approval(service, job_id)
+            awaiting = _wait_for_proposal_approval(
+                service,
+                job_id,
+                diagnostic_stage=diagnostic_stage,
+                add_report_section=request.node.add_report_section,
+            )
             review = service.proposal_review(
                 job_id,
                 str(awaiting["progress"]["proposal_record_id"]),
             )
             return job_id, review
 
-        rejected_job_id, review = pending_job()
+        rejected_job_id, review = pending_job("assist_rejection_approval")
         rejected = service.reject_proposal_review(
             rejected_job_id,
             str(review["proposal_record_id"]),
@@ -927,7 +1011,7 @@ def test_assist_proposal_rejection_and_cancellation_do_not_resume(tmp_path: Path
         assert finished["state"] == "completed"
         assert finished["result_ref"] == review["source_run_id"]
 
-        cancelled_job_id, cancelled_review = pending_job()
+        cancelled_job_id, cancelled_review = pending_job("assist_cancellation_approval")
         service.cancel_job(cancelled_job_id)
         cancelled = service.job_controller.wait(cancelled_job_id, timeout=5)
         assert cancelled["state"] == "cancelled"
