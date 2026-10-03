@@ -90,7 +90,11 @@ class FixtureRunner(ReadyInventoryRunner):
 
     def execute_task(self, manifest, profile, *, task_id, cancel_event, durable_result_path):
         result = self.execute(manifest, profile)
-        payload = public_records(count=self.delegate.record_count)
+        if manifest["action_id"] == "sandbox.fixture.transform.v1":
+            self.redacted = manifest["params"]["redact_values"]
+        payload = public_records(
+            count=self.delegate.record_count, redacted=getattr(self, "redacted", False)
+        )
         digest = hashlib.sha256(payload).hexdigest()
         if manifest["action_id"] == "sandbox.collection.stage.v1":
             result["output"].update(sha256=digest, size=len(payload))

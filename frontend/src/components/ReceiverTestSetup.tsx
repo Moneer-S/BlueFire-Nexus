@@ -21,6 +21,7 @@ export function ReceiverTestSetup({ disabled, onStart }: { disabled: boolean; on
   const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
   const versions = useQuery({ queryKey: ["scenario-versions"], queryFn: api.scenarioVersions });
   const [selected, setSelected] = useState(readReceiverSelection);
+  const [workflow, setWorkflow] = useState<'comparison' | 'retained_redaction'>('comparison');
   const [storageError, setStorageError] = useState<unknown>();
   const saved = versions.data?.scenarios.find((item) => `${item.scenario_id}:${item.version}:${item.digest}` === selected);
   if (DEMO_MODE) return <Callout title="An owned Linux lab is required">This test changes a real receiver policy. Open the installed product with a prepared disposable lab.</Callout>;
@@ -28,24 +29,25 @@ export function ReceiverTestSetup({ disabled, onStart }: { disabled: boolean; on
   if (!catalog.data || !versions.data) return <LoadingState label="Loading saved experiments" />;
   return <section aria-label="Set up receiver control test" className="receiver-setup">
     <h2>New control test</h2>
+    <fieldset className="receiver-workflow"><legend>Policy outcome</legend><label><input type="radio" name="receiver-workflow" value="comparison" checked={workflow === "comparison"} disabled={disabled} onChange={() => setWorkflow("comparison")} /> Compare and restore prior policy</label><label><input type="radio" name="receiver-workflow" value="retained_redaction" checked={workflow === "retained_redaction"} disabled={disabled} onChange={() => setWorkflow("retained_redaction")} /> Retain redaction and verify legitimate use</label></fieldset>
     <Field label="Saved experiment" hint="Choose an immutable version with a JSONL staging step connected to a peer handoff."><select value={selected} onChange={(event) => { setSelected(event.target.value); try { rememberReceiverSelection(event.target.value); setStorageError(undefined); } catch (error) { setStorageError(error); } }}><option value="">Choose a saved experiment</option>{versions.data.scenarios.map((item) => <option key={`${item.scenario_id}:${item.version}:${item.digest}`} value={`${item.scenario_id}:${item.version}:${item.digest}`}>{item.title} · version {item.version}</option>)}</select></Field>
     {storageError ? <ErrorState title="Selection is only available on this page" error={storageError} /> : null}
     {selected && !saved ? <p>The previously selected version is no longer in this list. Choose an available saved version to check its current eligibility.</p> : null}
     {!versions.data.scenarios.length ? <p>Save an experiment in <Link to="/builder">Build</Link> to select it here.</p> : null}
-    <details className="receiver-test-help"><summary>How the three phases work</summary><p>Run the same saved experiment with a receiver that accepts reviewed synthetic records, a receiver that requires redaction, then the original policy restored. Each phase uses a fresh, short-lived receiver in your owned lab and requires its own run approval.</p><p>This measures the local receiver policy. It does not establish external security-system prevention or detection coverage.</p></details>
-    {saved ? <ReceiverConfiguration key={selected} saved={saved} catalog={catalog.data} disabled={disabled} onStart={onStart} /> : null}
+    <details className="receiver-test-help"><summary>How the three phases work</summary><p>{workflow === "retained_redaction" ? "Establish the permissive baseline, test the original staged bytes against redaction, then verify acceptance of explicitly redacted records. Retain the redaction policy for this saved control test and its linked fresh retests after receivers shut down. Independently created tests do not inherit it." : "Run the same saved experiment with a receiver that accepts reviewed synthetic records, a receiver that requires redaction, then the original policy restored."} Each phase uses a fresh, short-lived receiver in your owned lab and requires its own run approval.</p><p>This measures the local receiver policy. It does not establish external security-system prevention or detection coverage.</p></details>
+    {saved ? <ReceiverConfiguration key={selected} saved={saved} catalog={catalog.data} workflow={workflow} disabled={disabled} onStart={onStart} /> : null}
   </section>;
 }
 
-function ReceiverConfiguration({ saved, catalog, disabled, onStart }: { saved: ScenarioVersion; catalog: CatalogResponse; disabled: boolean; onStart: (body: StartRequest) => void }) {
+function ReceiverConfiguration({ saved, catalog, workflow, disabled, onStart }: { saved: ScenarioVersion; catalog: CatalogResponse; workflow: 'comparison' | 'retained_redaction'; disabled: boolean; onStart: (body: StartRequest) => void }) {
   const { runConfig } = useProduct();
   const setupKey = `${saved.scenario_id}:${saved.version}:${saved.digest}`;
   const [config, setConfig] = useState<RunConfiguration>(() => readReceiverConfiguration(setupKey, { ...structuredClone(runConfig), autonomy: "off", provider: "", actionImplementations: {}, approved: false, approvedBy: "" }));
   const [storageError, setStorageError] = useState<unknown>();
   useEffect(() => { try { rememberReceiverConfiguration(setupKey, config); setStorageError(undefined); } catch (error) { setStorageError(error); } }, [setupKey, config]);
-  const request = useMemo<ReceiverContextRequest>(() => ({ selection: { kind: "saved_scenario", scenario_id: saved.scenario_id, version: saved.version, digest: saved.digest }, run_intent: runIntent(config) }), [saved, config]);
+  const request = useMemo<ReceiverContextRequest>(() => ({ selection: { kind: "saved_scenario", scenario_id: saved.scenario_id, version: saved.version, digest: saved.digest }, run_intent: runIntent(config), ...(workflow === "retained_redaction" ? { workflow } : {}) }), [saved, config, workflow]);
   const assistant = useAssistancePanel();
-  const assistantSelection = useMemo<ReceiverAssistanceSelection | undefined>(() => { const value = { kind: "receiver_scenario" as const, ...request }; return validReceiverAssistanceSelection(value) ? value : undefined; }, [request]);
+  const assistantSelection = useMemo<ReceiverAssistanceSelection | undefined>(() => { if (workflow === "retained_redaction") return undefined; const value = { kind: "receiver_scenario" as const, ...request }; return validReceiverAssistanceSelection(value) ? value : undefined; }, [request, workflow]);
   usePublishReceiverSelection(disabled ? undefined : assistantSelection, saved.title);
   const context = useQuery({ queryKey: ["receiver-context", request], queryFn: async () => checkedReceiverContext(await api.receiverContext(request), request), retry: false });
   const ready = context.data?.eligible && context.data.availability.supported && context.data.availability.ready;
@@ -63,7 +65,7 @@ function ReceiverConfiguration({ saved, catalog, disabled, onStart }: { saved: S
         if (!context.data || !sameJson(context.data.selection, request.selection) || !sameJson(context.data.run_intent, request.run_intent)) return;
         onStart({ ...request, submission_id: crypto.randomUUID(), context_digest: context.data.context_digest });
       }}>Save control test</Button>
-      {assistant ? <div className="receiver-assistant-entry"><Button disabled={disabled || !assistantSelection || !context.data.eligible || context.isFetching} onClick={() => assistant.setOpen(true)}>Coordinate with Assistant</Button><p>Uses these settings and interprets the recorded phases. Receiver preparation and each Execute approval remain yours.</p></div> : null}
+      {assistant && workflow === "comparison" ? <div className="receiver-assistant-entry"><Button disabled={disabled || !assistantSelection || !context.data.eligible || context.isFetching} onClick={() => assistant.setOpen(true)}>Coordinate with Assistant</Button><p>Uses these settings and interprets the recorded phases. Receiver preparation and each Execute approval remain yours.</p></div> : null}
     </> : null}
   </>;
 }

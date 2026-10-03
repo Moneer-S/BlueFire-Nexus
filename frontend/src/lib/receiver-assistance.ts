@@ -75,7 +75,7 @@ function checkPhases(rows: ReceiverInspectionPhase[]) {
 export function checkedReceiverAssistanceContext(value: ReceiverAssistanceContext, selected: ReceiverAssistanceSelection): ReceiverAssistanceContext {
   if (!validReceiverAssistanceSelection(selected) || value.schema_version !== "bluefire.assistance-context.v1" || !sameJson(value.selected, selected) || !digest(value.context_digest)) fail();
   const native = value.receiver_context;
-  if (!native || !digest(native.context_digest) || !text(native.scenario_title) || native.scenario?.id !== native.selection?.scenario_id) fail();
+  if (!native || native.schema_version !== "bluefire.receiver-defense-context.v1" || native.workflow !== undefined || !digest(native.context_digest) || !text(native.scenario_title) || native.scenario?.id !== native.selection?.scenario_id) fail();
   if (selected.kind === "receiver_scenario" ? !sameJson(native.selection, selected.selection) || !sameJson(native.run_intent, selected.run_intent) : native.context_digest !== selected.receiver_context_digest) fail();
   checkPhases(value.source_prefix);
   if (selected.kind === "receiver_scenario" && value.source_prefix.length || !sameJson(value.reference_summary.phases, value.source_prefix)

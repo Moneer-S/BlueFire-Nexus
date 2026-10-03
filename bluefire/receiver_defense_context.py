@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from typing import Any, Mapping
 
+from . import receiver_defense_workflow as workflow
 from .contracts import ScenarioDefinition
 from .product_store_errors import ProductStoreError
 from .receiver_defense_contract import (
@@ -72,10 +73,15 @@ def intent(value: Any) -> Mapping[str, Any]:
 
 
 def context(service: Any, request: Mapping[str, Any]) -> Mapping[str, Any]:
-    if set(request) != {"selection", "run_intent"}:
+    if not {"selection", "run_intent"} <= set(request) or set(request) - {
+        "selection",
+        "run_intent",
+        *workflow.OPTION_FIELDS,
+    }:
         raise ProductStoreError(
             "Receiver context requires only saved selection and native settings."
         )
+    workflow_options = workflow.options(request)
     selection, run_intent = selected(request["selection"]), intent(request["run_intent"])
     saved = service.scenario_version(selection["scenario_id"], version=selection["version"])[
         "scenario"
@@ -226,4 +232,30 @@ def context(service: Any, request: Mapping[str, Any]) -> Mapping[str, Any]:
         "profile_digest": content_hash(profile.to_dict()) if profile is not None else None,
         "collector_binding": service._collector_binding(collectors, runtime),
     }
+    if workflow_options:
+        document.update(workflow_options)
+        document["schema_version"] = workflow.schema(document, "-context")
+        document["limitations"] = [
+            item for item in LIMITATIONS if not item.startswith("Restored means")
+        ] + [
+            "The retained policy applies only to this saved control test and its exact-bound linked fresh retests. Independently created tests do not inherit it; this is not persistent host hardening.",
+            "Cleanup closes each receiver and removes attack artifacts without resetting the accepted policy. Rollback is explicit.",
+            "The legitimate-use run freshly redacts the same generated records; it is not an independent unseen data set.",
+        ]
+        transform = None
+        if handoff is not None:
+            try:
+                transform = workflow.redaction_step(saved["document"], handoff)
+            except ProductStoreError as exc:
+                reasons.append({"code": "receiver_redaction_ineligible", "message": str(exc)})
+        document["control"] = (
+            workflow.control_descriptor(document, transform) if transform is not None else None
+        )
+        document["eligible"] = not reasons
+        if workflow_options.get("source_control"):
+            if document["control"] is None:
+                raise ProductStoreError("The retained control requires its reviewed record chain.")
+            from .receiver_defense_control import validate_source
+
+            document["source_baseline"] = validate_source(service.receiver_defense, document)
     return {**document, "context_digest": content_hash(document)}

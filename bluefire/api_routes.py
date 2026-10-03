@@ -711,7 +711,7 @@ class APIRoutes:
         suffix = path[len(prefix) :]
         if suffix in {"context", "jobs"}:
             return (suffix, "")
-        match = re.fullmatch(r"jobs/(job-[0-9a-f]{32})(?:/(prepare|review))?", suffix)
+        match = re.fullmatch(r"jobs/(job-[0-9a-f]{32})(?:/(prepare|review|control))?", suffix)
         if match is None:
             self._error(
                 HTTPStatus.BAD_REQUEST,

@@ -4236,6 +4236,12 @@ class ProductStore:
                 from .product_store_receiver_defense import guard as receiver_guard
 
                 receiver_guard(self, connection, job_kind, document)
+            if job_kind == "receiver.defense" and (document.get("context") or {}).get(
+                "source_control"
+            ):
+                from .product_store_receiver_defense import guard_source
+
+                guard_source(self, connection, {"request": document}, publication=True)
             if "method_comparison" in document:
                 from .product_store_method_comparison import publication_guard
 
