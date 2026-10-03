@@ -32,7 +32,7 @@ _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
     "bluefire/prepared_lab_ui_bootstrap.py": "sha256:7de08b08b2dbf7120e679f5cc1c81446a125dcddc205b69f244b0c6d4ed50b4c",
     "bluefire/prepared_lab_product.py": "sha256:3a5e38cfa1eb8c7b23c88fe2d8ab89f98cbeb00f27357c7af21c61fa95df7ea9",
     "bluefire/browser_launch.py": "sha256:c19b3d5ebfe9b51378d77ce5fd285ada78cc43898690699477d04f4c0862dbf1",
-    "bluefire/runner_python_environment.py": "sha256:b023313301c4c9f41cc494e3e6f4658c3afacd8af23ae3d7906dcb46b854dfcc",
+    "bluefire/runner_python_environment.py": "sha256:9928d6a53b5fd2dc9bf6036c4a2d9ec9715c97de1f9f89519e99055b21b2f25e",
 }
 _REVIEWED_RUST_PROCESS_BOUNDARY_SOURCES = (
     "runner/src/cancellation_witness.rs",

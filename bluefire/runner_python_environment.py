@@ -17,6 +17,7 @@ from pathlib import Path
 from .runner_transport_errors import RunnerTransportError
 
 _CONFIG_LIMIT = 32 * 1024
+_EXECUTABLE_LIMIT = 128 * 1024 * 1024
 _STAT_FIELDS = (
     "st_dev st_ino st_mode st_nlink st_uid st_gid st_size st_mtime_ns st_ctime_ns".split()
 )
@@ -29,6 +30,62 @@ def _identity(details: os.stat_result) -> tuple[int, ...]:
 
 def _directory_identity(details: os.stat_result) -> tuple[int, ...]:
     return tuple(int(getattr(details, field)) for field in _DIRECTORY_FIELDS)
+
+
+def _hash_regular_at(directory_fd: int, name: str, details: os.stat_result) -> str:
+    """Hash one already-checked executable without following a replacement link."""
+    if not 0 < details.st_size <= _EXECUTABLE_LIMIT:
+        raise OSError("application interpreter size is unsupported")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(name, flags, dir_fd=directory_fd)
+    try:
+        opened = os.fstat(descriptor)
+        if _identity(opened) != _identity(details) or not stat.S_ISREG(opened.st_mode):
+            raise OSError("application interpreter changed")
+        digest = hashlib.sha256()
+        total = 0
+        with os.fdopen(os.dup(descriptor), "rb") as source:
+            while chunk := source.read(64 * 1024):
+                total += len(chunk)
+                if total > _EXECUTABLE_LIMIT:
+                    raise OSError("application interpreter size is unsupported")
+                digest.update(chunk)
+        if (
+            total != details.st_size
+            or _identity(os.fstat(descriptor)) != _identity(details)
+            or _identity(os.stat(name, dir_fd=directory_fd, follow_symlinks=False))
+            != _identity(details)
+        ):
+            raise OSError("application interpreter changed")
+        return digest.hexdigest()
+    finally:
+        os.close(descriptor)
+
+
+def _protected_runtime_digest(runtime: Path, owner_uid: int) -> tuple[object, ...]:
+    """Return a content pin for the trusted base executable through protected parents."""
+    if not runtime.is_absolute() or ".." in runtime.parts:
+        raise OSError("application runtime path is not canonical")
+    resolved = runtime.resolve(strict=True)
+    if not resolved.is_absolute() or ".." in resolved.parts:
+        raise OSError("application runtime path is not canonical")
+    parents, parent_fd = _open_directory_chain(resolved.parent, owner_uid)
+    try:
+        details = os.stat(resolved.name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or details.st_uid not in {0, owner_uid}
+            or stat.S_IMODE(details.st_mode) & 0o022
+        ):
+            raise OSError("application runtime is not protected")
+        return (
+            str(resolved),
+            parents,
+            _identity(details),
+            _hash_regular_at(parent_fd, resolved.name, details),
+        )
+    finally:
+        os.close(parent_fd)
 
 
 def _protected_directory(
@@ -100,10 +157,19 @@ def _launcher_chain(launcher: Path, runtime: Path, owner_uid: int) -> tuple[obje
                     not stat.S_ISREG(details.st_mode)
                     or details.st_uid not in {0, owner_uid}
                     or mode & 0o022
-                    or current != runtime
                 ):
                     raise OSError("application interpreter target is not protected")
-                return (*links, (str(current), parents, _identity(details)))
+                identity = _identity(details)
+                if current == runtime.resolve(strict=True):
+                    return (*links, (str(current), parents, identity))
+                runtime_pin = _protected_runtime_digest(runtime, owner_uid)
+                launcher_digest = _hash_regular_at(parent_fd, current.name, details)
+                if launcher_digest != runtime_pin[3]:
+                    raise OSError("copied application interpreter differs from runtime")
+                return (
+                    *links,
+                    (str(current), parents, identity, launcher_digest, runtime_pin),
+                )
         finally:
             os.close(parent_fd)
         target_path = Path(target)
