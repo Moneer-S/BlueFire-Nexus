@@ -343,7 +343,7 @@ def make_checkpoint7(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
             store_module.detection_evaluation_store, "initialize_schema", lambda _connection: None
         )
         old.setattr(
-            store_module.capability_grant_store, "initialize_schema", lambda _connection: None
+            store_module.capability_store_api, "initialize_schema", lambda _connection: None
         )
         checkpoint = ProductStore(path)
         checkpoint.set_setting("unit.preserved", {"value": "retained"})
