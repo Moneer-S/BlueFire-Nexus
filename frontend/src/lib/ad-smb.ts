@@ -19,7 +19,7 @@ export interface AdChange { before: AdDescriptor; after: AdDescriptor; removed: 
 export interface AdRead { reader: "probe" | "legitimate"; purpose: "primary" | "health"; state: string; bytes: number; digest: string | null; localContext: string | null; cleanup: "verified" | "unknown" }
 export interface AdExecution { provenance: "synthetic_fixture" | "runner_reported"; dispatch: "not_started" | "attempted" | "unknown"; cleanup: "verified" | "unknown"; read: AdRead | null; audit: { events: number; truncated: boolean; digest: string } | null; change: AdChange | null }
 export interface AdOperation { id: string; phase: AdPhase; runId: string; state: "complete" | "partial" | "not_started" | "unknown"; expectation: "matched" | "not_met" | "incomplete" | null; distinctContexts: boolean | null; cleanup: "verified" | "unknown"; digest: string; executions: AdExecution[] }
-export interface AdWorkflow { id: string; environment: AdEnvironment; revision: number; stopped: boolean; pending: string | null; policy: "baseline" | "hardened" | "unknown"; operations: AdOperation[]; allowed: AdPhase[]; remaining: AdBudget; integration: "unavailable" | "injected_adapter" }
+export interface AdWorkflow { id: string; environment: AdEnvironment; revision: number; stopped: boolean; pending: string | null; policy: "baseline" | "hardened" | "unknown"; operations: AdOperation[]; allowed: AdPhase[]; remaining: AdBudget; integration: "unavailable" | "injected_adapter" | "configured_admission" }
 export interface AdReview { workflow: string; revision: number; phase: AdPhase; digest: string; steps: string[]; budget: AdBudget; change: AdChange | null; policy: string }
 export interface AdSubmission { submission_id: string; phase: AdPhase; review_digest: string; reviewed_by: string }
 export type AdPending = { kind: "create"; id: string; body: { submission_id: string; environment_id: string } } | { kind: "submit"; id: string; workflow: string; body: AdSubmission };
@@ -113,7 +113,7 @@ export function checkedAdWorkflow(value: unknown, expected?: string): AdWorkflow
   if (pending && (allowed.length || operations.some(row => row.id === pending))) throw bad();
   const selected = environment(object(row.request).environment);
   if (operations.some(row => row.executions.some(entry => entry.change && entry.change.removed.sid !== selected.principals.probe))) throw bad();
-  return { id, environment: selected, revision: integer(progress.revision, 1000), stopped: bool(progress.stopped), pending, policy: oneOf(progress.policy_state, ["baseline", "hardened", "unknown"]), operations, allowed, remaining: budget(envelope.remaining), integration: oneOf(envelope.execution_integration, ["unavailable", "injected_adapter"]) };
+  return { id, environment: selected, revision: integer(progress.revision, 1000), stopped: bool(progress.stopped), pending, policy: oneOf(progress.policy_state, ["baseline", "hardened", "unknown"]), operations, allowed, remaining: budget(envelope.remaining), integration: oneOf(envelope.execution_integration, ["unavailable", "injected_adapter", "configured_admission"]) };
 }
 export function checkedAdList(value: unknown): AdWorkflow[] { const rows = list(object(value).workflows, 4096).map(value => checkedAdWorkflow(value)); if (new Set(rows.map(row => row.id)).size !== rows.length) throw bad(); return rows; }
 export function checkedAdReview(value: unknown, workflow: AdWorkflow, phase: AdPhase): AdReview {

@@ -66,9 +66,10 @@ impl LocalReader {
         }
     }
 
-    fn render(event: Handle) -> Result<String, u32> {
+    fn render(event: Handle, maximum_bytes: usize) -> Result<String, u32> {
         // Fixed allocation avoids attacker-sized allocation and a size-query race.
-        let mut buffer = vec![0_u16; MAX_EVENT_BYTES + 1];
+        let maximum_bytes = maximum_bytes.min(MAX_EVENT_BYTES);
+        let mut buffer = vec![0_u16; maximum_bytes + 1];
         let (mut used, mut properties) = (0_u32, 0_u32);
         let success = unsafe {
             EvtRender(
@@ -92,7 +93,7 @@ impl LocalReader {
             return Err(13);
         }
         let xml = String::from_utf16(&buffer[..count - 1]).map_err(|_| 13_u32)?;
-        if xml.is_empty() || xml.len() > MAX_EVENT_BYTES {
+        if xml.is_empty() || xml.len() > maximum_bytes {
             return Err(122);
         }
         Ok(xml)
@@ -100,7 +101,7 @@ impl LocalReader {
 }
 
 impl Reader for LocalReader {
-    fn next(&mut self, timeout_ms: u32) -> Result<Next, u32> {
+    fn next(&mut self, timeout_ms: u32, maximum_bytes: usize) -> Result<Next, u32> {
         let mut event = ptr::null_mut();
         let mut returned = 0;
         let ok = unsafe { EvtNext(self.query, 1, &mut event, timeout_ms, 0, &mut returned) };
@@ -119,7 +120,7 @@ impl Reader for LocalReader {
                 Err(if error == 0 { 13 } else { error })
             };
         }
-        let result = Self::render(event);
+        let result = Self::render(event, maximum_bytes);
         if !self.close_event(event) {
             return Err(6);
         }

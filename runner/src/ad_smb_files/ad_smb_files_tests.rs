@@ -58,6 +58,7 @@ struct Fake {
     facts_calls: usize,
     fail_facts_call: Option<usize>,
     fail_read_call: Option<usize>,
+    content: Vec<u8>,
 }
 
 impl Fake {
@@ -82,6 +83,7 @@ impl Fake {
             facts_calls: 0,
             fail_facts_call: None,
             fail_read_call: None,
+            content: b"x\n\n".to_vec(),
         }
     }
 }
@@ -128,7 +130,7 @@ impl Backend for Fake {
         } else if self.extra_content {
             b"x\n\ny"
         } else {
-            b"x\n\n"
+            &self.content
         };
         let position = &mut self.positions[index - 4];
         let count = output.len().min(content.len() - *position);
@@ -304,4 +306,76 @@ fn cleanup_failure_does_not_upgrade_observation_to_ready() {
 #[test]
 fn expired_cooperative_deadline_refuses() {
     assert!(current(Instant::now().checked_sub(Duration::from_secs(6)).unwrap()).is_err());
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn emits_synthetic_inspect_result_for_python_workflow() {
+    use crate::ad_smb_descriptor::Descriptor;
+    use crate::ad_smb_share::{ShareMetadata, ShareProjection};
+    let inputs: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/ad_smb_native_corpus_inputs.json"
+    ))
+    .unwrap();
+    let request = &inputs["cases"]["inspect"]["packet"]["manifest"]["params"]["ad_smb_request"];
+    let scope = &request["scope"];
+    let bytes = hex::decode(inputs["descriptor_hex"].as_str().unwrap()).unwrap();
+    let descriptor = Descriptor::from_bytes(&bytes).unwrap();
+    let projection = descriptor.projection().clone();
+    let after = descriptor
+        .propose_probe_removal(
+            scope["principals"]["probe"]["sid"].as_str().unwrap(),
+            scope["principals"]["legitimate"]["sid"].as_str().unwrap(),
+            scope["principals"]["controller"]["sid"].as_str().unwrap(),
+        )
+        .unwrap();
+    let mut fake = Fake::new();
+    fake.content = b"{}\n".to_vec();
+    for (index, facts) in fake.before.iter_mut().enumerate() {
+        facts.selected_security = SelectedSecurity {
+            security_information: 7,
+            binary_hex: hex::encode(&bytes),
+            sha256: projection.sha256.clone(),
+            finite_descriptor: (index >= 3).then(|| projection.clone()),
+            sacl_observed: false,
+        };
+    }
+    fake.after = fake.before.clone();
+    let files = observe_with(&target(), &mut fake);
+    assert!(files.issue.is_none() && files.owned_handles_closed);
+    assert_eq!(fake.close_calls, 1);
+    let metadata = ShareMetadata {
+        name: target().name().to_owned(),
+        local_path: target().path().to_owned(),
+        share_type: 0,
+        flags: 0x8030,
+        client_cache_flags: 0x30,
+        encrypt_data_flag: true,
+        permissions: 0,
+        maximum_uses: u32::MAX,
+        remark_digest: format!(
+            "sha256:{:x}",
+            Sha256::digest(b"synthetic descriptor fixture")
+        ),
+    };
+    let metadata_value = serde_json::to_value(&metadata).unwrap();
+    assert_eq!(
+        scope["share"]["identity_digest"],
+        format!(
+            "sha256:{:x}",
+            Sha256::digest(serde_json::to_vec(&metadata_value).unwrap())
+        )
+    );
+    let share = ShareProjection {
+        schema_version: "bluefire.ad-smb-local-share.v1",
+        metadata,
+        current_uses: 0,
+        descriptor: projection,
+    };
+    let result =
+        serde_json::json!({"share":share,"files":files,"after_descriptor":after.projection()});
+    let marker = serde_json::json!({"schema_version":"bluefire.ad-smb-synthetic-native-case.v1","synthetic_only":true,"case":"inspect","operation":request["step"],"request_digest":format!("sha256:{:x}",Sha256::digest(serde_json::to_vec(request).unwrap())),"result":result});
+    let serialized = serde_json::to_string(&marker).unwrap();
+    assert!(serialized.len() <= 131072);
+    println!("BF_AD_NATIVE_CORPUS_V1 {serialized}");
 }

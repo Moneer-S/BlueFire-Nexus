@@ -1,0 +1,262 @@
+"""Synthetic original terminals only; no channel authentication or native effects."""
+
+from copy import deepcopy
+from datetime import timedelta
+
+import pytest
+
+from bluefire.ad_smb_channel import AdSmbHostChannel
+from bluefire.ad_smb_contract import AdSmbError, AdSmbScope
+from bluefire.ad_smb_receiver_results import native_generation, result_record, stored_result
+from bluefire.ad_smb_worker_wire import RECEIVER_RESULT_MAX, prepare_packet
+from bluefire.ad_smb_workspace_results import project_original
+from tests_platform.test_ad_smb_contract import NOW
+from tests_platform.test_ad_smb_native_member_results import (
+    audit_fixture,
+)
+from tests_platform.test_ad_smb_native_member_results import (
+    fixture as member_fixture,
+)
+from tests_platform.test_ad_smb_native_results import denied
+from tests_platform.test_ad_smb_receiver import original, packet, read_record, record
+from tests_platform.test_ad_smb_worker_wire import (
+    fixture as wire_fixture,
+)
+from tests_platform.test_ad_smb_worker_wire import (
+    rebind_context,
+    terminal_row,
+)
+
+
+def member_original(phase="inspect"):
+    request, raw = member_fixture()
+    scope = AdSmbScope.from_mapping(request["scope"])
+    value, old_channel = original(phase)
+    channel = AdSmbHostChannel.from_mapping(
+        scope, {**old_channel.to_dict(), "scope_digest": scope.digest}
+    )
+    host = {
+        **value["transport_identity"],
+        "channel_digest": channel.digest,
+        "native_generation": native_generation(channel),
+    }
+    value = rebind_context(
+        value,
+        scope=scope.to_dict(),
+        scope_digest=scope.digest,
+        host=host,
+        change=request["change"] if phase in {"harden", "rollback"} else None,
+    )
+    value["transport_identity"] = host
+    return value, channel, raw
+
+
+def timed_record(value, channel, raw):
+    public = packet(value, channel)
+    terminal = terminal_row(public)
+    terminal["result"] = raw
+    return result_record(
+        public,
+        terminal,
+        native_digest=channel.to_dict()["runner_binary_digest"],
+        issue=None,
+        receiver_completed_at=(NOW + timedelta(seconds=2)).isoformat(),
+    )
+
+
+def project(value, channel, saved):
+    return project_original(value["manifest"]["params"]["ad_smb_request"], value, channel, saved)
+
+
+def test_inspection_uses_recorded_receiver_time_and_exact_source_receipt():
+    value, channel, raw = member_original()
+    saved = timed_record(value, channel, raw)
+    result = project(value, channel, saved)
+    assert result["observation"]["snapshot"]["observed_at"] == saved["receiver_completed_at"]
+    assert result["observation"]["snapshot"]["descriptor"] == raw["share"]["descriptor"]
+    assert result["provenance"] == "runner_reported"
+    assert result["observation"]["after_descriptor"] == raw["after_descriptor"]
+    assert "receiver_completed_at" not in result
+
+
+def test_v1_inspect_recovers_without_invented_snapshot_timestamp():
+    value, channel, raw = member_original()
+    saved = timed_record(value, channel, raw)
+    saved["schema_version"] = "bluefire.ad-smb-receiver-result.v1"
+    del saved["receiver_completed_at"]
+    assert (
+        stored_result(
+            saved, value["manifest"], value["profile"], channel, maximum=RECEIVER_RESULT_MAX
+        )
+        == saved
+    )
+    with pytest.raises(AdSmbError, match="no receiver observation timestamp"):
+        project(value, channel, saved)
+
+
+@pytest.mark.parametrize(
+    "time_value", [None, NOW - timedelta(microseconds=1), NOW + timedelta(seconds=31)]
+)
+def test_v2_refuses_missing_or_outside_original_receiver_timestamp(time_value):
+    value, channel, raw = member_original()
+    saved = timed_record(value, channel, raw)
+    saved["receiver_completed_at"] = time_value.isoformat() if time_value else None
+    with pytest.raises(AdSmbError):
+        project(value, channel, saved)
+
+
+def test_v2_completion_cannot_precede_possible_original_preparation_interval():
+    value, channel, raw = member_original()
+    public = prepare_packet(
+        value,
+        channel,
+        challenge="a" * 64,
+        credential_binding_digest=None,
+        expected_upn_sha256=None,
+        prior_local_authentication_ids=[],
+        clock=NOW + timedelta(seconds=29),
+    )
+    terminal = terminal_row(public)
+    terminal["result"] = raw
+    saved = result_record(
+        public,
+        terminal,
+        native_digest=channel.to_dict()["runner_binary_digest"],
+        issue=None,
+        receiver_completed_at=(NOW + timedelta(seconds=2)).isoformat(),
+    )
+    with pytest.raises(AdSmbError):
+        project(value, channel, saved)
+    earliest = NOW + timedelta(seconds=29) - timedelta(milliseconds=1) + timedelta(microseconds=1)
+    saved["receiver_completed_at"] = (earliest - timedelta(microseconds=1)).isoformat()
+    with pytest.raises(AdSmbError):
+        project(value, channel, saved)
+    saved["receiver_completed_at"] = earliest.isoformat()
+    assert project(value, channel, saved)["observation"] is not None
+
+
+def test_timeout_limited_v2_does_not_invent_a_late_preparation_lower_bound():
+    value, channel = wire_fixture(
+        limits={
+            "timeout_ms": 1000,
+            "max_stdout_bytes": 4259840,
+            "max_stderr_bytes": 65536,
+            "max_artifact_bytes": 1048576,
+            "max_files": 2,
+        }
+    )
+    host = {**value["transport_identity"], "native_generation": native_generation(channel)}
+    value = rebind_context(value, host=host)
+    value["transport_identity"] = host
+    public = prepare_packet(
+        value,
+        channel,
+        challenge="a" * 64,
+        credential_binding_digest=None,
+        expected_upn_sha256=None,
+        prior_local_authentication_ids=[],
+        clock=NOW,
+    )
+    saved = result_record(
+        public,
+        terminal_row(public),
+        native_digest=channel.to_dict()["runner_binary_digest"],
+        issue="native_error",
+        receiver_completed_at=NOW.isoformat(),
+    )
+    assert (
+        stored_result(
+            saved, value["manifest"], value["profile"], channel, maximum=RECEIVER_RESULT_MAX
+        )
+        == saved
+    )
+
+
+@pytest.mark.parametrize("phase", ["harden", "rollback"])
+def test_matched_share_write_projects_exact_descriptor_and_keeps_resource_binding(phase):
+    value, channel, inspected = member_original(phase)
+    request = value["manifest"]["params"]["ad_smb_request"]
+    target = (
+        request["change"]["after_descriptor"]
+        if phase == "harden"
+        else request["change"]["before"]["descriptor"]
+    )
+    raw = {
+        "state": "readback_matched",
+        "write_attempted": True,
+        "set_status": 0,
+        "readback": {**inspected["share"], "descriptor": target},
+        "issue": None,
+    }
+    result = project(value, channel, timed_record(value, channel, raw))
+    assert result["observation"]["state"] == "readback_matched"
+    assert result["observation"]["snapshot"]["descriptor"] == target
+
+
+@pytest.mark.parametrize(
+    "state,attempt,status,issue",
+    [
+        ("not_attempted", False, None, "preimage_unavailable"),
+        ("unknown", True, 5, "set_response_failed_state_unknown"),
+    ],
+)
+def test_negative_write_is_not_upgraded(state, attempt, status, issue):
+    value, channel, _ = member_original("harden")
+    raw = {
+        "state": state,
+        "write_attempted": attempt,
+        "set_status": status,
+        "readback": None,
+        "issue": issue,
+    }
+    result = project(value, channel, timed_record(value, channel, raw))
+    assert result["observation"] == {"state": state, "snapshot": None}
+
+
+@pytest.mark.parametrize("denial", [False, True])
+def test_read_keeps_expected_remote_and_actual_local_identities_separate(denial):
+    value, channel = original("baseline")
+    saved = read_record(value, channel, 123)
+    if denial:
+        denied(saved["terminal"]["result"])
+    result = project(value, channel, saved)
+    row = result["observation"]
+    assert row["state"] == ("open_access_denied" if denial else "bytes_matched")
+    assert row["local_user_sid"] != row["expected_remote_sid"]
+    assert row["authenticated_remote_reader"] is row["fresh_server_logon"] is False
+    assert row["independent_observation"] is row["effective_access_claim"] is False
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_audit_summary_does_not_self_certify_raw_xml(partial):
+    value, channel = original("audit")
+    _, raw = audit_fixture()
+    raw.update(state="byte_limit" if partial else "query_exhausted", utf8_bytes=24)
+    saved = timed_record(value, channel, raw)
+    result = project(value, channel, saved)
+    assert result["observation"]["truncated"] is partial
+    assert result["observation"]["events"] == 1
+    assert "raw_events" not in str(result)
+    assert result["observation"]["authenticated_source"] is False
+
+
+@pytest.mark.parametrize("possible_effects", [False, True])
+def test_native_error_is_no_observation_not_success(possible_effects):
+    value, channel = original()
+    saved = record(value, channel)
+    saved["terminal"]["result"]["possible_effects"] = possible_effects
+    saved["terminal"]["result"]["code"] = "native_failed"
+    result = project(value, channel, saved)
+    assert result["observation"] is None
+    assert result["dispatch"] == ("attempted" if possible_effects else "not_started")
+
+
+def test_projection_does_not_mutate_original_or_accept_another_task():
+    value, channel, raw = member_original()
+    saved = timed_record(value, channel, raw)
+    before = deepcopy((value, saved))
+    project(value, channel, saved)
+    assert (value, saved) == before
+    different = rebind_context(value, operation_job_id="job-" + "f" * 32)
+    with pytest.raises(AdSmbError):
+        project(different, channel, saved)

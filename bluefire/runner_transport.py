@@ -3347,6 +3347,11 @@ class AuthenticatedRunnerServer:
             """)
         return cursor.rowcount == 1
 
+    def _validate_execute_reservation(
+        self, connection: sqlite3.Connection, request: Mapping[str, Any]
+    ) -> None:
+        pass
+
     def _begin_request(self, request: Mapping[str, Any], binding: Mapping[str, str]) -> None:
         # Polling rows are disposable, but Execute identities are replay guards.
         # Prune only the former, then fail closed at a hard global bound.
@@ -3413,6 +3418,12 @@ class AuthenticatedRunnerServer:
             ):
                 connection.rollback()
                 raise _RequestRefusal("ledger_capacity")
+            if request["operation"] == "execute":
+                try:
+                    self._validate_execute_reservation(connection, request)
+                except BaseException:
+                    connection.rollback()
+                    raise
             connection.execute(
                 """
                 INSERT INTO transport_tasks (

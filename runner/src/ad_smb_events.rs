@@ -3,7 +3,6 @@
 use chrono::{DateTime, Datelike, FixedOffset, Timelike, Utc};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(any(target_os = "windows", test))]
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
@@ -12,7 +11,6 @@ mod windows;
 pub const MAX_EVENTS: usize = 1000;
 pub const MAX_EVENT_BYTES: usize = 65_536;
 pub const MAX_TOTAL_BYTES: usize = 4 * 1024 * 1024;
-#[cfg(target_os = "windows")]
 const MAX_SECONDS: u64 = 60;
 
 #[derive(Debug)]
@@ -139,16 +137,35 @@ enum Next {
 
 #[cfg(any(target_os = "windows", test))]
 trait Reader {
-    fn next(&mut self, timeout_ms: u32) -> Result<Next, u32>;
+    fn next(&mut self, timeout_ms: u32, maximum_bytes: usize) -> Result<Next, u32>;
     fn close(&mut self) -> bool;
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(test)]
 fn collect(
     reader: &mut impl Reader,
     window: &AuditWindow,
     cancelled: &AtomicBool,
     deadline: Instant,
+) -> AuditCapture {
+    collect_bounded(
+        reader,
+        window,
+        cancelled,
+        deadline,
+        MAX_EVENTS,
+        MAX_TOTAL_BYTES,
+    )
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn collect_bounded(
+    reader: &mut impl Reader,
+    window: &AuditWindow,
+    cancelled: &AtomicBool,
+    deadline: Instant,
+    event_limit: usize,
+    byte_limit: usize,
 ) -> AuditCapture {
     let mut capture = AuditCapture {
         schema_version: "bluefire.ad-smb-native-audit-capture.v1",
@@ -175,15 +192,18 @@ fn collect(
             capture.state = CaptureState::Deadline;
             break;
         }
-        if capture.raw_events.len() == MAX_EVENTS {
+        if capture.raw_events.len() == event_limit {
             capture.state = CaptureState::EventLimit;
             break;
         }
-        if capture.utf8_bytes == MAX_TOTAL_BYTES {
+        if capture.utf8_bytes == byte_limit {
             capture.state = CaptureState::ByteLimit;
             break;
         }
-        let next = reader.next(remaining.as_millis().clamp(1, 1000) as u32);
+        let next = reader.next(
+            remaining.as_millis().clamp(1, 1000) as u32,
+            MAX_EVENT_BYTES.min(byte_limit - capture.utf8_bytes),
+        );
         // A deadline crossing during an API call must not become complete collection.
         if Instant::now() >= deadline || cancelled.load(Ordering::Acquire) {
             capture.state = if cancelled.load(Ordering::Acquire) {
@@ -203,7 +223,7 @@ fn collect(
                     capture.state = CaptureState::EventRejected;
                     break;
                 }
-                if xml.len() > MAX_TOTAL_BYTES - capture.utf8_bytes {
+                if xml.len() > byte_limit - capture.utf8_bytes {
                     capture.state = CaptureState::ByteLimit;
                     break;
                 }
@@ -214,6 +234,12 @@ fn collect(
                 capture.system_error = Some(error);
                 capture.state = if error == 1460 {
                     CaptureState::Deadline
+                } else if error == 122 {
+                    if byte_limit - capture.utf8_bytes < MAX_EVENT_BYTES {
+                        CaptureState::ByteLimit
+                    } else {
+                        CaptureState::EventRejected
+                    }
                 } else {
                     CaptureState::ReadFailed
                 };
@@ -234,14 +260,42 @@ pub fn collect_local(
     window: &AuditWindow,
     cancelled: &AtomicBool,
 ) -> Result<AuditCapture, &'static str> {
+    collect_local_bounded(
+        window,
+        cancelled,
+        Instant::now() + Duration::from_secs(MAX_SECONDS),
+        MAX_EVENTS,
+        MAX_TOTAL_BYTES,
+    )
+}
+
+pub(crate) fn collect_local_bounded(
+    window: &AuditWindow,
+    cancelled: &AtomicBool,
+    deadline: Instant,
+    event_limit: usize,
+    byte_limit: usize,
+) -> Result<AuditCapture, &'static str> {
+    if !(1..=MAX_EVENTS).contains(&event_limit)
+        || !(1..=MAX_TOTAL_BYTES).contains(&byte_limit)
+        || Instant::now() >= deadline
+    {
+        return Err("audit bounds or original deadline invalid");
+    }
     if cancelled.load(Ordering::Acquire) {
         return Err("audit collection was cancelled before query");
     }
     #[cfg(target_os = "windows")]
     {
-        let deadline = Instant::now() + Duration::from_secs(MAX_SECONDS);
         let mut reader = windows::LocalReader::open(&window.query())?;
-        Ok(collect(&mut reader, window, cancelled, deadline))
+        Ok(collect_bounded(
+            &mut reader,
+            window,
+            cancelled,
+            deadline,
+            event_limit,
+            byte_limit,
+        ))
     }
     #[cfg(not(target_os = "windows"))]
     {

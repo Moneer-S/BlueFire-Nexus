@@ -19,8 +19,9 @@ struct Fake {
 }
 
 impl Reader for Fake {
-    fn next(&mut self, timeout: u32) -> Result<Next, u32> {
+    fn next(&mut self, timeout: u32, maximum_bytes: usize) -> Result<Next, u32> {
         assert!((1..=1000).contains(&timeout));
+        assert!((1..=MAX_EVENT_BYTES).contains(&maximum_bytes));
         self.calls += 1;
         self.rows.pop_front().unwrap_or(Ok(Next::End))
     }
@@ -30,6 +31,52 @@ impl Reader for Fake {
     }
 }
 
+#[test]
+fn lower_scoped_limits_stop_before_an_extra_read_and_preserve_original_deadline() {
+    let mut reader = fake(vec![
+        Ok(Next::Event("1234".into())),
+        Ok(Next::Event("5678".into())),
+    ]);
+    let result = collect_bounded(
+        &mut reader,
+        &window(),
+        &AtomicBool::new(false),
+        Instant::now() + Duration::from_secs(1),
+        1,
+        8,
+    );
+    assert_eq!(result.state, CaptureState::EventLimit);
+    assert_eq!(reader.calls, 1);
+    assert!(reader.closed);
+    let mut reader = fake(vec![
+        Ok(Next::Event("1234".into())),
+        Ok(Next::Event("5678".into())),
+    ]);
+    let result = collect_bounded(
+        &mut reader,
+        &window(),
+        &AtomicBool::new(false),
+        Instant::now() + Duration::from_secs(1),
+        2,
+        4,
+    );
+    assert_eq!(result.state, CaptureState::ByteLimit);
+    assert_eq!(reader.calls, 1);
+    assert!(reader.closed);
+    let mut reader = fake(vec![]);
+    let result = collect_bounded(
+        &mut reader,
+        &window(),
+        &AtomicBool::new(false),
+        Instant::now(),
+        1,
+        1,
+    );
+    assert_eq!(result.state, CaptureState::Deadline);
+    assert_eq!(reader.calls, 0);
+    assert!(reader.closed);
+}
+
 fn fake(rows: Vec<Result<Next, u32>>) -> Fake {
     Fake {
         rows: rows.into(),
@@ -37,6 +84,45 @@ fn fake(rows: Vec<Result<Next, u32>>) -> Fake {
         closed: false,
         close_ok: true,
     }
+}
+
+#[test]
+fn emits_synthetic_partial_audit_for_python_workflow() {
+    use sha2::{Digest, Sha256};
+    let inputs: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/ad_smb_native_corpus_inputs.json"
+    ))
+    .unwrap();
+    let request =
+        &inputs["cases"]["partial_audit"]["packet"]["manifest"]["params"]["ad_smb_request"];
+    let scope = &request["scope"];
+    let window = AuditWindow::new(
+        scope["created_at"].as_str().unwrap(),
+        request["requested_at"].as_str().unwrap(),
+        scope["principals"]["probe"]["sid"].as_str().unwrap(),
+        scope["principals"]["legitimate"]["sid"].as_str().unwrap(),
+    )
+    .unwrap();
+    let mut reader = fake(vec![Ok(Next::Event("<Event/>".into())), Err(122)]);
+    let byte_limit = scope["limits"]["audit_bytes"].as_u64().unwrap() as usize;
+    assert_eq!(byte_limit, 32);
+    let result = collect_bounded(
+        &mut reader,
+        &window,
+        &AtomicBool::new(false),
+        Instant::now() + Duration::from_secs(1),
+        scope["limits"]["audit_events"].as_u64().unwrap() as usize,
+        byte_limit,
+    );
+    assert_eq!(result.state, CaptureState::ByteLimit);
+    assert_eq!(result.system_error, Some(122));
+    assert_eq!(result.raw_events, ["<Event/>"]);
+    assert_eq!(reader.calls, 2);
+    assert!(reader.closed && result.handles_closed);
+    let marker = serde_json::json!({"schema_version":"bluefire.ad-smb-synthetic-native-case.v1","synthetic_only":true,"case":"partial_audit","operation":request["step"],"request_digest":format!("sha256:{:x}",Sha256::digest(serde_json::to_vec(request).unwrap())),"result":result});
+    let serialized = serde_json::to_string(&marker).unwrap();
+    assert!(serialized.len() <= 131072);
+    println!("BF_AD_NATIVE_CORPUS_V1 {serialized}");
 }
 
 fn capture(reader: &mut Fake) -> AuditCapture {
@@ -160,6 +246,8 @@ fn failures_and_timeout_are_not_absence() {
             result.state,
             if error == 1460 {
                 CaptureState::Deadline
+            } else if error == 122 {
+                CaptureState::EventRejected
             } else {
                 CaptureState::ReadFailed
             }
@@ -168,6 +256,31 @@ fn failures_and_timeout_are_not_absence() {
         assert_eq!(result.raw_events, ["x"]);
         assert!(reader.closed);
     }
+}
+
+#[test]
+fn reduced_aggregate_render_cap_retains_prior_events_as_byte_limit() {
+    let mut reader = fake(vec![Ok(Next::Event("<Event/>".into())), Err(122)]);
+    let result = collect_bounded(
+        &mut reader,
+        &window(),
+        &AtomicBool::new(false),
+        Instant::now() + Duration::from_secs(1),
+        1000,
+        32,
+    );
+    assert_eq!(result.state, CaptureState::ByteLimit);
+    assert_eq!(result.raw_events, ["<Event/>"]);
+    assert_eq!(result.utf8_bytes, 8);
+    assert_eq!(result.system_error, Some(122));
+    assert_eq!(reader.calls, 2);
+    assert!(reader.closed && result.handles_closed);
+    assert!(
+        !result.authenticated_source_claim
+            && !result.independent_evidence_claim
+            && !result.effective_access_claim
+            && !result.log_continuity_verified
+    );
 }
 
 #[test]

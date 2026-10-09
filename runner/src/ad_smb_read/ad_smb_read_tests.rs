@@ -110,7 +110,7 @@ impl Backend for Fake {
     }
 }
 
-fn fixtures() -> (PreparedRead, SecretCredential, Fake, FakeClock) {
+fn read_arguments() -> (ReadTarget, ReadBindings) {
     let target = ReadTarget::new(
         "member.lab.example",
         ID,
@@ -123,6 +123,11 @@ fn fixtures() -> (PreparedRead, SecretCredential, Fake, FakeClock) {
     .unwrap();
     let digest = format!("sha256:{}", "a".repeat(64));
     let bindings = ReadBindings::new(&digest, &digest, &digest, &digest).unwrap();
+    (target, bindings)
+}
+
+fn fixtures() -> (PreparedRead, SecretCredential, Fake, FakeClock) {
+    let (target, bindings) = read_arguments();
     let read = PreparedRead::new(ID, target, Reader::Probe, SID, UPN, bindings, &[], 60).unwrap();
     let secret = SecretCredential::new(UPN, &[71, 82, 69, 69, 78]).unwrap();
     let time = Rc::new(Cell::new(0));
@@ -165,6 +170,121 @@ fn fixtures() -> (PreparedRead, SecretCredential, Fake, FakeClock) {
         read_sizes: vec![],
     };
     (read, secret, fake, FakeClock { time, cancelled })
+}
+
+fn emit_read_case(case: &str, denied: bool) {
+    let inputs: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/ad_smb_native_corpus_inputs.json"
+    ))
+    .unwrap();
+    let packet = &inputs["cases"][case]["packet"];
+    let request = &packet["manifest"]["params"]["ad_smb_request"];
+    let scope = &request["scope"];
+    let target_row = &request["target"];
+    let file = &target_row["file"];
+    assert_eq!(scope["scope_id"], ID);
+    assert_eq!(scope["hosts"]["member"]["fqdn"], "member.lab.example");
+    assert_eq!(target_row["reader"], "probe");
+    assert_eq!(file["purpose"], "primary");
+    assert_eq!(
+        packet["expected_upn_sha256"],
+        format!("sha256:{:x}", Sha256::digest(UPN.as_bytes()))
+    );
+    let volume = u64::from_str_radix(file["volume_serial"].as_str().unwrap(), 16).unwrap();
+    let target = ReadTarget::new(
+        "member.lab.example",
+        ID,
+        FilePurpose::Primary,
+        file["file_id"].as_str().unwrap(),
+        volume,
+        file["sha256"].as_str().unwrap(),
+        file["size_bytes"].as_u64().unwrap() as usize,
+    )
+    .unwrap();
+    let bindings = ReadBindings::new(
+        request["scope_digest"].as_str().unwrap(),
+        packet["client_identity_digest"].as_str().unwrap(),
+        scope["authentication"]["hardened_unc_receipt_digest"]
+            .as_str()
+            .unwrap(),
+        packet["credential_binding_digest"].as_str().unwrap(),
+    )
+    .unwrap();
+    let prior: Vec<u64> = packet["prior_local_authentication_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| u64::from_str_radix(value.as_str().unwrap(), 16).unwrap())
+        .collect();
+    let read = PreparedRead::new(
+        request["request_id"].as_str().unwrap(),
+        target,
+        Reader::Probe,
+        target_row["expected_remote_sid"].as_str().unwrap(),
+        UPN,
+        bindings,
+        &prior,
+        60,
+    )
+    .unwrap();
+    let (_, secret, mut fake, clock) = fixtures();
+    fake.data = b"{}\n".to_vec();
+    fake.facts.size = fake.data.len() as u64;
+    fake.facts.file_id = hex_array(file["file_id"].as_str().unwrap()).unwrap();
+    fake.facts.volume_serial = volume;
+    fake.logon.authentication_id = 0x2000_0000_0000_0001 + u64::from(denied);
+    if denied {
+        fake.fail = Some(("open", 5));
+    }
+    let proof = read.read_with(secret, &mut fake, &clock);
+    assert_eq!(
+        proof.state,
+        if denied {
+            ReadState::OpenAccessDenied
+        } else {
+            ReadState::BytesMatched
+        }
+    );
+    assert_eq!(fake.calls.last(), Some(&"cleanup"));
+    assert_eq!(proof.cleanup.token_closed, Some(true));
+    assert!(!proof.authenticated_remote_reader && !proof.effective_access_claim);
+    let marker = serde_json::json!({"schema_version":"bluefire.ad-smb-synthetic-native-case.v1","synthetic_only":true,"case":case,"operation":request["step"],"request_digest":format!("sha256:{:x}",Sha256::digest(serde_json::to_vec(request).unwrap())),"result":proof});
+    let serialized = serde_json::to_string(&marker).unwrap();
+    assert!(serialized.len() <= 131072);
+    assert!(!serialized.contains(UPN) && !serialized.contains("GREEN"));
+    println!("BF_AD_NATIVE_CORPUS_V1 {serialized}");
+}
+
+#[test]
+fn emits_synthetic_matched_read_for_python_workflow() {
+    emit_read_case("matched_read", false);
+}
+
+#[test]
+fn emits_synthetic_denied_read_for_python_workflow() {
+    emit_read_case("denied_read", true);
+}
+
+#[test]
+fn original_worker_deadline_can_only_shorten_the_read_budget() {
+    let (read, _, _, _) = fixtures();
+    assert!(read.with_original_deadline(Instant::now()).is_err());
+    let (read, secret, mut backend, clock) = fixtures();
+    let read = read
+        .with_original_deadline(Instant::now() + Duration::from_secs(2))
+        .unwrap();
+    assert!(read.budget <= Duration::from_secs(2));
+    clock.time.set(3);
+    let proof = read.read_with(secret, &mut backend, &clock);
+    assert_eq!(proof.state, ReadState::Deadline);
+    assert_eq!(backend.calls, ["cleanup"]);
+}
+
+#[test]
+fn owned_utf8_credential_copy_is_cleared_without_string_mutation() {
+    let mut value = UPN.to_owned();
+    erase_string(&mut value);
+    assert!(value.is_empty());
 }
 
 #[test]
@@ -252,32 +372,16 @@ fn only_generated_exact_unc_and_bounded_identity_inputs() {
 #[test]
 fn closed_request_rejects_probe_health_reuse_and_lifetime() {
     for prior in [vec![0], vec![2, 2], vec![1, 2, 3, 4, 5, 6]] {
-        let (read, _, _, _) = fixtures();
-        assert!(PreparedRead::new(
-            ID,
-            read.target,
-            Reader::Probe,
-            SID,
-            UPN,
-            read.bindings,
-            &prior,
-            60
-        )
-        .is_err());
+        let (target, bindings) = read_arguments();
+        assert!(
+            PreparedRead::new(ID, target, Reader::Probe, SID, UPN, bindings, &prior, 60).is_err()
+        );
     }
     for seconds in [0, 61, u64::MAX] {
-        let (read, _, _, _) = fixtures();
-        assert!(PreparedRead::new(
-            ID,
-            read.target,
-            Reader::Probe,
-            SID,
-            UPN,
-            read.bindings,
-            &[],
-            seconds
-        )
-        .is_err());
+        let (target, bindings) = read_arguments();
+        assert!(
+            PreparedRead::new(ID, target, Reader::Probe, SID, UPN, bindings, &[], seconds).is_err()
+        );
     }
     for sid in [
         "S-1-5-32-544",
@@ -285,32 +389,12 @@ fn closed_request_rejects_probe_health_reuse_and_lifetime() {
         "S-1-5-21-01-2-3-1101",
         "S-1-5-21-1-2-3-4294967296",
     ] {
-        let (read, _, _, _) = fixtures();
-        assert!(PreparedRead::new(
-            ID,
-            read.target,
-            Reader::Probe,
-            sid,
-            UPN,
-            read.bindings,
-            &[],
-            60
-        )
-        .is_err());
+        let (target, bindings) = read_arguments();
+        assert!(PreparedRead::new(ID, target, Reader::Probe, sid, UPN, bindings, &[], 60).is_err());
     }
-    let (mut read, _, _, _) = fixtures();
-    read.target.purpose = FilePurpose::Health;
-    assert!(PreparedRead::new(
-        ID,
-        read.target,
-        Reader::Probe,
-        SID,
-        UPN,
-        read.bindings,
-        &[],
-        60
-    )
-    .is_err());
+    let (mut target, bindings) = read_arguments();
+    target.purpose = FilePurpose::Health;
+    assert!(PreparedRead::new(ID, target, Reader::Probe, SID, UPN, bindings, &[], 60).is_err());
 }
 
 #[test]

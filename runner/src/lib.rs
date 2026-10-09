@@ -10,6 +10,7 @@ pub mod ad_smb_events;
 pub mod ad_smb_files;
 pub mod ad_smb_read;
 pub mod ad_smb_share;
+pub mod ad_smb_worker;
 mod atomic_chmod;
 mod atomic_gzip;
 mod cancellation_witness;

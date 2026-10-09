@@ -1,7 +1,7 @@
 """Saved finite AD workspace on the existing job controller and run bundle store.
 
-Production admission intentionally remains unavailable. Fixture executors exercise
-the real persistence path without claiming enrolled Windows or domain execution.
+Production admission defaults to unavailable without exact installed configuration.
+Fixture executors exercise persistence without claiming Windows or domain execution.
 """
 
 from __future__ import annotations
@@ -12,7 +12,12 @@ from typing import Any, Mapping
 from . import ad_smb_results as results
 from . import product_store_ad_smb as records
 from .ad_smb_contract import AdSmbError, AdSmbScope, document, exact, timestamp
-from .ad_smb_execution import AdSmbExecutor, UnavailableAdSmbExecutor
+from .ad_smb_execution import (
+    AdSmbExecutor,
+    InstalledAdSmbExecutor,
+    UnavailableAdSmbExecutor,
+    configured_executor,
+)
 from .evidence import EvidenceProvenance, EvidenceRecord
 from .job_runtime import JobResult, JobRuntimeError, RunJobController
 from .product_store import ProductStore
@@ -25,7 +30,7 @@ class AdSmbJobs:
         self.store: ProductStore = service.product_store
         self.runs: RunStore = service.store
         self.controller: RunJobController = service.job_controller
-        self.executor: AdSmbExecutor = executor or UnavailableAdSmbExecutor()
+        self.executor: AdSmbExecutor = executor or configured_executor(service)
         self.clock = clock
 
     def environments(self) -> dict[str, Any]:
@@ -111,7 +116,11 @@ class AdSmbJobs:
             "execution_integration": (
                 "unavailable"
                 if isinstance(self.executor, UnavailableAdSmbExecutor)
-                else "injected_adapter"
+                else (
+                    "configured_admission"
+                    if isinstance(self.executor, InstalledAdSmbExecutor)
+                    else "injected_adapter"
+                )
             ),
         }
 

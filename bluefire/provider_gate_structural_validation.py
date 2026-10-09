@@ -79,6 +79,16 @@ _SOURCE_AUDIT_PATHS = (
     "bluefire/runner_transport_framing.py",
     "bluefire/product_store_proposal_reviews.py",
     "bluefire/runner_durable_result.py",
+    "bluefire/ad_smb_admitted_transport.py",
+    "bluefire/ad_smb_installed.py",
+    "bluefire/ad_smb_workspace_results.py",
+    "bluefire/ad_smb_receiver_entry.py",
+    "bluefire/ad_smb_receiver.py",
+    "bluefire/ad_smb_receiver_results.py",
+    "bluefire/ad_smb_native_member_results.py",
+    "bluefire/ad_smb_worker_wire.py",
+    "bluefire/ad_smb_credentials.py",
+    "bluefire/ad_smb_native_results.py",
     "bluefire/receiver.py",
     "bluefire/receiver_policy.py",
     "bluefire/receiver_session_contract.py",
@@ -212,6 +222,7 @@ _SOURCE_AUDIT_PATHS = (
     "bluefire/prepared_lab_file_access.py",
     "bluefire/browser_launch.py",
     "bluefire/runner_python_environment.py",
+    "bluefire/ad_smb_worker_process.py",
     "runner/src/cancellation_witness.rs",
     "runner/src/process.rs",
     "runner/src/atomic_gzip.rs",
@@ -227,6 +238,12 @@ _PROCESS_CHECKS = {
     "native_process_inventory_is_fixed": True,
 }
 _PYTHON_BOUNDARIES = {
+    "ad_smb_worker_process.py": {
+        "passed": True,
+        "shell_imports": 1,
+        "process_calls": ["subprocess.Popen"],
+        "unexpected_findings": [],
+    },
     "prepared_lab_file_access.py": {
         "passed": True,
         "shell_imports": 1,

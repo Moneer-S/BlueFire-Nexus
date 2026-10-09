@@ -182,6 +182,23 @@ impl PreparedRead {
         }
     }
 
+    pub(crate) fn with_original_deadline(
+        mut self,
+        ingress_deadline: Instant,
+    ) -> Result<Self, &'static str> {
+        let now = Instant::now();
+        let remaining = ingress_deadline.saturating_duration_since(now);
+        if remaining.is_zero() {
+            return Err("read_deadline_expired");
+        }
+        self.budget = self
+            .budget
+            .saturating_sub(self.admitted_at.elapsed())
+            .min(remaining);
+        self.admitted_at = now;
+        Ok(self)
+    }
+
     fn read_with(
         self,
         secret: SecretCredential,
@@ -216,6 +233,20 @@ impl PreparedRead {
     }
 }
 
+impl Drop for PreparedRead {
+    fn drop(&mut self) {
+        erase_string(&mut self.expected_upn);
+    }
+}
+
+fn erase_string(value: &mut String) {
+    let mut bytes = std::mem::take(value).into_bytes();
+    for byte in &mut bytes {
+        unsafe { std::ptr::write_volatile(byte, 0) };
+    }
+    compiler_fence(Ordering::SeqCst);
+}
+
 /// Never Debug/Clone/Serialize. The private delivery layer must also erase its input.
 pub struct SecretCredential {
     upn_string: String,
@@ -248,6 +279,7 @@ impl SecretCredential {
 
 impl Drop for SecretCredential {
     fn drop(&mut self) {
+        erase_string(&mut self.upn_string);
         for value in self.upn.iter_mut().chain(self.password.iter_mut()) {
             // Volatile stores prevent removal of the owned secret-buffer erasure.
             unsafe { std::ptr::write_volatile(value, 0) };

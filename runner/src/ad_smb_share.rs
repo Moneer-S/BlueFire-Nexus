@@ -8,6 +8,7 @@ use crate::ad_smb_descriptor::{Descriptor, DescriptorProjection};
 use serde::Serialize;
 #[cfg(any(target_os = "windows", test))]
 use sha2::{Digest, Sha256};
+use std::time::Instant;
 
 #[cfg(any(target_os = "windows", test))]
 mod buffer;
@@ -112,6 +113,52 @@ impl ShareObservation {
             },
         })
     }
+
+    fn reviewed_pair(
+        self,
+        before: &[u8],
+        after: &[u8],
+        principals: [&str; 3],
+        restore: bool,
+    ) -> Result<DerivedPair, String> {
+        let parsed = Descriptor::from_bytes(before)?;
+        let derived = parsed.propose_probe_removal(principals[0], principals[1], principals[2])?;
+        if derived.bytes() != after
+            || self.descriptor.bytes() != if restore { after } else { before }
+        {
+            return Err("reviewed share pair or current preimage differs".into());
+        }
+        Ok(DerivedPair {
+            target: self.target,
+            metadata: self.metadata,
+            before: before.to_vec(),
+            after: after.to_vec(),
+        })
+    }
+
+    /// Reconstruct only a native-derived removal, never an arbitrary descriptor setter.
+    pub(crate) fn reviewed_change(
+        self,
+        before: &[u8],
+        after: &[u8],
+        principals: [&str; 3],
+    ) -> Result<PreparedShareChange, String> {
+        Ok(PreparedShareChange {
+            pair: self.reviewed_pair(before, after, principals, false)?,
+        })
+    }
+
+    /// The current hardened bytes and exact derived pair must both match.
+    pub(crate) fn reviewed_rollback(
+        self,
+        before: &[u8],
+        after: &[u8],
+        principals: [&str; 3],
+    ) -> Result<PreparedShareRollback, String> {
+        Ok(PreparedShareRollback {
+            pair: self.reviewed_pair(before, after, principals, true)?,
+        })
+    }
 }
 
 struct DerivedPair {
@@ -163,6 +210,16 @@ impl PreparedShareChange {
         self.apply_with(&mut LocalBackend)
     }
 
+    pub(crate) fn apply_before(self, deadline: Instant) -> ShareChangeAttempt {
+        let proof = write_pair_timed(&mut LocalBackend, &self.pair, false, &|| {
+            Instant::now() < deadline
+        });
+        ShareChangeAttempt {
+            proof,
+            rollback: PreparedShareRollback { pair: self.pair },
+        }
+    }
+
     fn apply_with(self, backend: &mut impl Backend) -> ShareChangeAttempt {
         let proof = write_pair(backend, &self.pair, false);
         ShareChangeAttempt {
@@ -178,17 +235,41 @@ impl PreparedShareRollback {
         self.rollback_with(&mut LocalBackend)
     }
 
+    pub(crate) fn rollback_before(self, deadline: Instant) -> ShareWriteProof {
+        write_pair_timed(&mut LocalBackend, &self.pair, true, &|| {
+            Instant::now() < deadline
+        })
+    }
+
     fn rollback_with(self, backend: &mut impl Backend) -> ShareWriteProof {
         write_pair(backend, &self.pair, true)
     }
 }
 
 fn write_pair(backend: &mut impl Backend, pair: &DerivedPair, restore: bool) -> ShareWriteProof {
+    write_pair_timed(backend, pair, restore, &|| true)
+}
+
+fn write_pair_timed(
+    backend: &mut impl Backend,
+    pair: &DerivedPair,
+    restore: bool,
+    current: &dyn Fn() -> bool,
+) -> ShareWriteProof {
     let (expected, desired) = if restore {
         (&pair.after, &pair.before)
     } else {
         (&pair.before, &pair.after)
     };
+    if !current() {
+        return ShareWriteProof {
+            state: ShareWriteState::NotAttempted,
+            write_attempted: false,
+            set_status: None,
+            readback: None,
+            issue: Some("original_deadline_expired"),
+        };
+    }
     let Ok(before) = backend.observe(&pair.target) else {
         return ShareWriteProof {
             state: ShareWriteState::NotAttempted,
@@ -207,12 +288,31 @@ fn write_pair(backend: &mut impl Backend, pair: &DerivedPair, restore: bool) -> 
             issue: Some("preimage_changed"),
         };
     }
+    if !current() {
+        return ShareWriteProof {
+            state: ShareWriteState::NotAttempted,
+            write_attempted: false,
+            set_status: None,
+            readback: Some(before.projection()),
+            issue: Some("original_deadline_expired"),
+        };
+    }
     // The read/check/write interval is not a CAS. Exclusive writer admission is external.
     let status = backend.set_descriptor(&pair.target, desired);
+    if !current() {
+        return ShareWriteProof {
+            state: ShareWriteState::Unknown,
+            write_attempted: true,
+            set_status: Some(status),
+            readback: None,
+            issue: Some("original_deadline_expired_after_write"),
+        };
+    }
     let observed = backend.observe(&pair.target).ok();
     let matched = observed
         .as_ref()
-        .is_some_and(|row| row.metadata == pair.metadata && row.descriptor.bytes() == desired);
+        .is_some_and(|row| row.metadata == pair.metadata && row.descriptor.bytes() == desired)
+        && current();
     ShareWriteProof {
         state: if status == 0 && matched {
             ShareWriteState::ReadbackMatched
