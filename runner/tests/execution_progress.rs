@@ -103,6 +103,8 @@ fn manifest(profile: &RunnerProfile, action: &str, params: Value) -> ExecutionMa
         execution_binding: None,
         provider_binding: None,
         reviewed_operation: None,
+        grant_attempt: None,
+        grant_cleanup: None,
         mode: RunMode::Execute,
         runner_id: profile.runner_id.clone(),
         runner_profile_id: profile.profile_id.clone(),
