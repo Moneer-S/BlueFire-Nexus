@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping, Sequence
 
+from .capability_packs import FILE_ACCESS_METHODS, FILE_ACCESS_PACK, RECEIVER_PACK
 from .util import content_hash, json_clone
 
-PACK = "bluefire.receiver-composition-pack.v1"
+PACK = RECEIVER_PACK
 MIB = 1024 * 1024
 METHODS = (
     "sandbox.fixture.create.v1",
@@ -74,6 +76,32 @@ class CapabilityContractError(ValueError):
     """A proposed capability contract is unsupported or inconsistent."""
 
 
+def digest(value: Any, context: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None:
+        raise CapabilityContractError(f"{context} must be a SHA-256 digest")
+    return value
+
+
+def identifier(value: Any, context: str) -> str:
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}", value) is None
+    ):
+        raise CapabilityContractError(f"{context} is invalid")
+    return value
+
+
+def text(value: Any, context: str, maximum: int) -> str:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= maximum
+        or not value.strip()
+        or any(ord(char) < 32 and char not in "\n\t" for char in value)
+    ):
+        raise CapabilityContractError(f"{context} is invalid")
+    return value
+
+
 def exact(value: Any, fields: set[str], context: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping) or set(value) != fields:
         raise CapabilityContractError(f"{context} has invalid fields")
@@ -96,9 +124,32 @@ def validate_limits(value: Any) -> dict[str, int]:
     return result
 
 
-def method_cost(method_id: str) -> dict[str, Any]:
+def method_cost(method_id: str, *, pack: str = PACK) -> dict[str, Any]:
     """Conservative material bounds; metadata reservations need writer enforcement."""
-    if method_id not in METHODS:
+    if pack == FILE_ACCESS_PACK:
+        if method_id not in FILE_ACCESS_METHODS:
+            raise CapabilityContractError("method is outside the fixed file-access pack")
+        file_writes = {
+            FILE_ACCESS_METHODS[0]: ["fixtures/access-probe.json"],
+            FILE_ACCESS_METHODS[1]: ["fixtures/access-owner.json"],
+            FILE_ACCESS_METHODS[2]: [],
+        }[method_id]
+        body = {
+            "schema_version": "bluefire.file-access-method-cost.v1",
+            "pack": pack,
+            "method_id": method_id,
+            "reads": [] if method_id == METHODS[6] else ["retained_resource"],
+            "writes": file_writes,
+            "material_directories": ["fixtures"] if file_writes else [],
+            "removes": "owned_attempt_receipts" if method_id == METHODS[6] else None,
+            "generated_bytes": 16 * 1024 * len(file_writes),
+            "network_bytes": 0,
+            "retained_metadata_bytes": 128 * 1024,
+            "business_steps": 0 if method_id == METHODS[6] else 1,
+            "maximum_material_file_bytes": 16 * 1024,
+        }
+        return {**body, "cost_digest": content_hash(body)}
+    if pack != PACK or method_id not in METHODS:
         raise CapabilityContractError("method has no reviewed composition cost contract")
     writes = _WRITES.get(method_id, ())
     body = {
@@ -118,9 +169,18 @@ def method_cost(method_id: str) -> dict[str, Any]:
     return {**body, "cost_digest": content_hash(body)}
 
 
-def semantic_ports(method_id: str) -> tuple[tuple, tuple]:
+def semantic_ports(method_id: str, *, pack: str = PACK) -> tuple[tuple, tuple]:
     """The semantic I/O boundary for which the pack's effect bounds were reviewed."""
-    if method_id not in _SEMANTIC_PORTS:
+    if pack == FILE_ACCESS_PACK and method_id in FILE_ACCESS_METHODS[:2]:
+        if method_id == FILE_ACCESS_METHODS[0]:
+            return (), (
+                ("probe", "artifact.file_access.probe.v1", False),
+                ("workspace", "artifact.sandbox.workspace.v1", False),
+            )
+        return (("probe", "artifact.file_access.probe.v1", False, True),), (
+            ("verification", "artifact.file_access.verification.v1", False),
+        )
+    if pack not in (PACK, FILE_ACCESS_PACK) or method_id not in _SEMANTIC_PORTS:
         raise CapabilityContractError("method has no reviewed composition semantic contract")
     inputs, outputs = _SEMANTIC_PORTS[method_id]
     return (
@@ -140,21 +200,23 @@ def semantic_ports(method_id: str) -> tuple[tuple, tuple]:
 
 
 def reserve_resources(
-    steps: Sequence[Mapping[str, Any]], limits: Mapping[str, Any]
+    steps: Sequence[Mapping[str, Any]], limits: Mapping[str, Any], *, pack: str = PACK
 ) -> dict[str, Any]:
     """Price a whole graph conservatively, including branches not ultimately taken."""
     checked = validate_limits(limits)
     integer(len(steps), 1, checked["max_nodes_per_attempt"], "graph node count")
     occupied: set[str] = set()
     handoffs = 0
+    peak = 0
     totals = {name: 0 for name in RESERVATION_LIMITS}
     totals.update(attempts=1, reserved_attempt_ms=checked["per_attempt_wall_ms"])
     for step in steps:
-        cost = method_cost(step["behavior_id"])
+        cost = method_cost(step["behavior_id"], pack=pack)
         writes = set(cost["writes"])
         if writes & occupied:
             raise CapabilityContractError("graph contains conflicting fixed material writers")
         occupied.update(writes)
+        peak += cost["generated_bytes"]
         handoffs += step["behavior_id"] == METHODS[5]
         for key in (
             "business_steps",
@@ -163,9 +225,12 @@ def reserve_resources(
             "retained_metadata_bytes",
         ):
             totals[key] += cost[key]
-    if handoffs != 1:
+    if pack == PACK and handoffs != 1:
         raise CapabilityContractError("receiver composition requires exactly one handoff")
-    peak = len(occupied) * MIB
+    if pack == FILE_ACCESS_PACK and sorted(step["behavior_id"] for step in steps) != sorted(
+        FILE_ACCESS_METHODS
+    ):
+        raise CapabilityContractError("file-access composition requires exactly its three methods")
     if peak > checked["max_peak_workspace_bytes"] or len(occupied) > checked["max_workspace_files"]:
         raise CapabilityContractError("graph exceeds its workspace material allowance")
     for name, bound in RESERVATION_LIMITS.items():

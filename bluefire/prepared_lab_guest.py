@@ -17,8 +17,9 @@ import subprocess  # nosec B404
 import sys
 import threading
 import time
-from pathlib import Path
 
+from bluefire.linux_session_facts import isolation_facts as isolation_facts
+from bluefire.linux_session_facts import isolation_surface_facts as isolation_surface_facts
 from bluefire.prepared_lab_relay import Relay, private_socket, remove_owned_socket, tcp_listener
 from bluefire.prepared_lab_runtime import (
     BRIDGE,
@@ -27,7 +28,6 @@ from bluefire.prepared_lab_runtime import (
     KINDS,
     PRODUCT,
     STOP_FILE,
-    gid,
     guest_command,
     isolate_mounts,
     namespaces,
@@ -52,7 +52,7 @@ def dropped(command: list[str]) -> list[str]:
     ]
 
 
-def enter(port: int, parent: str, *bootstrap: str) -> None:
+def enter(port: int, parent: str, *bootstrap: str, file_access: bool = False) -> None:
     if uid() != 0 or os.getpid() != 1 or socket.if_nameindex() != [(1, "lo")]:
         raise ValueError("setup requires a new PID and loopback-only network namespace")
     original = json.loads(parent)
@@ -60,49 +60,13 @@ def enter(port: int, parent: str, *bootstrap: str) -> None:
         raise ValueError("all four namespace identities must differ from the parent")
     isolate_mounts()
     subprocess.run(["/usr/sbin/ip", "link", "set", "lo", "up"], check=True, env=ENV)  # nosec B603
+    if file_access:
+        from .prepared_lab_file_access import enroll_fixed_reader
+
+        enroll_fixed_reader()
     os.execve(  # nosec B606
         "/usr/bin/setpriv", dropped(guest_command("inner", port, *bootstrap)), ENV
     )
-
-
-def isolation_facts() -> dict[str, object]:
-    if uid() != 1000 or gid() != 1000 or getattr(os, "getgroups", lambda: [-1])():
-        raise ValueError("the lab account must have UID/GID 1000 and no supplementary groups")
-    if socket.if_nameindex() != [(1, "lo")]:
-        raise ValueError("the isolated lab has a non-loopback network interface")
-    status = dict(
-        line.split(":", 1)
-        for line in Path("/proc/self/status").read_text().splitlines()
-        if ":" in line
-    )
-    if status.get("NoNewPrivs", "").strip() != "1" or any(
-        int(status.get(key, "1"), 16) != 0
-        for key in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")
-    ):
-        raise ValueError("the lab still has privileges or can regain them")
-    if any(
-        Path(path).exists() for path in ("/mnt/c", "/run/WSL", "/tmp/.X11-unix")  # nosec B108
-    ):  # nosec B108
-        raise ValueError("host filesystem or socket access remains exposed")
-    mounts = Path("/proc/self/mountinfo").read_text()
-    if any(marker in mounts for marker in (" - 9p ", " - drvfs ", " - virtiofs ")):
-        raise ValueError("a host-backed filesystem is still mounted")
-    routes = Path("/proc/net/route").read_text().splitlines()[1:]
-    if any(line.split()[0] != "lo" for line in routes if line.split()):
-        raise ValueError("a non-loopback IPv4 route remains")
-    routes6 = Path("/proc/net/ipv6_route").read_text().splitlines()
-    if any(line.split()[-1] != "lo" for line in routes6 if line.split()):
-        raise ValueError("a non-loopback IPv6 route remains")
-    return {
-        "uid": uid(),
-        "gid": gid(),
-        "namespaces": namespaces(),
-        "interfaces": socket.if_nameindex(),
-        "capabilities": "zero",
-        "no_new_privileges": True,
-        "routes": routes,
-        "routes6": routes6,
-    }
 
 
 def stopping() -> bool:
@@ -252,14 +216,23 @@ def main() -> None:
     port = int(raw_port)
     if not 1024 <= port <= 65535:
         raise ValueError("invalid UI port")
-    if mode == "broker-launch" and not args:
+    if mode in {"broker-launch", "broker-launch-file-access"} and not args:
         from .prepared_lab_broker import supervise
         from .prepared_lab_inference_input import read_definition
 
-        supervise(port, read_definition(sys.stdin.fileno()), stop=STOP)
-    elif mode == "launch" and len(args) in {0, 2}:
+        supervise(
+            port,
+            read_definition(sys.stdin.fileno()),
+            stop=STOP,
+            file_access=mode.endswith("file-access"),
+        )
+    elif mode in {"launch", "launch-file-access"} and len(args) in {0, 2}:
         if uid() != 0:
             raise ValueError("namespace creation requires clone-local root")
+        if mode == "launch-file-access":
+            from .prepared_lab_file_access import assert_probe_identity_unused
+
+            assert_probe_identity_unused()
         if STOP_FILE.exists():
             details = STOP_FILE.lstat()
             if (
@@ -284,12 +257,17 @@ def main() -> None:
                 "--propagation",
                 "private",
                 "--kill-child=TERM",
-                *guest_command("enter", port, json.dumps(namespaces()), *args),
+                *guest_command(
+                    "enter-file-access" if mode == "launch-file-access" else "enter",
+                    port,
+                    json.dumps(namespaces()),
+                    *args,
+                ),
             ],
             ENV,
         )  # nosec B606
-    elif mode == "enter" and len(args) in {1, 3}:
-        enter(port, args[0], *args[1:])
+    elif mode in {"enter", "enter-file-access"} and len(args) in {1, 3}:
+        enter(port, args[0], *args[1:], file_access=mode == "enter-file-access")
     elif mode == "inner" and len(args) in {0, 2}:
         inner(port, *args)
     elif mode == "outer" and not args:

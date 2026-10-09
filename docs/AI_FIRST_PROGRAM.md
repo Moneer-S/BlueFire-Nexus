@@ -24,8 +24,11 @@ declared endpoint environments, plus one AD and one AWS workflow:
 | Excess domain access | Disposable Windows AD domain, an explicit member host and share, dedicated test identities | Does unnecessary group membership or an excessive share/file permission permit access to generated records, and does the selected correction remove the demonstrated access path while retaining authorized access? |
 | Excess cloud access | Explicit AWS account, region, dedicated test roles, and one generated S3 data set | Does an excessive identity or resource policy permit access to the test objects, and does the selected policy correction block that route while preserving the intended role's access? |
 
-The latter three rows are proposed integration targets, not current capability
-claims. Final method and library selection requires source, license, platform,
+The excess-file-access row now has a bounded Linux implementation with reviewed
+software checks, not an installed or live cross-identity verification claim. Its
+Windows and macOS paths, and the AD and AWS workflows, remain unverified
+integration targets. See the [capability classification](RELEASE_CAPABILITIES.md).
+Further method and library selection requires source, license, platform,
 and environment review. These questions do not require credential extraction,
 arbitrary command execution, production targets, or broad enterprise management.
 Other cloud providers and additional technique families are later work.

@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, cast
 from . import product_store_ai_authorizations as ai_authorization_store
 from . import product_store_capability_api as capability_store_api
 from . import product_store_detection_evaluations as detection_evaluation_store
+from . import product_store_file_access as file_access_store
 from . import product_store_proposal_reviews as proposal_review_store
 from .contracts import ScenarioDefinition
 from .local_lock import (
@@ -67,7 +68,7 @@ if TYPE_CHECKING:
     from .action_packages import VerifiedActionPackage, VerifiedActionPackageActivation
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ACTION_PACKAGE_VERSION = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
@@ -253,7 +254,9 @@ class ApprovalRequest:
         }
 
 
-class ProductStore(capability_store_api.CapabilityStoreMixin):
+class ProductStore(
+    capability_store_api.CapabilityStoreMixin, file_access_store.FileAccessStoreMixin
+):
     """Thread-safe SQLite storage for local-first product state.
 
     Append-only tables are enforced transactionally by SQLite triggers for
@@ -829,6 +832,7 @@ class ProductStore(capability_store_api.CapabilityStoreMixin):
             detection_evaluation_store.initialize_schema(connection)
             ai_authorization_store.initialize_schema(connection)
             capability_store_api.initialize_schema(connection)
+            file_access_store.initialize_schema(connection)
             if current is None or int(current) < 6:
                 self._migrate_legacy_plugin_metadata(connection)
             if current is None or int(current) < SCHEMA_VERSION:

@@ -63,6 +63,7 @@ fn profile(root: &Workspace) -> RunnerProfile {
             .map(|item| item.action_id.to_string())
             .collect(),
         reviewed_execution: None,
+        file_access_binding: None,
         control_blocked_actions: Vec::new(),
         action_bindings: Vec::new(),
         native_tool_installations: Vec::new(),

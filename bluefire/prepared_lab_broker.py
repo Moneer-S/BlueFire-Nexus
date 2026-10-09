@@ -38,7 +38,13 @@ BROKER_HOME = str(HOME.with_name("bluefire-broker"))
 
 
 def command(mode: str, port: int, descriptor: int, launch: str, parent: int) -> list[str]:
-    if mode not in {"launch-worker", "launch-target", "worker-enter", "worker"}:
+    if mode not in {
+        "launch-worker",
+        "launch-target",
+        "launch-target-file-access",
+        "worker-enter",
+        "worker",
+    }:
         raise refusal()
     return [
         str(PYTHON),
@@ -65,7 +71,10 @@ class OwnedProcesses:
     def spawn(
         self, role: str, port: int, endpoint: socket.socket, launch: str
     ) -> subprocess.Popen[bytes]:
-        if role not in {"launch-worker", "launch-target"} or not self.containment.available():
+        if (
+            role not in {"launch-worker", "launch-target", "launch-target-file-access"}
+            or not self.containment.available()
+        ):
             raise refusal()
         process = cast(subprocess.Popen[bytes], subprocess.Popen.__new__(subprocess.Popen))
         self.processes.append(process)
@@ -178,7 +187,9 @@ def _grant(
     )
 
 
-def supervise(port: int, definition: Mapping[str, Any], *, stop: threading.Event) -> None:
+def supervise(
+    port: int, definition: Mapping[str, Any], *, stop: threading.Event, file_access: bool = False
+) -> None:
     if _RETAINED:
         raise refusal("broker_unavailable")
     verify_installation()
@@ -232,7 +243,12 @@ def supervise(port: int, definition: Mapping[str, Any], *, stop: threading.Event
         worker_parent.close()
         inference_worker.close()
         target_launch = secrets.token_hex(32)
-        target = owner.spawn("launch-target", port, target_child, target_launch)
+        target = owner.spawn(
+            "launch-target-file-access" if file_access else "launch-target",
+            port,
+            target_child,
+            target_launch,
+        )
         target_child.close()
         init_pid = _target_child(target, owner)
         _grant(
@@ -350,9 +366,16 @@ def main() -> None:
         # Only the bootstrap channel survives these fixed execs; it never holds
         # the inference descriptor before the final protected process handshake.
         os.set_inheritable(descriptor, True)
-        if mode == "launch-target":
+        if mode in {"launch-target", "launch-target-file-access"}:
             os.execve(
-                str(PYTHON), guest_command("launch", port, str(descriptor), launch), ENV
+                str(PYTHON),
+                guest_command(
+                    "launch-file-access" if mode.endswith("file-access") else "launch",
+                    port,
+                    str(descriptor),
+                    launch,
+                ),
+                ENV,
             )  # nosec B606
         elif mode == "launch-worker":
             os.execve(

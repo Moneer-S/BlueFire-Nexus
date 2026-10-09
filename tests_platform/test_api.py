@@ -53,6 +53,38 @@ class StubService:
         self.calls.append(("catalog",))
         return {"behaviors": [{"id": "observe.host.v1"}], "runner_profiles": []}
 
+    def file_access_status(self):
+        self.calls.append(("file_access_status",))
+        return {"saved": True}
+
+    def file_access_review(self, request):
+        self.calls.append(("file_access_review", request))
+        return {"saved": True}
+
+    def submit_file_access_operation(self, request):
+        self.calls.append(("submit_file_access_operation", request))
+        return {"saved": True}
+
+    def file_access_operation(self, job_id):
+        self.calls.append(("file_access_operation", job_id))
+        return {"saved": True}
+
+    def list_file_access_controls(self, request):
+        self.calls.append(("list_file_access_controls", request))
+        return {"saved": True}
+
+    def file_access_control(self, owner_id):
+        self.calls.append(("file_access_control", owner_id))
+        return {"saved": True}
+
+    def reconcile_file_access_operation(self, job_id, request):
+        self.calls.append(("reconcile_file_access_operation", job_id, request))
+        return {"saved": True}
+
+    def file_access_reconciliation(self, job_id, submission_id):
+        self.calls.append(("file_access_reconciliation", job_id, submission_id))
+        return {"saved": True}
+
     def composition_context(self, request):
         self.calls.append(("composition_context", request))
         return {"saved": True}

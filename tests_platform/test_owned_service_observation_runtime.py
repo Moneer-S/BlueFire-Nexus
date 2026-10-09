@@ -45,6 +45,28 @@ from bluefire.util import canonical_json_bytes, content_hash
 from tests_platform import test_owned_service_authority as legacy
 
 NOW = datetime(2026, 1, 1, 12, 2, tzinfo=timezone.utc)
+# This shared historical vector has a fixed method scope, independent of defaults.
+V2_FIXTURE_ACTIONS = {
+    "endpoint.discovery.processes.v1",
+    "endpoint.discovery.system.v1",
+    "sandbox.archive.tar.v1",
+    "sandbox.cleanup.v1",
+    "sandbox.collection.archive.v1",
+    "sandbox.collection.records.v1",
+    "sandbox.collection.stage.v1",
+    "sandbox.discovery.list.v1",
+    "sandbox.discovery.metadata.v1",
+    "sandbox.discovery.recursive.v1",
+    "sandbox.execution.native-canary.v1",
+    "sandbox.export.local.v1",
+    "sandbox.fixture.create.v1",
+    "sandbox.fixture.transform.v1",
+    "sandbox.identity-material.inspect.v1",
+    "sandbox.identity-material.seed.v1",
+    "sandbox.network.loopback.v1",
+    "sandbox.observability.variant.v1",
+    "sandbox.peer.handoff.v1",
+}
 
 
 def _reference(record: dict[str, Any]) -> dict[str, Any]:
@@ -180,7 +202,7 @@ def build_native_v2_fixture() -> dict[str, Any]:
         configured,
         enabled_actions=tuple(
             sorted(
-                set(configured.enabled_actions)
+                V2_FIXTURE_ACTIONS
                 | {
                     legacy.SERVICE_ACTION_ID,
                     *(record.to_dict()["adapter_id"] for record in records),

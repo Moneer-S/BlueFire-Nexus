@@ -26,12 +26,8 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterator, Mapping, Protocol, cast, runtime_checkable
 
-from .execution_contracts import (
-    ExecutionContractError,
-)
-from .execution_contracts import (
-    reject_forbidden_execution_keys as _reject_forbidden_execution_keys,
-)
+from .execution_contracts import execution_task_identity as execution_task_identity
+from .execution_contracts import reject_runner_execution_keys as reject_forbidden_execution_keys
 from .native_tool_candidate import validate_candidate_inspection
 from .native_tool_readiness import validate_native_tool_inspection
 from .native_tool_transport import inspect_subprocess_tool
@@ -1084,16 +1080,6 @@ class TaskAwareRunnerTransport(RunnerTransport, Protocol):
     ) -> Mapping[str, Any]: ...
 
 
-def execution_task_identity(
-    manifest: Mapping[str, Any],
-    profile: Mapping[str, Any],
-) -> tuple[str, str]:
-    """Bind one task identifier to the exact canonical execute payload."""
-
-    request_hash = content_hash({"manifest": dict(manifest), "profile": dict(profile)})
-    return "execute-" + request_hash.removeprefix("sha256:"), request_hash
-
-
 def canonical_runner_inventory(inventory: Mapping[str, Any]) -> Mapping[str, Any]:
     """Validate and normalize the stable identity-bearing runner inventory."""
 
@@ -1284,15 +1270,6 @@ class InventoryBoundRunner:
             yield
         finally:
             manager.__exit__(None, None, None)
-
-
-def reject_forbidden_execution_keys(value: Any, *, path: str = "$") -> None:
-    """Preserve the transport-facing error while sharing neutral validation."""
-
-    try:
-        _reject_forbidden_execution_keys(value, path=path)
-    except ExecutionContractError as exc:
-        raise RunnerTransportError(str(exc)) from exc
 
 
 def runner_watchdog_control_root(

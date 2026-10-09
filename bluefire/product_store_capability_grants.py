@@ -13,7 +13,10 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from .capability_dependency import endpoint_digest as _endpoint_digest
+from .capability_dependency import usage_document
 from .capability_grant import authority_id, digest, identifier, validate_grant
+from .capability_packs import grant_pack
 from .capability_resources import RESERVATION_LIMITS, accumulate_reservation, reserve_resources
 from .product_store_errors import ProductStoreError
 from .product_store_serialization import canonical_json
@@ -169,18 +172,7 @@ def _attempt_at(connection, attempt_id):
         or _endpoint_digest(grant["environment"]) != row["endpoint_digest"]
     ):
         raise ProductStoreError("Capability attempt belongs to another grant.")
-    expected_usage = {
-        "schema_version": "bluefire.receiver-control-usage.v1",
-        "attempt_id": attempt_id,
-        "grant_id": row["grant_id"],
-        "grant_digest": grant["grant_digest"],
-        "control_owner_id": row["control_owner_id"],
-        "control_digest": grant["environment"]["control_digest"],
-        "policy_digest": grant["environment"]["policy_digest"],
-        "lease_digest": lease["lease_digest"],
-        "compiled_digest": compiled["compiled_digest"],
-        "handoff": compiled["handoff"],
-    }
+    expected_usage = usage_document(grant, compiled, lease)
     usage = _one(
         connection, "SELECT * FROM capability_control_usages WHERE attempt_id=?", attempt_id
     )
@@ -209,7 +201,10 @@ def _usage(connection, lineage_id, limits):
         (lineage_id,),
     ):
         _, lease, compiled = _attempt_at(connection, row["attempt_id"])
-        if lease["reservation"] != reserve_resources(compiled["scenario"]["steps"], limits):
+        _, grant, _ = _grant_at(connection, lease["grant_id"])
+        if lease["reservation"] != reserve_resources(
+            compiled["scenario"]["steps"], limits, pack=grant_pack(grant)
+        ):
             raise ProductStoreError("Capability reservation differs from its graph.")
         result = accumulate_reservation(result, lease["reservation"], limits)
     return result
@@ -353,7 +348,9 @@ def reserve_attempt(
         ):
             raise ProductStoreError("The compiled attempt differs from its trusted grant.")
         _job_owner(store, connection, job_id, grant, attempt_id, expected_compiled_digest, run_id)
-        reservation = reserve_resources(compiled["scenario"]["steps"], grant["limits"])
+        reservation = reserve_resources(
+            compiled["scenario"]["steps"], grant["limits"], pack=grant_pack(grant)
+        )
         if compiled["reservation"] != reservation:
             raise ProductStoreError("The compiled resource reservation changed.")
         _control_current(store, connection, grant)
@@ -417,29 +414,12 @@ def reserve_attempt(
                 now_ms,
             ),
         )
-        usage = {
-            "schema_version": "bluefire.receiver-control-usage.v1",
-            "attempt_id": attempt_id,
-            "grant_id": grant_id,
-            "grant_digest": grant["grant_digest"],
-            "control_owner_id": owner_id,
-            "control_digest": grant["environment"]["control_digest"],
-            "policy_digest": grant["environment"]["policy_digest"],
-            "lease_digest": lease["lease_digest"],
-            "compiled_digest": expected_compiled_digest,
-            "handoff": compiled["handoff"],
-        }
+        usage = usage_document(grant, compiled, lease)
         connection.execute(
             "INSERT INTO capability_control_usages VALUES(?,?,?,?)",
             (attempt_id, owner_id, canonical_json(usage), content_hash(usage)),
         )
         return dict(json_clone(lease))
-
-
-def _endpoint_digest(environment):
-    """Re-enrollment cannot hide unsettled effects on the same owned endpoint."""
-    fields = ("environment_id", "port")
-    return content_hash({key: environment[key] for key in fields})
 
 
 def _endpoint_settled(store, connection, environment):
@@ -619,13 +599,7 @@ def register_task(
         _one(
             connection, "SELECT * FROM capability_preparation_starts WHERE attempt_id=?", attempt_id
         )
-        _document(
-            _one(
-                connection,
-                "SELECT * FROM capability_receiver_bindings WHERE attempt_id=?",
-                attempt_id,
-            )
-        )
+        store._capability_dependency_at(connection, attempt_id, lease)
         if claim["lease_digest"] != lease["lease_digest"] or step_id not in {
             step["id"] for step in compiled["scenario"]["steps"]
         }:
@@ -732,44 +706,8 @@ def record_task_terminal(store, task_id, *, request_hash, terminal_digest):
 
 def _settlement(store, connection, attempt_id, receipt):
     _, lease, _ = _attempt_at(connection, attempt_id)
-    if (
-        not isinstance(receipt, dict)
-        or set(receipt) != {"schema_version", "attempt_id", "lease_digest", "receiver", "native"}
-        or receipt.get("schema_version") != "bluefire.capability-attempt-settlement.v1"
-        or receipt["attempt_id"] != attempt_id
-        or receipt["lease_digest"] != lease["lease_digest"]
-    ):
-        raise ProductStoreError("Capability settlement does not bind its exact attempt.")
-    receiver = receipt["receiver"]
+    store._validate_capability_dependency(connection, attempt_id, lease, receipt)
     native = receipt["native"]
-    binding_row = connection.execute(
-        "SELECT * FROM capability_receiver_bindings WHERE attempt_id=?", (attempt_id,)
-    ).fetchone()
-    if binding_row is None:
-        preparing = connection.execute(
-            "SELECT 1 FROM capability_preparation_starts WHERE attempt_id=?", (attempt_id,)
-        ).fetchone()
-        if preparing or receiver != {"state": "not_started"}:
-            raise ProductStoreError("Receiver settlement lacks its reserved process identity.")
-    else:
-        binding = _document(binding_row)
-        _claim_at(connection, attempt_id, lease)
-        _one(
-            connection, "SELECT * FROM capability_preparation_starts WHERE attempt_id=?", attempt_id
-        )
-        if (
-            binding.get("attempt_id") != attempt_id
-            or binding.get("lease_digest") != lease["lease_digest"]
-        ):
-            raise ProductStoreError("Receiver ownership belongs to another capability attempt.")
-        if (
-            not isinstance(receiver, dict)
-            or set(receiver) != {"state", "session_generation", "review_digest", "receipt_digest"}
-            or receiver["state"] != "verified_closed"
-            or any(receiver[key] != binding[key] for key in ("session_generation", "review_digest"))
-        ):
-            raise ProductStoreError("The exact owned receiver is not verified closed.")
-        digest(receiver["receipt_digest"], "receiver cleanup receipt")
     tasks = connection.execute(
         "SELECT * FROM capability_task_claims WHERE attempt_id=? ORDER BY task_id", (attempt_id,)
     ).fetchall()

@@ -555,3 +555,39 @@ items:
       license: MIT
       derived: true
       notes: Declarative adaptation only; the external GNU chmod adapter is separately pinned and not embedded here.
+
+  - schema_version: bluefire.action.v1
+    id: file_access.probe.non_owner.v1
+    title: Read as enrolled non-owner
+    purpose: Freshly read only the fixed enrolled generated file and retain metadata-only evidence.
+    safety_tier: controlled
+    platforms: [linux]
+    capabilities: [filesystem.read, filesystem.write]
+    inputs: []
+    outputs:
+      - name: probe
+        type: artifact.file_access.probe.v1
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+    parameters: []
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: file_access.verify.owner.v1
+    title: Verify legitimate owner read
+    purpose: Freshly read only the fixed enrolled generated file and retain metadata-only evidence.
+    safety_tier: controlled
+    platforms: [linux]
+    capabilities: [filesystem.read, filesystem.write]
+    inputs:
+      - name: probe
+        type: artifact.file_access.probe.v1
+    outputs:
+      - name: verification
+        type: artifact.file_access.verification.v1
+    parameters: []
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
+    provenance: *authored

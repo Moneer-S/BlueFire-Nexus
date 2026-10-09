@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Mapping, Sequence
 
+from . import file_access_method
 from . import runner_provider_values as provider_values
 from .collection_methods import (
     COLLECTION_METHODS,
@@ -14,10 +15,11 @@ from .collection_methods import (
     collection_artifacts,
     collection_request,
 )
+from .execution_contracts import reject_runner_execution_keys as reject_forbidden_execution_keys
+from .file_access_contract import READ_ACTIONS
 from .permission_method import adapt_permission_method, permission_outputs
 from .planner import PlanStep
 from .provider_runner_contracts import PROVIDER_BINDING_SCHEMA
-from .runner_client import reject_forbidden_execution_keys
 from .runner_provider_values import (
     RunnerAdapterError,
     _provider_output_value,
@@ -236,6 +238,7 @@ class RunnerActionAdapter:
     action_ids = frozenset(
         {
             *COLLECTION_METHODS,
+            *READ_ACTIONS,
             "sandbox.fixture.create.v1",
             "sandbox.fixture.transform.v1",
             "sandbox.permission.chmod.v1",
@@ -282,7 +285,12 @@ class RunnerActionAdapter:
         if action_id not in self.action_ids:
             raise RunnerAdapterError(f"unreviewed or missing runner action: {action_id}")
 
-        if action_id in COLLECTION_METHODS:
+        if action_id in READ_ACTIONS:
+            params, path = file_access_method.request(action_id, step.parameters, bound_inputs)
+            adapted = AdaptedAction(
+                params=params, filesystem_scope=(path,), observable_paths=(path,)
+            )
+        elif action_id in COLLECTION_METHODS:
             try:
                 params, scope, observed = collection_request(
                     action_id, step.parameters, bound_inputs
@@ -585,6 +593,15 @@ class RunnerActionAdapter:
             raise RunnerAdapterError(f"unreviewed or missing runner action: {action_id}")
         if not isinstance(runner_output, Mapping):
             raise RunnerAdapterError("successful runner output must be an object")
+
+        if action_id in READ_ACTIONS:
+            return file_access_method.outputs(
+                action_id,
+                step.parameters,
+                bound_inputs=bound_inputs,
+                runner_output=runner_output,
+                receipt_ids=receipt_ids,
+            )
 
         if action_id == "sandbox.execution.native-canary.v1":
             _exact_parameter_keys(

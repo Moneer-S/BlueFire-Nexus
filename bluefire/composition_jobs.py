@@ -6,10 +6,16 @@ import threading
 import time
 from datetime import datetime
 
-from . import composition_admission, composition_context
+from . import (
+    capability_file_access,
+    composition_admission,
+    composition_context,
+    composition_file_access,
+)
 from .capability_composition import compile_initial_graph, compile_revision
 from .capability_facts import seal_facts, validate_facts
 from .capability_grant import objective_result, validate_grant
+from .capability_packs import FILE_ACCESS_PACK, grant_pack, review_pack
 from .composition_authority import GrantExecution, native_envelope
 from .contracts import ExecutionMode, ScenarioDefinition
 from .detection_evaluations import _source, _source_binding
@@ -60,19 +66,13 @@ class CompositionJobs:
         return owner
 
     def review(self, request):
-        if not isinstance(request, dict) or set(request) != {
-            "control_owner_id",
-            "question",
-            "limits",
-        }:
-            raise ProductStoreError(
-                "Composition review requires the exact control, question and limits."
-            )
+        pack = review_pack(request)
         return composition_context.review(
             self.service,
             request["control_owner_id"],
             question=request["question"],
             limits=request["limits"],
+            pack=pack,
         )
 
     def authorize(self, request):
@@ -109,7 +109,7 @@ class CompositionJobs:
         ):
             raise ProductStoreError("The capability grant is stopped, expired or changed.")
         current = composition_context.resolve(
-            self.service, grant["environment"]["control_owner_id"]
+            self.service, grant["environment"]["control_owner_id"], pack=grant_pack(grant)
         )
         validate_grant(
             grant,
@@ -122,6 +122,12 @@ class CompositionJobs:
         return grant, current
 
     def _facts(self, grant, prior_attempt_id=None):
+        if grant_pack(grant) == FILE_ACCESS_PACK:
+            if prior_attempt_id is not None:
+                raise ProductStoreError(
+                    "The fixed file-access route is exhausted; review the retained control explicitly."
+                )
+            return capability_file_access.seal_facts(grant)
         environment = grant["environment"]
 
         def fact(identity, kind, source, value, observed=None):
@@ -298,6 +304,11 @@ class CompositionJobs:
             action_bindings=self.service._catalog_snapshot.action_bindings,
             provider_artifacts=self.service._catalog_snapshot.provider_artifacts,
             catalog_authority=self.service._catalog_snapshot.to_dict(),
+            **(
+                {"file_access_binding": current["file_access_binding"]}
+                if "file_access_binding" in current
+                else {}
+            ),
             **kwargs,
         )
 
@@ -340,6 +351,7 @@ class CompositionJobs:
 
     def _run_attempt(self, ctx, marker, compiled, grant, current, scenario, envelope, lease, claim):
         attempt_id = marker["attempt_id"]
+        file_access = grant_pack(grant) == FILE_ACCESS_PACK
         done = threading.Event()
         started = time.monotonic()
         origin = self.clock()
@@ -469,12 +481,16 @@ class CompositionJobs:
                 registered.add(task_id)
                 return
             fresh = check()
-            material = handoff_artifact(
-                step,
-                inputs,
-                manifest,
-                step_id=compiled["handoff"]["step_id"],
-                port=compiled["handoff"]["port"],
+            material = (
+                None
+                if file_access
+                else handoff_artifact(
+                    step,
+                    inputs,
+                    manifest,
+                    step_id=compiled["handoff"]["step_id"],
+                    port=compiled["handoff"]["port"],
+                )
             )
             self.store.register_capability_task(
                 attempt_id,
@@ -531,6 +547,10 @@ class CompositionJobs:
                 self.store.record_capability_task_terminal(
                     task_id, request_hash=manifest["request_hash"], terminal_digest=terminal
                 )
+                if file_access:
+                    composition_file_access.record_terminal(
+                        self, ctx.job_id, attempt_id, current, step, manifest, task_id, result
+                    )
                 if result.get("schema_version") == "bluefire.task-not-sent.v1" or (
                     result.get("status") in {"refused", "control_blocked"}
                     and result.get("receipt_ids") == []
@@ -559,16 +579,19 @@ class CompositionJobs:
             self.store.start_capability_preparation(
                 attempt_id, now_ms=self.clock(), current_environment=fresh["current_environment"]
             )
-            self._publish(ctx.job_id, {"prepare_started": True, "phase": "preparing_receiver"})
-            session = self.owners.prepare(
-                ctx.job_id, grant["environment"]["policy_id"], grant["environment"]["port"]
-            )
-            self._publish(ctx.job_id, {"session": session})
-            self.store.bind_capability_receiver(
-                attempt_id,
-                session_generation=session["receiver_session_id"],
-                review_digest=session["review_digest"],
-            )
+            if file_access:
+                composition_file_access.prepare(self, ctx.job_id, attempt_id, fresh)
+            else:
+                self._publish(ctx.job_id, {"prepare_started": True, "phase": "preparing_receiver"})
+                session = self.owners.prepare(
+                    ctx.job_id, grant["environment"]["policy_id"], grant["environment"]["port"]
+                )
+                self._publish(ctx.job_id, {"session": session})
+                self.store.bind_capability_receiver(
+                    attempt_id,
+                    session_generation=session["receiver_session_id"],
+                    review_digest=session["review_digest"],
+                )
             current = check()
             workspace = self.service._isolated_owned_sandbox(current["sandbox"], attempt_id)
             orchestrator = self._orchestrator(current, grant_execution=execution)
@@ -603,18 +626,20 @@ class CompositionJobs:
             if monitor.is_alive():
                 ctx.cancellation_event.set()
                 raise ProductStoreError("The attempt deadline monitor did not stop.")
-            state = self.store.get_job(ctx.job_id)["progress"]
-            try:
-                observation = self.owners.observe_bound(
-                    ctx.job_id, state.get("session"), state.get("task_binding")
+            if not file_access:
+                state = self.store.get_job(ctx.job_id)["progress"]
+                try:
+                    observation = self.owners.observe_bound(
+                        ctx.job_id, state.get("session"), state.get("task_binding")
+                    )
+                finally:
+                    closed = self.owners.close(ctx.job_id)
+                self._publish(
+                    ctx.job_id, {"receiver_observation": observation, "receiver_closed": closed}
                 )
-            finally:
-                closed = self.owners.close(ctx.job_id)
             self._publish(
                 ctx.job_id,
                 {
-                    "receiver_observation": observation,
-                    "receiver_closed": closed,
                     "native_cleanup": cleanup_result,
                     "finalized_run_id": marker["run_id"] if run_result is not None else None,
                 },
@@ -632,6 +657,10 @@ class CompositionJobs:
 
     def _settle_attempt(self, marker, job_id, lease, run_result, cleanup_result):
         state = self.store.get_job(job_id)["progress"]
+        if state.get("file_access_dependency") is not None:
+            return composition_file_access.settle(
+                self, marker, job_id, lease, run_result, cleanup_result
+            )
         session = state.get("session")
         if (
             session is None
@@ -703,6 +732,8 @@ class CompositionJobs:
             raise ProductStoreError(
                 "The actual finalized run differs from its grant-owned attempt."
             )
+        if "file_access" in compiled:
+            return composition_file_access.verified_result(self, attempt, run, records, observed)
         session, task, observation = (
             state["session"],
             state["task_binding"],
@@ -852,6 +883,12 @@ class CompositionJobs:
         initial = None
         initial_scenario = None
         if prior_attempt_id is None:
+            if grant_pack(grant) == FILE_ACCESS_PACK:
+                initial = capability_file_access.initial_proposal()
+                initial_scenario = self.validate_proposal(owner_id, initial)["scenario"]
+                return composition_file_access.proposal_context(
+                    grant, facts, initial, initial_scenario
+                )
             source = current["source_context"]["scenario"]
             scenario = ScenarioDefinition.from_mapping(source)
             plan = self._orchestrator(current).planner.compile(
@@ -922,7 +959,7 @@ class CompositionJobs:
             "document"
         ]
         current = composition_context.resolve(
-            self.service, grant["environment"]["control_owner_id"]
+            self.service, grant["environment"]["control_owner_id"], pack=grant_pack(grant)
         )
         self.store.change_capability_grant_state(
             grant["grant_id"],

@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-
-class RunnerTransportError(RuntimeError):
-    """A sanitized failure at the maintained runner transport boundary."""
+from .domain_errors import RunnerTransportError as RunnerTransportError
 
 
 class RunnerReadinessError(RunnerTransportError):

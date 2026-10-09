@@ -2,7 +2,7 @@ import * as Tooltip from "@radix-ui/react-tooltip";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity, Bot, Braces, BookOpen, ChevronDown, PanelLeftClose, PanelLeftOpen, FlaskConical, GitCompareArrows, HelpCircle,
-  Home, ListChecks, Menu, MoreHorizontal, Network, PackageCheck, PlaySquare, Puzzle, ScrollText, Settings, SlidersHorizontal, X,
+  FileLock2, Home, ListChecks, Menu, MoreHorizontal, Network, PackageCheck, PlaySquare, Puzzle, ScrollText, Settings, SlidersHorizontal, X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
@@ -33,6 +33,7 @@ const settingsItems = [
 const moreItems = [
   { to: "/", label: "Overview", icon: Home },
   { to: "/getting-started", label: "Getting Started", icon: ListChecks },
+  { to: "/file-access", label: "File access", icon: FileLock2 },
   { to: "/behaviors", label: "Behaviors", icon: Braces },
   { to: "/research-sources", label: "Research Sources", icon: BookOpen },
   { to: "/ai-planner?view=audit", label: "Proposal audit", icon: Bot },

@@ -7,13 +7,17 @@ import sqlite3
 from typing import Any, Mapping, cast
 
 from . import product_store_capability_cleanup as cleanup
+from . import product_store_capability_dependencies as dependencies
 from . import product_store_capability_grants as capability_grant_store
+from .capability_packs import FILE_ACCESS_PACK, grant_pack, review_pack
 from .product_store_contracts import safe_document
 from .product_store_errors import ProductStoreError
 from .product_store_serialization import canonical_json, utc_now
 from .util import content_hash
 
 _TABLES = {
+    "capability_file_access_bindings": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
+    "capability_file_access_terminals": "task_id TEXT PRIMARY KEY REFERENCES capability_task_claims(task_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "capability_lineages": "lineage_id TEXT PRIMARY KEY, binding_digest TEXT NOT NULL UNIQUE, document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "capability_grants": "grant_id TEXT PRIMARY KEY, lineage_id TEXT NOT NULL REFERENCES capability_lineages(lineage_id), control_owner_id TEXT NOT NULL, document_json TEXT NOT NULL, document_digest TEXT NOT NULL, created_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL",
     "capability_grant_events": "sequence INTEGER PRIMARY KEY AUTOINCREMENT, grant_id TEXT NOT NULL REFERENCES capability_grants(grant_id), status TEXT NOT NULL CHECK(status IN ('active','paused','revoked','interrupted','completed')), at_ms INTEGER NOT NULL",
@@ -64,9 +68,9 @@ class CapabilityStoreMixin:
             or set(submitted) != {"submission_id", "review", "reviewed_by", "review_digest"}
             or safe_document(submitted, context="saved composition submission") != submitted
             or not isinstance(submitted["review"], dict)
-            or set(submitted["review"]) != {"control_owner_id", "question", "limits"}
         ):
             raise ProductStoreError("The saved capability objective binding is invalid.")
+        review_pack(submitted["review"])
         expected_id, binding = store._job_submission_binding(
             submitted["submission_id"], content_hash(marker)
         )
@@ -252,9 +256,41 @@ class CapabilityStoreMixin:
     def _guard_capability_control(
         self, connection: sqlite3.Connection, grant: Mapping[str, Any]
     ) -> None:
+        if grant_pack(grant) == FILE_ACCESS_PACK:
+            from .product_store_file_access import guard_control
+
+            guard_control(self, connection, grant)
+            return
         from .product_store_receiver_defense import guard_capability_control
 
         guard_capability_control(self, connection, grant)
+
+    @staticmethod
+    def _capability_dependency_at(connection, attempt_id, lease):
+        return dependencies.dependency_at(connection, attempt_id, lease)
+
+    @staticmethod
+    def _validate_capability_dependency(connection, attempt_id, lease, receipt):
+        dependencies.validate_dependency(connection, attempt_id, lease, receipt)
+
+    def bind_capability_file_access(self, attempt_id: str, **context: Any) -> None:
+        dependencies.bind_file_access(self, attempt_id, **context)
+
+    def record_capability_file_access_terminal(self, attempt_id: str, **context: Any) -> None:
+        dependencies.record_file_access_terminal(self, attempt_id, **context)
+
+    def capability_file_access_closure(self, attempt_id: str) -> dict[str, Any]:
+        return dependencies.file_access_closure(self, attempt_id)
+
+    def capability_file_access_evidence(self, attempt_id: str) -> dict[str, Any]:
+        store = cast(Any, self)
+        with store._connection() as connection:
+            _, lease, _ = capability_grant_store._attempt_at(connection, attempt_id)
+            binding = dependencies.dependency_at(connection, attempt_id, lease)
+            return {
+                "binding": binding,
+                "terminals": dependencies._file_terminals(connection, attempt_id, binding),
+            }
 
     def get_capability_grant(self, grant_id: str, *, now_ms: int) -> dict[str, Any]:
         return capability_grant_store.get_grant(self, grant_id, now_ms=now_ms)

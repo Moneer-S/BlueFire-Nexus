@@ -546,7 +546,9 @@ class TerminalForwarding:
             raise OSError("some owned product terminal pipes could not be closed")
 
 
-def start(state: Path, port: int, *, inference: Mapping[str, Any] | None = None) -> None:
+def start(
+    state: Path, port: int, *, inference: Mapping[str, Any] | None = None, file_access: bool = False
+) -> None:
     if not 1024 <= port <= 65535:
         raise ValueError("choose an unprivileged UI port between 1024 and 65535")
     with owned(state) as (lease, record):
@@ -562,7 +564,8 @@ def start(state: Path, port: int, *, inference: Mapping[str, Any] | None = None)
                     "-B",
                     "-m",
                     "bluefire.prepared_lab_guest",
-                    "launch" if inference is None else "broker-launch",
+                    ("launch" if inference is None else "broker-launch")
+                    + ("-file-access" if file_access else ""),
                     str(port),
                 ),
                 stdin=subprocess.PIPE,
@@ -671,6 +674,11 @@ def main(argv: list[str] | None = None) -> None:
     launch.add_argument("--state-dir", required=True, type=Path)
     launch.add_argument("--port", default=8767, type=int)
     launch.add_argument(
+        "--enroll-file-access-probe",
+        action="store_true",
+        help="Explicitly enroll the finite dedicated reader and one generated-resource root in this disposable session",
+    )
+    launch.add_argument(
         "--ai-provider-definition",
         type=Path,
         help="Explicit public provider JSON; its configured credential reference is read only by this operator boundary",
@@ -693,7 +701,7 @@ def main(argv: list[str] | None = None) -> None:
             prepare(args.state_dir, args.wheel, args.wheelhouse)
         elif args.command == "start":
             if args.ai_provider_definition is None:
-                start(args.state_dir, args.port)
+                start(args.state_dir, args.port, file_access=args.enroll_file_access_probe)
             else:
                 from .prepared_lab_inference_input import operator_definition
 
@@ -704,7 +712,12 @@ def main(argv: list[str] | None = None) -> None:
                     args.ai_max_edges,
                     environ=os.environ,
                 )
-                start(args.state_dir, args.port, inference=definition)
+                start(
+                    args.state_dir,
+                    args.port,
+                    inference=definition,
+                    file_access=args.enroll_file_access_probe,
+                )
         else:
             with owned(args.state_dir) as (lease, record):
                 verify(lease, record)

@@ -7,8 +7,10 @@ import re
 from collections import defaultdict
 from typing import Any, Mapping, Sequence
 
+from . import capability_file_access
 from .capability_facts import validate_facts
 from .capability_grant import digest, text, validate_grant
+from .capability_packs import FILE_ACCESS_PACK, grant_pack
 from .capability_resources import METHODS, CapabilityContractError, exact, reserve_resources
 from .contracts import ScenarioDefinition, StepOutcome
 from .registry import BehaviorRegistry, _dominators, _reachable_from, _topological_order
@@ -149,23 +151,12 @@ def _graph(
             if candidates:
                 inputs[input_spec.name] = candidates[0]
         row["inputs"] = inputs
-    handoffs = [key for key, step in steps.items() if step["behavior_id"] == METHODS[5]]
-    cleanups = [key for key, step in steps.items() if step["behavior_id"] == METHODS[6]]
-    if len(handoffs) != 1 or len(cleanups) != 1:
-        raise CapabilityContractError("graph requires one receiver handoff and one cleanup")
-    handoff, cleanup = handoffs[0], cleanups[0]
-    if successors[cleanup] or any(
-        routes.get((handoff, outcome.value)) != cleanup for outcome in StepOutcome
-    ):
-        raise CapabilityContractError("every receiver outcome must end in the reviewed cleanup")
-    # Every business node must contribute to the one allowed receiver operation.
-    ancestors = _reachable_from(handoff, predecessors)
-    if set(steps) - {cleanup} != ancestors:
-        raise CapabilityContractError("graph contains unrelated business operations")
-    stage = steps[handoff]["inputs"]["bundle"]["from_step"]
-    if steps[stage]["behavior_id"] != METHODS[4]:
-        raise CapabilityContractError("receiver needs the reviewed JSONL staging producer")
-    reservation = reserve_resources(list(steps.values()), grant["limits"])
+    details = (
+        capability_file_access.graph_details(steps, successors, routes, grant)
+        if grant_pack(grant) == FILE_ACCESS_PACK
+        else _receiver_details(steps, successors, predecessors, routes, grant)
+    )
+    reservation = reserve_resources(list(steps.values()), grant["limits"], pack=grant_pack(grant))
     indexes = {identity: index for index, identity in enumerate(order)}
     semantic = {
         "steps": [
@@ -203,21 +194,36 @@ def _graph(
         }
     )
     registry.validate_scenario(scenario)
-    return (
-        scenario,
-        {
-            "reservation": reservation,
-            "handoff": {
-                "step_id": handoff,
-                "stage_step_id": stage,
-                "port": grant["environment"]["port"],
-                "host": "127.0.0.1",
-                "artifact_type": "artifact.sandbox.bundle.v1",
-                "format": "jsonl",
-            },
+    return scenario, {"reservation": reservation, **details}, semantic_digest
+
+
+def _receiver_details(steps, successors, predecessors, routes, grant):
+    handoffs = [key for key, step in steps.items() if step["behavior_id"] == METHODS[5]]
+    cleanups = [key for key, step in steps.items() if step["behavior_id"] == METHODS[6]]
+    if len(handoffs) != 1 or len(cleanups) != 1:
+        raise CapabilityContractError("graph requires one receiver handoff and one cleanup")
+    handoff, cleanup = handoffs[0], cleanups[0]
+    if successors[cleanup] or any(
+        routes.get((handoff, outcome.value)) != cleanup for outcome in StepOutcome
+    ):
+        raise CapabilityContractError("every receiver outcome must end in the reviewed cleanup")
+    # Every business node must contribute to the one allowed receiver operation.
+    ancestors = _reachable_from(handoff, predecessors)
+    if set(steps) - {cleanup} != ancestors:
+        raise CapabilityContractError("graph contains unrelated business operations")
+    stage = steps[handoff]["inputs"]["bundle"]["from_step"]
+    if steps[stage]["behavior_id"] != METHODS[4]:
+        raise CapabilityContractError("receiver needs the reviewed JSONL staging producer")
+    return {
+        "handoff": {
+            "step_id": handoff,
+            "stage_step_id": stage,
+            "port": grant["environment"]["port"],
+            "host": "127.0.0.1",
+            "artifact_type": "artifact.sandbox.bundle.v1",
+            "format": "jsonl",
         },
-        semantic_digest,
-    )
+    }
 
 
 def compile_revision(
@@ -319,7 +325,11 @@ def _compile(
         for key in references
     ):
         raise CapabilityContractError("proposal references unknown, stale or unobserved evidence")
-    required = {"receiver_result", "cleanup"} if revision else {"retained_policy"}
+    required = (
+        {"retained_file_control"}
+        if grant_pack(grant) == FILE_ACCESS_PACK
+        else {"receiver_result", "cleanup"} if revision else {"retained_policy"}
+    )
     if not required <= {by_id[key]["kind"] for key in references}:
         raise CapabilityContractError("proposal omits its supporting evidence references")
     scenario, details, semantic_digest = _graph(proposal, grant, registry)

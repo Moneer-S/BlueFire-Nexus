@@ -9,6 +9,8 @@ from bluefire.planner import PlanStep
 from bluefire.runner_adapter import AdaptedAction, RunnerActionAdapter, RunnerAdapterError
 
 ACTION_IDS = {
+    "file_access.probe.non_owner.v1",
+    "file_access.verify.owner.v1",
     "sandbox.fixture.create.v1",
     "sandbox.fixture.transform.v1",
     "sandbox.permission.chmod.v1",
@@ -35,6 +37,8 @@ ACTION_IDS = {
     "sandbox.cleanup.v1",
 }
 CONTROLLED_ACTIONS = {
+    "file_access.probe.non_owner.v1",
+    "file_access.verify.owner.v1",
     "sandbox.permission.chmod.v1",
     "sandbox.archive.tar.v1",
     "sandbox.collection.stage.v1",

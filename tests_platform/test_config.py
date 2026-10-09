@@ -45,11 +45,13 @@ def test_seeded_execute_profiles_budget_the_installed_ten_step_journey() -> None
     assert all(profile.budgets.max_steps == 12 for profile in profiles.values())
     assert all(profile.budgets.max_seconds == 120 for profile in profiles.values())
     assert all(len(profile.capabilities) == 21 for profile in profiles.values())
-    assert all(len(profile.enabled_actions) == 19 for profile in profiles.values())
+    assert all(len(profile.enabled_actions) == 21 for profile in profiles.values())
     for profile in profiles.values():
         assert {
             "sandbox.collection.records.v1",
             "sandbox.collection.archive.v1",
+            "file_access.probe.non_owner.v1",
+            "file_access.verify.owner.v1",
         } <= set(profile.enabled_actions)
         # Optional native tools must be explicitly selected and bound in a
         # saved profile; an unbound method would block ordinary Execute.

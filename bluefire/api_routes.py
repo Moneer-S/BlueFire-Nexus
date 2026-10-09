@@ -698,6 +698,39 @@ class APIRoutes:
             return ("", "")
         return (match.group(2) or "read", match.group(1))
 
+    def _file_access_request(self, path: str) -> tuple[str, str, str] | None:
+        prefix = f"{API_PREFIX}/file-access/"
+        if not path.startswith(prefix):
+            return None
+        if not self._management_query_free():
+            return ("", "", "")
+        suffix = path[len(prefix) :]
+        if suffix in {"status", "review", "operations", "control-list"}:
+            return suffix, "", ""
+        match = re.fullmatch(
+            r"(operations|controls)/(job-[0-9a-f]{32})(?:/(reconcile)|/reconciliations/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}))?",
+            suffix,
+        )
+        if match is not None and (
+            match.group(1) == "operations" or not (match.group(3) or match.group(4))
+        ):
+            action = (
+                "reconciliation"
+                if match.group(4)
+                else (
+                    "reconcile"
+                    if match.group(3)
+                    else "operation" if match.group(1) == "operations" else "control"
+                )
+            )
+            return action, match.group(2), match.group(4) or ""
+        self._error(
+            HTTPStatus.BAD_REQUEST,
+            "file_access_invalid",
+            "Select a canonical saved file-access control or operation.",
+        )
+        return "", "", ""
+
     def _receiver_defense_request(
         self, path: str, *, listing: bool = False
     ) -> tuple[str, str] | None:

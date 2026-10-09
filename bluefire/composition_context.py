@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .capability_grant import build_snapshot, validate_objective
+from .capability_packs import FILE_ACCESS_PACK, RECEIVER_PACK
 from .capability_resources import METHODS, MIB, validate_limits
 from .contracts import ExecutionMode
 from .product_store_errors import ProductStoreError
@@ -27,8 +28,13 @@ DEFAULT_LIMITS = {
 }
 
 
-def resolve(service, owner_id: str) -> dict[str, Any]:
+def resolve(service, owner_id: str, *, pack: str = RECEIVER_PACK) -> dict[str, Any]:
     """Read live authority through existing catalog, receiver and runner boundaries."""
+    if pack == FILE_ACCESS_PACK:
+        context: dict[str, Any] = service.file_access.composition_context(owner_id)
+        return context
+    if pack != RECEIVER_PACK:
+        raise ProductStoreError("The composition pack is unavailable.")
     owner = service.receiver_defense._job(owner_id)
     current = service.receiver_defense._fresh(owner)
     if (
@@ -119,35 +125,60 @@ def resolve(service, owner_id: str) -> dict[str, Any]:
     }
 
 
-def review(service, owner_id, *, question, limits=None):
-    current = resolve(service, owner_id)
+def review(service, owner_id, *, question, limits=None, pack=RECEIVER_PACK):
+    current = resolve(service, owner_id, pack=pack)
+    file_access = pack == FILE_ACCESS_PACK
     objective = validate_objective(
         {
             "question": question,
             "predicate": {
-                "kind": "redacted_delivery_preserves_records",
+                "kind": (
+                    "non_owner_denied_owner_preserves_records"
+                    if file_access
+                    else "redacted_delivery_preserves_records"
+                ),
                 "record_count": current["record_count"],
                 "data_class": "generated_public_jsonl",
+                **({"sha256": current["resource_sha256"]} if file_access else {}),
             },
-        }
+        },
+        pack=pack,
     )
     environment = current["current_environment"]
     body = {
-        "schema_version": "bluefire.composition-review.v1",
+        "schema_version": (
+            "bluefire.composition-review.v2" if file_access else "bluefire.composition-review.v1"
+        ),
+        **({"pack": pack} if file_access else {}),
         "objective": objective,
         "environment": environment,
         "limits": validate_limits(DEFAULT_LIMITS if limits is None else limits),
         "snapshot": build_snapshot(
-            current["registry"], current["implementation_digests"], objective, environment
+            current["registry"],
+            current["implementation_digests"],
+            objective,
+            environment,
+            pack=pack,
         ),
         "baseline_source": current["baseline"]["source_binding"],
-        "limitations": [
-            "Delegates fresh graphs within these installed capabilities, not an exact human-approved itinerary.",
-            "Each attempt regenerates public synthetic records and retains the reviewed receiver policy.",
-            "Generated material and network allowances are conservative complete-attempt reservations.",
-            "Workspace byte and file allowances count generated data artifacts, not native receipt or control metadata.",
-            "Retained metadata bytes are an admission estimate, not an enforced total-storage quota.",
-            "Runtime AI requests require a separate provider/data/usage authorization.",
-        ],
+        "limitations": (
+            [
+                "Delegates only the enrolled non-owner fresh read, owner verification and attempt-artifact cleanup.",
+                "The exact generated resource remains under its separately reviewed retained control.",
+                "No retained creation, hardening, rollback, reset, arbitrary identity, path or network operation is delegated.",
+                "The fixed pack has one useful permitted graph; a changed control requires a new review.",
+                "Retained metadata bytes are an admission estimate, not an enforced total-storage quota.",
+                "Runtime AI requests require a separate provider/data/usage authorization.",
+            ]
+            if file_access
+            else [
+                "Delegates fresh graphs within these installed capabilities, not an exact human-approved itinerary.",
+                "Each attempt regenerates public synthetic records and retains the reviewed receiver policy.",
+                "Generated material and network allowances are conservative complete-attempt reservations.",
+                "Workspace byte and file allowances count generated data artifacts, not native receipt or control metadata.",
+                "Retained metadata bytes are an admission estimate, not an enforced total-storage quota.",
+                "Runtime AI requests require a separate provider/data/usage authorization.",
+            ]
+        ),
     }
     return {**body, "review_digest": content_hash(body)}
