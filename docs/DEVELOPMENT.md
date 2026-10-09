@@ -46,6 +46,17 @@ justify another `pip-audit` exception.
 
 Do not install project dependencies globally. Keep test run stores, databases, sandboxes, caches, and build artifacts untracked.
 
+The Windows Gate 01 acceptance browser probe uses an existing Edge installation and
+the Playwright core version declared by the committed frontend pnpm lock. Before
+running it, set `BLUEFIRE_ACCEPTANCE_NODE_BINARY` to the reviewed absolute Node 22+
+executable and `BLUEFIRE_ACCEPTANCE_NODE_SHA256` to its independently verified
+lowercase SHA-256. It never chooses Node from `PATH`. These are acceptance-tool
+settings, not product runtime requirements. The gate checks dependency-root
+confinement and records observed package fingerprints; a matching package version
+or lockfile declaration alone is not byte-integrity attestation. The isolated
+probe exchanges the one-time connection code through stdin and a private browser
+control pipe, verifies same-tab reload, and expects a separate tab to reconnect.
+
 ## Python verification
 
 ```bash

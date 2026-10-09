@@ -7,6 +7,10 @@ class ProductStoreError(ValueError):
     """Raised when product metadata or a state transition is invalid."""
 
 
+class ResourceConflictError(ProductStoreError):
+    """Raised when a resource changed after its expected snapshot was read."""
+
+
 class ResearchSourceIntegrityError(ProductStoreError):
     """Raised when a persisted research-source identity would be rewritten."""
 
@@ -33,5 +37,6 @@ __all__ = [
     "DetectionRevisionIntegrityError",
     "DetectionRevisionLimitError",
     "ProductStoreError",
+    "ResourceConflictError",
     "ResearchSourceIntegrityError",
 ]

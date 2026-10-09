@@ -9,7 +9,7 @@ import pytest
 
 from bluefire import browser_launch as launch
 
-URL = "http://127.0.0.1:8765/#bluefire-session=" + "A" * 64
+URL = "http://127.0.0.1:8765/"
 
 
 @pytest.mark.parametrize(
@@ -93,8 +93,10 @@ def test_windows_handoff_uses_registered_url_handler_only(
         URL.replace("8765", "0"),
         URL.replace("8765", "65536"),
         URL.replace("127.0.0.1", "user@127.0.0.1"),
-        URL.replace("/#", "/other#"),
-        URL.replace("/#", "/?q=private#"),
+        URL + "other",
+        URL + "?q=private",
+        URL + "#bluefire-session=" + "A" * 64,
+        URL + "#other",
         URL + "x",
         URL + "\n",
         "--help",

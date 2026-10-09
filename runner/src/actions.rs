@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::fs;
@@ -155,6 +156,14 @@ pub struct ActionContext<'a> {
     pub manifest: &'a ExecutionManifest,
     pub profile: &'a RunnerProfile,
     pub root: &'a SafeRoot,
+    pub(crate) execution_started: Cell<bool>,
+}
+
+impl ActionContext<'_> {
+    // Includes attempted input inspection, not proof of content read or publication.
+    fn mark_execution_started(&self) {
+        self.execution_started.set(true);
+    }
 }
 
 #[derive(Debug)]
@@ -746,6 +755,7 @@ impl PreparedAction for ProcessTreeCancellationWitnessPrepared {
             context.root,
             remaining,
             &layout,
+            &context.execution_started,
         )
         .map(ActionOutcome::success)
         .map_err(map_failure)
@@ -877,6 +887,7 @@ impl PreparedAction for IdentityMaterialInspectPrepared {
             .root
             .resolve_existing(&path)
             .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
+        context.mark_execution_started();
         let bytes = read_file_bounded(&source, context.manifest.limits.max_artifact_bytes)
             .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
         if bytes.as_slice() != IDENTITY_MATERIAL_BYTES {
@@ -1162,6 +1173,7 @@ impl PreparedAction for FixtureTransformPrepared {
             .root
             .resolve_existing(&input)
             .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
+        context.mark_execution_started();
         let input_bytes =
             read_file_bounded(&input_path, context.manifest.limits.max_artifact_bytes)
                 .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
@@ -2193,6 +2205,7 @@ fn load_reviewed_staged_bundle(
         .root
         .resolve_existing(&relative)
         .map_err(|error| ActionFailure::blocked("staged_bundle_rejected", error))?;
+    context.mark_execution_started();
     let bytes = read_file_bounded(&source, context.manifest.limits.max_artifact_bytes)
         .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
     validate_reviewed_staged_bundle(&bytes, format)?;
@@ -3002,6 +3015,7 @@ impl PreparedAction for NetworkLoopbackPrepared {
                     .root
                     .resolve_existing(&artifact)
                     .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
+                context.mark_execution_started();
                 read_file_bounded(&artifact_path, context.manifest.limits.max_artifact_bytes)
                     .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?
             }
@@ -3385,6 +3399,7 @@ impl PreparedAction for ExportLocalPrepared {
             .root
             .resolve_existing(&source)
             .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
+        context.mark_execution_started();
         let bytes = read_file_bounded(&source_path, context.manifest.limits.max_artifact_bytes)
             .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
         let target = context
@@ -3969,6 +3984,7 @@ mod tests {
             manifest: &manifest,
             profile: &profile,
             root: &root,
+            execution_started: Cell::new(false),
         };
         fs::create_dir_all(path.join("staged/collection")).unwrap();
         let destination = "staged/collection/bundle.jsonl.gz";

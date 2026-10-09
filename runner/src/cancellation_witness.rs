@@ -1,3 +1,4 @@
+use std::cell::Cell;
 #[cfg(windows)]
 use std::fs::{self, File, OpenOptions};
 #[cfg(windows)]
@@ -137,7 +138,7 @@ struct DescendantGuard {
 
 #[cfg(windows)]
 impl DescendantGuard {
-    fn spawn() -> Result<Self, WitnessFailure> {
+    fn spawn(execution_started: &Cell<bool>) -> Result<Self, WitnessFailure> {
         let executable = std::env::current_exe().map_err(|error| {
             WitnessFailure::failed(format!(
                 "cannot resolve the current runner executable: {error}"
@@ -158,6 +159,7 @@ impl DescendantGuard {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             command.creation_flags(CREATE_NO_WINDOW);
         }
+        execution_started.set(true);
         let child = command.spawn().map_err(|error| {
             WitnessFailure::failed(format!(
                 "cannot start the fixed cancellation descendant: {error}"
@@ -276,6 +278,7 @@ fn create_control_directory(
     root: &SafeRoot,
     layout: &WitnessLayout,
     lease_token: Option<&str>,
+    execution_started: &Cell<bool>,
 ) -> Result<ControlDirectory, WitnessFailure> {
     let root_path = root.path();
     let root_handle =
@@ -296,6 +299,12 @@ fn create_control_directory(
         }
     };
     if create_parent {
+        if lease_token.is_some() {
+            return Err(WitnessFailure::blocked(
+                "the trusted outer cancellation lease directory is absent",
+            ));
+        }
+        execution_started.set(true);
         match fs::create_dir(&parent_path) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -344,6 +353,7 @@ fn create_control_directory(
                     "the trusted outer cancellation lease directory is absent",
                 ));
             }
+            execution_started.set(true);
             fs::create_dir(&task_path).map_err(|error| {
                 if error.kind() == io::ErrorKind::AlreadyExists {
                     WitnessFailure::blocked(
@@ -654,6 +664,7 @@ pub fn run_process_tree_cancellation_witness(
     root: &SafeRoot,
     remaining: Duration,
     layout: &WitnessLayout,
+    execution_started: &Cell<bool>,
 ) -> Result<serde_json::Value, WitnessFailure> {
     let deadline = Instant::now()
         .checked_add(remaining)
@@ -672,7 +683,7 @@ pub fn run_process_tree_cancellation_witness(
         task_handle,
         task_owned,
         lease_file,
-    } = create_control_directory(root, layout, lease_token.as_deref())?;
+    } = create_control_directory(root, layout, lease_token.as_deref(), execution_started)?;
     let mut control = ControlTaskGuard::new(root_handle, parent_handle, task_handle, task_owned);
     if let Some(file) = lease_file {
         control.retain_file(file, "the trusted outer cancellation lease");
@@ -695,7 +706,7 @@ pub fn run_process_tree_cancellation_witness(
         require_absent(&path, subject)?;
     }
 
-    let descendant = DescendantGuard::spawn()?;
+    let descendant = DescendantGuard::spawn(execution_started)?;
     let ready_bytes = ready_record_bytes(layout, std::process::id(), descendant.id());
     control.publish(
         &task_path,
@@ -769,6 +780,7 @@ pub fn run_process_tree_cancellation_witness(
     _root: &SafeRoot,
     _remaining: Duration,
     _layout: &WitnessLayout,
+    _execution_started: &Cell<bool>,
 ) -> Result<serde_json::Value, WitnessFailure> {
     Err(WitnessFailure::blocked(
         "the process-tree cancellation witness is available only on Windows",
@@ -864,10 +876,16 @@ mod tests {
         let request_hash =
             "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         let layout = witness_layout(request_hash).unwrap();
-        let error =
-            run_process_tree_cancellation_witness(&root, Duration::from_millis(40), &layout)
-                .expect_err("a request-free witness must reach its direct timeout");
+        let execution_started = Cell::new(false);
+        let error = run_process_tree_cancellation_witness(
+            &root,
+            Duration::from_millis(40),
+            &layout,
+            &execution_started,
+        )
+        .expect_err("a request-free witness must reach its direct timeout");
         assert_eq!(error.kind, WitnessFailureKind::TimedOut, "{error:?}");
+        assert!(execution_started.get());
         assert!(!root_path.join(&layout.task_relative_path).exists());
         let parent = root_path.join(CONTROL_PARENT_DIRECTORY);
         assert_eq!(fs::read_dir(&parent).unwrap().count(), 0);
@@ -894,7 +912,14 @@ mod tests {
         let worker_layout = layout.clone();
         let worker = thread::spawn(move || {
             let root = SafeRoot::open(&worker_root).unwrap();
-            run_process_tree_cancellation_witness(&root, Duration::from_secs(5), &worker_layout)
+            let execution_started = Cell::new(false);
+            let result = run_process_tree_cancellation_witness(
+                &root,
+                Duration::from_secs(5),
+                &worker_layout,
+                &execution_started,
+            );
+            (result, execution_started.get())
         });
 
         let ready_path = root_path.join(&layout.ready_relative_path);
@@ -913,15 +938,48 @@ mod tests {
         )
         .unwrap();
 
-        let error = worker
-            .join()
-            .unwrap()
-            .expect_err("the malformed request must be rejected");
+        let (result, execution_started) = worker.join().unwrap();
+        let error = result.expect_err("the malformed request must be rejected");
         assert_eq!(error.kind, WitnessFailureKind::Blocked);
+        assert!(execution_started);
         assert!(!root_path.join(&layout.task_relative_path).exists());
         let parent = root_path.join(CONTROL_PARENT_DIRECTORY);
         assert_eq!(fs::read_dir(&parent).unwrap().count(), 0);
         fs::remove_dir(parent).unwrap();
+        fs::remove_dir(root_path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn invalid_layout_and_absent_outer_lease_refuse_before_effects() {
+        let root_path = std::env::temp_dir().join(format!(
+            "bluefire-cancellation-early-test-{}-{}",
+            std::process::id(),
+            crate::contract::utc_now().timestamp_nanos_opt().unwrap()
+        ));
+        fs::create_dir(&root_path).unwrap();
+        let root = SafeRoot::open(&root_path).unwrap();
+        let layout = witness_layout(&format!("sha256:{}", "a".repeat(64))).unwrap();
+        let mut changed = layout.clone();
+        changed.task_id = "unreviewed".into();
+        let execution_started = Cell::new(false);
+        let error = run_process_tree_cancellation_witness(
+            &root,
+            Duration::from_secs(1),
+            &changed,
+            &execution_started,
+        )
+        .expect_err("a changed layout must be refused before control-directory setup");
+        assert_eq!(error.kind, WitnessFailureKind::Blocked);
+        assert!(!execution_started.get());
+        let error =
+            create_control_directory(&root, &layout, Some(&"b".repeat(64)), &execution_started)
+                .err()
+                .expect("an absent outer lease cannot create its own parent");
+        assert_eq!(error.kind, WitnessFailureKind::Blocked);
+        assert!(!execution_started.get());
+        assert!(!root_path.join(CONTROL_PARENT_DIRECTORY).exists());
+        drop(root);
         fs::remove_dir(root_path).unwrap();
     }
 }

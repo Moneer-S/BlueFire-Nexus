@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence, cast
 
 from . import install_gate_archive as archive_io
+from . import install_gate_browser_runtime as browser_runtime
 from . import install_gate_validation as validation
 from . import install_gate_workspace as workspace
 from .install_gate_package_metadata import _canonical_name as _canonical_name
@@ -64,7 +65,7 @@ _EXPECTED_ASSERTIONS: Mapping[str, tuple[str, tuple[str, ...], str, str]] = {
     ),
     "GATE-01-UI-LAUNCH": (
         "dynamic",
-        ("gate01-ui-health-report.json",),
+        ("gate01-ui-health-report.json", "gate01-browser-tooling-report.json"),
         "GATE-01.production-ui.loopback-health.v1",
         "ui_launch",
     ),
@@ -615,8 +616,17 @@ def _run_installed_helper(
     helper_copy: Path,
     support_copy: Path,
 ) -> Mapping[str, Any]:
+    node, browser_module, tooling = browser_runtime.browser_probe_runtime(
+        forbidden_checkout, source
+    )
+    browser_identity = evidence_dir / "gate01-browser-tooling-report.json"
+    _write_json(browser_identity, tooling)
+    browser_probe = evidence_dir / "p.mjs"
+    ui_health = evidence_dir / "u.py"
     shutil.copyfile(source / "tools" / "run_install_gate_journey.py", helper_copy)
     shutil.copyfile(source / "tools" / "install_gate_journey_support.py", support_copy)
+    shutil.copyfile(source / "tools" / "run_install_gate_browser_probe.mjs", browser_probe)
+    shutil.copyfile(source / "tools" / "install_gate_ui_health.py", ui_health)
     exit_code, summary = _run_json(
         [
             os.fspath(python),
@@ -630,6 +640,16 @@ def _run_installed_helper(
             os.fspath(forbidden_checkout),
             "--support-module",
             os.fspath(support_copy),
+            "--browser-node",
+            os.fspath(node),
+            "--browser-module",
+            os.fspath(browser_module),
+            "--browser-probe",
+            os.fspath(browser_probe),
+            "--browser-identity",
+            os.fspath(browser_identity),
+            "--ui-health-module",
+            os.fspath(ui_health),
         ],
         cwd=evidence_dir,
         environment=_environment(),
@@ -779,6 +799,9 @@ def _validate_reports(evidence_dir: Path) -> tuple[str, str]:
     validation.validate_package_runtime(package_runtime)
     validation.validate_dependency_runtime_binding(dependency_metadata, provision, package_runtime)
     validation.validate_ui(ui)
+    browser_runtime.validate_browser_tooling_report(
+        _load_json(evidence_dir / "gate01-browser-tooling-report.json")
+    )
     run_ids = validation.validate_journey(journey)
     validation.validate_runner_digest_binding(inspection, journey)
     validation.validate_structural(structural)
