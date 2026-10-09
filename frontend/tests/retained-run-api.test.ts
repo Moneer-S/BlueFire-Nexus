@@ -16,6 +16,8 @@ function envelope(observations: unknown) {
 }
 
 it("reads unfinished observations with GET while keeping finalized result reads strict", async () => {
+  const syntheticSession = "s".repeat(64);
+  sessionStorage.setItem("bluefire.browser-session.v1", syntheticSession);
   const fetch = respond(retained);
   expect(await api.retainedRunDetail(runId)).toEqual({ ...retained, retained_events_complete: true });
   await expect(api.runDetail(runId)).rejects.toMatchObject({ code: "run_not_finalized" });
@@ -26,7 +28,11 @@ it("reads unfinished observations with GET while keeping finalized result reads 
   for (const [, options] of fetch.mock.calls) {
     expect(options?.method ?? "GET").toBe("GET");
     expect(options?.body).toBeUndefined();
-    expect(options?.credentials).toBe("same-origin");
+    expect(options?.credentials).toBe("omit");
+    expect(options?.redirect).toBe("error");
+    const headers = new Headers(options?.headers);
+    expect(headers.get("Accept")).toBe("application/json");
+    expect(headers.get("X-BlueFire-Session")).toBe(syntheticSession);
   }
 });
 
