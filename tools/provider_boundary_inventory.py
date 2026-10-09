@@ -12,7 +12,7 @@ from tools.provider_gate_common import TRUSTED_PROCESS_BOUNDARY_PATHS, _sha256_b
 
 _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
     "bluefire/runner_client.py": "sha256:2f6eefc94b6d47b2d21133a8215a10b52be4be4e794cb2f1053f0bd3912b32b0",
-    "bluefire/runner_bootstrap.py": "sha256:0cdec225f25e4b5e980bca0c297685f9050eb1f503dce1803212de065bb3110a",
+    "bluefire/runner_bootstrap.py": "sha256:96cb388497058077fde8536f83c80f67f4796a343b407ab4071e340aeaa14957",
     "bluefire/runner_darwin_containment.py": "sha256:f02533a6cba3c29bc95d5aef5fbd4bfc0e30a830af4005fb6c1bf76a0b57353c",
     "bluefire/runner_windows_containment.py": "sha256:937456440a3c2dce94d24af695951ce19ca682b7752aa7437a5fae1f86bfb733",
     "bluefire/runner_linux_containment.py": "sha256:7b0f3cf3cd36304ba3c400439586efba98f682d34aa4053a12f478ef02eaea3a",

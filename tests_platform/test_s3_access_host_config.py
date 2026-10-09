@@ -45,7 +45,7 @@ def configured():
                 "runtime_root": "/opt/bluefire/s3-runtime",
                 "runtime_digest": request["runtime_digest"],
                 "worker_generation": request["worker_generation"],
-                "ledger_root": "/home/runner/s3-ledger",
+                "ledger_root": "/var/lib/bluefire-test/s3-ledger",
                 "credential_reference": "s3-test-environment.secret",
             }
         ],
@@ -78,9 +78,9 @@ def test_exact_configuration_has_only_a_safe_public_environment_projection():
     [
         ("runtime_root", "./relative"),
         ("runtime_root", "/opt/../tmp/runtime"),
-        ("ledger_root", "/home/runner//ledger"),
+        ("ledger_root", "/var/lib/bluefire-test//ledger"),
         ("ledger_root", "/tmp/ledger/"),
-        ("credential_reference", "/home/user/.aws/credentials"),
+        ("credential_reference", "/var/lib/bluefire-test/.aws/credentials"),
         ("credential_reference", "s3-another-environment.secret"),
         ("environment_id", "../another"),
         ("display_name", "bad\nlabel"),
@@ -121,7 +121,7 @@ def second_environment(row):
     entry.update(
         environment_id="second",
         credential_reference="s3-second.secret",
-        ledger_root="/home/runner/different-journal",
+        ledger_root="/var/lib/bluefire-test/different-journal",
     )
     entry["scope"]["expires_at"] = "2026-10-09T00:59:00Z"
     row["environments"].append(entry)
