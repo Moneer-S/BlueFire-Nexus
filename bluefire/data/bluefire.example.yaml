@@ -128,7 +128,6 @@ runner_profiles:
       - sandbox.identity-material.inspect.v1
       - sandbox.fixture.create.v1
       - sandbox.fixture.transform.v1
-      - sandbox.permission.chmod.v1
       - file_access.probe.non_owner.v1
       - file_access.verify.owner.v1
       - sandbox.discovery.list.v1

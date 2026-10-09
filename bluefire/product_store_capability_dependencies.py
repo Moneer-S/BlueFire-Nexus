@@ -21,13 +21,17 @@ def _file_access(connection, lease):
     return grant_pack(grant) == FILE_ACCESS_PACK
 
 
-def dependency_at(connection, attempt_id, lease):
-    table = (
-        "capability_file_access_bindings"
-        if _file_access(connection, lease)
-        else "capability_receiver_bindings"
+def _dependency_query(is_file):
+    return (
+        "SELECT * FROM capability_file_access_bindings WHERE attempt_id=?"
+        if is_file
+        else "SELECT * FROM capability_receiver_bindings WHERE attempt_id=?"
     )
-    return _document(_one(connection, f"SELECT * FROM {table} WHERE attempt_id=?", attempt_id))
+
+
+def dependency_at(connection, attempt_id, lease):
+    query = _dependency_query(_file_access(connection, lease))
+    return _document(_one(connection, query, attempt_id))
 
 
 def bind_file_access(store, attempt_id, *, binding_digest, resource_generation, control_revision):
@@ -189,10 +193,7 @@ def validate_dependency(connection, attempt_id, lease, receipt):
         or receipt["lease_digest"] != lease["lease_digest"]
     ):
         raise ProductStoreError("Capability settlement does not bind its exact attempt and pack.")
-    table = "capability_file_access_bindings" if is_file else "capability_receiver_bindings"
-    binding_row = connection.execute(
-        f"SELECT * FROM {table} WHERE attempt_id=?", (attempt_id,)
-    ).fetchone()
+    binding_row = connection.execute(_dependency_query(is_file), (attempt_id,)).fetchone()
     dependency = receipt[dependency_key]
     if binding_row is None:
         if connection.execute(

@@ -1,6 +1,7 @@
 """Pure retained-control admission and recovery checks; no enrolled worker runs."""
 
 from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,6 +31,11 @@ def operation(tmp_path):
             Path(__file__).resolve().parents[1] / "config/bluefire.example.yaml"
         ).runner_profiles
         if p.id == "sandbox-execute.v1"
+    )
+    # This pure fixture opts in to the method; real setup also requires its
+    # reviewed native-tool installation and a successful readiness inspection.
+    profile = replace(
+        profile, enabled_actions=(*profile.enabled_actions, "sandbox.permission.chmod.v1")
     )
     root = str((tmp_path / "retained").resolve())
     enrollment = {

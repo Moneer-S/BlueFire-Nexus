@@ -340,7 +340,11 @@ fn probe(
     message.msg_iov = &mut vector;
     message.msg_iovlen = 1;
     message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = size_of_val(&control);
+    // Linux libc uses different ancillary-length types on glibc and musl.
+    #[allow(clippy::unnecessary_cast)]
+    {
+        message.msg_controllen = size_of_val(&control) as _;
+    }
     let received = unsafe { libc::recvmsg(descriptor, &mut message, libc::MSG_CMSG_CLOEXEC) };
     require(received >= 0)?;
     let mut credentials = Vec::new();
@@ -349,16 +353,18 @@ fn probe(
         let mut header = libc::CMSG_FIRSTHDR(&message);
         while !header.is_null() {
             let item = &*header;
+            #[allow(clippy::unnecessary_cast)]
+            let control_length = item.cmsg_len as usize;
             if item.cmsg_level == libc::SOL_SOCKET
                 && item.cmsg_type == libc::SCM_CREDENTIALS
-                && item.cmsg_len == libc::CMSG_LEN(size_of::<libc::ucred>() as u32) as usize
+                && control_length == libc::CMSG_LEN(size_of::<libc::ucred>() as u32) as usize
             {
                 let peer = std::ptr::read_unaligned(libc::CMSG_DATA(header).cast::<libc::ucred>());
                 credentials.push((peer.pid as u32, peer.uid, peer.gid));
             } else {
                 unexpected = true;
                 if item.cmsg_level == libc::SOL_SOCKET && item.cmsg_type == libc::SCM_RIGHTS {
-                    let length = item.cmsg_len.saturating_sub(libc::CMSG_LEN(0) as usize)
+                    let length = control_length.saturating_sub(libc::CMSG_LEN(0) as usize)
                         / size_of::<libc::c_int>();
                     for index in 0..length {
                         libc::close(std::ptr::read_unaligned(

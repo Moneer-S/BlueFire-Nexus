@@ -478,6 +478,11 @@ The ordinary File access UI uses these query-free routes for the finite Linux
 owner/non-owner workflow. Status reports prepared enrollment; reading status does
 not provision identities, start a worker, or authorize an operation.
 
+The permission-change method is not enabled in the ordinary default Execute
+profile. File-access setup must explicitly enable `sandbox.permission.chmod.v1`
+with its reviewed `native_tool_installations` entry; an unconfigured structural
+tool is not ready and must not block unrelated default-profile runs.
+
 | Method | Path | Result |
 |---|---|---|
 | GET | `/api/v1/file-access/status` | Current enrollment readiness and allowed operations |
