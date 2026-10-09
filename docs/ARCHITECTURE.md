@@ -61,7 +61,7 @@ The UI and CLI are adapters over the same service boundary. Neither browser stat
 | bluefire/research.py | Strict pinned source/version/license/relationship registry | Fetching or executing external research |
 | bluefire/replay.py | Lineage, restart, and compatible behavior substitution | Mutating source runs through the replay API |
 | bluefire/comparison.py | Normalized run summaries and deltas | Causal inference |
-| bluefire/api.py and bluefire/ui/ | Loopback-only HTTP adapter, one-use browser bootstrap exchange, bounded HttpOnly session, and browser workspace | Authentication for remote exposure or multi-user identity |
+| bluefire/api.py and bluefire/ui/ | Loopback-only HTTP adapter, one-use browser bootstrap exchange, bounded origin-scoped header session, and browser workspace | Authentication for remote exposure or multi-user identity |
 | bluefire/plugins.py | Strict declarative plugin manifest inventory | Importing or executing third-party code |
 
 ## Contract model

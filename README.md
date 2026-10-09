@@ -66,7 +66,7 @@ python3 -m venv .venv
 
 </details>
 
-The launcher opens your browser. If it cannot, open the URL printed in the terminal. Keep the terminal running and reuse the same `workspace` folder when you restart.
+The launcher opens your browser without passing it a credential. Enter the one-time connection code printed in the terminal. If the browser does not open, use the printed URL. Keep the terminal running and reuse the same `workspace` folder when you restart. A session belongs to its browser tab and exact local address, including the port; sharing the URL does not share access. Relaunch BlueFire for a fresh code after the session expires. `--no-browser` also prints a one-use manual launch link; treat that link as a credential and do not share it.
 
 Open an example in **Experiments** to inspect or edit it in **Build**. Choose **Simulate** to preview the steps without performing their actions, or **Execute** to run them after setting up a compatible runner and reviewing the plan. Simulation does not need an AI account. See [running an experiment](docs/OPERATOR_GUIDE.md) and [the disposable Linux lab](docs/PREPARED_LINUX_LAB.md) for setup.
 

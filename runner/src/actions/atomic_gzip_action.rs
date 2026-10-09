@@ -71,6 +71,7 @@ impl PreparedAction for AtomicGzipPrepared {
             .root
             .resolve_existing(&input)
             .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
+        context.mark_execution_started();
         let bytes = read_file_bounded(&source, limit)
             .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
         verify_collection_input(&bytes, &Some(params.expected_sha256.clone()))?;

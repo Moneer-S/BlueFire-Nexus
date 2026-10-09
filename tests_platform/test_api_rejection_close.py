@@ -33,10 +33,10 @@ def test_post_path_refusal_closes_unread_body_without_parsing_following_request(
             client.sendall(
                 (
                     f"POST {path} HTTP/1.1\r\nHost: {authority}\r\n"
-                    f"Origin: http://{authority}\r\nCookie: {server._test_browser_cookie}\r\n"
+                    f"Origin: http://{authority}\r\nX-BlueFire-Session: {server._test_browser_session}\r\n"
                     "Content-Length: 2\r\nContent-Type: application/json\r\n\r\n"
                     "{}GET /api/v1/catalog HTTP/1.1\r\n"
-                    f"Host: {authority}\r\nCookie: {server._test_browser_cookie}\r\n\r\n"
+                    f"Host: {authority}\r\nX-BlueFire-Session: {server._test_browser_session}\r\n\r\n"
                 ).encode("ascii")
             )
             client.shutdown(socket.SHUT_WR)
@@ -124,7 +124,7 @@ def test_rejection_reaches_client_before_delayed_body_and_closes_without_dispatc
             headers = {
                 "Host": authority,
                 "Origin": f"http://{authority}",
-                "Cookie": server._test_browser_cookie,
+                "X-BlueFire-Session": server._test_browser_session,
                 "Content-Length": "2",
                 "Content-Type": "application/json",
             }
@@ -151,8 +151,8 @@ def test_rejection_reaches_client_before_delayed_body_and_closes_without_dispatc
                 client.sendall(
                     b"{}GET /api/v1/catalog HTTP/1.1\r\nHost: "
                     + authority.encode("ascii")
-                    + b"\r\nCookie: "
-                    + server._test_browser_cookie.encode("ascii")
+                    + b"\r\nX-BlueFire-Session: "
+                    + server._test_browser_session.encode("ascii")
                     + b"\r\n\r\n"
                 )
                 client.shutdown(socket.SHUT_WR)
@@ -244,10 +244,10 @@ def test_unsupported_method_with_body_closes_without_parsing_following_request(
             client.sendall(
                 (
                     f"{method} /api/v1/catalog HTTP/1.1\r\nHost: {authority}\r\n"
-                    f"Origin: http://{authority}\r\nCookie: {server._test_browser_cookie}\r\n"
+                    f"Origin: http://{authority}\r\nX-BlueFire-Session: {server._test_browser_session}\r\n"
                     "Content-Length: 2\r\nContent-Type: application/json\r\n\r\n"
                     "{}GET /api/v1/catalog HTTP/1.1\r\n"
-                    f"Host: {authority}\r\nCookie: {server._test_browser_cookie}\r\n\r\n"
+                    f"Host: {authority}\r\nX-BlueFire-Session: {server._test_browser_session}\r\n\r\n"
                 ).encode("ascii")
             )
             client.shutdown(socket.SHUT_WR)
@@ -276,10 +276,10 @@ def test_unsupported_method_without_body_keeps_the_connection_reusable() -> None
             client.sendall(
                 (
                     f"DELETE /api/v1/catalog HTTP/1.1\r\nHost: {authority}\r\n"
-                    f"Origin: http://{authority}\r\nCookie: {server._test_browser_cookie}\r\n"
+                    f"Origin: http://{authority}\r\nX-BlueFire-Session: {server._test_browser_session}\r\n"
                     "\r\n"
                     f"GET /api/v1/catalog HTTP/1.1\r\nHost: {authority}\r\n"
-                    f"Cookie: {server._test_browser_cookie}\r\n\r\n"
+                    f"X-BlueFire-Session: {server._test_browser_session}\r\n\r\n"
                 ).encode("ascii")
             )
             client.shutdown(socket.SHUT_WR)

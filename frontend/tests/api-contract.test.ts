@@ -41,7 +41,7 @@ describe("control-plane request contracts", () => {
       { schema_version: "bluefire.native-tool-candidate.v1", action_id: "sandbox.permission.chmod.v1", installation_location: "/usr/bin/chmod", tool_version: "9.4-3ubuntu6.1" },
       { schema_version: "bluefire.native-tool-candidate.v1", action_id: "sandbox.collection.atomic-gzip.v1", installation_location: "/usr/bin/gzip", tool_version: "1.12-1ubuntu3.2" },
     ]);
-    expect(fetchMock.mock.calls.every(([, init]) => init?.method === "POST" && init.credentials === "same-origin")).toBe(true);
+    expect(fetchMock.mock.calls.every(([, init]) => init?.method === "POST" && init.credentials === "omit")).toBe(true);
   });
   it("uses only explicit authenticated model-authorization endpoints and exact reviewed fields", async () => {
     const row = authorization();
@@ -51,8 +51,8 @@ describe("control-plane request contracts", () => {
     await api.aiAuthorizations(); await api.authorizeAI(body); await api.revokeAIAuthorization(row.authorization_id);
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual(["/api/v1/ai/authorizations", "/api/v1/ai/authorizations", `/api/v1/ai/authorizations/${row.authorization_id}/revoke`]);
     expect(JSON.parse(String(fetchMock.mock.calls[1]![1]!.body))).toEqual(body);
-    expect(fetchMock.mock.calls[1]![1]).toMatchObject({ method: "POST", credentials: "same-origin" });
-    expect(fetchMock.mock.calls[2]![1]).toMatchObject({ method: "POST", credentials: "same-origin", body: "{}" });
+    expect(fetchMock.mock.calls[1]![1]).toMatchObject({ method: "POST", credentials: "omit" });
+    expect(fetchMock.mock.calls[2]![1]).toMatchObject({ method: "POST", credentials: "omit", body: "{}" });
   });
   it("sends exact autonomy and provider IDs without unsupported browser preferences", () => {
     const payload = buildRunPayload(demoScenario, configuration);
