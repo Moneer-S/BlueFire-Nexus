@@ -1,13 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import { api, type ReplayPreparation } from "../src/lib/api";
-import type { AdaptiveAuthorization, AdaptiveExecution } from "../src/lib/adaptive-execution";
+import type { AdaptiveAuthorization, AdaptiveAuthorizationV2, AdaptiveExecutionV1, AdaptiveExecutionV2 } from "../src/lib/adaptive-execution";
 import { continuationApprovalPreflight, hasAdaptiveApprovalReview, requiresAdaptiveReview, storedRunApprovalPreflight } from "../src/lib/approvalReview";
 import { demoScenario } from "../src/lib/demo";
 import type { AIProposalReview, PreflightReport, RunJob } from "../src/types";
 
 const digest = `sha256:${"a".repeat(64)}`;
 const methods = ["sandbox.collection.records.v1", "sandbox.collection.archive.v1"].map(id => ({ behavior_id: id, action_id: id }));
-const policy: AdaptiveExecution = { schema_version: "bluefire.adaptive-execution.v1", steps: [{ step_id: "stage", methods }], eligible_outcomes: ["failed"], max_retries: 1, on_provider_failure: "stop" };
+const policy: AdaptiveExecutionV1 = { schema_version: "bluefire.adaptive-execution.v1", steps: [{ step_id: "stage", methods }], eligible_outcomes: ["failed"], max_retries: 1, on_provider_failure: "stop" };
+
+function asV2Authorization(base: AdaptiveAuthorization, v2Policy: AdaptiveExecutionV2): AdaptiveAuthorizationV2 {
+  return { ...base, schema_version: "bluefire.adaptive-authorization.v2", policy: v2Policy };
+}
 
 function fixture(adaptive = true) {
   const scenario = { ...structuredClone(demoScenario), ...(adaptive ? { adaptive_execution: policy } : {}) };
@@ -31,6 +35,25 @@ function fixture(adaptive = true) {
 }
 
 describe("adaptive review requirements follow the saved job", () => {
+  it("accepts v2 only when authorization and policy versions match and budgets remain valid", () => {
+    const { preflight, authorization: v1Authorization } = fixture();
+    const v2: AdaptiveExecutionV2 = { schema_version: "bluefire.adaptive-execution.v2", steps: [{ step_id: "stage", methods, max_retries: 1 }],
+      eligible_outcomes: ["failed"], max_retries: 1, on_provider_failure: "stop" };
+    const authorization = asV2Authorization(v1Authorization, v2);
+    preflight.adaptive_authorization = authorization;
+    expect(hasAdaptiveApprovalReview(preflight, true)).toBe(true);
+    authorization.steps[0]!.methods[0]!.plan_step.action_id = "sandbox.collection.unreviewed.v1";
+    expect(hasAdaptiveApprovalReview(preflight, true)).toBe(false);
+    authorization.steps[0]!.methods[0]!.plan_step.action_id = methods[0]!.action_id;
+
+    preflight.adaptive_authorization = { ...authorization, schema_version: "bluefire.adaptive-authorization.v1" } as unknown as AdaptiveAuthorization;
+    expect(hasAdaptiveApprovalReview(preflight, true)).toBe(false);
+    preflight.adaptive_authorization = { ...v1Authorization, schema_version: "bluefire.adaptive-authorization.v2" } as unknown as AdaptiveAuthorization;
+    expect(hasAdaptiveApprovalReview(preflight, true)).toBe(false);
+    preflight.adaptive_authorization = asV2Authorization(v1Authorization, { ...v2, steps: [{ step_id: "stage", methods, max_retries: 2 }] });
+    expect(hasAdaptiveApprovalReview(preflight, true)).toBe(false);
+  });
+
   it.each(["direct", "submission", "replay"])("retains the requirement from the %s scenario when a returned review is missing", source => {
     const { scenario, preflight, job } = fixture();
     job.request = source === "direct" ? { scenario } : source === "submission" ? { _run_submission_request: { scenario } } : { replay_preparation: { scenario } };
@@ -94,7 +117,7 @@ describe("adaptive replay approval restoration", () => {
 });
 
 it("requires finite review for a v4 continuation even when the parent uses a scenario reference", () => {
-  const { job, preflight, authorization } = fixture();
+  const { job, preflight, authorization: v1Authorization } = fixture();
   job.request = { scenario_id: demoScenario.id, approval_request_id: "original" };
   job.progress = { approval_kind: "ai_proposal_execute", approval_request_id: "approval-reviewed", proposal_record_id: "proposal" };
   const review: AIProposalReview = { schema_version: "bluefire.ai-proposal-review.v1", job_id: job.job_id, proposal_record_id: "proposal", source_run_id: "run-source", source_proposal_id: "source-proposal", state_digest: digest, plan_digest: digest, proposal_digest: digest, status: "accepted", record: { schema_version: "bluefire.ai-proposal-record.v4" }, created_at: "2026-01-01T00:00:00Z",
@@ -104,6 +127,10 @@ it("requires finite review for a v4 continuation even when the parent uses a sce
   delete preflight.adaptive_authorization;
   expect(continuationApprovalPreflight(job, review, job.approval_request)).toBeUndefined();
   expect(continuationApprovalPreflight(job, review, job.approval_request, { forDisplayOnly: true })).toBeUndefined();
-  preflight.adaptive_authorization = authorization;
+  preflight.adaptive_authorization = v1Authorization;
+  expect(continuationApprovalPreflight(job, review, job.approval_request)).toBe(preflight);
+  review.record = { schema_version: "bluefire.ai-proposal-record.v5" };
+  expect(continuationApprovalPreflight(job, review, job.approval_request)).toBeUndefined();
+  preflight.adaptive_authorization = asV2Authorization(v1Authorization, { ...policy, schema_version: "bluefire.adaptive-execution.v2", steps: [{ step_id: "stage", methods, max_retries: 1 }] });
   expect(continuationApprovalPreflight(job, review, job.approval_request)).toBe(preflight);
 });

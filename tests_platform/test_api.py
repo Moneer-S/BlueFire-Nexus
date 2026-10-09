@@ -13,7 +13,7 @@ import bluefire.api as api_module
 from bluefire.api import (
     BROWSER_BOOTSTRAP_HEADER,
     BROWSER_BOOTSTRAP_LIFETIME_SECONDS,
-    BROWSER_SESSION_COOKIE,
+    BROWSER_SESSION_HEADER,
     BROWSER_SESSION_LIFETIME_SECONDS,
     APIError,
     BlueFireHTTPServer,
@@ -53,6 +53,78 @@ class StubService:
         self.calls.append(("catalog",))
         return {"behaviors": [{"id": "observe.host.v1"}], "runner_profiles": []}
 
+    def file_access_status(self):
+        self.calls.append(("file_access_status",))
+        return {"saved": True}
+
+    def file_access_review(self, request):
+        self.calls.append(("file_access_review", request))
+        return {"saved": True}
+
+    def submit_file_access_operation(self, request):
+        self.calls.append(("submit_file_access_operation", request))
+        return {"saved": True}
+
+    def file_access_operation(self, job_id):
+        self.calls.append(("file_access_operation", job_id))
+        return {"saved": True}
+
+    def list_file_access_controls(self, request):
+        self.calls.append(("list_file_access_controls", request))
+        return {"saved": True}
+
+    def file_access_control(self, owner_id):
+        self.calls.append(("file_access_control", owner_id))
+        return {"saved": True}
+
+    def reconcile_file_access_operation(self, job_id, request):
+        self.calls.append(("reconcile_file_access_operation", job_id, request))
+        return {"saved": True}
+
+    def file_access_reconciliation(self, job_id, submission_id):
+        self.calls.append(("file_access_reconciliation", job_id, submission_id))
+        return {"saved": True}
+
+    def composition_context(self, request):
+        self.calls.append(("composition_context", request))
+        return {"saved": True}
+
+    def authorize_composition(self, request):
+        self.calls.append(("authorize_composition", request))
+        return {"saved": True}
+
+    def list_composition_objectives(self, request):
+        self.calls.append(("list_composition_objectives", request))
+        return {"saved": True}
+
+    def composition_objective(self, owner_id):
+        self.calls.append(("composition_objective", owner_id))
+        return {"saved": True}
+
+    def composition_proposal_context(self, owner_id, request):
+        self.calls.append(("composition_proposal_context", owner_id, request))
+        return {"saved": True}
+
+    def submit_composition_attempt(self, owner_id, request):
+        self.calls.append(("submit_composition_attempt", owner_id, request))
+        return {"saved": True}
+
+    def submit_composition_proposal(self, owner_id, request):
+        self.calls.append(("submit_composition_proposal", owner_id, request))
+        return {"saved": True}
+
+    def composition_proposal(self, job_id):
+        self.calls.append(("composition_proposal", job_id))
+        return {"saved": True}
+
+    def cancel_composition_proposal(self, job_id, request):
+        self.calls.append(("cancel_composition_proposal", job_id, request))
+        return {"saved": True}
+
+    def control_composition(self, owner_id, action, request):
+        self.calls.append(("control_composition", owner_id, action, request))
+        return {"saved": True}
+
     def receiver_defense_context(self, request):
         self.calls.append(("receiver_defense_context", request))
         return {"eligible": False}
@@ -76,6 +148,10 @@ class StubService:
     def review_receiver_defense(self, job_id, request):
         self.calls.append(("review_receiver_defense", job_id, request))
         return {"job": {"job_id": job_id}}
+
+    def decide_receiver_control(self, job_id, request):
+        self.calls.append(("decide_receiver_control", job_id, request))
+        return {"accepted": True}
 
     def scenarios(self):
         self.calls.append(("scenarios",))
@@ -586,9 +662,9 @@ def running_server(
                 extra_headers={BROWSER_BOOTSTRAP_HEADER: capability},
                 authenticated=False,
             )
-            assert status == 204
-            assert payload == b""
-            server._test_browser_cookie = headers["Set-Cookie"].split(";", 1)[0]  # type: ignore[attr-defined]
+            assert status == 200
+            assert "Set-Cookie" not in headers
+            server._test_browser_session = json_body(payload)["session"]  # type: ignore[attr-defined]
         yield server, target
     finally:
         server.shutdown()
@@ -614,9 +690,9 @@ def request(
     )
     headers = dict(extra_headers or {})
     if authenticated and path.startswith("/api/v1") and path.split("?", 1)[0] != "/api/v1/session":
-        cookie = getattr(server, "_test_browser_cookie", None)
-        if cookie is not None:
-            headers.setdefault("Cookie", cookie)
+        session = getattr(server, "_test_browser_session", None)
+        if session is not None:
+            headers.setdefault(BROWSER_SESSION_HEADER, session)
     if payload is not None:
         headers["Content-Type"] = content_type
     if method == "POST" and origin is not None:
@@ -808,7 +884,7 @@ def test_static_assets_are_public_but_local_api_requires_a_browser_session() -> 
         assert not service.calls
 
 
-def test_browser_bootstrap_is_single_use_and_sets_a_strict_bounded_cookie(
+def test_browser_bootstrap_is_single_use_and_returns_nonambient_session(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     capability = generate_browser_bootstrap_capability()
@@ -834,22 +910,13 @@ def test_browser_bootstrap_is_single_use_and_sets_a_strict_bounded_cookie(
             extra_headers={BROWSER_BOOTSTRAP_HEADER: capability},
             authenticated=False,
         )
-        assert status == 204
-        assert payload == b""
-        cookie_header = headers["Set-Cookie"]
-        cookie = cookie_header.split(";", 1)[0]
-        attributes = set(cookie_header.split("; ")[1:])
-        assert cookie.startswith(f"{BROWSER_SESSION_COOKIE}=")
-        assert attributes == {
-            "HttpOnly",
-            f"Max-Age={BROWSER_SESSION_LIFETIME_SECONDS}",
-            "Path=/api/v1",
-            "SameSite=Strict",
-        }
-        assert "Domain=" not in cookie_header
-        assert "Secure" not in attributes
-        assert "__Host-" not in cookie_header
-        assert capability not in cookie_header
+        assert status == 200
+        session = json_body(payload)["session"]
+        assert set(json_body(payload)) == {"session"}
+        assert isinstance(session, str) and len(session) == 64
+        assert "Set-Cookie" not in headers
+        assert headers["Cache-Control"] == "no-store"
+        assert capability != session
         assert capability not in repr(vars(service))
         assert capability not in repr(vars(server))
 
@@ -857,7 +924,7 @@ def test_browser_bootstrap_is_single_use_and_sets_a_strict_bounded_cookie(
             server,
             "GET",
             "/api/v1/session",
-            extra_headers={"Cookie": cookie},
+            extra_headers={BROWSER_SESSION_HEADER: session},
             authenticated=False,
         )
         assert status == 204
@@ -934,8 +1001,8 @@ def test_concurrent_browser_bootstrap_exchange_has_exactly_one_winner() -> None:
             thread.join(timeout=5)
 
         assert all(not thread.is_alive() for thread in threads)
-        assert sorted(status for status, _, _ in results) == [204] + [401] * 7
-        assert sum("Set-Cookie" in headers for _, headers, _ in results) == 1
+        assert sorted(status for status, _, _ in results) == [200] + [401] * 7
+        assert all("Set-Cookie" not in headers for _, headers, _ in results)
         assert all(capability.encode() not in payload for _, _, payload in results)
         assert not service.calls
 
@@ -968,21 +1035,21 @@ def test_bootstrap_and_browser_sessions_expire_without_service_dispatch(
         authenticate=False,
         bootstrap_capability=capability,
     ) as (server, service):
-        status, headers, _ = request(
+        status, _, payload = request(
             server,
             "POST",
             "/api/v1/session",
             extra_headers={BROWSER_BOOTSTRAP_HEADER: capability},
             authenticated=False,
         )
-        assert status == 204
-        cookie = headers["Set-Cookie"].split(";", 1)[0]
+        assert status == 200
+        session = json_body(payload)["session"]
         now[0] += BROWSER_SESSION_LIFETIME_SECONDS
         port = server.server_address[1]
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
         connection.putrequest("POST", "/api/v1/scenarios/validate")
         connection.putheader("Origin", f"http://127.0.0.1:{port}")
-        connection.putheader("Cookie", cookie)
+        connection.putheader(BROWSER_SESSION_HEADER, session)
         connection.putheader("Content-Type", "application/json")
         connection.putheader("Content-Length", "1048576")
         connection.endheaders()
@@ -996,23 +1063,22 @@ def test_bootstrap_and_browser_sessions_expire_without_service_dispatch(
         assert not service.calls
 
 
-def test_browser_session_cookie_parsing_is_exact_and_duplicate_safe() -> None:
+def test_browser_session_header_is_exact_and_duplicate_safe() -> None:
     with running_server() as (server, service):
-        valid_cookie = server._test_browser_cookie  # type: ignore[attr-defined]
-        session_value = valid_cookie.split("=", 1)[1]
+        session = server._test_browser_session  # type: ignore[attr-defined]
         malformed = (
-            f"{valid_cookie}; {valid_cookie}",
-            f"{BROWSER_SESSION_COOKIE}=not-the-session",
-            f'{BROWSER_SESSION_COOKIE}="{session_value}"',
-            f"theme=dark, {valid_cookie}",
-            f"broken; {valid_cookie}",
+            f"{session}, {session}",
+            "not-the-session",
+            f'"{session}"',
+            f"Bearer {session}",
+            session + " ",
         )
-        for cookie in malformed:
+        for value in malformed:
             status, _, payload = request(
                 server,
                 "GET",
                 "/api/v1/catalog",
-                extra_headers={"Cookie": cookie},
+                extra_headers={BROWSER_SESSION_HEADER: value},
                 authenticated=False,
             )
             assert status == 401
@@ -1022,7 +1088,7 @@ def test_browser_session_cookie_parsing_is_exact_and_duplicate_safe() -> None:
             server,
             "GET",
             "/api/v1/session",
-            extra_headers={"Cookie": f"theme=dark; {valid_cookie}"},
+            extra_headers={BROWSER_SESSION_HEADER: session},
             authenticated=False,
         )
         assert status == 204
@@ -1030,14 +1096,47 @@ def test_browser_session_cookie_parsing_is_exact_and_duplicate_safe() -> None:
         port = server.server_address[1]
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
         connection.putrequest("GET", "/api/v1/catalog")
-        connection.putheader("Cookie", valid_cookie)
-        connection.putheader("Cookie", valid_cookie)
+        connection.putheader(BROWSER_SESSION_HEADER, session)
+        connection.putheader(BROWSER_SESSION_HEADER, session)
         connection.endheaders()
         response = connection.getresponse()
         payload = response.read()
         connection.close()
         assert response.status == 401
         assert json_body(payload)["error"]["code"] == "browser_session_required"
+        assert not service.calls
+
+
+def test_cookie_only_replay_cannot_authorize_any_management_request() -> None:
+    with running_server() as (server, service):
+        session = server._test_browser_session  # type: ignore[attr-defined]
+        cookie = f"bluefire_session={session}"
+        for method, path in (
+            ("GET", "/api/v1/session"),
+            ("GET", "/api/v1/catalog"),
+            ("POST", "/api/v1/scenarios/validate"),
+        ):
+            status, _, payload = request(
+                server, method, path, extra_headers={"Cookie": cookie}, authenticated=False
+            )
+            assert status == 401
+            assert json_body(payload)["error"]["code"] == "browser_session_required"
+            assert session.encode() not in payload
+        assert not service.calls
+
+
+def test_session_header_is_bound_to_its_listener_authority() -> None:
+    with running_server() as (first, _), running_server() as (second, service):
+        session = first._test_browser_session  # type: ignore[attr-defined]
+        status, _, payload = request(
+            second,
+            "GET",
+            "/api/v1/catalog",
+            extra_headers={BROWSER_SESSION_HEADER: session},
+            authenticated=False,
+        )
+        assert status == 401
+        assert session.encode() not in payload
         assert not service.calls
 
 
@@ -2130,7 +2229,7 @@ def test_content_length_is_required_for_post() -> None:
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
         connection.putrequest("POST", "/api/v1/scenarios/validate")
         connection.putheader("Origin", f"http://127.0.0.1:{port}")
-        connection.putheader("Cookie", server._test_browser_cookie)  # type: ignore[attr-defined]
+        connection.putheader(BROWSER_SESSION_HEADER, server._test_browser_session)  # type: ignore[attr-defined]
         connection.putheader("Content-Type", "application/json")
         connection.endheaders()
         response = connection.getresponse()
@@ -2157,7 +2256,7 @@ def test_security_sensitive_duplicate_headers_are_rejected(
         connection.putrequest("POST", "/api/v1/scenarios/validate")
         headers = {
             "Origin": f"http://127.0.0.1:{port}",
-            "Cookie": server._test_browser_cookie,  # type: ignore[attr-defined]
+            BROWSER_SESSION_HEADER: server._test_browser_session,  # type: ignore[attr-defined]
             "Content-Type": "application/json",
             "Content-Length": "2",
         }

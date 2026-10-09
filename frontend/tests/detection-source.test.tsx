@@ -50,11 +50,11 @@ it("recomputes predicted fields when a finite permission tune changes condition"
   const tune = vi.spyOn(api, "tuneDetection").mockResolvedValue({ schema_version: "v1", candidate: parent });
   await screen.findByRole("heading", { name: "Baseline SQL" });
   await user.click(screen.getByRole("tab", { name: "Revisions" }));
-  await user.click(screen.getByText("Advanced clone and tune"));
+  await user.click(screen.getByText("Revise this rule"));
   await user.click(screen.getByRole("radio", { name: /Tune rule behavior/i }));
   await user.selectOptions(screen.getByRole("combobox", { name: "Detection condition" }), "non_owner_writable");
   await user.type(screen.getByRole("textbox", { name: /Required research reason/ }), "Review permission condition change.");
-  await user.click(screen.getByRole("button", { name: "Create immutable tune" }));
+  await user.click(screen.getByRole("button", { name: "Save revised rule" }));
   await waitFor(() => expect(tune).toHaveBeenCalledTimes(1));
   expect(tune.mock.calls[0]![1]).toMatchObject({
     selection: permissionSelection("non_owner_writable"),
@@ -68,7 +68,7 @@ it("explicitly updates a legacy permission draft without rewriting its saved par
   const tune = vi.spyOn(api, "tuneDetection").mockResolvedValue({ schema_version: "v1", candidate: parent });
   await screen.findByRole("heading", { name: "Baseline SQL" });
   await user.click(screen.getByRole("tab", { name: "Revisions" }));
-  await user.click(screen.getByText("Advanced clone and tune"));
+  await user.click(screen.getByText("Revise this rule"));
   await user.click(screen.getByRole("radio", { name: /Tune rule behavior/i }));
   expect(screen.getByRole("combobox", { name: "Detection condition" })).toHaveValue("world_writable");
   expect(tune).not.toHaveBeenCalled();
@@ -76,7 +76,7 @@ it("explicitly updates a legacy permission draft without rewriting its saved par
   expect(tune).not.toHaveBeenCalled();
   expect(candidates[0]).toEqual(original);
   await user.type(screen.getByRole("textbox", { name: /Required research reason/ }), "Match independent filesystem observations.");
-  await user.click(screen.getByRole("button", { name: "Create immutable tune" }));
+  await user.click(screen.getByRole("button", { name: "Save revised rule" }));
   await waitFor(() => expect(tune).toHaveBeenCalledTimes(1));
   expect(tune.mock.calls[0]![1]).toMatchObject({
     selection: permissionSelection("world_writable"),
@@ -90,14 +90,14 @@ it("preserves candidate predicted fields for custom permission JSON", async () =
   const tune = vi.spyOn(api, "tuneDetection").mockResolvedValue({ schema_version: "v1", candidate: parent });
   await screen.findByRole("heading", { name: "Baseline SQL" });
   await user.click(screen.getByRole("tab", { name: "Revisions" }));
-  await user.click(screen.getByText("Advanced clone and tune"));
+  await user.click(screen.getByText("Revise this rule"));
   await user.click(screen.getByRole("radio", { name: /Tune rule behavior/i }));
   await user.click(screen.getByText("Advanced structured inputs", { selector: "summary" }));
   await user.clear(screen.getByRole("textbox", { name: /Tuned selection JSON/ }));
   await user.paste('{"artifact_type":"file_observation","custom_permission":true}');
   expect(screen.queryByRole("combobox", { name: "Detection condition" })).not.toBeInTheDocument();
   await user.type(screen.getByRole("textbox", { name: /Required research reason/ }), "Review custom permission condition.");
-  await user.click(screen.getByRole("button", { name: "Create immutable tune" }));
+  await user.click(screen.getByRole("button", { name: "Save revised rule" }));
   await waitFor(() => expect(tune).toHaveBeenCalledTimes(1));
   expect(tune.mock.calls[0]![1]).toMatchObject({
     selection: { artifact_type: "file_observation", custom_permission: true },

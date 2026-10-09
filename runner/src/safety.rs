@@ -478,7 +478,7 @@ impl SafeRoot {
         })
     }
 
-    fn workspace_id(&self) -> String {
+    pub(crate) fn workspace_id(&self) -> String {
         let portable = self.root.to_string_lossy().replace('\\', "/");
         sha256_hex(portable.as_bytes())
     }

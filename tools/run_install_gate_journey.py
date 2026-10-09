@@ -18,24 +18,23 @@ import sysconfig
 import threading
 import time
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 SUMMARY_SCHEMA = "bluefire.gate01-helper-summary.v1"
-PACKAGE_SCHEMA = "bluefire.gate01-installed-package.v1"
-UI_SCHEMA = "bluefire.gate01-ui-health.v1"
+PACKAGE_SCHEMA = "bluefire.gate01-installed-package.v2"
+UI_SCHEMA = "bluefire.gate01-ui-health.v2"
 JOURNEY_SCHEMA = "bluefire.gate01-journey.v1"
 PROFILE_ID = "sandbox-restricted-owned.v1"
 SCENARIO_ID = "scenario.restricted.persistence-canary.v1"
 COLLECTOR_ID = "collector.filesystem.sandbox.v1"
 RUNNER_ID = "bluefire-rust-runner.v1"
-_LAUNCH = re.compile(
-    r"^BlueFire local console: http://127\.0\.0\.1:([0-9]{1,5})/"
-    r"#bluefire-session=([A-Za-z0-9_-]{64})$"
-)
+_LAUNCH = re.compile(r"^BlueFire local console: http://127\.0\.0\.1:([0-9]{1,5})/" r"$")
+_CONNECTION_CODE = re.compile(r"^One-time connection code: ([A-Za-z0-9_-]{64})$")
 _MAX_HTTP_BYTES = 16 * 1024 * 1024
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_RUNTIME_ROOT_CHARS = 48
 _SUPPORT: Any | None = None
+_UI_HEALTH: Any | None = None
 
 
 class JourneyError(RuntimeError):
@@ -51,7 +50,9 @@ def _require(condition: bool, code: str, message: str) -> None:
         raise JourneyError(code, message)
 
 
-def _load_support(path: Path, destination: Path, forbid_root: Path) -> Any:
+def _load_helper(
+    path: Path, destination: Path, forbid_root: Path, *, required: Sequence[str]
+) -> Any:
     # ``-I`` ignores PYTHONDONTWRITEBYTECODE, so enforce this in-process before
     # SourceFileLoader can persist a helper cache containing its absolute path.
     sys.dont_write_bytecode = True
@@ -63,39 +64,46 @@ def _load_support(path: Path, destination: Path, forbid_root: Path) -> Any:
         "support_module_invalid",
         "installed journey support module is outside its isolated helper directory",
     )
-    spec = importlib.util.spec_from_file_location("bluefire_gate01_journey_support", support_path)
-    _require(
-        spec is not None and spec.loader is not None,
-        "support_module_invalid",
-        "installed journey support module could not be loaded",
+    spec = importlib.util.spec_from_file_location(
+        f"bluefire_gate01_{support_path.stem}", support_path
     )
+    if spec is None or spec.loader is None:
+        raise JourneyError(
+            "support_module_invalid", "installed journey support module could not be loaded"
+        )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     _require(
-        all(
-            hasattr(module, name)
-            for name in (
-                "SupportError",
-                "attach_process_tree",
-                "cleanup_all",
-                "cleanup_journey",
-                "terminate_process_tree",
-                "probe_packaged_ui",
-                "remove_ephemeral_tree",
-                "validate_preflight",
-                "validate_job_approval_pointers",
-                "validate_fresh_replay_approval",
-                "validate_package_version",
-                "validate_approval",
-                "validate_run",
-                "wait_for_job",
-                "validate_bundles",
-            )
-        ),
+        all(hasattr(module, name) for name in required),
         "support_module_invalid",
         "installed journey support module has an invalid interface",
     )
     return module
+
+
+def _load_support(path: Path, destination: Path, forbid_root: Path) -> Any:
+    return _load_helper(
+        path,
+        destination,
+        forbid_root,
+        required=(
+            "SupportError",
+            "attach_process_tree",
+            "cleanup_all",
+            "cleanup_journey",
+            "terminate_process_tree",
+            "probe_packaged_ui",
+            "remove_ephemeral_tree",
+            "validate_preflight",
+            "validate_job_approval_pointers",
+            "validate_fresh_replay_approval",
+            "validate_package_version",
+            "validate_approval",
+            "validate_run",
+            "wait_for_job",
+            "validate_bundles",
+        ),
+    )
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -136,6 +144,10 @@ def _installed_package_report(forbid_root: Path) -> dict[str, Any]:
         "cryptography": cryptography,
         "PyNaCl": nacl,
     }
+    if sys.version_info < (3, 11):
+        import tomli
+
+        dependency_modules["tomli"] = tomli
     dependency_versions = {name: importlib.metadata.version(name) for name in dependency_modules}
     _require(sys.flags.isolated == 1, "fresh_python_not_isolated", "fresh Python is not isolated")
     _require(
@@ -173,6 +185,7 @@ def _installed_package_report(forbid_root: Path) -> dict[str, Any]:
     )
     return {
         "schema_version": PACKAGE_SCHEMA,
+        "python_version": list(sys.version_info[:2]),
         "verified": True,
         "package_version": distribution.version,
         "fresh_environment": {
@@ -195,12 +208,16 @@ def _drain_stream(
     stream: Any,
     capability_queue: queue.Queue[tuple[int, str]],
 ) -> None:
+    port: int | None = None
     try:
         for raw_line in iter(stream.readline, ""):
             line = raw_line.rstrip("\r\n")
             match = _LAUNCH.fullmatch(line)
-            if match is not None and capability_queue.empty():
-                capability_queue.put_nowait((int(match.group(1)), match.group(2)))
+            if match is not None:
+                port = int(match.group(1))
+            code = _CONNECTION_CODE.fullmatch(line)
+            if code is not None and port is not None and capability_queue.empty():
+                capability_queue.put_nowait((port, code.group(1)))
     finally:
         stream.close()
 
@@ -313,7 +330,8 @@ def _raw_request(
     method: str,
     path: str,
     *,
-    cookie: str | None = None,
+    session: str | None = None,
+    legacy_cookie: str | None = None,
     capability: str | None = None,
     body: Mapping[str, Any] | None = None,
     timeout: float = 20.0,
@@ -323,8 +341,10 @@ def _raw_request(
         "Origin": f"http://127.0.0.1:{port}",
     }
     payload: bytes | None = None
-    if cookie is not None:
-        headers["Cookie"] = cookie
+    if session is not None:
+        headers["X-BlueFire-Session"] = session
+    if legacy_cookie is not None:
+        headers["Cookie"] = "bluefire_session=" + legacy_cookie
     if capability is not None:
         headers["X-BlueFire-Browser-Bootstrap"] = capability
         headers["Content-Length"] = "0"
@@ -358,7 +378,7 @@ def _json_request(
     method: str,
     path: str,
     *,
-    cookie: str,
+    session: str,
     body: Mapping[str, Any] | None = None,
     expected: int = 200,
     timeout: float = 60.0,
@@ -367,7 +387,7 @@ def _json_request(
         port,
         method,
         path,
-        cookie=cookie,
+        session=session,
         body=body,
         timeout=timeout,
     )
@@ -394,113 +414,22 @@ def _ui_health(
     port: int,
     capability: str,
 ) -> tuple[str, Mapping[str, Any], Mapping[str, Any], dict[str, Any]]:
-    status, index_headers, index = _raw_request(port, "GET", "/")
-    _require(
-        status == 200
-        and index_headers.get("content-type", "").startswith("text/html")
-        and b'<div id="root"></div>' in index
-        and b'<script type="module" crossorigin src="/ui/app.js"></script>' in index
-        and b'<link rel="stylesheet" crossorigin href="/ui/styles.css">' in index,
-        "ui_index_invalid",
-        "packaged UI index did not load",
-    )
-    assets: dict[str, dict[str, Any]] = {}
-    for path, marker, media_type in (
-        ("/ui/app.js", b"BlueFire", ("text/javascript", "application/javascript")),
-        ("/ui/styles.css", b"--", ("text/css",)),
-    ):
-        asset_status, asset_headers, payload = _raw_request(port, "GET", path)
-        _require(
-            asset_status == 200
-            and len(payload) >= 512
-            and marker in payload
-            and asset_headers.get("content-type", "").split(";", 1)[0] in media_type,
-            "ui_asset_invalid",
-            "a packaged production UI asset did not load",
+    if _UI_HEALTH is None:
+        raise JourneyError("ui_health_module_missing", "installed UI health helper is unavailable")
+    try:
+        return cast(
+            tuple[str, Mapping[str, Any], Mapping[str, Any], dict[str, Any]],
+            _UI_HEALTH.probe_ui_health(
+                port,
+                capability,
+                raw_request=_raw_request,
+                json_request=_json_request,
+                scenario_id=SCENARIO_ID,
+                schema=UI_SCHEMA,
+            ),
         )
-        assets[path] = {"size_bytes": len(payload), "sha256": _sha256_bytes(payload)}
-    session_status, session_headers, session_payload = _raw_request(
-        port,
-        "POST",
-        "/api/v1/session",
-        capability=capability,
-    )
-    set_cookie = session_headers.get("set-cookie", "")
-    cookie = set_cookie.partition(";")[0]
-    _require(
-        session_status == 204
-        and session_payload == b""
-        and cookie.startswith("bluefire_session=")
-        and "httponly" in set_cookie.casefold()
-        and "samesite=strict" in set_cookie.casefold()
-        and "path=/api/v1" in set_cookie.casefold(),
-        "ui_session_invalid",
-        "production UI session exchange was invalid",
-    )
-    replay_status, _replay_headers, _replay_payload = _raw_request(
-        port,
-        "POST",
-        "/api/v1/session",
-        capability=capability,
-    )
-    _require(
-        replay_status == 401,
-        "ui_capability_reusable",
-        "production UI launch capability was reusable",
-    )
-    session_check, _check_headers, check_payload = _raw_request(
-        port,
-        "GET",
-        "/api/v1/session",
-        cookie=cookie,
-    )
-    _require(
-        session_check == 204 and check_payload == b"",
-        "ui_session_unhealthy",
-        "production UI session health check failed",
-    )
-    catalog = _json_request(port, "GET", "/api/v1/catalog", cookie=cookie)
-    scenarios = _json_request(port, "GET", "/api/v1/scenarios", cookie=cookie)
-    scenario_rows = scenarios.get("scenarios")
-    _require(
-        isinstance(catalog.get("behaviors"), list)
-        and isinstance(scenario_rows, list)
-        and any(isinstance(row, Mapping) and row.get("id") == SCENARIO_ID for row in scenario_rows),
-        "ui_catalog_unhealthy",
-        "production UI catalog health check failed",
-    )
-    report = {
-        "schema_version": UI_SCHEMA,
-        "verified": True,
-        "launch": {
-            "command": [
-                "{python}",
-                "-I",
-                "-m",
-                "bluefire.cli",
-                "--runs-dir",
-                "{runs-dir}",
-                "ui",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                "0",
-            ],
-            "loopback_only": True,
-            "ephemeral_port": True,
-            "capability_fragment_only": True,
-            "capability_single_use": True,
-            "strict_session_cookie": True,
-        },
-        "assets": assets,
-        "api": {
-            "session_healthy": True,
-            "catalog_behavior_count": len(catalog["behaviors"]),
-            "scenario_count": len(scenario_rows),
-            "seeded_scenario_present": True,
-        },
-    }
-    return cookie, catalog, scenarios, report
+    except _UI_HEALTH.UIHealthError as exc:
+        raise JourneyError(exc.code, str(exc)) from exc
 
 
 def _run_request() -> dict[str, Any]:
@@ -516,7 +445,7 @@ def _run_request() -> dict[str, Any]:
 
 def _journey(
     port: int,
-    cookie: str,
+    session: str,
     sandbox_root: Path,
     catalog: Mapping[str, Any],
 ) -> tuple[dict[str, Any], tuple[str, str]]:
@@ -524,14 +453,14 @@ def _journey(
         port,
         "POST",
         "/api/v1/runner/bootstrap",
-        cookie=cookie,
+        session=session,
         body={"profile_id": PROFILE_ID, "allow_upgrade": False},
     )
     recovered = _json_request(
         port,
         "POST",
         "/api/v1/runner/bootstrap",
-        cookie=cookie,
+        session=session,
         body={"profile_id": PROFILE_ID, "allow_upgrade": False},
     )
     runner = bootstrap.get("runner")
@@ -558,7 +487,7 @@ def _journey(
         port,
         "POST",
         "/api/v1/runner/start",
-        cookie=cookie,
+        session=session,
         body={"profile_id": PROFILE_ID},
         timeout=120.0,
     )
@@ -566,7 +495,7 @@ def _journey(
         port,
         "GET",
         "/api/v1/runner",
-        cookie=cookie,
+        session=session,
     )
     health = status.get("health")
     _require(
@@ -587,7 +516,7 @@ def _journey(
         port,
         "POST",
         "/api/v1/runs/preflight",
-        cookie=cookie,
+        session=session,
         body=request,
     )
     initial_binding, initial_envelope_digest = _SUPPORT.validate_preflight(preflight, catalog)
@@ -595,7 +524,7 @@ def _journey(
         port,
         "POST",
         "/api/v1/runs",
-        cookie=cookie,
+        session=session,
         body=request,
         expected=202,
     )
@@ -633,7 +562,7 @@ def _journey(
     )
     job_id = str(job["job_id"])
     awaiting = _SUPPORT.wait_for_job(
-        lambda: _json_request(port, "GET", f"/api/v1/jobs/{job_id}", cookie=cookie),
+        lambda: _json_request(port, "GET", f"/api/v1/jobs/{job_id}", session=session),
         wanted="awaiting_approval",
         timeout=30.0,
     )
@@ -652,7 +581,7 @@ def _journey(
         port,
         "POST",
         f"/api/v1/jobs/{job_id}/approval",
-        cookie=cookie,
+        session=session,
         body={"approved_by": "gate01-release-operator"},
         expected=202,
     )
@@ -670,7 +599,7 @@ def _journey(
         "one-time Execute approval was not consumed",
     )
     settled = _SUPPORT.wait_for_job(
-        lambda: _json_request(port, "GET", f"/api/v1/jobs/{job_id}", cookie=cookie),
+        lambda: _json_request(port, "GET", f"/api/v1/jobs/{job_id}", session=session),
         wanted="completed",
         timeout=180.0,
     )
@@ -693,7 +622,7 @@ def _journey(
         approval_id=approval_id,
     )
     source_id = str(settled["result_ref"])
-    source = _json_request(port, "GET", f"/api/v1/runs/{source_id}", cookie=cookie)
+    source = _json_request(port, "GET", f"/api/v1/runs/{source_id}", session=session)
     source_summary = _SUPPORT.validate_run(
         source,
         sandbox_root=sandbox_root,
@@ -705,7 +634,7 @@ def _journey(
         port,
         "POST",
         f"/api/v1/runs/{source_id}/replays",
-        cookie=cookie,
+        session=session,
         body={
             "exact": True,
             "target_scope": {"scope_refs": ["sandbox.workspace"]},
@@ -735,7 +664,7 @@ def _journey(
         port,
         "POST",
         "/api/v1/comparisons",
-        cookie=cookie,
+        session=session,
         body={"run_ids": [source_id, replay_id]},
     )
     summaries = comparison.get("summaries")
@@ -822,12 +751,12 @@ def _journey(
     return report, (source_id, replay_id)
 
 
-def _teardown(port: int, cookie: str) -> dict[str, Any]:
+def _teardown(port: int, session: str) -> dict[str, Any]:
     stopped = _json_request(
         port,
         "POST",
         "/api/v1/runner/stop",
-        cookie=cookie,
+        session=session,
         body={"profile_id": PROFILE_ID},
         timeout=120.0,
     )
@@ -835,14 +764,14 @@ def _teardown(port: int, cookie: str) -> dict[str, Any]:
         port,
         "POST",
         "/api/v1/runner/revoke",
-        cookie=cookie,
+        session=session,
         body={},
     )
     removed = _json_request(
         port,
         "POST",
         "/api/v1/runner/remove",
-        cookie=cookie,
+        session=session,
         body={"confirm_runner_id": RUNNER_ID},
     )
     _require(
@@ -911,10 +840,37 @@ def _cleanup_preserving_primary(
             raise
 
 
-def run(evidence_dir: Path, forbid_root: Path, runtime_root: Path) -> Mapping[str, Any]:
+def run(
+    evidence_dir: Path,
+    forbid_root: Path,
+    runtime_root: Path,
+    *,
+    browser_node: Path,
+    browser_module: Path,
+    browser_probe: Path,
+    browser_identity: Path,
+) -> Mapping[str, Any]:
     _require(os.name == "nt", "unsupported_gate01_host", "Gate 01 managed trust requires Windows")
     destination = evidence_dir.resolve(strict=True)
     checkout = forbid_root.resolve(strict=True)
+    probe_path = browser_probe.resolve(strict=True)
+    identity_path = browser_identity.resolve(strict=True)
+    _require(
+        probe_path.parent == destination
+        and not probe_path.is_relative_to(checkout)
+        and probe_path.name == "p.mjs"
+        and probe_path.is_file(),
+        "browser_probe_invalid",
+        "installed browser probe is outside its isolated helper directory",
+    )
+    _require(
+        identity_path.parent == destination
+        and not identity_path.is_relative_to(checkout)
+        and identity_path.name == "gate01-browser-tooling-report.json"
+        and identity_path.is_file(),
+        "browser_identity_invalid",
+        "installed browser tooling identity is outside its isolated helper directory",
+    )
     runtime = _validated_runtime_root(runtime_root, destination, checkout)
     runs_dir = destination / "runs"
     runs_dir.mkdir(exist_ok=False)
@@ -923,7 +879,7 @@ def run(evidence_dir: Path, forbid_root: Path, runtime_root: Path) -> Mapping[st
     probe_job: int | None = None
     process: subprocess.Popen[str] | None = None
     process_job: int | None = None
-    cookie: str | None = None
+    session: str | None = None
     port: int | None = None
     teardown: Mapping[str, Any] | None = None
     journey_report: dict[str, Any] | None = None
@@ -938,6 +894,10 @@ def run(evidence_dir: Path, forbid_root: Path, runtime_root: Path) -> Mapping[st
             probe_port,
             probe_capability,
             runtime / "browser-profile",
+            node=browser_node,
+            module=browser_module,
+            probe=probe_path,
+            identity_path=identity_path,
         )
         probe_capability = ""
         owned_probe, owned_probe_job = probe_process, probe_job
@@ -947,22 +907,22 @@ def run(evidence_dir: Path, forbid_root: Path, runtime_root: Path) -> Mapping[st
             runtime_root=runtime,
             runs_dir=runs_dir,
         )
-        cookie, catalog, _scenarios, ui_report = _ui_health(port, capability)
+        session, catalog, _scenarios, ui_report = _ui_health(port, capability)
         ui_report["runtime_probe"] = runtime_probe
         capability = ""  # The consumed launch capability is never persisted.
         sandbox_root = runtime / "state" / "BlueFire Nexus" / "runtime" / "sandbox"
-        journey_report, run_ids = _journey(port, cookie, sandbox_root, catalog)
-        teardown = _teardown(port, cookie)
+        journey_report, run_ids = _journey(port, session, sandbox_root, catalog)
+        teardown = _teardown(port, session)
     except BaseException as exc:
         primary_error = exc
         raise
     finally:
         fallback_teardown = None
-        if process is not None and port is not None and cookie is not None and teardown is None:
+        if process is not None and port is not None and session is not None and teardown is None:
 
             def fallback_teardown_action() -> None:
                 if process.poll() is None:
-                    _teardown(port, cookie)
+                    _teardown(port, session)
 
             fallback_teardown = fallback_teardown_action
         _cleanup_preserving_primary(
@@ -1004,15 +964,34 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--runtime-root", type=Path, required=True)
     parser.add_argument("--forbid-root", type=Path, required=True)
     parser.add_argument("--support-module", type=Path, required=True)
+    parser.add_argument("--ui-health-module", type=Path, required=True)
+    parser.add_argument("--browser-node", type=Path, required=True)
+    parser.add_argument("--browser-module", type=Path, required=True)
+    parser.add_argument("--browser-probe", type=Path, required=True)
+    parser.add_argument("--browser-identity", type=Path, required=True)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    global _SUPPORT
+    global _SUPPORT, _UI_HEALTH
     args = _parser().parse_args(argv)
     try:
         _SUPPORT = _load_support(args.support_module, args.evidence_dir, args.forbid_root)
-        summary = run(args.evidence_dir, args.forbid_root, args.runtime_root)
+        _UI_HEALTH = _load_helper(
+            args.ui_health_module,
+            args.evidence_dir,
+            args.forbid_root,
+            required=("UIHealthError", "probe_ui_health"),
+        )
+        summary = run(
+            args.evidence_dir,
+            args.forbid_root,
+            args.runtime_root,
+            browser_node=args.browser_node,
+            browser_module=args.browser_module,
+            browser_probe=args.browser_probe,
+            browser_identity=args.browser_identity,
+        )
     except JourneyError as exc:
         summary = {
             "schema_version": SUMMARY_SCHEMA,

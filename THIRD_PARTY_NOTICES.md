@@ -102,12 +102,13 @@ corresponding-source rights required by that license.
 | PyNaCl `>=1.5,<2` | Maintained Ed25519 public-key validation for signed action packages and XChaCha20-Poly1305 protection for owner-private POSIX runner-enrollment secrets | Apache-2.0. PyNaCl wheels may include libsodium, which is ISC licensed; the bundled notice identifies Frank Denis as copyright holder. |
 | wasmi `=1.1.0` | No-WASI WebAssembly interpreter compiled into the native runner | Dual licensed MIT or Apache-2.0. BlueFire enables only `std` and `extra-checks`; it does not enable WASI. |
 | wat `=1.239.0` | Development-only compilation of provider test fixtures | Apache-2.0 with LLVM exception, Apache-2.0, or MIT. It is not a production runner dependency. |
+| linux-raw-sys `=0.12.1` | Linux-only generated `statx` ABI in the native cgroup reader; only `general` and `no_std` features | Apache-2.0 with LLVM exception, Apache-2.0, or MIT; BlueFire uses the MIT option. The complete notice is below. |
 
 These packages are obtained from their normal Python or Rust package registries; their source is not copied into this repository. Redistributors must preserve the license texts shipped with the resolved packages and any compiled native-runner distribution.
 
 ## Release dependency rights inventory
 
-The release rights review dated 2026-08-30 is recorded in
+The release rights inventory, updated for the Linux ABI dependency on 2026-10-01, is recorded in
 `bluefire/data/release_rights_policy.json`. The offline verifier in
 `bluefire/release_rights_audit.py` compares that reviewed record with the Python manifests and
 locked wheel inventory, the production closure of `frontend/pnpm-lock.yaml`, the complete
@@ -116,10 +117,37 @@ dependency or asset is not silently accepted: it requires an updated classificat
 `unresolved_items` list fails the review.
 
 The base Python artifact declares PyYAML (MIT), cryptography (Apache-2.0 or BSD-3-Clause), and
-PyNaCl (Apache-2.0). Its locked Linux release set additionally contains cffi (MIT-0) and pycparser
+PyNaCl (Apache-2.0), plus Tomli 2.4.1 (MIT) on Python 3.10. Python 3.11 and newer use the
+standard-library TOML parser; unsupported TOML syntax fails the audit. The separate
+`bluefire/data/python_runtime_backports.json` pins the reviewed, dependency-free Tomli wheel.
+Its locked Python 3.12 Linux release set additionally contains cffi (MIT-0) and pycparser
 (BSD-3-Clause). The exact five wheel versions and SHA-256 values are part of the committed
 inventory. PyNaCl wheels can incorporate libsodium (ISC); that nested notice must be retained
 from the resolved wheel.
+
+### Tomli 2.4.1 notice
+
+MIT License
+
+Copyright (c) 2021 Taneli Hukkinen
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 The packaged web application has 69 packages in its production lock closure: 58 MIT packages;
 the ISC-licensed D3 modules `d3-color`, `d3-dispatch`, `d3-drag`, `d3-interpolate`,
@@ -128,8 +156,8 @@ BSD-3-Clause `d3-ease`; and 0BSD `tslib`. The exact name/version inventory is in
 The remaining entries in the 391-package pnpm lock are build, test, platform, or development
 entries and are not represented as shipped browser code by this review.
 
-The native runner review classifies all 48 external crates in `Cargo.lock`; the conservative
-release graph contains 42 of them. Observed terms are MIT, Apache-2.0, BSD-3-Clause, Zlib,
+The native runner review classifies all 49 external crates in `Cargo.lock`; the conservative
+release graph contains 43 of them, including target-specific production dependencies. Observed terms are MIT, Apache-2.0, BSD-3-Clause, Zlib,
 Unlicense, Unicode-3.0, and the LLVM exception, alone or in the expressions recorded in the
 policy. `wat` and its exclusive closure are test-only. The native runner is statically generated
 from the reviewed Rust graph, so binary redistributors must carry the upstream notices and
@@ -140,6 +168,40 @@ Its direct packages are pySigma 1.5.0 (LGPL-2.1-only), pySigma SQLite backend 1.
 (LGPL-3.0-only), and yara-python 4.5.4 (Apache-2.0). A distributor who bundles that optional
 environment must perform a fresh transitive inventory and satisfy the corresponding LGPL and
 other upstream obligations; this base-release review does not authorize such a bundle.
+
+## linux-raw-sys 0.12.1 notice
+
+The exact [published source archive](https://static.crates.io/crates/linux-raw-sys/linux-raw-sys-0.12.1.crate)
+has SHA-256 `32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53`.
+Its package license expression is `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`.
+The generated bindings are compiled into the Linux runner; upstream source is not
+vendored here. The upstream COPYRIGHT file states that copyrights are retained by
+the project's contributors. BlueFire selects the MIT option and preserves the
+complete upstream LICENSE-MIT text:
+
+> Permission is hereby granted, free of charge, to any
+> person obtaining a copy of this software and associated
+> documentation files (the "Software"), to deal in the
+> Software without restriction, including without
+> limitation the rights to use, copy, modify, merge,
+> publish, distribute, sublicense, and/or sell copies of
+> the Software, and to permit persons to whom the Software
+> is furnished to do so, subject to the following
+> conditions:
+>
+> The above copyright notice and this permission notice
+> shall be included in all copies or substantial portions
+> of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+> ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+> TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+> PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+> SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+> CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+> OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+> IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+> DEALINGS IN THE SOFTWARE.
 
 ## Release license decision
 

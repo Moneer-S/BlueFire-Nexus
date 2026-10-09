@@ -72,6 +72,25 @@ impl Runner {
 
     pub fn execute(&self, manifest: ExecutionManifest, profile: RunnerProfile) -> TaskResult {
         let started_at = utc_now();
+        if manifest.action_id == crate::service_admission::SERVICE_ACTION_ID
+            || manifest.execution_binding.as_ref().is_some_and(|binding| {
+                binding.runner_opcode == crate::service_admission::SERVICE_ACTION_ID
+            })
+        {
+            // The ordinary registry never grants service authority, even if a
+            // future release registers this name. Typed admission needs its own
+            // service dispatch path before reservation and live identity checks.
+            return failure_result(
+                &manifest,
+                &profile,
+                started_at,
+                ActionFailure {
+                    status: TaskStatus::Refused,
+                    code: "service_admission_required",
+                    message: "Owned-service execution requires protected host admission.".into(),
+                },
+            );
+        }
         let execution = match validate_policy(&manifest, &profile) {
             Ok(execution) => execution,
             Err(failure) => return failure_result(&manifest, &profile, started_at, failure),
@@ -100,14 +119,24 @@ impl Runner {
                         )
                     }
                 };
+                if let Err(failure) = validate_grant_cleanup_receipts(&manifest, &profile, &root) {
+                    return failure_result(&manifest, &profile, started_at, failure);
+                }
                 let context = ActionContext {
                     manifest: &manifest,
                     profile: &profile,
                     root: &root,
+                    execution_started: std::cell::Cell::new(false),
                 };
                 match prepared.execute(&context) {
                     Ok(outcome) => outcome_result(&manifest, &profile, started_at, outcome),
-                    Err(failure) => failure_result(&manifest, &profile, started_at, failure),
+                    Err(failure) => failure_result_with_progress(
+                        &manifest,
+                        &profile,
+                        started_at,
+                        failure,
+                        context.execution_started.get(),
+                    ),
                 }
             }
             ValidatedExecution::Provider { binding, artifact } => {
@@ -537,6 +566,17 @@ fn validate_profile(profile: &RunnerProfile) -> Result<(), ActionFailure> {
             ));
         }
     }
+    if let Some(binding) = &profile.file_access_binding {
+        if profile.platform != crate::contract::Platform::Linux {
+            return Err(blocked(
+                "file_access_binding_invalid",
+                crate::file_access::REFUSAL,
+            ));
+        }
+        binding
+            .validate()
+            .map_err(|message| blocked("file_access_binding_invalid", message))?;
+    }
     reviewed_execution::validate_profile(profile)?;
     native_tools::validate_profile(profile)
         .map_err(|error| blocked("native_tool_profile_invalid", error))?;
@@ -725,6 +765,12 @@ fn validate_policy<'a>(
             package_alias,
         } => {
             let descriptor = action.descriptor();
+            if !descriptor.platforms.contains(&actual_platform) {
+                return Err(blocked(
+                    "platform_blocked",
+                    "registered action does not support the actual host platform",
+                ));
+            }
             native_tools::validate_selected(profile, *action)
                 .map_err(|error| blocked("native_tool_installation_required", error))?;
             if matches!(descriptor.readiness, ActionReadiness::Structural)
@@ -739,12 +785,6 @@ fn validate_policy<'a>(
                 })?;
             } else {
                 ensure_action_ready(descriptor)?;
-            }
-            if !descriptor.platforms.contains(&actual_platform) {
-                return Err(blocked(
-                    "platform_blocked",
-                    "registered action does not support the actual host platform",
-                ));
             }
             if !package_alias
                 && !descriptor
@@ -832,8 +872,11 @@ fn validate_policy<'a>(
             "action safety tier is misstated or exceeds the profile",
         ));
     }
+    let grant_authorized = validate_grant_attempt(manifest, profile, now)?;
+    let cleanup_authorized = validate_grant_cleanup(manifest, profile, now)?;
     if let Some(threshold) = profile.approval_required_at_or_above {
-        if target_safety_tier.rank() >= threshold.rank() {
+        if target_safety_tier.rank() >= threshold.rank() && !grant_authorized && !cleanup_authorized
+        {
             let approval = manifest.approval.as_ref().ok_or_else(|| {
                 blocked(
                     "approval_required",
@@ -884,6 +927,218 @@ fn ensure_action_ready(descriptor: &ActionDescriptor) -> Result<(), ActionFailur
     ))
 }
 
+fn validate_grant_attempt(
+    manifest: &ExecutionManifest,
+    profile: &RunnerProfile,
+    now: chrono::DateTime<Utc>,
+) -> Result<bool, ActionFailure> {
+    let Some(grant) = &manifest.grant_attempt else {
+        return Ok(false);
+    };
+    let invalid = || {
+        blocked(
+            "grant_attempt_invalid",
+            "grant attempt authority is invalid or unbound",
+        )
+    };
+    let canonical_id = |value: &str, prefix: &str| {
+        value.strip_prefix(prefix).is_some_and(|suffix| {
+            suffix.len() == 32
+                && suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+    };
+    if manifest.approval.is_some()
+        || manifest.grant_cleanup.is_some()
+        || grant.schema_version != "bluefire.runner-grant-attempt.v1"
+        || grant.issuer != "capability-grant-controller.v1"
+        || !canonical_id(&grant.grant_id, "grant-")
+        || !canonical_id(&grant.attempt_id, "attempt-")
+        || grant.run_id != manifest.run_id
+        || [
+            &grant.grant_digest,
+            &grant.lease_digest,
+            &grant.compiled_digest,
+            &grant.plan_digest,
+            &grant.native_envelope_digest,
+        ]
+        .iter()
+        .any(|value| !is_sha256_digest(value))
+        || grant.issued_at > manifest.requested_at
+        || grant.issued_at > now + ChronoDuration::minutes(5)
+        || grant.expires_at <= now
+        || grant.expires_at <= grant.issued_at
+        || manifest.expires_at > grant.expires_at
+        || grant.request_hash != manifest.request_hash
+    {
+        return Err(invalid());
+    }
+    let reviewed = profile.reviewed_execution.as_ref().ok_or_else(invalid)?;
+    let operation = manifest.reviewed_operation.as_ref().ok_or_else(invalid)?;
+    let binding = canonical_hash(&json!({
+        "schema_version": "bluefire.grant-attempt-plan-binding.v1",
+        "compiled_digest": grant.compiled_digest,
+        "plan_digest": grant.plan_digest,
+    }));
+    if reviewed.authorization_digest != binding
+        || operation.authorization_digest != binding
+        || grant.native_envelope_digest
+            != canonical_hash(&serde_json::to_value(reviewed).map_err(|_| invalid())?)
+    {
+        return Err(invalid());
+    }
+    Ok(true)
+}
+
+fn validate_grant_cleanup(
+    manifest: &ExecutionManifest,
+    profile: &RunnerProfile,
+    now: chrono::DateTime<Utc>,
+) -> Result<bool, ActionFailure> {
+    let Some(cleanup) = &manifest.grant_cleanup else {
+        return Ok(false);
+    };
+    let invalid = || {
+        blocked(
+            "grant_cleanup_invalid",
+            "cleanup authority is invalid or unbound",
+        )
+    };
+    let lower_hex = |value: &str, length: usize| {
+        value.len() == length
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    };
+    let authority_id = |value: &str, prefix: &str| {
+        value
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| lower_hex(suffix, 32))
+    };
+    let task_id = |value: &str| {
+        !value.is_empty()
+            && value.len() <= 200
+            && value.as_bytes()[0].is_ascii_alphanumeric()
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+    };
+    if manifest.approval.is_some()
+        || manifest.grant_attempt.is_some()
+        || cleanup.schema_version != "bluefire.runner-grant-cleanup.v1"
+        || cleanup.issuer != "capability-grant-controller.v1"
+        || !authority_id(&cleanup.grant_id, "grant-")
+        || !authority_id(&cleanup.attempt_id, "attempt-")
+        || manifest.action_id != "sandbox.cleanup.v1"
+        || manifest.behavior_id != "sandbox.cleanup.v1"
+        || manifest.execution_binding.is_some()
+        || manifest.provider_binding.is_some()
+        || !manifest.target_scope.filesystem.is_empty()
+        || !manifest.target_scope.network.is_empty()
+        || cleanup.run_id != manifest.run_id
+        || cleanup.runner_policy_digest != profile.policy_digest
+        || !lower_hex(&cleanup.workspace_id, 64)
+        || [
+            &cleanup.grant_digest,
+            &cleanup.lease_digest,
+            &cleanup.compiled_digest,
+            &cleanup.plan_digest,
+            &cleanup.native_envelope_digest,
+            &cleanup.obligation_digest,
+            &cleanup.runner_policy_digest,
+        ]
+        .iter()
+        .any(|value| !is_sha256_digest(value))
+        || cleanup.issued_at > manifest.requested_at
+        || cleanup.issued_at > now + ChronoDuration::minutes(5)
+        || cleanup.expires_at <= now
+        || cleanup.expires_at <= cleanup.issued_at
+        || cleanup.expires_at - cleanup.issued_at > ChronoDuration::seconds(120)
+        || manifest.expires_at > cleanup.expires_at
+        || cleanup.timeout_ms == 0
+        || cleanup.timeout_ms > 120_000
+        || cleanup.timeout_ms as i64 > (cleanup.expires_at - cleanup.issued_at).num_milliseconds()
+        || manifest.limits.timeout_ms > cleanup.timeout_ms
+        || cleanup.request_hash != manifest.request_hash
+        || cleanup.receipts.is_empty()
+        || cleanup.receipts.len() > 512
+        || cleanup.receipts.len() > manifest.limits.max_files
+    {
+        return Err(invalid());
+    }
+    let mut seen = BTreeSet::new();
+    for receipt in &cleanup.receipts {
+        if !lower_hex(&receipt.receipt_id, 64)
+            || !seen.insert(&receipt.receipt_id)
+            || !is_sha256_digest(&receipt.source_request_hash)
+            || !task_id(&receipt.source_task_id)
+        {
+            return Err(invalid());
+        }
+    }
+    let receipt_ids: Vec<&str> = cleanup
+        .receipts
+        .iter()
+        .map(|item| item.receipt_id.as_str())
+        .collect();
+    if manifest.params != json!({"receipt_ids": receipt_ids}) {
+        return Err(invalid());
+    }
+    let reviewed = profile.reviewed_execution.as_ref().ok_or_else(invalid)?;
+    let operation = manifest.reviewed_operation.as_ref().ok_or_else(invalid)?;
+    let binding = canonical_hash(&json!({
+        "schema_version": "bluefire.grant-attempt-plan-binding.v1",
+        "compiled_digest": cleanup.compiled_digest,
+        "plan_digest": cleanup.plan_digest,
+    }));
+    if reviewed.authorization_digest != binding
+        || operation.authorization_digest != binding
+        || cleanup.native_envelope_digest
+            != canonical_hash(&serde_json::to_value(reviewed).map_err(|_| invalid())?)
+    {
+        return Err(invalid());
+    }
+    Ok(true)
+}
+
+fn validate_grant_cleanup_receipts(
+    manifest: &ExecutionManifest,
+    profile: &RunnerProfile,
+    root: &SafeRoot,
+) -> Result<(), ActionFailure> {
+    let Some(cleanup) = &manifest.grant_cleanup else {
+        return Ok(());
+    };
+    let invalid = || {
+        blocked(
+            "grant_cleanup_receipt_invalid",
+            "cleanup receipt ownership changed",
+        )
+    };
+    if root.workspace_id() != cleanup.workspace_id {
+        return Err(invalid());
+    }
+    // Native receipts prove workspace/profile/request ownership. Task and grant
+    // lineage must already have been checked by the trusted obligation adapter.
+    for expected in &cleanup.receipts {
+        match root
+            .load_receipt(&expected.receipt_id)
+            .map_err(|_| invalid())?
+        {
+            Some(record)
+                if record.runner_profile_id == profile.profile_id
+                    && record.workspace_id == cleanup.workspace_id
+                    && record.request_hash == expected.source_request_hash => {}
+            None if !root
+                .receipt_commit_exists(&expected.receipt_id)
+                .map_err(|_| invalid())? => {}
+            _ => return Err(invalid()),
+        }
+    }
+    Ok(())
+}
+
 fn blocked(code: &'static str, message: impl Into<String>) -> ActionFailure {
     ActionFailure {
         status: TaskStatus::ControlBlocked,
@@ -923,10 +1178,21 @@ fn failure_result(
     started_at: chrono::DateTime<Utc>,
     failure: ActionFailure,
 ) -> TaskResult {
-    let kind = if matches!(
-        failure.status,
-        TaskStatus::Refused | TaskStatus::ControlBlocked
-    ) {
+    failure_result_with_progress(manifest, profile, started_at, failure, false)
+}
+
+fn failure_result_with_progress(
+    manifest: &ExecutionManifest,
+    profile: &RunnerProfile,
+    started_at: chrono::DateTime<Utc>,
+    failure: ActionFailure,
+    execution_started: bool,
+) -> TaskResult {
+    let kind = if !execution_started
+        && matches!(
+            failure.status,
+            TaskStatus::Refused | TaskStatus::ControlBlocked
+        ) {
         EvidenceKind::ControlBlocked
     } else {
         EvidenceKind::Executed

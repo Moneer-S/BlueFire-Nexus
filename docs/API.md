@@ -7,7 +7,7 @@ BlueFire serves one loopback JSON API under `/api/v1`. Requests and responses us
 - Default listener: `http://127.0.0.1:8765`.
 - Non-loopback bind addresses are rejected.
 - Host must identify the current loopback listener and port.
-- Every API request requires a valid bounded local browser-session cookie. The packaged UI obtains it by exchanging the CLI's one-use 384-bit URL-fragment capability; the fragment is stripped before any request and the server stores only its digest.
+- Every API request requires a valid bounded session in `X-BlueFire-Session`; cookies are not accepted as authority. The packaged UI exchanges the CLI's 384-bit one-time connection code via `X-BlueFire-Browser-Bootstrap` on `POST /api/v1/session`, receiving a no-store JSON object with one `session` value. It keeps that value in origin-and-tab-scoped session storage, sends it only to the exact API origin, omits ambient credentials and refuses redirects. The server stores only digests. An optional manual launch fragment is stripped before exchange; the desktop opener receives only the credential-free URL.
 - Every POST requires an exact same-origin `Origin` header.
 - Request bodies require one numeric `Content-Length` and are limited to 1 MiB.
 - Duplicate JSON keys, non-finite numbers, transfer encoding, absolute request targets, traversal, backslashes, and NUL paths are rejected.
@@ -472,52 +472,74 @@ Unknown, duplicate, signed, blank, non-decimal, or out-of-range values return `4
 
 Use the returned `next_sequence` as the next request's `after_sequence`. When `items` is empty, `next_sequence` remains the supplied cursor. This is bounded polling over immutable local records, not a live event stream.
 
-## Authenticated curl diagnostics
+## Effective file access
 
-The supported operator surfaces are the CLI and the packaged browser. A bare curl request is intentionally refused. For a local diagnostic only, launch `bluefire ui --no-browser`, take the 64-character value after `#bluefire-session=` from its exact one-use URL, and exchange it once into a private cookie jar. Do not put the capability in a URL, request body, shell history, log, or shared file.
+The ordinary File access UI uses these query-free routes for the finite Linux
+owner/non-owner workflow. Status reports prepared enrollment; reading status does
+not provision identities, start a worker, or authorize an operation.
 
-```bash
-umask 077
-COOKIE_JAR="$(mktemp)"
-read -r -s -p 'One-use BlueFire browser capability: ' BLUEFIRE_BROWSER_CAPABILITY
-printf '\n'
-curl --fail --silent --show-error \
-  -X POST \
-  -H 'Origin: http://127.0.0.1:8765' \
-  -H "X-BlueFire-Browser-Bootstrap: ${BLUEFIRE_BROWSER_CAPABILITY}" \
-  -H 'Content-Length: 0' \
-  -c "$COOKIE_JAR" \
-  http://127.0.0.1:8765/api/v1/session
-unset BLUEFIRE_BROWSER_CAPABILITY
+The permission-change method is not enabled in the ordinary default Execute
+profile. File-access setup must explicitly enable `sandbox.permission.chmod.v1`
+with its reviewed `native_tool_installations` entry; an unconfigured structural
+tool is not ready and must not block unrelated default-profile runs.
+
+| Method | Path | Result |
+|---|---|---|
+| GET | `/api/v1/file-access/status` | Current enrollment readiness and allowed operations |
+| POST | `/api/v1/file-access/review` | Exact review for create, baseline, harden, rollback, or reset |
+| POST | `/api/v1/file-access/operations` | Submit the reviewed operation with its durable submission identity |
+| POST | `/api/v1/file-access/control-list` | Bounded saved control inventory |
+| GET | `/api/v1/file-access/controls/{job_id}` | Retained control and operation history |
+| GET | `/api/v1/file-access/operations/{job_id}` | Original operation, job state, and evidence projection |
+| POST | `/api/v1/file-access/operations/{job_id}/reconcile` | Explicit authenticated evidence reconciliation |
+| GET | `/api/v1/file-access/operations/{job_id}/reconciliations/{reconciliation_id}` | Exact saved reconciliation receipt |
+
+Use the server's `allowed_operations` and exact review bindings. Reconciliation
+does not redispatch the original mutations or rewrite failed, interrupted, or
+cancelled job history. `settled_partial` is not completion: the retained control
+may require reset and may have no completed resource. Recovered observations are
+published only for complete, validated evidence; a retained baseline is historical
+and permission bits are not fresh effective-access proof. Unresolved evidence or
+usage remains blocking. See the [capability boundary](RELEASE_CAPABILITIES.md) for
+the distinction between implemented contracts and installed or live validation.
+
+## Authenticated diagnostics
+
+The supported operator surfaces are the CLI and the packaged browser. A bare HTTP request is intentionally refused. For a local diagnostic, launch `bluefire ui --no-browser` and enter its one-time connection code at a hidden prompt. Keep credentials in memory, not command arguments, URLs, shell history, logs, or shared files. This standard-library example reads the catalog without exposing either credential in process arguments or following redirects:
+
+```python
+import getpass
+import http.client
+import json
+
+port = int(input("BlueFire loopback port: "))
+if not 1 <= port <= 65535:
+    raise ValueError("Invalid port")
+connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+origin = f"http://127.0.0.1:{port}"
+code = getpass.getpass("One-time connection code: ")
+connection.request("POST", "/api/v1/session", headers={
+    "Origin": origin,
+    "X-BlueFire-Browser-Bootstrap": code,
+    "Content-Length": "0",
+})
+del code
+response = connection.getresponse()
+if response.status != 200:
+    raise RuntimeError("Connection refused; relaunch BlueFire for a fresh code")
+session = json.loads(response.read(4096))["session"]
+connection.request("GET", "/api/v1/catalog", headers={
+    "X-BlueFire-Session": session,
+})
+del session
+response = connection.getresponse()
+if response.status != 200:
+    raise RuntimeError("Catalog request refused")
+print(response.read(16 * 1024 * 1024).decode("utf-8"))
+connection.close()
 ```
 
-Read catalog:
-
-```bash
-curl --fail --silent --show-error -b "$COOKIE_JAR" \
-  http://127.0.0.1:8765/api/v1/catalog
-```
-
-Read up to 100 events after sequence 250:
-
-```bash
-curl --fail --silent \
-  -b "$COOKIE_JAR" \
-  'http://127.0.0.1:8765/api/v1/runs/RUN_ID/events?after_sequence=250&limit=100'
-```
-
-POST requests must send the matching Origin:
-
-```bash
-curl --fail --silent \
-  -b "$COOKIE_JAR" \
-  -H 'Origin: http://127.0.0.1:8765' \
-  -H 'Content-Type: application/json' \
-  --data '{"run_ids":["BASELINE_RUN_ID","CANDIDATE_RUN_ID"]}' \
-  http://127.0.0.1:8765/api/v1/comparisons
-```
-
-Delete the cookie jar when the diagnostic is complete: `rm -f -- "$COOKIE_JAR"`. Relaunch `bluefire ui` if the one-use exchange fails or the bounded session expires.
+Mutation requests must also send the exact matching `Origin`. `GET /api/v1/session` confirms a valid session with `204`; it does not renew authority. Relaunch `bluefire ui` for a fresh code when exchange fails or the bounded session expires. Each new tab connects explicitly; session storage survives reloads within that tab but is not an ambient cookie shared with unrelated loopback listeners.
 
 ## Error contract
 

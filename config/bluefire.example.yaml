@@ -128,6 +128,8 @@ runner_profiles:
       - sandbox.identity-material.inspect.v1
       - sandbox.fixture.create.v1
       - sandbox.fixture.transform.v1
+      - file_access.probe.non_owner.v1
+      - file_access.verify.owner.v1
       - sandbox.discovery.list.v1
       - sandbox.discovery.metadata.v1
       - endpoint.discovery.system.v1
@@ -136,7 +138,6 @@ runner_profiles:
       - sandbox.collection.stage.v1
       - sandbox.collection.records.v1
       - sandbox.collection.archive.v1
-      - sandbox.collection.atomic-gzip.v1
       - sandbox.archive.tar.v1
       - sandbox.network.loopback.v1
       - sandbox.peer.handoff.v1

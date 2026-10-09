@@ -1,9 +1,17 @@
-.receiver-defense-page { max-width: 1320px; }
+.receiver-defense-page { max-width: 1320px; grid-template-columns: minmax(0, 1fr); }
+.receiver-defense-page > * { min-width: 0; }
 .receiver-back { display: inline-block; margin-bottom: 12px; font-size: .875rem; }
 .receiver-test-help { max-width: 78ch; margin-block: 12px; }
 .receiver-test-help p, .receiver-current > p, .receiver-results > p { color: var(--muted-strong); line-height: 1.6; }
 .receiver-setup > h2 { margin-block: 24px 16px; }
 .receiver-setup > .field { max-width: 760px; }
+.receiver-workflow { display: flex; flex-wrap: wrap; gap: 16px 28px; border: 0; padding: 0; margin-block: 20px; }
+.receiver-workflow legend { font-weight: 600; margin-bottom: 12px; }
+.receiver-workflow label { display: flex; align-items: baseline; gap: 8px; }
+.receiver-retained-control { border-block: 1px solid var(--line); padding-block: 20px; margin-block: 20px; }
+.receiver-retained-control > p { max-width: 78ch; color: var(--muted-strong); line-height: 1.6; }
+.receiver-retained-control .field { max-width: 420px; margin-block: 16px; }
+.receiver-retained-control .receiver-control-review { border-top: 1px solid var(--line); padding-top: 16px; }
 .receiver-settings { margin-block: 24px; }
 .receiver-settings > summary { padding: 14px 0; cursor: pointer; font-weight: 600; }
 .receiver-settings .run-config { margin-top: 12px; }
@@ -20,7 +28,8 @@
 .receiver-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-block: 20px; }
 .receiver-review-summary { margin-block: 24px; padding-block: 20px; border-block: 1px solid var(--line); }
 .receiver-expiry { font-variant-numeric: tabular-nums; }
-.receiver-table-scroll { overflow: auto; }
+.receiver-table-scroll { max-width: 100%; overflow: auto; }
+.receiver-table-scroll:focus-visible { outline: 2px solid var(--blue-soft); outline-offset: 3px; }
 .receiver-results table { width: 100%; text-align: left; border-collapse: collapse; font-size: .875rem; }
 .receiver-results caption { text-align: left; padding-block: 14px; color: var(--muted-strong); }
 .receiver-results th, .receiver-results td { padding: 16px 14px 16px 0; border-bottom: 1px solid var(--line); vertical-align: top; }

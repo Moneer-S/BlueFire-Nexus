@@ -150,6 +150,47 @@ fn selected_tool_requires_exact_compiled_binding() {
     }
 }
 
+#[test]
+fn registered_gzip_requires_current_binding_and_cannot_borrow_chmod_identity() {
+    let action = find_action("sandbox.collection.atomic-gzip.v1").unwrap();
+    let binding = action.native_tool_binding().unwrap();
+    assert_eq!(binding.adapter_version, "1.1.0");
+    let alias = alias_binding(
+        "acme.profile.v1",
+        "acme.profile-action.v1",
+        "endpoint.discovery.system.v1",
+    );
+    let (mut profile, _) = alias_documents(Path::new("."), alias, json!({}));
+    profile.platform = Platform::Linux;
+    profile.allowed_actions = vec![binding.adapter_id.into()];
+    profile.action_bindings.clear();
+    assert!(native_tools::validate_selected(&profile, action).is_err());
+    let mut installation = native_installation();
+    installation.adapter_id = binding.adapter_id.into();
+    installation.adapter_version = binding.adapter_version.into();
+    installation.adapter_contract_digest = binding.adapter_contract_digest.into();
+    installation.tool_id = binding.tool_id.into();
+    profile.native_tool_installations = vec![installation];
+    // Pure declaration tests: matching shape is not a ready/executable build.
+    assert!(native_tools::validate_selected(&profile, action).is_ok());
+    for field in ["legacy-version", "contract", "chmod-tool", "chmod-record"] {
+        let mut changed = profile.clone();
+        let installation = &mut changed.native_tool_installations[0];
+        match field {
+            "legacy-version" => installation.adapter_version = "1.0.0".into(),
+            "contract" => {
+                installation.adapter_contract_digest = format!("sha256:{}", "c".repeat(64))
+            }
+            "chmod-tool" => installation.tool_id = "gnu.coreutils.chmod.v1".into(),
+            _ => *installation = native_installation(),
+        }
+        assert!(
+            native_tools::validate_selected(&changed, action).is_err(),
+            "{field}"
+        );
+    }
+}
+
 fn test_limits() -> ExecutionLimits {
     ExecutionLimits {
         timeout_ms: 5_000,
@@ -251,30 +292,6 @@ fn reviewed_alias_identity_is_enforced_before_dispatch() {
 }
 
 #[test]
-fn reviewed_authority_cannot_be_omitted_or_attached_to_legacy_profile() {
-    let binding = alias_binding(
-        "acme.profile.v1",
-        "acme.profile-action.v1",
-        "endpoint.discovery.system.v1",
-    );
-    let (mut profile, mut manifest) = alias_documents(Path::new("."), binding, json!({}));
-    let mut legacy = profile.clone();
-    enroll_reviewed(&mut profile, &mut manifest);
-    let mut missing = manifest.clone();
-    missing.reviewed_operation = None;
-    crate::contract::seal_manifest(&mut missing);
-    assert_eq!(
-        validate_policy(&missing, &profile).err().unwrap().code,
-        "reviewed_operation_blocked"
-    );
-    reseal_documents(&mut legacy, &mut manifest);
-    assert_eq!(
-        validate_policy(&manifest, &legacy).err().unwrap().code,
-        "reviewed_operation_blocked"
-    );
-}
-
-#[test]
 fn reviewed_profile_rejects_widening_duplicates_and_preserves_approval_checks() {
     let binding = alias_binding(
         "acme.profile.v1",
@@ -318,6 +335,9 @@ fn reviewed_profile_rejects_widening_duplicates_and_preserves_approval_checks() 
         "approval_invalid"
     );
 }
+
+#[path = "runner_authority_tests.rs"]
+mod authority_tests;
 
 #[test]
 fn reviewed_provider_uses_its_own_binding_and_builtin_uses_explicit_null() {
@@ -462,6 +482,7 @@ fn provider_documents(
         control_blocked_actions: Vec::new(),
         action_bindings: Vec::new(),
         native_tool_installations: Vec::new(),
+        file_access_binding: None,
         provider_bindings: vec![binding.clone()],
         provider_artifacts: vec![ProviderArtifact {
             artifact_sha256: binding.artifact_sha256.clone(),
@@ -505,6 +526,8 @@ fn provider_documents(
         cleanup_action_id: "sandbox.cleanup.v1".to_string(),
         policy_digest: profile.policy_digest.clone(),
         approval: None,
+        grant_attempt: None,
+        grant_cleanup: None,
         evidence_refs: Vec::new(),
         request_hash: String::new(),
     };
@@ -565,6 +588,7 @@ fn alias_documents(
         control_blocked_actions: Vec::new(),
         action_bindings: vec![binding.clone()],
         native_tool_installations: Vec::new(),
+        file_access_binding: None,
         provider_bindings: Vec::new(),
         provider_artifacts: Vec::new(),
         capabilities: descriptor.capabilities.to_vec(),
@@ -603,6 +627,8 @@ fn alias_documents(
         cleanup_action_id: "sandbox.cleanup.v1".to_string(),
         policy_digest: profile.policy_digest.clone(),
         approval: None,
+        grant_attempt: None,
+        grant_cleanup: None,
         evidence_refs: Vec::new(),
         request_hash: String::new(),
     };

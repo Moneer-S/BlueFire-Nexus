@@ -120,6 +120,45 @@ class PlatformService(Protocol):
     ) -> JsonResult:
         """Suspend or revoke one exact publisher signing key."""
 
+    def composition_context(self, request: JsonObject) -> JsonResult:
+        """Review objective scope without authorizing or starting effects."""
+
+    def file_access_status(self) -> JsonResult: ...
+    def file_access_review(self, request: JsonObject) -> JsonResult: ...
+    def submit_file_access_operation(self, request: JsonObject) -> JsonResult: ...
+    def file_access_operation(self, job_id: str) -> JsonResult: ...
+    def list_file_access_controls(self, request: JsonObject) -> JsonResult: ...
+    def file_access_control(self, owner_id: str) -> JsonResult: ...
+    def reconcile_file_access_operation(self, job_id: str, request: JsonObject) -> JsonResult: ...
+    def file_access_reconciliation(self, job_id: str, submission_id: str) -> JsonResult: ...
+
+    def authorize_composition(self, request: JsonObject) -> JsonResult:
+        """Retain explicit capability authority for one immutable objective."""
+
+    def list_composition_objectives(self, request: JsonObject) -> JsonResult:
+        """Reopen saved objectives for the selected retained control."""
+
+    def composition_objective(self, owner_id: str) -> JsonResult:
+        """Read the saved grant, attempts, counters and cleanup status."""
+
+    def composition_proposal_context(self, owner_id: str, request: JsonObject) -> JsonResult:
+        """Project current authorized facts for an initial or revised graph."""
+
+    def submit_composition_attempt(self, owner_id: str, request: JsonObject) -> JsonResult:
+        """Compile and reserve a new graph before an owned execution attempt."""
+
+    def submit_composition_proposal(self, owner_id: str, request: JsonObject) -> JsonResult:
+        """Request a provider proposal without granting native execution authority."""
+
+    def composition_proposal(self, job_id: str) -> JsonResult:
+        """Read the saved provider result and its current publication status."""
+
+    def cancel_composition_proposal(self, job_id: str, request: JsonObject) -> JsonResult:
+        """Cancel only the selected proposal job, preserving any retained result."""
+
+    def control_composition(self, owner_id: str, action: str, request: JsonObject) -> JsonResult:
+        """Stop, revoke or deliberately continue without replaying old effects."""
+
     def receiver_defense_context(self, request: JsonObject) -> JsonResult:
         """Read saved-graph eligibility without preparing a receiver."""
 
@@ -137,6 +176,9 @@ class PlatformService(Protocol):
 
     def review_receiver_defense(self, job_id: str, request: JsonObject) -> JsonResult:
         """Retain native review before a separate Execute approval."""
+
+    def decide_receiver_control(self, job_id: str, request: JsonObject) -> JsonResult:
+        """Record an explicit retained receiver control decision."""
 
     def detection_health(self) -> JsonResult:
         """Return Detection Lab persistence and backend readiness."""

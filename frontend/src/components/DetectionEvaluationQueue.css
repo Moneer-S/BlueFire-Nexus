@@ -1,0 +1,9 @@
+.evaluation-queue { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); min-width: 0; }
+.evaluation-queue h3 { margin-top: 0; }
+.evaluation-queue p, .evaluation-queue legend { overflow-wrap: anywhere; }
+.evaluation-queue > .field-note { margin-bottom: 12px; }
+.evaluation-queue-cases { display: grid; gap: 18px; list-style: none; padding: 0; }
+.evaluation-queue-cases > li { min-width: 0; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.evaluation-queue-cases fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
+.evaluation-queue-cases legend { max-width: 100%; padding: 0; margin-bottom: 10px; }
+.evaluation-queue input:disabled, .evaluation-queue select:disabled, .evaluation-queue textarea:disabled { opacity: 1; color: var(--muted-strong); }

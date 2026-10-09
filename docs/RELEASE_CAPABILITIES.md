@@ -24,6 +24,24 @@ available; it does not grant authorization.
   provider smoke paths require operator-supplied authorized credentials through references or
   opaque handles; offline acceptance uses deterministic providers.
 
+## Implemented, not installed-verified
+
+- Effective file access has a finite Linux implementation for one generated file,
+  a prepared owner identity, and a distinct enrolled non-owner worker identity.
+  It does not provision arbitrary users or accept operator-selected host paths.
+- The File access workspace exposes enrollment readiness, exact operation review,
+  saved controls, baseline reads, permission correction, rollback, reset, and
+  linked composition history. Execution requires current enrollment, compatible
+  runner inventory, and the reviewed native chmod installation.
+- Interrupted work retains its original request and evidence. Explicit
+  reconciliation reads authenticated receipts without replaying the original
+  effects. Partial settlement permits only the server-authorized reset; it does
+  not manufacture a completed resource or fresh access result.
+- Software and GNU native checks are not installed cross-identity proof. A mode
+  change alone proves neither blocked non-owner access nor preserved owner access.
+  The complete fresh-read journey, Windows/macOS effective-access paths, AD and
+  cloud workflows, and live model-directed endpoint replanning remain unverified.
+
 ## Structural
 
 - macOS package metadata, contracts, and error classification are checked when no macOS host is

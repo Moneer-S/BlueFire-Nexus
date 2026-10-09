@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   BROWSER_SESSION_RELAUNCH_MESSAGE,
@@ -6,6 +6,7 @@ import {
 } from "../src/lib/api";
 
 describe("browser session bootstrap", () => {
+  beforeEach(() => { sessionStorage.setItem("bluefire.browser-session.v1", "S".repeat(64)); });
   it("exchanges the exact URL fragment after clearing it and never sends it in the URL or body", async () => {
     const capability = "A".repeat(64);
     window.location.hash = `#bluefire-session=${capability}`;
@@ -13,7 +14,7 @@ describe("browser session bootstrap", () => {
       void _input;
       void _init;
       expect(window.location.hash).toBe("");
-      return new Response(null, { status: 204 });
+      return new Response(JSON.stringify({ session: "T".repeat(64) }), { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -25,16 +26,16 @@ describe("browser session bootstrap", () => {
     expect(String(input)).not.toContain(capability);
     expect(init?.method).toBe("POST");
     expect(init?.body).toBeUndefined();
-    expect(init?.credentials).toBe("same-origin");
+    expect(init?.credentials).toBe("omit");
+    expect(init?.redirect).toBe("error");
     expect(init?.cache).toBe("no-store");
     expect(init?.referrerPolicy).toBe("no-referrer");
-    expect(init?.headers).toEqual({
-      Accept: "application/json",
-      "X-BlueFire-Browser-Bootstrap": capability,
-    });
+    expect(new Headers(init?.headers).get("X-BlueFire-Browser-Bootstrap")).toBe(capability);
+    expect(new Headers(init?.headers).get("X-BlueFire-Session")).toBeNull();
+    expect(sessionStorage.getItem("bluefire.browser-session.v1")).toBe("T".repeat(64));
   });
 
-  it("reuses an existing HttpOnly session without consuming normal router fragments", async () => {
+  it("reuses an existing origin-scoped session without consuming normal router fragments", async () => {
     window.location.hash = "#/runs";
     const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -44,11 +45,11 @@ describe("browser session bootstrap", () => {
     expect(window.location.hash).toBe("#/runs");
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/session",
-      expect.objectContaining({ method: "GET", credentials: "same-origin" }),
+      expect.objectContaining({ method: "GET", credentials: "omit" }),
     );
   });
 
-  it("reuses an existing cookie after a one-use launch fragment is replayed", async () => {
+  it("reuses an existing header session after a one-use launch fragment is replayed", async () => {
     const capability = "R".repeat(64);
     window.location.hash = `#bluefire-session=${capability}`;
     const fetchMock = vi
@@ -62,7 +63,7 @@ describe("browser session bootstrap", () => {
     expect(window.location.hash).toBe("");
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls.map(([, init]) => init?.method)).toEqual(["POST", "GET"]);
-    expect(fetchMock.mock.calls[1]?.[1]?.headers).toEqual({ Accept: "application/json" });
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get("X-BlueFire-Session")).toBe("S".repeat(64));
   });
 
   it("clears malformed bootstrap fragments without sending them", async () => {

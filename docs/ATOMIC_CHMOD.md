@@ -96,9 +96,9 @@ An installed lab experiment exposed an earlier preset mismatch: the rule asked
 for `file_observation`, while the collector recorded `collector_observation`.
 The baseline therefore missed an independently observed world-writable file.
 Saved rules and their unsuccessful results remain unchanged. To correct an old
-rule, open **Revisions → Advanced clone and tune → Tune rule behavior**, choose
-**Use current observation fields**, record the reason, and create an immutable
-tune. Parse and exercise the new revision against the retained observations;
+rule, open **Revisions → Revise this rule → Tune rule behavior**, choose
+**Use current observation fields**, record the reason, and choose **Save revised
+rule**. Parse and exercise the new revision against the retained observations;
 keep benign and fresh-variation evaluations distinct.
 
 The cross-platform preset regression uses real file-handle collection with a

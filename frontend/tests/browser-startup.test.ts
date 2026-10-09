@@ -4,7 +4,8 @@ import { watchBrowserSession } from "../src/lib/browser-startup";
 let stop: (() => void) | undefined;
 afterEach(() => { stop?.(); stop = undefined; vi.unstubAllGlobals(); });
 const response = (status: number) => new Response(null, { status });
-const flush = async () => { for (let index = 0; index < 8; index += 1) await Promise.resolve(); };
+const sessionResponse = () => new Response(JSON.stringify({ session: "S".repeat(64) }), { status: 200 });
+const flush = async () => { for (let index = 0; index < 16; index += 1) await Promise.resolve(); };
 function sameDocumentHash(hash: string) {
   const oldURL = window.location.href;
   window.history.pushState(window.history.state, "", hash);
@@ -20,7 +21,7 @@ it("reconnects an unavailable same-document session before routing and retains w
   const capability = "A".repeat(64);
   const fetcher = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
     expect(window.location.hash).toBe("#/detection-lab?candidate=fixture");
-    return response(init?.method === "POST" ? 204 : 401);
+    return init?.method === "POST" ? sessionResponse() : response(401);
   });
   vi.stubGlobal("fetch", fetcher);
   const connected = vi.fn(), unavailable = vi.fn();
@@ -35,7 +36,8 @@ it("reconnects an unavailable same-document session before routing and retains w
   expect(observedRoutes).toEqual(["#/detection-lab?candidate=fixture"]);
   expect(window.history.state).toEqual({ idx: 4 });
   expect(fetcher.mock.calls.map(([, init]) => init?.method)).toEqual(["GET", "POST"]);
-  expect(fetcher.mock.lastCall).toEqual(["/api/v1/session", expect.objectContaining({ credentials: "same-origin", cache: "no-store", referrerPolicy: "no-referrer", headers: { Accept: "application/json", "X-BlueFire-Browser-Bootstrap": capability } })]);
+  expect(fetcher.mock.lastCall).toEqual(["/api/v1/session", expect.objectContaining({ credentials: "omit", redirect: "error", cache: "no-store", referrerPolicy: "no-referrer" })]);
+  expect(new Headers(fetcher.mock.lastCall?.[1]?.headers).get("X-BlueFire-Browser-Bootstrap")).toBe(capability);
   expect(localStorage.getItem("bluefire.local.scenario.v1")).toBe('{"draft":"unchanged"}');
   expect(sessionStorage.getItem("bluefire.assistance.receipt.v1")).toBe('{"submission_id":"retained"}');
 });
@@ -50,7 +52,7 @@ it("scrubs malformed and failed fresh links and accepts a later fresh retry with
   sameDocumentHash(`#bluefire-session=${"C".repeat(64)}`); await flush();
   expect(fetcher.mock.calls.map(([, init]) => init?.method)).toEqual(["GET", "POST", "GET"]);
   expect(connected).not.toHaveBeenCalled(); expect(unavailable).toHaveBeenCalledTimes(3);
-  fetcher.mockResolvedValue(response(204));
+  fetcher.mockImplementation(async () => sessionResponse());
   sameDocumentHash(`#bluefire-session=${"D".repeat(64)}`); await flush();
   expect(connected).toHaveBeenCalledOnce(); expect(window.location.hash).toBe("#/builder");
   expect(fetcher.mock.calls.every(([url, init]) => url === "/api/v1/session" && init.body === undefined)).toBe(true);
@@ -59,7 +61,7 @@ it("scrubs malformed and failed fresh links and accepts a later fresh retry with
 it("does not let an old failed startup response replace a newer successful connection", async () => {
   window.history.replaceState(null, "", "#/runs");
   let release!: (value: Response) => void;
-  const fetcher = vi.fn().mockImplementationOnce(() => new Promise<Response>(resolve => { release = resolve; })).mockResolvedValue(response(204));
+  const fetcher = vi.fn().mockImplementationOnce(() => new Promise<Response>(resolve => { release = resolve; })).mockImplementation(async () => sessionResponse());
   vi.stubGlobal("fetch", fetcher);
   const connected = vi.fn(), unavailable = vi.fn(); stop = watchBrowserSession({ connected, unavailable }).dispose;
   sameDocumentHash(`#bluefire-session=${"E".repeat(64)}`); await flush();
@@ -80,4 +82,20 @@ it("ignores ordinary routes and preserves the newest route across a replayed lau
   expect(connected).toHaveBeenCalledTimes(2);
   stop(); sameDocumentHash(`#bluefire-session=${"G".repeat(64)}`); await flush();
   expect(fetcher).toHaveBeenCalledTimes(3);
+});
+
+it("reaches the connection gate after an unresponsive initial session check", async () => {
+  vi.useFakeTimers();
+  try {
+    window.history.replaceState(null, "", "/");
+    const fetcher = vi.fn((_url, options: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      options.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+    }));
+    vi.stubGlobal("fetch", fetcher);
+    const connected = vi.fn(), unavailable = vi.fn();
+    stop = watchBrowserSession({ connected, unavailable }).dispose;
+    await vi.advanceTimersByTimeAsync(15_001); await flush();
+    expect(unavailable).toHaveBeenCalledOnce(); expect(connected).not.toHaveBeenCalled();
+    expect(fetcher).toHaveBeenCalledOnce();
+  } finally { vi.useRealTimers(); }
 });

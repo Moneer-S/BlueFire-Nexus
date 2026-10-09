@@ -3,9 +3,11 @@
 import json
 import threading
 import uuid
+from contextlib import nullcontext
 
 import pytest
 
+from bluefire import receiver_defense_native, receiver_defense_result
 from bluefire.ai_assistance import PURPOSE, RECEIVER_INSPECT, RECEIVER_TEST
 from bluefire.ai_provider_access import ProviderReadiness
 from bluefire.ai_receiver_inspection import PURPOSE as INSPECTION
@@ -13,7 +15,7 @@ from bluefire.ai_wire import AIProviderCancelled
 from bluefire.config import AIConfig, AIProviderConfig, AutonomyLevel
 from bluefire.job_runtime import JobState
 from bluefire.product_store_errors import ProductStoreError
-from tests_platform.test_receiver_defense_jobs import FixtureRunner
+from tests_platform.test_receiver_defense_jobs import FixtureRunner, _PublicationDiagnostic
 from tests_platform.test_receiver_defense_jobs import setup as receiver_setup  # noqa: F401
 
 
@@ -138,7 +140,7 @@ def planned(configured):
     return parent, owner
 
 
-def run_phase(service, owner_id, phase):
+def run_phase(service, owner_id, phase, *, diagnostic=None):
     submit = {
         "submission_id": str(uuid.uuid4()),
         "phase": phase,
@@ -180,7 +182,13 @@ def run_phase(service, owner_id, phase):
             service.store.root.parent / ("receiver-assistance-approval-" + phase + ".json")
         ).write_text(json.dumps(service.assistance_turn(marker["parent_job_id"])), encoding="utf-8")
     service.approve_job(execution["job_id"], {"approved_by": "Portable reviewer"})
-    result = service.job_controller.wait(execution["job_id"], timeout=20)
+    failure_context = (
+        nullcontext()
+        if diagnostic is None
+        else diagnostic.on_failure(service.job_controller, execution["job_id"], phase)
+    )
+    with failure_context:
+        result = service.job_controller.wait(execution["job_id"], timeout=20)
     assert result["state"] == "completed", result
     return result
 
@@ -214,15 +222,35 @@ def test_off_and_explicit_owner_are_no_effect_and_get_never_advances(configured)
 
 def test_three_phases_auto_coordination_retains_exact_analyses_without_automatic_effects(
     configured,
+    monkeypatch,
 ):
     service, access, sessions, body = configured
     body["autonomy"] = "auto"
     runner = protocol_runner(service, sessions)
+    diagnostic = _PublicationDiagnostic()
+    diagnostic.wrap(
+        monkeypatch,
+        service.receiver_defense,
+        "before_execute",
+        "before_execute",
+        phase_arg=0,
+    )
+    diagnostic.wrap(monkeypatch, service, "_execute_job_inner", "run", phase_arg=1)
+    diagnostic.wrap(monkeypatch, service, "_execute_replay_job", "replay", phase_arg=1)
+    diagnostic.wrap(monkeypatch, receiver_defense_native, "finish", "finish", phase_arg=2)
+    diagnostic.wrap(monkeypatch, service.receiver_defense.owners, "observe", "observe")
+    diagnostic.wrap(monkeypatch, service.receiver_defense.owners, "close", "close")
+    diagnostic.wrap(monkeypatch, receiver_defense_native, "_source", "source")
+    diagnostic.wrap(monkeypatch, receiver_defense_result, "verified_result", "verify")
     parent, owner = planned(configured)
     snapshots = []
     for index, phase in enumerate(("baseline", "protected", "restored")):
         assert len(sessions) == index
-        run_phase(service, owner["job_id"], phase)
+        run_phase(service, owner["job_id"], phase, diagnostic=diagnostic)
+        assert all(
+            diagnostic._states[phase, stage] == ("returned", "none")
+            for stage in ("before_execute", "run", "finish")
+        )
         parent = service.product_store.get_job(parent["job_id"])
         assert len(parent["progress"].get("receiver_inspections", [])) == index + 1, parent
         analysis = service.job_controller.wait(

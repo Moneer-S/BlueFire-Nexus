@@ -1,0 +1,12 @@
+.structured-rule-editor { container-type: inline-size; }
+.structured-condition { min-width: 0; margin: .65rem 0; padding: .5rem .65rem .65rem; border: 1px solid var(--line); border-radius: .5rem; }
+.structured-condition legend { font-size: .8rem; }
+.structured-condition-controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: .55rem; align-items: start; }
+.structured-condition-controls > *, .structured-condition-value { min-width: 0; }
+.structured-condition-controls input, .structured-condition-controls select { width: 100%; min-width: 0; }
+.structured-condition-value { display: grid; gap: .35rem; }
+.structured-condition-controls > button { justify-self: start; }
+@container (min-width: 560px) {
+  .structured-condition-controls { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.2fr) auto; }
+  .structured-condition-controls > button { margin-top: 1.6rem; }
+}

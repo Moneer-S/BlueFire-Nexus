@@ -4,6 +4,7 @@ import copy
 import json
 import threading
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,12 +12,14 @@ from bluefire.ai_broker_contract import schema_identity
 from bluefire.ai_method_comparison import OUTPUT_SCHEMA, PURPOSE
 from bluefire.ai_wire import AIProviderTransportError, structured_request
 from bluefire.config import AIProviderKind
+from bluefire.job_runtime import JobWaitTimeout
 from bluefire.prepared_lab_enrollment import product_config
 from bluefire.runner_lifecycle import ManagedRunnerLifecycle
 from bluefire.service import BlueFireService
 from bluefire.util import canonical_json_bytes, content_hash
 from tests_platform import test_ai_broker_channel as support
 from tests_platform.ai_live_authorization_support import authorize_service
+from tests_platform.test_ai_broker_graph_assistance import _timeout_evidence
 from tests_platform.test_ai_wire_runtime import _envelope
 from tests_platform.test_detection_evaluations import query_candidate
 from tests_platform.test_method_comparison_jobs import decision, source_run
@@ -35,12 +38,14 @@ def test_method_job_uses_fixed_enrolled_schema(tmp_path, pair, kind, monkeypatch
         ai_provider_access=access,
     )
     authorize_service(service, provider)
+    fixture = SimpleNamespace(calls=[])
 
     def response(url, *, headers, body, timeout_seconds):
         assert schema_identity(body, kind) == (PURPOSE, content_hash(OUTPUT_SCHEMA))
         payload = json.loads(body)
         context = json.loads(payload.get("input") or payload["messages"][1]["content"])
         transport.requests.append(payload)
+        fixture.calls.append(PURPOSE)
         return canonical_json_bytes(
             _envelope(
                 kind,
@@ -54,6 +59,8 @@ def test_method_job_uses_fixed_enrolled_schema(tmp_path, pair, kind, monkeypatch
         )
 
     monkeypatch.setattr(transport, "post", response)
+    timed_out = None
+    wait_stage = "proposal_wait"
     try:
         run_id = source_run(service, tmp_path)
         candidate_id = query_candidate(service)
@@ -76,11 +83,32 @@ def test_method_job_uses_fixed_enrolled_schema(tmp_path, pair, kind, monkeypatch
         assert job["state"] == "completed", job
         assert len(transport.requests) == 1 and "decision" not in job["progress"]
         accepted = service.decide_method_comparison(job["job_id"], decision(job))
+        wait_stage = "replay_wait"
         result = service.job_controller.wait(accepted["replay_job"]["job_id"], timeout=15)
         assert result["state"] == "completed" and "comparison" in result["progress"]
+    except JobWaitTimeout as error:
+        timed_out = error
+        _timeout_evidence(
+            "before_cleanup", fixture, worker, errors, timeout=error, wait_stage=wait_stage
+        )
+        raise
     finally:
-        service.close()
-        worker.join(3)
+        cleanup_completed = False
+        try:
+            service.close()
+            worker.join(3)
+            cleanup_completed = True
+        finally:
+            if timed_out is not None:
+                _timeout_evidence(
+                    "cleanup_exit",
+                    fixture,
+                    worker,
+                    errors,
+                    timeout=timed_out,
+                    wait_stage=wait_stage,
+                    cleanup_completed=cleanup_completed,
+                )
     assert not worker.is_alive() and errors == []
 
 

@@ -1,10 +1,9 @@
-"""Single-purpose, quiet handoff of an authenticated local console to the desktop."""
+"""Single-purpose, quiet handoff of a credential-free console address to the desktop."""
 
 from __future__ import annotations
 
 import ipaddress
 import os
-import re
 import subprocess
 import sys
 from typing import Callable
@@ -29,7 +28,7 @@ def _console_url(value: str) -> bool:
             and parsed.password is None
             and parsed.path == "/"
             and not parsed.query
-            and re.fullmatch(r"bluefire-session=[A-Za-z0-9_-]{64}", parsed.fragment)
+            and not parsed.fragment
         )
     except ValueError:
         return False
@@ -53,7 +52,7 @@ def _desktop_error(error: OSError) -> str:
 
 
 def open_console_url(url: str, *, on_failure: Callable[[str], None] | None = None) -> bool:
-    """Request one desktop handoff; success does not attest that a page loaded."""
+    """Open only a credential-free address; success does not attest that a page loaded."""
 
     def failed(reason: str) -> bool:
         if on_failure is not None:
