@@ -1,6 +1,9 @@
 .composition-page { max-width: 1400px; grid-template-columns: minmax(0, 1fr); }
 .composition-page > *, .composition-section, .composition-scope { min-width: 0; }
 .composition-page h1 { font-size: 1.65rem; overflow-wrap: anywhere; }
+.composition-page > .page-header h1 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.composition-objective-expanded > .page-header h1 { display: block; }
+.composition-page > .page-header > div:first-child { min-width: 0; }
 .composition-page h2 { font-size: 1.15rem; margin: 0 0 16px; }
 .composition-page h3 { font-size: 1rem; }
 .composition-page p { max-width: 85ch; line-height: 1.55; }
@@ -13,7 +16,8 @@
 .composition-objective-list { display: grid; gap: 0; }
 .composition-objective-list a { padding: 12px 0; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 16px; }
 .composition-objective-list a[aria-current] { color: var(--blue-soft); }
-.composition-objective-list strong { overflow-wrap: anywhere; }
+.composition-objective-list strong { min-width: 0; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.composition-objective-list a > span { flex-shrink: 0; }
 .composition-limits { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 16px; margin-block: 20px; }
 .composition-limits dt { font-size: .8rem; color: var(--muted-strong); }
 .composition-limits dd { margin: 5px 0 0; font-variant-numeric: tabular-nums; font-size: 1rem; }

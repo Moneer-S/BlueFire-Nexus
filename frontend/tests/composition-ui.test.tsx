@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import * as Tooltip from "@radix-ui/react-tooltip";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
@@ -10,7 +11,7 @@ import { attemptFixture, contextFixture, controlId, grantRequestFixture, objecti
 
 vi.mock("../src/components/CompositionGraph", () => ({ CompositionGraph: () => <div>Read-only graph</div> }));
 vi.mock("../src/lib/api", () => ({ DEMO_MODE: false, request: vi.fn(), ApiError: class extends Error {}, api: { catalog: vi.fn(async () => ({ ai: { providers: [] } })) } }));
-function mount(element: React.ReactNode, path = "/composition") { const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); return { ...render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}>{element}</MemoryRouter></QueryClientProvider>), client }; }
+function mount(element: React.ReactNode, path = "/composition") { const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); return { ...render(<QueryClientProvider client={client}><Tooltip.Provider><MemoryRouter initialEntries={[path]}>{element}</MemoryRouter></Tooltip.Provider></QueryClientProvider>), client }; }
 beforeEach(() => { localStorage.clear(); vi.spyOn(compositionApi, "list").mockResolvedValue({ schema_version: "bluefire.composition-objective-list.v1", objectives: [{ owner_id: ownerId, title: question, status: "active", job_state: "completed" }] }); vi.spyOn(compositionApi, "context").mockResolvedValue(contextFixture()); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -170,4 +171,55 @@ it("does not reopen a completed objective by selecting an earlier refusal", asyn
   expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled(); expect(screen.getByRole("button", { name: "Revoke" })).toBeEnabled();
   expect(screen.getAllByRole("link", { name: "Inspect verified run evidence" })).toHaveLength(2);
   expect(compositionApi.context).not.toHaveBeenCalled();
+});
+it("keeps the complete objective accessible while its visual heading is collapsed", async () => {
+  const value = objectiveFixture(); value.grant.document.objective.question = "Long reviewed objective ".repeat(80);
+  vi.spyOn(compositionApi, "objective").mockResolvedValue(value);
+  mount(<CompositionPage />, `/composition?control=${controlId}&objective=${ownerId}`);
+  const heading = await screen.findByRole("heading", { level: 1, name: value.grant.document.objective.question.trim() });
+  const expand = screen.getByRole("button", { name: "Show full objective question" });
+  expect(expand).toHaveAttribute("aria-expanded", "false");
+  expect(heading.closest(".composition-page")).not.toHaveClass("composition-objective-expanded");
+  fireEvent.click(expand);
+  expect(screen.getByRole("button", { name: "Collapse objective question" })).toHaveAttribute("aria-expanded", "true");
+  expect(heading.closest(".composition-page")).toHaveClass("composition-objective-expanded");
+  expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "Collapse objective question" }));
+  expect(heading).toHaveTextContent(value.grant.document.objective.question.trim());
+  expect(heading.closest(".composition-page")).not.toHaveClass("composition-objective-expanded");
+});
+it.each(["stop", "revoke"] as const)("discards a late context failure after %s without a new planning request", async operation => {
+  let value = objectiveFixture();
+  vi.spyOn(compositionApi, "objective").mockImplementation(async () => value);
+  let rejectContext!: (reason: Error) => void;
+  vi.mocked(compositionApi.context).mockReturnValueOnce(new Promise((_resolve, reject) => { rejectContext = reject; }));
+  const control = vi.spyOn(compositionApi, "control").mockImplementation(async (_owner, action) => {
+    value = structuredClone(value); value.grant.status = action === "continue" ? "active" : action === "stop" ? "paused" : "revoked"; return value;
+  });
+  const submit = vi.spyOn(compositionApi, "submit");
+  mount(<CompositionPage />, `/composition?control=${controlId}&objective=${ownerId}`);
+  await waitFor(() => expect(compositionApi.context).toHaveBeenCalledOnce());
+  fireEvent.click(screen.getByRole("button", { name: operation === "stop" ? "Stop" : "Revoke" }));
+  await waitFor(() => expect(control).toHaveBeenCalledWith(ownerId, operation));
+  await screen.findByText(operation === "stop" ? "Paused" : "Revoked");
+  await act(async () => rejectContext(new Error("Late context refusal after control change")));
+  expect(screen.queryByText("Late context refusal after control change")).not.toBeInTheDocument();
+  expect(screen.queryByText("Verifying current facts and capabilities")).not.toBeInTheDocument();
+  expect(compositionApi.context).toHaveBeenCalledOnce();
+  expect(submit).not.toHaveBeenCalled();
+  if (operation === "stop") {
+    fireEvent.click(await screen.findByRole("button", { name: "Continue objective" }));
+    await waitFor(() => expect(compositionApi.context).toHaveBeenCalledTimes(2));
+    fireEvent.click(await screen.findByRole("button", { name: "Review established graph" }));
+    expect(await screen.findByRole("button", { name: "Start fresh attempt within grant" })).toBeEnabled();
+    expect(submit).not.toHaveBeenCalled();
+  }
+});
+it("still exposes a current active planning failure", async () => {
+  vi.spyOn(compositionApi, "objective").mockResolvedValue(objectiveFixture());
+  vi.mocked(compositionApi.context).mockRejectedValue(new Error("Current evidence cannot be verified"));
+  mount(<CompositionPage />, `/composition?control=${controlId}&objective=${ownerId}`);
+  await screen.findByText("Current evidence cannot be verified");
+  expect(screen.getByRole("button", { name: "Request AI graph" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
 });
