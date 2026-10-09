@@ -31,7 +31,7 @@ _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
     "bluefire/prepared_lab_broker.py": "sha256:970191f6782403857cc4d3860547cc1e1c7c1de10a15cfd9b1be653ab8c7087b",
     "bluefire/prepared_lab_ui_bootstrap.py": "sha256:7de08b08b2dbf7120e679f5cc1c81446a125dcddc205b69f244b0c6d4ed50b4c",
     "bluefire/prepared_lab_product.py": "sha256:3a5e38cfa1eb8c7b23c88fe2d8ab89f98cbeb00f27357c7af21c61fa95df7ea9",
-    "bluefire/browser_launch.py": "sha256:c19b3d5ebfe9b51378d77ce5fd285ada78cc43898690699477d04f4c0862dbf1",
+    "bluefire/browser_launch.py": "sha256:54d7a77e43821254841f895aedd516321523c7287d9571df2fa9a52e1253c72f",
     "bluefire/runner_python_environment.py": "sha256:9928d6a53b5fd2dc9bf6036c4a2d9ec9715c97de1f9f89519e99055b21b2f25e",
 }
 _REVIEWED_RUST_PROCESS_BOUNDARY_SOURCES = (

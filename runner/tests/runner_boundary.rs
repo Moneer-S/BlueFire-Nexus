@@ -1270,22 +1270,19 @@ fn collection_output_limits_keep_legacy_default_and_enforce_exact_publication_bo
                 ),
                 profile.clone(),
             );
-            // gzip has executed a process; the native serializers have not published an effect.
-            let (status, kind) = if method == "atomic-gzip" {
-                (TaskStatus::Failed, EvidenceKind::Executed)
+            // All methods have read input, even when no output has been published.
+            let status = if method == "atomic-gzip" {
+                TaskStatus::Failed
             } else {
-                (TaskStatus::ControlBlocked, EvidenceKind::ControlBlocked)
+                TaskStatus::ControlBlocked
             };
             assert_eq!(result.status, status, "{result:#?}");
             assert_eq!(
                 result.error.as_ref().unwrap().code,
                 "collection_output_limit"
             );
-            assert_eq!(result.evidence[0].kind, kind);
-            assert_eq!(
-                result.evidence[0].details["side_effects_started"],
-                method == "atomic-gzip"
-            );
+            assert_eq!(result.evidence[0].kind, EvidenceKind::Executed);
+            assert_eq!(result.evidence[0].details["side_effects_started"], true);
             assert!(result.receipt_ids.is_empty());
             assert_collection_not_published(&root, &source, fixture_receipts.len());
         }
@@ -1377,6 +1374,32 @@ fn collection_output_allowance_does_not_widen_the_manifest_input_read_limit() {
         };
         assert_eq!(result.status, status, "{result:#?}");
         assert_eq!(result.error.as_ref().unwrap().code, code);
+        assert_eq!(result.evidence[0].kind, EvidenceKind::Executed);
+        assert_eq!(result.evidence[0].details["side_effects_started"], true);
+        assert!(result.receipt_ids.is_empty());
+        assert_collection_not_published(&root, &source, fixture_receipts.len());
+        cleanup_collection_receipts(&profile, fixture_receipts);
+        assert_no_workspace_artifacts(root.path());
+    }
+}
+
+#[test]
+fn collection_digest_refusal_preserves_execution_after_input_read() {
+    for &(method, _) in COLLECTION_LIMIT_METHODS {
+        let root = TempDir::new().unwrap();
+        let profile = collection_test_profile(&root, method);
+        let (source, fixture_receipts) = collection_limit_fixture(&root, &profile);
+        let action = format!("sandbox.collection.{method}.v1");
+        let mut params = collection_limit_params(&source, "primary", None);
+        params["expected_sha256"] = json!("0".repeat(64));
+        let result = runner().execute(manifest(&profile, &action, params), profile.clone());
+        assert_eq!(result.status, TaskStatus::ControlBlocked, "{result:#?}");
+        assert_eq!(
+            result.error.as_ref().unwrap().code,
+            "collection_input_identity_mismatch"
+        );
+        assert_eq!(result.evidence[0].kind, EvidenceKind::Executed);
+        assert_eq!(result.evidence[0].details["side_effects_started"], true);
         assert!(result.receipt_ids.is_empty());
         assert_collection_not_published(&root, &source, fixture_receipts.len());
         cleanup_collection_receipts(&profile, fixture_receipts);

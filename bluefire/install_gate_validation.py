@@ -319,9 +319,9 @@ def validate_ui(report: Mapping[str, Any]) -> None:
             "command",
             "loopback_only",
             "ephemeral_port",
-            "capability_fragment_only",
+            "capability_not_in_http_target",
             "capability_single_use",
-            "strict_session_cookie",
+            "session_header_required",
         },
         "UI launch",
     )
@@ -343,11 +343,14 @@ def validate_ui(report: Mapping[str, Any]) -> None:
             "runs_navigation_present",
             "runs_route_rendered",
             "guided_execute_rendered",
+            "explicit_connection_form",
+            "same_tab_reload_authenticated",
+            "new_tab_requires_connection",
         },
         "UI runtime probe",
     )
     if (
-        root["schema_version"] != "bluefire.gate01-ui-health.v1"
+        root["schema_version"] != "bluefire.gate01-ui-health.v2"
         or root["verified"] is not True
         or launch["command"]
         != [
@@ -372,6 +375,10 @@ def validate_ui(report: Mapping[str, Any]) -> None:
         or type(api["scenario_count"]) is not int
         or api["scenario_count"] <= 0
         or api["seeded_scenario_present"] is not True
+        or any(
+            runtime_probe[key] is not True
+            for key in set(runtime_probe) - {"engine", "browser_sandbox", "network_scope"}
+        )
         or runtime_probe
         != {
             "engine": "edge-headless",
@@ -383,6 +390,9 @@ def validate_ui(report: Mapping[str, Any]) -> None:
             "runs_navigation_present": True,
             "runs_route_rendered": True,
             "guided_execute_rendered": True,
+            "explicit_connection_form": True,
+            "same_tab_reload_authenticated": True,
+            "new_tab_requires_connection": True,
         }
     ):
         raise ValueError("production UI health proof is invalid")

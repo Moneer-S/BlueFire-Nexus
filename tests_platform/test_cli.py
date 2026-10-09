@@ -652,7 +652,7 @@ def test_cli_action_package_file_reads_are_bounded_and_path_safe(
     assert service.calls == []
 
 
-def test_cli_ui_delivers_one_capability_only_in_the_launch_url_fragment(
+def test_cli_ui_no_browser_retains_explicit_terminal_launch_link_and_code(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -696,6 +696,7 @@ def test_cli_ui_delivers_one_capability_only_in_the_launch_url_fragment(
     assert output.out == ""
     assert output.err == (
         f"BlueFire local console: http://127.0.0.1:49321/#bluefire-session={capability}\n"
+        f"One-time connection code: {capability}\n"
     )
     launch_url = output.err.partition(": ")[2].strip()
     assert "?" not in launch_url.partition("#")[0]
@@ -729,7 +730,7 @@ def test_cli_ui_bind_failure_never_announces_the_capability(
     assert capability not in output.out + output.err
 
 
-def test_cli_ui_opens_only_the_bound_authenticated_url_once(
+def test_cli_ui_opens_only_the_bound_credential_free_url_once(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     service = _RecordingService()
@@ -761,10 +762,13 @@ def test_cli_ui_opens_only_the_bound_authenticated_url_once(
     monkeypatch.setattr(cli.threading, "Thread", InlineThread)
     monkeypatch.setattr(cli, "serve", serve_bound)
     _execute(_parser().parse_args(["ui", "--port", "0"]))
-    url = f"http://127.0.0.1:49322/#bluefire-session={capability}"
+    url = "http://127.0.0.1:49322/"
     assert opened == [url]
+    assert capability not in repr(opened)
     assert events == ["bound", "serving"]
-    assert capsys.readouterr().err == f"BlueFire local console: {url}\n"
+    assert capsys.readouterr().err == (
+        f"BlueFire local console: {url}\nOne-time connection code: {capability}\n"
+    )
 
 
 @pytest.mark.parametrize("throws", [False, True])
@@ -820,7 +824,7 @@ def test_cli_missing_browser_explains_recovery_without_echoing_session(
 ) -> None:
     from bluefire import browser_launch
 
-    bootstrap_url = "http://127.0.0.1:49322/#bluefire-session=" + "D" * 64
+    bootstrap_url = "http://127.0.0.1:49322/"
     requests: list[str] = []
 
     def no_browser(url: str) -> None:

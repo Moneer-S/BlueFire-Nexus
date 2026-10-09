@@ -321,13 +321,19 @@ describe("product application", () => {
   });
 
   it("renders recent work and routes every research source link", async () => {
+    const syntheticSession = "s".repeat(64);
+    sessionStorage.setItem("bluefire.browser-session.v1", syntheticSession);
     const user = userEvent.setup();
     renderApp();
     expect(await screen.findByRole("heading", { name: "Overview" })).toBeVisible();
     const indicators = await screen.findAllByRole("img", { name: "Local service connected" });
     expect(indicators).toHaveLength(2); // Mobile and sidebar use the same checked connection.
     for (const indicator of indicators) { expect(indicator).toBeVisible(); expect(indicator).toHaveClass("ready"); }
-    expect(vi.mocked(fetch)).toHaveBeenCalledWith("/api/v1/session", expect.objectContaining({ method: "GET", credentials: "same-origin", cache: "no-store" }));
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith("/api/v1/session", expect.objectContaining({ method: "GET", credentials: "omit", cache: "no-store", redirect: "error" }));
+    const sessionRequest = vi.mocked(fetch).mock.calls.find(([url]) => url === "/api/v1/session")?.[1];
+    const sessionHeaders = new Headers(sessionRequest?.headers);
+    expect(sessionHeaders.get("Accept")).toBe("application/json");
+    expect(sessionHeaders.get("X-BlueFire-Session")).toBe(syntheticSession);
     await user.click(screen.getByRole("button", { name: "Show more tools" }));
     await user.click(screen.getByRole("link", { name: /Research Sources/i }));
     expect(await screen.findByRole("heading", { name: "Research sources" })).toBeVisible();

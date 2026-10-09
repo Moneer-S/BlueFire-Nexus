@@ -111,7 +111,7 @@ def _runtime() -> dict[str, Any]:
 
 def _ui() -> dict[str, Any]:
     return {
-        "schema_version": "bluefire.gate01-ui-health.v1",
+        "schema_version": "bluefire.gate01-ui-health.v2",
         "verified": True,
         "launch": {
             "command": [
@@ -129,9 +129,9 @@ def _ui() -> dict[str, Any]:
             ],
             "loopback_only": True,
             "ephemeral_port": True,
-            "capability_fragment_only": True,
+            "capability_not_in_http_target": True,
             "capability_single_use": True,
-            "strict_session_cookie": True,
+            "session_header_required": True,
         },
         "assets": {
             "/ui/app.js": {"size_bytes": 512, "sha256": _DIGEST},
@@ -153,6 +153,9 @@ def _ui() -> dict[str, Any]:
             "runs_navigation_present": True,
             "runs_route_rendered": True,
             "guided_execute_rendered": True,
+            "explicit_connection_form": True,
+            "same_tab_reload_authenticated": True,
+            "new_tab_requires_connection": True,
         },
     }
 
