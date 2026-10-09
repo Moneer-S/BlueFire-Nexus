@@ -1,5 +1,8 @@
 """The fixed worker is an exact reviewed command boundary, not a general launcher."""
 
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -89,3 +92,67 @@ def test_fixed_worker_bytes_and_inventory_cannot_be_substituted(tmp_path, change
 @pytest.mark.parametrize("source", [b"", b"\xff", "not bytes", None])
 def test_invalid_worker_source_is_refused(source):
     assert not reviewed_s3_worker_source(source)
+
+
+@pytest.mark.parametrize("with_worker_rule", [True, False])
+def test_autocrlf_checkout_preserves_only_the_exact_reviewed_worker(tmp_path, with_worker_rule):
+    git = shutil.which("git")
+    assert git is not None
+    rule = b"/runner/src/s3_worker_process.rs text eol=lf"
+    attributes = (ROOT / ".gitattributes").read_bytes().replace(b"\r\n", b"\n")
+    if not with_worker_rule:
+        attributes = b"\n".join(line for line in attributes.split(b"\n") if line != rule)
+    source = tmp_path / "source"
+    worker = source / "runner/src" / WORKER
+    worker.parent.mkdir(parents=True)
+    (source / ".gitattributes").write_bytes(attributes)
+    original = _source(WORKER)
+    assert reviewed_s3_worker_source(original) and b"\r" not in original
+    worker.write_bytes(original)
+    (source / "control.txt").write_bytes(b"synthetic checkout control\n")
+    environment = {
+        key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")
+    }
+    environment.update(
+        GIT_CONFIG_NOSYSTEM="1",
+        GIT_CONFIG_GLOBAL=os.devnull,
+        GIT_ATTR_NOSYSTEM="1",
+        GIT_OPTIONAL_LOCKS="0",
+        GIT_TERMINAL_PROMPT="0",
+    )
+
+    def command(*arguments):
+        return subprocess.run(
+            [
+                git,
+                "-c",
+                "gc.auto=0",
+                "-c",
+                "core.autocrlf=true",
+                "-c",
+                "core.safecrlf=false",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.hooksPath=" + os.devnull,
+                "-c",
+                "core.attributesFile=" + os.devnull,
+                *arguments,
+            ],
+            cwd=source,
+            env=environment,
+            check=True,
+            capture_output=True,
+            timeout=15,
+        ).stdout
+
+    command("init", "-q")
+    command("add", "--", ".gitattributes", "control.txt", "runner/src/" + WORKER)
+    output = tmp_path / "materialized"
+    output.mkdir()
+    command("checkout-index", "--all", "--prefix=" + output.as_posix() + "/")
+    assert (output / "control.txt").read_bytes() == b"synthetic checkout control\r\n"
+    actual = (output / "runner/src" / WORKER).read_bytes()
+    expected = original if with_worker_rule else original.replace(b"\n", b"\r\n")
+    assert actual == expected
+    assert reviewed_s3_worker_source(actual) is with_worker_rule
