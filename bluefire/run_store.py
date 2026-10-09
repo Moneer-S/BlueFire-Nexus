@@ -102,15 +102,22 @@ class RunStore:
         policy: Mapping[str, Any],
         profile: Mapping[str, Any] | None,
         replay: Mapping[str, Any] | None = None,
+        _reserved_run_id: str | None = None,
     ) -> RunHandle:
+        if _reserved_run_id is not None and (
+            not isinstance(_reserved_run_id, str) or RUN_ID_RE.fullmatch(_reserved_run_id) is None
+        ):
+            raise RunStoreError("reserved run identity is invalid")
         created_at = utc_now()
         acceptance_binding = _acceptance_binding()
         for _attempt in range(8):
-            run_id = self._new_run_id()
+            run_id = _reserved_run_id or self._new_run_id()
             path = self.root / run_id
             try:
                 path.mkdir(mode=0o700, exist_ok=False)
             except FileExistsError:
+                if _reserved_run_id is not None:
+                    raise RunStoreError("reserved run identity already exists") from None
                 continue
             handle = RunHandle(run_id=run_id, created_at=created_at, path=path)
             metadata = {

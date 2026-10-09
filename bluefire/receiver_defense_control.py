@@ -64,10 +64,12 @@ def view(coordinator, parent, phase_views, completed):
     )
     with coordinator.store._connection() as connection:
         related = records.related_control_tests(coordinator.store, connection, parent["job_id"])
-        settled = all(
-            records.control_settled(coordinator.store, connection, owner) for owner in related
+        usage = records.composition_control_usage(coordinator.store, connection, parent["job_id"])
+        settled = (
+            all(records.control_settled(coordinator.store, connection, owner) for owner in related)
+            and usage["settled"]
         )
-        receiver_states = []
+        receiver_states = ["uncertain"] if usage["receiver_state"] == "unknown" else []
         for owner in related:
             for entry in [
                 *owner["progress"].get("phases", {}).values(),

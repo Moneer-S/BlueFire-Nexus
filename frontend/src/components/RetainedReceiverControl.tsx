@@ -34,6 +34,7 @@ export function RetainedReceiverControl({ envelope, disabled, onStart, onRollbac
     {envelope.context.source_control ? <p>Fresh retest of <Link to={`/compare?receiver_job=${encodeURIComponent(control.owner_job_id)}`}>the retained policy</Link>. The <Link to={`/runs/${encodeURIComponent(envelope.context.source_baseline!.run_id)}`}>original baseline</Link> is lineage; only this test's new runs establish its outcomes.</p> : null}
     {control.status === "rolled_back" ? <Callout title="Retained policy rolled back">The desired policy is now the prior reviewed-records policy. Previous prevention and legitimate-use evidence remains historical.</Callout> : null}
     <div className="receiver-actions">
+      {!envelope.context.source_control && envelope.status === "completed" && control.status !== "rolled_back" ? <Link className="button button-secondary button-medium" to={`/composition?control=${encodeURIComponent(control.owner_job_id)}`}>Open composition workspace</Link> : null}
       {control.can_retest ? <Button disabled={disabled} onClick={() => openReview("retest")}>Review fresh retest</Button> : null}
       {control.can_rollback ? <Button disabled={disabled} onClick={() => openReview("rollback")}>Review policy rollback</Button> : null}
     </div>

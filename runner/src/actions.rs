@@ -3584,8 +3584,20 @@ impl PreparedAction for CleanupPrepared {
                 "cleanup receipt count is empty or exceeds the manifest file limit",
             ));
         }
+        let timeout_ms = if let Some(authority) = &context.manifest.grant_cleanup {
+            let remaining = (authority.expires_at - crate::contract::utc_now()).num_milliseconds();
+            if remaining <= 0 {
+                return Err(ActionFailure::blocked(
+                    "grant_cleanup_expired",
+                    "the retained cleanup obligation deadline elapsed before execution",
+                ));
+            }
+            context.manifest.limits.timeout_ms.min(remaining as u64)
+        } else {
+            context.manifest.limits.timeout_ms
+        };
         let cleanup_deadline = Instant::now()
-            .checked_add(Duration::from_millis(context.manifest.limits.timeout_ms))
+            .checked_add(Duration::from_millis(timeout_ms))
             .ok_or_else(|| {
                 ActionFailure::blocked(
                     "invalid_resource_limits",

@@ -112,6 +112,12 @@ Stop, browser navigation, and replay never perform this rollback implicitly.
 The original restoration workflow and its Assistant integration are unchanged;
 retained-policy tests currently use explicit native controls with runtime AI Off.
 
+After completing the original retained-policy test, **Open composition workspace**
+starts a separate [capability-grant workflow](capability-composition.md). It can
+propose new compatible graphs and use verified attempt evidence for revisions.
+That delegation does not change the approvals or runtime AI setting of this
+three-phase control test.
+
 ## Coordinate with Assistant, or analyse an existing test
 
 Manual **Save control test** needs no model. To coordinate a new test instead,

@@ -113,6 +113,38 @@ class PolicyDecision:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class GrantPolicyState:
+    """Exact delegated request already bound by the trusted manifest builder."""
+
+    authority_kind: str
+    issued_at: str
+    expires_at: str
+    request_hash: str
+    action_id: str
+    runner_profile_id: str
+    target_scope_digest: str
+
+    def validate(
+        self, *, request_hash, action_id, runner_profile_id, target_scope_digest, now=None
+    ):
+        if self.authority_kind not in {"capability_grant_attempt", "capability_grant_cleanup"}:
+            raise PolicyError("delegated authority kind is unsupported")
+        if self.authority_kind == "capability_grant_cleanup" and action_id != "sandbox.cleanup.v1":
+            raise PolicyError("retained cleanup authority cannot perform business work")
+        if (
+            self.request_hash,
+            self.action_id,
+            self.runner_profile_id,
+            self.target_scope_digest,
+        ) != (request_hash, action_id, runner_profile_id, target_scope_digest):
+            raise PolicyError("delegated authority is not bound to this exact request")
+        current = now or datetime.now(timezone.utc)
+        issued, expires = _parse_timestamp(self.issued_at), _parse_timestamp(self.expires_at)
+        if issued > current or expires <= current or expires <= issued:
+            raise PolicyError("delegated authority is not currently valid")
+
+
 class PolicyEngine:
     def evaluate(
         self,
@@ -125,6 +157,7 @@ class PolicyEngine:
         target_scope: Mapping[str, Any],
         request_hash: str,
         approval: ApprovalState | None,
+        grant: GrantPolicyState | None = None,
     ) -> PolicyDecision:
         scope_digest = content_hash(target_scope)
         reasons: list[str] = []
@@ -189,14 +222,18 @@ class PolicyEngine:
 
         if profile is not None and status is PolicyStatus.ALLOWED:
             approval_needed = profile.approval_required or step.safety_tier is SafetyTier.RESTRICTED
-            if approval_needed:
-                required_approvals.append("operator")
-                if approval is None:
+            if approval_needed or grant is not None:
+                required_approvals.append("capability_grant" if grant is not None else "operator")
+                authority = grant if grant is not None else approval
+                if grant is not None and approval is not None:
+                    reasons.append("ordinary approval and delegated authority are exclusive")
+                    status = PolicyStatus.REFUSED
+                elif authority is None:
                     reasons.append("an operator approval bound to this request is required")
                     status = PolicyStatus.APPROVAL_REQUIRED
                 else:
                     try:
-                        approval.validate(
+                        authority.validate(
                             request_hash=request_hash,
                             action_id=action.id,
                             runner_profile_id=profile.id,

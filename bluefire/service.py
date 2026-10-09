@@ -49,6 +49,7 @@ from .ai_drafts import (
     normalize_ai_graph_draft,
 )
 from .ai_provider_access import AIProviderAccess, DirectAIProviderAccess
+from .ai_runtime_composition import CompositionAIJobs
 from .ai_transport import ManagedAIJSONTransport
 from .ai_wire import AIProviderCancelled
 from .application_errors import APIError
@@ -307,6 +308,10 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         )
         self.assistance_runs = AssistanceRunJobs(self)
         self.receiver_defense = ReceiverDefenseJobs(self)
+        from .composition_jobs import CompositionJobs, now_ms
+
+        self.product_store.interrupt_active_capability_grants(now_ms=now_ms())
+        self.composition = CompositionJobs(self)
         self.assistance = ExperimentAssistance(self)
         self.assistance_receiver = ReceiverAssistance(self)
         self.detection_ai.on_application = self.assistance.application_committed
@@ -2638,6 +2643,64 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             "proposal_record_id": proposal_record_id,
         }
 
+    def composition_context(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        return dict(self.composition.review(request))
+
+    def authorize_composition(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        return dict(self.composition.authorize(request))
+
+    def composition_objective(self, owner_id: str) -> Mapping[str, Any]:
+        return dict(self.composition.read(owner_id))
+
+    def list_composition_objectives(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        if not isinstance(request, dict) or set(request) != {"control_owner_id"}:
+            raise ProductStoreError("Objective listing requires an exact control owner.")
+        if not isinstance(request["control_owner_id"], str) or not request["control_owner_id"]:
+            raise ProductStoreError("Objective listing requires a control owner identifier.")
+        return dict(self.composition.objectives(request["control_owner_id"]))
+
+    def composition_proposal_context(
+        self, owner_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        if not isinstance(request, dict) or set(request) != {"prior_attempt_id"}:
+            raise ProductStoreError("Proposal context requires the exact prior attempt field.")
+        return self.composition_ai.context(owner_id, prior_attempt_id=request["prior_attempt_id"])
+
+    def submit_composition_attempt(
+        self, owner_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        return dict(self.composition.attempt(owner_id, request))
+
+    def control_composition(
+        self, owner_id: str, action: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        if not isinstance(request, dict) or request:
+            raise ProductStoreError("Composition control accepts only an empty object.")
+        if action == "continue":
+            return dict(self.composition.continue_objective(owner_id))
+        if action in {"stop", "revoke"}:
+            return dict(self.composition.stop(owner_id, revoke=action == "revoke"))
+        raise ProductStoreError("Unknown composition control action.")
+
+    @property
+    def composition_ai(self) -> CompositionAIJobs:
+        return CompositionAIJobs(self)
+
+    def submit_composition_proposal(
+        self, owner_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        return self.composition_ai.submit(owner_id, request)
+
+    def composition_proposal(self, job_id: str) -> Mapping[str, Any]:
+        return self.composition_ai.read(job_id)
+
+    def cancel_composition_proposal(
+        self, job_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        if request:
+            raise ProductStoreError("Composition proposal cancellation takes no body fields.")
+        return self.composition_ai.cancel(job_id)
+
     def pause_job(self, job_id: str) -> Mapping[str, Any]:
         return self._signal_job(job_id, "pause")
 
@@ -3634,7 +3697,9 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
                 try:
                     self.job_controller.shutdown()
                 finally:
-                    if not self.receiver_defense.owners.close_all():
+                    receiver_closed = self.receiver_defense.owners.close_all()
+                    composition_closed = self.composition.owners.close_all()
+                    if not receiver_closed or not composition_closed:
                         raise ProductStoreError(
                             "One or more owned receivers lack verified cleanup after shutdown."
                         )
@@ -6237,6 +6302,15 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         approval_id = approval_record.get("approval_id")
         if not isinstance(approval_id, str) or not approval_id.startswith("approval-"):
             raise RunnerContractError("Execute approval has no stable workspace identity")
+        return BlueFireService._isolated_owned_sandbox(configured_root, approval_id)
+
+    @staticmethod
+    def _isolated_owned_sandbox(configured_root: Path, owner_id: str) -> Path:
+        if (
+            not isinstance(owner_id, str)
+            or re.fullmatch(r"(?:approval|attempt)-[a-zA-Z0-9_-]{1,128}", owner_id) is None
+        ):
+            raise RunnerContractError("Execute has no stable owned workspace identity")
         base = configured_root.resolve(strict=True)
         executions = base / ".bluefire-executions"
         if executions.is_symlink():
@@ -6245,7 +6319,7 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         execution_parent = executions.resolve(strict=True)
         if execution_parent.parent != base:
             raise RunnerContractError("execution workspace parent escaped the configured sandbox")
-        candidate = execution_parent / approval_id
+        candidate = execution_parent / owner_id
         if candidate.is_symlink():
             raise RunnerContractError("execution workspace cannot be a symbolic link")
         try:
