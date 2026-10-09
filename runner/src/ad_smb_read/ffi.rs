@@ -134,7 +134,7 @@ extern "system" {
     ) -> i32;
 }
 
-#[link(name = "mpr")]
+#[link(name = "mpr", kind = "raw-dylib")]
 extern "system" {
     pub(super) fn WNetCancelConnection2W(name: *const u16, flags: u32, force: i32) -> u32;
 }

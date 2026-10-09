@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 type Handle = *mut c_void;
 
-#[link(name = "wevtapi")]
+#[link(name = "wevtapi", kind = "raw-dylib")]
 extern "system" {
     fn EvtQuery(session: Handle, path: *const u16, query: *const u16, flags: u32) -> Handle;
     fn EvtNext(

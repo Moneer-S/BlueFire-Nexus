@@ -20,7 +20,7 @@ pub(super) struct ShareInfo1501 {
     pub descriptor: *mut c_void,
 }
 
-#[link(name = "netapi32")]
+#[link(name = "netapi32", kind = "raw-dylib")]
 extern "system" {
     pub(super) fn NetShareGetInfo(
         server: *const u16,
