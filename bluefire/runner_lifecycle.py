@@ -641,6 +641,19 @@ class ManagedRunnerLifecycle:
                 process_state="unavailable",
             )
         enrollment, enrollment_state = self._enrollment_for_status()
+        profile_enrollment = (
+            {
+                "profile_enrollment": {
+                    "state": "not_enrolled",
+                    "enrolled_profile_ids": list(enrollment.allowed_profile_ids),
+                }
+            }
+            if enrollment is not None
+            and isinstance(profile_id, str)
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}", profile_id) is not None
+            and profile_id not in enrollment.allowed_profile_ids
+            else {}
+        )
         if enrollment is not None and pending_upgrade(self):
             try:
                 self._require_stopped("upgrade recovery review")
@@ -658,6 +671,7 @@ class ManagedRunnerLifecycle:
                     profile_id=profile_id,
                 ),
                 "upgrade_recovery_required": True,
+                **profile_enrollment,
             }
         if enrollment is None:
             lock_state = self._ledger_lock_state()
@@ -710,6 +724,19 @@ class ManagedRunnerLifecycle:
                 enrollment_state=enrollment_state,
                 process_state="absent" if state == "unbootstrapped" else "unavailable",
             )
+        if profile_enrollment:
+            # A configured profile added after enrollment is not new authority.
+            # Report the verified enrollment without probing through another profile
+            # or claiming that the shared host is stopped.
+            return {
+                **self._status_payload(
+                    state="unavailable",
+                    enrollment_state=enrollment_state,
+                    process_state="unavailable",
+                    profile_id=profile_id,
+                ),
+                **profile_enrollment,
+            }
         selected = self._selected_profile(enrollment, profile_id)
         public_runner = self._public_runner(bootstrap)
         if not self.process_record_path.exists() and not _is_link_or_reparse(

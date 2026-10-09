@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import io
 import json
 import os
 import shutil
@@ -12,6 +13,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -27,6 +29,7 @@ from bluefire.runner_client import SubprocessRustRunner
 from bluefire.util import file_hash
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+_SUPERVISOR_STDERR_LIMIT = 16 * 1024
 _DRIVER = r"""
 import json
 import os
@@ -77,7 +80,7 @@ helper = subprocess.Popen(
     cwd=sys.argv[3],
     stdin=subprocess.DEVNULL,
     stdout=subprocess.DEVNULL,
-    stderr=subprocess.DEVNULL,
+    stderr=None if sys.argv[4:] == ["capture-failure-stderr"] else subprocess.DEVNULL,
     shell=False,
     pass_fds=(child_socket.fileno(), target_descriptor),
 )
@@ -228,15 +231,80 @@ def _read_record(process: subprocess.Popen[str]) -> dict[str, Any]:
     return value
 
 
-def _launch_supervisor(
-    tmp_path: Path,
-    target_code: str,
-) -> tuple[subprocess.Popen[str], Path, dict[str, Any]]:
+def _copied_supervisor_runtime(tmp_path: Path) -> Path:
     runtime = tmp_path / "python-runtime"
     launch = tmp_path / (".bluefire-verified-launch-" + "b" * 64)
     shutil.copyfile(sys.executable, runtime)
     runtime.chmod(0o700)
     os.link(runtime, launch)
+    # A copied interpreter cannot locate a relocated stdlib from its private
+    # argv[0]. CPython's venv discovery uses this actual base executable's
+    # directory for its prefix searches, including before importing encodings.
+    # Match venv's lexical parent; a macOS framework bin stub may be a symlink.
+    base_executable = Path(os.path.abspath(sys._base_executable))
+    (tmp_path / "pyvenv.cfg").write_text(
+        f"home = {base_executable.parent}\ninclude-system-site-packages = false\n",
+        encoding="utf-8",
+    )
+    return launch
+
+
+def test_copied_supervisor_runtime_imports_from_the_active_base(tmp_path: Path) -> None:
+    import encodings
+    import pathlib
+
+    launch = _copied_supervisor_runtime(tmp_path)
+    expected = {
+        "base_prefix": str(Path(sys.base_prefix).resolve()),
+        "base_exec_prefix": str(Path(sys.base_exec_prefix).resolve()),
+        "executable": str(launch.resolve()),
+        "modules": [
+            str(Path(module.__file__).resolve()) for module in (encodings, pathlib, subprocess)
+        ],
+    }
+    code = """
+import encodings, json, pathlib, subprocess, sys
+expected = json.loads(sys.argv[1])
+actual = {
+    "base_prefix": str(pathlib.Path(sys.base_prefix).resolve()),
+    "base_exec_prefix": str(pathlib.Path(sys.base_exec_prefix).resolve()),
+    "executable": str(pathlib.Path(sys.executable).resolve()),
+    "modules": [str(pathlib.Path(module.__file__).resolve())
+                for module in (encodings, pathlib, subprocess)],
+}
+print(json.dumps({key: actual[key] == value for key, value in expected.items()},
+                 sort_keys=True))
+"""
+    descriptor = os.open(launch, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        before = os.fstat(descriptor)
+        assert parent_death._private_darwin_target(str(launch), descriptor)
+        assert os.path.samestat(before, (tmp_path / "python-runtime").stat())
+        assert stat.S_IMODE(before.st_mode) == 0o700
+        result = subprocess.run(  # nosec B603
+            [str(launch), "-I", "-B", "-c", code, json.dumps(expected)],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        assert result.returncode == 0
+        assert json.loads(result.stdout) == dict.fromkeys(expected, True)
+        assert result.stderr == ""
+        assert os.path.samestat(before, os.fstat(descriptor))
+        assert parent_death._private_darwin_target(str(launch), descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _launch_supervisor(
+    tmp_path: Path,
+    target_code: str,
+    *,
+    capture_failure_stderr: bool = False,
+) -> tuple[subprocess.Popen[str], Path, dict[str, Any]]:
+    launch = _copied_supervisor_runtime(tmp_path)
     process = subprocess.Popen(  # nosec B603
         [
             sys.executable,
@@ -247,6 +315,7 @@ def _launch_supervisor(
             str(launch),
             target_code,
             str(_REPOSITORY_ROOT),
+            *(["capture-failure-stderr"] if capture_failure_stderr else []),
         ],
         cwd=_REPOSITORY_ROOT,
         stdin=subprocess.PIPE,
@@ -281,6 +350,130 @@ def _cleanup_driver(process: subprocess.Popen[str], identities: dict[str, Any]) 
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait(timeout=5)
+
+
+def _supervisor_failure_evidence(
+    process: subprocess.Popen[str], helper_record: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Observe bounded fixture output after cleanup without waiting on descendants."""
+
+    stderr = bytearray()
+    stderr_eof = False
+    if process.stderr is not None:
+        descriptor = process.stderr.fileno()
+        os.set_blocking(descriptor, False)
+        while len(stderr) <= _SUPERVISOR_STDERR_LIMIT:
+            try:
+                chunk = os.read(descriptor, _SUPERVISOR_STDERR_LIMIT + 1 - len(stderr))
+            except BlockingIOError:
+                break
+            if not chunk:
+                stderr_eof = True
+                break
+            stderr.extend(chunk)
+    if helper_record is None and process.returncode is not None and process.stdout is not None:
+        # Only the direct driver writes this pipe: helper/target stdout is DEVNULL.
+        # Its reap proves EOF, including any record buffered by _read_record.
+        pending = process.stdout.read(513)
+        if len(pending) <= 512:
+            try:
+                candidate = json.loads(pending)
+            except ValueError:
+                candidate = None
+            if isinstance(candidate, dict):
+                helper_record = candidate
+    helper_returncode = None
+    if helper_record is not None and set(helper_record) == {"helper_returncode"}:
+        value = helper_record["helper_returncode"]
+        if type(value) is int and -255 <= value <= 255:
+            helper_returncode = value
+    return {
+        "driver_returncode": process.returncode,
+        "helper_returncode": helper_returncode,
+        "stderr": bytes(stderr[:_SUPERVISOR_STDERR_LIMIT]).decode("utf-8", errors="replace"),
+        "stderr_truncated": len(stderr) > _SUPERVISOR_STDERR_LIMIT,
+        "stderr_eof": stderr_eof,
+        # The failed publication path never reached the descendant/group checks.
+        # Saved descendant PIDs do not authorize signalling after their owner reaps.
+        "descendant_cleanup": "not_verified_by_failure_diagnostic",
+    }
+
+
+def _emit_supervisor_failure_evidence(
+    process: subprocess.Popen[str], helper_record: dict[str, Any] | None
+) -> None:
+    try:
+        evidence = _supervisor_failure_evidence(process, helper_record)
+        print("Portable supervisor failure evidence: " + json.dumps(evidence, sort_keys=True))
+    except Exception:
+        # Diagnostic I/O must not replace the original assertion or cleanup error.
+        pass
+
+
+@pytest.mark.parametrize("overflow", [False, True])
+def test_supervisor_failure_evidence_bounds_stderr_and_preserves_helper_status(
+    monkeypatch: pytest.MonkeyPatch, overflow: bool
+) -> None:
+    monkeypatch.setattr(sys.modules[__name__], "_SUPERVISOR_STDERR_LIMIT", 64)
+    read_descriptor, write_descriptor = os.pipe()
+    payload = b"x" * 65 if overflow else b"authored target startup failure\n"
+    try:
+        os.write(write_descriptor, payload)
+    finally:
+        os.close(write_descriptor)
+    with os.fdopen(read_descriptor, "r") as stderr:
+        process = SimpleNamespace(
+            stderr=stderr, stdout=io.StringIO('{"helper_returncode": 74}\n'), returncode=0
+        )
+        evidence = _supervisor_failure_evidence(process, None)
+    assert evidence["stderr"] == payload[:64].decode()
+    assert evidence["stderr_truncated"] is overflow
+    assert evidence["stderr_eof"] is not overflow
+    assert evidence["helper_returncode"] == 74
+    assert evidence["driver_returncode"] == 0
+    assert evidence["descendant_cleanup"] == "not_verified_by_failure_diagnostic"
+
+
+def test_supervisor_failure_evidence_does_not_wait_for_a_surviving_stderr_writer() -> None:
+    read_descriptor, write_descriptor = os.pipe()
+    try:
+        with os.fdopen(read_descriptor, "r") as stderr:
+            process = SimpleNamespace(stderr=stderr, stdout=io.StringIO(""), returncode=-9)
+            evidence = _supervisor_failure_evidence(process, None)
+            assert os.get_blocking(stderr.fileno()) is False
+    finally:
+        os.close(write_descriptor)
+    assert evidence["stderr"] == ""
+    assert evidence["stderr_eof"] is False
+    assert evidence["helper_returncode"] is None
+    assert evidence["driver_returncode"] == -9
+
+
+@pytest.mark.parametrize(
+    "record",
+    [None, {"helper_returncode": True}, {"unrelated": 74}],
+    ids=("missing", "boolean", "wrong-field"),
+)
+def test_supervisor_failure_evidence_does_not_invent_helper_status(
+    record: dict[str, Any] | None,
+) -> None:
+    process = SimpleNamespace(stderr=None, stdout=io.StringIO("invalid record\n"), returncode=0)
+    assert _supervisor_failure_evidence(process, record)["helper_returncode"] is None
+    assert (
+        _supervisor_failure_evidence(process, {"helper_returncode": -9})["helper_returncode"] == -9
+    )
+
+
+def test_supervisor_failure_diagnostic_io_does_not_replace_the_original_failure() -> None:
+    process = SimpleNamespace(stderr=io.StringIO(""), stdout=io.StringIO(""), returncode=0)
+    original = AssertionError("authored original failure")
+    with pytest.raises(AssertionError) as caught:
+        try:
+            raise original
+        finally:
+            # StringIO has no descriptor: observation fails without masking the assertion.
+            _emit_supervisor_failure_evidence(process, None)
+    assert caught.value is original
 
 
 pytestmark = pytest.mark.skipif(
@@ -346,16 +539,32 @@ def test_portable_darwin_supervisor_runner_exit_cleans_a_live_descendant(
         "path.write_text(str(child.pid), encoding='ascii'); "
         "os._exit(0)"
     )
-    process, _launch, identities = _launch_supervisor(tmp_path, target_code)
+    process, _launch, identities = _launch_supervisor(
+        tmp_path, target_code, capture_failure_stderr=True
+    )
+    helper_record = None
+    failed = False
     try:
+        # This acknowledges exec-close only, not Python initialization or the payload.
         assert _start_target(process)["executed"] is not None
         _wait_for_file(descendant_path)
         descendant = int(descendant_path.read_text(encoding="ascii"))
-        assert _read_record(process)["helper_returncode"] == 74
+        helper_record = _read_record(process)
+        assert helper_record["helper_returncode"] == 74
         _wait_until_stopped(descendant, identities["monitor_pid"], identities["target_pid"])
         assert not _group_running(identities["monitor_pid"])
+    except BaseException:
+        failed = True
+        raise
     finally:
-        _cleanup_driver(process, identities)
+        try:
+            _cleanup_driver(process, identities)
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            if failed:
+                _emit_supervisor_failure_evidence(process, helper_record)
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Darwin Seatbelt dynamic proof")

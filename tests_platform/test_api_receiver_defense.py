@@ -62,3 +62,29 @@ def test_receiver_prepare_uses_existing_mutation_guards(violation, status):
             origin="https://untrusted.example" if violation == "origin" else "same",
         )
         assert actual == status and not service.calls
+
+
+@pytest.mark.parametrize(
+    "violation,status",
+    [
+        (None, 200),
+        ("method", 405),
+        ("query", 400),
+        ("session", 401),
+        ("origin", 403),
+        ("body", 400),
+    ],
+)
+def test_receiver_control_uses_existing_mutation_guards(violation, status):
+    with running_server() as (server, service):
+        actual, _, _ = request(
+            server,
+            "GET" if violation == "method" else "POST",
+            f"/api/v1/receiver-defense/jobs/{JOB_ID}/control"
+            + ("?reset=true" if violation == "query" else ""),
+            body=None if violation == "method" else [] if violation == "body" else {},
+            authenticated=violation != "session",
+            origin="https://untrusted.example" if violation == "origin" else "same",
+        )
+        assert actual == status
+        assert service.calls == ([] if violation else [("decide_receiver_control", JOB_ID, {})])

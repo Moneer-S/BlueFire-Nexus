@@ -25,6 +25,16 @@ function report(id = selected): DetectionRunEvaluation {
 const group = (id = selected, reports = [report(id)]): EvaluationReportGroup => ({ id, label: id === selected ? "Selected revision 2" : "Related revision 1", status: "loaded", reports });
 const appendix = (markdown: string) => JSON.parse(markdown.split("```json\n")[1]!.split("\n```")[0]!);
 
+it("exports the internal engine and real definition without inventing query identity", () => {
+  const retained = report();
+  retained.candidate = { ...retained.candidate, target_language: "internal", query_sha256: null, source_sha256: null };
+  retained.backend = { name: "bluefire-structured-matcher", executed: true, version: "1.0" };
+  const markdown = evaluationReportMarkdown([group(selected, [retained])], [run]);
+  expect(markdown).toContain(String.raw`bluefire\-structured\-matcher 1\.0`);
+  expect(markdown).not.toContain("query-digest");
+  expect(appendix(markdown).evaluations).toEqual([retained]);
+});
+
 it("exports actual two-revision 1-of-3 measurements, same-match comparison and exact retained records", () => {
   const records = [report(), report(related)];
   const markdown = evaluationReportMarkdown([group(selected, [records[0]!]), group(related, [records[1]!])], [run]);

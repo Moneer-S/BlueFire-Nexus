@@ -596,13 +596,18 @@ def _execute(
                 int(address[1]),
                 browser_capability,
             )
-            print(f"BlueFire local console: {launch_url}", file=sys.stderr)
+            public_url = launch_url.split("#", 1)[0]
+            print(
+                f"BlueFire local console: {launch_url if args.no_browser else public_url}",
+                file=sys.stderr,
+            )
+            print(f"One-time connection code: {browser_capability}", file=sys.stderr)
             sys.stderr.flush()
             if not args.no_browser:
                 try:
                     threading.Thread(
                         target=_open_console_browser,
-                        args=(launch_url, launch_stopped),
+                        args=(public_url, launch_stopped),
                         name="bluefire-browser-launch",
                         daemon=True,
                     ).start()

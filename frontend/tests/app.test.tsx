@@ -321,13 +321,19 @@ describe("product application", () => {
   });
 
   it("renders recent work and routes every research source link", async () => {
+    const syntheticSession = "s".repeat(64);
+    sessionStorage.setItem("bluefire.browser-session.v1", syntheticSession);
     const user = userEvent.setup();
     renderApp();
     expect(await screen.findByRole("heading", { name: "Overview" })).toBeVisible();
     const indicators = await screen.findAllByRole("img", { name: "Local service connected" });
     expect(indicators).toHaveLength(2); // Mobile and sidebar use the same checked connection.
     for (const indicator of indicators) { expect(indicator).toBeVisible(); expect(indicator).toHaveClass("ready"); }
-    expect(vi.mocked(fetch)).toHaveBeenCalledWith("/api/v1/session", expect.objectContaining({ method: "GET", credentials: "same-origin", cache: "no-store" }));
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith("/api/v1/session", expect.objectContaining({ method: "GET", credentials: "omit", cache: "no-store", redirect: "error" }));
+    const sessionRequest = vi.mocked(fetch).mock.calls.find(([url]) => url === "/api/v1/session")?.[1];
+    const sessionHeaders = new Headers(sessionRequest?.headers);
+    expect(sessionHeaders.get("Accept")).toBe("application/json");
+    expect(sessionHeaders.get("X-BlueFire-Session")).toBe(syntheticSession);
     await user.click(screen.getByRole("button", { name: "Show more tools" }));
     await user.click(screen.getByRole("link", { name: /Research Sources/i }));
     expect(await screen.findByRole("heading", { name: "Research sources" })).toBeVisible();
@@ -752,10 +758,10 @@ describe("product application", () => {
     expect(await screen.findByRole("heading", { name: "Detection Lab" })).toBeVisible();
     await user.click(screen.getByRole("tab", { name: "Revisions" }));
 
-    expect(screen.getByText("Advanced clone and tune").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByText("Revise this rule").closest("details")).not.toHaveAttribute("open");
     expect(screen.getByRole("button", { name: "Compare immutable revisions" })).toBeVisible();
-    await user.click(screen.getByText("Advanced clone and tune"));
-    expect(screen.getByText("Advanced definition revisions")).toBeVisible();
+    await user.click(screen.getByText("Revise this rule"));
+    expect(screen.getByText("Save a separate revision")).toBeVisible();
     expect(screen.getByText(/does not copy compiled source or results/)).toBeVisible();
     expect(screen.getAllByText(/Revision 1 · Origin/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Revision 2 · Tune/).length).toBeGreaterThan(0);

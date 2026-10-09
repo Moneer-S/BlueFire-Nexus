@@ -1,9 +1,10 @@
 import { Link } from "react-router-dom";
 import type { ReceiverAssistanceProgress } from "../lib/receiver-assistance";
+import { phaseTitle } from "../lib/receiver-defense";
 import { RunReference } from "./RunReference";
 import { sentence } from "./Primitives";
 
-const phaseNames = { baseline: "Baseline", protected: "Protected", restored: "Restoration" };
+const phaseNames = { ...phaseTitle, protected: "Protected", restored: "Restoration" };
 const decisions = { accepted: "Receiver accepted the records", policy_refused: "Receiver policy refused the records", insufficient_evidence: "Receiver decision is not established" };
 const count = (value: number | null) => value === null ? "Unknown" : String(value);
 /** Native receipts are evidence; model text is separately labelled interpretation. */

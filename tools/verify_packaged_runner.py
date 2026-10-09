@@ -17,6 +17,89 @@ import zipfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+_FAILURE_STAGES = {
+    "arguments": ("initialization", "argument_processing_failed"),
+    "wheel_inspection": ("inspection", "wheel_inspection_failed"),
+    "imports": ("imports", "installed_import_failed"),
+    "package_location": ("isolation", "package_location_invalid"),
+    "source_overrides": ("isolation", "source_override_present"),
+    "work_root": ("setup", "work_root_unavailable"),
+    "bootstrap": ("bootstrap", "bootstrap_failed"),
+    "bootstrap_status": ("bootstrap", "packaged_readiness_invalid"),
+    "runner_init": ("runner_init", "runner_initialization_failed"),
+    "inventory": ("inventory", "inventory_failed"),
+    "inventory_identity": ("inventory", "runner_identity_invalid"),
+    "fixture_setup": ("fixture_setup", "fixture_setup_failed"),
+    "fixture_execute": ("fixture_execute", "fixture_execution_failed"),
+    "fixture_receipts": ("fixture_validation", "fixture_receipts_invalid"),
+    "fixture_file": ("fixture_validation", "fixture_file_missing"),
+    "fixture_contract": ("fixture_validation", "fixture_contract_invalid"),
+    "cleanup_setup": ("cleanup_setup", "cleanup_setup_failed"),
+    "cleanup_execute": ("cleanup_execute", "cleanup_execution_failed"),
+    "cleanup_validation": ("cleanup_validation", "cleanup_contract_invalid"),
+    "alias_runner_init": ("signed_alias", "alias_runner_initialization_failed"),
+    "signed_alias": ("signed_alias", "signed_alias_failed"),
+    "alias_service_init": ("signed_alias", "alias_service_initialization_failed"),
+    "alias_trust": ("signed_alias", "alias_publisher_trust_failed"),
+    "alias_install": ("signed_alias", "alias_installation_failed"),
+    "alias_activate": ("signed_alias", "alias_activation_failed"),
+    "alias_execute": ("signed_alias", "alias_execution_failed"),
+    "alias_validation": ("signed_alias", "alias_contract_invalid"),
+    "report": ("report", "verification_report_failed"),
+}
+_FAILURE_TYPES = frozenset(
+    {
+        "RunnerBootstrapError",
+        "RunnerTransportError",
+        "APIError",
+        "OSError",
+        "PermissionError",
+        "FileNotFoundError",
+        "RuntimeError",
+        "ValueError",
+        "BadZipFile",
+    }
+)
+_VERIFICATION_STAGE = "arguments"
+_BOOTSTRAP_FAILURE_STATUS: Mapping[str, Any] | None = None
+
+
+def _stage(name: str) -> None:
+    global _VERIFICATION_STAGE
+    _VERIFICATION_STAGE = name
+
+
+def _failure_diagnostic(
+    stage: str, error: BaseException, bootstrap_status: Mapping[str, Any] | None = None
+) -> str:
+    """Emit only finite source-owned labels, never exception text or payloads."""
+
+    phase, reason = _FAILURE_STAGES.get(stage, ("unknown", "verification_failed"))
+    exception_types = []
+    current: BaseException | None = error
+    for _ in range(3):
+        if current is None:
+            break
+        name = type(current).__name__
+        exception_types.append(name if name in _FAILURE_TYPES else "other")
+        current = current.__cause__ if current.__cause__ is not None else current.__context__
+    diagnostic: dict[str, Any] = {
+        "schema_version": "bluefire.packaged-runner-failure.v1",
+        "phase": phase,
+        "reason": reason,
+        "exception_types": exception_types,
+    }
+    if stage == "bootstrap_status" and bootstrap_status is not None:
+        diagnostic["bootstrap"] = {
+            key: value if isinstance(value, str) and value in allowed else "unknown"
+            for key, allowed in {
+                "state": {"ready"},
+                "source": {"packaged", "environment_override"},
+            }.items()
+            for value in (bootstrap_status.get(key),)
+        }
+    return json.dumps(diagnostic, sort_keys=True, separators=(",", ":"))
+
 
 def _duplicates_rejected(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
@@ -121,6 +204,7 @@ def _disposable_workspace_proof(
 
 
 def inspect_wheel(args: argparse.Namespace) -> int:
+    _stage("wheel_inspection")
     wheel_dir = args.wheel_dir.resolve(strict=True)
     wheels = sorted(wheel_dir.glob("*.whl"))
     if len(wheels) != 1:
@@ -229,6 +313,8 @@ def inspect_wheel(args: argparse.Namespace) -> int:
 
 
 def smoke_installed_runner(args: argparse.Namespace) -> int:
+    global _BOOTSTRAP_FAILURE_STATUS
+    _stage("imports")
     # Imports deliberately happen only in smoke mode, under the fresh venv.
     import bluefire
     from bluefire.contracts import ActionDefinition, SafetyTier, SourceProvenance
@@ -236,6 +322,7 @@ def smoke_installed_runner(args: argparse.Namespace) -> int:
     from bluefire.runner_client import SubprocessRustRunner
     from bluefire.runner_contracts import build_execution_manifest, seal_profile
 
+    _stage("package_location")
     package_path = Path(bluefire.__file__).resolve(strict=True)
     checkout = args.forbid_root.resolve(strict=True)
     try:
@@ -244,26 +331,38 @@ def smoke_installed_runner(args: argparse.Namespace) -> int:
         pass
     else:
         raise RuntimeError("smoke imported BlueFire from the checkout instead of the wheel")
+    _stage("source_overrides")
     if "BLUEFIRE_RUNNER_BINARY" in os.environ or "BLUEFIRE_SANDBOX_ROOT" in os.environ:
         raise RuntimeError("source runner overrides must be absent during installed-wheel smoke")
 
+    _stage("work_root")
     work_root = args.work_root.resolve()
     work_root.mkdir(parents=True, exist_ok=True)
+    _stage("bootstrap")
     bootstrapped = bootstrap_runner(environ={}, managed_root=work_root / "managed")
+    _stage("bootstrap_status")
     status = bootstrapped.public_status()
     if status.get("state") != "ready" or status.get("source") != "packaged":
+        _BOOTSTRAP_FAILURE_STATUS = {
+            "state": status.get("state"),
+            "source": status.get("source"),
+        }
         raise RuntimeError("installed runner bootstrap did not reach packaged readiness")
 
+    _stage("runner_init")
     runner = SubprocessRustRunner(
         bootstrapped.binary_path,
         work_root / "transport",
         timeout_seconds=30.0,
         output_limit_bytes=4 * 1024 * 1024,
     )
+    _stage("inventory")
     inventory = runner.inventory()
+    _stage("inventory_identity")
     if inventory.get("runner_id") != "bluefire-rust-runner.v1":
         raise RuntimeError("installed runner returned an unexpected identity")
 
+    _stage("fixture_setup")
     sandbox = work_root / "sandbox"
     sandbox.mkdir()
     platform = current_platform()
@@ -326,13 +425,17 @@ def smoke_installed_runner(args: argparse.Namespace) -> int:
         filesystem_scope=("fixtures/smoke.jsonl",),
         approval_record=None,
     )
+    _stage("fixture_execute")
     created = runner.execute(create, profile)
+    _stage("fixture_receipts")
     receipts = created.get("receipt_ids")
     if created.get("status") != "success" or not isinstance(receipts, list) or len(receipts) != 1:
         raise RuntimeError("installed runner did not create a receipt-bound fixture")
+    _stage("fixture_file")
     fixture_path = sandbox / "fixtures" / "smoke.jsonl"
     if not fixture_path.is_file():
         raise RuntimeError("installed runner did not create the expected sandbox fixture")
+    _stage("fixture_contract")
     expected_record = {
         "record_id": "synthetic-001",
         "synthetic": True,
@@ -358,6 +461,7 @@ def smoke_installed_runner(args: argparse.Namespace) -> int:
     ):
         raise RuntimeError("installed runner did not satisfy the fixture-create v2 contract")
 
+    _stage("cleanup_setup")
     cleanup_action = ActionDefinition(
         schema_version="bluefire.action.v1",
         id="sandbox.cleanup.v1",
@@ -383,7 +487,9 @@ def smoke_installed_runner(args: argparse.Namespace) -> int:
         filesystem_scope=(),
         approval_record=None,
     )
+    _stage("cleanup_execute")
     cleaned = runner.execute(cleanup, profile)
+    _stage("cleanup_validation")
     remaining_files = [path for path in sandbox.rglob("*") if path.is_file()]
     cleanup_report = cleaned.get("cleanup")
     requested_receipts = (
@@ -407,14 +513,17 @@ def smoke_installed_runner(args: argparse.Namespace) -> int:
     ):
         raise RuntimeError("installed runner cleanup did not reconcile the sandbox to zero files")
 
+    _stage("alias_runner_init")
     alias_runner = SubprocessRustRunner(
         bootstrapped.binary_path,
         work_root / "alias-transport",
         timeout_seconds=30.0,
         output_limit_bytes=4 * 1024 * 1024,
     )
+    _stage("signed_alias")
     signed_alias = _smoke_signed_package_alias(alias_runner, work_root)
 
+    _stage("report")
     _write_report(
         args.report,
         {
@@ -565,6 +674,7 @@ def _smoke_signed_package_alias(runner: Any, work_root: Path) -> Mapping[str, An
     alias_sandbox = work_root / "alias-sandbox"
     project_root.mkdir()
     alias_sandbox.mkdir()
+    _stage("alias_service_init")
     service = BlueFireService(
         project_root=project_root,
         runs_dir=work_root / "alias-runs",
@@ -572,6 +682,7 @@ def _smoke_signed_package_alias(runner: Any, work_root: Path) -> Mapping[str, An
         runner_factory=lambda _profile: (runner, alias_sandbox),
     )
     try:
+        _stage("alias_trust")
         service.trust_action_package_publisher(
             {
                 "publisher_id": publisher_id,
@@ -584,12 +695,14 @@ def _smoke_signed_package_alias(runner: Any, work_root: Path) -> Mapping[str, An
                 "trusted_by": "wheel-smoke-reviewer",
             }
         )
+        _stage("alias_install")
         service.install_action_package(
             {"envelope": envelope, "installed_by": "wheel-smoke-installer"}
         )
         profile = next(
             item for item in service.config.runner_profiles if item.mode.value == "execute"
         )
+        _stage("alias_activate")
         activated = service.activate_action_package(
             package_id,
             "1.0.0",
@@ -599,6 +712,7 @@ def _smoke_signed_package_alias(runner: Any, work_root: Path) -> Mapping[str, An
                 "reason": "verify the installed signed alias against the packaged native runner",
             },
         )
+        _stage("alias_execute")
         result = service.run(
             {
                 "scenario": {
@@ -630,6 +744,7 @@ def _smoke_signed_package_alias(runner: Any, work_root: Path) -> Mapping[str, An
         )
     finally:
         service.close()
+    _stage("alias_validation")
     step = result["steps"][0]
     binding = step.get("execution_binding")
     alias_remaining_files = [
@@ -696,13 +811,29 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    global _BOOTSTRAP_FAILURE_STATUS
+    _stage("arguments")
+    _BOOTSTRAP_FAILURE_STATUS = None
     args = _parser().parse_args(argv)
     return int(args.handler(args))
 
 
-if __name__ == "__main__":
+def _cli(argv: Sequence[str] | None = None) -> int:
     try:
-        raise SystemExit(main())
-    except (OSError, RuntimeError, ValueError, zipfile.BadZipFile):
+        return main(argv)
+    except Exception as exc:
+        # Installed application errors also need sanitizing. Keep this copied
+        # CLI independent of BlueFire imports and preserve process-control exits.
         print("packaged runner verification failed", file=sys.stderr)
-        raise SystemExit(2) from None
+        try:
+            diagnostic = _failure_diagnostic(_VERIFICATION_STAGE, exc, _BOOTSTRAP_FAILURE_STATUS)
+        except Exception:
+            diagnostic = (
+                '{"schema_version":"bluefire.packaged-runner-failure.v1","capture":"failed"}'
+            )
+        print(diagnostic, file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli())

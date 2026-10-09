@@ -6,8 +6,14 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 
+from .adaptive_execution_contract import AdaptiveExecution
 from .adaptive_observations import project_runtime_observations
-from .adaptive_record_validation import ADAPTIVE_DECISION_CONTRACT, validate_v4_attempt_record
+from .adaptive_record_validation import (
+    ADAPTIVE_DECISION_CONTRACT,
+    ADAPTIVE_DECISION_CONTRACT_V5,
+    validate_v4_attempt_record,
+    validate_v5_attempt_record,
+)
 from .ai import AIProposalRequest, AIProviderCancelled, AIProviderError, ProposalType
 from .ai_observation_summary import RuntimeObservationSummary
 from .config import AIProviderKind, AutonomyLevel
@@ -24,7 +30,10 @@ class AdaptiveRuntimeDecision:
     stop: bool = False
 
     def __post_init__(self) -> None:
-        validate_v4_attempt_record(self.record)
+        if self.record.get("schema_version") == "bluefire.ai-proposal-record.v5":
+            validate_v5_attempt_record(self.record)
+        else:
+            validate_v4_attempt_record(self.record)
 
 
 def reviewed_plan_step(document: Mapping[str, Any]) -> PlanStep:
@@ -53,6 +62,76 @@ def reviewed_methods(authorization: Mapping[str, Any], step_id: str) -> tuple[Pl
     )
 
 
+def _v2_budget(
+    *,
+    authorization: Mapping[str, Any],
+    policy: Mapping[str, Any],
+    current_step: PlanStep,
+    steps: Sequence[Mapping[str, Any]],
+    retries_used: int,
+    step_retries_used: int | None,
+    attempted_methods: Sequence[Mapping[str, Any]] | None,
+) -> tuple[int, int, list[dict[str, str]]]:
+    """Check the caller's verified lineage projection without reserving effects."""
+    parsed = AdaptiveExecution.from_mapping(policy)
+    authored = next((step for step in parsed.steps if step.step_id == current_step.step_id), None)
+    if (
+        authorization.get("schema_version") != "bluefire.adaptive-authorization.v2"
+        or authorization.get("policy") != policy
+        or authored is None
+        or authored.max_retries is None
+        or type(retries_used) is not int
+        or not 0 <= retries_used <= parsed.max_retries
+        or type(step_retries_used) is not int
+        or not 0 <= step_retries_used <= min(retries_used, authored.max_retries)
+    ):
+        raise ValueError("adaptive v2 runtime budget is missing or invalid")
+    fields = ("step_id", "behavior_id", "action_id")
+    permitted = {
+        (group["step_id"], method["plan_step"]["behavior_id"], method["plan_step"]["action_id"])
+        for group in authorization["steps"]
+        for method in group["methods"]
+    }
+    if (
+        not isinstance(attempted_methods, (list, tuple))
+        or len(attempted_methods) > len(permitted)
+        or len(permitted) > 256
+    ):
+        raise ValueError("adaptive v2 attempted methods are missing or invalid")
+    attempted: list[dict[str, str]] = []
+    keys = set()
+    for row in attempted_methods:
+        if (
+            not isinstance(row, Mapping)
+            or set(row) != set(fields)
+            or any(not isinstance(row[field], str) for field in fields)
+        ):
+            raise ValueError("adaptive v2 attempted method identity is invalid")
+        key = tuple(row[field] for field in fields)
+        if key not in permitted or key in keys:
+            raise ValueError("adaptive v2 attempted method is unreviewed or repeated")
+        keys.add(key)
+        attempted.append({field: row[field] for field in fields})
+    adaptive_ids = {step.step_id for step in parsed.steps}
+    observed = {
+        tuple(row.get(field) for field in fields)
+        for row in steps
+        if row.get("step_id") in adaptive_ids
+    }
+    current = tuple(current_step.to_dict()[field] for field in fields)
+    counts = {step_id: sum(key[0] == step_id for key in keys) for step_id in adaptive_ids}
+    if (
+        not observed.issubset(keys)
+        or current not in keys
+        or step_retries_used > counts[current_step.step_id]
+        or retries_used > len(keys)
+        or step_retries_used < max(counts[current_step.step_id] - 1, 0)
+        or retries_used < sum(max(count - 1, 0) for count in counts.values())
+    ):
+        raise ValueError("adaptive v2 runtime budget omits or refunds attempted methods")
+    return parsed.max_retries, authored.max_retries, attempted
+
+
 def propose_reviewed_method(
     *,
     run_id: str,
@@ -72,6 +151,8 @@ def propose_reviewed_method(
     retries_used: int,
     validate_choice: Callable[[PlanStep], Any],
     check_cancelled: Callable[[], None],
+    step_retries_used: int | None = None,
+    attempted_methods: Sequence[Mapping[str, Any]] | None = None,
 ) -> AdaptiveRuntimeDecision:
     """Make one bounded proposal. This function never grants authority or dispatches.
 
@@ -79,6 +160,33 @@ def propose_reviewed_method(
     selected operation immediately before its eventual effects. The callback here
     also checks expiry after provider latency, before recording an applicable choice.
     """
+    if policy.get("schema_version") not in {
+        None,
+        "bluefire.adaptive-execution.v1",
+        "bluefire.adaptive-execution.v2",
+    }:
+        raise ValueError("adaptive runtime policy version is unsupported")
+    version_two = policy.get("schema_version") == "bluefire.adaptive-execution.v2"
+    if (
+        not version_two
+        and authorization.get("schema_version") == "bluefire.adaptive-authorization.v2"
+    ):
+        raise ValueError("adaptive v2 authorization requires its explicit policy")
+    maximum_retries, maximum_step_retries = 1, 1
+    bounded_step_retries = 0
+    lineage_attempts: list[dict[str, str]] = []
+    if version_two:
+        maximum_retries, maximum_step_retries, lineage_attempts = _v2_budget(
+            authorization=authorization,
+            policy=policy,
+            current_step=current_step,
+            steps=steps,
+            retries_used=retries_used,
+            step_retries_used=step_retries_used,
+            attempted_methods=attempted_methods,
+        )
+        assert isinstance(step_retries_used, int)
+        bounded_step_retries = step_retries_used
     deadline = time.monotonic() + remaining_seconds if remaining_seconds > 0 else None
     methods = reviewed_methods(authorization, current_step.step_id)
     projection = project_runtime_observations(
@@ -89,13 +197,21 @@ def propose_reviewed_method(
         platform=platform,
         remaining_steps=remaining_steps,
         remaining_seconds=remaining_seconds,
-        retries_remaining=max(1 - retries_used, 0),
+        retries_remaining=max(maximum_retries - retries_used, 0),
+        step_retries_remaining=(
+            maximum_step_retries - bounded_step_retries if version_two else None
+        ),
     )
     attempted = {
         (row.get("behavior_id"), row.get("action_id"))
         for row in steps
         if row.get("step_id") == current_step.step_id
     }
+    attempted.update(
+        (row["behavior_id"], row["action_id"])
+        for row in lineage_attempts
+        if row["step_id"] == current_step.step_id
+    )
     compatible = {
         (item["behavior_id"], item["action_id"])
         for item in projection["available_methods"]
@@ -119,26 +235,39 @@ def propose_reviewed_method(
         for step in choices
     ]
     proposal_policy = {
-        "schema_version": "bluefire.ai-proposal-policy.v2",
+        "schema_version": (
+            "bluefire.ai-proposal-policy.v3" if version_two else "bluefire.ai-proposal-policy.v2"
+        ),
         "mode": "execute",
         "autonomy": plan.autonomy.value,
         "observed_outcome": outcome,
         "authorization_digest": authorization["authorization_digest"],
         "registered_options": options,
-        "maximum_adaptive_retries": 1,
+        "maximum_adaptive_retries": maximum_retries,
         "adaptive_retries_used": retries_used,
         "remaining_steps": remaining_steps,
         "on_provider_failure": policy["on_provider_failure"],
     }
+    if version_two:
+        proposal_policy.update(
+            adaptive_policy_digest=content_hash(policy),
+            maximum_step_retries=maximum_step_retries,
+            step_retries_used=step_retries_used,
+            attempted_methods=lineage_attempts,
+        )
     planner_state = {
-        "schema_version": "bluefire.planner-state.v2",
+        "schema_version": (
+            "bluefire.planner-state.v3" if version_two else "bluefire.planner-state.v2"
+        ),
         "source_state_digest": decision.current_state_digest,
         "current_step_id": current_step.step_id,
         "outcome": outcome,
         "authorization_digest": authorization["authorization_digest"],
         "registered_options": options,
         "observations": projection,
-        "decision_contract": json_clone(ADAPTIVE_DECISION_CONTRACT),
+        "decision_contract": json_clone(
+            ADAPTIVE_DECISION_CONTRACT_V5 if version_two else ADAPTIVE_DECISION_CONTRACT
+        ),
         "deterministic_decision": decision.to_dict(),
     }
     request = AIProposalRequest(
@@ -154,7 +283,9 @@ def propose_reviewed_method(
         observation_summary=RuntimeObservationSummary.from_projection(projection),
     )
     record: dict[str, Any] = {
-        "schema_version": "bluefire.ai-proposal-record.v4",
+        "schema_version": (
+            "bluefire.ai-proposal-record.v5" if version_two else "bluefire.ai-proposal-record.v4"
+        ),
         "run_id": run_id,
         "current_step_id": current_step.step_id,
         "outcome": outcome,
@@ -188,7 +319,13 @@ def propose_reviewed_method(
         "stop_requested": True,
     }
     check_cancelled()
-    if remaining_steps < 1 or remaining_seconds <= 0 or retries_used >= 1:
+    if (
+        remaining_steps < 1
+        or remaining_seconds <= 0
+        or retries_used >= maximum_retries
+        or (version_two and bounded_step_retries >= maximum_step_retries)
+        or (version_two and projection["remaining_budgets"]["seconds"] == 0)
+    ):
         record.update(
             application_status="stopped_budget_exhausted",
             application_reason="No execution budget remains for a reviewed method; no provider was called.",

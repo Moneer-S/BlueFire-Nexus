@@ -16,7 +16,12 @@ import threading
 from pathlib import Path
 from typing import Any, Mapping
 
-from .api import BROWSER_BOOTSTRAP_HEADER, create_server, generate_browser_bootstrap_capability
+from .api import (
+    BROWSER_BOOTSTRAP_HEADER,
+    BROWSER_SESSION_HEADER,
+    create_server,
+    generate_browser_bootstrap_capability,
+)
 from .detection_journey import PRODUCT_DB_ARTIFACT
 from .detections import DetectionCandidate, DetectionError
 from .service import BlueFireService
@@ -298,9 +303,13 @@ def _replay(
                 "/api/v1/session",
                 headers={BROWSER_BOOTSTRAP_HEADER: capability},
             )
-            _require(status == 204 and payload == b"", "the replay API session exchange failed")
-            cookie = headers.get("set-cookie", "").split(";", 1)[0]
-            _require(cookie.startswith("bluefire_session="), "the replay API session is absent")
+            _require(status == 200, "the replay API session exchange failed")
+            session = _json_response(payload, "management API session").get("session")
+            _require(
+                isinstance(session, str)
+                and re.fullmatch(r"[A-Za-z0-9_-]{64}", session) is not None,
+                "the replay API session is absent",
+            )
             replay_status, _headers, _payload = _http_request(
                 port,
                 "POST",
@@ -308,7 +317,7 @@ def _replay(
                 headers={BROWSER_BOOTSTRAP_HEADER: capability},
             )
             _require(replay_status == 401, "the replay API capability was not exactly one-use")
-            auth = {"Cookie": cookie}
+            auth = {BROWSER_SESSION_HEADER: str(session)}
             sigma_status, _headers, payload = _http_request(
                 port,
                 "GET",

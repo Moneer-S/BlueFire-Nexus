@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from . import product_store_receiver_defense as records
 from .detection_evaluations import _source, _source_binding
 from .product_store_errors import ProductStoreError
+from .receiver_defense_workflow import legitimate_semantics
 from .receiver_session_contract import ReceiverSessionError
 from .runner_client import RunnerTransportError
 from .util import content_hash
@@ -120,6 +121,13 @@ def finish(coordinator, job_id, marker, run_id):
             ),
         },
     }
+    if marker["phase"] == "legitimate":
+        baseline = coordinator.baseline(coordinator._job(marker["parent_job_id"]))
+        result["legitimate_use"] = {
+            "baseline_run_id": baseline["run_id"],
+            "established": result["decision"] == "accepted"
+            and legitimate_semantics(result, baseline),
+        }
     from .receiver_defense_result import verified_result
 
     candidate = {

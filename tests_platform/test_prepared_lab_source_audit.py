@@ -59,3 +59,26 @@ def test_only_exact_moved_public_lab_path_is_classified():
     )
     assert _has_private_source_path("bluefire/unrelated.py", public)
     assert _has_private_source_path("bluefire/prepared_lab_runtime.py", public + "-personal")
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement"),
+    (
+        ("shell=False", "shell=True"),
+        ("close_fds=True", "close_fds=False"),
+        ("pass_fds=(child.fileno(), listener.fileno())", "pass_fds=(child.fileno(),)"),
+        ("--reuid=1002", "--reuid=0"),
+        ("bluefire.file_access_probe", "bluefire.unreviewed_worker"),
+        ("stdin=subprocess.DEVNULL", "stdin=subprocess.PIPE"),
+        ("env=ENV", "env=os.environ"),
+    ),
+)
+def test_fixed_probe_launch_cannot_expand_with_unchanged_process_count(
+    tmp_path, original, replacement
+):
+    name = "prepared_lab_file_access.py"
+    path = tmp_path / name
+    source = (ROOT / "bluefire" / name).read_text(encoding="utf-8")
+    assert source.count(original) == 1
+    path.write_text(source.replace(original, replacement), encoding="utf-8")
+    assert not prepared_lab_boundary(path, _python_shell_findings(path, tmp_path))["passed"]

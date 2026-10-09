@@ -25,6 +25,8 @@ EXPECTED_ACTION_IDS = {
     "endpoint.discovery.system.v1",
     "endpoint.discovery.windows-version.v1",
     "endpoint.discovery.processes.v1",
+    "file_access.probe.non_owner.v1",
+    "file_access.verify.owner.v1",
     "sandbox.discovery.recursive.v1",
     "sandbox.archive.tar.v1",
     "sandbox.collection.stage.v1",

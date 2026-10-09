@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import type { ReceiverContext, ReceiverDecision, ReceiverDefenseEnvelope, ReceiverPhase, ReceiverPhaseView } from "../lib/receiver-defense-types";
 import { phaseTitle, policyTitle, receiverOutcome } from "../lib/receiver-defense";
 import { downloadArtifact } from "../lib/download";
+import { receiverControlReport } from "../lib/receiver-report";
 import { savedExperimentPath } from "../lib/receiver-navigation";
 import { CanonicalPlanReview } from "./CanonicalPlanReview";
 import { RunWorkspace } from "./RunWorkspace";
@@ -13,6 +14,7 @@ const phaseDescription = {
   baseline: "Start a fresh receiver that accepts reviewed synthetic records, then run the selected experiment.",
   protected: "Start a fresh receiver that requires redaction. Replay the same staged bytes to measure whether this policy refuses them.",
   restored: "Start another fresh receiver with the original policy. Replay again to check whether restoring the policy restores acceptance.",
+  legitimate: "Keep the redaction policy and run the explicitly redacted record variant. Verify that legitimate redacted use is accepted with fresh receiver evidence.",
 };
 export function ReceiverTestProgress({ envelope, disabled: externalDisabled, onPrepare, onReview }: {
   envelope: ReceiverDefenseEnvelope & { context: ReceiverContext }; disabled: boolean; onPrepare: (body: PrepareRequest) => void; onReview: (body: ReceiverDecision) => void;
@@ -43,7 +45,7 @@ export function ReceiverTestProgress({ envelope, disabled: externalDisabled, onP
   const remaining = preparation ? Math.max(0, Math.ceil((preparation.session.expires_at_ms - now) / 1000)) : 0;
   const canReview = current?.review_ready && envelope.next_action.kind === "review_replay" && Boolean(preparation) && remaining > 0 && !disabled;
   const results = envelope.phases.filter((phase) => phase.result);
-  const baseline = envelope.phases.find((phase) => phase.phase === "baseline")?.result;
+  const baseline = envelope.context.source_baseline ?? envelope.phases.find((phase) => phase.phase === "baseline")?.result;
   const protectedResult = envelope.phases.find((phase) => phase.phase === "protected")?.result;
   const restored = envelope.phases.find((phase) => phase.phase === "restored")?.result;
   const complete = envelope.status === "completed";
@@ -60,7 +62,7 @@ export function ReceiverTestProgress({ envelope, disabled: externalDisabled, onP
     </li>)}</ol>
     {results.length ? <section className="receiver-results" aria-label="Measured receiver outcomes"><h2>{complete ? "Measured control outcome" : "Results so far"}</h2>
       <p>Receiver acceptance and prevention are separate from detection. Missing or unverified receiver evidence leaves the outcome unknown.</p>
-      <div className="receiver-table-scroll"><table><caption>Same experiment, separately prepared receiver policies</caption><thead><tr><th scope="col">Phase</th><th scope="col">Receiver policy</th><th scope="col">Observed outcome</th><th scope="col">Cleanup</th><th scope="col">Evidence</th></tr></thead><tbody>{results.map((phase) => <tr key={phase.phase}><th scope="row">{phaseTitle[phase.phase]}</th><td>{policyTitle[phase.policy_id]}</td><td><strong>{receiverOutcome(phase)}</strong></td><td><CleanupSummary phase={phase} /></td><td><Link to={`/runs/${encodeURIComponent(phase.result!.run_id)}`}>Inspect run</Link></td></tr>)}</tbody></table></div>
+      <div className="receiver-table-scroll" role="region" aria-label="Receiver outcome comparison" tabIndex={0}><table><caption>Same experiment, separately prepared receiver policies</caption><thead><tr><th scope="col">Phase</th><th scope="col">Receiver policy</th><th scope="col">Observed outcome</th><th scope="col">Cleanup</th><th scope="col">Evidence</th></tr></thead><tbody>{results.map((phase) => <tr key={phase.phase}><th scope="row">{phaseTitle[phase.phase]}</th><td>{policyTitle[phase.policy_id]}</td><td><strong>{receiverOutcome(phase)}</strong>{phase.result?.legitimate_use ? <p>{phase.result.legitimate_use.established ? "Legitimate use established" : "Legitimate use not established"}</p> : null}</td><td><CleanupSummary phase={phase} /></td><td><Link to={`/runs/${encodeURIComponent(phase.result!.run_id)}`}>Inspect run</Link></td></tr>)}</tbody></table></div>
       <div className="receiver-actions"><Button variant={complete ? "primary" : "secondary"} onClick={() => downloadReceiverReport(envelope)}>Download control report</Button>{baseline && protectedResult ? <Link className="button button-secondary button-medium" to={`/compare?${new URLSearchParams({ source: baseline.run_id, replay: protectedResult.run_id })}`}>Compare baseline and protected run</Link> : null}{baseline && restored ? <Link className="button button-secondary button-medium" to={`/compare?${new URLSearchParams({ source: baseline.run_id, replay: restored.run_id })}`}>Check restoration against baseline</Link> : null}</div>
     </section> : null}
     {current ? <section className="receiver-current" aria-label="Current test phase">
@@ -71,10 +73,10 @@ export function ReceiverTestProgress({ envelope, disabled: externalDisabled, onP
         <DataList items={[{ label: "Receiver policy", value: policyTitle[current.policy_id] }, { label: "Lifetime", value: "One decision in a short-lived, memory-only receiver" }, { label: "Experiment actions", value: "Wait for separate review and fresh run approval" }]} />
         <p>Preparing starts the bounded receiver in the owned lab. It can expire while you review. A replacement is available only after BlueFire verifies shutdown of the previous receiver.</p>
         <Field label="Prepared by"><input autoComplete="off" maxLength={128} value={reviewer} onChange={(event) => setReviewer(event.target.value)} /></Field>
-        <Button variant="primary" disabled={disabled || !current.prepare_allowed || !reviewer.trim()} onClick={prepare}>Prepare {current.phase === "protected" ? "protected" : current.phase === "restored" ? "restored" : "baseline"} receiver</Button>
+        <Button variant="primary" disabled={disabled || !current.prepare_allowed || !reviewer.trim()} onClick={prepare}>Prepare {current.phase} receiver</Button>
       </> : null}
       {preparation && !current.execution_job && envelope.next_action.kind === "review_replay" ? <>
-        <div className="receiver-review-summary"><strong>{current.phase === "baseline" ? "Review the baseline run" : "Review the policy change and replay"}</strong><p>{current.phase === "protected" ? "Accept reviewed records → Require redacted records" : current.phase === "restored" ? "Require redacted records → Accept reviewed records" : "The deliberately permissive baseline accepts authenticated, reviewed synthetic records."}</p><p>{current.phase === "baseline" ? "The actual staged artifact is bound when the approved handoff runs." : "Replay must match the staged artifact independently recorded in the baseline."}</p></div>
+        <div className="receiver-review-summary"><strong>{current.phase === "baseline" ? "Review the baseline run" : current.phase === "legitimate" ? "Review legitimate redacted use" : "Review the policy change and replay"}</strong><p>{current.phase === "protected" ? envelope.context.source_control ? "Retained policy: Require redacted records" : "Accept reviewed records → Require redacted records" : current.phase === "restored" ? "Require redacted records → Accept reviewed records" : current.phase === "legitimate" ? "Require redacted records; explicitly redact the staged values." : "The deliberately permissive baseline accepts authenticated, reviewed synthetic records."}</p><p>{current.phase === "baseline" ? "The actual staged artifact is bound when the approved handoff runs." : current.phase === "legitimate" ? "This reviewed variant changes the staged bytes. Acceptance requires independently verified, fully redacted record semantics." : "Replay must match the staged artifact independently recorded in the baseline."}</p></div>
         <p className="receiver-expiry">{remaining ? `Receiver review expires in ${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}.` : "This receiver review has expired. Wait for verified cleanup before preparing a fresh receiver."}</p>
         {preparation.preflight.plan ? <CanonicalPlanReview plan={preparation.preflight.plan} scope={preparation.preflight.scope} cleanup={preparation.preflight.cleanup} binding={preparation.preflight.approval_binding} envelope={preparation.preflight.approval_envelope} adaptiveAuthorization={preparation.preflight.adaptive_authorization} /> : <Callout title="Run plan unavailable">This preparation cannot be accepted without the complete run review.</Callout>}
         <label className="check-row"><input type="checkbox" checked={acknowledged} disabled={!canReview} onChange={(event) => setAcknowledged(event.target.checked)} /><span>I reviewed this receiver policy and the complete run plan.</span></label>
@@ -101,11 +103,5 @@ function CleanupSummary({ phase }: { phase: ReceiverPhaseView }) {
 }
 
 function downloadReceiverReport(envelope: ReceiverDefenseEnvelope & { context: ReceiverContext }) {
-  const lines = ["# Receiver control test", "", envelope.context.scenario_title, "", `Status: ${envelope.status}`, "", "This local lab experiment uses a deliberately permissive baseline and fresh receiver sessions. It measures prevention separately from detection.", ""];
-  for (const phase of envelope.phases) {
-    lines.push(`## ${phaseTitle[phase.phase]}`, "", `Policy: ${policyTitle[phase.policy_id]}`, `Outcome: ${receiverOutcome(phase)}`, `Receiver cleanup: ${phase.cleanup.receiver}; run cleanup: ${phase.cleanup.run}`, "");
-    if (phase.result) lines.push(`Run: ${phase.result.run_id}`, "", "```json", JSON.stringify(phase.result, null, 2), "```", "");
-  }
-  lines.push("## Limitations", "", ...envelope.limitations.map((item) => `- ${item}`), "", "Unverified or missing evidence is not a prevention pass. No general detection or prevention coverage is established.", "");
-  downloadArtifact(new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" }), `${envelope.job.job_id}-receiver-control.md`);
+  downloadArtifact(new Blob([receiverControlReport(envelope)], { type: "text/markdown;charset=utf-8" }), `${envelope.job.job_id}-receiver-control.md`);
 }

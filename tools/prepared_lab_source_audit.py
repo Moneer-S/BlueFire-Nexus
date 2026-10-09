@@ -21,6 +21,7 @@ BOUNDARIES = {
     "prepared_lab_broker.py": (1, ("os.execve",) * 3 + ("subprocess.Popen.__init__",)),
     "prepared_lab_ui_bootstrap.py": (1, ("subprocess.Popen.__init__",)),
     "prepared_lab_product.py": (0, ()),
+    "prepared_lab_file_access.py": (1, ("subprocess.Popen",)),
 }
 
 
@@ -50,11 +51,59 @@ def prepared_lab_boundary(path: Path, findings: list[dict[str, Any]]) -> dict[st
         and len(node.args) == 2
         for node in constructors
     )
+    probe_options = True
+    if path.name == "prepared_lab_file_access.py":
+        launches = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and ast.unparse(node.func) == "subprocess.Popen"
+        ]
+        expected_command = [
+            repr(value)
+            for value in (
+                "/usr/bin/setpriv",
+                "--reuid=1002",
+                "--regid=1002",
+                "--clear-groups",
+                "--no-new-privs",
+                "--bounding-set=-all",
+                "--inh-caps=-all",
+                "--ambient-caps=-all",
+            )
+        ] + [
+            "str(PYTHON)",
+            "'-I'",
+            "'-B'",
+            "'-m'",
+            "'bluefire.file_access_probe'",
+            "str(child.fileno())",
+            "str(listener.fileno())",
+            "'1'",
+            "launch",
+        ]
+        probe_options = len(launches) == 1 and all(
+            len(node.args) == 1
+            and isinstance(node.args[0], ast.List)
+            and [ast.unparse(item) for item in node.args[0].elts] == expected_command
+            and {key.arg: ast.unparse(key.value) for key in node.keywords}
+            == {
+                "stdin": "subprocess.DEVNULL",
+                "stdout": "subprocess.DEVNULL",
+                "stderr": "subprocess.DEVNULL",
+                "shell": "False",
+                "close_fds": "True",
+                "pass_fds": "(child.fileno(), listener.fileno())",
+                "env": "ENV",
+                "cwd": "'/'",
+            }
+            for node in launches
+        )
     return {
         "passed": imports == expected_imports
         and sorted(actual) == sorted(expected_calls)
         and not unexpected
-        and constructor_options,
+        and constructor_options
+        and probe_options,
         "shell_imports": imports,
         "process_calls": sorted(actual),
         "unexpected_findings": unexpected,

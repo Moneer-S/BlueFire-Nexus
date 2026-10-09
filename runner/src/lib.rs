@@ -19,8 +19,21 @@ pub mod providers;
 mod receipt_store;
 mod receiver_auth;
 mod reviewed_chmod_builds;
+mod reviewed_gzip_builds;
+mod reviewed_native_builds;
 pub mod runner;
 pub mod safety;
+pub mod service_admission;
+#[cfg(target_os = "linux")]
+pub mod service_cgroup_reader;
+#[cfg(any(target_os = "linux", test))]
+mod service_installations;
+pub mod service_observer;
+pub mod service_operation_binding;
+pub mod service_payload;
+#[cfg(target_os = "linux")]
+pub mod service_query_reader;
+pub mod service_reservation;
 
 pub use actions::{inventory, ActionDescriptor, ACTION_SDK_SCHEMA_VERSION};
 pub use cancellation_witness::{run_internal_cancellation_descendant, INTERNAL_DESCENDANT_VERB};
@@ -36,3 +49,5 @@ pub use native_tool_setup::inspect_installation;
 pub use providers::{provider_runtimes, ProviderRuntimeDescriptor};
 pub use runner::{execute_files, Runner, RunnerError, MAX_DOCUMENT_BYTES};
 pub use safety::RECEIPT_PROTOCOL_VERSION;
+pub mod file_access;
+pub mod file_access_contract;

@@ -21,6 +21,7 @@ from .detection_backend_health import SQLITE_BACKEND_PIN as _SQLITE_BACKEND_PIN
 from .detection_backend_health import YARA_PIN as _YARA_PIN
 from .detection_backend_health import detection_backend_health
 from .detection_query_limits import RUN_EXECUTION_LIMITS as _RUN_EXECUTION_LIMITS
+from .detection_yara_fixtures import YaraFixtureError, match_fixtures
 from .evidence import EvidenceProvenance
 
 
@@ -913,37 +914,12 @@ class ExternalDetectionValidator:
             )
         except yara.Error as exc:
             raise DetectionError("YARA-Python fixture compilation failed") from exc
-        fixture_ids: list[str] = []
-        matched_ids: list[str] = []
-        total_bytes = 0
-        for fixture in fixtures:
-            if not isinstance(fixture, Mapping):
-                raise DetectionError("each YARA fixture must be an object")
-            fixture_id = fixture.get("fixture_id")
-            if (
-                not isinstance(fixture_id, str)
-                or _FIXTURE_ID.fullmatch(fixture_id) is None
-                or fixture_id in fixture_ids
-            ):
-                raise DetectionError("YARA fixture IDs must be valid and unique")
-            payload = fixture.get("data", b"")
-            if isinstance(payload, str):
-                data = payload.encode("utf-8")
-            elif isinstance(payload, bytes):
-                data = payload
-            else:
-                raise DetectionError("YARA fixture data must be bytes or text")
-            total_bytes += len(data)
-            if total_bytes > self.max_fixture_bytes:
-                raise DetectionError("YARA fixtures exceed the total byte limit")
-            fixture_ids.append(fixture_id)
-            try:
-                matches = rules.match(data=data, timeout=2)
-            except yara.Error as exc:
-                raise DetectionError("YARA-Python fixture evaluation failed") from exc
-            if matches:
-                matched_ids.append(fixture_id)
-        return fixture_ids, matched_ids
+        try:
+            return match_fixtures(
+                rules, yara, fixtures, max_fixture_bytes=self.max_fixture_bytes, clock=monotonic
+            )
+        except YaraFixtureError as exc:
+            raise DetectionError(str(exc)) from exc
 
     def check_spl(self, candidate: Any, source: str) -> Any:
         self._require_hypothesis(candidate, "spl")

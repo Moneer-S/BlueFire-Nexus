@@ -20,6 +20,10 @@ from bluefire.config import AIProviderKind, AutonomyLevel, load_config
 from bluefire.runner_lifecycle import ManagedRunnerLifecycle
 from bluefire.service import BlueFireService
 from bluefire.util import canonical_json_bytes
+from tests_platform.ai_proposal_startup_diagnostics import (
+    ProposalStartupRecorder,
+    proposal_startup_assertion,
+)
 from tests_platform.test_ai import FakeTransport, _proposal, _request
 from tests_platform.test_ai_live_authorization import request as authorization_request
 from tests_platform.test_ai_transport_deadline import endpoint as endpoint
@@ -119,8 +123,12 @@ def _format_cancellation_diagnostic(
 
 
 @contextmanager
-def _diagnose_cancellation_assertions(render: Callable[[], str], stream: TextIO) -> Iterator[None]:
-    """Print safe diagnostics only on failure and re-raise unchanged."""
+def _diagnose_cancellation_assertions(
+    render: Callable[[], str],
+    stream: TextIO,
+    add_report_section: Callable[[str, str, str], None] | None = None,
+) -> Iterator[None]:
+    """Record safe diagnostics only on failure and re-raise unchanged."""
 
     try:
         yield
@@ -130,8 +138,11 @@ def _diagnose_cancellation_assertions(render: Callable[[], str], stream: TextIO)
         except BaseException:
             payload = '{"stage":"unknown","capture":"failed"}'
         try:
-            stream.write(f"provider-cancellation-diagnostic={payload}\n")
-            stream.flush()
+            if add_report_section is None:
+                stream.write(f"provider-cancellation-diagnostic={payload}\n")
+                stream.flush()
+            else:
+                add_report_section("call", "Provider cancellation diagnostic", payload)
         except BaseException:
             pass
         raise
@@ -194,10 +205,43 @@ def test_postcondition_diagnostic_preserves_the_original_assertion() -> None:
     assert '"stage":"postconditions"' in stream.getvalue()
 
 
+@pytest.mark.parametrize("sink_fails", [False, True])
+def test_cancellation_report_section_preserves_assertion_and_cleanup(
+    request, capsys, sink_fails
+) -> None:
+    original = AssertionError("original assertion")
+    order = []
+    before = len(request.node._report_sections)
+
+    def sink(*args):
+        order.append("sink")
+        if sink_fails:
+            raise OSError("authored report failure")
+        request.node.add_report_section(*args)
+
+    with pytest.raises(AssertionError) as caught:
+        try:
+            with _diagnose_cancellation_assertions(
+                lambda: '{"stage":"postconditions"}', sys.stderr, sink
+            ):
+                raise original
+        finally:
+            order.append("cleanup")
+    assert caught.value is original
+    assert order == ["sink", "cleanup"]
+    assert request.node._report_sections[before:] == (
+        []
+        if sink_fails
+        else [("call", "Provider cancellation diagnostic", '{"stage":"postconditions"}')]
+    )
+    assert capsys.readouterr() == ("", "")
+
+
 @pytest.mark.parametrize("kind", KINDS)
 @pytest.mark.parametrize("autonomy", ["assist", "auto"])
 @pytest.mark.parametrize("signal", ["cancel", "close"])
 def test_in_flight_job_proposal_is_cancelled_and_reaped_without_fallback(
+    request: pytest.FixtureRequest,
     tmp_path: Path,
     endpoint: tuple[str, threading.Event, list[str]],
     workers: list[subprocess.Popen[bytes]],
@@ -233,6 +277,13 @@ def test_in_flight_job_proposal_is_cancelled_and_reaped_without_fallback(
             },
         )
     )["authorization"]
+    startup = ProposalStartupRecorder()
+    monkeypatch.setattr(subprocess, "Popen", startup.wrap_popen(subprocess.Popen))
+    monkeypatch.setattr(
+        service.product_store,
+        "transition_job",
+        startup.wrap_transition(service.product_store.transition_job),
+    )
     # The shipped composition is under test: no injected provider or HTTP transport.
     diagnostic_started = time.monotonic()
     callback_observation: dict[str, Any] = {
@@ -420,15 +471,20 @@ def test_in_flight_job_proposal_is_cancelled_and_reaped_without_fallback(
         mark("setup_wait_started")
         ready = transport_ready.wait(30)
         mark("setup_wait_finished")
-        with _diagnose_cancellation_assertions(diagnostic_payload, sys.stderr):
+        with _diagnose_cancellation_assertions(
+            diagnostic_payload, sys.stderr, request.node.add_report_section
+        ):
             assert ready, "proposal never reached the transport boundary"
         stage["name"] = "before_endpoint"
         mark("endpoint_wait_started")
         release_transport.set()
         endpoint_reached = entered.wait(4)
         mark("endpoint_wait_finished")
-        with _diagnose_cancellation_assertions(diagnostic_payload, sys.stderr):
-            assert endpoint_reached, "proposal never reached the local endpoint"
+        with proposal_startup_assertion(request.node, startup):
+            with _diagnose_cancellation_assertions(
+                diagnostic_payload, sys.stderr, request.node.add_report_section
+            ):
+                assert endpoint_reached, "proposal never reached the local endpoint"
         stage["name"] = "request_active"
         mark("endpoint_entered")
         started = time.monotonic()
@@ -438,7 +494,9 @@ def test_in_flight_job_proposal_is_cancelled_and_reaped_without_fallback(
             closer.start()
             closer.join(timeout=3)
             mark("shutdown_join_finished")
-            with _diagnose_cancellation_assertions(diagnostic_payload, sys.stderr):
+            with _diagnose_cancellation_assertions(
+                diagnostic_payload, sys.stderr, request.node.add_report_section
+            ):
                 assert not closer.is_alive(), "service shutdown waited for the provider timeout"
         else:
             stage["name"] = "job_cancellation"
@@ -446,13 +504,19 @@ def test_in_flight_job_proposal_is_cancelled_and_reaped_without_fallback(
             mark("job_cancel_requested")
         stage["name"] = "job_settlement"
         mark("job_wait_started")
-        with _diagnose_cancellation_assertions(diagnostic_payload, sys.stderr):
+        with _diagnose_cancellation_assertions(
+            diagnostic_payload, sys.stderr, request.node.add_report_section
+        ):
             result = service.job_controller.wait(job_id, timeout=3)
         mark("job_wait_finished")
-        with _diagnose_cancellation_assertions(diagnostic_payload, sys.stderr):
+        with _diagnose_cancellation_assertions(
+            diagnostic_payload, sys.stderr, request.node.add_report_section
+        ):
             assert time.monotonic() - started < 3
         stage["name"] = "postconditions"
-        with _diagnose_cancellation_assertions(diagnostic_payload, sys.stderr):
+        with _diagnose_cancellation_assertions(
+            diagnostic_payload, sys.stderr, request.node.add_report_section
+        ):
             assert result["state"] == "cancelled"
             assert not errors
             assert len(workers) == 1 and workers[0].poll() is not None

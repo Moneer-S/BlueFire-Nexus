@@ -342,7 +342,16 @@ class DeterministicPlanner:
             approvals_required=(),
             remaining_budgets={
                 "steps": max(len(plan.steps) - completed_steps, 0),
-                "retries": max(1 - retries_used, 0),
+                "retries": max(
+                    (
+                        scenario.adaptive_execution.max_retries
+                        if plan.mode is ExecutionMode.EXECUTE
+                        and scenario.adaptive_execution is not None
+                        else 1
+                    )
+                    - retries_used,
+                    0,
+                ),
             },
             proposed_by="deterministic-planner.v1",
         )

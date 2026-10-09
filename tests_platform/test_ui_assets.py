@@ -344,7 +344,14 @@ def test_browser_has_no_direct_runner_or_shell_surface(source: str) -> None:
     ):
         assert forbidden not in lowered
     assert 'const api_root = "/api/v1"' in lowered
-    assert 'credentials: "same-origin"' in lowered
+    assert 'credentials: "same-origin"' not in lowered
+    assert 'credentials: "include"' not in lowered
+    transport = (SOURCE_ROOT / "lib" / "browser-session.ts").read_text(encoding="utf-8")
+    assert 'credentials: "omit"' in transport
+    assert 'redirect: "error"' in transport
+    assert "target.origin !== window.location.origin" in transport
+    assert 'const SESSION_HEADER = "X-BlueFire-Session"' in transport
+    assert "headers.set(SESSION_HEADER, token)" in transport
 
 
 def test_public_ui_has_no_actor_branding_or_review_residue(source: str) -> None:

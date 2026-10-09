@@ -14,9 +14,9 @@ function RunConfigWitness() {
   return <output aria-label="Run config witness">{JSON.stringify({ implementations: runConfig.actionImplementations ?? {}, approved: runConfig.approved, approvedBy: runConfig.approvedBy })}</output>;
 }
 
-function renderBuilder() {
+function renderBuilder(scenario = demoScenario) {
   window.localStorage.clear();
-  window.localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(demoScenario));
+  window.localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(scenario));
   vi.spyOn(api, "catalog").mockResolvedValue(demoCatalog);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(["catalog"], demoCatalog);
@@ -36,6 +36,7 @@ async function selectFirstStep(user: ReturnType<typeof userEvent.setup>) {
   return step.id;
 }
 const storedSteps = () => (JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!) as { steps: { id: string }[] }).steps.map((step) => step.id);
+const storedScenario = () => JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!) as typeof demoScenario & { adaptive_execution?: { schema_version: string; max_retries: number; steps: { step_id: string; methods: { behavior_id: string; action_id: string }[]; max_retries: number }[] } };
 
 describe("Builder step rename", () => {
   it("keeps the renamed step selected through a multi-character rename", async () => {
@@ -67,6 +68,35 @@ describe("Builder step rename", () => {
     // A rename must not carry execution authorization with it.
     expect(witness().approved).toBe(false);
     expect(witness().approvedBy).toBe("");
+  }, 20000);
+
+  it("renames a v2 adaptive step without losing its cap, methods, or connected input references", async () => {
+    const initial = structuredClone(demoScenario);
+    const first = initial.steps[0]!;
+    const retained = { step_id: "stage", methods: [
+      { behavior_id: "sandbox.collection.stage.v1", action_id: "sandbox.collection.stage.v1" },
+      { behavior_id: "sandbox.collection.export.v1", action_id: "sandbox.export.local.v1" },
+      { behavior_id: "sandbox.collection.verify.v1", action_id: "sandbox.collection.verify.v1" },
+    ], max_retries: 2 };
+    initial.adaptive_execution = { schema_version: "bluefire.adaptive-execution.v2", steps: [
+      { step_id: first.id, methods: [
+        { behavior_id: first.behavior_id, action_id: "sandbox.fixture.create.v1" },
+        { behavior_id: "sandbox.program.fixed.v1", action_id: "sandbox.program.fixed.v1" },
+      ], max_retries: 1 }, retained], eligible_outcomes: ["failed"], max_retries: 3, on_provider_failure: "stop" };
+    const user = renderBuilder(initial);
+    const originalInputs = structuredClone(initial.steps[1]!.inputs);
+    await selectFirstStep(user);
+    await user.type(await screen.findByLabelText(/^Step ID/), "_two");
+    const saved = await waitFor(() => {
+      const value = storedScenario();
+      expect(value.adaptive_execution!.steps[0]!.step_id).toBe(`${first.id}_two`);
+      return value;
+    });
+    expect(saved.adaptive_execution).toMatchObject({ schema_version: "bluefire.adaptive-execution.v2", max_retries: 3,
+      steps: [{ step_id: `${first.id}_two`, max_retries: 1 }, retained] });
+    expect(saved.steps[1]!.inputs.workspace!.from_step).toBe(`${first.id}_two`);
+    expect(saved.steps[1]!.inputs).toEqual({ ...originalInputs,
+      workspace: { ...originalInputs.workspace!, from_step: `${first.id}_two` } });
   }, 20000);
 
   it("still drops an override when the step is replaced by a different behavior", async () => {

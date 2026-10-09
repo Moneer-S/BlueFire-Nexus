@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+import time
+from dataclasses import dataclass
+from typing import Any, Callable, Mapping
 
 from .adaptive_execution import AdaptiveAuthorizationError, validate_selected_method
 from .adaptive_runtime import reviewed_methods
@@ -74,6 +76,7 @@ def validate_dispatch(
     remaining_seconds: float,
     retries_used: int,
     approval_expires_at: str,
+    step_retries_used: int | None = None,
 ) -> None:
     if any(group["step_id"] == step.step_id for group in authorization["steps"]):
         validate_selected_method(
@@ -88,7 +91,80 @@ def validate_dispatch(
             remaining_steps=remaining_steps,
             remaining_seconds=remaining_seconds,
             retries_used=retries_used,
+            step_retries_used=step_retries_used,
             approval_expires_at=approval_expires_at,
         )
     elif step.to_dict() not in [baseline.to_dict() for baseline in plan.steps]:
         raise AdaptiveAuthorizationError("non-adaptive step differs from the reviewed exact plan")
+
+
+@dataclass(frozen=True)
+class ReviewedStepChecks:
+    """Bind immutable authority once; recheck the live deadline before each effect.
+
+    A returned callback captures the counters at reservation time. Later loop
+    iterations cannot change which reservation that callback is checking.
+    """
+
+    plan: ExecutionPlan
+    authorization: Mapping[str, Any] | None
+    expected_digest: str | None
+    registry: BehaviorRegistry
+    profile: RunnerProfile | None
+    target_scope: Mapping[str, Any]
+    platform: str
+    catalog_authority: Mapping[str, Any] | None
+    approval: Mapping[str, Any] | None
+    deadline: float | None
+    cleanup_reserve: float
+
+    def bind(
+        self,
+        *,
+        remaining_steps: int,
+        retries_used: int,
+        budget: Mapping[str, Any] | None,
+        step: PlanStep | None = None,
+        is_retry: bool = False,
+    ) -> Callable[..., None]:
+        counts = (
+            {key: row["used"] for key, row in budget["per_step"].items()}
+            if budget is not None
+            else {}
+        )
+
+        def check(selected: PlanStep | None = step) -> None:
+            if self.authorization is None:
+                if is_retry:
+                    raise AdaptiveAuthorizationError(
+                        "adaptive method selection has no reviewed authority"
+                    )
+                return
+            assert self.profile is not None and self.approval is not None and selected is not None
+            args: dict[str, Any] = {
+                "step": selected,
+                "authorization": self.authorization,
+                "registry": self.registry,
+                "profile": self.profile,
+                "target_scope": self.target_scope,
+                "platform": self.platform,
+                "catalog_authority": self.catalog_authority,
+                "remaining_steps": remaining_steps,
+                "remaining_seconds": max(
+                    (self.deadline or time.monotonic()) - time.monotonic() - self.cleanup_reserve,
+                    0.0,
+                ),
+                "retries_used": retries_used,
+                "step_retries_used": counts.get(selected.step_id),
+                "approval_expires_at": str(self.approval["expires_at"]),
+            }
+            assert self.expected_digest is not None
+            digest = self.expected_digest
+            if is_retry:
+                validate_selected_method(
+                    **args, expected_authorization_digest=digest, is_retry=True
+                )
+            else:
+                validate_dispatch(**args, plan=self.plan, expected_digest=digest)
+
+        return check

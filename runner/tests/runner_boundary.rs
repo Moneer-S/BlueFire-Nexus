@@ -145,6 +145,7 @@ fn profile(root: &TempDir, network: Vec<NetworkDestination>) -> RunnerProfile {
         control_blocked_actions: Vec::new(),
         action_bindings: Vec::new(),
         native_tool_installations: Vec::new(),
+        file_access_binding: None,
         provider_bindings: Vec::new(),
         provider_artifacts: Vec::new(),
         capabilities: vec![
@@ -201,6 +202,8 @@ fn manifest(profile: &RunnerProfile, action_id: &str, params: Value) -> Executio
         cleanup_action_id: "sandbox.cleanup.v1".to_string(),
         policy_digest: profile.policy_digest.clone(),
         approval: None,
+        grant_attempt: None,
+        grant_cleanup: None,
         evidence_refs: vec![format!("sha256:{}", "1".repeat(64))],
         request_hash: String::new(),
     };
@@ -1113,6 +1116,55 @@ fn collection_methods_refuse_changed_source_and_unreviewed_paths_before_writing(
     }
 }
 
+// These are software integration fixtures, not an operator experiment.
+// Inspection must establish an independently reviewed package before a positive
+// gzip case can run; an unknown host build is a prerequisite failure, not a skip.
+fn collection_test_profile(root: &TempDir, method: &str) -> RunnerProfile {
+    let mut selected = profile(root, Vec::new());
+    if method == "atomic-gzip" {
+        let location =
+            std::env::var("BLUEFIRE_TEST_GZIP").unwrap_or_else(|_| "/usr/bin/gzip".into());
+        let mut inspection_codes = Vec::new();
+        for version in ["1.12-1ubuntu3.2", "1.12-1ubuntu3.1"] {
+            let result = bluefire_runner::inspect_candidate(&json!({
+                "schema_version": "bluefire.native-tool-candidate.v1",
+                "action_id": "sandbox.collection.atomic-gzip.v1",
+                "installation_location": location, "tool_version": version
+            }));
+            inspection_codes.push(format!(
+                "{version}: {}",
+                result["code"].as_str().unwrap_or("missing-code")
+            ));
+            if result["status"] == "ready" {
+                selected
+                    .native_tool_installations
+                    .push(serde_json::from_value(result["installation"].clone()).unwrap());
+                break;
+            }
+        }
+        assert_eq!(selected.native_tool_installations.len(), 1,
+            "Linux gzip integration tests require a protected reviewed build; inspection codes: {inspection_codes:?}; see docs/REVIEWED_NATIVE_BUILDS.md");
+        seal_profile(&mut selected);
+    }
+    selected
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn gzip_legacy_unbound_profile_cannot_gain_native_execution_authority() {
+    let root = TempDir::new().unwrap();
+    let selected = profile(&root, Vec::new());
+    let result = runner().execute(manifest(&selected, "sandbox.collection.atomic-gzip.v1",
+        json!({"input":"fixtures/transformed.jsonl", "expected_sha256":"a".repeat(64), "stage_variant":"primary"})), selected);
+    assert_eq!(result.status, TaskStatus::ControlBlocked);
+    assert_eq!(
+        result.error.unwrap().code,
+        "native_tool_installation_required"
+    );
+    assert!(result.receipt_ids.is_empty());
+    assert_no_workspace_artifacts(root.path());
+}
+
 const COLLECTION_LIMIT_METHODS: &[(&str, &str)] = &[
     ("records", "jsonl"),
     ("archive", "tar"),
@@ -1192,7 +1244,7 @@ fn assert_collection_not_published(root: &TempDir, source: &[u8], receipt_count:
 fn collection_output_limits_keep_legacy_default_and_enforce_exact_publication_boundary() {
     for &(method, extension) in COLLECTION_LIMIT_METHODS {
         let root = TempDir::new().unwrap();
-        let profile = profile(&root, Vec::new());
+        let profile = collection_test_profile(&root, method);
         let (source, fixture_receipts) = collection_limit_fixture(&root, &profile);
         let action = format!("sandbox.collection.{method}.v1");
         let artifact = root
@@ -1219,22 +1271,19 @@ fn collection_output_limits_keep_legacy_default_and_enforce_exact_publication_bo
                 ),
                 profile.clone(),
             );
-            // gzip has executed a process; the native serializers have not published an effect.
-            let (status, kind) = if method == "atomic-gzip" {
-                (TaskStatus::Failed, EvidenceKind::Executed)
+            // All methods have read input, even when no output has been published.
+            let status = if method == "atomic-gzip" {
+                TaskStatus::Failed
             } else {
-                (TaskStatus::ControlBlocked, EvidenceKind::ControlBlocked)
+                TaskStatus::ControlBlocked
             };
             assert_eq!(result.status, status, "{result:#?}");
             assert_eq!(
                 result.error.as_ref().unwrap().code,
                 "collection_output_limit"
             );
-            assert_eq!(result.evidence[0].kind, kind);
-            assert_eq!(
-                result.evidence[0].details["side_effects_started"],
-                method == "atomic-gzip"
-            );
+            assert_eq!(result.evidence[0].kind, EvidenceKind::Executed);
+            assert_eq!(result.evidence[0].details["side_effects_started"], true);
             assert!(result.receipt_ids.is_empty());
             assert_collection_not_published(&root, &source, fixture_receipts.len());
         }
@@ -1264,7 +1313,7 @@ fn collection_output_limits_keep_legacy_default_and_enforce_exact_publication_bo
 fn collection_output_limits_refuse_invalid_values_and_sealed_parameter_widening_before_effects() {
     for &(method, _) in COLLECTION_LIMIT_METHODS {
         let root = TempDir::new().unwrap();
-        let profile = profile(&root, Vec::new());
+        let profile = collection_test_profile(&root, method);
         let (source, fixture_receipts) = collection_limit_fixture(&root, &profile);
         let action = format!("sandbox.collection.{method}.v1");
         for invalid in [
@@ -1308,7 +1357,7 @@ fn collection_output_limits_refuse_invalid_values_and_sealed_parameter_widening_
 fn collection_output_allowance_does_not_widen_the_manifest_input_read_limit() {
     for &(method, _) in COLLECTION_LIMIT_METHODS {
         let root = TempDir::new().unwrap();
-        let profile = profile(&root, Vec::new());
+        let profile = collection_test_profile(&root, method);
         let (source, fixture_receipts) = collection_limit_fixture(&root, &profile);
         let action = format!("sandbox.collection.{method}.v1");
         let mut request = manifest(
@@ -1326,6 +1375,32 @@ fn collection_output_allowance_does_not_widen_the_manifest_input_read_limit() {
         };
         assert_eq!(result.status, status, "{result:#?}");
         assert_eq!(result.error.as_ref().unwrap().code, code);
+        assert_eq!(result.evidence[0].kind, EvidenceKind::Executed);
+        assert_eq!(result.evidence[0].details["side_effects_started"], true);
+        assert!(result.receipt_ids.is_empty());
+        assert_collection_not_published(&root, &source, fixture_receipts.len());
+        cleanup_collection_receipts(&profile, fixture_receipts);
+        assert_no_workspace_artifacts(root.path());
+    }
+}
+
+#[test]
+fn collection_digest_refusal_preserves_execution_after_input_read() {
+    for &(method, _) in COLLECTION_LIMIT_METHODS {
+        let root = TempDir::new().unwrap();
+        let profile = collection_test_profile(&root, method);
+        let (source, fixture_receipts) = collection_limit_fixture(&root, &profile);
+        let action = format!("sandbox.collection.{method}.v1");
+        let mut params = collection_limit_params(&source, "primary", None);
+        params["expected_sha256"] = json!("0".repeat(64));
+        let result = runner().execute(manifest(&profile, &action, params), profile.clone());
+        assert_eq!(result.status, TaskStatus::ControlBlocked, "{result:#?}");
+        assert_eq!(
+            result.error.as_ref().unwrap().code,
+            "collection_input_identity_mismatch"
+        );
+        assert_eq!(result.evidence[0].kind, EvidenceKind::Executed);
+        assert_eq!(result.evidence[0].details["side_effects_started"], true);
         assert!(result.receipt_ids.is_empty());
         assert_collection_not_published(&root, &source, fixture_receipts.len());
         cleanup_collection_receipts(&profile, fixture_receipts);
@@ -1337,7 +1412,7 @@ fn collection_output_allowance_does_not_widen_the_manifest_input_read_limit() {
 #[test]
 fn collection_output_budget_preserves_eight_record_objective_across_real_methods() {
     let root = TempDir::new().unwrap();
-    let profile = profile(&root, Vec::new());
+    let profile = collection_test_profile(&root, "atomic-gzip");
     let (source, mut receipts) = collection_limit_fixture(&root, &profile);
     // Declare the objective independently of the selected container or its reported digest.
     let objective: Vec<Value> = std::str::from_utf8(&source)
@@ -1384,7 +1459,7 @@ fn collection_output_budget_preserves_eight_record_objective_across_real_methods
         let payload = if method == "atomic-gzip" {
             assert!(bytes.len() < source.len());
             // Independently decode the actual product artifact using fixed gzip arguments.
-            let decoded = Command::new("/usr/bin/gzip")
+            let decoded = Command::new(&profile.native_tool_installations[0].installation_location)
                 .args(["-d", "-c"])
                 .arg(&path)
                 .output()
@@ -3171,12 +3246,28 @@ fn inventory_and_execute_cli_emit_the_versioned_json_contract() {
         "bluefire.runner-receipt-wal.v2"
     );
     let actions = inventory_json["actions"].as_array().unwrap();
-    assert_eq!(actions.len(), 24);
+    assert_eq!(actions.len(), 26);
+    for action_id in [
+        "file_access.probe.non_owner.v1",
+        "file_access.verify.owner.v1",
+    ] {
+        let action = actions
+            .iter()
+            .find(|item| item["action_id"] == action_id)
+            .unwrap();
+        assert_eq!(action["platforms"], json!(["linux"]));
+        assert_eq!(action["filesystem_effect"], true);
+        assert_eq!(action["process_effect"], false);
+        assert_eq!(action["network_effect"], false);
+    }
     let gzip = actions
         .iter()
         .find(|action| action["action_id"] == "sandbox.collection.atomic-gzip.v1")
         .expect("the reviewed gzip adapter must be present in the static inventory");
     assert_eq!(gzip["platforms"], json!(["linux"]));
+    assert_eq!(gzip["action_version"], "1.1.0");
+    assert_eq!(gzip["readiness"], "structural");
+    assert_eq!(gzip["native_tool_binding"]["tool_id"], "gnu.gzip.v1");
     assert_eq!(gzip["filesystem_effect"], true);
     assert_eq!(gzip["process_effect"], true);
     assert_eq!(gzip["network_effect"], false);

@@ -3,13 +3,7 @@
 //! Adding a build requires package provenance review and a source change.
 //! Neither an installation record nor a run/model request can extend this set.
 
-use crate::native_tool_installations::NativeToolInstallation;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct UnrecognizedToolBuild {
-    pub(crate) code: &'static str,
-    pub(crate) message: &'static str,
-}
+use crate::native_tool_installations::{NativeToolInstallation, UnrecognizedToolBuild};
 
 #[derive(Debug)]
 struct ReviewedBuild {

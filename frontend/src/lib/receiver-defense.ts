@@ -1,16 +1,22 @@
-import type { ReceiverAttempt, ReceiverContext, ReceiverContextRequest, ReceiverDecision, ReceiverDefenseEnvelope, ReceiverPhase, ReceiverPhaseView } from "./receiver-defense-types";
+import type { ReceiverAttempt, ReceiverContext, ReceiverContextRequest, ReceiverControlDecision, ReceiverDecision, ReceiverDefenseEnvelope, ReceiverPhase, ReceiverPhaseView } from "./receiver-defense-types";
 import type { RunJob } from "../types";
 import { sameJson } from "./replay-review";
 
 export const receiverPhases: ReceiverPhase[] = ["baseline", "protected", "restored"];
-export const phaseTitle = { baseline: "Baseline", protected: "Redaction required", restored: "Prior policy restored" };
+const retainedPhases: ReceiverPhase[] = ["baseline", "protected", "legitimate"];
+const allPhases = [...receiverPhases, "legitimate"];
+export const phaseTitle = { baseline: "Baseline", protected: "Redaction required", restored: "Prior policy restored", legitimate: "Legitimate redacted use" };
 export const policyTitle = { "receiver.reviewed-records.v1": "Accept reviewed synthetic records", "receiver.redacted-only.v1": "Require redacted records" };
 export const receiverJobId = (submission: string) => `job-${submission.replaceAll("-", "")}`;
 export const receiverJobValid = (value: string) => /^job-[0-9a-f]{32}$/.test(value);
 const digest = (value: unknown) => typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
 const uuid = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-const fail = () => { throw new Error("The control test response does not match its saved review. Refresh its status before continuing."); };
+const fail = (): never => { throw new Error("The control test response does not match its saved review. Refresh its status before continuing."); };
+const phasePolicy = (phase: ReceiverPhase) => phase === "protected" || phase === "legitimate" ? "receiver.redacted-only.v1" : "receiver.reviewed-records.v1";
+const sourceValid = (value: unknown) => { const source = record(value); return sameJson(Object.keys(source).sort(), ["control_digest", "job_id"]) && typeof source.job_id === "string" && receiverJobValid(source.job_id) && digest(source.control_digest); };
+const artifactValid = (value: unknown) => { const artifact = record(value); return typeof artifact.sha256 === "string" && /^[0-9a-f]{64}$/.test(artifact.sha256) && Number.isInteger(artifact.size_bytes) && Number(artifact.size_bytes) > 0; };
+const rollbackValid = (value: unknown) => { const decision = record(value); return sameJson(Object.keys(decision).sort(), ["control_digest", "decision", "reviewed_by", "submission_id"]) && uuid(decision.submission_id) && digest(decision.control_digest) && decision.decision === "rollback" && typeof decision.reviewed_by === "string" && Boolean(decision.reviewed_by.trim()); };
 
 function checkedSubmission(job: RunJob, submissionId: unknown) {
   const submission = record(job.request?._submission);
@@ -75,8 +81,28 @@ function checkedAttempt(value: ReceiverDefenseEnvelope & { context: ReceiverCont
       !sameJson(prep.session, child.progress.session) || prep.session.port !== value.context.handoff?.port || !digest(prep.session.review_digest)) fail();
     if (attempt.phase === "baseline") {
       if (!sameJson(prep.run_request, { scenario: value.context.scenario, ...value.context.run_intent }) || prep.replay_preparation !== null || prep.baseline_artifact !== null) fail();
-    } else if (prep.run_request !== null || !prep.replay_preparation || !sameJson(prep.baseline_artifact, value.phases[0]?.result?.artifact) ||
-      prep.replay_preparation.binding?.source?.run_id !== value.phases[0]?.result?.run_id) fail();
+    } else {
+      const baseline = value.context.source_baseline ?? value.phases.find((phase) => phase.phase === "baseline")?.result;
+      if (!baseline || prep.run_request !== null || !prep.replay_preparation ||
+        !sameJson(prep.baseline_artifact, attempt.phase === "legitimate" ? null : baseline.artifact) ||
+        prep.replay_preparation.binding?.source?.run_id !== baseline.run_id) fail();
+      if (attempt.phase === "legitimate") {
+        const redaction = prep.replay_preparation!.scenario.steps.find((step) => step.id === value.context.control?.redaction_step_id);
+        if (!redaction || redaction.parameters.redact_values !== true ||
+          !sameJson(prep.replay_preparation!.replay_request.parameter_overrides, { [value.context.control!.redaction_step_id]: { redact_values: true } })) fail();
+      }
+    }
+    if (value.schema_version === "bluefire.receiver-defense.v2") {
+      const baseline = value.context.source_baseline ?? value.phases.find((phase) => phase.phase === "baseline")?.result;
+      if (!sameJson(prep.control_binding, value.context.control) || (attempt.phase !== "baseline" && (!baseline ||
+        !sameJson(prep.baseline_reference, { run_id: baseline.run_id, artifact: baseline.artifact, source_binding: baseline.source_binding }))) ||
+        (attempt.phase === "baseline" && prep.baseline_reference !== null)) fail();
+      if (attempt.phase !== "baseline") {
+        const expectedScenario = { ...value.context.scenario, steps: value.context.scenario.steps.map((step) => attempt.phase === "legitimate" && step.id === value.context.control!.redaction_step_id
+          ? { ...step, parameters: { ...step.parameters, redact_values: true } } : step) };
+        if (prep.replay_preparation?.replay_extent !== "full" || !sameJson(prep.replay_preparation.scenario, expectedScenario)) fail();
+      }
+    } else if (prep.control_binding !== undefined || prep.baseline_reference !== undefined) fail();
   }
   if (attempt.decision && (!uuid(attempt.decision.submission_id) || !["accept", "reject"].includes(attempt.decision.decision) || !attempt.decision.reviewed_by?.trim())) fail();
   const execution = attempt.execution_job;
@@ -102,25 +128,60 @@ function checkedAttempt(value: ReceiverDefenseEnvelope & { context: ReceiverCont
       record(run.manifest).run_id !== result.run_id || run.mode !== "execute" || record(run.plan).autonomy !== "off" ||
       !sameJson(run.scenario, prep!.run_request?.scenario ?? prep!.replay_preparation?.scenario)) fail();
     checkedObservation(attempt);
+    if (attempt.phase === "legitimate") {
+      const baseline = value.phases.find((phase) => phase.phase === "baseline")?.result;
+      const baselineRunId = value.context.source_baseline?.run_id ?? baseline?.run_id;
+      const legitimate = result.legitimate_use;
+      if (!legitimate || !sameJson(Object.keys(legitimate).sort(), ["baseline_run_id", "established"]) ||
+        legitimate.baseline_run_id !== baselineRunId || typeof legitimate.established !== "boolean" ||
+        (attempt.status === "completed" && !legitimate.established)) fail();
+      if (legitimate!.established) {
+        const semantics = record(record(record(result.receiver_observation.terminal).decision).semantics);
+        if (result.decision !== "accepted" || !Number.isInteger(semantics.record_count) || Number(semantics.record_count) < 1 ||
+          semantics.redacted_record_count !== semantics.record_count || semantics.retained_record_count !== 0 || semantics.empty_record_count !== 0 ||
+          (baseline && record(record(record(baseline.receiver_observation.terminal).decision).semantics).record_count !== semantics.record_count)) fail();
+      }
+    } else if (result.legitimate_use !== undefined) fail();
   }
 }
 
 export function checkedReceiverContext(value: ReceiverContext, request?: ReceiverContextRequest): ReceiverContext {
-  if (value?.schema_version !== "bluefire.receiver-defense-context.v1" || !digest(value.context_digest) ||
+  if (!["bluefire.receiver-defense-context.v1", "bluefire.receiver-defense-context.v2"].includes(value?.schema_version) || !digest(value.context_digest) ||
     value.selection?.kind !== "saved_scenario" || !digest(value.selection.digest) || !Number.isInteger(value.selection.version) || value.selection.version < 1 ||
     value.scenario?.id !== value.selection.scenario_id || !Array.isArray(value.reasons) || !Array.isArray(value.policies) || !Array.isArray(value.limitations) ||
     typeof value.eligible !== "boolean" || typeof value.availability?.ready !== "boolean" || typeof value.availability?.supported !== "boolean" ||
     (request && (!sameJson(value.selection, request.selection) || !sameJson(value.run_intent, request.run_intent)))) fail();
   if (value.eligible && (value.run_intent.mode !== "execute" || !value.handoff || value.handoff.container !== "jsonl" || value.handoff.artifact_type !== "artifact.sandbox.bundle.v1")) fail();
+  if (value.schema_version === "bluefire.receiver-defense-context.v1") {
+    if (value.workflow !== undefined || value.control !== undefined || value.source_control !== undefined || value.source_baseline !== undefined || request?.workflow !== undefined || request?.source_control !== undefined) fail();
+  } else {
+    const control = value.control;
+    if (value.workflow !== "retained_redaction" || (request && request.workflow !== value.workflow) ||
+      (request && !sameJson(value.source_control, request.source_control)) || (!control && (value.eligible || control !== null))) fail();
+    if (control && (control.schema_version !== "bluefire.receiver-control.v1" || control.policy_id !== "receiver.redacted-only.v1" ||
+      !digest(control.policy_digest) || !digest(control.control_digest) || typeof control.redaction_step_id !== "string" || !control.redaction_step_id ||
+      !sameJson(control.scope?.selection, value.selection) || !sameJson(control.scope?.run_intent, value.run_intent) ||
+      (!digest(control.scope?.profile_digest) && (value.eligible || control.scope?.profile_digest !== null)) || !value.policies.some((policy) => policy.policy_id === control.policy_id && policy.digest === control.policy_digest))) fail();
+    if (value.source_control !== undefined) {
+      const baseline = value.source_baseline;
+      if (!sourceValid(value.source_control) || value.source_control.control_digest !== control?.control_digest || !baseline || typeof baseline.run_id !== "string" || !baseline.run_id ||
+        !artifactValid(baseline.artifact) || baseline.source_binding?.run_id !== baseline.run_id || !digest(baseline.source_binding.manifest_digest) ||
+        !digest(baseline.source_binding.evidence_digest) || !digest(baseline.source_binding.observed_records_digest)) fail();
+    } else if (value.source_baseline !== undefined) fail();
+  }
   return value;
 }
 
 export function checkedReceiverTest(value: ReceiverDefenseEnvelope, id: string): ReceiverDefenseEnvelope {
-  if (value?.schema_version !== "bluefire.receiver-defense.v1" || value.job?.job_id !== id || value.job.kind !== "receiver.defense" ||
-    !Array.isArray(value.phases) || value.phases.length !== 3 || !Array.isArray(value.limitations) ||
+  if (!["bluefire.receiver-defense.v1", "bluefire.receiver-defense.v2"].includes(value?.schema_version) || value.job?.job_id !== id || value.job.kind !== "receiver.defense" ||
+    !Array.isArray(value.phases) || !Array.isArray(value.limitations) ||
     !["active", "completed", "blocked", "stopping", "stopped"].includes(value.status) ||
     !["prepare_receiver", "review_replay", "approve_execute", "wait", "cleanup_required", "completed", "stopped"].includes(value.next_action?.kind)) fail();
   const submitted = record(value.job.request?.submitted_request);
+  const retainedWorkflow = value.schema_version === "bluefire.receiver-defense.v2";
+  const expectedPhases = retainedWorkflow ? (submitted.source_control ? retainedPhases.slice(1) : retainedPhases) : receiverPhases;
+  const requestKeys = ["context_digest", "run_intent", "selection", "submission_id", ...(retainedWorkflow ? ["workflow", ...(submitted.source_control ? ["source_control"] : [])] : [])].sort();
+  if (value.phases.length !== expectedPhases.length || (retainedWorkflow ? submitted.workflow !== "retained_redaction" || (submitted.source_control !== undefined && !sourceValid(submitted.source_control)) : value.control !== undefined)) fail();
   checkedSubmission(value.job, submitted.submission_id);
   const selection = record(submitted.selection);
   if (selection.kind !== "saved_scenario" || typeof selection.scenario_id !== "string" || !selection.scenario_id ||
@@ -131,21 +192,22 @@ export function checkedReceiverTest(value: ReceiverDefenseEnvelope, id: string):
     (admission.problem !== null && (admission.accepted || typeof admission.problem?.code !== "string" || !admission.problem.code || typeof admission.problem.message !== "string" || !admission.problem.message))) fail();
   if (admission.accepted && value.job.state !== "completed") fail();
   if (!digest(submitted.context_digest) || value.job.request?.context_digest !== submitted.context_digest ||
-    !sameJson(Object.keys(submitted).sort(), ["context_digest", "run_intent", "selection", "submission_id"]) ||
+    !sameJson(Object.keys(submitted).sort(), requestKeys) ||
     !sameJson(value.job.request?.context, value.context)) fail();
   const refused = !admission.accepted && admission.problem !== null;
   if (refused && (value.job.state !== "failed" || !["blocked", "stopped"].includes(value.status))) fail();
   if (value.context === null) {
     if (!refused) fail();
   } else {
-    checkedReceiverContext(value.context, { selection: submitted.selection, run_intent: submitted.run_intent } as ReceiverContextRequest);
+    checkedReceiverContext(value.context, { selection: submitted.selection, run_intent: submitted.run_intent, ...(retainedWorkflow ? { workflow: submitted.workflow, ...(submitted.source_control ? { source_control: submitted.source_control } : {}) } : {}) } as ReceiverContextRequest);
+    if (value.context.schema_version !== (retainedWorkflow ? "bluefire.receiver-defense-context.v2" : "bluefire.receiver-defense-context.v1")) fail();
     if (!refused && value.context.context_digest !== submitted.context_digest) fail();
   }
   if (!admission.accepted) {
     if (Object.keys(record(value.job.progress.phases)).length || (Array.isArray(value.job.progress.attempt_history) && value.job.progress.attempt_history.length) ||
       !["wait", "stopped"].includes(value.next_action.kind) || value.next_action.native_path !== null || value.status === "completed" ||
-      (value.next_action.phase !== null && !receiverPhases.includes(value.next_action.phase)) ||
-      value.phases.some((phase, index) => phase.phase !== receiverPhases[index] || phase.policy_id !== (index === 1 ? "receiver.redacted-only.v1" : "receiver.reviewed-records.v1") ||
+      (value.next_action.phase !== null && !expectedPhases.includes(value.next_action.phase)) ||
+      value.phases.some((phase, index) => phase.phase !== expectedPhases[index] || phase.policy_id !== phasePolicy(phase.phase) ||
         phase.prepare_allowed !== false || phase.review_ready !== false || phase.receiver_job !== null || phase.preparation !== null || phase.decision !== null ||
         phase.execution_job !== null || phase.result !== null || !Array.isArray(phase.attempts) || phase.attempts.length ||
         !sameJson(phase.cleanup, { receiver: "not_started", run: "not_started" }))) fail();
@@ -154,17 +216,17 @@ export function checkedReceiverTest(value: ReceiverDefenseEnvelope, id: string):
   if (!value.context) fail();
   const admitted = value as ReceiverDefenseEnvelope & { context: ReceiverContext };
   value.phases.forEach((phase, index) => {
-    if (phase.phase !== receiverPhases[index] || phase.policy_id !== (index === 1 ? "receiver.redacted-only.v1" : "receiver.reviewed-records.v1") ||
+    if (phase.phase !== expectedPhases[index] || phase.policy_id !== phasePolicy(phase.phase) ||
       typeof phase.prepare_allowed !== "boolean" || typeof phase.review_ready !== "boolean" || !Array.isArray(phase.attempts)) fail();
     for (const attempt of [...phase.attempts, phase]) {
       if (attempt.phase !== phase.phase || attempt.policy_id !== phase.policy_id || !attempt.cleanup) fail();
       const prep = attempt.preparation;
-      if (prep && (prep.schema_version !== "bluefire.receiver-defense-preparation.v1" || prep.parent_job_id !== id || prep.phase !== phase.phase ||
+      if (prep && (prep.schema_version !== (retainedWorkflow ? "bluefire.receiver-defense-preparation.v2" : "bluefire.receiver-defense-preparation.v1") || prep.parent_job_id !== id || prep.phase !== phase.phase ||
         prep.context_digest !== admitted.context.context_digest || !digest(prep.preparation_digest) || prep.receiver_job_id !== attempt.receiver_job?.job_id ||
         prep.approval_created !== false || prep.target_effects_started !== false || prep.receiver_started !== true ||
         prep.session?.schema_version !== "bluefire.owned-receiver-session.v1" || prep.session.host !== "127.0.0.1" || prep.session.maximum_decisions !== 1 ||
         prep.session.storage !== "memory_only" || !Number.isFinite(prep.session.expires_at_ms) || !digest(prep.session.policy_digest) ||
-        prep.execution_kind !== (index === 0 ? "scenario.run" : "scenario.replay"))) fail();
+        prep.execution_kind !== (phase.phase === "baseline" ? "scenario.run" : "scenario.replay"))) fail();
       if (attempt.decision && (!prep || attempt.decision.phase !== phase.phase || attempt.decision.preparation_digest !== prep.preparation_digest)) fail();
       const result = attempt.result;
       if (result && (!prep || !attempt.execution_job || result.phase !== phase.phase || result.policy_id !== phase.policy_id || result.preparation_job_id !== prep.receiver_job_id ||
@@ -176,7 +238,8 @@ export function checkedReceiverTest(value: ReceiverDefenseEnvelope, id: string):
       checkedAttempt(admitted, attempt, reservation);
     }
   });
-  if (value.next_action.phase !== null && !receiverPhases.includes(value.next_action.phase)) fail();
+  if (retainedWorkflow) checkedRetainedControl(admitted);
+  if (value.next_action.phase !== null && !expectedPhases.includes(value.next_action.phase)) fail();
   if (value.next_action.kind === "approve_execute") {
     const phase = value.phases.find((item) => item.phase === value.next_action.phase);
     if (!phase?.execution_job || phase.execution_job.state !== "awaiting_approval" || value.next_action.native_path !== `/runs?job=${phase.execution_job.job_id}`) fail();
@@ -184,10 +247,27 @@ export function checkedReceiverTest(value: ReceiverDefenseEnvelope, id: string):
   return value;
 }
 
+function checkedRetainedControl(value: ReceiverDefenseEnvelope & { context: ReceiverContext }) {
+  const control = value.control;
+  const policy = value.context.control;
+  if (!control || !policy) return fail();
+  if (Object.entries(policy).some(([key, item]) => !sameJson(record(control)[key], item)) ||
+    control.owner_job_id !== (value.context.source_control?.job_id ?? value.job.job_id) ||
+    !["proposed", "accepted", "verified", "retained", "rolled_back"].includes(control.status) ||
+    !["stopped", "active", "unknown"].includes(control.receiver_state) || typeof control.can_retest !== "boolean" || typeof control.can_rollback !== "boolean" ||
+    !["receiver.reviewed-records.v1", "receiver.redacted-only.v1"].includes(control.desired_policy_id) ||
+    control.desired_policy_id !== (["proposed", "rolled_back"].includes(control.status) ? "receiver.reviewed-records.v1" : "receiver.redacted-only.v1") ||
+    (control.rollback !== null && (!rollbackValid(control.rollback) || control.rollback.control_digest !== control.control_digest || control.status !== "rolled_back")) ||
+    (control.status === "rolled_back" && (!control.rollback || control.can_retest || control.can_rollback)) ||
+    (control.can_retest && (control.status !== "retained" || control.receiver_state !== "stopped"))) fail();
+  if (control.owner_job_id === value.job.job_id && !sameJson(value.job.progress.control_rollback ?? null, control.rollback)) fail();
+}
+
 export type ReceiverPending =
   | { kind: "create"; id: string; body: ReceiverContextRequest & { submission_id: string; context_digest: string } }
   | { kind: "prepare"; id: string; body: { submission_id: string; phase: ReceiverPhase; reviewed_by: string } }
-  | { kind: "review"; id: string; body: ReceiverDecision };
+  | { kind: "review"; id: string; body: ReceiverDecision }
+  | { kind: "control"; id: string; body: ReceiverControlDecision };
 const pendingKey = "bluefire.receiver-defense.pending.v1";
 export function readReceiverPending(): ReceiverPending | undefined {
   const raw = sessionStorage.getItem(pendingKey);
@@ -195,10 +275,11 @@ export function readReceiverPending(): ReceiverPending | undefined {
   try {
     if (raw.length > 64000) throw new Error();
     const value = JSON.parse(raw) as ReceiverPending;
-    if (!["create", "prepare", "review"].includes(value.kind) || !receiverJobValid(value.id) ||
+    if (!["create", "prepare", "review", "control"].includes(value.kind) || !receiverJobValid(value.id) ||
       typeof value.body?.submission_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value.body.submission_id)) throw new Error();
-    if (value.kind === "create" ? receiverJobId(value.body.submission_id) !== value.id || !digest(value.body.context_digest) || !value.body.selection || !value.body.run_intent :
-      !receiverPhases.includes(value.body.phase) || typeof value.body.reviewed_by !== "string" || !value.body.reviewed_by.trim()) throw new Error();
+    if (value.kind === "create" ? receiverJobId(value.body.submission_id) !== value.id || !digest(value.body.context_digest) || !value.body.selection || !value.body.run_intent ||
+      (value.body.workflow !== undefined && value.body.workflow !== "retained_redaction") || (value.body.source_control !== undefined && (value.body.workflow !== "retained_redaction" || !sourceValid(value.body.source_control))) :
+      value.kind === "control" ? !rollbackValid(value.body) : !allPhases.includes(value.body.phase) || typeof value.body.reviewed_by !== "string" || !value.body.reviewed_by.trim()) throw new Error();
     if (value.kind === "review" && (!digest(value.body.preparation_digest) || !["accept", "reject"].includes(value.body.decision))) throw new Error();
     return value;
   } catch { throw new Error("The saved control-test request could not be read. Use the retained test in Runs to check its status before starting another."); }
@@ -210,6 +291,10 @@ export function storeReceiverPending(value: ReceiverPending) {
 }
 export function receiverRequestConfirmed(value: ReceiverDefenseEnvelope, pending: ReceiverPending): boolean {
   if (value.job.job_id !== pending.id) return false;
+  if (pending.kind === "control") {
+    try { checkedReceiverTest(value, pending.id); } catch { return false; }
+    return value.control?.owner_job_id === pending.id && sameJson(value.control.rollback, pending.body);
+  }
   if (pending.kind === "create") {
     // A rejected first submission is still a durable receipt. Validate its
     // no-effects shape before allowing the exact saved request to be cleared.

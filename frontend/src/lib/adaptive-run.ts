@@ -3,7 +3,53 @@ import { displayTitle } from "./display-title";
 
 export type RuntimeRecord = NonNullable<RunRecord["ai_proposals"]>[number];
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-export const adaptiveRecords = (run: RunRecord) => (run.ai_proposals ?? []).filter(record => record.schema_version === "bluefire.ai-proposal-record.v4");
+const digest = (value: unknown): value is string => typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
+const integer = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value);
+const finiteNonnegative = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+export const adaptiveRecords = (run: RunRecord) => (run.ai_proposals ?? []).filter(record =>
+  record.schema_version === "bluefire.ai-proposal-record.v4" || record.schema_version === "bluefire.ai-proposal-record.v5");
+
+function v5BudgetProjection(record: RuntimeRecord): { steps: number; seconds: number; retries: number; stepRetries: number } | undefined {
+  const policy = object(record.proposal_policy), planner = object(record.planner_state), observations = object(planner.observations);
+  const budgets = object(observations.remaining_budgets);
+  const maxRetries = policy.maximum_adaptive_retries, usedRetries = policy.adaptive_retries_used;
+  const maxStepRetries = policy.maximum_step_retries, usedStepRetries = policy.step_retries_used;
+  const steps = policy.remaining_steps, seconds = budgets.seconds;
+  const attempted = policy.attempted_methods;
+  if (policy.schema_version !== "bluefire.ai-proposal-policy.v3" || !digest(record.proposal_policy_digest)
+    || !digest(record.planner_state_digest) || !digest(policy.adaptive_policy_digest)
+    || planner.schema_version !== "bluefire.planner-state.v3" || observations.schema_version !== "bluefire.runtime-observations.v2"
+    || !integer(maxRetries) || maxRetries < 1 || maxRetries > 8
+    || !integer(usedRetries) || usedRetries < 0 || usedRetries > maxRetries
+    || !integer(maxStepRetries) || maxStepRetries < 1 || maxStepRetries > 3
+    || !integer(usedStepRetries) || usedStepRetries < 0
+    || usedStepRetries > Math.min(maxStepRetries, usedRetries)
+    || !integer(steps) || steps < 0
+    || !finiteNonnegative(seconds)
+    || !Array.isArray(attempted) || attempted.length < 1 || attempted.length > 256
+    || !integer(budgets.steps) || budgets.steps !== steps
+    || !integer(budgets.retries) || budgets.retries !== maxRetries - usedRetries
+    || !integer(budgets.step_retries) || budgets.step_retries !== maxStepRetries - usedStepRetries) return undefined;
+  const seen = new Set<string>();
+  const attemptsByStep = new Map<string, number>();
+  for (const row of attempted) {
+    const identity = object(row);
+    if (Object.keys(identity).length !== 3 || Object.keys(identity).some(key => !["step_id", "behavior_id", "action_id"].includes(key))
+      || ![identity.step_id, identity.behavior_id, identity.action_id].every(value => typeof value === "string" && value.length > 0 && value.length <= 200)) return undefined;
+    const key = `${identity.step_id as string}\u0000${identity.behavior_id as string}\u0000${identity.action_id as string}`;
+    if (seen.has(key)) return undefined;
+    seen.add(key);
+    const stepId = identity.step_id as string;
+    attemptsByStep.set(stepId, (attemptsByStep.get(stepId) ?? 0) + 1);
+  }
+  const currentStepId = record.current_step_id;
+  const currentStepAttempts = typeof currentStepId === "string" ? attemptsByStep.get(currentStepId) : undefined;
+  if (currentStepAttempts === undefined || attemptsByStep.size > 64 || [...attemptsByStep.values()].some(count => count > 4)
+    || usedStepRetries > currentStepAttempts || usedStepRetries < currentStepAttempts - 1
+    || usedRetries > attempted.length
+    || usedRetries < [...attemptsByStep.values()].reduce((sum, count) => sum + count - 1, 0)) return undefined;
+  return { steps, seconds, retries: budgets.retries as number, stepRetries: budgets.step_retries as number };
+}
 export const recordedMethodName = (catalog: CatalogResponse, behavior?: string | null, action?: string | null) =>
   displayTitle(catalog.actions.find(item => item.id === action)?.title ?? catalog.behaviors.find(item => item.id === behavior)?.title ?? "Method unavailable in this catalog");
 
@@ -48,11 +94,18 @@ export function decisionProvenance(record: RuntimeRecord): { label: string; prov
 
 export function decisionObservations(record: RuntimeRecord) {
   const projection = object(object(record.planner_state).observations);
+  // Recorded observations, not policy attempted_methods (which includes reserved choices).
   const attempts = Array.isArray(projection.attempts) ? projection.attempts.map(object) : [];
   const latest = attempts.filter(attempt => attempt.step_id === record.current_step_id).at(-1);
-  return { classification: object(latest?.failure).classification, budgets: object(projection.remaining_budgets),
+  const failure = object(latest?.failure);
+  const budgets = record.schema_version === "bluefire.ai-proposal-record.v5" ? v5BudgetProjection(record) : object(projection.remaining_budgets);
+  const unknowns = Array.isArray(projection.unknowns) ? projection.unknowns.filter((item): item is string => typeof item === "string") : [];
+  if (record.schema_version === "bluefire.ai-proposal-record.v5" && !budgets) unknowns.push("The retained v5 retry budget projection is inconsistent; remaining adaptive allowance is unknown.");
+  return { attempts, classification: failure.classification,
+    telemetryGap: typeof failure.telemetry_gap === "boolean" ? failure.telemetry_gap : undefined,
+    budgets: budgets ?? {},
     evidence: Array.isArray(latest?.evidence) ? latest.evidence.map(object).filter(item => typeof item.evidence_id === "string") : [],
-    unknowns: Array.isArray(projection.unknowns) ? projection.unknowns.filter((item): item is string => typeof item === "string") : [] };
+    unknowns };
 }
 
 export function recordedPathNodes(run: RunRecord) {

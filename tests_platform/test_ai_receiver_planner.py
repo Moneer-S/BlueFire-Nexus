@@ -141,6 +141,7 @@ def test_both_dialects_enroll_exact_receiver_schema_and_keep_existing_purposes(p
     assert tuple(name for name, _ in enrollment.schemas) == (
         "bluefire_ai_graph_draft",
         "bluefire_ai_proposal",
+        "bluefire_composition_proposal",
         "bluefire_connection_check",
         "bluefire_detection_source_creation",
         "bluefire_detection_source_revision",

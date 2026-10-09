@@ -10,6 +10,12 @@ use crate::canonical::canonical_hash;
 pub const SCHEMA: &str = "bluefire.native-tool-installation.v1";
 pub(crate) const MAX_SIZE_BYTES: u64 = 128 * 1024 * 1024;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UnrecognizedToolBuild {
+    pub(crate) code: &'static str,
+    pub(crate) message: &'static str,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct NativeToolInstallation {

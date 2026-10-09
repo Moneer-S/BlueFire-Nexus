@@ -133,6 +133,72 @@ The orchestrator currently creates one built-in internal staging candidate for `
 
 This internal matcher validates its own structured predicate only. It is not a replacement for Sigma, YARA, SPL, EDR, or SIEM syntax.
 
+### Edit internal rule conditions
+
+To author an internal rule before its first save, open **New rule**, choose the
+registered behavior and **Internal structured matcher**, then edit **Match all
+these conditions**. The optional **Collection contents** starter selects independent
+collection observations; add a format, path or record count as needed. Permission
+and staged-file starters are also available. Choosing a starter replaces the
+pending conditions. **Apply conditions** keeps the selection in this form;
+**Save rule draft** submits that exact selection and its predicted fields as a
+hypothesis. Neither action parses, evaluates, runs a scenario or requests AI.
+
+Apply or discard pending edits before saving an internal rule. Both applied and
+pending conditions survive navigation and reload in the same browser tab. Switching
+languages keeps the internal definition for when you return to Internal; other
+languages continue to start from their staged-file definition. Pending internal
+edits must still be applied or discarded before saving. **Discard New rule
+inputs** resets the entire manual draft after confirmation. If this exact internal
+definition already exists, review the matching rule and explicitly choose
+**Start another draft** to create a separate draft.
+
+Select a saved internal rule and open **Revisions → Revise this rule**. With
+**Tune rule behavior** selected, **Match all these conditions** provides field,
+operator and value controls for supported collection and permission conditions.
+Counts remain non-negative whole numbers, Yes/No values remain booleans, and
+permission modes preserve their leading zeros. Suggested values have readable
+labels; custom text remains available. Permission bits do not prove effective
+access.
+
+Use **Remove** on the **Collection format** condition to stop restricting a
+rule to one container format while retaining its other conditions. Choose
+**Apply conditions** to update the draft selection, record the reason, then
+choose **Save revised rule** to create a separate revision. Applying conditions
+does not save or evaluate a rule; the parent and its results remain unchanged.
+
+Unapplied condition edits stay with the exact rule draft across navigation and
+reload in the same browser tab. Apply or **Discard condition edits** before
+saving a tune or editing advanced JSON. The workspace's **Discard these inputs**
+also clears these edits. Storage failures and edits bound to a different
+selection are reported instead of silently applying them.
+
+Unsupported fields, operators or complex selections remain unchanged and
+inspectable under **Advanced structured inputs → Tuned selection JSON**. The visual
+editor reports **Visual editing unavailable** rather than dropping predicates.
+Invalid supported condition values must be repaired before applying them.
+
+## Authoring benign samples
+
+For an internal rule, open **Fixtures** to enter synthetic benign samples using
+typed fields. Add a sample, choose the fields that were available, and enter their
+values. Counts stay numbers, Yes/No choices stay booleans, and permission modes
+keep their leading zeros. Removing a field omits it from the sample; it does not
+substitute zero, No, or an empty string. Samples are authored examples, not
+collector-verified observations.
+
+Apply the sample edits, add notes explaining the representative activity, then
+choose **Evaluate benign fixtures**. Applying or restoring edits performs no
+evaluation. A benign label never suppresses a measured match. Missing fields can
+cause a nonmatch, so review field availability before drawing conclusions about
+false positives or detection coverage.
+
+Pending sample edits stay with the exact candidate revision in the same browser
+tab. Apply or discard them before evaluating or editing advanced JSON. The visual
+editor supports a limited set of fields and values; other JSON samples remain
+unchanged under the advanced controls. Use those controls for complex records.
+Browser storage failures are reported, and local inputs remain exportable.
+
 ## Predicted versus observed fields
 
 Field drift reports:
@@ -154,6 +220,12 @@ BlueFire's built-in research registry references MITRE ATT&CK, Sigma specificati
 ## UI behavior
 
 The selected rule is the main workspace. Open **New rule** to create a draft; **Detection backends** and **Validation stages** contain setup and lifecycle details. An empty SQLite draft offers an editable staged-file query for the `logs` table. Inserting it performs no validation or evaluation. Choose evidence fields appropriate to the source run, validate the rule, and measure actual matches. Changing the source run keeps a selected registry rule and its current source edits in place.
+
+In **Compare**, a missing detector result offers **Evaluate original on this run** or **Evaluate revised on this run**. The link opens **Run evaluations** for that saved revision and run without submitting an evaluation or replacing your retained workspace. If retained evaluation inputs select another run, choose **Use comparison run** to change only the source choice, or **Leave comparison setup** to return to the retained workspace. Your question, activity label and data-use selection stay intact. Review them before choosing **Evaluate full observed run**. Missing or ambiguous saved revisions and unavailable source runs cannot silently become another comparison target.
+
+For several selected runs, **Evaluate missing results** lets you choose the original or revised rule, then previews only runs without a retained evaluation for that rule, in comparison order. Each side uses its own retained history; backend errors and insufficient-evidence reports remain visible and count as existing results for that side. Changing the selected rule invalidates the preview, even if you switch back; review again to prepare fresh inputs. Review each run's question, activity label and data-use choice; unknown activity and unspecified data use are the defaults, and independence is never inferred. Nothing is submitted until you explicitly start the queue. Requests run one at a time, and each completed result or refusal remains visible. A request failure or **Stop after current evaluation** leaves later cases unsubmitted; it does not cancel a request already sent. After the sequence settles, **Review remaining evaluations** performs a fresh registry, history and source read; a new **Start evaluations** action is still required. A request with an unconfirmed outcome remains flagged for its exact rule and source identity because a fresh history read cannot prove it was not retained. Reloading does not resume a queue.
+
+When the evaluation came from a comparison, **Return to comparison** restores its ordered runs and both selected detector revisions; choose **Compare selected** to load the comparison results.
 
 The manual **New rule** form keeps its title, behavior and target language across navigation and reload in the same browser tab. These inputs do not belong to a selected run or saved rule, and restoring them does not save or evaluate a detection. They remain available after a save until you explicitly discard them. If a retained behavior or language is unavailable, choose an available value before saving. Storage failures are shown beside the form; copy your inputs before closing or reloading when storage is unavailable.
 

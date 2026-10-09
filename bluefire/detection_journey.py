@@ -16,6 +16,7 @@ from typing import Any, Mapping, Sequence, cast
 
 from .api import (
     BROWSER_BOOTSTRAP_HEADER,
+    BROWSER_SESSION_HEADER,
     browser_console_url,
     create_server,
     generate_browser_bootstrap_capability,
@@ -440,7 +441,7 @@ def _api_evidence(
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    cookie = ""
+    session = ""
     try:
         port = int(server.server_address[1])
         status, headers, payload = _http_request(
@@ -449,10 +450,12 @@ def _api_evidence(
             "/api/v1/session",
             headers={BROWSER_BOOTSTRAP_HEADER: capability},
         )
-        _require(status == 204 and payload == b"", "the API session exchange failed")
-        cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
-        _require(cookie.startswith("bluefire_session="), "the API session cookie is absent")
-        auth = {"Cookie": cookie}
+        _require(status == 200, "the API session exchange failed")
+        session = str(_json_response(payload).get("session", ""))
+        _require(
+            re.fullmatch(r"[A-Za-z0-9_-]{64}", session) is not None, "the API session is absent"
+        )
+        auth = {BROWSER_SESSION_HEADER: session}
         sigma_id = str(sigma["candidate_id"])
         status, _headers, payload = _http_request(
             port,
@@ -515,7 +518,7 @@ def _api_evidence(
         return api, ui
     finally:
         capability = ""
-        cookie = ""
+        session = ""
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
