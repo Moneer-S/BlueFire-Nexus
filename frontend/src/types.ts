@@ -344,7 +344,7 @@ export interface PublicAIProviderConfig {
   max_output_tokens: number;
   redaction: { enabled: boolean; redact_keys: string[]; max_string_chars: number; include_evidence_content: boolean };
 }
-export type AIModelPurpose = "bluefire_connection_check" | "bluefire_ai_proposal" | "bluefire_experiment_assistance" | "bluefire_detection_source_creation" | "bluefire_detection_source_revision" | "bluefire_run_evidence_inspection" | "bluefire_method_comparison" | "bluefire_ai_graph_draft" | "bluefire_graph_step_edit" | "bluefire_receiver_defense_inspection";
+export type AIModelPurpose = "bluefire_connection_check" | "bluefire_ai_proposal" | "bluefire_experiment_assistance" | "bluefire_detection_source_creation" | "bluefire_detection_source_revision" | "bluefire_run_evidence_inspection" | "bluefire_method_comparison" | "bluefire_ai_graph_draft" | "bluefire_graph_step_edit" | "bluefire_receiver_defense_inspection" | "bluefire_composition_proposal";
 export interface AIUsageLimits { max_requests: number; max_request_bytes: number; max_reserved_output_tokens: number }
 export interface AILiveAuthorization {
   schema_version: "bluefire.ai-live-authorization.v1";
@@ -451,6 +451,10 @@ export interface RunnerLifecycleStatus {
   enrollment: "absent" | "active" | "revoked" | "unavailable" | string;
   process: "absent" | "authenticated" | "stale" | "unavailable" | string;
   upgrade_recovery_required?: true;
+  profile_enrollment?: {
+    state: "not_enrolled";
+    enrolled_profile_ids: string[];
+  };
   runner: {
     source?: string;
     product_version?: string;
@@ -618,7 +622,7 @@ export interface DetectionRunEvaluation {
   question: string;
   case_role: DetectionCaseRole;
   case_role_basis: "operator_declared";
-  candidate: { candidate_id: string; revision_root_id: string; revision: number; definition_digest: string; query_sha256: string; source_sha256: string; target_language: string; parser_backend: Record<string, string> };
+  candidate: { candidate_id: string; revision_root_id: string; revision: number; definition_digest: string; query_sha256: string | null; source_sha256: string | null; target_language: string; parser_backend: Record<string, string> };
   source: { run_id: string; manifest_digest: string; evidence_digest: string; observed_count: number; evidence_count: number; excluded_provenance_counts: Record<string, number> };
   result: { state: "matched" | "not_matched" | "insufficient_evidence" | "backend_error"; match_count: number | null; evaluated_evidence_ids: string[]; matched_evidence_ids: string[];
     matched_evidence_hashes?: Record<string, string>; gap_count: number; gap_evidence_ids: string[]; mapped_fields: string[]; available_fields: string[]; unsupported_fields: string[]; missing_fields: string[]; diagnostic_codes: string[] };

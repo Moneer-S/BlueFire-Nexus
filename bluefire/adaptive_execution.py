@@ -19,7 +19,10 @@ from .planner import DeterministicPlanner, ExecutionPlan, PlanStep
 from .registry import BehaviorRegistry
 from .util import content_hash, json_clone
 
-_SCHEMA = "bluefire.adaptive-authorization.v1"
+_SCHEMAS = {
+    "bluefire.adaptive-execution.v1": "bluefire.adaptive-authorization.v1",
+    "bluefire.adaptive-execution.v2": "bluefire.adaptive-authorization.v2",
+}
 _FIELDS = frozenset(
     {
         "schema_version",
@@ -223,7 +226,7 @@ def compile_adaptive_authorization(
             )
         reviewed_steps.append({"step_id": source.id, "methods": methods})
     body = {
-        "schema_version": _SCHEMA,
+        "schema_version": _SCHEMAS[policy.schema_version],
         "scenario_digest": content_hash(scenario.to_dict()),
         "plan_digest": content_hash(document),
         "objective": compiled.objective,
@@ -261,7 +264,7 @@ def validate_adaptive_authorization(
     )
     body = {key: value for key, value in authorization.items() if key != "authorization_digest"}
     _require(
-        authorization.get("schema_version") == _SCHEMA
+        authorization.get("schema_version") in _SCHEMAS.values()
         and authorization.get("authorization_digest") == expected_digest
         and content_hash(body) == expected_digest,
         "adaptive authorization digest changed",
@@ -289,6 +292,10 @@ def validate_adaptive_authorization(
         "adaptive authorization limits or cleanup changed",
     )
     policy = AdaptiveExecution.from_mapping(authorization.get("policy"))
+    _require(
+        authorization.get("schema_version") == _SCHEMAS[policy.schema_version],
+        "adaptive authorization schema does not match its policy",
+    )
     steps = authorization.get("steps")
     _require(
         isinstance(steps, list) and len(steps) == len(policy.steps),
@@ -342,6 +349,7 @@ def validate_selected_method(
     retries_used: int,
     approval_expires_at: str,
     is_retry: bool = False,
+    step_retries_used: int | None = None,
     catalog_authority: Mapping[str, Any] | None = None,
     now: datetime | None = None,
 ) -> Mapping[str, Any]:
@@ -350,6 +358,7 @@ def validate_selected_method(
     Set ``is_retry`` when admitting a new retry, using the count before its
     reservation. Rechecks of an already reserved operation use False. Callers
     reserve that retry before effects and retain it in the durable attempt record.
+    V2 also requires the selected step's durable retry count at the same boundary.
     """
     validated = validate_adaptive_authorization(
         authorization,
@@ -378,6 +387,12 @@ def validate_selected_method(
         and retries_used + int(is_retry) <= validated["policy"]["max_retries"],
         "adaptive retry budget exhausted or invalid",
     )
+    version_two = validated["policy"]["schema_version"] == "bluefire.adaptive-execution.v2"
+    if version_two:
+        _require(
+            type(step_retries_used) is int and 0 <= step_retries_used <= retries_used,
+            "adaptive per-step retry count is missing or invalid",
+        )
     try:
         expires = datetime.fromisoformat(approval_expires_at.replace("Z", "+00:00"))
         current = now or datetime.now(timezone.utc)
@@ -394,6 +409,17 @@ def validate_selected_method(
                 candidate == choice["plan_step"]
                 and content_hash(candidate) == choice["plan_step_digest"]
             ):
+                if version_two:
+                    authored = next(
+                        group
+                        for group in validated["policy"]["steps"]
+                        if group["step_id"] == row["step_id"]
+                    )
+                    assert isinstance(step_retries_used, int)
+                    _require(
+                        step_retries_used + int(is_retry) <= authored["max_retries"],
+                        "adaptive per-step retry budget exhausted",
+                    )
                 return dict(json_clone(choice))
     raise AdaptiveAuthorizationError(
         "selected method, parameters, or input bindings were not reviewed"

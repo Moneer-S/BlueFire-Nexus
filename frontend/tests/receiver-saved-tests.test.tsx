@@ -32,3 +32,10 @@ it("keeps a history error visible instead of presenting unavailable tests as an 
   expect(await screen.findByText("History unavailable")).toBeVisible();
   expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled();
 });
+
+it("opens retained-policy tests while their legitimate-use phase is in progress", async () => {
+  vi.spyOn(api, "receiverTests").mockResolvedValue({ schema_version: "bluefire.receiver-defense-list.v1", jobs: [{ job_id: receiverFixtureId, title: "Retained redaction", status: "active", phase: "legitimate", updated_at: null, native_path: "/ignored" }], truncated: false, next_cursor: null });
+  mount();
+  expect(await screen.findByRole("link", { name: /Retained redaction/ })).toHaveAttribute("href", `/compare?receiver_job=${receiverFixtureId}`);
+  expect(screen.getByText(/Legitimate redacted use/)).toBeVisible();
+});

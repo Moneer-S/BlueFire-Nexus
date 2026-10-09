@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 import pytest
 
+from bluefire.ai import AIProposalRequest, AIProviderResult, DeterministicOfflineProvider
 from bluefire.approvals import execution_approval_binding
 from bluefire.collectors import (
     CollectionRequest,
@@ -974,6 +975,70 @@ def test_simulate_never_calls_runner_inventory_or_execute(tmp_path: Path) -> Non
     }
     assert {record["provenance"] for record in result["evidence"]["records"]} == {"synthetic"}
     assert all(step["action_id"] is None for step in result["steps"])
+
+
+@pytest.mark.parametrize("autonomy", list(AutonomyLevel), ids=lambda value: value.value)
+def test_simulate_finishes_without_native_platform_or_processes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    autonomy: AutonomyLevel,
+) -> None:
+    runner = RunnerMustNotBeCalled()
+    orchestrator = _orchestrator(tmp_path, runner)
+    provider = DeterministicOfflineProvider(
+        load_config(ROOT / "config" / "bluefire.example.yaml").ai.fallback
+    )
+    requests: list[AIProposalRequest] = []
+    original_propose = provider.propose
+
+    def propose(request: AIProposalRequest) -> AIProviderResult:
+        requests.append(request)
+        return original_propose(request)
+
+    def forbidden_platform(*_args: Any, **_kwargs: Any) -> None:
+        pytest.fail("Simulate must not inspect the native runner platform")
+
+    def forbidden_process(*_args: Any, **_kwargs: Any) -> None:
+        pytest.fail("Simulate must not start a native process")
+
+    monkeypatch.setattr(provider, "propose", propose)
+    orchestrator.proposal_provider = provider
+    # Fail at the platform boundary on every OS, including when Windows 3.10
+    # would otherwise query its version through a subprocess. Keep the actual
+    # simulation and offline proposal implementation under test.
+    monkeypatch.setattr("bluefire.orchestrator.current_platform", forbidden_platform)
+    monkeypatch.setattr("bluefire.runner_contracts.current_platform", forbidden_platform)
+    monkeypatch.setattr("subprocess.Popen", forbidden_process)
+
+    result = orchestrator.run(
+        load_scenario(SCENARIO_PATH),
+        mode=ExecutionMode.SIMULATE,
+        autonomy=autonomy,
+        ai_provider=provider.config.runtime_metadata(),
+    )
+
+    assert result["status"] == "completed"
+    assert result["objective_reached"] is True
+    assert result["mode"] == "simulate"
+    assert runner.calls == 0
+    assert all(step["action_id"] is None for step in result["steps"])
+    assert {record["provenance"] for record in result["evidence"]["records"]} == {"synthetic"}
+    assert orchestrator.store.validate_bundle(result["run_id"])["valid"]
+    assert orchestrator.store.get_run(result["run_id"])["status"] == "completed"
+    if autonomy is AutonomyLevel.OFF:
+        assert requests == []
+        assert result["ai_proposals"] == []
+    else:
+        assert requests
+        assert all(request.allowed_action_ids == () for request in requests)
+        assert len(result["ai_proposals"]) == len(requests)
+        assert all(not record["provider"]["used_fallback"] for record in result["ai_proposals"])
+        expected = (
+            "recorded_for_review"
+            if autonomy is AutonomyLevel.ASSIST
+            else "accepted_registered_default"
+        )
+        assert any(record["application_status"] == expected for record in result["ai_proposals"])
 
 
 def test_simulate_persists_canonical_autonomy_and_provider_metadata(tmp_path: Path) -> None:

@@ -22,6 +22,33 @@ _RUNTIME_VERSION_RANGES = {
 }
 
 
+def _python_version(value: Any) -> tuple[int, int]:
+    if (
+        not isinstance(value, list)
+        or len(value) != 2
+        or any(type(part) is not int for part in value)
+        or value[0] != 3
+        or value[1] < 10
+    ):
+        raise ValueError("dependency proof Python version is invalid")
+    return value[0], value[1]
+
+
+def required_distributions(python_version: list[int]) -> frozenset[str]:
+    version = _python_version(python_version)
+    return _REQUIRED_DISTRIBUTIONS | ({"tomli"} if version < (3, 11) else set())
+
+
+def _dependency_revision(report: Mapping[str, Any], family: str) -> int:
+    if not isinstance(report, Mapping):
+        raise ValueError("dependency proof must be an object")
+    schema = report.get("schema_version")
+    for revision in (1, 2):
+        if schema == f"bluefire.gate01-{family}.v{revision}":
+            return revision
+    raise ValueError("dependency proof schema is invalid")
+
+
 def bounded_failure_message(error: BaseException) -> str:
     message = " ".join(str(error).split())
     if (
@@ -84,6 +111,12 @@ def validate_inspection(report: Mapping[str, Any]) -> None:
 
 
 def validate_wheel_dependency_metadata(report: Mapping[str, Any]) -> None:
+    revision = _dependency_revision(report, "wheel-dependency-metadata")
+    expected = list(_EXPECTED_RUNTIME_REQUIREMENTS)
+    if revision == 2:
+        expected.append(
+            {"name": "tomli", "specifier": "==2.4.1", "marker": "python_version < '3.11'"}
+        )
     root = _mapping(
         report,
         {
@@ -99,20 +132,20 @@ def validate_wheel_dependency_metadata(report: Mapping[str, Any]) -> None:
         "wheel dependency metadata",
     )
     if (
-        root["schema_version"] != "bluefire.gate01-wheel-dependency-metadata.v1"
-        or root["verified"] is not True
+        root["verified"] is not True
         or root["project_name"] != "bluefire-nexus"
         or not isinstance(root["project_version"], str)
         or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", root["project_version"])
         is None
         or root["requires_python"] != ">=3.10"
-        or root["declared_runtime_dependencies"] != _EXPECTED_RUNTIME_REQUIREMENTS
-        or root["wheel_requires_dist"] != _EXPECTED_RUNTIME_REQUIREMENTS
+        or root["declared_runtime_dependencies"] != expected
+        or root["wheel_requires_dist"] != expected
     ):
         raise ValueError("built wheel dependency metadata proof is invalid")
     _digest(root["wheel_sha256"], "built wheel")
     for index, raw in enumerate(root["wheel_requires_dist"]):
-        _mapping(raw, {"name", "specifier"}, f"wheel requirement {index}")
+        fields = {"name", "specifier"} | ({"marker"} if raw["name"] == "tomli" else set())
+        _mapping(raw, fields, f"wheel requirement {index}")
 
 
 def validate_wheel_metadata_binding(
@@ -125,6 +158,7 @@ def validate_wheel_metadata_binding(
 
 
 def validate_dependency_provision(report: Mapping[str, Any]) -> None:
+    revision = _dependency_revision(report, "dependency-provision")
     root = _mapping(
         report,
         {
@@ -135,18 +169,23 @@ def validate_dependency_provision(report: Mapping[str, Any]) -> None:
             "wheel_sha256",
             "wheel_requirements_satisfied",
             "distributions",
-        },
+        }
+        | ({"python_version"} if revision == 2 else set()),
         "dependency provision",
     )
     distributions = root["distributions"]
     if (
-        root["schema_version"] != "bluefire.gate01-dependency-provision.v1"
-        or root["verified"] is not True
+        root["verified"] is not True
         or root["method"] != "copied-verified-installed-distributions"
         or root["isolated_environment"] is not True
         or root["wheel_requirements_satisfied"] is not True
         or not isinstance(distributions, Mapping)
-        or set(distributions) != _REQUIRED_DISTRIBUTIONS
+        or set(distributions)
+        != (
+            required_distributions(root["python_version"])
+            if revision == 2
+            else _REQUIRED_DISTRIBUTIONS
+        )
     ):
         raise ValueError("fresh dependency provision report is invalid")
     _digest(root["wheel_sha256"], "provisioned dependency wheel")
@@ -178,6 +217,10 @@ def validate_dependency_provision_binding(
 ) -> None:
     validate_wheel_dependency_metadata(metadata)
     validate_dependency_provision(provision)
+    if _dependency_revision(metadata, "wheel-dependency-metadata") != _dependency_revision(
+        provision, "dependency-provision"
+    ):
+        raise ValueError("dependency proof revisions do not match")
     if provision["wheel_sha256"] != metadata["wheel_sha256"]:
         raise ValueError("provisioned dependencies are not bound to the built wheel")
     distributions = provision["distributions"]
@@ -185,6 +228,8 @@ def validate_dependency_provision_binding(
         version = _release_version(distributions[name]["version"])
         if not _version_at_least(version, minimum) or _version_at_least(version, maximum):
             raise ValueError(f"{name} does not satisfy the built wheel runtime requirement")
+    if "tomli" in distributions and distributions["tomli"]["version"] != "2.4.1":
+        raise ValueError("tomli does not satisfy the built wheel runtime requirement")
 
 
 def validate_dependency_runtime_binding(
@@ -192,18 +237,22 @@ def validate_dependency_runtime_binding(
     provision: Mapping[str, Any],
     runtime: Mapping[str, Any],
 ) -> None:
-    validate_wheel_dependency_metadata(metadata)
-    validate_dependency_provision(provision)
+    validate_dependency_provision_binding(metadata, provision)
     validate_package_runtime(runtime)
+    if _dependency_revision(provision, "dependency-provision") != _dependency_revision(
+        runtime, "installed-package"
+    ) or provision.get("python_version") != runtime.get("python_version"):
+        raise ValueError("dependency proof Python versions or revisions do not match")
     if runtime["package_version"] != metadata["project_version"]:
         raise ValueError("installed BlueFire version does not match the built wheel")
     installed = runtime["dependencies"]
-    for name in _RUNTIME_VERSION_RANGES:
+    for name in installed:
         if installed[name] != provision["distributions"][name]["version"]:
             raise ValueError(f"{name} runtime version does not match its provisioned files")
 
 
 def validate_package_runtime(report: Mapping[str, Any]) -> None:
+    revision = _dependency_revision(report, "installed-package")
     root = _mapping(
         report,
         {
@@ -213,7 +262,8 @@ def validate_package_runtime(report: Mapping[str, Any]) -> None:
             "fresh_environment",
             "dependencies",
             "source_overrides_absent",
-        },
+        }
+        | ({"python_version"} if revision == 2 else set()),
         "installed package runtime",
     )
     environment = _mapping(
@@ -231,8 +281,7 @@ def validate_package_runtime(report: Mapping[str, Any]) -> None:
     )
     dependencies = root["dependencies"]
     if (
-        root["schema_version"] != "bluefire.gate01-installed-package.v1"
-        or root["verified"] is not True
+        root["verified"] is not True
         or not isinstance(root["package_version"], str)
         or not root["package_version"]
         or root["source_overrides_absent"] is not True
@@ -247,7 +296,12 @@ def validate_package_runtime(report: Mapping[str, Any]) -> None:
             "console_entrypoint": True,
         }
         or not isinstance(dependencies, Mapping)
-        or set(dependencies) != {"PyYAML", "cryptography", "PyNaCl"}
+        or set(dependencies)
+        != (
+            required_distributions(root["python_version"]) - {"cffi", "pycparser"}
+            if revision == 2
+            else {"PyYAML", "cryptography", "PyNaCl"}
+        )
         or any(not isinstance(version, str) or not version for version in dependencies.values())
     ):
         raise ValueError("installed package runtime proof is invalid")
@@ -265,9 +319,9 @@ def validate_ui(report: Mapping[str, Any]) -> None:
             "command",
             "loopback_only",
             "ephemeral_port",
-            "capability_fragment_only",
+            "capability_not_in_http_target",
             "capability_single_use",
-            "strict_session_cookie",
+            "session_header_required",
         },
         "UI launch",
     )
@@ -289,11 +343,14 @@ def validate_ui(report: Mapping[str, Any]) -> None:
             "runs_navigation_present",
             "runs_route_rendered",
             "guided_execute_rendered",
+            "explicit_connection_form",
+            "same_tab_reload_authenticated",
+            "new_tab_requires_connection",
         },
         "UI runtime probe",
     )
     if (
-        root["schema_version"] != "bluefire.gate01-ui-health.v1"
+        root["schema_version"] != "bluefire.gate01-ui-health.v2"
         or root["verified"] is not True
         or launch["command"]
         != [
@@ -318,6 +375,10 @@ def validate_ui(report: Mapping[str, Any]) -> None:
         or type(api["scenario_count"]) is not int
         or api["scenario_count"] <= 0
         or api["seeded_scenario_present"] is not True
+        or any(
+            runtime_probe[key] is not True
+            for key in set(runtime_probe) - {"engine", "browser_sandbox", "network_scope"}
+        )
         or runtime_probe
         != {
             "engine": "edge-headless",
@@ -329,6 +390,9 @@ def validate_ui(report: Mapping[str, Any]) -> None:
             "runs_navigation_present": True,
             "runs_route_rendered": True,
             "guided_execute_rendered": True,
+            "explicit_connection_form": True,
+            "same_tab_reload_authenticated": True,
+            "new_tab_requires_connection": True,
         }
     ):
         raise ValueError("production UI health proof is invalid")

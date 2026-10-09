@@ -134,11 +134,16 @@ it("keeps unfinalized downloads unavailable and demo bundles unavailable", () =>
 });
 
 it("uses same-origin binary fetch and preserves structured API failures", async () => {
+  const syntheticSession = "s".repeat(64);
+  sessionStorage.setItem("bluefire.browser-session.v1", syntheticSession);
   const blob = new Blob(["zip"], { type: "application/zip" });
   const fetch = vi.fn().mockResolvedValue({ ok: true, headers: new Headers({ "Content-Type": "application/zip" }), blob: async () => blob });
   vi.stubGlobal("fetch", fetch);
   expect(await api.runBundle(run.run_id, new AbortController().signal)).toBe(blob);
-  expect(fetch).toHaveBeenCalledWith(`/api/v1/runs/${run.run_id}/bundle`, expect.objectContaining({ credentials: "same-origin", cache: "no-store", headers: { Accept: "application/zip" } }));
+  expect(fetch).toHaveBeenCalledWith(`/api/v1/runs/${run.run_id}/bundle`, expect.objectContaining({ credentials: "omit", cache: "no-store", redirect: "error" }));
+  const headers = new Headers((fetch.mock.calls[0]?.[1] as RequestInit | undefined)?.headers);
+  expect(headers.get("Accept")).toBe("application/zip");
+  expect(headers.get("X-BlueFire-Session")).toBe(syntheticSession);
   fetch.mockResolvedValue({ ok: false, status: 409, json: async () => ({ error: { code: "run_bundle_unavailable", message: "Not finalized" } }) });
   await expect(api.runBundle(run.run_id, new AbortController().signal)).rejects.toMatchObject({ code: "run_bundle_unavailable", status: 409, message: "Not finalized" });
   await expect(api.runBundle("../private", new AbortController().signal)).rejects.toMatchObject({ code: "invalid_run_id" });

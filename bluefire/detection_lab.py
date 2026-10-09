@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import threading
@@ -27,6 +28,7 @@ from .product_store import (
     DetectionRevisionLimitError,
     ProductStore,
     ProductStoreError,
+    ResourceConflictError,
 )
 from .registry import BehaviorRegistry, RegistryError
 from .research import ResearchSource, ResearchSourceError
@@ -370,36 +372,35 @@ class DetectionLabService:
             context="malicious fixture exercise",
         )
         fixtures = self._fixtures(request.get("fixtures"))
-        with self._lock:
-            resource = self._resource(candidate_id)
-            before = self._candidate_from_resource(resource)
-            try:
-                if before.target_language == "internal":
-                    after = self.pipeline.exercise_fixtures(before, fixtures)
-                    after = replace(
-                        after,
-                        validation={
-                            **dict(after.validation),
-                            "fixture_backend": self.pipeline.parser_name,
-                            "source_rule_executed": True,
-                        },
-                    )
-                elif before.target_language in {"sigma", "sqlite"}:
-                    after = self.validator.exercise_query_fixtures(before, fixtures)
-                elif before.target_language == "yara":
-                    self._yara_fixture_shape(fixtures)
-                    after = self.validator.exercise_yara_fixtures(before, fixtures)
-                elif before.target_language == "yara-l":
-                    raise DetectionError("YARA-L fixture execution is unavailable")
-                else:
-                    raise DetectionError(
-                        "SPL structural validation cannot advance to fixture exercise"
-                    )
-            except DetectionError as exc:
-                self._raise_detection_error(exc, action="exercise fixtures")
-            after = replace(after, malicious_fixtures=tuple(fixtures))
-            recorded = self._record_transition(before, after, "exercise_fixtures", request)
-            return self._envelope(self._save(recorded))
+        request_snapshot = canonical_json_bytes({"fixtures": fixtures})
+        snapshot, digest = self._evaluation_snapshot(candidate_id)
+        before = DetectionCandidate.from_mapping(json.loads(snapshot))
+        try:
+            if before.target_language == "internal":
+                after = self.pipeline.exercise_fixtures(before, fixtures)
+                after = replace(
+                    after,
+                    validation={
+                        **dict(after.validation),
+                        "fixture_backend": self.pipeline.parser_name,
+                        "source_rule_executed": True,
+                    },
+                )
+            elif before.target_language in {"sigma", "sqlite"}:
+                after = self.validator.exercise_query_fixtures(before, fixtures)
+            elif before.target_language == "yara":
+                self._yara_fixture_shape(fixtures)
+                after = self.validator.exercise_yara_fixtures(before, fixtures)
+            elif before.target_language == "yara-l":
+                raise DetectionError("YARA-L fixture execution is unavailable")
+            else:
+                raise DetectionError("SPL structural validation cannot advance to fixture exercise")
+        except DetectionError as exc:
+            self._raise_detection_error(exc, action="exercise fixtures")
+        after = replace(after, malicious_fixtures=tuple(fixtures))
+        return self._commit_evaluation(
+            snapshot, digest, after, "exercise_fixtures", request_snapshot
+        )
 
     def exercise_observed(self, candidate_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
         self._fields(
@@ -476,38 +477,52 @@ class DetectionLabService:
         )
         fixtures = self._fixtures(request.get("fixtures"))
         notes = self._notes(request.get("notes"), context="benign notes")
+        request_snapshot = canonical_json_bytes({"fixtures": fixtures, "notes": notes})
+        snapshot, digest = self._evaluation_snapshot(candidate_id)
+        before = DetectionCandidate.from_mapping(json.loads(snapshot))
+        try:
+            if before.target_language == "internal":
+                after = self.pipeline.evaluate_benign(before, fixtures, notes=notes)
+                after = replace(
+                    after,
+                    validation={
+                        **dict(after.validation),
+                        "benign_fixture_backend": self.pipeline.parser_name,
+                        "source_rule_executed": True,
+                    },
+                )
+            elif before.target_language in {"sigma", "sqlite"}:
+                after = self.validator.evaluate_query_benign(before, fixtures, notes=notes)
+            elif before.target_language == "yara":
+                self._yara_fixture_shape(fixtures)
+                after = self.validator.evaluate_yara_benign(before, fixtures, notes=notes)
+            elif before.target_language == "yara-l":
+                raise DetectionError("YARA-L benign execution is unavailable")
+            else:
+                raise DetectionError("SPL structural validation cannot be benign-evaluated")
+        except DetectionError as exc:
+            self._raise_detection_error(exc, action="evaluate benign fixtures")
+        after = replace(after, benign_fixtures=tuple(fixtures))
+        return self._commit_evaluation(snapshot, digest, after, "evaluate_benign", request_snapshot)
+
+    def _evaluation_snapshot(self, candidate_id: str) -> tuple[bytes, str]:
         with self._lock:
             resource = self._resource(candidate_id)
-            before = self._candidate_from_resource(resource)
-            try:
-                if before.target_language == "internal":
-                    after = self.pipeline.evaluate_benign(before, fixtures, notes=notes)
-                    after = replace(
-                        after,
-                        validation={
-                            **dict(after.validation),
-                            "benign_fixture_backend": self.pipeline.parser_name,
-                            "source_rule_executed": True,
-                        },
-                    )
-                elif before.target_language in {"sigma", "sqlite"}:
-                    after = self.validator.evaluate_query_benign(
-                        before,
-                        fixtures,
-                        notes=notes,
-                    )
-                elif before.target_language == "yara":
-                    self._yara_fixture_shape(fixtures)
-                    after = self.validator.evaluate_yara_benign(before, fixtures, notes=notes)
-                elif before.target_language == "yara-l":
-                    raise DetectionError("YARA-L benign execution is unavailable")
-                else:
-                    raise DetectionError("SPL structural validation cannot be benign-evaluated")
-            except DetectionError as exc:
-                self._raise_detection_error(exc, action="evaluate benign fixtures")
-            after = replace(after, benign_fixtures=tuple(fixtures))
-            recorded = self._record_transition(before, after, "evaluate_benign", request)
-            return self._envelope(self._save(recorded))
+            # Immutable bytes keep the exact reviewed authority independent of evaluator objects.
+            return canonical_json_bytes(resource["document"]), str(resource["digest"])
+
+    def _commit_evaluation(
+        self,
+        snapshot: bytes,
+        digest: str,
+        after: DetectionCandidate,
+        action: str,
+        request_snapshot: bytes,
+    ) -> Mapping[str, Any]:
+        before = DetectionCandidate.from_mapping(json.loads(snapshot))
+        with self._lock:
+            recorded = self._record_transition(before, after, action, json.loads(request_snapshot))
+            return self._envelope(self._save(recorded, expected_digest=digest))
 
     def reject(self, candidate_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
         self._fields(
@@ -1331,7 +1346,12 @@ class DetectionLabService:
             raise DetectionError("persisted resource status does not match candidate state")
         return candidate
 
-    def _save(self, candidate: DetectionCandidate) -> Mapping[str, Any]:
+    def _save(
+        self,
+        candidate: DetectionCandidate,
+        *,
+        expected_digest: str | None = None,
+    ) -> Mapping[str, Any]:
         try:
             validated = DetectionCandidate.from_mapping(candidate.to_dict())
             return self.product_store.save_resource(
@@ -1339,6 +1359,7 @@ class DetectionLabService:
                 validated.candidate_id,
                 validated.to_dict(),
                 status=validated.state.value,
+                expected_digest=expected_digest,
             )
         except DetectionError as exc:
             raise APIError(
@@ -1346,6 +1367,12 @@ class DetectionLabService:
                 "detection_transition_invalid",
                 "Detection transition produced an invalid candidate.",
                 [str(exc)],
+            ) from exc
+        except ResourceConflictError as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "detection_evaluation_conflict",
+                "Detection changed during evaluation; stale results were not saved.",
             ) from exc
         except ProductStoreError as exc:
             raise APIError(

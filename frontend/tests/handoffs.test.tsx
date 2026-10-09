@@ -3,8 +3,10 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { api } from "../src/lib/api";
 import { demoCatalog, demoRuns, demoScenario } from "../src/lib/demo";
-import { comparisonLink, detectionLink, registeredDetectionLink, sourceObservedRecords, sourceRunParam } from "../src/lib/run-handoffs";
+import { comparisonEvaluationLink } from "../src/lib/comparison-evaluation-navigation";
+import { comparisonLink, detectionLink, registeredDetectionEvaluationLink, registeredDetectionLink, sourceObservedRecords, sourceRunParam } from "../src/lib/run-handoffs";
 import { ComparePage } from "../src/pages/Compare";
 import { DetectionLabPage } from "../src/pages/DetectionLab";
 import { RunsPage } from "../src/pages/Runs";
@@ -16,6 +18,7 @@ const syntheticId = `run-${"2".repeat(32)}`;
 const replayId = `run-${"3".repeat(32)}`;
 const candidateId = `detection-${"4".repeat(20)}`;
 const savedId = `detection-${"5".repeat(20)}`;
+const comparisonSelection = { runIds: [sourceId, syntheticId, replayId], baselineId: candidateId, revisedId: savedId };
 const resourceMetadata = { kind: "detection", digest: `sha256:${"b".repeat(64)}`, created_at: "2030-01-01T00:00:00Z", updated_at: "2030-01-01T00:00:00Z" };
 const linkedCandidate: DetectionCandidate = {
   candidate_id: candidateId,
@@ -49,6 +52,7 @@ let runs: RunRecord[];
 let registry: DetectionResource[];
 let replayBarrier: Promise<void> | undefined;
 let replayJob: RunJob | undefined;
+let comparisonResponseOverride: ((runIds: string[]) => unknown) | undefined;
 
 function json(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
@@ -69,7 +73,7 @@ function LocationProbe() {
 
 function renderJourney(path: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={[path]}><LocationProbe /><Routes><Route path="/runs" element={<RunsPage />} /><Route path="/runs/:runId" element={<RunsPage />} /><Route path="/detection-lab" element={<DetectionLabPage />} /><Route path="/compare" element={<ComparePage />} /></Routes></MemoryRouter></ProductProvider></QueryClientProvider>);
+  return { client, ...render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={[path]}><LocationProbe /><Routes><Route path="/runs" element={<RunsPage />} /><Route path="/runs/:runId" element={<RunsPage />} /><Route path="/detection-lab" element={<DetectionLabPage />} /><Route path="/compare" element={<ComparePage />} /></Routes></MemoryRouter></ProductProvider></QueryClientProvider>) };
 }
 
 function postBody(suffix: string) {
@@ -77,10 +81,15 @@ function postBody(suffix: string) {
   return call ? JSON.parse(String(call[1]?.body)) as Record<string, unknown> : undefined;
 }
 
+function retainedDetectionDrafts() {
+  return Object.fromEntries(Object.keys(sessionStorage).filter(key => key.startsWith("bluefire.detection-draft.v1:")).map(key => [key, sessionStorage.getItem(key)]));
+}
+
 beforeEach(() => {
   runs = structuredClone([observedRun, syntheticRun]);
   registry = [];
   replayBarrier = undefined; replayJob = undefined;
+  comparisonResponseOverride = undefined;
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     if (path.endsWith("/catalog")) return json(demoCatalog);
@@ -99,7 +108,8 @@ beforeEach(() => {
       return json({ candidate: registry.at(-1) });
     }
     if (path.endsWith(`/detections/${savedId}/exercise-observed`)) return json({ candidate: registry.at(-1) });
-    if (path.endsWith(`/detections/${savedId}/evaluations`)) return json({ evaluations: [] });
+    if (/\/detections\/[^/]+\/evaluations$/.test(path)) return json({ evaluations: [] });
+    if (/\/detections\/[^/]+\/evaluate-run$/.test(path) && init?.method === "POST") return json({ error: { code: "authored_evaluation_refusal", message: "The authored evaluation was refused." } }, 409);
     if (path.endsWith("/replay-preparations")) {
       const request = JSON.parse(String(init?.body));
       return json({ schema_version: "bluefire.replay-preparation.v1", preparation_id: "prepared", preparation_context: {}, binding: { source: { run_id: syntheticId }, replay_request: request }, replay_request: request, replay_extent: "full", scenario: demoScenario, lineage: {}, preflight: { ready: true, status: "ready" }, approval_created: false, effects_started: false });
@@ -114,7 +124,11 @@ beforeEach(() => {
     }
     if (path.endsWith("/jobs")) return json({ schema_version: "bluefire.active-job-list.v1", jobs: [] });
     if (replayJob && path.endsWith(`/jobs/${replayJob.job_id}`)) return json(replayJob);
-    if (path.endsWith("/comparisons")) return json({ comparison_id: "comparison-test", baseline_run_id: syntheticId, run_ids: [syntheticId, replayId], summaries: [], deltas: [] });
+    if (path.endsWith("/comparisons")) {
+      const runIds = (JSON.parse(String(init?.body)) as { run_ids: string[] }).run_ids;
+      if (comparisonResponseOverride) return json(comparisonResponseOverride(runIds));
+      return json({ comparison_id: "comparison-test", baseline_run_id: syntheticId, run_ids: [syntheticId, replayId], summaries: [], deltas: [] });
+    }
     if (path.endsWith("/runs")) return json({ runs: runs.map(summary) });
     const match = path.match(/\/runs\/([^/?]+)$/);
     if (match) {
@@ -201,6 +215,232 @@ describe("run journey handoffs", () => {
     expect(postBody("/detections/from-run")).toBeUndefined();
   });
 
+  it("opens the exact registered rule and run evaluation without submitting until asked", async () => {
+    registry = [{ ...resourceMetadata, id: candidateId, status: "parsed", document: { ...linkedCandidate, title: "Saved comparison rule", state: "parsed" } }];
+    const user = userEvent.setup();
+    renderJourney(registeredDetectionEvaluationLink(sourceId, candidateId)!);
+    expect(await screen.findByRole("heading", { name: "Saved comparison rule" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "Run evaluations" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("combobox", { name: "Evaluation source run" })).toHaveValue(sourceId);
+    expect(screen.queryByRole("button", { name: "Save hypothesis from run" })).not.toBeInTheDocument();
+    const submit = screen.getByRole("button", { name: "Evaluate full observed run" });
+    await waitFor(() => expect(submit).toBeEnabled());
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+    await user.click(submit);
+    await screen.findByText("The authored evaluation was refused.");
+    expect(postBody(`/detections/${candidateId}/evaluate-run`)).toEqual({ run_id: sourceId, question: "", case_role: "unknown", activity_label: "unknown", evaluation_use: "unspecified" });
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+  });
+
+  it("returns from a copied evaluation link with all comparison choices and waits for Compare selected", async () => {
+    runs.push({ ...structuredClone(observedRun), run_id: replayId, evidence: { records: [] } });
+    comparisonResponseOverride = runIds => ({ comparison_id: "authored-comparison-fixture", baseline_run_id: runIds[0], run_ids: runIds, summaries: runIds.map(run_id => ({ run_id, path: [], outcomes: {} })), deltas: [] });
+    registry = [
+      { ...resourceMetadata, id: candidateId, status: "parsed", document: { ...linkedCandidate, candidate_id: candidateId, title: "Original revision", state: "parsed", revision_root_id: candidateId, revision: 1 } },
+      { ...resourceMetadata, id: savedId, status: "parsed", document: { ...linkedCandidate, candidate_id: savedId, title: "Revised revision", state: "parsed", revision_root_id: candidateId, revision: 2 } },
+    ];
+    const copiedLink = comparisonEvaluationLink(sourceId, savedId, comparisonSelection)!;
+    const user = userEvent.setup();
+    renderJourney(copiedLink); // A single initial entry models opening the copied URL in a new tab.
+    expect(await screen.findByRole("heading", { name: "Revised revision" })).toBeVisible();
+    const submit = await screen.findByRole("button", { name: "Evaluate full observed run" });
+    await waitFor(() => expect(submit).toBeEnabled());
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+    await user.click(submit);
+    expect(await screen.findByText("The authored evaluation was refused.")).toBeVisible();
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Return to comparison" }));
+    await waitFor(() => expect(screen.getByLabelText("Current route")).toHaveTextContent("/compare?"));
+    const returnUrl = new URL(`http://localhost${screen.getByLabelText("Current route").textContent!}`);
+    expect(returnUrl.searchParams.getAll("compare_run")).toEqual([sourceId, syntheticId, replayId]);
+    expect(returnUrl.searchParams.get("compare_baseline")).toBe(candidateId);
+    expect(returnUrl.searchParams.get("compare_revised")).toBe(savedId);
+    expect(screen.getByText("Comparison selection restored. Choose Compare selected to load results. This link retains selections, not a saved comparison.")).toBeVisible();
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Compare selected" }));
+    await waitFor(() => expect(postBody("/comparisons")).toEqual({ run_ids: [sourceId, syntheticId, replayId] }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(2));
+    expect(await screen.findByRole("combobox", { name: "Original detector" })).toHaveValue(candidateId);
+    expect(screen.getByRole("combobox", { name: "Revised detector" })).toHaveValue(savedId);
+  });
+
+  it("opens evaluations temporarily while preserving the retained fixture tab and notes", async () => {
+    registry = [{ ...resourceMetadata, id: savedId, status: "fixture_exercised", document: { ...linkedCandidate, candidate_id: savedId, state: "fixture_exercised" } }];
+    const user = userEvent.setup();
+    const view = renderJourney(registeredDetectionLink(sourceId, savedId));
+    await user.click(await screen.findByRole("tab", { name: "Fixtures" }));
+    await user.type(screen.getByRole("textbox", { name: "Benign evaluation notes" }), "Keep sample notes");
+    const before = retainedDetectionDrafts();
+    expect(Object.keys(before)).not.toHaveLength(0);
+    view.unmount();
+    renderJourney(registeredDetectionEvaluationLink(sourceId, savedId)!);
+    expect(await screen.findByRole("combobox", { name: "Evaluation source run" })).toHaveValue(sourceId);
+    expect(screen.queryByRole("button", { name: "Return to comparison" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Run evaluations" })).toHaveAttribute("aria-selected", "true");
+    expect(retainedDetectionDrafts()).toEqual(before);
+    await user.click(screen.getByRole("button", { name: "Leave comparison setup" }));
+    expect(screen.getByRole("tab", { name: "Fixtures" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("textbox", { name: "Benign evaluation notes" })).toHaveValue("Keep sample notes");
+    expect(retainedDetectionDrafts()).toEqual(before);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it.each(["Use comparison run", "Leave comparison setup"] as const)("preserves retained evaluation inputs until the operator chooses %s", async choice => {
+    registry = [{ ...resourceMetadata, id: savedId, status: "parsed", document: { ...linkedCandidate, candidate_id: savedId, state: "parsed" } }];
+    const user = userEvent.setup();
+    const view = renderJourney(registeredDetectionLink(sourceId, savedId));
+    await user.click(await screen.findByRole("tab", { name: "Run evaluations" }));
+    await user.type(screen.getByRole("textbox", { name: "Experiment question" }), "Retained question");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Evaluation source run" }), syntheticId);
+    await user.selectOptions(screen.getByRole("combobox", { name: /^Activity label/ }), "benign");
+    await user.selectOptions(screen.getByRole("combobox", { name: /^Use of this data/ }), "independent");
+    const before = retainedDetectionDrafts();
+    view.unmount();
+    renderJourney(registeredDetectionEvaluationLink(sourceId, savedId)!);
+    expect(await screen.findByText("A different run is selected")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Return to comparison" })).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Evaluation source run" })).toHaveValue(syntheticId);
+    expect(screen.getByRole("button", { name: "Evaluate full observed run" })).toBeDisabled();
+    expect(retainedDetectionDrafts()).toEqual(before);
+    await user.click(screen.getByRole("button", { name: choice }));
+    const chosenRun = choice === "Use comparison run" ? sourceId : syntheticId;
+    expect(screen.queryByText("A different run is selected")).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Evaluation source run" })).toHaveValue(chosenRun);
+    expect(screen.getByRole("textbox", { name: "Experiment question" })).toHaveValue("Retained question");
+    expect(screen.getByRole("combobox", { name: /^Activity label/ })).toHaveValue("benign");
+    expect(screen.getByRole("combobox", { name: /^Use of this data/ })).toHaveValue("independent");
+    if (choice === "Leave comparison setup") expect(retainedDetectionDrafts()).toEqual(before);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Evaluate full observed run" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Evaluate full observed run" }));
+    await screen.findByText("The authored evaluation was refused.");
+    expect(postBody(`/detections/${savedId}/evaluate-run`)).toEqual({ run_id: chosenRun, question: "Retained question", case_role: "benign", activity_label: "benign", evaluation_use: "independent" });
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+  });
+
+  it("ignores malformed comparison context while keeping standalone evaluation inputs", async () => {
+    registry = [{ ...resourceMetadata, id: savedId, status: "parsed", document: { ...linkedCandidate, candidate_id: savedId, state: "parsed" } }];
+    const user = userEvent.setup();
+    const view = renderJourney(registeredDetectionLink(sourceId, savedId));
+    await user.click(await screen.findByRole("tab", { name: "Run evaluations" }));
+    await user.type(screen.getByRole("textbox", { name: "Experiment question" }), "Question to keep");
+    await user.selectOptions(screen.getByRole("combobox", { name: /^Activity label/ }), "benign");
+    await user.selectOptions(screen.getByRole("combobox", { name: /^Use of this data/ }), "independent");
+    const before = retainedDetectionDrafts();
+    view.unmount();
+    const standalone = registeredDetectionEvaluationLink(sourceId, savedId)!;
+    renderJourney(`${standalone}&compare_context=1&compare_context=1&compare_run=${sourceId}&compare_run=${syntheticId}&compare_baseline=${candidateId}&compare_revised=${savedId}`);
+    expect(await screen.findByRole("textbox", { name: "Experiment question" })).toHaveValue("Question to keep");
+    expect(screen.getByRole("combobox", { name: /^Activity label/ })).toHaveValue("benign");
+    expect(screen.getByRole("combobox", { name: /^Use of this data/ })).toHaveValue("independent");
+    expect(screen.queryByRole("button", { name: "Return to comparison" })).not.toBeInTheDocument();
+    expect(retainedDetectionDrafts()).toEqual(before);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it.each(["missing", "duplicate", "mismatched document", "ambiguous URL"])("does not substitute another rule for a stale %s comparison target", async state => {
+    const resource = { ...resourceMetadata, id: candidateId, status: "parsed", document: { ...linkedCandidate, title: "Saved comparison rule", state: "parsed" } };
+    registry = state === "missing" ? [] : state === "duplicate" ? [resource, structuredClone(resource)] : state === "mismatched document" ? [{ ...resource, document: { ...resource.document, candidate_id: savedId } }] : [resource];
+    const destination = registeredDetectionEvaluationLink(sourceId, candidateId)!;
+    renderJourney(state === "ambiguous URL" ? `${destination}&candidate=${savedId}` : destination);
+    expect(await screen.findByText("Requested saved revision unavailable")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Evaluate full observed run" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save hypothesis from run" })).not.toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("leaves an unavailable comparison run inspectable without enabling evaluation", async () => {
+    registry = [{ ...resourceMetadata, id: savedId, status: "parsed", document: { ...linkedCandidate, candidate_id: savedId, state: "parsed" } }];
+    renderJourney(registeredDetectionEvaluationLink("run-missing", savedId)!);
+    expect(await screen.findByText("Source run unavailable")).toBeVisible();
+    expect(screen.getByRole("tab", { name: "Run evaluations" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("combobox", { name: "Evaluation source run" })).toHaveValue("run-missing");
+    expect(screen.getByRole("button", { name: "Evaluate full observed run" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Leave comparison setup" })).toBeEnabled();
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it.each(["different run identity", "unfinalized run"])("blocks comparison evaluation for a response with %s", async state => {
+    registry = [{ ...resourceMetadata, id: savedId, status: "parsed", document: { ...linkedCandidate, candidate_id: savedId, state: "parsed" } }];
+    const response = structuredClone(observedRun);
+    if (state === "different run identity") response.run_id = syntheticId;
+    else { response.finalized_at = undefined; response.status = "running"; }
+    vi.spyOn(api, "runDetail").mockResolvedValue(response);
+    renderJourney(registeredDetectionEvaluationLink(sourceId, savedId)!);
+    expect(await screen.findByText("Comparison setup not ready")).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "Evaluation source run" })).toHaveValue(sourceId);
+    expect(screen.getByRole("button", { name: "Evaluate full observed run" })).toBeDisabled();
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("blocks a cached comparison source while refreshing and after refresh fails", async () => {
+    registry = [{ ...resourceMetadata, id: savedId, status: "parsed", document: { ...linkedCandidate, candidate_id: savedId, state: "parsed" } }];
+    const source = vi.spyOn(api, "runDetail").mockResolvedValue(observedRun);
+    const { client } = renderJourney(registeredDetectionEvaluationLink(sourceId, savedId)!);
+    const submit = await screen.findByRole("button", { name: "Evaluate full observed run" });
+    await waitFor(() => expect(submit).toBeEnabled());
+    let failSource!: (error: Error) => void;
+    source.mockImplementationOnce(() => new Promise((_resolve, reject) => { failSource = reject; }));
+    await act(async () => { void client.invalidateQueries({ queryKey: ["run", sourceId] }); });
+    expect(await screen.findByText("Comparison setup not ready")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Evaluate full observed run" })).toBeDisabled();
+    await act(async () => failSource(new Error("Authored source refresh refusal")));
+    expect(await screen.findByText("Authored source refresh refusal")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Evaluate full observed run" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "Evaluation source run" })).toHaveValue(sourceId);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("retains an in-flight evaluation across a same-revision registry refresh", async () => {
+    registry = [{ ...resourceMetadata, id: savedId, status: "parsed", document: { ...linkedCandidate, candidate_id: savedId, state: "parsed" } }];
+    const registrations = vi.spyOn(api, "detections").mockResolvedValue({ schema_version: "bluefire.detection-list.v1", candidates: registry });
+    let failEvaluation!: (error: Error) => void;
+    const evaluate = vi.spyOn(api, "evaluateDetectionRun").mockImplementation(() => new Promise((_resolve, reject) => { failEvaluation = reject; }));
+    const user = userEvent.setup();
+    const returnableLink = comparisonEvaluationLink(sourceId, savedId, { runIds: [sourceId, syntheticId], baselineId: candidateId, revisedId: savedId })!;
+    const { client } = renderJourney(returnableLink);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Evaluate full observed run" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Evaluate full observed run" }));
+    const pending = await screen.findByRole("button", { name: "Evaluating immutable evidence" });
+    expect(pending).toBeDisabled();
+    const returnButton = screen.getByRole("button", { name: "Return to comparison" });
+    expect(returnButton).toBeDisabled();
+    expect(screen.getByLabelText("Current route")).toHaveTextContent("/detection-lab?");
+    let finishRegistry!: (value: { schema_version: string; candidates: DetectionResource[] }) => void;
+    registrations.mockImplementationOnce(() => new Promise(resolve => { finishRegistry = resolve; }));
+    await act(async () => { void client.invalidateQueries({ queryKey: ["detections"] }); });
+    expect(screen.getByRole("button", { name: "Evaluating immutable evidence" })).toBe(pending);
+    expect(pending).toBeDisabled();
+    await act(async () => finishRegistry({ schema_version: "bluefire.detection-list.v1", candidates: structuredClone(registry) }));
+    expect(screen.getByRole("button", { name: "Evaluating immutable evidence" })).toBe(pending);
+    await user.click(pending);
+    await user.click(screen.getByRole("button", { name: "Return to comparison" }));
+    expect(evaluate).toHaveBeenCalledTimes(1);
+    await act(async () => failEvaluation(new Error("Original evaluation refusal")));
+    expect(await screen.findByText("Original evaluation refusal")).toBeVisible();
+    expect(screen.getByLabelText("Current route")).toHaveTextContent("/detection-lab?");
+    expect(screen.getByRole("button", { name: "Return to comparison" })).toBeEnabled();
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Evaluate full observed run" })).toBeEnabled();
+    expect(evaluate).toHaveBeenCalledWith(savedId, { run_id: sourceId, question: "", case_role: "unknown", activity_label: "unknown", evaluation_use: "unspecified" });
+  });
+
+  it("clears the temporary evaluation view when another saved rule is selected", async () => {
+    registry = [
+      { ...resourceMetadata, id: savedId, status: "parsed", document: { ...linkedCandidate, candidate_id: savedId, title: "Original comparison rule", state: "parsed" } },
+      { ...resourceMetadata, id: candidateId, status: "parsed", document: { ...linkedCandidate, title: "Another saved rule", state: "parsed" } },
+    ];
+    const user = userEvent.setup();
+    renderJourney(registeredDetectionEvaluationLink(sourceId, savedId)!);
+    await user.click(await screen.findByRole("button", { name: /^Another saved rule/ }));
+    expect(await screen.findByRole("heading", { name: "Another saved rule" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "Candidate" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByLabelText("Current route")).toHaveTextContent(registeredDetectionLink(sourceId, candidateId));
+    expect(screen.getByLabelText("Current route")).not.toHaveTextContent("view=evaluations");
+    expect(screen.queryByRole("button", { name: "Leave comparison setup" })).not.toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
   it.each(["run", "registry"])("does not substitute the opposite scope for an absent %s candidate", async (scope) => {
     if (scope === "run") {
       runs[0]!.detections = { candidates: [] };
@@ -229,6 +469,7 @@ describe("run journey handoffs", () => {
     await user.click(await screen.findByRole("tab", { name: "Fixtures" }));
     expect(JSON.parse(String((screen.getByRole("textbox", { name: /^Malicious fixtures JSON/ }) as HTMLTextAreaElement).value))).toEqual([{ fixture_id: "synthetic-selection-example", ...selection }]);
     expect(screen.getByText(/positive example is generated from this internal selection/)).toBeInTheDocument();
+    await user.click(screen.getByText("Advanced benign samples JSON", { selector: "summary" }));
     expect(screen.getByRole("textbox", { name: /^Benign fixtures JSON/ })).toHaveValue("");
     expect(screen.getByRole("textbox", { name: "Benign evaluation notes" })).toHaveValue("");
   });
@@ -323,6 +564,8 @@ describe("handoff evidence boundaries", () => {
   it("retains encoded source identity while treating malformed URL values as absent", () => {
     const id = "run:a/b?c&d";
     expect(sourceRunParam(new URL(comparisonLink(id), "http://localhost").searchParams, "source")).toBe(id);
+    const evaluation = new URL(registeredDetectionEvaluationLink(id, "detector:a/b?c&d")!, "http://localhost");
+    expect(Object.fromEntries(evaluation.searchParams)).toEqual({ run: id, candidate: "detector:a/b?c&d", candidate_scope: "registry", view: "evaluations" });
     expect(sourceRunParam(new URLSearchParams({ run: "a\nb" }), "run")).toBe("");
     expect(sourceRunParam(new URLSearchParams({ run: "a".repeat(201) }), "run")).toBe("");
   });

@@ -14,7 +14,12 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Mapping, cast
 
-from .api import BROWSER_BOOTSTRAP_HEADER, create_server, generate_browser_bootstrap_capability
+from .api import (
+    BROWSER_BOOTSTRAP_HEADER,
+    BROWSER_SESSION_HEADER,
+    create_server,
+    generate_browser_bootstrap_capability,
+)
 from .runner_bootstrap import current_platform, wheel_platform_tag
 from .runner_contracts import RunnerContractError, build_runner_profile
 from .service import BlueFireService
@@ -79,17 +84,22 @@ def _http_runner_status(service: BlueFireService, require: Require) -> Mapping[s
         )
         response = connection.getresponse()
         bootstrap_payload = response.read(_MAX_STATUS_BYTES + 1)
-        cookie = response.getheader("Set-Cookie")
         connection.close()
         require(
-            response.status == 204 and bootstrap_payload == b"" and isinstance(cookie, str),
+            response.status == 200 and 0 < len(bootstrap_payload) <= _MAX_STATUS_BYTES,
             "HTTP session bootstrap failed",
+        )
+        exchange = json.loads(bootstrap_payload)
+        session = exchange.get("session") if isinstance(exchange, Mapping) else None
+        require(
+            isinstance(session, str) and re.fullmatch(r"[A-Za-z0-9_-]{64}", session) is not None,
+            "HTTP session response is invalid",
         )
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         connection.request(
             "GET",
             "/api/v1/runner",
-            headers={"Cookie": cast(str, cookie).split(";", 1)[0]},
+            headers={BROWSER_SESSION_HEADER: cast(str, session)},
         )
         response = connection.getresponse()
         payload = response.read(_MAX_STATUS_BYTES + 1)

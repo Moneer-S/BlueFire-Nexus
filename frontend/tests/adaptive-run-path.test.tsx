@@ -3,11 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { AdaptiveRunPath } from "../src/components/AdaptiveRunPath";
 import { decisionObservations, decisionProvenance, recordedPathNodes, selectedAttempt } from "../src/lib/adaptive-run";
+import { RunReview } from "../src/pages/Runs";
 import { demoCatalog } from "../src/lib/demo";
 import type { AIProposal, CatalogResponse, RunRecord } from "../src/types";
 
 // Authored component fixtures exercise presentation; they are not observed runs.
-const primary = "sandbox.discovery.list.v1", alternate = "sandbox.discovery.metadata.v1";
+const primary = "sandbox.discovery.list.v1", alternate = "sandbox.discovery.metadata.v1", third = "sandbox.discovery.hash.v1";
+const digest = `sha256:${"a".repeat(64)}`;
 const evidenceId = `evidence-${"a".repeat(20)}`, recordHash = `sha256:${"b".repeat(64)}`;
 function projection() {
   return { schema_version: "bluefire.runtime-observations.v1", omitted_attempt_count: 0,
@@ -22,9 +24,11 @@ function projection() {
 }
 const catalog: CatalogResponse = { ...demoCatalog, behaviors: [
   ...demoCatalog.behaviors, { ...demoCatalog.behaviors[0]!, id: primary, title: "Discover records" },
+  { ...demoCatalog.behaviors[0]!, id: third, title: "Hash selected records" },
 ], actions: [
   ...demoCatalog.actions, { ...demoCatalog.actions[0]!, id: primary, title: "List owned files" },
   { ...demoCatalog.actions[0]!, id: alternate, title: "Inspect file metadata" },
+  { ...demoCatalog.actions[0]!, id: third, title: "Hash selected files" },
 ] };
 function fixture(): RunRecord {
   return { run_id: "authored-run", mode: "execute", status: "completed", objective: "Verify the original collection objective", objective_reached: false,
@@ -38,6 +42,57 @@ function fixture(): RunRecord {
       provider: { effective_provider_id: "deterministic-offline.v1", model: "software-test-model", used_fallback: false }, provider_attempt: { provider_id: "deterministic-offline.v1", kind: "deterministic", model: "software-test-model" }, provider_called: true, decision_source: "deterministic_provider",
       planner_state: { observations: projection() },
     }] };
+}
+
+function v5Fixture(): RunRecord {
+  const run = fixture();
+  const record = structuredClone(run.ai_proposals![0]!);
+  record.schema_version = "bluefire.ai-proposal-record.v5";
+  record.proposal_policy_digest = digest;
+  record.planner_state_digest = digest;
+  record.proposal_policy = { schema_version: "bluefire.ai-proposal-policy.v3", maximum_adaptive_retries: 2, adaptive_retries_used: 0,
+    maximum_step_retries: 2, step_retries_used: 0, adaptive_policy_digest: digest, remaining_steps: 3,
+    attempted_methods: [{ step_id: "discover", behavior_id: primary, action_id: primary }] };
+  const state = record.planner_state as Record<string, unknown>;
+  const observations = state.observations as Record<string, unknown>;
+  state.schema_version = "bluefire.planner-state.v3";
+  state.observations = { ...observations, schema_version: "bluefire.runtime-observations.v2",
+    remaining_budgets: { steps: 3, seconds: 20, retries: 2, step_retries: 2 } };
+  run.ai_proposals = [record];
+  return run;
+}
+
+function multipleV5Fixture(): RunRecord {
+  const run = v5Fixture();
+  const first = run.ai_proposals![0]!;
+  const second = structuredClone(first);
+  second.current_step_id = "discover";
+  second.deterministic_decision_id = "decision-retry";
+  second.outcome = "failed";
+  second.proposal = { ...first.proposal!, proposal_id: "authored-choice-2", selected_behavior_id: third, selected_action_id: third,
+    rationale: "The second method failed; the remaining reviewed method can still inspect the same input." };
+  second.applied_step = { step_id: "discover", behavior_id: third, action_id: third };
+  second.planner_state_digest = `sha256:${"b".repeat(64)}`;
+  second.planner_state = { ...(first.planner_state as Record<string, unknown>), deterministic_decision: {
+    decision_id: "decision-retry", run_id: "authored-run", current_state_digest: digest } };
+  second.proposal_policy = { schema_version: "bluefire.ai-proposal-policy.v3", maximum_adaptive_retries: 2, adaptive_retries_used: 1,
+    maximum_step_retries: 2, step_retries_used: 1, adaptive_policy_digest: digest, remaining_steps: 2,
+    attempted_methods: [{ step_id: "discover", behavior_id: primary, action_id: primary },
+      { step_id: "discover", behavior_id: alternate, action_id: alternate }] };
+  const secondState = second.planner_state as Record<string, unknown>;
+  const secondObservations = secondState.observations as Record<string, unknown>;
+  secondState.observations = { ...secondObservations,
+    attempts: [...projection().attempts, { attempt_index: 1, step_id: "discover", behavior_id: alternate, action_id: alternate,
+      outcome: "failed", failure: { classification: "execution_failure", telemetry_gap: false },
+      missing_evidence_count: 0, omitted_evidence_count: 0, evidence: [] }],
+    remaining_budgets: { steps: 2, seconds: 10, retries: 1, step_retries: 1 } };
+  second.proposal_policy_digest = `sha256:${"c".repeat(64)}`;
+  run.steps[1]!.status = "failed";
+  run.steps[1]!.runner_status = "failed";
+  run.steps.push({ step_id: "discover", behavior_id: third, action_id: third, status: "success", runner_status: "success",
+    request_hash: "third-request", execution_disposition: "execute", planner_decision_id: "decision-final", evidence_ids: [] });
+  run.ai_proposals = [first, second];
+  return run;
 }
 
 describe("recorded adaptive path", () => {
@@ -115,11 +170,114 @@ describe("recorded adaptive path", () => {
     Object.assign(record, { provider: null, proposal: null, decision_source: "none" });
     expect(decisionProvenance(record).label).toBe("Provider request did not produce a permitted choice");
   });
+
+  it("renders coherent v5 retry projections while keeping method selection separate from recorded attempts", () => {
+    const run = multipleV5Fixture();
+    expect(recordedPathNodes(run)).toHaveLength(1);
+    expect(selectedAttempt(run, run.ai_proposals![0]!)).toBe(run.steps[1]);
+    expect(selectedAttempt(run, run.ai_proposals![1]!)).toBe(run.steps[2]);
+    render(<AdaptiveRunPath run={run} catalog={catalog}/>);
+    const path = screen.getByRole("region", { name: "Recorded adaptive path" });
+    expect(within(path).getByText("Attempt 2 · run position 2")).toBeVisible();
+    expect(within(path).getByText("Attempt 3 · run position 3")).toBeVisible();
+    const decisions = within(path).getAllByRole("region", { name: "Recorded adaptive decision" });
+    expect(decisions).toHaveLength(2);
+    const decision = decisions[1]!;
+    expect(within(decision).getByText("Chosen alternative: Hash selected files")).toBeVisible();
+    expect(within(decision).getByText(/Deterministic provider · software evidence/)).toBeVisible();
+    expect(within(decision).queryByText(/Live provider response/)).not.toBeInTheDocument();
+    openDetails(decision);
+    expect(within(decision).getByText("2 steps · 10 seconds · 1 retry · 1 retry for this step")).toBeVisible();
+  });
+
+  it("keeps v5 activity visible but reports an inconsistent retry projection as unknown", () => {
+    const run = v5Fixture();
+    const record = run.ai_proposals![0]!;
+    const state = record.planner_state as Record<string, unknown>;
+    const observations = state.observations as Record<string, unknown>;
+    const budgets = observations.remaining_budgets as Record<string, unknown>;
+    observations.remaining_budgets = { ...budgets, step_retries: 1 };
+    expect(recordedPathNodes(run)).toHaveLength(1);
+    expect(selectedAttempt(run, record)).toBe(run.steps[1]);
+    render(<AdaptiveRunPath run={run} catalog={catalog}/>);
+    const decision = screen.getByRole("region", { name: "Recorded adaptive decision" });
+    expect(within(decision).getByText("Chosen alternative: Inspect file metadata")).toBeVisible();
+    expect(within(decision).getByText(/Runner returned success/)).toBeVisible();
+    openDetails(decision);
+    expect(within(decision).getByText("The retained v5 retry budget projection is inconsistent; remaining adaptive allowance is unknown.")).toBeVisible();
+    expect(within(decision).getByText(/Unknown retries for this step/)).toBeVisible();
+  });
+
+  it.each([
+    { budget: "coherent", remainingStepRetries: 1 },
+    { budget: "inconsistent", remainingStepRetries: 0 },
+  ])("preserves observed permissions and coverage with a $budget v5 budget without turning a reservation into an attempt", ({ budget, remainingStepRetries }) => {
+    const run = v5Fixture();
+    run.steps.pop(); // The alternate was reserved, but no runner result was recorded.
+    const record = run.ai_proposals![0]!;
+    const policy = record.proposal_policy as Record<string, unknown>;
+    Object.assign(policy, { adaptive_retries_used: 1, step_retries_used: 1, attempted_methods: [
+      { step_id: "discover", behavior_id: primary, action_id: primary },
+      { step_id: "discover", behavior_id: alternate, action_id: alternate },
+    ] });
+    const state = record.planner_state as Record<string, unknown>;
+    const observations = state.observations as Record<string, unknown>;
+    observations.remaining_budgets = { steps: 3, seconds: 20, retries: 1, step_retries: remainingStepRetries };
+    const facts = { artifact_type: "file_observation", permission_status: "available", effective_access: "not_evaluated",
+      permission_mode_octal: "0660", group_write_bit: true, other_write_bit: false, non_owner_write_bit: true };
+    observations.attempts = [{ attempt_index: 0, step_id: "discover", behavior_id: primary, action_id: primary, outcome: "failed",
+      failure: { classification: "execution_timeout", telemetry_gap: true },
+      missing_evidence_count: 0, omitted_evidence_count: 0,
+      evidence: [{ evidence_id: evidenceId, record_hash: recordHash, provenance: "observed", facts }] }];
+    run.evidence = { records: [{ evidence_id: evidenceId, provenance: "observed", producer: "authored-fixture", content: facts }] };
+    const before = JSON.stringify(run);
+
+    render(<AdaptiveRunPath run={run} catalog={catalog}/>);
+    const path = screen.getByRole("region", { name: "Recorded adaptive path" });
+    expect(within(path).getByText("Attempt 1 · run position 1")).toBeVisible();
+    expect(within(path).queryByText("Attempt 2 · run position 2")).not.toBeInTheDocument();
+    expect(within(path).getByText("1 independently observed records")).toBeVisible();
+    const decision = within(path).getByRole("region", { name: "Recorded adaptive decision" });
+    expect(within(decision).getByText("Selection applied; no matching attempt is recorded.")).toBeVisible();
+    openDetails(decision);
+    expect(within(decision).getByText("Execution timeout", { selector: "dd" })).toBeVisible();
+    expect(within(decision).getByText("Some observations are unavailable.")).toBeVisible();
+    const evidenceRow = within(decision).getByText("Current attempt evidence", { selector: "dt" }).parentElement!;
+    expect(within(evidenceRow).getByText(evidenceId, { selector: "dd" })).toBeVisible();
+    const permissions = within(decision).getByRole("region", { name: "Observed file permissions" });
+    expect(within(permissions).getByText("0660", { selector: "dd" })).toBeVisible();
+    expect(within(permissions).getByText("From run position 1")).toBeVisible();
+    expect(within(permissions).getByText("Effective access not evaluated.")).toBeVisible();
+    expect(within(permissions).queryByText("Observation 2", { selector: "strong" })).not.toBeInTheDocument();
+    const warning = "The retained v5 retry budget projection is inconsistent; remaining adaptive allowance is unknown.";
+    if (budget === "coherent") {
+      expect(within(decision).getByText("3 steps · 20 seconds · 1 retry · 1 retry for this step")).toBeVisible();
+      expect(within(decision).queryByText(warning)).not.toBeInTheDocument();
+    } else {
+      expect(within(decision).getByText(warning)).toBeVisible();
+      expect(within(decision).getByText(/Unknown retries for this step/)).toBeVisible();
+    }
+    expect(JSON.stringify(run)).toBe(before);
+  });
+
+  it("routes v5 records through the adaptive decision trail in the full run review", () => {
+    const run = multipleV5Fixture();
+    render(<RunReview run={run} catalog={catalog}/>);
+    const summary = screen.getByText("AI decisions (2)");
+    const trail = summary.closest("details")!;
+    trail.open = true;
+    const decisions = within(trail).getAllByRole("region", { name: "Recorded adaptive decision" });
+    expect(decisions).toHaveLength(2);
+    expect(within(trail).getByText("Chosen alternative: Hash selected files")).toBeVisible();
+    openDetails(decisions[1]!);
+    expect(within(trail).getByText("2 steps · 10 seconds · 1 retry · 1 retry for this step")).toBeVisible();
+    expect(within(trail).queryByText("Policy not reported")).not.toBeInTheDocument();
+  });
 });
 
-function observationsFixture() {
-  const run = fixture(), view = projection(), record = run.ai_proposals![0]!;
-  record.planner_state = { observations: view };
+function observationsFixture(version: "v4" | "v5" = "v4") {
+  const run = version === "v5" ? v5Fixture() : fixture(), record = run.ai_proposals![0]!;
+  const view = (record.planner_state as { observations: ReturnType<typeof projection> }).observations;
   return { run, record, view, attempt: view.attempts[0]!, row: view.attempts[0]!.evidence[0]! };
 }
 async function openObservations(run: RunRecord) {
@@ -129,9 +287,9 @@ async function openObservations(run: RunRecord) {
   return within(panel);
 }
 
-describe("retained observations at the exact adaptive decision", () => {
+describe.each(["v4", "v5"] as const)("retained %s observations at the exact adaptive decision", version => {
   it("shows permission facts, reported output and separate omissions without claiming effective access or provider receipt", async () => {
-    const { run, attempt } = observationsFixture();
+    const { run, attempt } = observationsFixture(version);
     const reported = `evidence-${"c".repeat(20)}`;
     run.steps[0]!.evidence_ids!.push(reported, `evidence-${"d".repeat(20)}`, `evidence-${"e".repeat(20)}`);
     attempt.evidence.push({ evidence_id: reported, record_hash: recordHash, provenance: "executed", facts: { reported_size_bytes: 32 } });
@@ -154,7 +312,7 @@ describe("retained observations at the exact adaptive decision", () => {
   });
 
   it("matches the global attempt index when a step has repeated methods", () => {
-    const { run, record, view, attempt } = observationsFixture();
+    const { run, record, view, attempt } = observationsFixture(version);
     run.steps[1] = { ...run.steps[0]!, status: "success", planner_decision_id: "decision-retry" };
     Object.assign(record, { deterministic_decision_id: "decision-retry", outcome: "success" });
     view.attempts.push({ ...attempt, attempt_index: 1, outcome: "success", evidence: [{ ...attempt.evidence[0]!, facts: { file_count: 7 } }] });
@@ -167,7 +325,7 @@ describe("retained observations at the exact adaptive decision", () => {
     ["synthetic", "Simulated evidence"], ["control_blocked", "BlueFire control record"],
     ["counterfactual", "Counterfactual evidence"], ["unknown", "Observation unavailable"],
   ])("keeps %s counts distinct from independent observations", async (provenance, label) => {
-    const { run, row } = observationsFixture();
+    const { run, row } = observationsFixture(version);
     row.provenance = provenance;
     row.facts = { file_count: 2 };
     const panel = await openObservations(run);
@@ -176,7 +334,7 @@ describe("retained observations at the exact adaptive decision", () => {
   });
 
   it.each(["run", "decision", "duplicate-origin", "index", "duplicate-index", "step", "behavior", "action", "outcome", "record-outcome"])("refuses a mismatched %s without borrowing another attempt", async field => {
-    const { run, record, view, attempt } = observationsFixture();
+    const { run, record, view, attempt } = observationsFixture(version);
     if (field === "run") record.run_id = "other-run";
     if (field === "decision") record.deterministic_decision_id = "other-decision";
     if (field === "duplicate-origin") run.steps.push({ ...run.steps[0]! });
@@ -193,7 +351,7 @@ describe("retained observations at the exact adaptive decision", () => {
   });
 
   it.each(["legacy", "missing-count", "negative-count", "boolean-count", "infinite-count", "unsafe-count", "inconsistent-count", "too-many-attempts", "too-many-records", "duplicate-record", "reference", "hash", "provenance"])("keeps %s unavailable instead of inventing complete evidence", field => {
-    const { run, record, view, attempt, row } = observationsFixture();
+    const { run, record, view, attempt, row } = observationsFixture(version);
     if (field === "legacy") Reflect.deleteProperty(view, "schema_version");
     if (field === "missing-count") Reflect.deleteProperty(attempt, "missing_evidence_count");
     if (field === "negative-count") attempt.omitted_evidence_count = -1;
@@ -211,7 +369,7 @@ describe("retained observations at the exact adaptive decision", () => {
   });
 
   it("keeps a valid empty summary and absent telemetry flag distinct from verified absence", async () => {
-    const { run, attempt } = observationsFixture();
+    const { run, attempt } = observationsFixture(version);
     run.steps[0]!.evidence_ids = [];
     attempt.evidence = [];
     Reflect.deleteProperty(attempt.failure, "telemetry_gap");
@@ -221,7 +379,7 @@ describe("retained observations at the exact adaptive decision", () => {
   });
 
   it.each(["extra", "enum", "negative", "boolean", "unsafe", "permission-bits", "permission-shape", "effective-access", "executed-permissions"])("does not render unsupported %s facts or raw values", async field => {
-    const { run, row } = observationsFixture();
+    const { run, row } = observationsFixture(version);
     const unsupportedValue = "synthetic-private-value:/private/operator/file";
     if (field === "extra") row.facts.raw_log = unsupportedValue;
     if (field === "enum") row.facts.observation_kind = unsupportedValue;
@@ -239,7 +397,7 @@ describe("retained observations at the exact adaptive decision", () => {
   });
 
   it.each(["unavailable_windows", "unsupported_platform", "invalid_metadata"])("keeps %s permission metadata unavailable without invented bits", async status => {
-    const { run, row } = observationsFixture();
+    const { run, row } = observationsFixture(version);
     row.facts = { artifact_type: "file_observation", permission_status: status, effective_access: "not_evaluated" };
     const panel = await openObservations(run);
     expect(panel.getByText("File permissions")).toBeVisible();
@@ -247,3 +405,88 @@ describe("retained observations at the exact adaptive decision", () => {
     expect(panel.getByText(/Not evaluated; mode bits/)).toBeVisible();
   });
 });
+describe("merged observation and retry-budget boundaries", () => {
+  it.each(["wrong-run", "duplicate-origin", "empty-id", "unmatched-id"])("keeps a v5 %s decision wholly unknown instead of borrowing its coherent budget", field => {
+    const run = v5Fixture(), record = run.ai_proposals![0]!;
+    if (field === "wrong-run") record.run_id = "other-run";
+    if (field === "duplicate-origin") run.steps.push({ ...run.steps[0]! });
+    if (field === "empty-id") record.deterministic_decision_id = "";
+    if (field === "unmatched-id") record.deterministic_decision_id = "other-decision";
+    expect(decisionObservations(run, record)).toEqual({ available: false, budgets: {}, attempts: [], evidence: [], unknowns: [] });
+    render(<AdaptiveRunPath run={run} catalog={catalog}/>);
+    const decision = screen.getByRole("region", { name: "Recorded adaptive decision" });
+    openDetails(decision);
+    expect(within(decision).getByText("Unknown steps · Unknown seconds · Unknown retries · Unknown retries for this step")).toBeVisible();
+    expect(within(decision).queryByRole("region", { name: "Observed file permissions" })).not.toBeInTheDocument();
+    expect(within(decision).queryByText(/retry budget projection is inconsistent/)).not.toBeInTheDocument();
+  });
+
+  it.each(["missing", "stale", "wrong-schema"])("does not borrow a %s v5 attempt summary", field => {
+    const run = multipleV5Fixture(), record = run.ai_proposals![1]!;
+    const observations = (record.planner_state as { observations: ReturnType<typeof projection> }).observations;
+    if (field === "missing") observations.attempts = [];
+    if (field === "stale") observations.attempts.pop();
+    if (field === "wrong-schema") observations.schema_version = "bluefire.runtime-observations.v1";
+    const result = decisionObservations(run, record);
+    expect(result).toMatchObject({ available: false, evidence: [], attempts: [] });
+    expect(result.budgets).toEqual(field === "wrong-schema" ? {} : { steps: 2, seconds: 10, retries: 1, stepRetries: 1 });
+    if (field !== "wrong-schema") {
+      render(<AdaptiveRunPath run={run} catalog={catalog}/>);
+      const decision = screen.getAllByRole("region", { name: "Recorded adaptive decision" })[1]!;
+      openDetails(decision);
+      expect(within(decision).getByText("2 steps · 10 seconds · 1 retry · 1 retry for this step")).toBeVisible();
+      expect(within(decision).queryByRole("region", { name: "Observed file permissions" })).not.toBeInTheDocument();
+    }
+  });
+
+  it.each(["v4", "v5"] as const)("requires the exact observation schema for %s", version => {
+    const { run, record, view } = observationsFixture(version);
+    view.schema_version = version === "v4" ? "bluefire.runtime-observations.v2" : "bluefire.runtime-observations.v1";
+    expect(decisionObservations(run, record)).toMatchObject({ available: false, evidence: [], attempts: [], budgets: {} });
+  });
+
+  it("selects only the current v5 attempt's facts while preserving independently bound earlier permission observations", () => {
+    const run = multipleV5Fixture(), record = run.ai_proposals![1]!;
+    const observations = (record.planner_state as { observations: ReturnType<typeof projection> }).observations;
+    const id = `evidence-${"c".repeat(20)}`;
+    run.steps[1]!.evidence_ids = [id];
+    observations.attempts[1]!.evidence = [{ evidence_id: id, record_hash: recordHash, provenance: "executed", facts: { reported_size_bytes: 7 } }];
+    const result = decisionObservations(run, record);
+    expect(result.available).toBe(true);
+    expect(result.evidence).toEqual([{ evidence_id: id, record_hash: recordHash, label: "Reported execution", facts: [{ label: "Reported size in bytes", value: "7" }] }]);
+    expect(result.attempts).toHaveLength(2);
+    expect(result.budgets).toEqual({ steps: 2, seconds: 10, retries: 1, stepRetries: 1 });
+  });
+
+  it.each(["behavior", "action", "outcome", "reference", "count", "duplicate-index"])("rejects an earlier attempt with mismatched %s before the permission view", field => {
+    const run = multipleV5Fixture(), record = run.ai_proposals![1]!;
+    const observations = (record.planner_state as { observations: ReturnType<typeof projection> }).observations;
+    const earlier = observations.attempts[0]!;
+    if (field === "behavior") earlier.behavior_id = alternate;
+    if (field === "action") earlier.action_id = alternate;
+    if (field === "outcome") earlier.outcome = "success";
+    if (field === "reference") earlier.evidence[0]!.evidence_id = `evidence-${"f".repeat(20)}`;
+    if (field === "count") earlier.missing_evidence_count = 1;
+    if (field === "duplicate-index") observations.attempts.push({ ...earlier });
+    const result = decisionObservations(run, record);
+    expect(result).toMatchObject({ available: false, evidence: [], attempts: [], budgets: { retries: 1, stepRetries: 1 } });
+    render(<AdaptiveRunPath run={run} catalog={catalog}/>);
+    const decision = screen.getAllByRole("region", { name: "Recorded adaptive decision" })[1]!;
+    openDetails(decision);
+    expect(within(decision).queryByRole("region", { name: "Observed file permissions" })).not.toBeInTheDocument();
+  });
+
+  it("does not expose unsupported earlier facts through the separate permission panel", () => {
+    const run = multipleV5Fixture(), record = run.ai_proposals![1]!;
+    const observations = (record.planner_state as { observations: ReturnType<typeof projection> }).observations;
+    observations.attempts[0]!.evidence[0]!.facts.extra = "unsupported authored value";
+    const result = decisionObservations(run, record);
+    expect(result.available).toBe(true);
+    expect(result.attempts[0]!.evidence).toEqual([]);
+  });
+});
+
+function openDetails(decision: HTMLElement) {
+  const summary = within(decision).getByText("Decision, observations and limits");
+  summary.closest("details")!.open = true;
+}

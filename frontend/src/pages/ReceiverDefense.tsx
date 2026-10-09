@@ -9,6 +9,7 @@ import { Button, Callout, ErrorState, LoadingState, PageHeader } from "../compon
 import { ReceiverTestSetup } from "../components/ReceiverTestSetup";
 import { ReceiverSavedTests } from "../components/ReceiverSavedTests";
 import { ReceiverTestProgress } from "../components/ReceiverTestProgress";
+import { RetainedReceiverControl } from "../components/RetainedReceiverControl";
 import "./ReceiverDefense.css";
 
 export function ReceiverDefensePage() {
@@ -26,7 +27,7 @@ export function ReceiverDefensePage() {
     // Persist before every attempt, including retry after an earlier storage failure.
     storeReceiverPending(operation);
     await client.cancelQueries({ queryKey: ["receiver-test", operation.id], exact: true });
-    const response = operation.kind === "create" ? await api.createReceiverTest(operation.body) : operation.kind === "prepare" ? await api.prepareReceiver(operation.id, operation.body) : await api.reviewReceiver(operation.id, operation.body);
+    const response = operation.kind === "create" ? await api.createReceiverTest(operation.body) : operation.kind === "prepare" ? await api.prepareReceiver(operation.id, operation.body) : operation.kind === "control" ? await api.rollbackReceiverControl(operation.id, operation.body) : await api.reviewReceiver(operation.id, operation.body);
     const envelope = checkedReceiverTest(response, operation.id);
     await client.cancelQueries({ queryKey: ["receiver-test", operation.id], exact: true });
     return envelope;
@@ -40,7 +41,7 @@ export function ReceiverDefensePage() {
     refetchInterval: (state) => state.state.data && ["active", "stopping"].includes(state.state.data.status) ? 1200 : false });
   const envelope = query.data;
   const assistant = useAssistancePanel();
-  const assistantSelection = useMemo<ReceiverAssistanceSelection | undefined>(() => envelope?.admission.accepted && envelope.context && envelope.phases.some((phase) => phase.result)
+  const assistantSelection = useMemo<ReceiverAssistanceSelection | undefined>(() => envelope?.schema_version === "bluefire.receiver-defense.v1" && envelope.admission.accepted && envelope.context && envelope.phases.some((phase) => phase.result)
     ? { kind: "receiver_test", receiver_job_id: envelope.job.job_id, receiver_context_digest: envelope.context.context_digest } : undefined, [envelope]);
   usePublishReceiverSelection(assistantSelection, envelope?.context?.scenario_title);
   const assistantOwner = envelope?.job.request?.assistance_turn as { parent_job_id?: string } | undefined;
@@ -64,14 +65,14 @@ export function ReceiverDefensePage() {
     if (id && !params.get("receiver_job")) setParams((old) => { const next = new URLSearchParams(old); next.set("receiver_job", id); return next; }, { replace: true });
   }, [id, params, setParams]);
   const submit = (operation: ReceiverPending) => {
-    if (locked.current || pending || restored.error || stopRequestedRef.current.has(operation.id)) return;
+    if (locked.current || pending || restored.error || (operation.kind !== "control" && stopRequestedRef.current.has(operation.id))) return;
     locked.current = true;
     setPending(operation);
     setParams((old) => { const next = new URLSearchParams(old); next.set("receiver_job", operation.id); return next; });
     setLocalError(undefined);
     write.mutate(operation);
   };
-  const retry = () => { if (!pending || pending.id !== id || locked.current || stopRequestedRef.current.has(pending.id)) return; locked.current = true; write.mutate(pending); };
+  const retry = () => { if (!pending || pending.id !== id || locked.current || (pending.kind !== "control" && stopRequestedRef.current.has(pending.id))) return; locked.current = true; write.mutate(pending); };
   const startAnother = () => {
     if (!envelope?.can_start_new_test || pending) return;
     setParams((old) => { const next = new URLSearchParams(old); next.delete("receiver_job"); next.set("receiver", "1"); return next; });
@@ -85,7 +86,7 @@ export function ReceiverDefensePage() {
       {!receiverJobValid(id) ? <ErrorState error={new Error("This control-test link is incomplete. Open the saved test from Runs.")} /> : query.isError ? <ErrorState title="Saved test status unavailable" error={query.error} retry={() => { void query.refetch(); }} /> : !envelope ? <LoadingState label={write.isPending ? "Saving the control test" : "Opening the control test"} /> : null}
       {pending ? <Callout title={write.isPending ? "Saving this request" : "Confirm this request before continuing"}>
         <p>{write.isPending ? "Keep working here or return to this saved test later." : "The original request is retained. Check its status or retry the same request; a retry keeps its identity and reviewed contents."}</p>
-        {pending.id !== id ? <p>This retained request belongs to another test. <Link to={`/compare?receiver_job=${encodeURIComponent(pending.id)}`}>Return to the retained control test</Link> to inspect and recover its exact request.</p> : !write.isPending ? <div className="receiver-actions">{!stopRequested ? <Button onClick={retry}>Retry this exact request</Button> : null}<Button onClick={() => { void query.refetch(); }}>Check saved status</Button>{envelope?.status === "stopped" ? <Button onClick={() => { try { clearReceiverPending(pending); setPending(undefined); setLocalError(undefined); } catch (error) { setLocalError(error); } }}>Close retained request after confirmed stop</Button> : null}</div> : null}
+        {pending.id !== id ? <p>This retained request belongs to another test. <Link to={`/compare?receiver_job=${encodeURIComponent(pending.id)}`}>Return to the retained control test</Link> to inspect and recover its exact request.</p> : !write.isPending ? <div className="receiver-actions">{!stopRequested || pending.kind === "control" ? <Button onClick={retry}>Retry this exact request</Button> : null}<Button onClick={() => { void query.refetch(); }}>Check saved status</Button>{envelope?.status === "stopped" && pending.kind !== "control" ? <Button onClick={() => { try { clearReceiverPending(pending); setPending(undefined); setLocalError(undefined); } catch (error) { setLocalError(error); } }}>Close retained request after confirmed stop</Button> : null}</div> : null}
         <details><summary>Retained request details</summary><pre>{JSON.stringify(pending, null, 2)}</pre></details>
       </Callout> : null}
       {write.error ? <ErrorState title="Request not confirmed" error={write.error} /> : null}
@@ -94,11 +95,12 @@ export function ReceiverDefensePage() {
         <p>{envelope.admission.problem?.message ?? "BlueFire is checking the saved experiment and settings before any receiver can be prepared."}</p>
         {envelope.admission.problem ? <><p>This request did not authorize a receiver or run. Start a separate test to review the current state; the original request stays in history.</p><details><summary>Original request and current unreviewed context</summary><pre>{JSON.stringify({ submitted_request: envelope.job.request?.submitted_request, unreviewed_context: envelope.context }, null, 2)}</pre></details></> : null}
       </Callout> : null}
-      {assistant && (receiverJobValid(assistantParentId) || assistantSelection) ? <div className="receiver-assistant-entry">
+      {assistant && envelope?.schema_version === "bluefire.receiver-defense.v1" && (receiverJobValid(assistantParentId) || assistantSelection) ? <div className="receiver-assistant-entry">
         <h3>{receiverJobValid(assistantParentId) ? "This test has saved Assistant work" : "Understand the receiver evidence"}</h3>
         <p>{receiverJobValid(assistantParentId) ? "Return to the operation that coordinates this test and its phase analyses. Its submitted mode and provider stay bound." : "Ask for an interpretation of the verified phases. Analysis does not take ownership of this test or start another phase."}</p>
         <Button onClick={() => { if (receiverJobValid(assistantParentId)) assistant.openJob(assistantParentId, id); else assistant.setOpen(true); }}>{receiverJobValid(assistantParentId) ? "Open saved Assistant work" : "Analyse with Assistant"}</Button>
       </div> : null}
+      {envelope?.admission.accepted && envelope.context && envelope.control ? <RetainedReceiverControl key={`${id}:${envelope.control.status}:${envelope.control.control_digest}`} envelope={{ ...envelope, context: envelope.context }} disabled={Boolean(pending) || write.isPending || (stopRequested && !["stopped", "completed"].includes(envelope.status)) || Boolean(query.error)} onStart={(body) => submit({ kind: "create", id: receiverJobId(body.submission_id), body })} onRollback={(ownerId, body) => submit({ kind: "control", id: ownerId, body })} /> : null}
       {envelope?.admission.accepted && envelope.context ? <ReceiverTestProgress key={id} envelope={{ ...envelope, context: envelope.context }} disabled={Boolean(pending) || write.isPending || stopRequested || Boolean(query.error)}
         onPrepare={(body) => submit({ kind: "prepare", id, body })} onReview={(body) => submit({ kind: "review", id, body })} /> : null}
       {envelope && envelope.status !== "completed" && envelope.status !== "stopped" ? <div className="receiver-stop"><Button variant="danger" disabled={stop.isPending} onClick={() => stop.mutate(id)}>{stop.isPending ? "Requesting stop" : "Stop control test"}</Button><p>Stop requests cancellation and receiver cleanup. The test stays open until shutdown is confirmed.</p></div> : null}

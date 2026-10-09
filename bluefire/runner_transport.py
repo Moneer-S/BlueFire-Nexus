@@ -29,7 +29,14 @@ from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, Callable, Iterator, Mapping, cast
 
 from . import native_tool_transport as native_tools
+from . import owned_service_transport as service_transport
 from . import runner_transport_framing as framing
+from .owned_service_authority import (
+    GRANT_SCHEMA,
+    OwnedServiceAdmission,
+    OwnedServiceAuthorityError,
+    OwnedServiceGrant,
+)
 from .runner_client import (
     RunnerTaskCancelled,
     RunnerTaskTimedOut,
@@ -46,6 +53,7 @@ from .runner_client import (
     runner_watchdog_control_root,
 )
 from .runner_result_persistence import commit_durable_result
+from .runner_transport_client import execute_authenticated_task
 from .runner_transport_errors import (
     AuthenticatedRunnerTransportError,
     RunnerAuthenticationError,
@@ -704,6 +712,25 @@ def audit_runner_ledger(
                     row["result_json"],
                     row["recovery_receipts_json"],
                 )
+                execute_identity_valid = True
+                if is_execute:
+                    try:
+                        # The stored-payload validator preserves legacy identity
+                        # checks and recognizes the service grant's stable
+                        # manifest/profile task identity.
+                        service_transport.stored_execute_payload(
+                            dict(row),
+                            decode_object=_decode_json_object,
+                            execution_identity=execution_task_identity,
+                            legacy_task_id=_execute_task_id,
+                        )
+                    except (
+                        RunnerTransportError,
+                        RunnerAuthenticationError,
+                        TypeError,
+                        ValueError,
+                    ):
+                        execute_identity_valid = False
                 if (
                     operation not in _OPERATIONS
                     or state_value not in _LEDGER_STATES
@@ -725,7 +752,7 @@ def audit_runner_ledger(
                         and (not isinstance(blob, bytes) or len(blob) > _MAX_LEDGER_VALUE_BYTES)
                         for blob in blobs
                     )
-                    or (is_execute and row["task_id"] != _execute_task_id(row["request_hash"]))
+                    or (is_execute and not execute_identity_valid)
                     or (is_execute and row["execute_payload_json"] is None)
                     or (not is_execute and row["execute_payload_json"] is not None)
                     or (not is_execute and row["effect_dispatched"] != 0)
@@ -2072,29 +2099,15 @@ class AuthenticatedRunnerServer:
                 os.close(parent_descriptor)
 
     @staticmethod
-    def _stored_execute_payload(row: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-        raw = row.get("execute_payload_json")
-        if not isinstance(raw, bytes):
-            raise RunnerTransportError("runner execution manifest is unavailable")
-        decoded = _decode_json_object(raw)
-        if set(decoded) != {"manifest", "profile"}:
-            raise RunnerTransportError("runner execution manifest is invalid")
-        manifest = decoded.get("manifest")
-        profile = decoded.get("profile")
-        if not isinstance(manifest, dict) or not isinstance(profile, dict):
-            raise RunnerTransportError("runner execution manifest is invalid")
-        if (
-            content_hash(decoded) != row.get("request_hash")
-            or row.get("task_id") != _execute_task_id(str(row.get("request_hash")))
-            or profile.get("profile_id") != row.get("profile_id")
-            or profile.get("runner_id") != row.get("runner_id")
-            or manifest.get("runner_id") != row.get("runner_id")
-            or manifest.get("runner_profile_id") != row.get("profile_id")
-            or manifest.get("platform") != profile.get("platform")
-            or manifest.get("policy_digest") != profile.get("policy_digest")
-        ):
-            raise RunnerTransportError("runner execution manifest identity is invalid")
-        return manifest, profile
+    def _stored_execute_payload(
+        row: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any], OwnedServiceGrant | None]:
+        return service_transport.stored_execute_payload(
+            row,
+            decode_object=_decode_json_object,
+            execution_identity=execution_task_identity,
+            legacy_task_id=_execute_task_id,
+        )
 
     def _execute_row(self, task_id: str) -> sqlite3.Row | None:
         with self._database() as connection:
@@ -2463,7 +2476,7 @@ class AuthenticatedRunnerServer:
                 connection.commit()
             return {"state": state, "result": None, "receipt_ids": []}
         try:
-            manifest, profile = self._stored_execute_payload(dict(row))
+            manifest, profile, stored_service_grant = self._stored_execute_payload(dict(row))
         except (RunnerTransportError, RunnerAuthenticationError):
             if existing_terminal:
                 return {"state": existing_state, "result": None, "receipt_ids": []}
@@ -2477,6 +2490,26 @@ class AuthenticatedRunnerServer:
                 return None
             state, receipt_ids = committed
             return {"state": state, "result": None, "receipt_ids": receipt_ids}
+        if stored_service_grant is not None:
+            # A service process can outlive its watchdog and has no workspace
+            # receipt that proves absence. Until the typed native reservation
+            # and independent service observer reconcile it, interruption is
+            # always recovery-required.
+            try:
+                durable_service_result = self._recover_durable_result(task_id, manifest, profile)
+            except RunnerTransportError:
+                durable_service_result = None
+            if durable_service_result is None:
+                committed = self._set_execute_recovery_state(
+                    task_id,
+                    receipt_ids=[],
+                    expected_state=existing_state,
+                    expected_updated_at=observed_updated_at,
+                )
+                if committed is None:
+                    return None
+                state, receipt_ids = committed
+                return {"state": state, "result": None, "receipt_ids": receipt_ids}
         if existing_terminal:
             receipts = self._discover_recovery_receipts(manifest, profile)
             if receipts:
@@ -2944,8 +2977,17 @@ class AuthenticatedRunnerServer:
         expected = request_authentication(enrollment, unsigned)
         if not hmac.compare_digest(authentication, expected):
             raise _RequestRefusal("authentication_failed")
-        if operation == "execute" and task_id != _execute_task_id(request_hash):
-            raise _RequestRefusal("request_invalid")
+        if operation == "execute":
+            try:
+                service_transport.validate_execute_task_identity(
+                    payload,
+                    task_id=task_id,
+                    request_hash=request_hash,
+                    execution_identity=execution_task_identity,
+                    legacy_task_id=_execute_task_id,
+                )
+            except (RunnerTransportError, RunnerAuthenticationError, ValueError):
+                raise _RequestRefusal("request_invalid") from None
         if profile_id not in enrollment.allowed_profile_ids:
             raise _RequestRefusal("profile_not_allowed")
         return dict(request)
@@ -3003,13 +3045,38 @@ class AuthenticatedRunnerServer:
                     self, request, enrollment, refusal=_RequestRefusal
                 )
             elif operation == "execute":
-                supplied = self._require_payload(request, frozenset({"manifest", "profile"}))
+                raw_payload = request.get("payload")
+                if not isinstance(raw_payload, dict):
+                    raise _RequestRefusal("request_invalid")
+                has_service_grant = "owned_service_grant" in raw_payload
+                expected_fields = (
+                    frozenset({"manifest", "profile", "owned_service_grant"})
+                    if has_service_grant
+                    else frozenset({"manifest", "profile"})
+                )
+                supplied = self._require_payload(request, expected_fields)
                 manifest = supplied["manifest"]
                 profile = supplied["profile"]
                 if not isinstance(manifest, dict) or not isinstance(profile, dict):
                     raise _RequestRefusal("request_invalid")
+                service_grant: OwnedServiceGrant | None = None
+                if has_service_grant:
+                    try:
+                        service_grant = service_transport.service_grant_from_payload(
+                            supplied,
+                            manifest=manifest,
+                            profile=profile,
+                            task_id=str(request["task_id"]),
+                        )
+                    except OwnedServiceAuthorityError:
+                        raise _RequestRefusal("request_invalid") from None
                 payload, already_completed = self._execute_payload(
-                    request, enrollment, manifest, profile
+                    request,
+                    enrollment,
+                    manifest,
+                    profile,
+                    peer_fingerprint=peer_fingerprint,
+                    service_grant=service_grant,
                 )
             elif operation == "recover":
                 supplied = self._require_payload(
@@ -3110,6 +3177,9 @@ class AuthenticatedRunnerServer:
         enrollment: RunnerEnrollment,
         manifest: Mapping[str, Any],
         profile: Mapping[str, Any],
+        *,
+        peer_fingerprint: str | None = None,
+        service_grant: OwnedServiceGrant | None = None,
     ) -> tuple[Mapping[str, Any], bool]:
         _inventory, canonical_inventory = self._validated_inventory(enrollment)
         self._validated_execute_documents(
@@ -3118,7 +3188,14 @@ class AuthenticatedRunnerServer:
 
         task_id = str(request["task_id"])
         self._recheck_effect_trust(request, enrollment)
-        existing = self._recover_durable_result(task_id, manifest, profile)
+        # Generic watchdog result files bind only the legacy manifest/profile.
+        # They cannot establish the service reservation or grant identity, so
+        # service requests always reach the native protected admission gate.
+        existing = (
+            None
+            if service_grant is not None
+            else self._recover_durable_result(task_id, manifest, profile)
+        )
         if existing is not None:
             # A safely archived ledger row may be reconstructed from the exact
             # immutable result. Mark the historical effect edge so a failed
@@ -3128,6 +3205,21 @@ class AuthenticatedRunnerServer:
         raw_execute_task = getattr(self.runner, "execute_task", None)
         execute_task = cast(Callable[..., Mapping[str, Any]], raw_execute_task)
         task_aware = callable(raw_execute_task)
+        service_admission: OwnedServiceAdmission | None = None
+        if service_grant is not None:
+            if peer_fingerprint is None or not task_aware:
+                raise _RequestRefusal("request_invalid")
+            try:
+                service_admission = service_transport.make_authenticated_admission(
+                    self.runner,
+                    service_grant,
+                    execute_task=execute_task,
+                    issuer=service_transport.authenticated_service_issuer(
+                        _enrollment_binding(enrollment, peer_fingerprint), self.instance_id
+                    ),
+                )
+            except OwnedServiceAuthorityError:
+                raise _RequestRefusal("request_invalid") from None
         cancellation = threading.Event()
         try:
             try:
@@ -3143,13 +3235,14 @@ class AuthenticatedRunnerServer:
                     if not entered:
                         raise _RequestRefusal("task_cancelled")
                     if task_aware:
-                        result = execute_task(
-                            manifest,
-                            profile,
-                            task_id=task_id,
-                            cancel_event=cancellation,
-                            durable_result_path=self._durable_result_path(task_id),
-                        )
+                        execute_kwargs: dict[str, Any] = {
+                            "task_id": task_id,
+                            "cancel_event": cancellation,
+                            "durable_result_path": self._durable_result_path(task_id),
+                        }
+                        if service_admission is not None:
+                            execute_kwargs["owned_service_admission"] = service_admission
+                        result = execute_task(manifest, profile, **execute_kwargs)
                     else:
                         result = self.runner.execute(manifest, profile)
                 if not isinstance(result, Mapping):
@@ -3554,7 +3647,7 @@ class AuthenticatedRunnerServer:
         )
         if state == "completed":
             try:
-                manifest, profile = self._stored_execute_payload(dict(row))
+                manifest, profile, _service_grant = self._stored_execute_payload(dict(row))
                 raw_stored = row["result_json"]
                 if not isinstance(raw_stored, bytes):
                     raise RunnerTransportError("completed task has no result")
@@ -3581,7 +3674,7 @@ class AuthenticatedRunnerServer:
             result = stored.get("result")
             if not isinstance(result, dict) or set(stored) != {"result"}:
                 raise sqlite3.DatabaseError("completed task result is invalid")
-            manifest, profile = self._stored_execute_payload(dict(row))
+            manifest, profile, _service_grant = self._stored_execute_payload(dict(row))
             result = self._validated_execute_result(result, manifest, profile)
         receipt_ids: list[str] = []
         raw_receipts = row["recovery_receipts_json"]
@@ -3834,6 +3927,8 @@ class AuthenticatedRunnerServer:
 class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
     """RunnerTransport client with exact-task reconnect recovery semantics."""
 
+    owned_service_grant_protocol = GRANT_SCHEMA
+
     def __init__(
         self,
         enrollment_root: str | Path,
@@ -3960,120 +4055,23 @@ class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
         task_id: str,
         cancel_event: threading.Event,
         durable_result_path: str | Path,
+        owned_service_grant: OwnedServiceGrant | Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
-        """Execute and cancel one exact remote task through separate mTLS requests.
-
-        The durable path belongs to the local orchestration interface only. It
-        is validated but never read, written, or sent to the runner host; the
-        authenticated server derives its own ledger-bound result namespace.
-        """
-
-        expected_task_id, request_hash = self.execution_identity(manifest, profile)
-        checked_task_id = _token(task_id)
-        if not hmac.compare_digest(checked_task_id, expected_task_id):
-            raise RunnerAuthenticationError("Runner execution identity is invalid.")
-        if not callable(getattr(cancel_event, "is_set", None)) or not callable(
-            getattr(cancel_event, "wait", None)
-        ):
-            raise RunnerAuthenticationError("Runner cancellation signal is invalid.")
-        caller_path = Path(durable_result_path).expanduser()
-        if not caller_path.is_absolute() or caller_path.name in {"", ".", ".."}:
-            raise RunnerAuthenticationError("Runner durable result identity is invalid.")
-
-        monitor_stop = threading.Event()
-        monitor_payload: list[Mapping[str, Any]] = []
-        monitor_error: list[BaseException] = []
-
-        def monitor_cancellation() -> None:
-            not_found_attempts = 0
-            connection_attempts = 0
-            while not monitor_stop.wait(0.01):
-                if not cancel_event.is_set():
-                    continue
-                while not monitor_stop.is_set():
-                    try:
-                        monitor_payload.append(
-                            self._cancel_for_execute_task(
-                                checked_task_id,
-                                request_hash,
-                                abort_event=monitor_stop,
-                            )
-                        )
-                        return
-                    except RunnerRemoteError as exc:
-                        if exc.code != "task_not_found" or not_found_attempts >= 20:
-                            monitor_error.append(exc)
-                            return
-                        not_found_attempts += 1
-                    except RunnerConnectionError as exc:
-                        connection_attempts += 1
-                        if connection_attempts >= self.recovery_attempts:
-                            monitor_error.append(exc)
-                            return
-                    except BaseException as exc:
-                        monitor_error.append(exc)
-                        return
-                    if monitor_stop.wait(max(self.recovery_delay_seconds, 0.01)):
-                        return
-
-        monitor = threading.Thread(
-            target=monitor_cancellation,
-            name=f"bluefire-runner-cancel-{checked_task_id[-12:]}",
-            daemon=True,
+        """Execute and cancel one exact remote task through separate mTLS requests."""
+        return execute_authenticated_task(
+            self,
+            manifest,
+            profile,
+            task_id=task_id,
+            cancel_event=cancel_event,
+            durable_result_path=durable_result_path,
+            owned_service_grant=owned_service_grant,
+            task_id_validator=_token,
+            remote_error=RunnerRemoteError,
+            connection_error=RunnerConnectionError,
+            cancelled_error=RunnerTaskCancelled,
+            timed_out_error=RunnerTaskTimedOut,
         )
-        monitor.start()
-        execution_result: Mapping[str, Any] | None = None
-        execution_error: BaseException | None = None
-        try:
-            execution_result = self.execute(manifest, profile)
-        except BaseException as exc:
-            execution_error = exc
-        finally:
-            monitor_stop.set()
-            monitor.join(timeout=max(self.socket_timeout_seconds + 1.0, 2.0))
-        if monitor.is_alive():
-            raise RunnerConnectionError(
-                "Runner cancellation request did not stop within its transport deadline."
-            )
-        if execution_result is not None:
-            return execution_result
-        assert execution_error is not None
-        if not isinstance(execution_error, RunnerConnectionError):
-            raise execution_error
-
-        terminal = monitor_payload[-1] if monitor_payload else None
-        if terminal is not None and terminal.get("state") == "cancelled":
-            raise RunnerTaskCancelled("Runner task was cancelled after its process tree stopped.")
-        if cancel_event.is_set() or terminal is not None or monitor_error:
-            recovered_error: RunnerConnectionError | None = None
-            for attempt in range(self.recovery_attempts):
-                if attempt and self.recovery_delay_seconds:
-                    time.sleep(self.recovery_delay_seconds)
-                try:
-                    recovered = self.recover(checked_task_id, request_hash)
-                except RunnerConnectionError as exc:
-                    recovered_error = exc
-                    continue
-                state = recovered.get("state")
-                if state == "completed":
-                    return self._recovered_result_payload(recovered)
-                if state == "cancelled":
-                    raise RunnerTaskCancelled(
-                        "Runner task was cancelled after its process tree stopped."
-                    )
-                if state == "timed_out":
-                    raise RunnerTaskTimedOut(
-                        "Runner task timed out after its process tree stopped."
-                    )
-                if state == "recovery_required":
-                    raise RunnerRemoteError("recovery_required")
-                if state == "failed" and isinstance(recovered.get("error_code"), str):
-                    raise RunnerRemoteError(str(recovered["error_code"]))
-            if monitor_error and isinstance(monitor_error[-1], RunnerAuthenticationError):
-                raise monitor_error[-1]
-            if recovered_error is not None:
-                raise recovered_error
-        raise execution_error
 
     def recover(self, task_id: str, request_hash: str) -> Mapping[str, Any]:
         _token(task_id)

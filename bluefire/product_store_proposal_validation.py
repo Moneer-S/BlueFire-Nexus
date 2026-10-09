@@ -8,7 +8,10 @@ from .ai import AIProposal, ProposalType
 
 
 def validate_reviewed_option(document: Mapping[str, Any], proposal: AIProposal) -> None:
-    if document.get("schema_version") == "bluefire.ai-proposal-record.v4":
+    if document.get("schema_version") in {
+        "bluefire.ai-proposal-record.v4",
+        "bluefire.ai-proposal-record.v5",
+    }:
         if proposal.proposal_type is not ProposalType.SELECT_REGISTERED_ACTION:
             raise ValueError("finite method review requires an exact method choice")
         matching = [

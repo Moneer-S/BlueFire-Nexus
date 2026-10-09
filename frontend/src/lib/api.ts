@@ -1,8 +1,9 @@
 import { retainedObservations, type RetainedRunRecord } from "./retained-run-record";
+import type { NativeToolActionId } from "./native-tool-setup";
 import type { AssistanceRunEnvelope, RunPreparationDecision, SavedRunSelection } from "./run-assistance";
 import type { AILiveAuthorization, AILiveAuthorizationList, AILiveAuthorizationRequest, PublicAIProviderConfig, NativeToolCandidateInspection } from "../types";
 import type { RunnerUpgradeReview } from "./runner-upgrade";
-import type { ReceiverContext, ReceiverContextRequest, ReceiverDecision, ReceiverDefenseEnvelope, ReceiverPhase, ReceiverTestList } from "./receiver-defense-types";
+import type { ReceiverContext, ReceiverContextRequest, ReceiverControlDecision, ReceiverDecision, ReceiverDefenseEnvelope, ReceiverPhase, ReceiverTestList } from "./receiver-defense-types";
 import type { RunDetectionSelection, DetectionCreationSource, DetectionCreationEnvelope, DetectionCreationDecision, DetectionCreationValidation } from "./detection-creation";
 import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionRunEvaluation, DetectionCaseRole, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunPresentation, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
 import { approvalDeadline, hasAdaptiveApprovalReview, requiresAdaptiveReview, storedRunApprovalPreflight } from "./approvalReview";
@@ -13,10 +14,10 @@ import type { MethodContext, MethodDecision, MethodRequest } from "./method-comp
 import type { AssistanceContext, AssistanceEnvelope, AssistanceRequest, GraphSelection } from "./assistance";
 import type { GraphDecision, GraphEnvelope, GraphValidation } from "./graph-assistance";
 import { compareDemoRuns, demoCatalog, demoRuns, demoScenario } from "./demo";
+import { browserApiFetch, exchangeBrowserCapability } from "./browser-session";
 
 const API_ROOT = "/api/v1";
 const BROWSER_BOOTSTRAP_FRAGMENT_KEY = "bluefire-session";
-const BROWSER_BOOTSTRAP_HEADER = "X-BlueFire-Browser-Bootstrap";
 const BROWSER_CAPABILITY = /^[A-Za-z0-9_-]{64}$/;
 // Server configuration permits six 300-second attempts, 5.75 seconds of retry
 // backoff, and 10 seconds for normalization. A static bound avoids aborting
@@ -28,7 +29,7 @@ const RUNNER_TRUST_MUTATION_TIMEOUT_MS = 135_000;
 // budget, and 60-second completion margin without trusting stale catalog metadata.
 const SYNCHRONOUS_REPLAY_TIMEOUT_MS = 5_000 + (24 * 60 * 60 * 1000) + 60_000;
 export const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
-export const BROWSER_SESSION_RELAUNCH_MESSAGE = "This local browser session is unavailable. Close this tab and relaunch BlueFire with `bluefire ui`.";
+export const BROWSER_SESSION_RELAUNCH_MESSAGE = "This browser session is unavailable. Connect with a fresh one-time code from the BlueFire launcher.";
 const EMPTY_ACTION_PACKAGE_CATALOG_DIGEST = `sha256:${"0".repeat(64)}`;
 
 export interface ReviewedT1082IntakeResult {
@@ -125,44 +126,37 @@ function consumeBrowserBootstrapFragment(returnHash: string): string | null {
   return capability;
 }
 
-export async function establishBrowserSession(returnHash = ""): Promise<void> {
+export async function establishBrowserSession(returnHash = "", connectionCode?: string): Promise<void> {
   if (DEMO_MODE) return;
   try {
-    const capability = consumeBrowserBootstrapFragment(returnHash);
-    let response = await fetch(`${API_ROOT}/session`, {
-      method: capability === null ? "GET" : "POST",
-      credentials: "same-origin",
-      cache: "no-store",
-      referrerPolicy: "no-referrer",
-      headers: capability === null
-        ? { Accept: "application/json" }
-        : { Accept: "application/json", [BROWSER_BOOTSTRAP_HEADER]: capability },
-    });
-    // Reopening the one-use launch URL in the same browser may replay the
-    // fragment while the HttpOnly session is still valid. Reuse that session
-    // without exposing it to JavaScript.
-    if (!response.ok && capability !== null) {
-      response = await fetch(`${API_ROOT}/session`, {
-        method: "GET",
-        credentials: "same-origin",
-        cache: "no-store",
-        referrerPolicy: "no-referrer",
-        headers: { Accept: "application/json" },
-      });
+    const fragment = consumeBrowserBootstrapFragment(returnHash);
+    const capability = connectionCode ?? fragment;
+    if (capability !== null) {
+      try { await exchangeBrowserCapability(capability); return; }
+      catch {
+        // A replayed launch link may still belong to this tab's valid session.
+        if (connectionCode !== undefined) throw new Error("connection code refused");
+      }
     }
-    if (!response.ok) throw new Error("browser session refused");
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15_000);
+    try {
+      const response = await browserApiFetch(`${API_ROOT}/session`, {
+        method: "GET", headers: { Accept: "application/json" }, signal: controller.signal,
+      });
+      if (response.status !== 204) throw new Error("browser session refused");
+    } finally { window.clearTimeout(timeout); }
   } catch {
     throw new ApiError(BROWSER_SESSION_RELAUNCH_MESSAGE, "browser_session_unavailable", undefined, 401);
   }
 }
 
-async function request<T>(path: string, options: RequestInit = {}, timeoutMs = 20_000): Promise<T> {
+export async function request<T>(path: string, options: RequestInit = {}, timeoutMs = 20_000): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${API_ROOT}${path}`, {
+    const response = await browserApiFetch(`${API_ROOT}${path}`, {
       ...options,
-      credentials: "same-origin",
       signal: controller.signal,
       headers: { Accept: "application/json", ...(options.body ? { "Content-Type": "application/json" } : {}), ...options.headers },
     });
@@ -317,8 +311,8 @@ export const api = {
     if (signal?.aborted) abort();
     const timer = window.setTimeout(abort, 5_000);
     try {
-      const response = await fetch(`${API_ROOT}/session`, {
-        method: "GET", credentials: "same-origin", cache: "no-store", referrerPolicy: "no-referrer",
+      const response = await browserApiFetch(`${API_ROOT}/session`, {
+        method: "GET",
         headers: { Accept: "application/json" }, signal: controller.signal,
       });
       if (controller.signal.aborted) throw new ApiError("The local service check did not complete.", "request_timeout");
@@ -356,6 +350,10 @@ export const api = {
   async reviewReceiver(id: string, body: ReceiverDecision): Promise<ReceiverDefenseEnvelope> {
     if (DEMO_MODE) throw new Error("Demo mode cannot accept a receiver run review.");
     return request(`/receiver-defense/jobs/${encodeURIComponent(id)}/review`, { method: "POST", body: JSON.stringify(body) });
+  },
+  async rollbackReceiverControl(id: string, body: ReceiverControlDecision): Promise<ReceiverDefenseEnvelope> {
+    if (DEMO_MODE) throw new Error("Demo mode cannot roll back a retained receiver policy.");
+    return request(`/receiver-defense/jobs/${encodeURIComponent(id)}/control`, { method: "POST", body: JSON.stringify(body) });
   },
   async detectionCreationSource(runId: string): Promise<DetectionCreationSource> {
     if (DEMO_MODE) throw new ApiError("Detection creation requires a saved run in the connected local service.", "demo_assistance_refused", undefined, 409);
@@ -568,11 +566,11 @@ export const api = {
     const body = kind === "plugins" ? { document } : { document, status };
     return request(`/resources/${kind}/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(body) });
   },
-  async inspectNativeToolCandidate(profileId: string, installationLocation: string, toolVersion: string): Promise<NativeToolCandidateInspection> {
+  async inspectNativeToolCandidate(profileId: string, installationLocation: string, toolVersion: string, actionId: NativeToolActionId = "sandbox.permission.chmod.v1"): Promise<NativeToolCandidateInspection> {
     if (DEMO_MODE) throw new ApiError("Demo mode cannot inspect a local native tool.", "demo_native_tool_inspection_refused", undefined, 409);
     return request(`/resources/runner-profiles/${encodeURIComponent(profileId)}/inspect-native-tool`, {
       method: "POST",
-      body: JSON.stringify({ schema_version: "bluefire.native-tool-candidate.v1", action_id: "sandbox.permission.chmod.v1", installation_location: installationLocation, tool_version: toolVersion }),
+      body: JSON.stringify({ schema_version: "bluefire.native-tool-candidate.v1", action_id: actionId, installation_location: installationLocation, tool_version: toolVersion }),
     });
   },
   async activateResource(kind: "runner-profiles" | "model-providers" | "plugins", id: string): Promise<RuntimeResourceResult> {
@@ -694,8 +692,8 @@ export const api = {
     if (signal.aborted) abort();
     const timeout = window.setTimeout(abort, 30_000);
     try {
-      const response = await fetch(`${API_ROOT}/runs/${runId}/bundle`, {
-        credentials: "same-origin", cache: "no-store", signal: controller.signal,
+      const response = await browserApiFetch(`${API_ROOT}/runs/${runId}/bundle`, {
+        signal: controller.signal,
         headers: { Accept: "application/zip" },
       });
       if (!response.ok) {

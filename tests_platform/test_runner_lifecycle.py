@@ -33,6 +33,7 @@ from bluefire.runner_bootstrap import (
     wheel_platform_tag,
 )
 from bluefire.runner_client import runner_transport_identity
+from bluefire.runner_contracts import seal_manifest, seal_profile
 from bluefire.runner_host import (
     LOOPBACK_HOST,
     PROCESS_RECORD_SCHEMA_VERSION,
@@ -57,7 +58,7 @@ from bluefire.runner_trust import (
     load_local_enrollment,
     remove_local_enrollment,
 )
-from bluefire.util import canonical_json_bytes, file_hash
+from bluefire.util import canonical_json_bytes, content_hash, file_hash
 from tests_platform.runner_lifecycle_host_helper import (
     ProcessFixtureRunner,
     ProcessTestSecretProvider,
@@ -536,7 +537,35 @@ def _create_test_ledger(
         connection.execute(runner_transport_module._TRANSPORT_TASKS_SQL)  # noqa: SLF001
         connection.execute(runner_transport_module._TRANSPORT_TASKS_NONCE_INDEX_SQL)  # noqa: SLF001
         for index, (operation, state_value, cleanup_required) in enumerate(rows):
-            request_hash = "sha256:" + f"{index + 1:064x}"
+            policy_digest = ""
+            profile = seal_profile(
+                {
+                    "schema_version": "bluefire.runner-profile.v1",
+                    "profile_id": PROFILE_ID,
+                    "runner_id": binding["runner_id"],
+                    "platform": current_platform(),
+                    "policy_digest": policy_digest,
+                }
+            )
+            manifest = seal_manifest(
+                {
+                    "schema_version": "bluefire.runner-manifest.v1",
+                    "request_id": f"lifecycle-test-{index}",
+                    "request_hash": "",
+                    "run_id": f"run-lifecycle-test-{index}",
+                    "step_id": f"step-lifecycle-test-{index}",
+                    "behavior_id": "sandbox.lifecycle.test.v1",
+                    "action_id": "sandbox.lifecycle.test.v1",
+                    "runner_id": binding["runner_id"],
+                    "runner_profile_id": PROFILE_ID,
+                    "platform": profile["platform"],
+                    "policy_digest": profile["policy_digest"],
+                    "requested_at": "2026-09-30T12:00:00Z",
+                    "expires_at": "2026-09-30T12:05:00Z",
+                }
+            )
+            execute_payload = {"manifest": manifest, "profile": profile}
+            request_hash = content_hash(execute_payload)
             recovery_receipts = (
                 canonical_json_bytes([]) if state_value == "recovery_required" else None
             )
@@ -568,7 +597,7 @@ def _create_test_ledger(
                     binding["enrollment_generation"],
                     f"{index + 101:064x}",
                     state_value,
-                    canonical_json_bytes({"request": index}),
+                    canonical_json_bytes(execute_payload),
                     result,
                     recovery_receipts,
                     cleanup_required,
@@ -585,6 +614,35 @@ def _create_test_ledger(
     finally:
         connection.close()
     return _TEST_LEDGER_GENERATION
+
+
+def test_ledger_audit_rejects_malformed_execute_payload(lifecycle: ManagedRunnerLifecycle) -> None:
+    _bootstrap(lifecycle)
+    _create_test_ledger(lifecycle, (("execute", "completed", 0),))
+    enrollment = load_local_enrollment(
+        lifecycle.enrollment_root,
+        require_active=False,
+        secret_provider=lifecycle.secret_provider,
+    )
+    valid_audit = runner_transport_module.audit_runner_ledger(lifecycle.ledger_path, enrollment)
+    assert valid_audit is not None
+    assert valid_audit["execute_rows"] == 1
+
+    connection = sqlite3.connect(lifecycle.ledger_path)
+    try:
+        connection.execute(
+            "UPDATE transport_tasks SET execute_payload_json = ?",
+            (canonical_json_bytes({"request": 0}),),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(
+        runner_transport_module.AuthenticatedRunnerTransportError,
+        match="audit could not be verified",
+    ):
+        runner_transport_module.audit_runner_ledger(lifecycle.ledger_path, enrollment)
 
 
 def test_default_host_command_uses_isolated_installed_module_semantics(tmp_path: Path) -> None:

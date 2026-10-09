@@ -4,7 +4,53 @@ import { observationCount, observationFacts, type ObservationFact } from "./adap
 
 export type RuntimeRecord = NonNullable<RunRecord["ai_proposals"]>[number];
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-export const adaptiveRecords = (run: RunRecord) => (run.ai_proposals ?? []).filter(record => record.schema_version === "bluefire.ai-proposal-record.v4");
+const digest = (value: unknown): value is string => typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
+const integer = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value);
+const finiteNonnegative = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+export const adaptiveRecords = (run: RunRecord) => (run.ai_proposals ?? []).filter(record =>
+  record.schema_version === "bluefire.ai-proposal-record.v4" || record.schema_version === "bluefire.ai-proposal-record.v5");
+
+function v5BudgetProjection(record: RuntimeRecord): { steps: number; seconds: number; retries: number; stepRetries: number } | undefined {
+  const policy = object(record.proposal_policy), planner = object(record.planner_state), observations = object(planner.observations);
+  const budgets = object(observations.remaining_budgets);
+  const maxRetries = policy.maximum_adaptive_retries, usedRetries = policy.adaptive_retries_used;
+  const maxStepRetries = policy.maximum_step_retries, usedStepRetries = policy.step_retries_used;
+  const steps = policy.remaining_steps, seconds = budgets.seconds;
+  const attempted = policy.attempted_methods;
+  if (policy.schema_version !== "bluefire.ai-proposal-policy.v3" || !digest(record.proposal_policy_digest)
+    || !digest(record.planner_state_digest) || !digest(policy.adaptive_policy_digest)
+    || planner.schema_version !== "bluefire.planner-state.v3" || observations.schema_version !== "bluefire.runtime-observations.v2"
+    || !integer(maxRetries) || maxRetries < 1 || maxRetries > 8
+    || !integer(usedRetries) || usedRetries < 0 || usedRetries > maxRetries
+    || !integer(maxStepRetries) || maxStepRetries < 1 || maxStepRetries > 3
+    || !integer(usedStepRetries) || usedStepRetries < 0
+    || usedStepRetries > Math.min(maxStepRetries, usedRetries)
+    || !integer(steps) || steps < 0
+    || !finiteNonnegative(seconds)
+    || !Array.isArray(attempted) || attempted.length < 1 || attempted.length > 256
+    || !integer(budgets.steps) || budgets.steps !== steps
+    || !integer(budgets.retries) || budgets.retries !== maxRetries - usedRetries
+    || !integer(budgets.step_retries) || budgets.step_retries !== maxStepRetries - usedStepRetries) return undefined;
+  const seen = new Set<string>();
+  const attemptsByStep = new Map<string, number>();
+  for (const row of attempted) {
+    const identity = object(row);
+    if (Object.keys(identity).length !== 3 || Object.keys(identity).some(key => !["step_id", "behavior_id", "action_id"].includes(key))
+      || ![identity.step_id, identity.behavior_id, identity.action_id].every(value => typeof value === "string" && value.length > 0 && value.length <= 200)) return undefined;
+    const key = `${identity.step_id as string}\u0000${identity.behavior_id as string}\u0000${identity.action_id as string}`;
+    if (seen.has(key)) return undefined;
+    seen.add(key);
+    const stepId = identity.step_id as string;
+    attemptsByStep.set(stepId, (attemptsByStep.get(stepId) ?? 0) + 1);
+  }
+  const currentStepId = record.current_step_id;
+  const currentStepAttempts = typeof currentStepId === "string" ? attemptsByStep.get(currentStepId) : undefined;
+  if (currentStepAttempts === undefined || attemptsByStep.size > 64 || [...attemptsByStep.values()].some(count => count > 4)
+    || usedStepRetries > currentStepAttempts || usedStepRetries < currentStepAttempts - 1
+    || usedRetries > attempted.length
+    || usedRetries < [...attemptsByStep.values()].reduce((sum, count) => sum + count - 1, 0)) return undefined;
+  return { steps, seconds, retries: budgets.retries as number, stepRetries: budgets.step_retries as number };
+}
 export const recordedMethodName = (catalog: CatalogResponse, behavior?: string | null, action?: string | null) =>
   displayTitle(catalog.actions.find(item => item.id === action)?.title ?? catalog.behaviors.find(item => item.id === behavior)?.title ?? "Method unavailable in this catalog");
 
@@ -61,46 +107,61 @@ const limitations = [
 ];
 export type DecisionObservations = {
   available: boolean; classification?: string; budgets: Record<string, number>;
+  attempts: Record<string, unknown>[];
   evidence: Array<{ evidence_id: string; record_hash: string; label: string; facts: ObservationFact[] | null }>;
   unknowns: string[]; missing?: number; omitted?: number; omittedAttempts?: number; telemetryGap?: boolean;
 };
 
 /** The saved projection is not proof of provider wire contents or objective completion. */
 export function decisionObservations(run: RunRecord, record: RuntimeRecord): DecisionObservations {
-  const unavailable: DecisionObservations = { available: false, budgets: {}, evidence: [], unknowns: [] };
   const origin = decisionOrigin(run, record), step = run.steps[origin];
+  if (!step) return { available: false, budgets: {}, attempts: [], evidence: [], unknowns: [] };
   const projection = object(object(record.planner_state).observations);
-  if (!step || record.schema_version !== "bluefire.ai-proposal-record.v4" || projection.schema_version !== "bluefire.runtime-observations.v1"
+  const isV5 = record.schema_version === "bluefire.ai-proposal-record.v5";
+  const budget = isV5 ? v5BudgetProjection(record) : undefined;
+  const unknowns = isV5 && !budget ? ["The retained v5 retry budget projection is inconsistent; remaining adaptive allowance is unknown."] : [];
+  const unavailable: DecisionObservations = { available: false, budgets: budget ?? {}, attempts: [], evidence: [], unknowns };
+  const expectedSchema = isV5 ? "bluefire.runtime-observations.v2" : "bluefire.runtime-observations.v1";
+  if ((!isV5 && record.schema_version !== "bluefire.ai-proposal-record.v4") || projection.schema_version !== expectedSchema
     || !Array.isArray(projection.attempts) || projection.attempts.length > 16) return unavailable;
   const attempts = projection.attempts.map(object), indices = attempts.map(attempt => attempt.attempt_index);
   if (indices.some(index => !observationCount(index) || index > origin) || new Set(indices).size !== indices.length) return unavailable;
   const matched = attempts.filter(attempt => attempt.attempt_index === origin);
-  if (matched.length !== 1) return unavailable;
+  if (matched.length !== 1 || !observationCount(projection.omitted_attempt_count)) return unavailable;
   const attempt = matched[0]!;
-  if (attempt.step_id !== step.step_id || attempt.behavior_id !== step.behavior_id || attempt.action_id !== step.action_id
-    || attempt.outcome !== step.status || attempt.outcome !== record.outcome
-    || !observationCount(attempt.missing_evidence_count) || !observationCount(attempt.omitted_evidence_count)
-    || !observationCount(projection.omitted_attempt_count) || !Array.isArray(attempt.evidence) || attempt.evidence.length > 32) return unavailable;
-  if (!Array.isArray(step.evidence_ids) || attempt.evidence.length + attempt.missing_evidence_count + attempt.omitted_evidence_count !== new Set(step.evidence_ids).size) return unavailable;
+  if (attempt.outcome !== record.outcome) return unavailable;
   const evidence: DecisionObservations["evidence"] = [];
-  for (const value of attempt.evidence) {
-    const row = object(value);
-    if (typeof row.evidence_id !== "string" || !/^evidence-[0-9a-f]{20}$/.test(row.evidence_id)
-      || typeof row.record_hash !== "string" || !/^sha256:[0-9a-f]{64}$/.test(row.record_hash)
-      || typeof row.provenance !== "string" || !Object.hasOwn(provenanceLabels, row.provenance)
-      || !step.evidence_ids?.includes(row.evidence_id) || evidence.some(item => item.evidence_id === row.evidence_id)) return unavailable;
-    evidence.push({ evidence_id: row.evidence_id, record_hash: row.record_hash, label: provenanceLabels[row.provenance]!, facts: observationFacts(row.facts, row.provenance) });
+  const retained: DecisionObservations["attempts"] = [];
+  // Every row passed to the permission view must match its own recorded attempt.
+  for (const item of attempts) {
+    const source = run.steps[item.attempt_index as number];
+    if (!source || item.step_id !== source.step_id || item.behavior_id !== source.behavior_id || item.action_id !== source.action_id
+      || item.outcome !== source.status || !observationCount(item.missing_evidence_count) || !observationCount(item.omitted_evidence_count)
+      || !Array.isArray(item.evidence) || item.evidence.length > 32 || !Array.isArray(source.evidence_ids)
+      || item.evidence.length + item.missing_evidence_count + item.omitted_evidence_count !== new Set(source.evidence_ids).size) return unavailable;
+    const seen = new Set<string>(), permissionEvidence: Record<string, unknown>[] = [];
+    for (const value of item.evidence) {
+      const row = object(value);
+      if (typeof row.evidence_id !== "string" || !/^evidence-[0-9a-f]{20}$/.test(row.evidence_id)
+        || !digest(row.record_hash) || typeof row.provenance !== "string" || !Object.hasOwn(provenanceLabels, row.provenance)
+        || !source.evidence_ids.includes(row.evidence_id) || seen.has(row.evidence_id)) return unavailable;
+      seen.add(row.evidence_id);
+      const facts = observationFacts(row.facts, row.provenance);
+      if (item === attempt) evidence.push({ evidence_id: row.evidence_id, record_hash: row.record_hash, label: provenanceLabels[row.provenance]!, facts });
+      if (facts !== null) permissionEvidence.push({ evidence_id: row.evidence_id, provenance: row.provenance, facts: row.facts });
+    }
+    retained.push({ attempt_index: item.attempt_index, step_id: item.step_id, evidence: permissionEvidence });
   }
-  const budgets: Record<string, number> = {};
-  for (const [key, value] of Object.entries(object(projection.remaining_budgets))) {
+  const budgets: Record<string, number> = budget ?? {};
+  for (const [key, value] of Object.entries(isV5 ? {} : object(projection.remaining_budgets))) {
     if (["steps", "retries"].includes(key) && observationCount(value)) budgets[key] = value;
     if (key === "seconds" && typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER) budgets[key] = value;
   }
-  const failure = object(attempt.failure), classification = failure.classification, unknowns = projection.unknowns;
+  const failure = object(attempt.failure), classification = failure.classification, retainedUnknowns = projection.unknowns;
   return { available: true, classification: typeof classification === "string" && classifications.includes(classification) ? classification : undefined,
-    budgets, evidence, missing: attempt.missing_evidence_count, omitted: attempt.omitted_evidence_count, omittedAttempts: projection.omitted_attempt_count,
+    budgets, attempts: retained, evidence, missing: attempt.missing_evidence_count as number, omitted: attempt.omitted_evidence_count as number, omittedAttempts: projection.omitted_attempt_count,
     telemetryGap: typeof failure.telemetry_gap === "boolean" ? failure.telemetry_gap : undefined,
-    unknowns: Array.isArray(unknowns) ? limitations.filter(value => unknowns.includes(value)) : [] };
+    unknowns: [...unknowns, ...(Array.isArray(retainedUnknowns) ? limitations.filter(value => retainedUnknowns.includes(value)) : [])] };
 }
 
 export function recordedPathNodes(run: RunRecord) {

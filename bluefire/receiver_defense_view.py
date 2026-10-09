@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from . import product_store_receiver_defense as records
+from . import receiver_defense_workflow as workflow
 from .application_errors import APIError
 from .product_store_errors import ProductStoreError
-from .receiver_defense_context import LIMITATIONS, PHASES, POLICIES
+from .receiver_defense_context import LIMITATIONS
 from .receiver_defense_result import verified_result
 from .util import content_hash
 
@@ -19,10 +20,10 @@ def visible_job(coordinator, identifier):
         raise
 
 
-def attempt(coordinator, phase, reservation):
+def attempt(coordinator, phase, reservation, context):
     view = {
         "phase": phase,
-        "policy_id": POLICIES[PHASES.index(phase)],
+        "policy_id": workflow.policy(context, phase),
         "status": "not_started",
         "receiver_job": None,
         "preparation": None,
@@ -138,14 +139,17 @@ def attempt(coordinator, phase, reservation):
 
 def read(coordinator, parent):
     phases = []
+    context = parent["request"].get("context") or parent["request"]["submitted_request"]
     stopped = parent["progress"].get("stopped") is True
     admission = parent["progress"]["admission"]
     admitted = parent["state"] == "completed" and admission == {"accepted": True, "problem": None}
     preceding = True
-    for phase in PHASES:
-        current = attempt(coordinator, phase, parent["progress"].get("phases", {}).get(phase))
+    for phase in workflow.phases(context):
+        current = attempt(
+            coordinator, phase, parent["progress"].get("phases", {}).get(phase), context
+        )
         current["attempts"] = [
-            attempt(coordinator, phase, old)
+            attempt(coordinator, phase, old, context)
             for old in parent["progress"].get("attempt_history", [])
             if old["phase"] == phase
         ]
@@ -217,8 +221,8 @@ def read(coordinator, parent):
                 status = "blocked"
                 next_action["kind"] = "cleanup_required"
             break
-    return {
-        "schema_version": "bluefire.receiver-defense.v1",
+    result = {
+        "schema_version": workflow.schema(context, ""),
         "job": coordinator.service.job(parent["job_id"]),
         "context": parent["request"]["context"],
         "phases": phases,
@@ -226,5 +230,14 @@ def read(coordinator, parent):
         "admission": admission,
         "next_action": next_action,
         "can_start_new_test": owners_settled and (completed or stopped or status == "blocked"),
-        "limitations": LIMITATIONS,
+        "limitations": context.get("limitations", LIMITATIONS),
     }
+    if workflow.retained(context):
+        from .receiver_defense_control import view
+
+        result["control"] = view(coordinator, parent, phases, completed)
+        if result["control"] and result["control"]["status"] == "rolled_back":
+            for phase in phases:
+                phase["prepare_allowed"] = False
+                phase["review_ready"] = False
+    return result

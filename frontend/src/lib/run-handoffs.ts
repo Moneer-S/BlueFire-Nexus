@@ -22,6 +22,18 @@ export function registeredDetectionLink(runId: string, candidateId: string): str
   return `/detection-lab?${params}`;
 }
 
+export function detectionEvaluationHandoff(params: URLSearchParams): { runId: string; candidateId: string } | undefined {
+  if (["run", "candidate", "candidate_scope", "view"].some(key => params.getAll(key).length !== 1)
+    || params.get("candidate_scope") !== "registry" || params.get("view") !== "evaluations") return undefined;
+  const runId = sourceRunParam(params, "run"), candidateId = sourceRunParam(params, "candidate");
+  return runId.trim() && candidateId.trim() ? { runId, candidateId } : undefined;
+}
+
+export function registeredDetectionEvaluationLink(runId: string, candidateId: string): string | undefined {
+  const params = new URLSearchParams({ run: runId, candidate: candidateId, candidate_scope: "registry", view: "evaluations" });
+  return detectionEvaluationHandoff(params) ? `/detection-lab?${params}` : undefined;
+}
+
 export function runCandidateKey(runId: string, candidateId: string): string {
   return `run:${runId}:${candidateId}`;
 }

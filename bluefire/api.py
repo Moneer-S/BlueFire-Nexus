@@ -38,13 +38,11 @@ _REVIEWED_T1082_INTAKE_ROUTE = f"{API_PREFIX}/research-intakes/mitre-attack-t108
 
 BROWSER_BOOTSTRAP_FRAGMENT_KEY = "bluefire-session"
 BROWSER_BOOTSTRAP_HEADER = "X-BlueFire-Browser-Bootstrap"
-BROWSER_SESSION_COOKIE = "bluefire_session"
+BROWSER_SESSION_HEADER = "X-BlueFire-Session"
 BROWSER_BOOTSTRAP_LIFETIME_SECONDS = 5 * 60
 BROWSER_SESSION_LIFETIME_SECONDS = 8 * 60 * 60
 
 _BROWSER_TOKEN = re.compile(r"^[A-Za-z0-9_-]{64}$")
-_COOKIE_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
-_COOKIE_VALUE = re.compile(r"^[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]*$")
 
 _UI_ROOT = Path(__file__).with_name("ui").resolve()
 _STATIC_ROUTES = {
@@ -436,6 +434,40 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                         proposal_job_id, proposal_record_id
                     )
                 )
+            return
+        file_access = self._routes._file_access_request(path)
+        if file_access is not None:
+            operations = {
+                "status": lambda: self.platform_server.service.file_access_status(),
+                "operation": lambda: self.platform_server.service.file_access_operation(
+                    file_access[1]
+                ),
+                "control": lambda: self.platform_server.service.file_access_control(file_access[1]),
+                "reconciliation": lambda: self.platform_server.service.file_access_reconciliation(
+                    file_access[1], file_access[2]
+                ),
+            }
+            if file_access[0] in operations:
+                self._dispatch(operations[file_access[0]])
+            elif file_access[0]:
+                self._error(
+                    HTTPStatus.METHOD_NOT_ALLOWED,
+                    "method_not_allowed",
+                    "This file-access route requires POST.",
+                )
+            return
+        composition = self._routes._composition_request(path)
+        if composition is not None:
+            if composition[0] == "read":
+                self._dispatch(
+                    lambda: self.platform_server.service.composition_objective(composition[1])
+                )
+            elif composition[0] == "proposal-read":
+                self._dispatch(
+                    lambda: self.platform_server.service.composition_proposal(composition[1])
+                )
+            elif composition[0]:
+                self._method_not_allowed("POST")
             return
         receiver = self._routes._receiver_defense_request(path, listing=True)
         if receiver is not None:
@@ -996,6 +1028,61 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if path == f"{API_PREFIX}/comparisons":
             self._dispatch(lambda: self.platform_server.service.compare(body))
             return
+        file_access = self._routes._file_access_request(path)
+        if file_access is not None:
+            operations = {
+                "review": lambda: self.platform_server.service.file_access_review(body),
+                "operations": lambda: self.platform_server.service.submit_file_access_operation(
+                    body
+                ),
+                "control-list": lambda: self.platform_server.service.list_file_access_controls(
+                    body
+                ),
+                "reconcile": lambda: self.platform_server.service.reconcile_file_access_operation(
+                    file_access[1], body
+                ),
+            }
+            if file_access[0] in operations:
+                self._dispatch(operations[file_access[0]])
+            elif file_access[0]:
+                self._error(
+                    HTTPStatus.METHOD_NOT_ALLOWED,
+                    "method_not_allowed",
+                    "This file-access route requires GET.",
+                )
+            return
+        composition = self._routes._composition_request(path)
+        if composition is not None:
+            operations = {
+                "context": lambda: self.platform_server.service.composition_context(body),
+                "objectives": lambda: self.platform_server.service.authorize_composition(body),
+                "objective-list": lambda: self.platform_server.service.list_composition_objectives(
+                    body
+                ),
+                "proposal-context": lambda: self.platform_server.service.composition_proposal_context(
+                    composition[1], body
+                ),
+                "attempts": lambda: self.platform_server.service.submit_composition_attempt(
+                    composition[1], body
+                ),
+                "proposals": lambda: self.platform_server.service.submit_composition_proposal(
+                    composition[1], body
+                ),
+                "proposal-cancel": lambda: self.platform_server.service.cancel_composition_proposal(
+                    composition[1], body
+                ),
+            }
+            if composition[0] in {"stop", "revoke", "continue"}:
+                self._dispatch(
+                    lambda: self.platform_server.service.control_composition(
+                        composition[1], composition[0], body
+                    )
+                )
+            elif composition[0] in operations:
+                self._dispatch(operations[composition[0]])
+            elif composition[0]:
+                self._method_not_allowed("GET")
+            return
         receiver = self._routes._receiver_defense_request(path)
         if receiver is not None:
             operations = {
@@ -1005,6 +1092,9 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     receiver[1], body
                 ),
                 "review": lambda: self.platform_server.service.review_receiver_defense(
+                    receiver[1], body
+                ),
+                "control": lambda: self.platform_server.service.decide_receiver_control(
                     receiver[1], body
                 ),
             }
@@ -1247,27 +1337,14 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 return True
         return False
 
-    def _request_session_cookie(self) -> str | None:
-        raw_headers = self.headers.get_all("Cookie", [])
-        if len(raw_headers) != 1 or len(raw_headers[0]) > 4096:
+    def _request_session_header(self) -> str | None:
+        values = self.headers.get_all(BROWSER_SESSION_HEADER, [])
+        if len(values) != 1 or _BROWSER_TOKEN.fullmatch(values[0]) is None:
             return None
-        cookies: dict[str, str] = {}
-        for raw_pair in raw_headers[0].split(";"):
-            pair = raw_pair.strip()
-            if not pair or "=" not in pair:
-                return None
-            name, value = pair.split("=", 1)
-            if (
-                name in cookies
-                or _COOKIE_NAME.fullmatch(name) is None
-                or _COOKIE_VALUE.fullmatch(value) is None
-            ):
-                return None
-            cookies[name] = value
-        return cookies.get(BROWSER_SESSION_COOKIE)
+        return values[0]
 
     def _require_browser_session(self, *, unread_body: bool = False) -> bool:
-        session = self._request_session_cookie()
+        session = self._request_session_header()
         if session is not None and self.platform_server.browser_sessions.validates(session):
             return True
         reject = self._reject_unread_body if unread_body else self._error
@@ -1319,15 +1396,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 "The browser launch capability is invalid, expired, or already used.",
             )
             return
-        cookie = (
-            f"{BROWSER_SESSION_COOKIE}={session}; HttpOnly; "
-            f"Max-Age={BROWSER_SESSION_LIFETIME_SECONDS}; Path={API_PREFIX}; SameSite=Strict"
-        )
         self._send(
-            HTTPStatus.NO_CONTENT,
-            b"",
+            HTTPStatus.OK,
+            json.dumps({"session": session}).encode("utf-8"),
             "application/json; charset=utf-8",
-            extra_headers={"Set-Cookie": cookie},
         )
 
     def _request_path(self, *, unread_body: bool = False) -> str | None:

@@ -38,6 +38,7 @@ from bluefire.runner_client import (
     runner_watchdog_status_path,
 )
 from bluefire.runner_linux_containment import LinuxPrivateProcessContainment
+from tests_platform.runner_failure_diagnostics import darwin_governor_snapshot
 
 _HELPER = r"""
 import json
@@ -486,19 +487,91 @@ def _pid_is_running(pid: int) -> bool:
         ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
 
 
+def _watchdog_failure_evidence(error: BaseException) -> None:
+    """Finite labels from the existing wait traceback; no new reads, waits or cleanup."""
+    try:
+        evidence: dict[str, Any] = {"wait_frame_found": False, "status_available": False}
+        trace = error.__traceback__
+        for _ in range(32):
+            if trace is None:
+                break
+            if trace.tb_frame.f_code is SubprocessRustRunner._await_watchdog.__code__:
+                evidence["wait_frame_found"] = True
+                snapshot = trace.tb_frame.f_locals
+                status = snapshot.get("status")
+                if type(status) is dict:
+                    evidence["status_available"] = True
+                    labels = {
+                        "state": (status.get("state"), {"succeeded", "failed", "cancelled"}),
+                        "error_code": (
+                            status.get("error_code"),
+                            {
+                                "runner_identity_changed",
+                                "runner_failure",
+                                "watchdog_failure",
+                                "start_timeout",
+                                "cancellation_cleanup_failed",
+                                "cancelled",
+                                "timed_out",
+                                "output_limit",
+                                "durable_result_exists",
+                                "pending_result_exists",
+                                "unsupported_result_schema",
+                                "invalid_json",
+                                "invalid_result",
+                            },
+                        ),
+                    }
+                    evidence.update(
+                        {
+                            key: value if type(value) is str and value in allowed else "unknown"
+                            for key, (value, allowed) in labels.items()
+                        }
+                    )
+                process = snapshot.get("process")
+                code = process.returncode if type(process) is subprocess.Popen else None
+                exits = {
+                    0: "success",
+                    20: "cancelled",
+                    21: "timed_out",
+                    22: "failed",
+                    64: "arguments",
+                    65: "configuration",
+                    66: "readiness",
+                    67: "terminal_cleanup",
+                }
+                evidence["exit_category"] = (
+                    exits.get(code, "signal" if code < 0 else "other")
+                    if type(code) is int
+                    else "unavailable"
+                )
+                break
+            trace = trace.tb_next
+        print(
+            "Runner watchdog failure evidence: " + json.dumps(evidence, sort_keys=True), flush=True
+        )
+    except BaseException:
+        # Reporting must preserve the original failure even when output is unavailable.
+        pass
+
+
 def test_execute_task_promotes_complete_stdout_and_preserves_execute_contract(
     tmp_path: Path,
 ) -> None:
     runner = _runner(tmp_path)
     manifest = _manifest()
     durable = (tmp_path / "durable" / "task-result.json").resolve()
-    result = runner.execute_task(
-        manifest,
-        {},
-        task_id="task-success-01",
-        cancel_event=threading.Event(),
-        durable_result_path=durable,
-    )
+    try:
+        result = runner.execute_task(
+            manifest,
+            {},
+            task_id="task-success-01",
+            cancel_event=threading.Event(),
+            durable_result_path=durable,
+        )
+    except BaseException as error:
+        _watchdog_failure_evidence(error)
+        raise
 
     assert result["status"] == "succeeded"
     assert json.loads(durable.read_text(encoding="utf-8")) == result
@@ -1028,7 +1101,14 @@ def test_darwin_watchdog_main_prelaunch_failures_publish_no_fork_proof(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     nonce = "b" * 64
-    config = SimpleNamespace(task_id="task-darwin-proof-01")
+    config = SimpleNamespace(
+        task_id="task-darwin-proof-01",
+        manifest={"action_id": "fixture.non-service"},
+        profile={},
+        runner_binary_digest="sha256:" + "a" * 64,
+        watchdog_script_digest="sha256:" + "b" * 64,
+        watchdog_interpreter_digest="sha256:" + "c" * 64,
+    )
     published: list[tuple[int | None, str | None]] = []
     monkeypatch.setattr(runner_watchdog_module.sys, "platform", "darwin")
     monkeypatch.setattr(
@@ -1162,12 +1242,34 @@ def test_darwin_spawn_rechecks_child_status_ownership(
 def test_darwin_process_slots_reject_before_exceeding_governor(tmp_path: Path) -> None:
     runner = _runner(tmp_path)
     slots: list[object] = []
+
+    def snapshot() -> dict[str, Any]:
+        # The caller holds the same RLock as reservation; never poll or reap here.
+        return darwin_governor_snapshot(
+            runner_client_module._DARWIN_ACTIVE_PROCESSES,
+            runner_client_module._DARWIN_INDETERMINATE_PROCESSES,
+            runner_client_module._DARWIN_PENDING_PROCESS_SLOTS,
+            owner=runner,
+        )
+
+    with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+        initial = snapshot()
     try:
         for _index in range(runner_client_module._DARWIN_INDETERMINATE_LIMIT):
             slot = object()
-            assert runner._reserve_darwin_process_slot(slot) is True
+            with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+                assert runner._reserve_darwin_process_slot(slot) is True, {
+                    "initial": initial,
+                    "at_failure": snapshot(),
+                    "reserved_here": len(slots),
+                }
             slots.append(slot)
-        assert runner._reserve_darwin_process_slot(object()) is False
+        with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+            assert runner._reserve_darwin_process_slot(object()) is False, {
+                "initial": initial,
+                "at_failure": snapshot(),
+                "reserved_here": len(slots),
+            }
     finally:
         for slot in slots:
             runner._cancel_darwin_process_slot(slot)
@@ -3082,7 +3184,15 @@ def test_cancellation_cleanup_binds_immutable_live_handshake_identities(
         request_path = root / "cancel.request"
         _wait_for_file(request_path)
         request = request_path.read_bytes()
-        (root / "cancel.ack").write_bytes(b"ack:" + request[7:])
+        acknowledgement = root / "cancel.ack"
+        staging = root / ".cancel.ack.bluefire-staging"
+        # Match the witness's complete-before-visible acknowledgement publication.
+        with staging.open("xb") as stream:
+            stream.write(b"ack:" + request[7:])
+            stream.flush()
+            os.fsync(stream.fileno())
+        assert not acknowledgement.exists()
+        staging.rename(acknowledgement)
 
     responder = threading.Thread(target=acknowledge)
     responder.start()
