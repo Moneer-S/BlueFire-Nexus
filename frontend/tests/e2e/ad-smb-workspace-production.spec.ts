@@ -204,7 +204,9 @@ test("synthetic production bundle: settled counterexample, exact restore review 
   await page.getByRole("button", { name: "Review restore share access", exact: true }).click();
   const review = page.getByRole("region", { name: "Explicit AD stage review" });
   await expect(review.getByText("Restore direction", { exact: true })).toBeVisible();
-  await expect(review.getByText("Explicit allow removed", { exact: true })).toBeVisible();
+  await expect(review.getByRole("row", { name: "Principal Current Restored" })).toBeVisible();
+  await expect(review.getByRole("row", { name: "Probe No explicit allow Read" })).toBeVisible();
+  await expect(review.getByText("Explicit allow removed", { exact: true })).toHaveCount(0);
   const confirm = await confirmReview(page);
   for (const viewport of viewports) {
     await page.setViewportSize(viewport);

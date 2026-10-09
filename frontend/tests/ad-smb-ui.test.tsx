@@ -78,6 +78,21 @@ it("shows a settled ineffective retest with restore still offered and no success
   expect(within(compare).getAllByText("Content matched")).toHaveLength(6);
   expect(screen.queryByText("Original operation unsettled")).not.toBeInTheDocument();
 });
+it("reviews restoration in its actual direction without changing the saved hardening evidence", async () => {
+  const value = rawAdWorkflow({ phases: ["inspect", "baseline", "harden", "retest"], allowed: ["rollback"] });
+  vi.mocked(adSmbApi.workflow).mockResolvedValue(value);
+  vi.mocked(adSmbApi.review).mockResolvedValue(rawAdReview("rollback", value.workflow.progress.revision));
+  mount(); fireEvent.click(await screen.findByRole("button", { name: "Review restore share access" }));
+  const review = await screen.findByRole("region", { name: "Explicit AD stage review" });
+  expect(within(review).getByRole("row", { name: "Principal Current Restored" })).toBeInTheDocument();
+  expect(within(review).getByRole("row", { name: "Probe No explicit allow Read" })).toBeInTheDocument();
+  expect(within(review).getByText("The probe's explicit Read entry is restored. Owner, group, and retained entries remain unchanged.")).toBeInTheDocument();
+  expect(within(review).queryByText("Explicit allow removed")).not.toBeInTheDocument();
+  expect(within(screen.getByRole("region", { name: "Retained AD evidence" })).getByRole("row", { name: "Probe Read Explicit allow removed" })).toBeInTheDocument();
+  expect(within(review).getByRole("checkbox")).not.toBeChecked();
+  expect(within(review).getByRole("button", { name: "Submit reviewed stage" })).toBeDisabled();
+  expect(adSmbApi.submit).not.toHaveBeenCalled();
+});
 it("keeps Stop usable for an active recovery even after new work is stopped", async () => {
   vi.mocked(adSmbApi.workflow).mockResolvedValue(rawAdWorkflow({ phases: ["inspect", "baseline", "harden"], pending: adChild, stopped: true }));
   mount(); const stop = await screen.findByRole("button", { name: "Stop current operation" }); expect(stop).toBeEnabled(); fireEvent.click(stop);
