@@ -48,15 +48,15 @@ function measurements() {
 }
 afterEach(() => { Reflect.deleteProperty(SVGElement.prototype, "getBBox"); });
 
-function mount(readOnly = false) {
+function mount(readOnly = false, experiment = scenario) {
   measurements();
   const digest = `sha256:${"a".repeat(64)}`;
-  localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(readOnly ? demoScenario : scenario));
+  localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(readOnly ? demoScenario : experiment));
   vi.spyOn(api, "catalog").mockResolvedValue(demoCatalog);
-  vi.spyOn(api, "immutableScenarioVersion").mockResolvedValue({ schema_version: "bluefire.scenario-version.v1", scenario: { scenario_id: scenario.id, version: 1, digest, title: scenario.title, created_at: "2030-01-01", document: scenario } });
+  vi.spyOn(api, "immutableScenarioVersion").mockResolvedValue({ schema_version: "bluefire.scenario-version.v1", scenario: { scenario_id: experiment.id, version: 1, digest, title: experiment.title, created_at: "2030-01-01", document: experiment } });
   const validate = vi.spyOn(api, "validate").mockResolvedValue({ valid: true, issues: [] });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
-  const path = readOnly ? `/builder?saved_scenario=${scenario.id}&version=1&digest=${digest}` : "/builder";
+  const path = readOnly ? `/builder?saved_scenario=${experiment.id}&version=1&digest=${digest}` : "/builder";
   return { validate, ...render(<QueryClientProvider client={client}><Tooltip.Provider><MemoryRouter initialEntries={[path]}><ProductProvider><BuilderPage/></ProductProvider></MemoryRouter></Tooltip.Provider></QueryClientProvider>) };
 }
 const cached = (): Scenario => JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!);
@@ -84,17 +84,25 @@ it("renders all 17 separate routes with compact source labels and complete keybo
 
 it("deletes only the selected route after confirmation and Undo restores every route", async () => {
   const user = userEvent.setup();
-  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
   mount();
   await user.click(await screen.findByRole("button", { name: "Show all branches" }));
   await user.click(routeButtons()[6]!);
+  const selectedButton = routeButtons()[6]!;
   await user.keyboard("{Delete}");
-  await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+  const dialog = await screen.findByRole("dialog", { name: "Delete from experiment?" });
+  expect(within(dialog).getByText("Route 7: Run reviewed fixture program → Reconcile and clean workspace · When blocked")).toBeVisible();
+  expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
   expect(cached()).toEqual(scenario);
-  confirm.mockReturnValue(true);
+  await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(selectedButton).toHaveFocus());
+  expect(cached()).toEqual(scenario);
   await user.keyboard("{Delete}");
+  await user.click(within(await screen.findByRole("dialog", { name: "Delete from experiment?" })).getByRole("button", { name: "Delete" }));
   await waitFor(() => expect(cached().edges).toEqual(scenario.edges.filter((_, index) => index !== 6)));
   expect(cached().steps).toEqual(scenario.steps);
+  await waitFor(() => expect(routeButtons().some(button => button === document.activeElement)).toBe(true));
+  expect(confirm).not.toHaveBeenCalled();
   await user.click(screen.getByRole("button", { name: "Undo" }));
   await waitFor(() => expect(cached()).toEqual(scenario));
   expect(routeButtons()).toHaveLength(17);
@@ -115,6 +123,47 @@ it("keeps disclosure explicit and returns focus when the route list is closed", 
   expect(routeButtons()).toHaveLength(5);
   expect(cached()).toEqual(scenario);
 });
+
+it("keeps keyboard node deletion on its replacement when the route list is open", async () => {
+  const user = userEvent.setup();
+  mount();
+  await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  await user.click(screen.getByRole("button", { name: "Show node inspector" }));
+  const node = screen.getByTestId("rf__node-stage_records");
+  node.focus();
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(node).toHaveClass("selected"));
+  expect(routeButtons()).toHaveLength(17);
+  await user.keyboard("{Delete}");
+  await user.click(within(await screen.findByRole("dialog", { name: "Delete from experiment?" })).getByRole("button", { name: "Delete" }));
+  await waitFor(() => expect(screen.queryByTestId("rf__node-stage_records")).not.toBeInTheDocument());
+  const replacement = screen.getByTestId("rf__node-create_fixture");
+  await waitFor(() => expect(replacement).toHaveFocus());
+  expect(replacement).toHaveClass("selected");
+  expect(screen.getByLabelText(/^Step ID/)).toHaveValue("create_fixture");
+  expect(screen.getByRole("button", { name: "Delete selected node" })).toBeEnabled();
+  expect(routeButtons().every(button => button.getAttribute("aria-pressed") === "false")).toBe(true);
+  expect(cached().steps).toEqual(scenario.steps.filter(step => step.id !== "stage_records"));
+}, 15000);
+
+it("keeps deleted input-connection focus on the canvas instead of selecting an unrelated route", async () => {
+  const user = userEvent.setup();
+  mount(false, demoScenario);
+  await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  await user.click(screen.getByRole("checkbox", { name: "Show input connections" }));
+  const edge = screen.getByTestId("rf__edge-artifact-place_fixture-workspace-run_fixture-workspace");
+  edge.focus();
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(edge).toHaveClass("selected"));
+  await user.keyboard("{Delete}");
+  await user.click(within(await screen.findByRole("dialog", { name: "Delete from experiment?" })).getByRole("button", { name: "Delete" }));
+  await waitFor(() => expect(cached().steps.find(step => step.id === "run_fixture")!.inputs).toEqual({}));
+  await waitFor(() => expect(screen.getByLabelText("Scenario graph canvas")).toHaveFocus());
+  expect(routeButtons().every(button => button.getAttribute("aria-pressed") === "false")).toBe(true);
+  expect(cached().edges).toEqual(demoScenario.edges);
+  await user.click(screen.getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(cached()).toEqual(demoScenario));
+}, 15000);
 
 it("never labels an unvalidated saved view ready, and shows validation only after its actual response", async () => {
   const user = userEvent.setup();
@@ -154,6 +203,7 @@ it("keeps saved route inspection read-only and returns between the route list an
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
   await user.keyboard("{Delete}");
   expect(confirm).not.toHaveBeenCalled();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(cached()).toEqual(demoScenario);
   await user.click(screen.getByRole("button", { name: "Inspect source step" }));
   await waitFor(() => expect(screen.getByRole("button", { name: "Hide node inspector" })).toHaveFocus());

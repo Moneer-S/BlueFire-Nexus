@@ -96,6 +96,8 @@
 .workbench-builder .react-flow__edge-text { text-transform: none; font-size: 12px; }
 .workbench-builder .validation-bar { min-height: 36px; padding: 7px 14px; font-size: .67rem; }
 .workbench-builder .validation-bar > div { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; }
+.workbench-builder .validation-bar.invalid strong { color: var(--red); }
+.workbench-builder .validation-bar li > button { margin-inline-start: 8px; }
 .workbench-builder .ordered-steps { list-style: none; padding: 12px 18px; margin: 0; overflow: auto; flex: 1; }
 .workbench-builder .ordered-steps > li + li { margin-top: 8px; }
 .workbench-builder .ordered-steps > li > button { display: flex; width: 100%; align-items: flex-start; gap: 14px; padding: 14px; text-align: left; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--text); cursor: pointer; }

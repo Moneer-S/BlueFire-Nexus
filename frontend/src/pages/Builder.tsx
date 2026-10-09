@@ -28,6 +28,10 @@ import { GraphProposalReview } from "../components/GraphProposalReview";
 import { SavedExperimentReview } from "../components/SavedExperimentReview";
 import { BuilderRouteEdge } from "../components/BuilderRouteEdge";
 import { BuilderRoutes } from "../components/BuilderRoutes";
+import { GraphDeleteDialog, graphDeletionSummary, graphStepName } from "../components/GraphDeleteDialog";
+import { GraphValidationFeedback } from "../components/GraphValidationFeedback";
+import { scenarioAuthoringFailure, scenarioDiagnostics, type ScenarioDiagnostic } from "../lib/scenario-diagnostics";
+import { useGraphDeletion } from "../state/useGraphDeletion";
 import { AdaptiveMethodEditor, AdaptiveRepair } from "../components/AdaptiveMethodEditor";
 import { adaptiveExecutionIssues, type AdaptiveExecution } from "../lib/adaptive-execution";
 import type { BuilderFlowEdge } from "../lib/graph-routes";
@@ -140,11 +144,12 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   const editTitle = selectedId ? behaviorMap.get(scenario.steps.find(step => step.id === selectedId)?.behavior_id ?? "")?.title ?? selectedId : undefined;
   usePublishGraphAssistanceSelection(!review, editContext.selection, editTitle, editContext.unavailable);
   const [search, setSearch] = useState(""); const [platform, setPlatform] = useState("all"); const [tier, setTier] = useState("all");
-  const [compatibility, setCompatibility] = useState<string>();
+  const [compatibility, setCompatibilityMessage] = useState<{ message: string; error: boolean }>();
+  const setCompatibility = (message: string | undefined, error = false) => setCompatibilityMessage(message ? { message, error } : undefined);
   const [purposeOpen, setPurposeOpen] = useState(!scenario.purpose.trim());
   const [purposeMissing, setPurposeMissing] = useState(false);
   const purposeInput = useRef<HTMLTextAreaElement>(null);
-  const [validationIssues, setValidationIssues] = useState<string[]>([]); const [validationState, setValidationState] = useState<"idle" | "valid" | "invalid">("idle");
+  const [validationIssues, setValidationIssues] = useState<ScenarioDiagnostic[]>([]); const [validationState, setValidationState] = useState<"idle" | "valid" | "invalid">("idle");
   const [history, setHistory] = useState<Scenario[]>(() => [structuredClone(scenario)]); const [historyIndex, setHistoryIndex] = useState(0);
   const currentScenario = useRef(scenario);
   // Local edits retain their history; a context replacement starts a new history.
@@ -157,6 +162,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
       locallyAppliedScenario.current = scenario;
     }
     setValidationState("idle"); setValidationIssues((current) => current.length ? [] : current); setInvalidNodes((current) => current.size ? new Set() : current);
+    setCompatibilityMessage(current => current?.error ? undefined : current);
   }, [scenario]);
   const [focusMode, setFocusMode] = useState(false); const [paletteOpen, setPaletteOpen] = useState(false); const [inspectorOpen, setInspectorOpen] = useState(initialView.inspector); const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [viewMode, setViewMode] = useState(initialView.mode);
@@ -272,19 +278,31 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
       return flowEdges(graph, behaviorMap).map((edge) => ({ ...edge, selected: selectedEdges.has(edge.id) }));
     });
   }, [graph, behaviorMap, makeNodes]);
+  const deletionScope = JSON.stringify([viewMode, allBranches, [...expandedBranches].sort(), focusedSection, showInputs, [...shownIds], selectedId, nodes.filter(node => node.selected && shownIds.has(node.id)).map(node => node.id).sort(), edges.filter(edge => edge.selected && edgeIsShown(edge)).map(edge => edge.id).sort()]);
+  const deletion = useGraphDeletion<BehaviorFlowNode, FlowEdge>({ revision: scenario, scope: deletionScope, readOnly: Boolean(review?.readOnly), currentRevision: () => currentScenario.current, focusContainer: () => graphCanvas.current, removalCommitted: elements => {
+    const remaining = Array.from(graphCanvas.current?.querySelectorAll<HTMLElement>(".react-flow__node, .react-flow__edge") ?? []);
+    return elements.nodes.every(node => !remaining.some(element => element.classList.contains("react-flow__node") && element.dataset.id === node.id)) && elements.edges.every(edge => !remaining.some(element => element.classList.contains("react-flow__edge") && element.dataset.id === edge.id));
+  }, focusFallback: elements => {
+    const workspace = graphCanvas.current?.closest(".builder-page");
+    if (viewMode === "steps") return workspace?.querySelector<HTMLElement>(".ordered-steps button[aria-pressed='true']") ?? workspace?.querySelector<HTMLElement>(".ordered-steps button, [aria-label='Show behavior palette'], [aria-label='Hide behavior palette']") ?? null;
+    if (elements.nodes.length) return graphCanvas.current?.querySelector<HTMLElement>(".react-flow__node.selected, .graph-empty-overlay button") ?? graphCanvas.current;
+    if (elements.edges.every(edge => edge.data?.kind === "route")) return workspace?.querySelector<HTMLElement>(".builder-routes button[data-route][aria-pressed='true']") ?? workspace?.querySelector<HTMLElement>(".builder-routes button[data-route]") ?? graphCanvas.current;
+    return graphCanvas.current;
+  } });
+  const { isPending: deletionPending, allowsRemoval: deletionAllowsRemoval, consume: consumeDeletion, request: requestDeletion } = deletion;
   useEffect(() => {
     if (!focusMode) return;
-    const exitFocus = (event: globalThis.KeyboardEvent) => { if (event.key === "Escape" && !commandPaletteOpen) setFocusMode(false); };
+    const exitFocus = (event: globalThis.KeyboardEvent) => { if (event.key === "Escape" && !commandPaletteOpen && !deletionPending()) setFocusMode(false); };
     window.addEventListener("keydown", exitFocus);
     return () => window.removeEventListener("keydown", exitFocus);
-  }, [commandPaletteOpen, focusMode]);
+  }, [commandPaletteOpen, focusMode, deletionPending]);
   useEffect(() => {
     const openCommands = (event: globalThis.KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setCommandPaletteOpen(true); }
+      if (!deletionPending() && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setCommandPaletteOpen(true); }
     };
     window.addEventListener("keydown", openCommands);
     return () => window.removeEventListener("keydown", openCommands);
-  }, []);
+  }, [deletionPending]);
   const replaceScenario = useCallback((next: Scenario) => {
     locallyAppliedScenario.current = next;
     currentScenario.current = next;
@@ -292,11 +310,11 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     setValidationState("idle"); setValidationIssues((current) => current.length ? [] : current); setInvalidNodes((current) => current.size ? new Set() : current);
   }, [setScenario]);
   const applyScenario = useCallback((next: Scenario, record = true) => {
-    if (review?.readOnly) return;
+    if (review?.readOnly || deletionPending()) return;
     replaceScenario(next);
     if (record) { setHistory((items) => [...items.slice(0, historyIndex + 1), structuredClone(next)]); setHistoryIndex((index) => index + 1); }
     else setHistory((items) => [...items.slice(0, historyIndex), structuredClone(next)]);
-  }, [historyIndex, replaceScenario, review?.readOnly]);
+  }, [historyIndex, replaceScenario, review?.readOnly, deletionPending]);
 
   // A step ID edit keeps the step's identity, so the selection and the chosen run
   // method travel with it. Both would otherwise be lost per keystroke: the old ID
@@ -304,7 +322,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   // vanished. Ordinary replacement with a different behavior still drops its
   // override, because only this identity-preserving path re-keys one.
   const renameStep = useCallback((previousId: string, nextId: string, next: Scenario) => {
-    if (review?.readOnly) return;
+    if (review?.readOnly || deletionPending()) return;
     // Overrides are only selectable outside a review, and the review-mode copy of
     // runConfig is rebuilt every render, so read the durable one.
     const override = review ? undefined : durableRunConfig.actionImplementations?.[previousId];
@@ -325,14 +343,14 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     selectionForGraphRefresh.current = nextId;
     setSelectedId(nextId);
     setNodes((items) => items.map((node) => (node.id === previousId ? { ...node, id: nextId, selected: true } : node)));
-  }, [applyScenario, durableRunConfig, review, setNodes, setRunConfig]);
+  }, [applyScenario, durableRunConfig, review, setNodes, setRunConfig, deletionPending]);
 
-  const undo = useCallback(() => { if (review?.readOnly || historyIndex <= 0) return; const index = historyIndex - 1; setHistoryIndex(index); replaceScenario(structuredClone(history[index]!)); }, [history, historyIndex, replaceScenario, review?.readOnly]);
-  const redo = useCallback(() => { if (review?.readOnly || historyIndex >= history.length - 1) return; const index = historyIndex + 1; setHistoryIndex(index); replaceScenario(structuredClone(history[index]!)); }, [history, historyIndex, replaceScenario, review?.readOnly]);
+  const undo = useCallback(() => { if (review?.readOnly || deletionPending() || historyIndex <= 0) return; const index = historyIndex - 1; setHistoryIndex(index); replaceScenario(structuredClone(history[index]!)); }, [history, historyIndex, replaceScenario, review?.readOnly, deletionPending]);
+  const redo = useCallback(() => { if (review?.readOnly || deletionPending() || historyIndex >= history.length - 1) return; const index = historyIndex + 1; setHistoryIndex(index); replaceScenario(structuredClone(history[index]!)); }, [history, historyIndex, replaceScenario, review?.readOnly, deletionPending]);
 
   const uniqueId = (title: string) => { const root = title.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").replace(/^[^a-z]+/, "") || "step"; let id = root; let suffix = 2; while (scenario.steps.some((step) => step.id === id)) id = `${root}_${suffix++}`; return id; };
   const addBehavior = (behavior: Behavior, position?: { x: number; y: number }) => {
-    if (review?.readOnly) return;
+    if (review?.readOnly || deletionPending()) return;
     const id = uniqueId(behavior.title); const step: ScenarioStep = { id, behavior_id: behavior.id, parameters: Object.fromEntries(behavior.parameters.filter(shouldInitializeParameter).map((item) => [item.name, initialParameterValue(item)])), inputs: {}, alternates: [] };
     const previous = scenario.steps.at(-1); const next: Scenario = { ...scenario, start: scenario.steps.length ? scenario.start : id, steps: [...scenario.steps, step], edges: previous ? [...scenario.edges, { from_step: previous.id, outcome: "success", to_step: id }] : scenario.edges, layout: { ...scenario.layout, [id]: position ?? { x: 70 + (scenario.steps.length % 3) * 310, y: 70 + Math.floor(scenario.steps.length / 3) * 220 } } };
     applyScenario(next); setAllBranches(true); selectStep(id); setCompatibility(`${displayTitle(behavior.title)} added. Set its inputs and parameters in step details.`);
@@ -340,17 +358,23 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
 
   const updateStep = (stepId: string, update: (step: ScenarioStep) => ScenarioStep) => applyScenario({ ...scenario, steps: scenario.steps.map((step) => step.id === stepId ? update(structuredClone(step)) : step) });
   const useAlternative = (stepId: string, behaviorId: string) => {
-    if (review?.readOnly) return;
+    if (review?.readOnly || deletionPending()) return;
     try {
       applyScenario(selectScenarioAlternative(scenario, stepId, behaviorId, behaviorMap));
       setCompatibility(`${displayTitle(behaviorMap.get(behaviorId)!.title)} selected. Inputs, parameters, and connections are preserved. Validate and review the changed run before executing.`);
-    } catch (error) { setCompatibility(error instanceof Error ? error.message : "This alternative is unavailable."); }
+    } catch (error) { setCompatibility(error instanceof Error ? error.message : "This alternative is unavailable.", true); }
   };
-  const onNodesChange = useCallback((changes: NodeChange<BehaviorFlowNode>[]) => setNodes((items) => applyNodeChanges(review?.readOnly ? changes.filter((change) => change.type === "select" || change.type === "dimensions") : changes, items)), [review?.readOnly]);
-  const onEdgesChange = useCallback((changes: EdgeChange<FlowEdge>[]) => setEdges((items) => applyEdgeChanges(review?.readOnly ? changes.filter((change) => change.type === "select") : changes, items)), [review?.readOnly]);
+  const onNodesChange = useCallback((changes: NodeChange<BehaviorFlowNode>[]) => {
+    const allowed = changes.filter(change => change.type === "remove" ? deletionAllowsRemoval("nodes", change.id) : !(review?.readOnly || deletionPending()) || change.type === "select" || change.type === "dimensions");
+    setNodes(items => applyNodeChanges(allowed, items));
+  }, [review?.readOnly, deletionAllowsRemoval, deletionPending]);
+  const onEdgesChange = useCallback((changes: EdgeChange<FlowEdge>[]) => {
+    const allowed = changes.filter(change => change.type === "remove" ? deletionAllowsRemoval("edges", change.id) : !(review?.readOnly || deletionPending()) || change.type === "select");
+    setEdges(items => applyEdgeChanges(allowed, items));
+  }, [review?.readOnly, deletionAllowsRemoval, deletionPending]);
   const onNodeDragStop = (_: unknown, node: BehaviorFlowNode) => applyScenario({ ...scenario, layout: { ...scenario.layout, [node.id]: { x: Math.round(node.position.x), y: Math.round(node.position.y) } } });
   const onDelete = ({ nodes: deletedNodes, edges: deletedEdges }: { nodes: BehaviorFlowNode[]; edges: FlowEdge[] }) => {
-    if (review?.readOnly) return;
+    if (review?.readOnly || !consumeDeletion({ nodes: deletedNodes, edges: deletedEdges })) return;
     const deletedNodeIds = deletedNodes.map((node) => node.id);
     const next = deleteScenarioGraphElements(scenario, deletedNodeIds, deletedEdges.map((edge) => ({
       kind: edge.data?.kind,
@@ -382,12 +406,12 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     const visibleNodes = requestedNodes.filter((node) => shownIds.has(node.id));
     const visibleEdges = requestedEdges.filter(edgeIsShown);
     if (!visibleNodes.length && !visibleEdges.length) return false;
-    const parts = [visibleNodes.length ? `${visibleNodes.length} node${visibleNodes.length === 1 ? "" : "s"}` : "", visibleEdges.length ? `${visibleEdges.length} edge${visibleEdges.length === 1 ? "" : "s"}` : ""].filter(Boolean);
-    return window.confirm(`Delete ${parts.join(" and ")} from this scenario?\n\nConnections to the deleted steps will also be removed. You can undo the confirmed change.`) ? { nodes: visibleNodes, edges: visibleEdges } : false;
-  }, [edgeIsShown, shownIds, review?.readOnly]);
+    const elements = { nodes: visibleNodes, edges: visibleEdges };
+    return requestDeletion(elements, graphDeletionSummary(scenario, behaviorMap, elements));
+  }, [edgeIsShown, shownIds, review?.readOnly, requestDeletion, scenario, behaviorMap]);
 
   const onConnect = (connection: Connection) => {
-    if (review?.readOnly) return;
+    if (review?.readOnly || deletionPending()) return;
     const source = scenario.steps.find((item) => item.id === connection.source); const target = scenario.steps.find((item) => item.id === connection.target);
     if (!source || !target || !connection.sourceHandle || !connection.targetHandle) return;
     if (connection.sourceHandle.startsWith("route:") && connection.targetHandle === "route:in") {
@@ -398,18 +422,18 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     if (connection.sourceHandle.startsWith("out:") && connection.targetHandle.startsWith("in:")) {
       const outputName = connection.sourceHandle.slice(4); const inputName = connection.targetHandle.slice(3);
       const output = behaviorMap.get(source.behavior_id)?.outputs.find((item) => item.name === outputName); const input = behaviorMap.get(target.behavior_id)?.inputs.find((item) => item.name === inputName);
-      if (!output || !input || output.type !== input.type || Boolean(output.multiple) !== Boolean(input.multiple)) { setCompatibility(`This step requires ${inputTypeLabel(input?.type ?? "compatible results")}${input?.multiple ? " (multiple values)" : ""}; the selected output provides ${inputTypeLabel(output?.type ?? "unknown results")}${output?.multiple ? " (multiple values)" : ""}. Choose a compatible output in step details.`); return; }
-      if (!guaranteedInputSources(scenario, target.id).has(source.id)) { setCompatibility("Connect the producer before this step on every incoming path, then choose its output in step details."); return; }
+      if (!output || !input || output.type !== input.type || Boolean(output.multiple) !== Boolean(input.multiple)) { setCompatibility(`This step requires ${inputTypeLabel(input?.type ?? "compatible results")}${input?.multiple ? " (multiple values)" : ""}; the selected output provides ${inputTypeLabel(output?.type ?? "unknown results")}${output?.multiple ? " (multiple values)" : ""}. Choose a compatible output in step details.`, true); return; }
+      if (!guaranteedInputSources(scenario, target.id).has(source.id)) { setCompatibility("Connect the producer before this step on every incoming path, then choose its output in step details.", true); return; }
       updateStep(target.id, (step) => ({ ...step, inputs: { ...step.inputs, [inputName]: { from_step: source.id, artifact: outputName } } })); setCompatibility(`Connected ${inputLabel(outputName)} to ${inputLabel(inputName)}.`);
     }
   };
 
-  const copySelected = () => { const selected = scenario.steps.find((step) => step.id === selectedId && shownIds.has(step.id)); if (!selected) return false; clipboard.current = structuredClone(selected); setCompatibility(`${selected.id} copied.`); return true; };
-  const paste = () => { if (review?.readOnly || !clipboard.current) return; const source = clipboard.current; const behavior = behaviorMap.get(source.behavior_id); if (!behavior) return; const id = uniqueId(`${source.id} copy`); const step = { ...structuredClone(source), id, inputs: {} }; const origin = scenario.layout?.[source.id] ?? { x: 60, y: 60 }; applyScenario({ ...scenario, steps: [...scenario.steps, step], layout: { ...scenario.layout, [id]: { x: origin.x + 36, y: origin.y + 36 } } }); setAllBranches(true); selectStep(id); };
+  const copySelected = () => { const selected = scenario.steps.find((step) => step.id === selectedId && shownIds.has(step.id)); if (!selected || deletionPending()) return false; clipboard.current = structuredClone(selected); setCompatibility(`${graphStepName(scenario, behaviorMap, selected.id)} copied.`); return true; };
+  const paste = () => { if (review?.readOnly || deletionPending() || !clipboard.current) return; const source = clipboard.current; const behavior = behaviorMap.get(source.behavior_id); if (!behavior) return; const id = uniqueId(`${source.id} copy`); const step = { ...structuredClone(source), id, inputs: {} }; const origin = scenario.layout?.[source.id] ?? { x: 60, y: 60 }; applyScenario({ ...scenario, steps: [...scenario.steps, step], layout: { ...scenario.layout, [id]: { x: origin.x + 36, y: origin.y + 36 } } }); setAllBranches(true); selectStep(id); };
   const duplicateSelected = () => { if (!review?.readOnly && copySelected()) window.setTimeout(paste, 0); };
   const keyboard = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
-    if (event.defaultPrevented || commandPaletteOpen || target.closest("input, select, textarea, [contenteditable]:not([contenteditable='false'])")) return;
+    if (event.defaultPrevented || commandPaletteOpen || deletionPending() || target.closest("input, select, textarea, [contenteditable]:not([contenteditable='false'])")) return;
     if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
     const key = event.key.toLowerCase();
     if (!["z", "c", "v", "d"].includes(key)) return;
@@ -422,23 +446,30 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   };
 
   const validateMutation = useMutation({
-    mutationFn: (submitted: Scenario) => {
+    mutationFn: async (submitted: Scenario) => {
       const issues = adaptiveExecutionIssues(submitted, behaviorMap, actionMap);
-      return issues.length ? Promise.resolve({ valid: false, issues: issues.map(issue => issue.message) }) : api.validate(submitted);
+      if (issues.length) return { valid: false, findings: issues.map(issue => ({ message: issue.message, stepId: issue.missingStep ? undefined : issue.stepId })) };
+      const result = await api.validate(submitted);
+      return { valid: result.valid, findings: result.valid ? [] : scenarioDiagnostics(result.issues, submitted, behaviorMap, id => graphStepName(submitted, behaviorMap, id)) };
     },
     onSuccess: (result, submitted) => {
       if (JSON.stringify(currentScenario.current) !== JSON.stringify(submitted)) return;
-      const issues = (result.issues ?? []).map((item) => typeof item === "string" ? item : JSON.stringify(item));
-      setValidationIssues(issues); setValidationState(result.valid ? "valid" : "invalid");
-      setInvalidNodes(new Set(submitted.steps.filter((step) => issues.some((issue) => issue.includes(step.id))).map((step) => step.id)));
+      setValidationIssues(result.findings); setValidationState(result.valid ? "valid" : "invalid");
+      setInvalidNodes(new Set(result.findings.flatMap(issue => issue.stepId ? [issue.stepId] : [])));
     },
     onError: (error, submitted) => {
       if (JSON.stringify(currentScenario.current) !== JSON.stringify(submitted)) return;
-      const message = error instanceof Error ? error.message : "Validation failed.";
-      setValidationIssues([message]); setValidationState("invalid");
+      const { findings } = scenarioAuthoringFailure(error, submitted, behaviorMap, id => graphStepName(submitted, behaviorMap, id));
+      setValidationIssues(findings); setValidationState("invalid");
+      setInvalidNodes(new Set(findings.flatMap(issue => issue.stepId ? [issue.stepId] : [])));
     },
   });
-  const saveMutation = useMutation({ mutationFn: (submitted: Scenario) => api.saveScenarioVersion(submitted), onSuccess: ({ scenario: saved }, submitted) => { const currentSaved = markSaved(submitted); setCompatibility(`Version ${saved.version} saved${currentSaved ? "." : "; newer changes remain unsaved."}`); }, onError: (error) => setCompatibility(`Save refused: ${error instanceof Error ? error.message : "The scenario version could not be saved."}`) });
+  const saveMutation = useMutation({ mutationFn: (submitted: Scenario) => api.saveScenarioVersion(submitted), onSuccess: ({ scenario: saved }, submitted) => { const currentSaved = markSaved(submitted); setCompatibility(`Version ${saved.version} saved${currentSaved ? "." : "; newer changes remain unsaved."}`); }, onError: (error, submitted) => {
+    if (JSON.stringify(currentScenario.current) !== JSON.stringify(submitted)) return;
+    const { findings, rejected } = scenarioAuthoringFailure(error, submitted, behaviorMap, id => graphStepName(submitted, behaviorMap, id));
+    setCompatibility(`Save refused: ${findings[0]!.message}`, true);
+    if (rejected) { setValidationIssues(findings); setValidationState("invalid"); setInvalidNodes(new Set(findings.flatMap(issue => issue.stepId ? [issue.stepId] : []))); }
+  } });
   const selected = scenario.steps.find((step) => step.id === selectedId && shownIds.has(step.id)); const selectedBehavior = behaviorMap.get(selected?.behavior_id ?? "");
   const filtered = behaviors.filter((behavior) => { const haystack = `${behavior.title} ${behavior.purpose} ${behavior.capabilities.join(" ")}`.toLowerCase(); return (!search || haystack.includes(search.toLowerCase())) && (platform === "all" || behavior.platforms.includes(platform)) && (tier === "all" || behavior.safety_tier === tier); });
   const platforms = [...new Set(behaviors.flatMap((item) => item.platforms))].sort();
@@ -463,13 +494,13 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   const saveVersion = () => {
     if (!scenario.purpose.trim()) {
       setPurposeMissing(true); setPurposeOpen(true);
-      setCompatibility("Describe the question this experiment will answer before saving.");
+      setCompatibility("Describe the question this experiment will answer before saving.", true);
       window.requestAnimationFrame(() => purposeInput.current?.focus());
       return;
     }
-    if (!scenario.steps.length) { setCompatibility("Add the first step before saving this experiment."); setPaletteOpen(true); return; }
+    if (!scenario.steps.length) { setCompatibility("Add the first step before saving this experiment.", true); setPaletteOpen(true); return; }
     const retryIssues = adaptiveExecutionIssues(scenario, behaviorMap, actionMap);
-    if (retryIssues.length) { setCompatibility(retryIssues[0]!.message); if (!retryIssues[0]!.missingStep) selectStep(retryIssues[0]!.stepId); return; }
+    if (retryIssues.length) { setCompatibility(retryIssues[0]!.message, true); if (!retryIssues[0]!.missingStep) selectStep(retryIssues[0]!.stepId); return; }
     saveMutation.mutate(structuredClone(scenario));
   };
 
@@ -479,7 +510,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     {review?.details}
     <AdaptiveRepair scenario={scenario} behaviors={behaviorMap} actions={actionMap} overrides={runConfig.actionImplementations} onSelect={selectStep} onChange={applyScenario} readOnly={review?.readOnly} />
     <div className="experiment-summary"><details open={purposeOpen} onToggle={(event) => setPurposeOpen(event.currentTarget.open)}><summary>{scenario.purpose.trim() ? "Experiment purpose" : "Describe the experiment question"}</summary><Field label="Experiment question" hint="What do you want to learn or verify? Required before saving."><textarea aria-label="Experiment question" ref={purposeInput} rows={2} disabled={review?.readOnly} value={scenario.purpose} required aria-invalid={purposeMissing && !scenario.purpose.trim()} onChange={(event) => { setPurposeMissing(false); applyScenario({ ...scenario, purpose: event.target.value }, false); }} placeholder="Describe the behavior, observation or detection you want to test." /></Field></details>{!review ? <div className="builder-assistance-actions"><Button variant="ghost" size="small" onClick={() => assistant?.setOpen(true)} disabled={!assistant}>Plan with Assistant</Button><Link className="button button-ghost button-small" to="/scenarios">Browse examples</Link></div> : null}</div>
-    {compatibility ? <div className={`compatibility-banner ${compatibility.startsWith("Incompatible") ? "error" : ""}`} role="status"><GitBranch/>{compatibility}<button onClick={() => setCompatibility(undefined)} aria-label="Dismiss compatibility message">×</button></div> : null}
+    {compatibility ? <div className={`compatibility-banner ${compatibility.error ? "error" : ""}`} role={compatibility.error ? "alert" : "status"}><GitBranch/>{compatibility.message}<button onClick={() => setCompatibility(undefined)} aria-label="Dismiss compatibility message">×</button></div> : null}
     <div className="graph-review-editor">
     <div className={`builder-layout ${paletteOpen ? "" : "palette-hidden"} ${inspectorOpen ? "" : "inspector-hidden"}`} style={{ "--palette-width": `${paletteWidth}px`, "--inspector-width": `${inspectorWidth}px` } as CSSProperties}>
       <Panel className="palette-panel" hidden={!paletteOpen}>{paletteOpen ? <><PanelHeader eyebrow="Available steps" title="Add a step" actions={<Badge>{filtered.length}</Badge>} /><div className="palette-filters"><label className="search-box"><Search/><input aria-label="Search palette" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Find a step" /></label><div><label><span className="sr-only">Platform filter</span><select aria-label="Platform filter" value={platform} onChange={(event) => setPlatform(event.target.value)}><option value="all">All platforms</option>{platforms.map((item) => <option key={item}>{item}</option>)}</select></label><label><span className="sr-only">Tier filter</span><select aria-label="Safety tier filter" value={tier} onChange={(event) => setTier(event.target.value)}><option value="all">All tiers</option><option value="safe">Safe</option><option value="controlled">Controlled</option><option value="restricted">Restricted</option></select></label></div></div><div className="palette-list">{filtered.map((behavior) => <button key={behavior.id} disabled={review?.readOnly} draggable={!review?.readOnly} onDragStart={(event) => { event.dataTransfer.setData("application/x-bluefire-behavior", behavior.id); event.dataTransfer.effectAllowed = "copy"; }} onClick={() => addBehavior(behavior)}><span className={`palette-icon tier-${behavior.safety_tier}`}><GitBranch/></span><span><strong>{displayTitle(behavior.title)}</strong><small>{behavior.purpose}</small><em>{behavior.platforms.slice(0, 3).join(" · ")}</em></span><Badge tone={behavior.execution_state === "action" ? "success" : behavior.execution_state === "simulation" ? "info" : "neutral"}>{behavior.execution_state === "action" ? "Action" : behavior.execution_state === "simulation" ? "Simulation" : "Research"}</Badge></button>)}</div><p className="panel-footnote"><Filter/> Choose a step to add it. Research entries describe techniques and cannot execute.</p></> : null}</Panel>
@@ -512,16 +543,17 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
           const id = event.target instanceof Element ? event.target.closest(".react-flow__edge")?.getAttribute("data-id") : null;
           if (id && visibleRoutes.some((edge) => edge.id === id)) { event.preventDefault(); selectRoute(id); }
         }} onPointerDown={(event) => { const target = event.target as HTMLElement; if (!target.closest("button, input, select, textarea")) event.currentTarget.focus(); }} onDragOver={(event) => { if (event.dataTransfer.types.includes("application/x-bluefire-behavior")) event.preventDefault(); }} onDrop={drop}>
-        <ReactFlow<BehaviorFlowNode, FlowEdge> nodes={displayNodes} edges={displayEdges} nodesDraggable={!review?.readOnly} nodesConnectable={!review?.readOnly} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onEdgeClick={onEdgeClick} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={onNodeClick} onSelectionChange={onSelectionChange} onMove={onMove} onNodeDragStop={onNodeDragStop} onDelete={onDelete} onBeforeDelete={confirmDelete} onConnect={onConnect} fitView fitViewOptions={fitViewOptions} minZoom={minimumGraphZoom} maxZoom={1.6} deleteKeyCode={review?.readOnly ? null : deleteKeys} connectionLineStyle={connectionLineStyle} proOptions={proOptions}>
+        <ReactFlow<BehaviorFlowNode, FlowEdge> nodes={displayNodes} edges={displayEdges} nodesDraggable={!review?.readOnly && !deletion.summary} nodesConnectable={!review?.readOnly && !deletion.summary} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onEdgeClick={onEdgeClick} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={onNodeClick} onSelectionChange={onSelectionChange} onMove={onMove} onNodeDragStop={onNodeDragStop} onDelete={onDelete} onBeforeDelete={confirmDelete} onConnect={onConnect} fitView fitViewOptions={fitViewOptions} minZoom={minimumGraphZoom} maxZoom={1.6} deleteKeyCode={review?.readOnly || deletion.summary ? null : deleteKeys} connectionLineStyle={connectionLineStyle} proOptions={proOptions}>
           <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="rgba(117,198,255,.18)"/>{allBranches && scenario.steps.length > 12 ? <MiniMap pannable zoomable nodeColor={(node) => { const behavior = behaviorMap.get((node.data as BehaviorNodeData).step.behavior_id); return behavior?.safety_tier === "restricted" ? "#ff6e79" : behavior?.safety_tier === "controlled" ? "#f7b84b" : "#38a8ff"; }} maskColor="rgba(5,9,19,.74)"/> : null}<Controls showInteractive={false}/>
         </ReactFlow>{!nodes.length ? <div className="graph-empty-overlay"><GitBranch/><strong>Add the first step</strong><span>Choose a method to begin designing this experiment.</span><Button variant="primary" disabled={review?.readOnly} onClick={() => { setPaletteOpen(true); setInspectorOpen(false); }}>Add first step</Button></div> : null}</div>
         {routesOpen ? <BuilderRoutes routes={visibleRoutes} total={scenario.edges.length} selected={selectedRoute} readOnly={Boolean(review?.readOnly)} select={selectRoute} inspect={(source) => { selectStep(source); setRoutesOpen(false); window.requestAnimationFrame(() => document.getElementById(inspectorToggleId)?.focus()); }} remove={(id) => { void flow.deleteElements({ edges: [{ id }] }); }} close={() => { setRoutesOpen(false); document.getElementById(routesToggleId)?.focus(); }} /> : null}
         </div>
-        <div className={`validation-bar ${displayedValidation}`}><div><strong>{displayedValidation === "valid" ? "Experiment validated" : displayedValidation === "invalid" ? "Check the highlighted steps" : review?.readOnly ? "Read-only view · not validated here" : "Validate this experiment before run review"}</strong><span>{validationIssues[0] ?? `${scenario.steps.length} steps · ${scenario.edges.length} branches`}</span></div>{validationIssues.length > 1 ? <details><summary>{validationIssues.length} findings</summary><ul>{validationIssues.map((item) => <li key={item}>{item}</li>)}</ul></details> : null}</div>
+        <GraphValidationFeedback state={displayedValidation} findings={validationIssues} stepCount={scenario.steps.length} routeCount={scenario.edges.length} readOnly={review?.readOnly} name={id => graphStepName(scenario, behaviorMap, id)} onSelect={id => { setAllBranches(true); setFocusedSection(null); selectStep(id); }} />
       </Panel>
       <Panel className="inspector-panel" hidden={!inspectorOpen}>{inspectorOpen ? <><PanelHeader eyebrow="Step details" title={displayTitle(selectedBehavior?.title ?? "Select a step")} actions={<IconButton label="Close step details" onClick={() => { setInspectorOpen(false); document.getElementById(inspectorToggleId)?.focus(); }}><X/></IconButton>} />{selected && selectedBehavior ? <fieldset className="graph-review-editor" disabled={review?.readOnly}><Inspector scenario={scenario} step={selected} behavior={selectedBehavior} behaviors={behaviorMap} actions={actionMap} onAlternative={useAlternative} updateStep={updateStep} updateScenario={applyScenario} renameStep={renameStep} selectedAction={runConfig.actionImplementations?.[selected.id] ?? ""} allowRunOverride={!review} onAction={(actionId) => { const next = { ...(runConfig.actionImplementations ?? {}) }; if (actionId) next[selected.id] = actionId; else delete next[selected.id]; setRunConfig({ ...runConfig, actionImplementations: next }); }} /></fieldset> : <EmptyState title="Select a step" description="Select a step on the canvas or in the list to choose its method, inputs, and branches." />}</> : null}</Panel>
     </div>
     </div>
+    <GraphDeleteDialog summary={deletion.summary} confirm={deletion.confirm} cancel={deletion.cancel} restoreFocus={deletion.restoreFocus} />
     <Dialog.Root open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen}>
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay builder-command-overlay" />
