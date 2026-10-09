@@ -89,13 +89,14 @@ def enroll_fixed_reader() -> dict[str, Any]:
     _directory(root / "fixtures", 0o2710, OWNER_UID, PROBE_UID)
     _directory(control, 0o700, OWNER_UID, OWNER_UID)
     issued = time.time_ns() // 1_000_000
+    socket_path = str(control / "probe.sock")
     definition = {
         "enrollment_id": "file-enrollment-" + secrets.token_hex(16),
         "resource_id": "file-resource-" + secrets.token_hex(16),
         "resource_generation": "file-generation-" + generation,
         "expires_at_ms": issued + MAX_ENROLLMENT_MS,
         "root": str(root),
-        "socket_path": str(control / "probe.sock"),
+        "socket_path": socket_path,
         "launch_nonce": launch,
     }
     parent, child = bootstrap_pair()
@@ -103,11 +104,9 @@ def enroll_fixed_reader() -> dict[str, Any]:
     admitted = False
     try:
         with socket.socket(linux_attr(socket, "AF_UNIX"), socket.SOCK_SEQPACKET) as listener:
-            listener.bind(definition["socket_path"])
-            linux_attr(os, "chown")(
-                definition["socket_path"], OWNER_UID, OWNER_UID, follow_symlinks=False
-            )
-            os.chmod(definition["socket_path"], 0o600, follow_symlinks=False)
+            listener.bind(socket_path)
+            linux_attr(os, "chown")(socket_path, OWNER_UID, OWNER_UID, follow_symlinks=False)
+            os.chmod(socket_path, 0o600, follow_symlinks=False)
             process = subprocess.Popen(  # nosec B603
                 [
                     "/usr/bin/setpriv",
