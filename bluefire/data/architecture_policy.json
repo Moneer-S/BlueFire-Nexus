@@ -70,9 +70,9 @@
       },
       {
         "path": "bluefire/runner_lifecycle.py",
-        "max_lines": 3675,
-        "reason": "Security-critical local supervisor remains one lifecycle ownership boundary spanning authenticated start, exact-process cancellation, durable failed-launch exclusion, and recovery; transport security, trust, and service APIs are separate.",
-        "reviewed_by": "BlueFire completion lead (Codex), 2026-09-02",
+        "max_lines": 3700,
+        "reason": "Security-critical local supervisor remains one lifecycle ownership boundary. This ceiling includes only the already-merged 25-line enrollment-recovery correction in 8c96581 (blob f52e2272e21d5046e7b5cbe75a14f5ac321a79c7), with no new composition allowance; transport security, trust, and service APIs remain separate.",
+        "reviewed_by": "BlueFire program lead (Codex), 2026-10-03",
         "expires_after": "2027-03-31 or BlueFire Nexus v3.1.0, whichever comes first"
       },
       {
@@ -278,6 +278,12 @@
       "layer": "application",
       "patterns": [
         "bluefire.application_errors",
+        "bluefire.ai_runtime_composition",
+        "bluefire.composition_context",
+        "bluefire.composition_dispatch",
+        "bluefire.composition_admission",
+        "bluefire.composition_jobs",
+        "bluefire.owned_receiver_registry",
         "bluefire.ai_authorized_access",
         "bluefire.assistance_context",
         "bluefire.assistance_receiver",
@@ -362,7 +368,6 @@
         "bluefire.native_tool_candidate",
         "bluefire.receiver",
         "bluefire.receiver_auth",
-        "bluefire.receiver_policy",
         "bluefire.receiver_session",
         "bluefire.receiver_session_channel",
         "bluefire.receiver_session_contract",
@@ -426,6 +431,13 @@
     {
       "layer": "domain",
       "patterns": [
+        "bluefire.capability_resources",
+        "bluefire.ai_composition_contract",
+        "bluefire.capability_grant",
+        "bluefire.capability_facts",
+        "bluefire.capability_composition",
+        "bluefire.composition_authority",
+        "bluefire.receiver_policy",
         "bluefire.receiver_defense_contract",
         "bluefire.action_*",
         "bluefire.ai",
@@ -583,6 +595,7 @@
     "providers": "action",
     "runner": "execution",
     "runner_tests": "execution",
+    "runner_authority_tests": "execution",
     "runner_reviewed_execution": "execution",
     "runner_native_tools": "execution",
     "lib": "adapter",

@@ -35,6 +35,7 @@ _PURPOSES = {
     "bluefire_experiment_assistance",
     "bluefire_run_evidence_inspection",
     "bluefire_receiver_defense_inspection",
+    "bluefire_composition_proposal",
 }
 ERROR_CODES = frozenset(
     {

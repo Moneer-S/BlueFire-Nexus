@@ -40,6 +40,18 @@ async function review(user: ReturnType<typeof userEvent.setup>) {
 
 describe("in-product data and usage authorization", () => {
   beforeEach(() => { vi.resetAllMocks(); });
+  it("requires explicit composition-purpose consent without granting unrelated model work", async () => {
+    const user = await mount();
+    const purpose = screen.getByRole("checkbox", { name: "Propose a bounded composition graph" });
+    expect(purpose).not.toBeChecked(); expect(authorizeButton()).toBeDisabled();
+    await user.click(purpose);
+    await user.type(screen.getByLabelText("Operator identity for model usage"), "Composition owner");
+    expect(authorizeButton()).toBeDisabled();
+    await user.click(screen.getByRole("checkbox", { name: consent }));
+    await user.click(authorizeButton());
+    await waitFor(() => expect(api.authorizeAI).toHaveBeenCalledWith(expect.objectContaining({ purposes: ["bluefire_composition_proposal"], approved_by: "Composition owner" })));
+    expect(api.checkAIProvider).not.toHaveBeenCalled(); expect(liveButton()).toBeDisabled();
+  });
   it("uses one explicit final action for the exact edited connection and bounded purposes, without a model call", async () => {
     const user = await mount();
     expect(api.authorizeAI).not.toHaveBeenCalled(); expect(api.checkAIProvider).not.toHaveBeenCalled(); expect(liveButton()).toBeDisabled();

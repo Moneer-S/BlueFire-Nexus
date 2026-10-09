@@ -292,30 +292,6 @@ fn reviewed_alias_identity_is_enforced_before_dispatch() {
 }
 
 #[test]
-fn reviewed_authority_cannot_be_omitted_or_attached_to_legacy_profile() {
-    let binding = alias_binding(
-        "acme.profile.v1",
-        "acme.profile-action.v1",
-        "endpoint.discovery.system.v1",
-    );
-    let (mut profile, mut manifest) = alias_documents(Path::new("."), binding, json!({}));
-    let mut legacy = profile.clone();
-    enroll_reviewed(&mut profile, &mut manifest);
-    let mut missing = manifest.clone();
-    missing.reviewed_operation = None;
-    crate::contract::seal_manifest(&mut missing);
-    assert_eq!(
-        validate_policy(&missing, &profile).err().unwrap().code,
-        "reviewed_operation_blocked"
-    );
-    reseal_documents(&mut legacy, &mut manifest);
-    assert_eq!(
-        validate_policy(&manifest, &legacy).err().unwrap().code,
-        "reviewed_operation_blocked"
-    );
-}
-
-#[test]
 fn reviewed_profile_rejects_widening_duplicates_and_preserves_approval_checks() {
     let binding = alias_binding(
         "acme.profile.v1",
@@ -359,6 +335,9 @@ fn reviewed_profile_rejects_widening_duplicates_and_preserves_approval_checks() 
         "approval_invalid"
     );
 }
+
+#[path = "runner_authority_tests.rs"]
+mod authority_tests;
 
 #[test]
 fn reviewed_provider_uses_its_own_binding_and_builtin_uses_explicit_null() {
@@ -546,6 +525,8 @@ fn provider_documents(
         cleanup_action_id: "sandbox.cleanup.v1".to_string(),
         policy_digest: profile.policy_digest.clone(),
         approval: None,
+        grant_attempt: None,
+        grant_cleanup: None,
         evidence_refs: Vec::new(),
         request_hash: String::new(),
     };
@@ -644,6 +625,8 @@ fn alias_documents(
         cleanup_action_id: "sandbox.cleanup.v1".to_string(),
         policy_digest: profile.policy_digest.clone(),
         approval: None,
+        grant_attempt: None,
+        grant_cleanup: None,
         evidence_refs: Vec::new(),
         request_hash: String::new(),
     };

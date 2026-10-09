@@ -151,7 +151,7 @@ export async function establishBrowserSession(returnHash = "", connectionCode?: 
   }
 }
 
-async function request<T>(path: string, options: RequestInit = {}, timeoutMs = 20_000): Promise<T> {
+export async function request<T>(path: string, options: RequestInit = {}, timeoutMs = 20_000): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {

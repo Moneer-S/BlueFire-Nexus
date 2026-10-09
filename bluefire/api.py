@@ -435,6 +435,19 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
             return
+        composition = self._routes._composition_request(path)
+        if composition is not None:
+            if composition[0] == "read":
+                self._dispatch(
+                    lambda: self.platform_server.service.composition_objective(composition[1])
+                )
+            elif composition[0] == "proposal-read":
+                self._dispatch(
+                    lambda: self.platform_server.service.composition_proposal(composition[1])
+                )
+            elif composition[0]:
+                self._method_not_allowed("POST")
+            return
         receiver = self._routes._receiver_defense_request(path, listing=True)
         if receiver is not None:
             if receiver[0] == "read":
@@ -993,6 +1006,38 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         if path == f"{API_PREFIX}/comparisons":
             self._dispatch(lambda: self.platform_server.service.compare(body))
+            return
+        composition = self._routes._composition_request(path)
+        if composition is not None:
+            operations = {
+                "context": lambda: self.platform_server.service.composition_context(body),
+                "objectives": lambda: self.platform_server.service.authorize_composition(body),
+                "objective-list": lambda: self.platform_server.service.list_composition_objectives(
+                    body
+                ),
+                "proposal-context": lambda: self.platform_server.service.composition_proposal_context(
+                    composition[1], body
+                ),
+                "attempts": lambda: self.platform_server.service.submit_composition_attempt(
+                    composition[1], body
+                ),
+                "proposals": lambda: self.platform_server.service.submit_composition_proposal(
+                    composition[1], body
+                ),
+                "proposal-cancel": lambda: self.platform_server.service.cancel_composition_proposal(
+                    composition[1], body
+                ),
+            }
+            if composition[0] in {"stop", "revoke", "continue"}:
+                self._dispatch(
+                    lambda: self.platform_server.service.control_composition(
+                        composition[1], composition[0], body
+                    )
+                )
+            elif composition[0] in operations:
+                self._dispatch(operations[composition[0]])
+            elif composition[0]:
+                self._method_not_allowed("GET")
             return
         receiver = self._routes._receiver_defense_request(path)
         if receiver is not None:

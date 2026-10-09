@@ -201,6 +201,8 @@ fn manifest(profile: &RunnerProfile, action_id: &str, params: Value) -> Executio
         cleanup_action_id: "sandbox.cleanup.v1".to_string(),
         policy_digest: profile.policy_digest.clone(),
         approval: None,
+        grant_attempt: None,
+        grant_cleanup: None,
         evidence_refs: vec![format!("sha256:{}", "1".repeat(64))],
         request_hash: String::new(),
     };
