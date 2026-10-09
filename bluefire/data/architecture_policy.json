@@ -404,7 +404,11 @@
         "bluefire.runner_transport_errors",
         "bluefire.runner_transport_security",
         "bluefire.runner_watchdog",
-        "bluefire.runner_watchdog_status"
+        "bluefire.runner_watchdog_status",
+        "bluefire.s3_access_wire",
+        "bluefire.s3_access_sdk",
+        "bluefire.s3_access_sdk_boundary",
+        "bluefire.s3_access_sdk_transport"
       ]
     },
     {
@@ -502,6 +506,8 @@
         "bluefire.replay_checkpoint_parameters",
         "bluefire.replay_checkpoint_values",
         "bluefire.research",
+        "bluefire.s3_access_contract",
+        "bluefire.s3_access_policy",
         "bluefire.source_intake",
         "bluefire.source_intake_contracts",
         "bluefire.source_intake_package",
