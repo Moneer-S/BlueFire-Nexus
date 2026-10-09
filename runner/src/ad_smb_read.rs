@@ -347,6 +347,7 @@ pub struct ReadProof {
     pub bytes_read: usize,
     pub expected_volume_serial: u64,
     pub observed_volume_serial: Option<u64>,
+    pub observed_file_id: Option<String>,
     pub observed_sha256: Option<String>,
     pub failed_stage: Option<&'static str>,
     pub win32_error: Option<u32>,
@@ -377,6 +378,7 @@ impl ReadProof {
             bytes_read: 0,
             expected_volume_serial: read.target.volume_serial,
             observed_volume_serial: None,
+            observed_file_id: None,
             observed_sha256: None,
             failed_stage: None,
             win32_error: None,
@@ -477,6 +479,7 @@ fn read_once(
     let facts = backend.facts()?;
     proof.protocol = Some(facts.protocol.clone());
     proof.observed_volume_serial = Some(facts.volume_serial);
+    proof.observed_file_id = Some(hex::encode(facts.file_id));
     if !facts.protocol.permitted() {
         return Err(Failure::new("metadata", "smb_protection_unverified"));
     }

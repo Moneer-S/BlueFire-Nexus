@@ -7,6 +7,7 @@
 pub mod actions;
 pub mod ad_smb_descriptor;
 pub mod ad_smb_events;
+pub mod ad_smb_files;
 pub mod ad_smb_read;
 pub mod ad_smb_share;
 mod atomic_chmod;

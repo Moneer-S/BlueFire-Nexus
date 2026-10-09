@@ -34,6 +34,7 @@ const moreItems = [
   { to: "/", label: "Overview", icon: Home },
   { to: "/getting-started", label: "Getting Started", icon: ListChecks },
   { to: "/file-access", label: "File access", icon: FileLock2 },
+  { to: "/ad-smb", label: "AD share access", icon: Network },
   { to: "/behaviors", label: "Behaviors", icon: Braces },
   { to: "/research-sources", label: "Research Sources", icon: BookOpen },
   { to: "/ai-planner?view=audit", label: "Proposal audit", icon: Bot },

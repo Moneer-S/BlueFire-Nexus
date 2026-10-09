@@ -175,6 +175,7 @@ fn complete_read_does_not_claim_remote_identity_or_independence() {
     assert_eq!(proof.bytes_read, CONTENT.len());
     assert_eq!(proof.expected_volume_serial, 42);
     assert_eq!(proof.observed_volume_serial, Some(42));
+    assert_eq!(proof.observed_file_id.as_deref(), Some(ID));
     assert_eq!(fake.read_sizes, [CONTENT.len(), 1]);
     assert_eq!(
         fake.calls,
@@ -378,6 +379,7 @@ fn errors_at_each_stage_never_retry_or_blur_open_denial() {
             }
             if stage == "open" {
                 assert!(proof.protocol.is_none());
+                assert!(proof.observed_file_id.is_none());
             }
             assert!(!proof.effective_access_claim);
         }
@@ -481,6 +483,20 @@ fn same_file_id_content_and_path_on_a_different_volume_refuses_payload() {
     assert_eq!(proof.issue, Some("file_identity_mismatch"));
     assert_eq!(proof.expected_volume_serial, 42);
     assert_eq!(proof.observed_volume_serial, Some(43));
+    assert_eq!(proof.bytes_read, 0);
+    assert!(!fake.calls.contains(&"read"));
+}
+
+#[test]
+fn observed_file_id_preserves_the_actual_mismatching_object() {
+    let (read, secret, mut fake, clock) = fixtures();
+    fake.facts.file_id[0] ^= 1;
+    let actual = hex::encode(fake.facts.file_id);
+    let proof = read.read_with(secret, &mut fake, &clock);
+    assert_eq!(proof.observed_file_id.as_deref(), Some(actual.as_str()));
+    assert_ne!(actual, ID);
+    assert_eq!(proof.state, ReadState::Unknown);
+    assert_eq!(proof.issue, Some("file_identity_mismatch"));
     assert_eq!(proof.bytes_read, 0);
     assert!(!fake.calls.contains(&"read"));
 }

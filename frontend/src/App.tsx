@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { AIPlannerPage } from "./pages/AIPlanner";
 import { ActionPackagesPage } from "./pages/ActionPackages";
+import { AdSmbPage } from "./pages/AdSmb";
 import { BuilderPage } from "./pages/Builder";
 import {
   ActionsPage,
@@ -33,6 +34,7 @@ export default function App() {
         <Route path="compare" element={<ComparePage />} />
         <Route path="composition" element={<CompositionPage />} />
         <Route path="file-access" element={<FileAccessPage />} />
+        <Route path="ad-smb" element={<AdSmbPage />} />
         <Route path="behaviors" element={<BehaviorsPage />} />
         <Route path="runner-profiles" element={<RunnerProfilesPage />} />
         <Route path="runners" element={<RunnersPage />} />

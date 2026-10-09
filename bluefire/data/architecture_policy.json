@@ -264,6 +264,7 @@
       "patterns": [
         "bluefire.__init__",
         "bluefire.api",
+        "bluefire.api_ad_smb",
         "bluefire.api_context",
         "bluefire.api_routes",
         "bluefire.cli",
@@ -279,6 +280,8 @@
       "layer": "application",
       "patterns": [
         "bluefire.application_errors",
+        "bluefire.ad_smb_jobs",
+        "bluefire.ad_smb_service",
         "bluefire.ai_runtime_composition",
         "bluefire.composition_context",
         "bluefire.composition_file_access",
@@ -366,6 +369,7 @@
     {
       "layer": "execution",
       "patterns": [
+        "bluefire.ad_smb_execution",
         "bluefire.ai_broker_bootstrap",
         "bluefire.native_tool_inspection",
         "bluefire.planned_runner_inventory",
@@ -405,6 +409,8 @@
         "bluefire.runner_durable_result",
         "bluefire.runner_result_persistence",
         "bluefire.runner_transport",
+        "bluefire.ad_smb_channel_trust",
+        "bluefire.ad_smb_channel_transport",
         "bluefire.runner_transport_client",
         "bluefire.owned_service_transport",
         "bluefire.service_launch",
@@ -442,8 +448,11 @@
       "layer": "domain",
       "patterns": [
         "bluefire.ad_smb_contract",
+        "bluefire.ad_smb_channel",
         "bluefire.ad_smb_acl",
         "bluefire.ad_smb_audit",
+        "bluefire.ad_smb_results",
+        "bluefire.ad_smb_native_results",
         "bluefire.capability_resources",
         "bluefire.capability_dependency",
         "bluefire.capability_file_access",
@@ -586,6 +595,8 @@
     "ad_smb_descriptor": "platform",
     "ad_smb_events": "platform",
     "ad_smb_events_tests": "platform",
+    "ad_smb_files": "platform",
+    "ad_smb_files_tests": "platform",
     "ad_smb_read": "platform",
     "ad_smb_read_tests": "platform",
     "ad_smb_share": "platform",

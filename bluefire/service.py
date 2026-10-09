@@ -27,6 +27,8 @@ from .action_catalog import (
     ActionCatalogSnapshot,
     ActivatedActionPackage,
 )
+from .ad_smb_jobs import AdSmbJobs
+from .ad_smb_service import AdSmbServiceMixin
 from .adaptive_approval_binding import reviewed_execution_approval_binding
 from .adaptive_budget import reserve_method, validate_budget
 from .adaptive_execution import compile_adaptive_authorization
@@ -216,7 +218,7 @@ def _default_collector_registry_factory(sandbox: Path) -> CollectorRegistry:
     return CollectorRegistry((FilesystemCollector(sandbox), CollectionSemanticsCollector(sandbox)))
 
 
-class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin):
+class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin, AdSmbServiceMixin):
     """Synchronous, JSON-only product boundary used by every frontend."""
 
     def __init__(
@@ -311,6 +313,7 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         )
         self.assistance_runs = AssistanceRunJobs(self)
         self.receiver_defense = ReceiverDefenseJobs(self)
+        self.ad_smb = AdSmbJobs(self)
         from .composition_jobs import CompositionJobs, now_ms
 
         self.product_store.interrupt_active_capability_grants(now_ms=now_ms())
