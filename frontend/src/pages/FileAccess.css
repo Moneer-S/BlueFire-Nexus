@@ -1,0 +1,23 @@
+.file-access-page { max-width: 1200px; grid-template-columns: minmax(0, 1fr); }
+.file-access-page > *, .file-access-section { min-width: 0; }
+.file-access-page h1 { font-size: 1.65rem; overflow-wrap: anywhere; }
+.file-access-page h2 { font-size: 1.15rem; margin: 0 0 16px; }
+.file-access-page h3 { font-size: 1rem; }
+.file-access-page p { max-width: 85ch; line-height: 1.55; }
+.file-access-page code, .file-access-page li, .file-access-page dd { overflow-wrap: anywhere; }
+.file-access-page code { font-size: .78rem; }
+.file-access-section { border-top: 1px solid var(--line); padding-block: 24px; }
+.file-access-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.file-access-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-block: 16px; }
+.file-access-page .button { max-width: 100%; white-space: normal; text-align: left; }
+.file-access-page .button svg { width: 16px; height: 16px; flex: 0 0 16px; }
+.file-access-page .field { margin-block: 16px; }
+.file-access-list > div, .file-access-history li { padding-block: 12px; border-bottom: 1px solid var(--line); }
+.file-access-list a, .file-access-history li > div { display: flex; justify-content: space-between; gap: 16px; padding-block: 4px; }
+.file-access-list details, .file-access-history details { margin-top: 8px; color: var(--muted-strong); font-size: .8rem; }
+.file-access-list a[aria-current] { color: var(--blue-soft); }
+.file-access-history { padding-left: 0; list-style: none; }
+@media (max-width: 680px) {
+  .file-access-page h1 { font-size: 1.35rem; }
+  .file-access-list a, .file-access-history li > div { flex-direction: column; gap: 4px; }
+}

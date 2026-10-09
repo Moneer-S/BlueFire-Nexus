@@ -2,6 +2,7 @@
 
 from . import composition_context
 from .capability_grant import create_grant
+from .capability_packs import review_pack
 from .capability_resources import CapabilityContractError
 from .product_store_contracts import safe_document
 from .product_store_errors import ProductStoreError
@@ -68,7 +69,7 @@ def _replay(jobs, previous, request):
 
 def authorize(jobs, request):
     fields(request, {"submission_id", "review", "reviewed_by", "review_digest"})
-    fields(request["review"], {"control_owner_id", "question", "limits"})
+    pack = review_pack(request["review"])
     request = safe_document(request, context="composition authorization submission")
     if (
         not isinstance(request["reviewed_by"], str)
@@ -94,7 +95,9 @@ def authorize(jobs, request):
             problem = "composition_review_changed"
         else:
             current = composition_context.resolve(
-                jobs.service, reviewed["environment"]["control_owner_id"]
+                jobs.service,
+                reviewed["environment"]["control_owner_id"],
+                pack=pack,
             )
             grant = create_grant(
                 registry=current["registry"],
@@ -105,7 +108,10 @@ def authorize(jobs, request):
                 grant_id="grant-" + job_id[4:],
                 approved_by=request["reviewed_by"],
                 created_at_ms=created,
-                expires_at_ms=created + 900_000,
+                expires_at_ms=min(
+                    created + 900_000, current.get("expires_at_ms", created + 900_000)
+                ),
+                pack=pack,
             )
             if existing is not None:
                 if any(

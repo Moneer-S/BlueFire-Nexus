@@ -12,6 +12,7 @@ import "./Composition.css";
 import { clearCompositionControl, compositionControlConfirmed, readCompositionControls, readCompositionProposals, rememberCompositionProposal, storeCompositionControl, type CompositionControl } from "../lib/composition";
 import { clearCompositionCancellation, compositionCanRevise, compositionCancellationConfirmed, compositionEstablished, readCompositionCancellations, storeCompositionCancellation } from "../lib/composition";
 import type { CompositionObjectiveState, CompositionReviewRequest } from "../lib/composition";
+import { compositionPack, compositionRequestPack, FILE_ACCESS_PACK, RECEIVER_PACK } from "../lib/composition";
 
 export function CompositionPage() {
   const [params, setParams] = useSearchParams();
@@ -28,6 +29,8 @@ export function CompositionPage() {
   const id = params.get("objective") ?? pending?.owner ?? "";
   const stopped = Boolean(pendingControls[id]) || stoppedOwners.current.has(id);
   const control = params.get("control") ?? pending?.control ?? "";
+  const requestedPack = params.get("pack");
+  const invalidPack = requestedPack !== null && requestedPack !== FILE_ACCESS_PACK && requestedPack !== RECEIVER_PACK;
   const proposalId = cancellations[id] ?? params.get("proposal") ?? (pending?.kind === "proposal" && pending.owner === id ? pending.id : "");
   const navigate = (owner: string, proposal = "") => setParams(next => { const value = new URLSearchParams(next); value.set("control", control); if (owner) value.set("objective", owner); else value.delete("objective"); if (proposal) value.set("proposal", proposal); else value.delete("proposal"); return value; });
   const list = useQuery({ queryKey: ["composition-list", control], queryFn: async () => checkedCompositionList(await compositionApi.list(control)), enabled: compositionJobValid(control), retry: false });
@@ -42,7 +45,7 @@ export function CompositionPage() {
     else client.setQueryData(["composition-proposal", operation.id], value);
     void client.invalidateQueries({ queryKey: ["composition-list", operation.control] });
   }, onSettled: () => { locked.current = false; } });
-  const objective = useQuery({ queryKey: ["composition-objective", id], queryFn: async () => checkedCompositionObjective(await compositionApi.objective(id), id, control || undefined), enabled: compositionJobValid(id) && !write.isPending, retry: false, refetchInterval: state => state.state.data?.grant && !["revoked", "expired"].includes(state.state.data.grant.status) ? 1500 : false });
+  const objective = useQuery({ queryKey: ["composition-objective", id], queryFn: async () => checkedCompositionObjective(await compositionApi.objective(id), id, control || undefined, requestedPack === FILE_ACCESS_PACK ? FILE_ACCESS_PACK : requestedPack === RECEIVER_PACK ? RECEIVER_PACK : undefined), enabled: compositionJobValid(id) && !write.isPending && !invalidPack, retry: false, refetchInterval: state => state.state.data?.grant && !["revoked", "expired"].includes(state.state.data.grant.status) ? 1500 : false });
   const proposal = useQuery({ queryKey: ["composition-proposal", proposalId], queryFn: async () => checkedCompositionProposal(await compositionApi.proposal(proposalId), proposalId, id), enabled: compositionJobValid(proposalId) && compositionJobValid(id) && !write.isPending, retry: false, refetchInterval: state => state.state.data && ["pending", "requesting"].includes(state.state.data.provider_outcome) ? 1200 : false });
   useEffect(() => {
     const savedControl = control || objective.data?.grant?.document.environment.control_owner_id || String(compositionRecord(compositionRecord(objective.data?.owner.progress.submitted_request).review).control_owner_id ?? "");
@@ -83,15 +86,21 @@ export function CompositionPage() {
     await client.cancelQueries({ queryKey: ["composition-proposal", job], exact: true });
     return checkedCompositionProposal(await compositionApi.cancel(job), job, owner);
   }, onSuccess: value => client.setQueryData(["composition-proposal", value.job.job_id], value) });
-  const envelope = objective.data?.grant ? objective.data : undefined;
-  const refusal = objective.data?.grant === null ? objective.data : undefined;
+  const savedEnvelope = objective.data?.grant ? objective.data : undefined;
+  const envelope = savedEnvelope && !invalidPack && (!control || savedEnvelope.grant.document.environment.control_owner_id === control) && (!requestedPack || compositionPack(savedEnvelope.grant.document) === requestedPack) ? savedEnvelope : undefined;
+  const savedRefusal = objective.data?.grant === null ? objective.data : undefined;
+  const refusedReview = compositionRecord(compositionRecord(savedRefusal?.owner.progress.submitted_request).review);
+  const refusal = savedRefusal && !invalidPack && (!control || refusedReview.control_owner_id === control) && (!requestedPack || compositionRequestPack(refusedReview) === requestedPack) ? savedRefusal : undefined;
+  const pack = envelope ? compositionPack(envelope.grant.document) : requestedPack === FILE_ACCESS_PACK || compositionRecord(pending?.body.review).pack === FILE_ACCESS_PACK || compositionRecord(compositionRecord(refusal?.owner.progress.submitted_request).review).pack === FILE_ACCESS_PACK ? FILE_ACCESS_PACK : RECEIVER_PACK;
+  const fileAccess = pack === FILE_ACCESS_PACK;
+  const packQuery: Record<string, string> = fileAccess ? { pack: FILE_ACCESS_PACK } : {};
   return <div className="page composition-page">
-    <Link to={compositionJobValid(control) ? `/compare?receiver_job=${encodeURIComponent(control)}` : "/compare"}>Retained receiver control</Link>
+    <Link to={fileAccess ? `/file-access${compositionJobValid(control) ? `?control=${encodeURIComponent(control)}` : ""}` : compositionJobValid(control) ? `/compare?receiver_job=${encodeURIComponent(control)}` : "/compare"}>{fileAccess ? "Retained file-access control" : "Retained receiver control"}</Link>
     <PageHeader title={envelope?.grant.document.objective.question ?? "Composition workspace"} actions={compositionJobValid(id) && !refusal ? <div className="composition-actions"><Button variant="danger" disabled={safety.isPending} onClick={() => controlObjective("stop")}><Pause />Stop</Button><Button variant="danger" disabled={safety.isPending} onClick={() => controlObjective("revoke")}><Ban />Revoke</Button></div> : undefined} />
     {localError ? <ErrorState title="Saved request needs attention" error={localError} /> : null}
-    {!compositionJobValid(control) ? <Callout title="Select the original retained control">Open a completed retained receiver control to review its available composition capabilities.</Callout> : <>
+    {invalidPack ? <ErrorState error={new Error("This capability pack is not supported.")} /> : !compositionJobValid(control) ? <Callout title="Select the original retained control"><Link to="/compare">Receiver control</Link> or <Link to="/file-access">effective file access</Link></Callout> : <>
       <section className="composition-section" aria-label="Saved objectives"><div className="composition-heading"><h2>Saved objectives</h2><Button size="small" disabled={list.isFetching} onClick={() => { void list.refetch(); }}><RefreshCw />Refresh</Button></div>
-        {list.error ? <ErrorState error={list.error} /> : list.isPending ? <LoadingState label="Opening saved objectives" /> : <div className="composition-objective-list">{list.data?.objectives.map(item => <Link aria-label={`Open objective: ${item.title}, ${sentence(item.status)}`} aria-current={item.owner_id === id ? "page" : undefined} key={item.owner_id} to={`/composition?${new URLSearchParams({ control, objective: item.owner_id, ...(recentProposals[item.owner_id] ? { proposal: recentProposals[item.owner_id]! } : {}) })}`}><strong>{item.title}</strong><span>{sentence(item.status)}</span></Link>)}{!list.data?.objectives.length ? <p>No saved objectives for this control.</p> : null}</div>}
+        {list.error ? <ErrorState error={list.error} /> : list.isPending ? <LoadingState label="Opening saved objectives" /> : <div className="composition-objective-list">{list.data?.objectives.map(item => <Link aria-label={`Open objective: ${item.title}, ${sentence(item.status)}`} aria-current={item.owner_id === id ? "page" : undefined} key={item.owner_id} to={`/composition?${new URLSearchParams({ control, objective: item.owner_id, ...packQuery, ...(recentProposals[item.owner_id] ? { proposal: recentProposals[item.owner_id]! } : {}) })}`}><strong>{item.title}</strong><span>{sentence(item.status)}</span></Link>)}{!list.data?.objectives.length ? <p>No saved objectives for this control.</p> : null}</div>}
         {id ? <Button disabled={Boolean(pending) || write.isPending} onClick={() => { setReviewSeed(undefined); navigate(""); }}>New objective</Button> : null}
       </section>
       {pending ? <Callout title={write.isPending ? "Saving exact request" : "Request confirmation pending"}>
@@ -102,7 +111,7 @@ export function CompositionPage() {
       {write.error ? <ErrorState title="Submission not confirmed" error={write.error} /> : null}
       {safety.error ? <ErrorState title="Control request not confirmed" error={safety.error} /> : null}
       {pendingControls[id] ? <Callout title={`${sentence(pendingControls[id]!)} confirmation pending`}><p>New work remains disabled until this exact control request is reconciled.</p><div className="composition-actions"><Button disabled={safety.isPending} onClick={() => controlObjective(pendingControls[id]!)}>Retry exact control request</Button><Button onClick={() => { void objective.refetch(); }}>Check control state</Button></div></Callout> : null}
-      {!id ? <CompositionSetup control={control} disabled={Boolean(pending) || Boolean(localError)} onSubmit={send} initialRequest={reviewSeed} /> : <>
+      {!id ? <CompositionSetup key={`${control}:${pack}`} control={control} pack={pack} disabled={Boolean(pending) || Boolean(localError)} onSubmit={send} initialRequest={reviewSeed} /> : <>
         {!compositionJobValid(id) ? <ErrorState error={new Error("This objective link is incomplete.")} /> : objective.error ? <ErrorState title="Current objective unavailable" error={objective.error} retry={() => { void objective.refetch(); }} /> : !envelope && !refusal ? <LoadingState label="Opening objective" /> : null}
         {refusal ? <Callout title="Delegation refused"><p>{String(compositionRecord(compositionRecord(refusal.owner.progress.admission).problem).message)}</p><p>No capability grant or execution authority was issued.</p><Button disabled={Boolean(pending) || Boolean(localError)} onClick={() => { setReviewSeed(compositionRecord(refusal.owner.progress.submitted_request).review as CompositionReviewRequest); navigate(""); }}><RefreshCw />Review again</Button></Callout> : null}
         {envelope ? <>
@@ -140,7 +149,8 @@ function CompositionPlanning({ objective, proposal, proposalId, pending, disable
   const proposing = Boolean(proposal && ["pending", "requesting"].includes(proposal.provider_outcome));
   const active = !established && objective.grant.status === "active" && grant.expires_at_ms > now && !disabled && !pending && !proposing;
   const priorValid = !objective.attempts.length ? prior === "" : objective.attempts.some(item => item.request.composition_attempt.attempt_id === prior && compositionCanRevise(item, objective));
-  const context = useQuery({ queryKey: ["composition-context", owner, prior, objective.attempts.map(item => `${item.job_id}:${item.state}:${item.progress.settlement}`).join("|")], queryFn: async () => checkedCompositionContext(await compositionApi.context(owner, prior || null), grant.grant_id), enabled: active && priorValid, retry: false });
+  const pack = compositionPack(grant);
+  const context = useQuery({ queryKey: ["composition-context", owner, prior, objective.attempts.map(item => `${item.job_id}:${item.state}:${item.progress.settlement}`).join("|")], queryFn: async () => checkedCompositionContext(await compositionApi.context(owner, prior || null), grant.grant_id, pack), enabled: active && priorValid, retry: false });
   const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog, retry: false });
   const providers = (catalog.data?.ai.providers ?? []).filter(item => item.kind !== "deterministic");
   const current = context.data;
@@ -150,6 +160,7 @@ function CompositionPlanning({ objective, proposal, proposalId, pending, disable
   const matches = Boolean(current && (useInitial ? !objective.attempts.length && candidate : proposal?.candidate_ready && proposal.proposal?.context_digest === current.context_digest && proposal.proposal.prior_attempt_id === (prior || null)));
   const ready = active && priorValid && !context.isFetching && !context.error && matches && candidate && scenario;
   const newRequest = (kind: "proposal" | "attempt", body: Record<string, unknown>) => { const submission_id = crypto.randomUUID(); onSubmit({ kind, owner, control: grant.environment.control_owner_id, id: compositionJobId(submission_id), body: { submission_id, ...body } }); };
+  if (pack === FILE_ACCESS_PACK && objective.attempts.length) return <section className="composition-section" aria-label="Graph planning"><h2>{established ? "Objective established" : "Control review"}</h2><p>{established ? "A settled verified attempt meets every reviewed access and cleanup condition." : "The fixed file-access pack has no different permitted read path. The current attempt and its cleanup remain recorded."}</p><Link to={`/file-access?control=${encodeURIComponent(grant.environment.control_owner_id)}`}>Review retained file-access control</Link></section>;
   return <section className="composition-section" aria-label="Graph planning"><h2>{objective.attempts.length ? "Evidence-driven revision" : "Initial graph"}</h2>
     {objective.attempts.length ? <Field label="Verified prior attempt"><select value={prior} disabled={pending} onChange={event => { setPrior(event.target.value); setUseInitial(false); onProposal(""); }}><option value="">Select settled refusal evidence</option>{objective.attempts.map((item, index) => <option key={item.job_id} value={item.request.composition_attempt.attempt_id} disabled={!compositionCanRevise(item, objective)}>Attempt {index + 1}: {String(compositionRecord(compositionRecord(item.progress.verified_result).objective).established === true ? "established" : item.state)}{item.progress.settlement !== "settled" ? " / cleanup pending" : ""}</option>)}</select></Field> : null}
     {established ? <Callout title="Objective established">A settled verified attempt meets every reviewed success condition. No new graph or attempt is available for this objective.</Callout> : !active ? <Callout title="New dispatch unavailable">{grant.expires_at_ms <= now ? "The original grant has expired." : proposing ? "The selected provider request is still active. Its saved result or confirmed cancellation remains pending." : "A current active grant, reconciled submissions and verified cleanup are required."}</Callout> : null}

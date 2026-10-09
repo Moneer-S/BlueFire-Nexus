@@ -12,13 +12,13 @@ export function reviewFixture(): CompositionReview {
     objective: { question, predicate: { kind: "redacted_delivery_preserves_records", record_count: 8 } },
     environment: { control_owner_id: controlId, runner_id: "local-runner", policy_id: "redacted-only.v1", policy_digest: testDigest, port: 8844 },
     limits: { max_attempts: 3, max_business_steps: 24, cleanup_reserve_ms: 10000 },
-    snapshot: { snapshot_digest: testDigest, artifact_context: {}, methods: [{ behavior_id: demoCatalog.behaviors[0]!.id, action_id: demoCatalog.actions[0]!.id, behavior: demoCatalog.behaviors[0]!, action: demoCatalog.actions[0]!, implementation_digest: testDigest, parameter_domains: { record_count: [8] }, cost: {} }] },
+    snapshot: { pack: "bluefire.receiver-composition-pack.v1", snapshot_digest: testDigest, artifact_context: {}, methods: [{ behavior_id: demoCatalog.behaviors[0]!.id, action_id: demoCatalog.actions[0]!.id, behavior: demoCatalog.behaviors[0]!, action: demoCatalog.actions[0]!, implementation_digest: testDigest, parameter_domains: { record_count: [8] }, cost: {} }] },
     limitations: [],
   };
 }
 export function objectiveFixture(): CompositionObjective {
   const review = reviewFixture();
-  return { schema_version: "bluefire.composition-objective.v1", owner: { job_id: ownerId, kind: "composition.objective", state: "completed", request: { grant_id: `grant-${"b".repeat(32)}`, grant_digest: testDigest }, progress: {} }, grant: { status: "active", usage: { attempts: 0 }, cleanup_state: "settled", document: { ...review, grant_id: `grant-${"b".repeat(32)}`, grant_digest: testDigest, approved_by: "operator", created_at_ms: Date.now(), expires_at_ms: Date.now() + 900000 } }, attempts: [] };
+  return { schema_version: "bluefire.composition-objective.v1", owner: { job_id: ownerId, kind: "composition.objective", state: "completed", request: { grant_id: `grant-${"b".repeat(32)}`, grant_digest: testDigest }, progress: {} }, grant: { status: "active", usage: { attempts: 0 }, cleanup_state: "settled", document: { ...review, schema_version: "bluefire.capability-grant.v1", grant_id: `grant-${"b".repeat(32)}`, grant_digest: testDigest, approved_by: "operator", created_at_ms: Date.now(), expires_at_ms: Date.now() + 900000 } }, attempts: [] };
 }
 export function contextFixture(): CompositionContext {
   const review = reviewFixture();
