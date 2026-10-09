@@ -1118,6 +1118,15 @@ def test_authority_history_tables_are_append_only(saved, table):
     register(saved, lease)
     cleanup_complete(saved, lease)
     store.settle_capability_attempt(lease["attempt_id"], closed(lease, ["task-one"]))
+    if table in {"capability_file_access_bindings", "capability_file_access_terminals"}:
+        # The receiver fixture has no endpoint rows; exercise the row triggers explicitly.
+        identity = lease["attempt_id"] if table.endswith("bindings") else "task-one"
+        document = {"schema_only_fixture": identity}
+        with store._connection(write=True) as connection:
+            connection.execute(
+                f"INSERT INTO {table} VALUES(?,?,?)",
+                (identity, canonical_json(document), content_hash(document)),
+            )
     with pytest.raises(sqlite3.IntegrityError, match="append-only"):
         with store._connection(write=True) as connection:
             connection.execute(f"DELETE FROM {table}")
@@ -1186,6 +1195,63 @@ def test_schema8_upgrade_preserves_history_and_is_transactional(tmp_path, monkey
             )
     else:
         upgraded = ProductStore(path)
-        assert upgraded.schema_version == 9
+        assert upgraded.schema_version == 10
         assert upgraded.get_setting("unit.preserved") == {"value": "preserved"}
         assert upgraded.get_job(original_job["job_id"]) == original_job
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_schema9_endpoint_upgrade_preserves_history_and_is_transactional(
+    tmp_path, monkeypatch, fail
+):
+    from bluefire import product_store_file_access as endpoint_schema
+
+    path = tmp_path / "prior-endpoint.sqlite3"
+    added = {"capability_file_access_bindings", "capability_file_access_terminals"}
+    with monkeypatch.context() as prior:
+        prior.setattr(store_module, "SCHEMA_VERSION", 9)
+        prior.setattr(endpoint_schema, "initialize_schema", lambda _connection: None)
+        prior.setattr(
+            schema_api,
+            "_TABLES",
+            {
+                name: definition
+                for name, definition in schema_api._TABLES.items()
+                if name not in added
+            },
+        )
+        store = ProductStore(path)
+        store.set_setting("unit.preserved", {"value": "preserved"})
+        original_job = store.create_job("unit.job", {"purpose": "preserved"})
+        assert store.schema_version == 9
+    initialize = endpoint_schema.initialize_schema
+
+    def interrupted(connection):
+        initialize(connection)
+        raise sqlite3.OperationalError("fixture interrupted endpoint migration")
+
+    if fail:
+        monkeypatch.setattr(endpoint_schema, "initialize_schema", interrupted)
+        with pytest.raises(ProductStoreError, match="migration failed"):
+            ProductStore(path)
+        with sqlite3.connect(path) as connection:
+            assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone() == (
+                9,
+            )
+            assert (
+                connection.execute(
+                    "SELECT name FROM sqlite_master WHERE name LIKE 'file_access_%' OR name LIKE 'capability_file_access_%'"
+                ).fetchall()
+                == []
+            )
+    else:
+        upgraded = ProductStore(path)
+        assert upgraded.schema_version == 10
+        assert upgraded.get_setting("unit.preserved") == {"value": "preserved"}
+        assert upgraded.get_job(original_job["job_id"]) == original_job
+        with upgraded._connection() as connection:
+            names = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+        assert set(endpoint_schema._TABLES) | added <= names

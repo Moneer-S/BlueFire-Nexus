@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-
-class ProductStoreError(ValueError):
-    """Raised when product metadata or a state transition is invalid."""
+from .domain_errors import ProductStoreError as ProductStoreError
 
 
 class ResearchSourceIntegrityError(ProductStoreError):

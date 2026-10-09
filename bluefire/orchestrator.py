@@ -70,6 +70,7 @@ from .execution_progress import (
     record_interrupted_dispatch,
     validate_cleanup_result,
 )
+from .file_access_contract import VerifiedFileAccessBinding
 from .job_runtime import JobCancelled
 from .native_tool_execution_readiness import inspected_tool_rows
 from .observation_integrity import evaluate_observation_integrity
@@ -304,6 +305,7 @@ class Orchestrator:
         before_receiver_task: Callable[..., None] | None = None,
         service_intent_journal: ServiceIntentJournal | None = None,
         grant_execution: GrantExecution | None = None,
+        file_access_binding: VerifiedFileAccessBinding | None = None,
     ) -> None:
         self.registry = registry
         self.store = store
@@ -316,6 +318,12 @@ class Orchestrator:
         if grant_execution is not None and type(grant_execution) is not GrantExecution:
             raise OrchestrationError("Composition requires its trusted execution adapter")
         self.grant_execution = grant_execution
+        if (
+            file_access_binding is not None
+            and type(file_access_binding) is not VerifiedFileAccessBinding
+        ):
+            raise OrchestrationError("File-access execution requires its trusted stored binding")
+        self.file_access_binding = file_access_binding
         self.catalog_authority = dict(catalog_authority) if catalog_authority is not None else None
         self.action_bindings = {
             (str(behavior_id), str(action_id)): dict(binding)
@@ -718,6 +726,7 @@ class Orchestrator:
                     if self.grant_execution is not None
                     else runner_authorization(plan, adaptive_authorization)
                 ),
+                file_access_binding=self.file_access_binding,
             )
             if self.grant_execution is not None:
                 self.grant_execution.bind_profile(runner_profile_doc)
@@ -2611,6 +2620,7 @@ class Orchestrator:
         approval_binding: Mapping[str, Any] | None = None,
         owned_service_scope: OwnedServiceScope | None = None,
         owned_service_operation_binding: ServiceOperationBinding | None = None,
+        task_lifecycle: Any = None,
     ) -> tuple[dict[str, Any], tuple[EvidenceRecord, ...], PolicyDecision, tuple[str, ...]]:
         action = self.registry.get_action(str(step.action_id))
         if reviewed_step_check is not None:
@@ -2823,7 +2833,12 @@ class Orchestrator:
             if callable(execute_task) and wrapped_supports_tasks:
                 runner_task_id = task_id
                 composition_dispatch.before_task(
-                    self.grant_execution, step, bound_inputs, manifest, task_id, cancel_event
+                    task_lifecycle or self.grant_execution,
+                    step,
+                    bound_inputs,
+                    manifest,
+                    task_id,
+                    cancel_event,
                 )
                 if self.before_receiver_task is not None:
                     self.before_receiver_task(step, bound_inputs, manifest, task_id)
@@ -2874,7 +2889,7 @@ class Orchestrator:
                     **service_kwargs,
                 )
             else:
-                if self.grant_execution is not None:
+                if self.grant_execution is not None or task_lifecycle is not None:
                     raise RunnerTransportError(
                         "Grant-owned execution requires authenticated task transport."
                     )
@@ -2912,7 +2927,7 @@ class Orchestrator:
             )
             self._validate_cleanup_result(manifest, runner_result)
             composition_dispatch.after_result(
-                self.grant_execution,
+                task_lifecycle or self.grant_execution,
                 step,
                 manifest,
                 task_id,
@@ -2921,7 +2936,7 @@ class Orchestrator:
             )
         except RunnerTaskCancelled as exc:
             composition_dispatch.after_cancellation(
-                self.grant_execution, step, manifest, task_id, exc
+                task_lifecycle or self.grant_execution, step, manifest, task_id, exc
             )
             try:
                 for receipt_id in discover_current_receipts():
@@ -2948,7 +2963,7 @@ class Orchestrator:
             raise
         except RunnerTransportError as exc:
             composition_dispatch.after_unsent(
-                self.grant_execution,
+                task_lifecycle or self.grant_execution,
                 step,
                 manifest,
                 task_id,
@@ -3711,34 +3726,9 @@ class Orchestrator:
 
     @staticmethod
     def _filesystem_scope(plan: ExecutionPlan) -> tuple[str, ...]:
-        """Compile the fixed runner roots needed by this exact reviewed plan."""
+        from .runner_plan_scope import filesystem_scope
 
-        roots_by_action = {
-            "sandbox.identity-material.seed.v1": ("identity-material",),
-            "sandbox.identity-material.inspect.v1": ("identity-material",),
-            "sandbox.fixture.create.v1": ("fixtures",),
-            "sandbox.fixture.transform.v1": ("fixtures",),
-            "sandbox.discovery.list.v1": ("fixtures",),
-            "sandbox.discovery.metadata.v1": ("fixtures",),
-            "sandbox.discovery.recursive.v1": ("fixtures",),
-            "sandbox.archive.tar.v1": ("fixtures", "staged"),
-            "sandbox.collection.stage.v1": ("fixtures", "staged"),
-            "sandbox.collection.records.v1": ("fixtures", "staged"),
-            "sandbox.collection.archive.v1": ("fixtures", "staged"),
-            "sandbox.collection.atomic-gzip.v1": ("fixtures", "staged"),
-            "sandbox.permission.chmod.v1": ("fixtures",),
-            "sandbox.network.loopback.v1": ("staged",),
-            "sandbox.peer.handoff.v1": ("staged",),
-            "sandbox.observability.variant.v1": ("staged", "observability"),
-            "sandbox.export.local.v1": ("staged", "exports"),
-            "sandbox.restricted.persistence-marker.v1": ("restricted",),
-        }
-        selected: list[str] = []
-        for step in plan.steps:
-            for root in roots_by_action.get(Orchestrator._runner_opcode(step) or "", ()):
-                if root not in selected:
-                    selected.append(root)
-        return tuple(selected)
+        return filesystem_scope(plan, opcode_for_step=Orchestrator._runner_opcode)
 
     @staticmethod
     def _network_destinations(plan: ExecutionPlan) -> tuple[Mapping[str, Any], ...]:

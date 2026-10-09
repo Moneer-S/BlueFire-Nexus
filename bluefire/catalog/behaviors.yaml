@@ -738,3 +738,49 @@ items:
       derived: true
       notes: Declarative adaptation only; simulation is synthetic and the external adapter is separately pinned.
     limitations: [Linux GNU chmod adapter only; fixed transformed fixture; mode bits do not establish effective access through the workspace.]
+
+  - schema_version: bluefire.behavior.v1
+    id: file_access.probe.non_owner.v1
+    title: Read as enrolled non-owner
+    purpose: Freshly read only the fixed enrolled generated file and retain metadata-only evidence.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [linux]
+    techniques: []
+    capabilities: [filesystem.read, filesystem.write]
+    inputs: []
+    outputs:
+      - name: probe
+        type: artifact.file_access.probe.v1
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+    parameters: []
+    simulation_id: null
+    action_ids: [file_access.probe.non_owner.v1]
+    telemetry: [file_access.read.observed]
+    detection_hints: [Only authenticated fresh reads establish effective access.]
+    limitations: [One pre-enrolled Linux principal and generated file only; no general host or cross-platform claim.]
+    provenance: *authored
+
+  - schema_version: bluefire.behavior.v1
+    id: file_access.verify.owner.v1
+    title: Verify legitimate owner read
+    purpose: Freshly read only the fixed enrolled generated file and retain metadata-only evidence.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [linux]
+    techniques: []
+    capabilities: [filesystem.read, filesystem.write]
+    inputs:
+      - name: probe
+        type: artifact.file_access.probe.v1
+    outputs:
+      - name: verification
+        type: artifact.file_access.verification.v1
+    parameters: []
+    simulation_id: null
+    action_ids: [file_access.verify.owner.v1]
+    telemetry: [file_access.read.observed]
+    detection_hints: [Only authenticated fresh reads establish effective access.]
+    limitations: [One pre-enrolled Linux principal and generated file only; no general host or cross-platform claim.]
+    provenance: *authored

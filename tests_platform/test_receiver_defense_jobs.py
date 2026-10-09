@@ -1130,19 +1130,27 @@ def test_partial_factory_failure_retains_exact_attempt_and_verified_cleanup(setu
     assert not service.receiver_defense.owners._owners and not access.calls
 
 
-def test_shutdown_includes_failed_construction_retained_pool(setup, monkeypatch):
-    from bluefire import receiver_defense_ownership as ownership
+@pytest.mark.parametrize("retained_counts", [(1, 0), (0, 1), (1, 1)])
+def test_shutdown_includes_failed_construction_retained_pool(setup, monkeypatch, retained_counts):
+    from bluefire import owned_receiver_registry as ownership
 
     service, *_ = setup
     calls = []
+    remaining = iter(retained_counts)
+
+    def reconcile():
+        count = next(remaining)
+        calls.append(count)
+        return {"reconciled": 0, "remaining": count}
+
     monkeypatch.setattr(
         ownership,
         "reconcile_retained_receiver_sessions",
-        lambda: calls.append(True) or {"reconciled": 0, "remaining": 1},
+        reconcile,
     )
     with pytest.raises(ProductStoreError, match="verified cleanup"):
         service.close()
-    assert calls == [True]
+    assert calls == list(retained_counts)
     monkeypatch.setattr(
         ownership, "reconcile_retained_receiver_sessions", lambda: {"reconciled": 1, "remaining": 0}
     )

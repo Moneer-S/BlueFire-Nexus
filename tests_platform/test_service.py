@@ -51,6 +51,8 @@ EXECUTE_PROFILE_ACTIONS = {
     "endpoint.discovery.processes.v1",
     "endpoint.discovery.system.v1",
     "endpoint.discovery.windows-version.v1",
+    "file_access.probe.non_owner.v1",
+    "file_access.verify.owner.v1",
     "sandbox.archive.tar.v1",
     "sandbox.cleanup.v1",
     "sandbox.collection.stage.v1",
@@ -70,6 +72,7 @@ EXECUTE_PROFILE_ACTIONS = {
     "sandbox.network.loopback.v1",
     "sandbox.observability.variant.v1",
     "sandbox.peer.handoff.v1",
+    "sandbox.permission.chmod.v1",
 }
 
 
@@ -1737,12 +1740,17 @@ def test_cleanup_pending_callback_cannot_override_cancellation_race(
         service.close()
 
 
+@pytest.mark.parametrize(
+    "missing_action",
+    ["sandbox.fixture.create.v1", "file_access.probe.non_owner.v1", "file_access.verify.owner.v1"],
+)
 def test_execute_preflight_refuses_missing_enabled_action_without_side_effects(
     tmp_path: Path,
+    missing_action: str,
 ) -> None:
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()
-    runner = ReadyInventoryRunner(actions=EXECUTE_PROFILE_ACTIONS - {"sandbox.fixture.create.v1"})
+    runner = ReadyInventoryRunner(actions=EXECUTE_PROFILE_ACTIONS - {missing_action})
     service = BlueFireService(
         project_root=ROOT,
         runs_dir=tmp_path / "runs",
@@ -1765,7 +1773,7 @@ def test_execute_preflight_refuses_missing_enabled_action_without_side_effects(
 
     assert refused.value.code == "preflight_refused"
     assert refused.value.details == [
-        "Runner inventory is missing enabled action(s): sandbox.fixture.create.v1"
+        f"Runner inventory is missing enabled action(s): {missing_action}"
     ]
     assert not (sandbox / ".bluefire-executions").exists()
     assert runner.execute_calls == 0

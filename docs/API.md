@@ -472,6 +472,32 @@ Unknown, duplicate, signed, blank, non-decimal, or out-of-range values return `4
 
 Use the returned `next_sequence` as the next request's `after_sequence`. When `items` is empty, `next_sequence` remains the supplied cursor. This is bounded polling over immutable local records, not a live event stream.
 
+## Effective file access
+
+The ordinary File access UI uses these query-free routes for the finite Linux
+owner/non-owner workflow. Status reports prepared enrollment; reading status does
+not provision identities, start a worker, or authorize an operation.
+
+| Method | Path | Result |
+|---|---|---|
+| GET | `/api/v1/file-access/status` | Current enrollment readiness and allowed operations |
+| POST | `/api/v1/file-access/review` | Exact review for create, baseline, harden, rollback, or reset |
+| POST | `/api/v1/file-access/operations` | Submit the reviewed operation with its durable submission identity |
+| POST | `/api/v1/file-access/control-list` | Bounded saved control inventory |
+| GET | `/api/v1/file-access/controls/{job_id}` | Retained control and operation history |
+| GET | `/api/v1/file-access/operations/{job_id}` | Original operation, job state, and evidence projection |
+| POST | `/api/v1/file-access/operations/{job_id}/reconcile` | Explicit authenticated evidence reconciliation |
+| GET | `/api/v1/file-access/operations/{job_id}/reconciliations/{reconciliation_id}` | Exact saved reconciliation receipt |
+
+Use the server's `allowed_operations` and exact review bindings. Reconciliation
+does not redispatch the original mutations or rewrite failed, interrupted, or
+cancelled job history. `settled_partial` is not completion: the retained control
+may require reset and may have no completed resource. Recovered observations are
+published only for complete, validated evidence; a retained baseline is historical
+and permission bits are not fresh effective-access proof. Unresolved evidence or
+usage remains blocking. See the [capability boundary](RELEASE_CAPABILITIES.md) for
+the distinction between implemented contracts and installed or live validation.
+
 ## Authenticated curl diagnostics
 
 The supported operator surfaces are the CLI and the packaged browser. A bare curl request is intentionally refused. For a local diagnostic only, launch `bluefire ui --no-browser`, take the 64-character value after `#bluefire-session=` from its exact one-use URL, and exchange it once into a private cookie jar. Do not put the capability in a URL, request body, shell history, log, or shared file.

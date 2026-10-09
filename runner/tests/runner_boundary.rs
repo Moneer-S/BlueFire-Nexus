@@ -145,6 +145,7 @@ fn profile(root: &TempDir, network: Vec<NetworkDestination>) -> RunnerProfile {
         control_blocked_actions: Vec::new(),
         action_bindings: Vec::new(),
         native_tool_installations: Vec::new(),
+        file_access_binding: None,
         provider_bindings: Vec::new(),
         provider_artifacts: Vec::new(),
         capabilities: vec![
@@ -3222,7 +3223,20 @@ fn inventory_and_execute_cli_emit_the_versioned_json_contract() {
         "bluefire.runner-receipt-wal.v2"
     );
     let actions = inventory_json["actions"].as_array().unwrap();
-    assert_eq!(actions.len(), 24);
+    assert_eq!(actions.len(), 26);
+    for action_id in [
+        "file_access.probe.non_owner.v1",
+        "file_access.verify.owner.v1",
+    ] {
+        let action = actions
+            .iter()
+            .find(|item| item["action_id"] == action_id)
+            .unwrap();
+        assert_eq!(action["platforms"], json!(["linux"]));
+        assert_eq!(action["filesystem_effect"], true);
+        assert_eq!(action["process_effect"], false);
+        assert_eq!(action["network_effect"], false);
+    }
     let gzip = actions
         .iter()
         .find(|action| action["action_id"] == "sandbox.collection.atomic-gzip.v1")

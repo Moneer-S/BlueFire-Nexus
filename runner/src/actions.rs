@@ -603,6 +603,7 @@ macro_rules! reviewed_descriptor {
 
 mod atomic_chmod_action;
 mod atomic_gzip_action;
+mod file_access;
 use atomic_chmod_action::AtomicChmodAction;
 use atomic_gzip_action::AtomicGzipAction;
 #[cfg(test)]
@@ -3850,6 +3851,10 @@ static COLLECTION_RECORDS: CollectionMethodAction = CollectionMethodAction { arc
 static COLLECTION_ARCHIVE: CollectionMethodAction = CollectionMethodAction { archive: true };
 static ATOMIC_GZIP: AtomicGzipAction = AtomicGzipAction;
 static ATOMIC_CHMOD: AtomicChmodAction = AtomicChmodAction;
+static FILE_ACCESS_PROBE: file_access::FileAccessAction =
+    file_access::FileAccessAction { owner: false };
+static FILE_ACCESS_OWNER: file_access::FileAccessAction =
+    file_access::FileAccessAction { owner: true };
 static NETWORK_LOOPBACK: NetworkLoopbackAction = NetworkLoopbackAction;
 static PEER_HANDOFF: PeerHandoffAction = PeerHandoffAction;
 static OBSERVABILITY_VARIANT: ObservabilityVariantAction = ObservabilityVariantAction;
@@ -3858,7 +3863,7 @@ static RESTRICTED_PERSISTENCE_MARKER: RestrictedPersistenceMarkerAction =
     RestrictedPersistenceMarkerAction;
 static CLEANUP: CleanupAction = CleanupAction;
 
-static REGISTRY: [&'static dyn Action; 24] = [
+static REGISTRY: [&'static dyn Action; 26] = [
     &NATIVE_CANARY,
     &PROCESS_TREE_CANCELLATION_WITNESS,
     &IDENTITY_MATERIAL_SEED,
@@ -3877,6 +3882,8 @@ static REGISTRY: [&'static dyn Action; 24] = [
     &COLLECTION_ARCHIVE,
     &ATOMIC_GZIP,
     &ATOMIC_CHMOD,
+    &FILE_ACCESS_PROBE,
+    &FILE_ACCESS_OWNER,
     &NETWORK_LOOPBACK,
     &PEER_HANDOFF,
     &OBSERVABILITY_VARIANT,
@@ -4049,6 +4056,8 @@ mod tests {
             "sandbox.collection.archive.v1",
             "sandbox.collection.atomic-gzip.v1",
             "sandbox.permission.chmod.v1",
+            "file_access.probe.non_owner.v1",
+            "file_access.verify.owner.v1",
             "sandbox.network.loopback.v1",
             "sandbox.peer.handoff.v1",
             "sandbox.observability.variant.v1",
