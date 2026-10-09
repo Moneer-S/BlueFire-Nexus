@@ -162,7 +162,9 @@ fn policy(rows: &[PolicyValue], target: &str) -> Result<()> {
     require(row.kind == 1 && row.data.len() >= 2 && row.data.len() % 2 == 0)?;
     let units = row
         .data
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|b| u16::from_le_bytes([b[0], b[1]]))
         .collect::<Vec<_>>();
     require(units.last() == Some(&0) && !units[..units.len() - 1].contains(&0))?;

@@ -108,7 +108,9 @@ fn parse_begin(raw: &[u8], packet: &Packet) -> Result<Begin> {
     }
     let password = SecretUnits(
         raw[offset + 2..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
             .collect(),
     );

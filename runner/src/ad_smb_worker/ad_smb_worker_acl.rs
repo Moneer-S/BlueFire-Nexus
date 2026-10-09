@@ -9,7 +9,7 @@ pub(super) fn bytes(projection: &Value) -> Result<Vec<u8>> {
     ensure(!value.is_empty() && value.len() <= 87_384 && value.len() % 4 == 0)?;
     let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = Vec::with_capacity(value.len() / 4 * 3);
-    for (index, chunk) in value.as_bytes().chunks_exact(4).enumerate() {
+    for (index, chunk) in value.as_bytes().as_chunks::<4>().0.iter().enumerate() {
         let last = (index + 1) * 4 == value.len();
         let mut bits = [0u8; 4];
         let padding = if chunk[2..] == *b"==" {

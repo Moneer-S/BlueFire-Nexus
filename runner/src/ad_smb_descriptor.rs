@@ -179,7 +179,7 @@ fn sid_range(bytes: &[u8], offset: usize, bound: usize) -> Result<Range<usize>, 
     let header = bytes.get(offset..offset + 8).ok_or("truncated SID")?;
     let end = offset + 8 + usize::from(header[1]) * 4;
     if offset < 20
-        || offset % 4 != 0
+        || !offset.is_multiple_of(4)
         || header[0] != 1
         || !(1..=15).contains(&header[1])
         || end > bound
@@ -208,7 +208,7 @@ fn frame(bytes: &[u8]) -> Result<Frame, String> {
     let end = start + usize::from(word(bytes, start + 2)?);
     let count = word(bytes, start + 4)?;
     if start < 20
-        || start % 4 != 0
+        || !start.is_multiple_of(4)
         || header[0..2] != [2, 0]
         || word(bytes, start + 6)? != 0
         || end > bytes.len()
@@ -225,7 +225,7 @@ fn frame(bytes: &[u8]) -> Result<Frame, String> {
         if header[0..2] != [0, 0]
             || ace_end > end
             || ace_end < offset + 16
-            || ace_end % 4 != 0
+            || !ace_end.is_multiple_of(4)
             || ![SUPPORTED_READ_MASK, SUPPORTED_FULL_MASK].contains(&dword(bytes, offset + 4)?)
             || sid_range(bytes, offset + 8, ace_end)?.end != ace_end
         {

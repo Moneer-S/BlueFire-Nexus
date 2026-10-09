@@ -30,7 +30,7 @@ impl<'a> BufferView<'a> {
             .checked_sub(self.base)
             .ok_or("NetAPI pointer precedes allocation")?;
         let end = offset.checked_add(count).ok_or("NetAPI range overflow")?;
-        if address % alignment != 0 {
+        if !address.is_multiple_of(alignment) {
             return Err("NetAPI pointer alignment is invalid".into());
         }
         self.bytes
