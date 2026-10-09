@@ -24,6 +24,26 @@ fn bytes(value: &Value) -> Vec<u8> {
     serde_json::to_vec(value).unwrap()
 }
 
+#[test]
+fn reconciliation_has_only_identity_and_policy_read_without_write_authority() {
+    let mut value = request("apply_policy");
+    value["operation"] = json!("reconcile_policy");
+    value["exclusive_writer_digest"] = Value::Null;
+    value["max_sends"] = json!(2);
+    let binding = S3WorkerBinding::from_json(&bytes(&value)).unwrap();
+    assert_eq!(binding.operation_plan().len(), 2);
+    assert_eq!(
+        binding.planned_send(2).unwrap()["operation"],
+        "GetBucketPolicy"
+    );
+    assert!(binding.planned_send(3).is_err());
+    value["exclusive_writer_digest"] = json!(format!("sha256:{}", "f".repeat(64)));
+    assert!(S3WorkerBinding::from_json(&bytes(&value)).is_err());
+    value["exclusive_writer_digest"] = Value::Null;
+    value["policy_change"] = Value::Null;
+    assert!(S3WorkerBinding::from_json(&bytes(&value)).is_err());
+}
+
 fn hash(value: &Value) -> String {
     // All corpus keys and strings are ASCII; serde's sorted map matches canonical JSON.
     format!("sha256:{}", hex::encode(Sha256::digest(bytes(value))))

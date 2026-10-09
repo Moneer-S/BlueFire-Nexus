@@ -102,6 +102,7 @@ from .runner_transport_errors import (
     RunnerTransportError,
 )
 from .runner_windows_containment import WindowsJobContainment
+from .s3_access_launch import ConfiguredS3LaunchAuthority, S3Launch, S3LaunchIntent
 from .service_launch import (
     SERVICE_ACTION_ID,
     ConfiguredServiceLaunchAuthority,
@@ -1437,6 +1438,7 @@ class SubprocessRustRunner:
         output_limit_bytes: int = 2 * 1024 * 1024,
         receiver_task_key_factory: Callable[[str], bytes] | None = None,
         service_launch_authority: ConfiguredServiceLaunchAuthority | None = None,
+        s3_launch_authority: ConfiguredS3LaunchAuthority | None = None,
         durable_result_guard: _PinnedPrivateDirectory | None = None,
         _kill_child_on_job_close: bool = False,
         _watchdog_interpreter: str | Path | None = None,
@@ -1456,6 +1458,7 @@ class SubprocessRustRunner:
         self.output_limit_bytes = output_limit_bytes
         self._receiver_task_key_factory = receiver_task_key_factory
         self._service_launch_authority = service_launch_authority
+        self._s3_launch_authority = s3_launch_authority
         self._durable_result_guard = durable_result_guard
         self._durable_results = DurableRunnerResult(parent_guard=durable_result_guard)
         self._kill_child_on_job_close = bool(_kill_child_on_job_close)
@@ -1803,6 +1806,10 @@ class SubprocessRustRunner:
     def owned_service_admission_protocol(self) -> str | None:
         return ADMISSION_SCHEMA if self._service_launch_authority is not None else None
 
+    @property
+    def s3_access_admission_protocol(self) -> str | None:
+        return "bluefire.s3-access-admission.v1" if self._s3_launch_authority is not None else None
+
     def execute_task(
         self,
         manifest: Mapping[str, Any],
@@ -1812,6 +1819,7 @@ class SubprocessRustRunner:
         cancel_event: threading.Event,
         durable_result_path: str | Path,
         owned_service_admission: OwnedServiceAdmission | None = None,
+        s3_access_intent: S3LaunchIntent | None = None,
     ) -> Mapping[str, Any]:
         """Run one task through an independent crash-surviving watchdog process."""
 
@@ -1824,7 +1832,15 @@ class SubprocessRustRunner:
                 "Runner task did not start because cancellation was requested."
             )
 
-        service_launch = None
+        service_launch: ServiceLaunch | S3Launch | None = None
+        if owned_service_admission is not None and s3_access_intent is not None:
+            raise RunnerTransportError("Multiple protected execution authorities are invalid.")
+        if (
+            owned_service_admission is not None and manifest.get("action_id") != SERVICE_ACTION_ID
+        ) or (
+            s3_access_intent is not None and manifest.get("action_id") != "owned.aws.s3_access.v1"
+        ):
+            raise RunnerTransportError("Protected execution authority does not match the action.")
         if owned_service_admission is not None:
             if self._service_launch_authority is None:
                 raise RunnerTransportError(
@@ -1841,6 +1857,20 @@ class SubprocessRustRunner:
             )
         elif manifest.get("action_id") == SERVICE_ACTION_ID:
             raise RunnerTransportError("Owned-service execution requires protected admission.")
+        if s3_access_intent is not None:
+            if self._s3_launch_authority is None:
+                raise RunnerTransportError("S3 execution requires configured host admission.")
+            service_launch = self._s3_launch_authority.prepare(
+                s3_access_intent,
+                manifest,
+                profile,
+                task_id=task_id,
+                runner_digest=self.runner_binary_digest,
+                watchdog_digest=self.watchdog_script_digest,
+                interpreter_digest=self._watchdog_interpreter_digest,
+            )
+        elif manifest.get("action_id") == "owned.aws.s3_access.v1":
+            raise RunnerTransportError("S3 execution requires protected admission.")
         try:
             destination, pending, handoff_guard = self._durable_results.prepare(
                 durable_result_path,
@@ -2029,7 +2059,7 @@ class SubprocessRustRunner:
         cancellation_lease_token: str | None = None,
         darwin_launch_started: Callable[[], None] | None = None,
         darwin_launch_sealed: Callable[[], None] | None = None,
-        service_launch: ServiceLaunch | None = None,
+        service_launch: ServiceLaunch | S3Launch | None = None,
     ) -> Mapping[str, Any]:
         """Watchdog-only fixed-runner execution and durable-result commit."""
 
@@ -2286,7 +2316,7 @@ class SubprocessRustRunner:
         receiver_environment: Mapping[str, str],
         task_id: str,
         process_sink: list[subprocess.Popen[bytes]],
-        service_launch: ServiceLaunch | None = None,
+        service_launch: ServiceLaunch | S3Launch | None = None,
     ) -> subprocess.Popen[bytes]:
         try:
             interpreter = self._watchdog_interpreter
@@ -2736,7 +2766,7 @@ class SubprocessRustRunner:
         cancellation_lease_token: str | None,
         darwin_launch_started: Callable[[], None] | None,
         darwin_launch_sealed: Callable[[], None] | None,
-        service_launch: ServiceLaunch | None = None,
+        service_launch: ServiceLaunch | S3Launch | None = None,
     ) -> tuple[bytes, tuple[int, int]]:
         output = self._durable_results.open_pending(pending_result_path)
         guarded_output = cast(_GuardedBinaryFile, output)
@@ -3202,7 +3232,7 @@ class SubprocessRustRunner:
         darwin_allow_fork: bool = False,
         darwin_descriptor_argument_indexes: tuple[int, ...] = (),
         process_sink: list[subprocess.Popen[bytes]],
-        service_launch: ServiceLaunch | None = None,
+        service_launch: ServiceLaunch | S3Launch | None = None,
         watchdog_executable: str | None = None,
     ) -> subprocess.Popen[bytes]:
         if process_sink:
@@ -3214,7 +3244,7 @@ class SubprocessRustRunner:
         environment.update(_validated_receiver_task_environment(receiver_environment))
         if service_launch is not None:
             if not sys.platform.startswith("linux") or not isinstance(
-                service_launch, ServiceLaunch
+                service_launch, (ServiceLaunch, S3Launch)
             ):
                 raise RunnerTransportError("Owned-service launch channel is invalid.")
             environment.update(service_launch.environment)

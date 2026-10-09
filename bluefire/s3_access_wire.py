@@ -15,7 +15,14 @@ from .util import canonical_json_bytes, content_hash
 REQUEST_SCHEMA = "bluefire.s3-worker-request.v1"
 MAX_FRAME_BYTES = 80 * 1024
 MAX_SECRET_FRAME_BYTES = 16 * 1024
-OPERATIONS = {"inspect_policy", "apply_policy", "rollback_policy", "probe_read", "legitimate_read"}
+OPERATIONS = {
+    "inspect_policy",
+    "reconcile_policy",
+    "apply_policy",
+    "rollback_policy",
+    "probe_read",
+    "legitimate_read",
+}
 _HEX = re.compile(r"[0-9a-f]{64}", re.ASCII)
 _SECRET_TEXT = re.compile(r"[\x21-\x7e]+", re.ASCII)
 Clock = Callable[[], datetime]
@@ -108,6 +115,7 @@ class S3WorkerRequest:
         row["scope"] = scope.to_dict()
         maximum = {
             "inspect_policy": 2,
+            "reconcile_policy": 2,
             "apply_policy": 4,
             "rollback_policy": 4,
             "probe_read": 4,
@@ -125,10 +133,14 @@ class S3WorkerRequest:
         ):
             raise S3AccessError("worker deadline is outside the scope lifetime")
         row["deadline"] = deadline.isoformat().replace("+00:00", "Z")
-        if row["operation"] in {"apply_policy", "rollback_policy"}:
+        if row["operation"] in {"apply_policy", "rollback_policy", "reconcile_policy"}:
             change = S3PolicyChange.from_mapping(scope, row["policy_change"])
             row["policy_change"] = change.to_dict()
-            digest(row["exclusive_writer_digest"])
+            if row["operation"] == "reconcile_policy":
+                if row["exclusive_writer_digest"] is not None:
+                    raise S3AccessError("reconciliation cannot carry mutation authority")
+            else:
+                digest(row["exclusive_writer_digest"])
         elif row["policy_change"] is not None or row["exclusive_writer_digest"] is not None:
             raise S3AccessError("read operation cannot carry mutation authority")
         return cls(canonical_json_bytes(row))
@@ -282,7 +294,7 @@ def operation_plan(request: S3WorkerRequest) -> list[tuple[str, str, str]]:
         plan += [("s3", "GetObject", reader)] * (1 if reader == "probe" else 2)
     else:
         plan += [("s3", "GetBucketPolicy", "controller")]
-        if selected != "inspect_policy":
+        if selected not in {"inspect_policy", "reconcile_policy"}:
             plan += [
                 ("s3", "PutBucketPolicy", "controller"),
                 ("s3", "GetBucketPolicy", "controller"),
@@ -402,6 +414,17 @@ def validate_result(request: S3WorkerRequest, value: Any) -> dict[str, Any]:
             raise S3AccessError("worker reader identity was not confirmed")
     else:
         exact(data, {"policy_digest", "structural_review"}, "worker policy observation")
+        if source["operation"] == "reconcile_policy":
+            current = digest(data["policy_digest"])
+            change = source["policy_change"]
+            review = (
+                "matched_before"
+                if current == change["before_digest"]
+                else "matched_after" if current == change["after_digest"] else "drift"
+            )
+            if data["structural_review"] != review or any("error_code" in call for call in calls):
+                raise S3AccessError("reconciliation differs from its exact policy observation")
+            return row
         expected_digest = source["scope"]["policy"]["baseline_digest"]
         if source["operation"] == "apply_policy":
             expected_digest = source["policy_change"]["after_digest"]

@@ -1,0 +1,41 @@
+.s3-access-page { min-width: 0; max-width: 1400px; grid-template-columns: minmax(0, 1fr); --border: var(--line); --text-secondary: var(--muted-strong); }
+.s3-access-page > * { min-width: 0; }
+.s3-access-page h1 { font-size: 1.65rem; overflow-wrap: anywhere; }
+.s3-access-page .button svg { flex: 0 0 16px; width: 16px; height: 16px; }
+.s3-access-page h2 { font-size: 18px; }
+.s3-access-page h3 { font-size: 15px; }
+.s3-access-page p { color: var(--text-secondary); }
+.s3-band { border-top: 1px solid var(--border); padding: 18px 0; min-width: 0; }
+.s3-band > h2 { margin: 0 0 16px; }
+.s3-objective, .s3-actions, .s3-stage-toolbar, .s3-operation-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.s3-objective { padding: 16px 0; }
+.s3-objective > div:first-child { flex: 1; min-width: 180px; }
+.s3-objective h2, .s3-objective p { margin: 4px 0; overflow-wrap: anywhere; }
+.s3-stage-toolbar { border-block: 1px solid var(--border); padding: 12px 0; }
+.s3-workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 330px); gap: 24px; }
+.s3-evidence-main, .s3-review-side { min-width: 0; }
+.s3-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 16px; }
+.s3-facts article { border-left-width: 3px; border-left-style: solid; border-left-color: var(--border); padding-left: 12px; min-width: 0; }
+.s3-facts article:nth-child(2) { border-color: #25ad8a; }
+.s3-facts article:nth-child(3) { border-color: #ccab44; }
+.s3-facts h3 { margin-top: 0; }
+.s3-facts dl { display: grid; gap: 12px; margin: 0; }
+.s3-facts dt { color: var(--text-secondary); font-size: 12px; }
+.s3-facts dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.s3-operation { padding: 14px 0; border-bottom: 1px solid var(--border); }
+.s3-operation .s3-actions { margin: 12px 0; font-size: 13px; }
+.s3-access-page details { margin-top: 14px; }
+.s3-access-page summary { cursor: pointer; font-size: 13px; }
+.s3-access-page pre { max-width: 100%; max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; padding: 12px 0; }
+.s3-consent { display: flex; align-items: flex-start; gap: 8px; margin: 16px 0; font-size: 13px; }
+.s3-consent input { flex: 0 0 auto; margin: 3px 0; }
+.s3-review .field { margin-top: 16px; }
+.s3-review input:not([type="checkbox"]) { width: 100%; }
+.s3-environment { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; padding: 16px 0; border-bottom: 1px solid var(--border); }
+.s3-environment > div { flex: 1; min-width: 180px; overflow-wrap: anywhere; }
+.s3-environment h3, .s3-environment p { margin: 4px 0; }
+.s3-saved > a { display: flex; justify-content: space-between; gap: 16px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--border); }
+.s3-saved small { display: block; margin-top: 4px; color: var(--text-secondary); }
+.s3-access-page .button { white-space: normal; }
+@media (max-width: 1100px) { .s3-workspace { grid-template-columns: minmax(0, 1fr); gap: 0; } .s3-review-side { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; } }
+@media (max-width: 600px) { .s3-review-side { display: block; } .s3-facts { grid-template-columns: minmax(0, 1fr); } .s3-facts dl { grid-template-columns: repeat(2, minmax(0, 1fr)); } .s3-stage-toolbar > button { flex: 1 1 160px; } .s3-saved > a { align-items: flex-start; } .s3-saved > a > span { min-width: 0; overflow-wrap: anywhere; } }

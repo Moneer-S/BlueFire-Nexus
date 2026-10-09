@@ -83,7 +83,7 @@ impl S3WorkerBinding {
         require(canonical_json(&encoded(&request.scope)?).len() <= 32 * 1024)?;
         require(request.scope_digest == canonical_hash(&encoded(&request.scope)?))?;
         let maximum = match request.operation.as_str() {
-            "inspect_policy" => 2,
+            "inspect_policy" | "reconcile_policy" => 2,
             "apply_policy" | "rollback_policy" | "probe_read" => 4,
             "legitimate_read" => 5,
             _ => return Err("S3 worker operation is unsupported"),
@@ -94,18 +94,24 @@ impl S3WorkerBinding {
             utc_time(&request.scope.created_at)? < deadline
                 && deadline <= utc_time(&request.scope.expires_at)?,
         )?;
-        if ["apply_policy", "rollback_policy"].contains(&request.operation.as_str()) {
+        if ["apply_policy", "rollback_policy", "reconcile_policy"]
+            .contains(&request.operation.as_str())
+        {
             request
                 .policy_change
                 .as_ref()
                 .ok_or("S3 policy change is absent")?
                 .validate(&request.scope)?;
-            require(
-                request
-                    .exclusive_writer_digest
-                    .as_ref()
-                    .is_some_and(|value| digest(value)),
-            )?;
+            if request.operation == "reconcile_policy" {
+                require(request.exclusive_writer_digest.is_none())?;
+            } else {
+                require(
+                    request
+                        .exclusive_writer_digest
+                        .as_ref()
+                        .is_some_and(|value| digest(value)),
+                )?;
+            }
         } else {
             require(request.policy_change.is_none() && request.exclusive_writer_digest.is_none())?;
         }
@@ -126,6 +132,51 @@ impl S3WorkerBinding {
 
     pub fn max_sends(&self) -> u64 {
         self.request.max_sends
+    }
+
+    pub(crate) fn request_id(&self) -> &str {
+        &self.request.request_id
+    }
+    pub(crate) fn launch_id(&self) -> &str {
+        &self.request.launch_id
+    }
+    pub(crate) fn scope_digest(&self) -> &str {
+        &self.request.scope_digest
+    }
+    pub(crate) fn runtime_digest(&self) -> &str {
+        &self.request.runtime_digest
+    }
+    pub(crate) fn worker_generation(&self) -> &str {
+        &self.request.worker_generation
+    }
+    pub(crate) fn operation(&self) -> &str {
+        &self.request.operation
+    }
+    pub(crate) fn api_limit(&self) -> u64 {
+        self.request.scope.limits.api_calls
+    }
+    pub(crate) fn session_limit(&self) -> u64 {
+        self.request.scope.limits.sessions
+    }
+    pub(crate) fn business_attempt_limit(&self) -> u64 {
+        self.request.scope.limits.business_attempts
+    }
+    pub(crate) fn deadline(&self) -> Checked<DateTime<FixedOffset>> {
+        utc_time(&self.request.deadline)
+    }
+    pub(crate) fn policy_change_digest(&self) -> Checked<Option<String>> {
+        self.request
+            .policy_change
+            .as_ref()
+            .map(|change| encoded(change).map(|value| canonical_hash(&value)))
+            .transpose()
+    }
+    pub(crate) fn resource_key(&self) -> String {
+        canonical_hash(&serde_json::json!({
+            "account_id": self.request.scope.account_id,
+            "region": self.request.scope.region,
+            "bucket": self.request.scope.bucket,
+        }))
     }
 
     /// The caller supplies time; this is not a native wall-clock or cancellation gate.
@@ -156,7 +207,7 @@ impl S3WorkerBinding {
             }
         } else {
             plan.push(S3PlannedCall::new("s3", "GetBucketPolicy", "controller"));
-            if selected != "inspect_policy" {
+            if !["inspect_policy", "reconcile_policy"].contains(&selected) {
                 plan.push(S3PlannedCall::new("s3", "PutBucketPolicy", "controller"));
                 plan.push(S3PlannedCall::new("s3", "GetBucketPolicy", "controller"));
             }

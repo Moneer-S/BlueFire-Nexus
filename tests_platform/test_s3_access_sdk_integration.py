@@ -70,6 +70,9 @@ def offline_runtime():
         ("probe_read", "missing_read_id", "failed", 4),
         ("apply_policy", "missing_put_id", "reconcile_required", 3),
         ("inspect_policy", "hostile_profile", "failed", 0),
+        ("inspect_policy", "fixed_session", "observed", 2),
+        ("legitimate_read", "fixed_session", "observed", 5),
+        ("apply_policy", "fixed_session", "observed", 4),
     ],
 )
 def test_official_sdk_serialization_with_inert_transport(
@@ -128,5 +131,8 @@ def test_official_sdk_serialization_with_inert_transport(
     }
     assert result["production_runtime_admitted"] is False
     assert result["transport_mode"] == "official-sdk-with-inert-connection"
+    assert result["session_configuration"] == (
+        "fixed-runtime" if scenario == "fixed_session" else "injected-test-session"
+    )
     if scenario == "denied":
         assert result["result"]["data"]["objects"][0]["result"] == "service_denied"

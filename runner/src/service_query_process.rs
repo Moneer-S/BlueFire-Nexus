@@ -321,35 +321,8 @@ pub(super) fn child_identity(
     pid: u32,
     parent: u32,
 ) -> Result<(bool, u64), QueryReadIssue> {
-    if bytes.len() > 4096 {
-        return Err(QueryReadIssue::ProcessIdentity);
-    }
-    let text = std::str::from_utf8(bytes).map_err(|_| QueryReadIssue::ProcessIdentity)?;
-    let prefix = format!("{pid} (");
-    let fields: Vec<_> = text
-        .strip_prefix(&prefix)
-        .and_then(|text| text.rsplit_once(") "))
-        .ok_or(QueryReadIssue::ProcessIdentity)?
-        .1
-        .split_whitespace()
-        .collect();
-    if fields.len() < 20
-        || fields[1] != parent.to_string()
-        || fields[2] != pid.to_string()
-        || !matches!(
-            fields[0],
-            "R" | "S" | "D" | "Z" | "T" | "t" | "X" | "x" | "K" | "W" | "P" | "I"
-        )
-    {
-        return Err(QueryReadIssue::ProcessIdentity);
-    }
-    let ticks: u64 = fields[19]
-        .parse()
-        .map_err(|_| QueryReadIssue::ProcessIdentity)?;
-    if ticks == 0 || ticks.to_string() != fields[19] {
-        return Err(QueryReadIssue::ProcessIdentity);
-    }
-    Ok((matches!(fields[0], "Z" | "X" | "x"), ticks))
+    crate::owned_child_identity::parse(bytes, pid, parent)
+        .map_err(|_| QueryReadIssue::ProcessIdentity)
 }
 
 fn nonblocking(fd: RawFd) -> bool {

@@ -41,6 +41,38 @@ class StubService:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
 
+    def s3_access_environments(self):
+        self.calls.append(("s3_access_environments",))
+        return {"environments": []}
+
+    def s3_access_exercises(self):
+        self.calls.append(("s3_access_exercises",))
+        return {"exercises": []}
+
+    def s3_access_exercise(self, identifier):
+        self.calls.append(("s3_access_exercise", identifier))
+        return {"workflow_job_id": identifier}
+
+    def create_s3_access(self, request):
+        self.calls.append(("create_s3_access", request))
+        return {"saved": True}
+
+    def review_s3_access(self, identifier, request):
+        self.calls.append(("review_s3_access", identifier, request))
+        return {"saved": True}
+
+    def submit_s3_access(self, identifier, request):
+        self.calls.append(("submit_s3_access", identifier, request))
+        return {"saved": True}
+
+    def stop_s3_access(self, identifier, request):
+        self.calls.append(("stop_s3_access", identifier, request))
+        return {"saved": True}
+
+    def recover_s3_access(self, identifier, request):
+        self.calls.append(("recover_s3_access", identifier, request))
+        return {"saved": True}
+
     def retained_observations(self, run_id):
         self.calls.append(("retained_observations", run_id))
         return {"schema_version": "bluefire.retained-run-observations.v1", "run_id": run_id}

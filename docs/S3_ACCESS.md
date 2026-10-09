@@ -10,15 +10,20 @@ cleanup and guarded explicit rollback are separate obligations.
 
 ## Implementation Status
 
-The pure contract/policy planner and an unregistered SDK-worker component are
-implemented. The planner accepts no credential values. The worker is tested with
-deterministic fake clients/streams and a pinned official SDK using inert transport;
-it has no executable entrypoint,
-runtime loader, secret channel or registered action. No AWS calls have been made.
-Neither component grants authority or establishes enrollment, effective access
-or prevention.
-The supervised native executor, durable operation/control workflow, audit collector,
-composition integration, workspace UI and authorized installed proof remain required.
+The contract/policy planner, fixed worker entrypoint and protected-runtime loader,
+authenticated host integration, native supervision and durable send ledger are
+implemented in source. A saved operation uses the existing jobs, runs and evidence
+stores. The planner accepts no credential values. Deterministic fake tests and a
+pinned official SDK with inert transport exercise the component boundaries; native
+validation and installed workflow verification are separate gates.
+
+No AWS calls have been made, and no cloud capability or runtime is automatically
+enrolled. Missing protected installation or host authority leaves execution
+unavailable. These components do not establish effective access or prevention.
+Original-result recovery is implemented in the coordinator for an already-finalized
+authenticated task; installed recovery proof remains separate. Actual Linux
+interpreter-prefix compatibility, authorized installed proof, fixture/audit lifecycle
+and broader composition integration remain required. The cloud phase is not complete.
 
 `S3AccessScope.from_mapping` validates an immutable structural scope with one
 commercial-partition account/region, three distinct same-account roles without
@@ -63,8 +68,10 @@ that exact change when loading saved review material.
 `plan_rollback(scope, change, current)` returns the original complete policy only
 while that postimage still matches. Unrelated changes cause refusal, not a merge.
 These are structural preimage/readback checks, not an atomic remote compare-and-swap.
-The future executor needs exclusive resource ownership, serialized writers and
-ambiguous-response reconciliation before it can safely use the proposed change.
+The native ledger serializes the configured bucket authority; duplicate bucket
+authorities are refused within host configuration and visible authenticated hosts.
+This is not a distributed lock. Exclusive resource ownership against external
+controllers and ambiguous-response reconciliation remain explicit requirements.
 
 Removing this statement does not rule out identity policies, session policies,
 permissions boundaries, SCPs or other access routes. There is no IAM simulator or
@@ -75,8 +82,9 @@ observations remain necessary. Existing approvals do not authorize this workflow
 
 `S3WorkerRequest.from_mapping` revalidates the complete scope, exact policy change,
 runtime/launch/generation bindings, operation deadline and send allowance. Supported
-operations are only policy inspection, apply, rollback, probe read and legitimate
-read. Writes require an exclusive-writer receipt digest; validating that digest's
+operations are only policy inspection, read-only reconciliation, apply, rollback,
+probe read and legitimate read. Writes require an exclusive-writer receipt digest;
+validating that digest's
 syntax is not verification of exclusive ownership. Fixture creation/deletion and
 audit collection are not silently added to this contract.
 
@@ -106,10 +114,12 @@ returns `reconcile_required`, never an instruction to retry it.
 `BotocoreFactory` requires supplied SDK bindings, CA path and runtime assertion;
 it does not discover or import an ambient installation. It configures explicit
 credentials, regional endpoints, no proxies and one total attempt. These constructor
-seams are not an attested production loader. Selecting and verifying a fixed SDK,
-Python, dependency/service-model and CA tree is still an explicit execution blocker.
-That loader must also isolate configuration and imports, prevent all ambient
-credential/auth-token resolution, and disable SDK/history/debug secret logging.
+seams are not themselves production admission. The fixed loader validates a closed
+manifest, protected interpreter/stdlib/worker trees, the reviewed SDK payload bytes,
+service models and CA file. It isolates configuration and import paths, removes
+ambient credential/auth-token resolution and disables SDK/history/debug logging.
+An actual compatible protected Linux installation remains an execution prerequisite;
+version labels, a manifest digest or fake origin checks do not establish one.
 No wire field can select a factory, executable, import or fake test driver.
 
 An explicit offline compatibility suite exercised Botocore `1.43.110` serialization,
@@ -138,14 +148,13 @@ cannot confirm success. `validate_result` preserves worker-reported provenance a
 refuses isolation/effective-access claims. A service `AccessDenied` observation is
 not by itself proof of a specific defensive change or an independent audit event.
 
-The next implementation work is the typed native authority/runtime boundary,
-durable reservation/reconciliation, supervised execution, generated-fixture and
-audit lifecycle, then one usable saved workspace workflow and authorized retesting.
-This component is not a completed cloud phase.
+The offline suite also exercises the fixed loader's real SDK session configuration
+with protected-host admission explicitly stubbed. That is compatibility evidence,
+not proof that a copied interpreter has the required Linux standard-library prefix.
 
 ## Native Consistency Boundary
 
-The unregistered Rust binding independently parses the worker's normalized UTC
+The Rust binding independently parses the worker's normalized UTC
 document, including closed nested scope and policy types. It rejects duplicate
 keys, unknown fields, implicit missing nulls, numeric coercions, scope drift and
 changes beyond the exact owned policy statement. It uses the existing canonical
@@ -159,10 +168,40 @@ and escaping, not a new signing implementation. A serializer change must receive
 fresh compatibility review rather than silently accepting a different digest.
 The send-preview parser validates one bounded frame and its caller-supplied next
 sequence, but cannot issue an acknowledgement or consume authority. These types
-are consistency checks only. No action, network capability, runtime loader,
-credential channel, native admission token or durable send ledger is registered.
-Native supervision, durable accounting and live scoped execution remain separate
-required implementation and verification work.
+are consistency checks only; authority comes from the separately authenticated
+managed-host admission and protected fixed-worker deployment.
+
+## Supervised Boundary
+
+The reserved `owned.aws.s3_access.v1` action requires the explicit
+`cloud_aws_s3_access` host capability. It cannot run through the ordinary action
+registry, and it does not widen ToolAdapter v1 or a loopback capability. The native
+supervisor independently binds the reviewed scope, original request, runtime,
+deadline and finite call sequence. Credentials travel only through the private
+contained worker channel, not arguments, environment or durable evidence.
+
+Reservations and each send debit are recorded durably before the worker receives
+a permit. Failed or unsent attempts are not refunded. The ledger counts the probe
+read and both legitimate reads, preserves the reviewed retest/rollback budget, and
+refuses further operations for an orphaned or unknown-cleanup reservation. An
+unlocked lease or parent-death signal is not proof that the worker is absent.
+
+The deployment premise is trusted fixed code on a protected enrolled host, not
+isolation from malicious same-UID code. Filesystem metadata and process memory are
+not claimed inaccessible to that UID. Before dispatch, a synchronous durable
+checkpoint retains the exact original task/hash, sealed request/profile and
+authenticated host identity without credential material. Missing or failed
+checkpoint persistence refuses dispatch. Recovering an already-finalized original
+result uses that same authenticated task without discovering a new environment,
+replaying execute, renewing approval expiry or issuing credentials. A changed
+enrollment, runner binary or inventory is not accepted as the original host.
+Missing, still-running and unavailable results remain unresolved. The enrolled host
+must still be authenticated and available through its existing lifecycle client;
+this path does not start or enroll a replacement host. Fully orphaned cleanup,
+including the spawn-before-durable-
+birth-record gap, remains fail closed until actual owned-child absence is proved.
+Policy readback and rollback are distinct from process cleanup and independently
+correlated audit evidence.
 
 ## References
 

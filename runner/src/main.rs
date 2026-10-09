@@ -53,7 +53,14 @@ fn execute_command(args: &[String]) -> Result<i32, String> {
         // No reservation may imply possible effects for an unavailable adapter.
         return Err("the fixed owned-service adapter is not registered in this runner".into());
     }
-    let result = execute_files(&manifest_path, &profile_path).map_err(|error| error.to_string())?;
+    let result =
+        match bluefire_runner::s3_admission::verify_inherited_files(&manifest_path, &profile_path)?
+        {
+            Some(admission) => bluefire_runner::runner_s3_access::execute_admitted(admission),
+            None => {
+                execute_files(&manifest_path, &profile_path).map_err(|error| error.to_string())?
+            }
+        };
     println!(
         "{}",
         serde_json::to_string_pretty(&result)

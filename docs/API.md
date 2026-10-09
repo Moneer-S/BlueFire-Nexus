@@ -472,6 +472,39 @@ Unknown, duplicate, signed, blank, non-decimal, or out-of-range values return `4
 
 Use the returned `next_sequence` as the next request's `after_sequence`. When `items` is empty, `next_sequence` remains the supplied cursor. This is bounded polling over immutable local records, not a live event stream.
 
+## Saved S3 access reviews
+
+The ordinary authenticated browser opens the cloud access workspace at `/s3-access`.
+Its API uses existing durable jobs and immutable run evidence; it does not create
+an alternate scheduler or accept credentials. All routes below use the
+`/api/v1` prefix, reject query parameters, and preserve the normal session and
+mutation-Origin requirements.
+
+| Method and path | Purpose |
+| --- | --- |
+| `GET /s3-access/environments` | Bounded enrolled environments and current readiness. |
+| `GET /s3-access/exercises` | The latest 100 saved exercises, with an explicit truncation flag. |
+| `POST /s3-access/exercises` | Save an exercise from its canonical `submission_id`, `environment_id` and exact `context_digest`. |
+| `GET /s3-access/exercises/{job_id}` | Read the original exercise, operation history, safe run references and available stages. |
+| `POST /s3-access/exercises/{job_id}/review` | Review one `phase` against the current saved revision and remaining authority. |
+| `POST /s3-access/exercises/{job_id}/operations` | Submit the exact `phase`, `review_digest`, bounded `reviewed_by` and fresh canonical `submission_id`. |
+| `POST /s3-access/exercises/{job_id}/stop` | Stop new work and request cancellation of the original pending job; body `{}`. |
+| `POST /s3-access/exercises/{job_id}/recover` | Reconcile original terminal job results already sealed in the run store, without invoking the executor; body `{}`. |
+
+The phases are `inspect`, `baseline`, `apply`, `retest`, `reconcile` and `rollback`.
+A review distinguishes this stage's `reserved` budget from `required_remaining`,
+which also protects capacity for necessary fresh checks and bounded recovery.
+That allowance does not increase the scope or refund previous reservations.
+An identical submission is idempotent; a changed request needs a fresh review and
+submission identity. Reading, reopening or reloading saved work never submits a
+cloud operation. Recovery refuses missing or mismatched original evidence.
+
+Missing enrollment remains unavailable. A saved review or its digest is not native
+execution authority. Synthetic test evidence is labeled separately from
+runner-reported observations; neither is an independent effectiveness claim.
+Cloud audit remains `not_collected`, and generated resources remain `retained`.
+See [S3 access review](s3-access-review.md) for workflow and evidence boundaries.
+
 ## Authenticated diagnostics
 
 The supported operator surfaces are the CLI and the packaged browser. A bare HTTP request is intentionally refused. For a local diagnostic, launch `bluefire ui --no-browser` and enter its one-time connection code at a hidden prompt. Keep credentials in memory, not command arguments, URLs, shell history, logs, or shared files. This standard-library example reads the catalog without exposing either credential in process arguments or following redirects:

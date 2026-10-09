@@ -32,10 +32,12 @@ def request_row(operation="inspect_policy"):
         "scope": scope.to_dict(),
         "scope_digest": scope.digest,
         "operation": operation,
-        "policy_change": plan_hardening(scope, policy).to_dict() if mutation else None,
+        "policy_change": plan_hardening(scope, policy).to_dict()
+        if mutation or operation == "reconcile_policy" else None,
         "deadline": (NOW + timedelta(seconds=30)).isoformat(),
         "max_sends": {
             "inspect_policy": 2,
+            "reconcile_policy": 2,
             "apply_policy": 4,
             "rollback_policy": 4,
             "probe_read": 4,
@@ -69,7 +71,7 @@ def acknowledge(send):
 
 @pytest.mark.parametrize(
     "operation",
-    ["inspect_policy", "apply_policy", "rollback_policy", "probe_read", "legitimate_read"],
+    ["inspect_policy", "reconcile_policy", "apply_policy", "rollback_policy", "probe_read", "legitimate_read"],
 )
 def test_request_roundtrip_is_exact_and_revalidated(operation):
     row = request_row(operation)

@@ -151,6 +151,9 @@ from .runner_contracts import RunnerContractError, current_platform
 from .runner_inventory import native_tool_setup_problem
 from .runner_lifecycle import ManagedRunnerLifecycle, RunnerLifecycleError, RunnerProfileBudgetError
 from .runner_management_service import RunnerManagementServiceMixin
+from .s3_access_executor import S3AccessExecutor, configured_executor
+from .s3_access_jobs import S3AccessJobs
+from .s3_access_service import S3AccessServiceMixin
 from .util import content_hash, file_hash
 
 RunnerFactory = Callable[[RunnerProfile], tuple[RunnerTransport, Path]]
@@ -213,7 +216,9 @@ def _default_collector_registry_factory(sandbox: Path) -> CollectorRegistry:
     return CollectorRegistry((FilesystemCollector(sandbox), CollectionSemanticsCollector(sandbox)))
 
 
-class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin):
+class BlueFireService(
+    RunnerManagementServiceMixin, ReceiverDefenseServiceMixin, S3AccessServiceMixin
+):
     """Synchronous, JSON-only product boundary used by every frontend."""
 
     def __init__(
@@ -231,6 +236,7 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         ai_provider_factory: AIProviderFactory | None = None,
         ai_draft_provider_factory: AIDraftProviderFactory | None = None,
         ai_provider_access: AIProviderAccess | None = None,
+        s3_access_executor: S3AccessExecutor | None = None,
     ) -> None:
         root = (
             Path(project_root) if project_root is not None else Path(__file__).resolve().parents[1]
@@ -308,6 +314,7 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         )
         self.assistance_runs = AssistanceRunJobs(self)
         self.receiver_defense = ReceiverDefenseJobs(self)
+        self.s3_access = S3AccessJobs(self, s3_access_executor or configured_executor(self))
         from .composition_jobs import CompositionJobs, now_ms
 
         self.product_store.interrupt_active_capability_grants(now_ms=now_ms())

@@ -31,6 +31,7 @@ from typing import Any, BinaryIO, Callable, Iterator, Mapping, cast
 from . import native_tool_transport as native_tools
 from . import owned_service_transport as service_transport
 from . import runner_transport_framing as framing
+from . import s3_access_transport
 from .owned_service_authority import (
     GRANT_SCHEMA,
     OwnedServiceAdmission,
@@ -53,7 +54,7 @@ from .runner_client import (
     runner_watchdog_control_root,
 )
 from .runner_result_persistence import commit_durable_result
-from .runner_transport_client import execute_authenticated_task
+from .runner_transport_client import execute_authenticated_task, validated_cancellation_payload
 from .runner_transport_errors import (
     AuthenticatedRunnerTransportError,
     RunnerAuthenticationError,
@@ -62,6 +63,7 @@ from .runner_transport_errors import (
 from .runner_transport_security import (
     client_context as _build_client_context,
 )
+from .runner_transport_security import enrollment_binding as _enrollment_binding
 from .runner_transport_security import (
     request_authentication,
 )
@@ -104,7 +106,15 @@ _EXECUTE_RECOVERY_RESERVE_BYTES = _MAX_RECOVERY_RECEIPTS * 68 + 128
 _SQLITE_OVERHEAD_BYTES = 2 * 1024 * 1024
 _FRAME_HEADER = struct.Struct("!I")
 _OPERATIONS = native_tools.INSPECTION_OPERATIONS.union(
-    {"health", "inventory", "execute", "recover", "cancel", "shutdown"}
+    {
+        "health",
+        "inventory",
+        "execute",
+        "recover",
+        "cancel",
+        "shutdown",
+        s3_access_transport.OPERATION,
+    }
 )
 _REQUEST_FIELDS = frozenset(
     {
@@ -390,21 +400,6 @@ def _execute_task_id(request_hash: str) -> str:
     if _DIGEST.fullmatch(request_hash) is None:
         raise RunnerAuthenticationError("Runner execution identity is invalid.")
     return "execute-" + request_hash.removeprefix("sha256:")
-
-
-def _enrollment_binding(enrollment: RunnerEnrollment, peer_fingerprint: str) -> dict[str, str]:
-    public_identity = {
-        "runner_id": enrollment.runner_id,
-        "client_id": enrollment.client_id,
-        "ca_fingerprint": str(enrollment.metadata["ca_fingerprint"]),
-        "server_fingerprint": str(enrollment.metadata["server_fingerprint"]),
-        "client_fingerprint": str(enrollment.metadata["client_fingerprint"]),
-    }
-    return {
-        **public_identity,
-        "peer_fingerprint": peer_fingerprint,
-        "enrollment_generation": content_hash(public_identity),
-    }
 
 
 def _normalized_sql(value: Any) -> str:
@@ -3044,6 +3039,10 @@ class AuthenticatedRunnerServer:
                 payload = native_tools.inspect_server_tool(
                     self, request, enrollment, refusal=_RequestRefusal
                 )
+            elif operation == s3_access_transport.OPERATION:
+                payload = s3_access_transport.server_environments(
+                    self, request, enrollment, refusal=_RequestRefusal
+                )
             elif operation == "execute":
                 raw_payload = request.get("payload")
                 if not isinstance(raw_payload, dict):
@@ -3206,6 +3205,23 @@ class AuthenticatedRunnerServer:
         execute_task = cast(Callable[..., Mapping[str, Any]], raw_execute_task)
         task_aware = callable(raw_execute_task)
         service_admission: OwnedServiceAdmission | None = None
+        s3_intent = None
+        if manifest.get("action_id") == s3_access_transport.ACTION:
+            if peer_fingerprint is None or not task_aware or service_grant is not None:
+                raise _RequestRefusal("request_invalid")
+            try:
+                s3_intent = s3_access_transport.authenticated_intent(
+                    self.runner,
+                    enrollment,
+                    manifest,
+                    profile,
+                    task_id=task_id,
+                    issuer=service_transport.authenticated_service_issuer(
+                        _enrollment_binding(enrollment, peer_fingerprint), self.instance_id
+                    ),
+                )
+            except (OSError, ValueError, RuntimeError):
+                raise _RequestRefusal("request_invalid") from None
         if service_grant is not None:
             if peer_fingerprint is None or not task_aware:
                 raise _RequestRefusal("request_invalid")
@@ -3242,6 +3258,8 @@ class AuthenticatedRunnerServer:
                         }
                         if service_admission is not None:
                             execute_kwargs["owned_service_admission"] = service_admission
+                        if s3_intent is not None:
+                            execute_kwargs["s3_access_intent"] = s3_intent
                         result = execute_task(manifest, profile, **execute_kwargs)
                     else:
                         result = self.runner.execute(manifest, profile)
@@ -3976,6 +3994,9 @@ class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
         canonical_runner_inventory(inventory)
         return inventory
 
+    def s3_access_environments(self) -> list[dict[str, Any]]:
+        return s3_access_transport.client_environments(self)
+
     def transport_identity(self) -> Mapping[str, Any]:
         """Return the validated, secret-free identity of the authenticated host."""
 
@@ -4109,30 +4130,7 @@ class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
         )
         return self._validated_cancellation_payload(payload, task_id, request_hash)
 
-    @staticmethod
-    def _validated_cancellation_payload(
-        payload: Mapping[str, Any],
-        task_id: str,
-        request_hash: str,
-    ) -> Mapping[str, Any]:
-        if (
-            set(payload)
-            != {
-                "original_task_id",
-                "original_request_hash",
-                "state",
-                "cancellation_requested",
-                "cancelled",
-            }
-            or payload.get("original_task_id") != task_id
-            or payload.get("original_request_hash") != request_hash
-            or not isinstance(payload.get("state"), str)
-            or not isinstance(payload.get("cancellation_requested"), bool)
-            or not isinstance(payload.get("cancelled"), bool)
-            or (payload.get("cancelled") is True and payload.get("state") != "cancelled")
-        ):
-            raise RunnerAuthenticationError("Runner cancellation response is invalid.")
-        return payload
+    _validated_cancellation_payload = staticmethod(validated_cancellation_payload)
 
     def shutdown(self, server_instance_id: str | None = None) -> Mapping[str, Any]:
         """Request an authenticated managed-host shutdown acknowledgement.

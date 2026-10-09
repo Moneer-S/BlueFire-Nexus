@@ -8,6 +8,7 @@ from pathlib import Path
 from tools.atomic_chmod_source_audit import reviewed_atomic_chmod_source
 from tools.atomic_gzip_source_audit import reviewed_gzip_source
 from tools.provider_gate_common import _sha256_bytes
+from tools.s3_worker_source_audit import reviewed_s3_worker_source
 
 _REVIEWED_PROCESS_SOURCE_SIZE = 25_856
 _REVIEWED_PROCESS_SOURCE_SHA256 = (
@@ -18,8 +19,8 @@ _REVIEWED_CANCELLATION_SOURCE_SHA256 = (
     "sha256:2c787df1148ed2b6ba0e00394e9fb3651d4172275d2c2e3be125ebde92614c07"
 )
 _REVIEWED_QUERY_PROCESS_SOURCE = (
-    12_657,
-    "sha256:d6b9082ee10a7dae1cb3bb20cdc74f641cd02a48d606deddc5db2d1bceef7af5",
+    11_756,
+    "sha256:db4d1d39b3940ada12e95747d5d11d20b9853e2f4e9d9b63f8b2606d2b0777de",
 )
 _REVIEWED_QUERY_FIXTURE_SOURCE = (
     13_948,
@@ -164,6 +165,7 @@ def _native_command_source_inventory_is_fixed(repository: Path) -> bool:
         "atomic_chmod.rs",
         "service_query_process.rs",
         "service_query_process_tests.rs",
+        "s3_worker_process.rs",
     }:
         return False
     if not _reviewed_service_query_sources(
@@ -174,6 +176,8 @@ def _native_command_source_inventory_is_fixed(repository: Path) -> bool:
     if not reviewed_gzip_source(command_sources["atomic_gzip.rs"]):
         return False
     if not reviewed_atomic_chmod_source(command_sources["atomic_chmod.rs"]):
+        return False
+    if not reviewed_s3_worker_source(command_sources["s3_worker_process.rs"]):
         return False
     cancellation_source = command_sources["cancellation_witness.rs"]
     if (

@@ -448,6 +448,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             elif composition[0]:
                 self._method_not_allowed("POST")
             return
+        from .api_s3_access import dispatch_s3_access
+
+        if dispatch_s3_access(self, path):
+            return
         receiver = self._routes._receiver_defense_request(path, listing=True)
         if receiver is not None:
             if receiver[0] == "read":
@@ -1038,6 +1042,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 self._dispatch(operations[composition[0]])
             elif composition[0]:
                 self._method_not_allowed("GET")
+            return
+        from .api_s3_access import dispatch_s3_access
+
+        if dispatch_s3_access(self, path, body):
             return
         receiver = self._routes._receiver_defense_request(path)
         if receiver is not None:

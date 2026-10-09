@@ -60,6 +60,36 @@ def run_offline() -> dict:
     sys.addaudithook(audit)
     payload = json.loads(sys.stdin.buffer.read(128 * 1024))
     repository = Path(payload["repository"])
+    fixed_factory = None
+    if payload["scenario"] == "fixed_session":
+        # This case exercises the actual fixed Session configuration, not
+        # Linux deployment admission. Only those filesystem/import checks are
+        # replaced: the SDK-only runtime is independently hash-checked outside.
+        package = ModuleType("bluefire")
+        package.__path__ = [str(repository / "bluefire")]
+        sys.modules["bluefire"] = package
+        from bluefire.s3_access_runtime import S3Runtime
+
+        sdk_root = Path(sys.prefix) / "Lib" / "site-packages"
+        assert sdk_root.is_dir()
+        os.environ.clear()
+        runtime = S3Runtime(
+            Path(sys.prefix),
+            Path(sys.executable),
+            Path(sys.base_prefix) / "Lib",
+            sdk_root,
+            repository / "bluefire",
+            "sha256:" + "0" * 64,
+            "sha256:" + "0" * 64,
+            b"{}",
+        )
+        S3Runtime.assert_current = lambda self: None
+
+        def component_import_check(self):
+            assert sys.flags.isolated and sys.dont_write_bytecode and not os.environ
+
+        S3Runtime._admit_imports = component_import_check
+        fixed_factory = runtime.create_factory()
     # SDK imports happen only after denial hooks; only explicit synthetic
     # credentials are passed below. No SDK credential resolver is admissible.
     import botocore.credentials
@@ -189,16 +219,17 @@ def run_offline() -> dict:
                 body, media="application/octet-stream", identifier=scenario != "missing_read_id"
             )
 
-    class OfflineSession(botocore.session.Session):
-        def create_client(self, *args, **kwargs):
-            client = super().create_client(*args, **kwargs)
-            transport = client._endpoint.http_session
-            manager = SimpleNamespace(
-                connection_from_url=lambda url: Connection(url.split("/", 3)[2])
-            )
-            transport._get_connection_manager = lambda *_args, **_kwargs: manager
-            opened_sessions.append(transport)
-            return client
+    create_client = botocore.session.Session.create_client
+
+    def offline_client(self, *args, **kwargs):
+        client = create_client(self, *args, **kwargs)
+        transport = client._endpoint.http_session
+        manager = SimpleNamespace(connection_from_url=lambda url: Connection(url.split("/", 3)[2]))
+        transport._get_connection_manager = lambda *_args, **_kwargs: manager
+        opened_sessions.append(transport)
+        return client
+
+    botocore.session.Session.create_client = offline_client
 
     # None of these paths exists or carries credentials. The audited SDK must
     # neither read the original user's .aws tree nor invoke its resolver.
@@ -208,8 +239,8 @@ def run_offline() -> dict:
             AWS_SHARED_CREDENTIALS_FILE=str(private_config / ".aws" / "credentials"),
             AWS_CONFIG_FILE=str(private_config / ".aws" / "config"),
         )
-    factory = BotocoreFactory(
-        session_factory=OfflineSession,
+    factory = fixed_factory or BotocoreFactory(
+        session_factory=botocore.session.Session,
         config_factory=Config,
         client_error_type=ClientError,
         ca_bundle=str(Path(botocore.__file__).parent / "cacert.pem"),
@@ -236,6 +267,7 @@ def run_offline() -> dict:
         "sdk_version": botocore.__version__,
         "transport_mode": "official-sdk-with-inert-connection",
         "production_runtime_admitted": False,
+        "session_configuration": "fixed-runtime" if fixed_factory else "injected-test-session",
     }
 
 

@@ -15,6 +15,9 @@ use crate::providers::{
 
 const PROVIDER_OUTPUT_OFFSET: u64 = 4096;
 
+#[path = "runner_s3_profile_tests.rs"]
+mod s3_profiles;
+
 fn native_installation() -> crate::native_tool_installations::NativeToolInstallation {
     serde_json::from_value(json!({
         "schema_version": "bluefire.native-tool-installation.v1",

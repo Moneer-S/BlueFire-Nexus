@@ -181,6 +181,18 @@ class S3SdkAdapter:
             }
         change = S3PolicyChange.from_mapping(self.scope, self.row["policy_change"])
         values = change.to_dict()
+        if self.row["operation"] == "reconcile_policy":
+            current_digest = content_hash(current)
+            review = (
+                "matched_before"
+                if current == values["before"] and current_digest == values["before_digest"]
+                else (
+                    "matched_after"
+                    if current == values["after"] and current_digest == values["after_digest"]
+                    else "drift"
+                )
+            )
+            return {"policy_digest": current_digest, "structural_review": review}
         if self.row["operation"] == "apply_policy":
             if current != values["before"] or content_hash(current) != values["before_digest"]:
                 raise S3AccessError("policy preimage changed immediately before apply")

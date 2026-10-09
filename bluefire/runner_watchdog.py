@@ -43,6 +43,7 @@ if __package__ in {None, ""}:
         _PrivateFileCleanupError,
         _read_descriptor_bounded,
     )
+    from bluefire.s3_access_launch import S3Launch, consume_s3_launch
     from bluefire.service_launch import ServiceLaunch, consume_service_launch
     from bluefire.util import canonical_json_bytes, file_hash
 else:
@@ -65,6 +66,7 @@ else:
         _PrivateFileCleanupError,
         _read_descriptor_bounded,
     )
+    from .s3_access_launch import S3Launch, consume_s3_launch
     from .service_launch import ServiceLaunch, consume_service_launch
     from .util import canonical_json_bytes, file_hash
 
@@ -833,7 +835,7 @@ def _run(
     config: _WatchdogConfig,
     *,
     receiver_environment: Mapping[str, str],
-    service_launch: ServiceLaunch | None = None,
+    service_launch: ServiceLaunch | S3Launch | None = None,
     darwin_proof_descriptor: int | None = None,
     darwin_proof_nonce: str | None = None,
 ) -> tuple[str, str | None, Mapping[str, bool] | None]:
@@ -1002,6 +1004,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = _load_config(arguments[0])
     except RunnerTransportError:
         return fail_before_launch(65)
+    service_launch: ServiceLaunch | S3Launch | None = None
+    s3_launch = None
     try:
         receiver_environment = _consume_receiver_task_environment(expected_task_id=config.task_id)
         service_launch = consume_service_launch(
@@ -1012,7 +1016,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             watchdog_digest=config.watchdog_script_digest,
             interpreter_digest=config.watchdog_interpreter_digest,
         )
+        s3_launch = consume_s3_launch(
+            config.manifest,
+            config.profile,
+            task_id=config.task_id,
+            runner_digest=config.runner_binary_digest,
+            watchdog_digest=config.watchdog_script_digest,
+            interpreter_digest=config.watchdog_interpreter_digest,
+        )
+        if service_launch is not None and s3_launch is not None:
+            raise RunnerTransportError("Multiple protected launch channels are invalid.")
+        service_launch = service_launch or s3_launch
     except RunnerTransportError:
+        for channel in (service_launch, s3_launch):
+            if channel is not None:
+                try:
+                    channel.close()
+                except RunnerTransportError:
+                    pass
         try:
             _close_config(config)
         except RunnerTransportError:
