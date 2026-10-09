@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, useLocation, useSearchParams } from "react-router-dom";
 import { expect, it, vi } from "vitest";
@@ -10,6 +10,7 @@ import { matchesMethodPending, methodComparisonLink, methodJobId, methodProposal
 import type { DetectionResource, RunJob } from "../src/types";
 
 const digest = `sha256:${"a".repeat(64)}`;
+const blockedReadinessMessage = "Compatible registered alternatives exist, but none currently passes replay preflight. Review the original environment's readiness and retry method preparation.";
 const source = { ...demoRuns[0]!, run_id: "run-owned", mode: "execute" as const };
 const provider = { provider_id: "local-method-model", kind: "openai_chat_completions", model: "chosen-model" };
 const detector: DetectionResource = { kind: "detections", id: "rule-owned", digest, status: "parsed", created_at: "2030-01-01", updated_at: "2030-01-01", document: { title: "Observed collection", revision: 2, target_language: "sqlite", state: "parsed", rule_source: "SELECT fixture_id FROM logs" } };
@@ -36,7 +37,7 @@ function mount(initial?: RunJob, child?: RunJob) {
   const approve = vi.spyOn(api, "approveJob");
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/compare?source=${source.run_id}${initial ? `&method_job=${initial.job_id}` : ""}`]}><Harness /></MemoryRouter></QueryClientProvider>);
-  return { user: userEvent.setup(), send, effect, approve, jobs };
+  return { user: userEvent.setup(), send, effect, approve, jobs, client };
 }
 
 it("sends no model request in Off and preserves the full bounded Assist intent", async () => {
@@ -181,4 +182,50 @@ it("focuses the retained results and keeps the accepted proposal in a closed his
   expect(screen.getByRole("heading", { name: "Review the method change" })).toBeVisible();
   expect(screen.queryByRole("button", { name: "Accept method and prepare approval" })).not.toBeInTheDocument();
   expect(send).not.toHaveBeenCalled(); expect(effect).not.toHaveBeenCalled();
+});
+
+it("blocks stale method choices during a readiness refresh and after refusal, then restores the draft on retry", async () => {
+  const { user, send, effect, approve, client } = mount();
+  await user.click(screen.getByRole("button", { name: "Set up method test" }));
+  await user.selectOptions(await screen.findByLabelText("Step to vary"), "collect");
+  await user.selectOptions(screen.getByLabelText("Saved rule to evaluate"), detector.id);
+  await user.type(screen.getByLabelText("Question for this method test"), "Keep this detection question");
+  await user.selectOptions(screen.getByLabelText("Method AI mode"), "assist");
+  expect(screen.getByRole("button", { name: "Propose method test" })).toBeEnabled();
+
+  let refuse!: (reason: Error) => void;
+  vi.mocked(api.methodComparisonContext).mockImplementationOnce(() => new Promise((_resolve, reject) => { refuse = reject; }));
+  let refresh!: Promise<void>;
+  act(() => { refresh = client.refetchQueries({ queryKey: ["method-context", source.run_id] }); });
+  expect(await screen.findByText("Finding compatible methods")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Propose method test" })).toBeDisabled();
+  await act(async () => { refuse(new Error(blockedReadinessMessage)); await refresh; });
+  expect(await screen.findByText(blockedReadinessMessage)).toBeVisible();
+  expect(screen.queryByText("No compatible alternative")).not.toBeInTheDocument();
+  expect(screen.queryByRole("option", { name: "Record collection · collect" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Propose method test" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Propose method test" }));
+  expect(readMethodPending()).toBeUndefined();
+  expect(send).not.toHaveBeenCalled();
+
+  await user.click(screen.getByRole("button", { name: "Retry method preparation" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Propose method test" })).toBeEnabled());
+  expect(screen.getByLabelText("Step to vary")).toHaveValue("collect");
+  expect(screen.getByLabelText("Saved rule to evaluate")).toHaveValue(detector.id);
+  expect(screen.getByLabelText("Question for this method test")).toHaveValue("Keep this detection question");
+  expect(screen.getByLabelText("Method AI mode")).toHaveValue("assist");
+  expect(send).not.toHaveBeenCalled(); expect(effect).not.toHaveBeenCalled(); expect(approve).not.toHaveBeenCalled();
+});
+
+it("shows no compatible alternative only after a successful current preparation", async () => {
+  const { user, send, client } = mount();
+  vi.mocked(api.methodComparisonContext).mockResolvedValueOnce({ ...context, options: [] });
+  await user.click(screen.getByRole("button", { name: "Set up method test" }));
+  expect(await screen.findByText("No compatible alternative")).toBeVisible();
+  vi.mocked(api.methodComparisonContext).mockRejectedValueOnce(new Error("Runner readiness is unavailable."));
+  await act(async () => { await client.refetchQueries({ queryKey: ["method-context", source.run_id] }); });
+  expect(await screen.findByText("Runner readiness is unavailable.")).toBeVisible();
+  expect(screen.queryByText("No compatible alternative")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Propose method test" })).toBeDisabled();
+  expect(send).not.toHaveBeenCalled();
 });
