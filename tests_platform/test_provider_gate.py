@@ -1157,6 +1157,8 @@ def test_provider_gate_core_action_count_is_pinned_to_the_runner_registry() -> N
     """
     assert provider_gate_validation._CORE_ACTION_COUNT == len(BUILTIN_RUNNER_ACTION_IDS)
     assert BUILTIN_RUNNER_ACTION_VERSIONS["sandbox.permission.chmod.v1"] == "1.0.0"
+    assert BUILTIN_RUNNER_ACTION_VERSIONS["file_access.probe.non_owner.v1"] == "1.0.0"
+    assert BUILTIN_RUNNER_ACTION_VERSIONS["file_access.verify.owner.v1"] == "1.0.0"
 
 
 def test_gate_02_emits_exact_unique_proofs_and_bundle_attachments(

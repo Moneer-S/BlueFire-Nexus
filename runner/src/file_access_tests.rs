@@ -1,4 +1,4 @@
-//! Pure authority-shape tests. These never launch or impersonate a probe identity.
+//! Authority and execution-phase tests; never launch or impersonate a probe identity.
 
 use super::*;
 
@@ -79,4 +79,82 @@ fn file_access_time_bound_never_renews_enrollment() {
         .unwrap()
         .current()
         .is_err());
+}
+
+#[test]
+fn file_access_pure_refusals_do_not_mark_runtime_inspection() {
+    for (pointer, replacement) in [
+        ("/expires_at_ms", json!(1)),
+        ("/resource/owner_uid", json!(1002)),
+    ] {
+        let mut value = binding();
+        *value.pointer_mut(pointer).unwrap() = replacement;
+        let binding = serde_json::from_value(value).unwrap();
+        let execution_started = Cell::new(false);
+        assert!(observe(
+            &binding,
+            &"a".repeat(64),
+            true,
+            std::time::Duration::from_secs(1),
+            &execution_started,
+        )
+        .is_err());
+        assert!(!execution_started.get());
+    }
+}
+
+#[test]
+fn file_access_empty_deadline_does_not_mark_runtime_inspection() {
+    let binding = serde_json::from_value(binding()).unwrap();
+    let execution_started = Cell::new(false);
+    assert!(observe(
+        &binding,
+        &"a".repeat(64),
+        true,
+        std::time::Duration::ZERO,
+        &execution_started,
+    )
+    .is_err());
+    assert!(!execution_started.get());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn file_access_runtime_identity_refusal_retains_attempted_inspection() {
+    let mut binding: FileAccessBinding = serde_json::from_value(binding()).unwrap();
+    let actual = std::fs::read_link("/proc/self/ns/mnt").unwrap();
+    let other = if actual.to_str().unwrap() == "mnt:[1]" {
+        "mnt:[2]"
+    } else {
+        "mnt:[1]"
+    };
+    binding.worker.namespaces.insert("mnt".into(), other.into());
+    binding.current().unwrap();
+    let execution_started = Cell::new(false);
+    // The deliberately different namespace prevents reaching the enrolled file or worker.
+    assert!(observe(
+        &binding,
+        &"a".repeat(64),
+        true,
+        std::time::Duration::from_secs(1),
+        &execution_started,
+    )
+    .is_err());
+    assert!(execution_started.get());
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn file_access_unsupported_platform_does_not_mark_runtime_inspection() {
+    let binding = serde_json::from_value(binding()).unwrap();
+    let execution_started = Cell::new(false);
+    assert!(observe(
+        &binding,
+        &"a".repeat(64),
+        true,
+        std::time::Duration::from_secs(1),
+        &execution_started,
+    )
+    .is_err());
+    assert!(!execution_started.get());
 }

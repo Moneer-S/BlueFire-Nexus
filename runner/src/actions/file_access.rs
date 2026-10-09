@@ -83,38 +83,56 @@ impl PreparedAction for Prepared {
             &context.manifest.request_hash,
             self.owner,
             remaining.min(Duration::from_millis(context.manifest.limits.timeout_ms)),
+            &context.execution_started,
         )
         .map_err(|_| {
-            ActionFailure::failed("file_access_unavailable", crate::file_access::REFUSAL)
+            if context.execution_started.get() {
+                ActionFailure::failed("file_access_unavailable", crate::file_access::REFUSAL)
+            } else {
+                ActionFailure::refused("file_access_unavailable", crate::file_access::REFUSAL)
+            }
         })?;
-        let bytes = crate::canonical::canonical_json(&observation).into_bytes();
-        if bytes.len() > crate::file_access::MAX_REPORT
-            || bytes.len() as u64 > context.manifest.limits.max_artifact_bytes
-            || context.manifest.limits.max_files < 1
-        {
-            return Err(ActionFailure::refused(
-                "artifact_limit",
-                "The file-access observation exceeds its reviewed report bound.",
-            ));
-        }
-        let target = context
-            .root
-            .prepare_new_file(&path)
-            .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
-        let intent = begin_receipt(
-            context,
-            receipt_paths(target.relative.clone(), &bytes, &target.created_directories),
-        )?;
-        context
-            .root
-            .write_new(&target, &bytes, &intent)
-            .map_err(|_| {
-                ActionFailure::failed(
-                    "file_access_report_failed",
-                    "The observation report could not be retained.",
-                )
-            })?;
-        let receipt = commit_receipt(context, &intent)?;
-        Ok(ActionOutcome::success(json!({"observation":observation,"report":{"path":path,"sha256":crate::contract::sha256_hex(&bytes),"size":bytes.len()}})).with_receipt(receipt))
+        retain_observation(context, &path, observation)
     }
 }
+
+fn retain_observation(
+    context: &ActionContext<'_>,
+    path: &str,
+    observation: Value,
+) -> Result<ActionOutcome, ActionFailure> {
+    context.mark_execution_started();
+    let bytes = crate::canonical::canonical_json(&observation).into_bytes();
+    if bytes.len() > crate::file_access::MAX_REPORT
+        || bytes.len() as u64 > context.manifest.limits.max_artifact_bytes
+        || context.manifest.limits.max_files < 1
+    {
+        return Err(ActionFailure::refused(
+            "artifact_limit",
+            "The file-access observation exceeds its reviewed report bound.",
+        ));
+    }
+    let target = context
+        .root
+        .prepare_new_file(path)
+        .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
+    let intent = begin_receipt(
+        context,
+        receipt_paths(target.relative.clone(), &bytes, &target.created_directories),
+    )?;
+    context
+        .root
+        .write_new(&target, &bytes, &intent)
+        .map_err(|_| {
+            ActionFailure::failed(
+                "file_access_report_failed",
+                "The observation report could not be retained.",
+            )
+        })?;
+    let receipt = commit_receipt(context, &intent)?;
+    Ok(ActionOutcome::success(json!({"observation":observation,"report":{"path":path,"sha256":crate::contract::sha256_hex(&bytes),"size":bytes.len()}})).with_receipt(receipt))
+}
+
+#[cfg(test)]
+#[path = "file_access_tests.rs"]
+mod tests;

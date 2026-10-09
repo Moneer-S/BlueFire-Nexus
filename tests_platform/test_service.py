@@ -499,7 +499,7 @@ def test_service_seeds_durable_product_state_and_indexes_completed_runs(
 
     assert service.product_store.path == database.resolve()
     assert service.seed_counts["scenario"] == 13
-    assert service.seed_counts["action"] == 24
+    assert service.seed_counts["action"] == 26
     assert len(service.product_store.list_resources("collector")) == 11
 
     result = service.run(

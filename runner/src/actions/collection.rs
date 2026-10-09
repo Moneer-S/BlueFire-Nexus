@@ -125,6 +125,7 @@ impl PreparedAction for ArchiveTarPrepared {
                 .resolve_existing(&input)
                 .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
             let remaining = artifact_limit.saturating_sub(input_total);
+            context.mark_execution_started();
             let bytes = read_file_bounded(&path, remaining)
                 .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
             verify_collection_input(&bytes, &self.1)?;
@@ -272,6 +273,7 @@ impl PreparedAction for CollectionStagePrepared {
                 .resolve_existing(&normalized)
                 .map_err(|error| ActionFailure::failed("collection_input_failed", error))?;
             let remaining = artifact_limit.saturating_sub(input_bytes);
+            context.mark_execution_started();
             let bytes = read_file_bounded(&source, remaining)
                 .map_err(|error| ActionFailure::failed("collection_input_failed", error))?;
             verify_collection_input(&bytes, &self.1)?;

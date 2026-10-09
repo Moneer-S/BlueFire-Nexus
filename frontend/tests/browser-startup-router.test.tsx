@@ -12,7 +12,8 @@ function Draft() {
 }
 it("handles browser popstate before HashRouter and keeps the mounted draft during reconnect", async () => {
   window.history.replaceState(null, "", "#/runs");
-  const fetcher = vi.fn(async (_url: RequestInfo | URL, options?: RequestInit) => new Response(null, { status: options?.method === "POST" ? 204 : 401 }));
+  const fetcher = vi.fn(async (_url: RequestInfo | URL, options?: RequestInit) => options?.method === "POST"
+    ? new Response(JSON.stringify({ session: "S".repeat(64) }), { status: 200 }) : new Response(null, { status: 401 }));
   vi.stubGlobal("fetch", fetcher);
   const connected = vi.fn(), unavailable = vi.fn();
   const watcher = watchBrowserSession({ connected, unavailable }); stop = watcher.dispose;

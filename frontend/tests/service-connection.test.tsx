@@ -38,7 +38,7 @@ it("does not treat a cached successful catalog as a service connection", async (
   expect(screen.queryByText("Connected")).not.toBeInTheDocument();
   await act(async () => { release(success()); }); await flush();
   expect(screen.getByText("Connected")).toBeVisible(); expect(fetcher).toHaveBeenCalledOnce();
-  expect(fetcher).toHaveBeenCalledWith("/api/v1/session", expect.objectContaining({ method: "GET", credentials: "same-origin", cache: "no-store", referrerPolicy: "no-referrer" }));
+  expect(fetcher).toHaveBeenCalledWith("/api/v1/session", expect.objectContaining({ method: "GET", credentials: "omit", cache: "no-store", referrerPolicy: "no-referrer" }));
   expect(view.catalog).not.toHaveBeenCalled(); expect(view.scenarios).not.toHaveBeenCalled();
 });
 
@@ -63,7 +63,7 @@ it.each([401, 403])("reports unavailable browser session (%s) without renewing c
   expect(screen.getAllByText("Session unavailable").length).toBeGreaterThan(0);
   expect(screen.getByText(/Relaunch with bluefire ui/)).toBeVisible(); expect(screen.getByText("Retained comparison result")).toBeVisible();
   expect(screen.queryByText("Connected")).not.toBeInTheDocument();
-  expect(fetcher.mock.calls.every(([, options]) => options.method === "GET" && !Object.keys(options.headers).some((key) => /bootstrap/i.test(key)))).toBe(true);
+  expect(fetcher.mock.calls.every(([, options]) => options.method === "GET" && !new Headers(options.headers).has("X-BlueFire-Browser-Bootstrap"))).toBe(true);
 });
 
 it("expires the connection indication when foreground checks pause and rechecks on return", async () => {

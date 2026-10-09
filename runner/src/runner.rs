@@ -126,10 +126,17 @@ impl Runner {
                     manifest: &manifest,
                     profile: &profile,
                     root: &root,
+                    execution_started: std::cell::Cell::new(false),
                 };
                 match prepared.execute(&context) {
                     Ok(outcome) => outcome_result(&manifest, &profile, started_at, outcome),
-                    Err(failure) => failure_result(&manifest, &profile, started_at, failure),
+                    Err(failure) => failure_result_with_progress(
+                        &manifest,
+                        &profile,
+                        started_at,
+                        failure,
+                        context.execution_started.get(),
+                    ),
                 }
             }
             ValidatedExecution::Provider { binding, artifact } => {
@@ -1171,10 +1178,21 @@ fn failure_result(
     started_at: chrono::DateTime<Utc>,
     failure: ActionFailure,
 ) -> TaskResult {
-    let kind = if matches!(
-        failure.status,
-        TaskStatus::Refused | TaskStatus::ControlBlocked
-    ) {
+    failure_result_with_progress(manifest, profile, started_at, failure, false)
+}
+
+fn failure_result_with_progress(
+    manifest: &ExecutionManifest,
+    profile: &RunnerProfile,
+    started_at: chrono::DateTime<Utc>,
+    failure: ActionFailure,
+    execution_started: bool,
+) -> TaskResult {
+    let kind = if !execution_started
+        && matches!(
+            failure.status,
+            TaskStatus::Refused | TaskStatus::ControlBlocked
+        ) {
         EvidenceKind::ControlBlocked
     } else {
         EvidenceKind::Executed

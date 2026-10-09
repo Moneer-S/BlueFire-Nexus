@@ -1,5 +1,7 @@
 //! Fixed Linux observation action over an independently enrolled resource.
 
+use std::cell::Cell;
+
 use serde_json::Value;
 
 pub(crate) use crate::file_access_contract::{
@@ -29,15 +31,16 @@ pub(crate) fn observe(
     request_hash: &str,
     owner: bool,
     timeout: std::time::Duration,
+    execution_started: &Cell<bool>,
 ) -> Result<Value, String> {
     binding.current()?;
     #[cfg(target_os = "linux")]
     {
-        linux::observe(binding, request_hash, owner, timeout)
+        linux::observe(binding, request_hash, owner, timeout, execution_started)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (request_hash, owner, timeout);
+        let _ = (request_hash, owner, timeout, execution_started);
         Err(REFUSAL.into())
     }
 }

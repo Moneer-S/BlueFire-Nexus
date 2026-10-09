@@ -58,6 +58,7 @@ from .product_store_errors import (
     DetectionRevisionLimitError,
     ProductStoreError,
     ResearchSourceIntegrityError,
+    ResourceConflictError,
 )
 from .product_store_serialization import canonical_json as _canonical_json
 from .product_store_serialization import utc_now
@@ -1189,6 +1190,7 @@ class ProductStore(
         *,
         status: str | None = None,
         replace_existing: bool = True,
+        expected_digest: str | None = None,
     ) -> Mapping[str, Any]:
         if kind not in _RESOURCE_KINDS:
             raise ProductStoreError("resource kind is unsupported")
@@ -1203,6 +1205,10 @@ class ProductStore(
             raise ResearchSourceIntegrityError("research source status must be draft or pinned")
         if not isinstance(replace_existing, bool):
             raise ProductStoreError("resource replacement choice must be boolean")
+        if expected_digest is not None and (
+            not isinstance(expected_digest, str) or _DIGEST.fullmatch(expected_digest) is None
+        ):
+            raise ProductStoreError("expected resource digest is invalid")
         payload = _safe_document(document, context=f"{kind}.{stable_id}")
         detection_identity = (
             _detection_revision_identity(payload, strict=True) if kind == "detection" else None
@@ -1219,6 +1225,8 @@ class ProductStore(
                 "SELECT * FROM resources WHERE kind = ? AND resource_id = ?",
                 (kind, stable_id),
             ).fetchone()
+            if expected_digest is not None and (row is None or row["digest"] != expected_digest):
+                raise ResourceConflictError("resource changed since its evaluation snapshot")
             if kind == "plugin" and row is not None:
                 legacy = connection.execute(
                     """
@@ -4578,6 +4586,7 @@ __all__ = [
     "DetectionRevisionLimitError",
     "ProductStore",
     "ProductStoreError",
+    "ResourceConflictError",
     "ResearchSourceIntegrityError",
     "SCHEMA_VERSION",
     "utc_now",

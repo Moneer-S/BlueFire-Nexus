@@ -5,6 +5,10 @@ from __future__ import annotations
 from .domain_errors import ProductStoreError as ProductStoreError
 
 
+class ResourceConflictError(ProductStoreError):
+    """Raised when a resource changed after its expected snapshot was read."""
+
+
 class ResearchSourceIntegrityError(ProductStoreError):
     """Raised when a persisted research-source identity would be rewritten."""
 
@@ -31,5 +35,6 @@ __all__ = [
     "DetectionRevisionIntegrityError",
     "DetectionRevisionLimitError",
     "ProductStoreError",
+    "ResourceConflictError",
     "ResearchSourceIntegrityError",
 ]

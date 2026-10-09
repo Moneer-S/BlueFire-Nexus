@@ -1,5 +1,6 @@
 //! Fresh owner inspection and credential-authenticated fixed non-owner IPC.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::fs::{File, Metadata};
@@ -419,10 +420,13 @@ pub(super) fn observe(
     request_hash: &str,
     is_owner: bool,
     timeout: Duration,
+    execution_started: &Cell<bool>,
 ) -> Result<Value, String> {
     let deadline = Instant::now()
         .checked_add(timeout.min(Duration::from_secs(5)))
         .ok_or(REFUSAL)?;
+    require(Instant::now() < deadline)?;
+    execution_started.set(true);
     let principal = owner(binding)?;
     let before = resource(binding, deadline)?;
     let challenge = canonical_hash(&json!({"schema_version":"bluefire.file-access-challenge.v1", "request_hash":request_hash,

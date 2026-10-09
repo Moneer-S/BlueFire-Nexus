@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import queue
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ from bluefire.collectors import CollectionRequest, FilesystemCollector
 from bluefire.registry import load_builtin_registry
 from bluefire.util import content_hash
 from tools import install_gate_journey_support as support
+from tools import install_gate_ui_health as ui_health
 from tools import run_install_gate_journey as journey
 
 _RUN_ID = "run-20300101T000000Z-0123456789abcdef"
@@ -654,6 +656,94 @@ def test_ui_launch_containment_failure_terminates_the_started_tree(
     assert terminated == [(process, None)]
 
 
+def test_ui_launch_reads_separate_terminal_code_without_a_credential_url() -> None:
+    capability = "C" * 64
+    announced: queue.Queue[tuple[int, str]] = queue.Queue(maxsize=1)
+    stream = io.StringIO(
+        "BlueFire local console: http://127.0.0.1:32123/\n"
+        f"One-time connection code: {capability}\n"
+    )
+    journey._drain_stream(stream, announced)
+    assert announced.get_nowait() == (32123, capability)
+    assert stream.closed
+
+
+def test_ui_health_proves_header_authority_and_refuses_ambient_cookie(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(journey, "_UI_HEALTH", ui_health)
+    session = "S" * 64
+    calls: list[tuple[str, str, dict[str, Any]]] = []
+    exchanged = False
+
+    def request(_port: int, method: str, path: str, **kwargs: Any) -> tuple[int, Any, bytes]:
+        nonlocal exchanged
+        calls.append((method, path, kwargs))
+        if path == "/":
+            return (
+                200,
+                {"content-type": "text/html"},
+                (
+                    b'<div id="root"></div><script type="module" crossorigin src="/ui/app.js"></script>'
+                    b'<link rel="stylesheet" crossorigin href="/ui/styles.css">'
+                ),
+            )
+        if path == "/ui/app.js":
+            return 200, {"content-type": "text/javascript"}, b"BlueFire" * 100
+        if path == "/ui/styles.css":
+            return 200, {"content-type": "text/css"}, b"--" * 300
+        if method == "POST":
+            if exchanged:
+                return 401, {}, b""
+            exchanged = True
+            return 200, {"cache-control": "no-store"}, ('{"session":"' + session + '"}').encode()
+        if "legacy_cookie" in kwargs:
+            return 401, {}, b""
+        assert kwargs["session"] == session
+        return 204, {}, b""
+
+    monkeypatch.setattr(journey, "_raw_request", request)
+    monkeypatch.setattr(
+        journey,
+        "_json_request",
+        lambda _port, _method, path, **_kwargs: (
+            {"behaviors": ["example"]}
+            if path.endswith("catalog")
+            else {"scenarios": [{"id": journey.SCENARIO_ID}]}
+        ),
+    )
+    actual, _, _, report = journey._ui_health(32123, "C" * 64)
+    assert actual == session
+    assert report["schema_version"] == "bluefire.gate01-ui-health.v2"
+    assert report["launch"]["session_header_required"] is True
+    assert any(kwargs.get("legacy_cookie") == session for _, _, kwargs in calls)
+    assert all("C" * 64 not in path and session not in path for _, path, _ in calls)
+
+
+def test_ui_health_refuses_old_cookie_exchange_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(journey, "_UI_HEALTH", ui_health)
+
+    def request(_port: int, _method: str, path: str, **_kwargs: Any) -> tuple[int, Any, bytes]:
+        if path == "/":
+            return (
+                200,
+                {"content-type": "text/html"},
+                (
+                    b'<div id="root"></div><script type="module" crossorigin src="/ui/app.js"></script>'
+                    b'<link rel="stylesheet" crossorigin href="/ui/styles.css">'
+                ),
+            )
+        if path == "/ui/app.js":
+            return 200, {"content-type": "text/javascript"}, b"BlueFire" * 100
+        if path == "/ui/styles.css":
+            return 200, {"content-type": "text/css"}, b"--" * 300
+        return 204, {"set-cookie": "bluefire_session=" + "S" * 64}, b""
+
+    monkeypatch.setattr(journey, "_raw_request", request)
+    with pytest.raises(journey.JourneyError, match="session exchange was invalid"):
+        journey._ui_health(32123, "C" * 64)
+
+
 def test_cleanup_all_attempts_later_actions_before_bounded_failure() -> None:
     observed: list[str] = []
 
@@ -781,3 +871,37 @@ def test_support_loader_disables_bytecode_before_import(
     assert journey.sys.dont_write_bytecode is True
     assert not (evidence / "__pycache__").exists()
     assert not list(evidence.rglob("*.pyc"))
+
+
+def test_ui_health_helper_loads_only_from_isolated_evidence_without_bytecode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = tmp_path / "evidence"
+    checkout = tmp_path / "checkout"
+    evidence.mkdir()
+    checkout.mkdir()
+    copy = evidence / "u.py"
+    copy.write_bytes(Path(ui_health.__file__).read_bytes())
+    monkeypatch.setattr(journey.sys, "dont_write_bytecode", False)
+    loaded = journey._load_helper(
+        copy, evidence, checkout, required=("UIHealthError", "probe_ui_health")
+    )
+    assert callable(loaded.probe_ui_health)
+    assert journey.sys.dont_write_bytecode is True
+    assert not (evidence / "__pycache__").exists()
+    outside = checkout / "u.py"
+    outside.write_bytes(copy.read_bytes())
+    with pytest.raises(journey.JourneyError, match="outside its isolated helper directory"):
+        journey._load_helper(outside, evidence, checkout, required=("probe_ui_health",))
+    with pytest.raises(journey.JourneyError, match="invalid interface"):
+        journey._load_helper(copy, evidence, checkout, required=("missing_interface",))
+
+
+def test_ui_health_refuses_requests_without_loaded_helper(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(journey, "_UI_HEALTH", None)
+    monkeypatch.setattr(
+        journey, "_raw_request", lambda *_args, **_kwargs: pytest.fail("no network before helper")
+    )
+    with pytest.raises(journey.JourneyError, match="health helper is unavailable"):
+        journey._ui_health(32123, "C" * 64)
