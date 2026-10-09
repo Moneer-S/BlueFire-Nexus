@@ -489,7 +489,7 @@ mutation-Origin requirements.
 | `POST /s3-access/exercises/{job_id}/review` | Review one `phase` against the current saved revision and remaining authority. |
 | `POST /s3-access/exercises/{job_id}/operations` | Submit the exact `phase`, `review_digest`, bounded `reviewed_by` and fresh canonical `submission_id`. |
 | `POST /s3-access/exercises/{job_id}/stop` | Stop new work and request cancellation of the original pending job; body `{}`. |
-| `POST /s3-access/exercises/{job_id}/recover` | Reconcile original terminal job results already sealed in the run store, without invoking the executor; body `{}`. |
+| `POST /s3-access/exercises/{job_id}/recover` | Use already-sealed results or authenticated original-task recovery to adopt a finalized result into the same pristine or known-startup run; body `{}`. This never replays execution or renews approval. Missing, running or unavailable results remain unresolved; partial publication is refused. |
 
 The phases are `inspect`, `baseline`, `apply`, `retest`, `reconcile` and `rollback`.
 A review distinguishes this stage's `reserved` budget from `required_remaining`,
@@ -504,6 +504,37 @@ execution authority. Synthetic test evidence is labeled separately from
 runner-reported observations; neither is an independent effectiveness claim.
 Cloud audit remains `not_collected`, and generated resources remain `retained`.
 See [S3 access review](s3-access-review.md) for workflow and evidence boundaries.
+
+## Effective file access
+
+The ordinary File access UI uses these query-free routes for the finite Linux
+owner/non-owner workflow. Status reports prepared enrollment; reading status does
+not provision identities, start a worker, or authorize an operation.
+
+The permission-change method is not enabled in the ordinary default Execute
+profile. File-access setup must explicitly enable `sandbox.permission.chmod.v1`
+with its reviewed `native_tool_installations` entry; an unconfigured structural
+tool is not ready and must not block unrelated default-profile runs.
+
+| Method | Path | Result |
+|---|---|---|
+| GET | `/api/v1/file-access/status` | Current enrollment readiness and allowed operations |
+| POST | `/api/v1/file-access/review` | Exact review for create, baseline, harden, rollback, or reset |
+| POST | `/api/v1/file-access/operations` | Submit the reviewed operation with its durable submission identity |
+| POST | `/api/v1/file-access/control-list` | Bounded saved control inventory |
+| GET | `/api/v1/file-access/controls/{job_id}` | Retained control and operation history |
+| GET | `/api/v1/file-access/operations/{job_id}` | Original operation, job state, and evidence projection |
+| POST | `/api/v1/file-access/operations/{job_id}/reconcile` | Explicit authenticated evidence reconciliation |
+| GET | `/api/v1/file-access/operations/{job_id}/reconciliations/{reconciliation_id}` | Exact saved reconciliation receipt |
+
+Use the server's `allowed_operations` and exact review bindings. Reconciliation
+does not redispatch the original mutations or rewrite failed, interrupted, or
+cancelled job history. `settled_partial` is not completion: the retained control
+may require reset and may have no completed resource. Recovered observations are
+published only for complete, validated evidence; a retained baseline is historical
+and permission bits are not fresh effective-access proof. Unresolved evidence or
+usage remains blocking. See the [capability boundary](RELEASE_CAPABILITIES.md) for
+the distinction between implemented contracts and installed or live validation.
 
 ## Authenticated diagnostics
 

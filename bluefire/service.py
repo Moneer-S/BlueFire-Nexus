@@ -16,7 +16,7 @@ from importlib.resources import as_file, files
 from ipaddress import ip_address
 from pathlib import Path, PurePosixPath
 from time import monotonic
-from typing import Any, Callable, Iterator, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, Sequence
 
 import yaml
 
@@ -155,6 +155,9 @@ from .s3_access_executor import S3AccessExecutor, configured_executor
 from .s3_access_jobs import S3AccessJobs
 from .s3_access_service import S3AccessServiceMixin
 from .util import content_hash, file_hash
+
+if TYPE_CHECKING:
+    from .file_access_control import FileAccessControl
 
 RunnerFactory = Callable[[RunnerProfile], tuple[RunnerTransport, Path]]
 CollectorRegistryFactory = Callable[[Path], CollectorRegistry]
@@ -2652,6 +2655,40 @@ class BlueFireService(
 
     def composition_context(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         return dict(self.composition.review(request))
+
+    @property
+    def file_access(self) -> FileAccessControl:
+        from .file_access_control import FileAccessControl
+
+        return FileAccessControl(self)
+
+    def file_access_status(self) -> Mapping[str, Any]:
+        return self.file_access.status()
+
+    def file_access_review(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self.file_access.review(request)
+
+    def submit_file_access_operation(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self.file_access.submit(request)
+
+    def file_access_operation(self, job_id: str) -> Mapping[str, Any]:
+        return self.file_access.operation(job_id)
+
+    def list_file_access_controls(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        if request != {}:
+            raise ProductStoreError("File-access control listing requires an empty request.")
+        return self.file_access.controls()
+
+    def file_access_control(self, owner_id: str) -> Mapping[str, Any]:
+        return self.file_access.control(owner_id)
+
+    def reconcile_file_access_operation(
+        self, job_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        return self.file_access.reconcile(job_id, request)
+
+    def file_access_reconciliation(self, job_id: str, submission_id: str) -> Mapping[str, Any]:
+        return self.file_access.reconciliation(job_id, submission_id)
 
     def authorize_composition(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         return dict(self.composition.authorize(request))

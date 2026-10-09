@@ -485,6 +485,7 @@ fn provider_documents(
         control_blocked_actions: Vec::new(),
         action_bindings: Vec::new(),
         native_tool_installations: Vec::new(),
+        file_access_binding: None,
         provider_bindings: vec![binding.clone()],
         provider_artifacts: vec![ProviderArtifact {
             artifact_sha256: binding.artifact_sha256.clone(),
@@ -590,6 +591,7 @@ fn alias_documents(
         control_blocked_actions: Vec::new(),
         action_bindings: vec![binding.clone()],
         native_tool_installations: Vec::new(),
+        file_access_binding: None,
         provider_bindings: Vec::new(),
         provider_artifacts: Vec::new(),
         capabilities: descriptor.capabilities.to_vec(),

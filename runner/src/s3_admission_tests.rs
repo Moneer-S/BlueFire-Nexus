@@ -173,3 +173,43 @@ fn ordinary_registry_cannot_dispatch_the_reserved_cloud_action() {
     assert_eq!(result.error.unwrap().code, "s3_admission_required");
     assert!(result.receipt_ids.is_empty() && result.cleanup.is_none());
 }
+
+#[test]
+fn resealed_endpoint_file_authority_cannot_enter_the_cloud_channel() {
+    let mut value = fixture();
+    assert!(checked(&value).is_ok());
+    let generation = "a".repeat(32);
+    let acl =
+        canonical_hash(&json!({"system.posix_acl_access":null,"system.posix_acl_default":null}));
+    let binding = json!({
+        "schema_version":"bluefire.file-access-execution.v1",
+        "enrollment_id":format!("file-enrollment-{}", "b".repeat(32)),
+        "enrollment_digest":format!("sha256:{}", "c".repeat(64)),
+        "resource_id":format!("file-resource-{}", "d".repeat(32)),
+        "resource_generation":format!("file-generation-{generation}"),
+        "expires_at_ms":crate::contract::utc_now().timestamp_millis()+90_000,
+        "control_revision":1,"mode":"0640",
+        "resource":{"root":format!("/run/bluefire-file-access/data/{generation}"),
+            "root_device":3,"root_inode":101,"parent_device":3,"parent_inode":102,
+            "device":3,"inode":103,"owner_uid":1000,"group_gid":1002,
+            "sha256":format!("sha256:{}", "e".repeat(64)),"size":100,"record_count":6,
+            "acl_digest":acl,"parent_acl_digest":acl},
+        "worker":{"socket_path":format!("/run/bluefire-file-access/control/{generation}/probe.sock"),
+            "uid":1002,"gid":1002,"pid":23,"start_ticks":42,"launch_nonce":"f".repeat(64),
+            "namespaces":{"mnt":"mnt:[123]","net":"net:[123]","pid":"pid:[123]","ipc":"ipc:[123]"}}
+    });
+    let endpoint: crate::file_access::FileAccessBinding =
+        serde_json::from_value(binding.clone()).unwrap();
+    endpoint.current().unwrap();
+    value["profile"]["file_access_binding"] = binding;
+    reseal(&mut value);
+    assert!(checked(&value).is_err());
+}
+
+#[test]
+fn explicit_null_endpoint_binding_is_not_absent_cloud_authority() {
+    let mut value = fixture();
+    value["profile"]["file_access_binding"] = Value::Null;
+    assert!(serde_json::from_value::<RunnerProfile>(value["profile"].clone()).is_err());
+    assert!(checked(&value).is_err());
+}

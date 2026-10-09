@@ -21,9 +21,12 @@ No AWS calls have been made, and no cloud capability or runtime is automatically
 enrolled. Missing protected installation or host authority leaves execution
 unavailable. These components do not establish effective access or prevention.
 Original-result recovery is implemented in the coordinator for an already-finalized
-authenticated task; installed recovery proof remains separate. Actual Linux
-interpreter-prefix compatibility, authorized installed proof, fixture/audit lifecycle
-and broader composition integration remain required. The cloud phase is not complete.
+authenticated task; installed recovery proof remains separate. One protected Linux
+interpreter prefix reached the actual fixed entry's Ready/EOF boundary offline,
+without a containment ACK, credentials or cloud calls. That historical component
+proof is not verification of the current integrated package or an authorized
+installed workflow. Fixture/audit lifecycle and broader composition integration
+remain required. The cloud phase is not complete.
 
 `S3AccessScope.from_mapping` validates an immutable structural scope with one
 commercial-partition account/region, three distinct same-account roles without
@@ -148,9 +151,11 @@ cannot confirm success. `validate_result` preserves worker-reported provenance a
 refuses isolation/effective-access claims. A service `AccessDenied` observation is
 not by itself proof of a specific defensive change or an independent audit event.
 
-The offline suite also exercises the fixed loader's real SDK session configuration
-with protected-host admission explicitly stubbed. That is compatibility evidence,
-not proof that a copied interpreter has the required Linux standard-library prefix.
+The offline SDK suite also exercises the fixed loader's real session configuration
+with protected-host admission explicitly stubbed. Separately, one protected Linux
+prefix passed actual entry Ready/EOF compatibility without an ACK, credentials or
+cloud calls. Neither check enrolls a runtime or proves an authorized installed
+workflow or the current integrated package.
 
 ## Native Consistency Boundary
 

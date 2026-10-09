@@ -586,6 +586,17 @@ fn validate_profile(profile: &RunnerProfile) -> Result<(), ActionFailure> {
             ));
         }
     }
+    if let Some(binding) = &profile.file_access_binding {
+        if profile.platform != crate::contract::Platform::Linux {
+            return Err(blocked(
+                "file_access_binding_invalid",
+                crate::file_access::REFUSAL,
+            ));
+        }
+        binding
+            .validate()
+            .map_err(|message| blocked("file_access_binding_invalid", message))?;
+    }
     reviewed_execution::validate_profile(profile)?;
     native_tools::validate_profile(profile)
         .map_err(|error| blocked("native_tool_profile_invalid", error))?;

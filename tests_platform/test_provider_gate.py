@@ -17,7 +17,11 @@ import bluefire.provider_gate_validation as provider_gate_validation
 import tools.run_provider_gate_journey as provider_gate_helper
 from bluefire.product_acceptance import load_release_contract
 from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_IDS, BUILTIN_RUNNER_ACTION_VERSIONS
-from tools import provider_boundary_inventory, provider_gate_source_audit
+from tools import (
+    provider_boundary_inventory,
+    provider_gate_runtime_evidence,
+    provider_gate_source_audit,
+)
 from tools.provider_gate_fixture_evidence import (
     _fixture_set,
 )
@@ -99,6 +103,11 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/receiver_policy.py",
         "bluefire/receiver_session_contract.py",
         "bluefire/receiver_session_channel.py",
+        "bluefire/file_access_contract.py",
+        "bluefire/file_access_enrollment.py",
+        "bluefire/file_access_method.py",
+        "bluefire/file_access_probe.py",
+        "bluefire/file_access_closure.py",
         "bluefire/capability_resources.py",
         "bluefire/capability_grant.py",
         "bluefire/capability_facts.py",
@@ -230,6 +239,9 @@ def _structural_report() -> dict[str, Any]:
         "runner/src/s3_worker_protocol.rs",
         "runner/src/s3_worker_result.rs",
         "runner/src/s3_worker_secret.rs",
+        "runner/src/file_access.rs",
+        "runner/src/file_access_linux.rs",
+        "runner/src/actions/file_access.rs",
         "bluefire/runner_client.py",
         "bluefire/runner_bootstrap.py",
         "bluefire/runner_darwin_containment.py",
@@ -250,6 +262,7 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/prepared_lab_broker.py",
         "bluefire/prepared_lab_ui_bootstrap.py",
         "bluefire/prepared_lab_product.py",
+        "bluefire/prepared_lab_file_access.py",
         "bluefire/browser_launch.py",
         "bluefire/runner_python_environment.py",
         "runner/src/cancellation_witness.rs",
@@ -403,6 +416,12 @@ def _structural_report() -> dict[str, Any]:
                         "native_process_inventory_is_fixed": True,
                     },
                     "python_boundaries": {
+                        "prepared_lab_file_access.py": {
+                            "passed": True,
+                            "shell_imports": 1,
+                            "process_calls": ["subprocess.Popen"],
+                            "unexpected_findings": [],
+                        },
                         "ai_transport.py": {
                             "passed": True,
                             "shell_imports": 1,
@@ -1032,7 +1051,7 @@ def _journey_report() -> dict[str, Any]:
                 "provider_runtime_count": 1,
                 # The inventory advertises every built-in action on every platform;
                 # platform restrictions are enforced by policy at dispatch.
-                "core_action_count": len(BUILTIN_RUNNER_ACTION_IDS),
+                "core_action_count": len(BUILTIN_RUNNER_ACTION_IDS) + 1,
             },
             "provider_runtime": {
                 **runtime_contract,
@@ -1199,29 +1218,52 @@ def _install_passing_fakes(
     return suite_calls
 
 
-def test_provider_gate_core_action_count_is_pinned_to_the_runner_registry() -> None:
-    """The release gate cannot import the domain-layer registry, so pin it here instead.
-
-    ``bluefire.provider_gate_validation`` sits in the release layer, which GATE-10
-    forbids from depending on ``bluefire.runner_inventory`` (domain). Its action count
-    is therefore a literal, and a literal is exactly what went stale when the registry
-    last grew. This test is the guard: if you add or remove a built-in runner action,
-    update ``_CORE_ACTION_COUNT`` to match.
-    """
-    assert provider_gate_validation._CORE_ACTION_COUNT == len(BUILTIN_RUNNER_ACTION_IDS)
+def test_provider_gate_core_action_count_distinguishes_reserved_metadata() -> None:
+    """Advertised descriptors are not the ordinary registry's dispatch authority."""
+    assert len(BUILTIN_RUNNER_ACTION_IDS) == 26
+    assert "owned.aws.s3_access.v1" not in BUILTIN_RUNNER_ACTION_IDS
+    assert provider_gate_validation._CORE_ACTION_COUNT == len(BUILTIN_RUNNER_ACTION_IDS) + 1
     assert BUILTIN_RUNNER_ACTION_VERSIONS["sandbox.permission.chmod.v1"] == "1.0.0"
+    assert BUILTIN_RUNNER_ACTION_VERSIONS["file_access.probe.non_owner.v1"] == "1.0.0"
+    assert BUILTIN_RUNNER_ACTION_VERSIONS["file_access.verify.owner.v1"] == "1.0.0"
+
+
+def test_provider_gate_counts_the_actual_reserved_descriptor_shape() -> None:
+    actions = [{"action_id": action_id} for action_id in sorted(BUILTIN_RUNNER_ACTION_IDS)]
+    reserved = {
+        "action_id": "owned.aws.s3_access.v1",
+        "action_version": "1.0.0",
+        "readiness": "structural",
+        "capabilities": ["cloud_aws_s3_access"],
+        "platforms": ["linux"],
+    }
+    inventory = {"actions": actions + [reserved]}
+    count = provider_gate_runtime_evidence._advertised_core_action_count(inventory)
+    assert count == 27
+    report = _journey_report()
+    report["packaged_runner"]["inventory_contract"]["core_action_count"] = count
+    provider_gate._validate_journey(report)
+    for rows in (
+        actions,
+        actions + [reserved, reserved],
+        actions + [{**reserved, "readiness": "ready"}],
+        actions + [{**reserved, "native_tool_binding": {}}],
+    ):
+        with pytest.raises(provider_gate_runtime_evidence.ProviderGateError):
+            provider_gate_runtime_evidence._advertised_core_action_count({"actions": rows})
 
 
 def test_gate_02_emits_exact_unique_proofs_and_bundle_attachments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert _journey_report()["packaged_runner"]["inventory_contract"]["core_action_count"] == len(
-        BUILTIN_RUNNER_ACTION_IDS
+    assert (
+        _journey_report()["packaged_runner"]["inventory_contract"]["core_action_count"]
+        == len(BUILTIN_RUNNER_ACTION_IDS) + 1
     )
-    # drift in either direction must still be rejected, relative to the registry
+    # Drift in either direction must still be rejected, including a missing reserved row.
     for invalid_count in (
-        len(BUILTIN_RUNNER_ACTION_IDS) - 1,
-        len(BUILTIN_RUNNER_ACTION_IDS) + 1,
+        len(BUILTIN_RUNNER_ACTION_IDS),
+        len(BUILTIN_RUNNER_ACTION_IDS) + 2,
     ):
         drifted_inventory = _journey_report()
         drifted_inventory["packaged_runner"]["inventory_contract"][

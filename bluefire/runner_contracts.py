@@ -548,6 +548,17 @@ def seal_profile(document: Mapping[str, Any]) -> dict[str, Any]:
     sealed: dict[str, Any] = dict(json_clone(document))
     if sealed.get("schema_version") != "bluefire.runner-profile.v1":
         raise RunnerContractError("runner profile schema version is unsupported")
+    if "file_access_binding" in sealed:
+        from .file_access_contract import FileAccessContractError, canonical_file_access_binding
+
+        try:
+            if sealed.get("platform") != "linux":
+                raise FileAccessContractError("file-access binding requires Linux")
+            sealed["file_access_binding"] = canonical_file_access_binding(
+                sealed["file_access_binding"]
+            )
+        except FileAccessContractError as exc:
+            raise RunnerContractError(str(exc)) from exc
     try:
         tools = canonical_native_tool_installations(
             sealed.get("native_tool_installations", []),
@@ -623,6 +634,7 @@ def build_runner_profile(
     provider_bindings: Sequence[Mapping[str, Any]] = (),
     provider_artifacts: Sequence[Mapping[str, Any]] = (),
     reviewed_execution: Mapping[str, Any] | None = None,
+    file_access_binding: Any = None,
 ) -> dict[str, Any]:
     if profile.mode.value != "execute":
         raise RunnerContractError("only Execute profiles can be compiled for the Rust runner")
@@ -717,6 +729,14 @@ def build_runner_profile(
     ]
     if installations:
         profile_doc["native_tool_installations"] = installations
+    if file_access_binding is not None:
+        from .file_access_contract import VerifiedFileAccessBinding
+
+        if not isinstance(file_access_binding, VerifiedFileAccessBinding):
+            raise RunnerContractError(
+                "file-access provenance must come from the trusted stored binding"
+            )
+        profile_doc["file_access_binding"] = file_access_binding.to_dict()
     return seal_profile(profile_doc)
 
 

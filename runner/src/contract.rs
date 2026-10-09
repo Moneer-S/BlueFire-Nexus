@@ -493,6 +493,12 @@ pub struct RunnerProfile {
     pub provider_artifacts: Vec<ProviderArtifact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub native_tool_installations: Vec<crate::native_tool_installations::NativeToolInstallation>,
+    #[serde(
+        default,
+        deserialize_with = "crate::file_access_contract::deserialize_binding",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub file_access_binding: Option<crate::file_access_contract::FileAccessBinding>,
     pub capabilities: Vec<Capability>,
     pub max_safety_tier: SafetyTier,
     #[serde(default)]

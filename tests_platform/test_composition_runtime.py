@@ -13,6 +13,7 @@ import pytest
 from bluefire import composition_context
 from bluefire.capability_composition import compile_initial_graph
 from bluefire.capability_facts import seal_facts
+from bluefire.capability_packs import RECEIVER_PACK
 from bluefire.capability_resources import CapabilityContractError
 from bluefire.composition_authority import GrantExecution, native_envelope
 from bluefire.composition_jobs import CompositionJobs
@@ -324,7 +325,14 @@ def controller(saved, tmp_path, monkeypatch):
         composition_ai=SimpleNamespace(stop_owner=lambda owner_id: None),
     )
     jobs = CompositionJobs(service, clock=lambda: clock[0])
-    monkeypatch.setattr(composition_context, "resolve", lambda *_: current)
+
+    def resolve_context(request_service, owner_id, *, pack=RECEIVER_PACK):
+        assert request_service is service
+        assert owner_id == state["grant"]["environment"]["control_owner_id"]
+        assert pack == RECEIVER_PACK
+        return current
+
+    monkeypatch.setattr(composition_context, "resolve", resolve_context)
     return jobs, state, compiled, current, clock
 
 

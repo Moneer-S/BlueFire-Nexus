@@ -202,6 +202,7 @@ pub(super) fn validate(
             && typed_manifest.limits.timeout_ms > 0
             && typed_manifest.limits.timeout_ms <= 60_000
             && typed_manifest.limits.timeout_ms <= typed_profile.limits.timeout_ms
+            && typed_profile.file_access_binding.is_none()
             && typed_manifest.execution_binding.is_none()
             && typed_manifest.provider_binding.is_none()
             && typed_manifest.reviewed_operation.is_none()

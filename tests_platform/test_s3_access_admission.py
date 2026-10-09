@@ -7,11 +7,12 @@ from pathlib import Path
 import pytest
 
 from bluefire.runner_client import execution_task_identity
-from bluefire.runner_contracts import seal_manifest
+from bluefire.runner_contracts import seal_manifest, seal_profile
 from bluefire.s3_access_admission import S3HostAdmission, approved_request
 from bluefire.s3_access_contract import S3AccessError
 from bluefire.s3_access_wire import S3WorkerRequest
 from bluefire.util import content_hash
+from tests_platform.file_access_fixtures import binding as file_access_binding
 from tests_platform.test_s3_access_host_config import checked, configured
 from tests_platform.test_s3_access_wire import NOW, request_row
 
@@ -139,3 +140,25 @@ def test_task_identity_and_ordinary_loopback_capability_cannot_supply_s3_authori
     reseal(fixture)
     with pytest.raises(S3AccessError):
         S3HostAdmission.issue(**fixture)
+
+
+def test_resealed_endpoint_binding_is_refused_before_cloud_admission():
+    fixture = admitted_fixture()
+    fixture["profile"]["file_access_binding"] = file_access_binding()
+    fixture["profile"] = seal_profile(fixture["profile"])
+    fixture["manifest"]["policy_digest"] = fixture["profile"]["policy_digest"]
+    reseal(fixture)
+    with pytest.raises(S3AccessError):
+        approved_request(fixture["manifest"], fixture["profile"], task_id=fixture["task_id"], now=NOW)
+
+
+def test_explicit_null_endpoint_binding_is_refused_before_profile_sealing(monkeypatch):
+    fixture = admitted_fixture()
+    fixture["profile"]["file_access_binding"] = None
+
+    def unexpected_sealing(_profile):
+        pytest.fail("mixed authority must be rejected before profile sealing")
+
+    monkeypatch.setattr("bluefire.s3_access_admission.seal_profile", unexpected_sealing)
+    with pytest.raises(S3AccessError):
+        approved_request(fixture["manifest"], fixture["profile"], task_id=fixture["task_id"], now=NOW)

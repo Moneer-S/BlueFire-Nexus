@@ -59,6 +59,7 @@ def approved_request(
 ) -> tuple[S3WorkerRequest, dict[str, Any]]:
     """Validate the exact sealed request before any credential or runtime read."""
     _require(now.tzinfo is not None)
+    _require("file_access_binding" not in profile)
     params = document(manifest.get("params"), limit=96 * 1024)
     exact(params, {"worker_request", "workflow_approval"}, "S3 task parameters")
     request = S3WorkerRequest.from_mapping(params["worker_request"])

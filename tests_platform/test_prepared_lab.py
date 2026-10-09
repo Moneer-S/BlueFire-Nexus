@@ -235,7 +235,7 @@ def test_ui_port_cannot_select_privileged_or_wildcard_endpoint() -> None:
 def test_namespace_witness_refuses_remaining_authority(
     fault: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from bluefire import prepared_lab_guest as guest
+    from bluefire import linux_session_facts as guest
 
     monkeypatch.setattr(guest, "uid", lambda: 0 if fault == "uid" else 1000)
     monkeypatch.setattr(guest, "gid", lambda: 1000)

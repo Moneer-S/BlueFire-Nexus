@@ -83,6 +83,11 @@ _SOURCE_AUDIT_PATHS = (
     "bluefire/receiver_policy.py",
     "bluefire/receiver_session_contract.py",
     "bluefire/receiver_session_channel.py",
+    "bluefire/file_access_contract.py",
+    "bluefire/file_access_enrollment.py",
+    "bluefire/file_access_method.py",
+    "bluefire/file_access_probe.py",
+    "bluefire/file_access_closure.py",
     "bluefire/capability_resources.py",
     "bluefire/capability_grant.py",
     "bluefire/capability_facts.py",
@@ -214,6 +219,9 @@ _SOURCE_AUDIT_PATHS = (
     "runner/src/s3_worker_protocol.rs",
     "runner/src/s3_worker_result.rs",
     "runner/src/s3_worker_secret.rs",
+    "runner/src/file_access.rs",
+    "runner/src/file_access_linux.rs",
+    "runner/src/actions/file_access.rs",
     "bluefire/runner_client.py",
     "bluefire/runner_bootstrap.py",
     "bluefire/runner_darwin_containment.py",
@@ -234,6 +242,7 @@ _SOURCE_AUDIT_PATHS = (
     "bluefire/prepared_lab_broker.py",
     "bluefire/prepared_lab_ui_bootstrap.py",
     "bluefire/prepared_lab_product.py",
+    "bluefire/prepared_lab_file_access.py",
     "bluefire/browser_launch.py",
     "bluefire/runner_python_environment.py",
     "runner/src/cancellation_witness.rs",
@@ -252,6 +261,12 @@ _PROCESS_CHECKS = {
     "native_process_inventory_is_fixed": True,
 }
 _PYTHON_BOUNDARIES = {
+    "prepared_lab_file_access.py": {
+        "passed": True,
+        "shell_imports": 1,
+        "process_calls": ["subprocess.Popen"],
+        "unexpected_findings": [],
+    },
     "ai_transport.py": {
         "passed": True,
         "shell_imports": 1,

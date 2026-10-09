@@ -75,3 +75,5 @@ pub use native_tool_setup::inspect_installation;
 pub use providers::{provider_runtimes, ProviderRuntimeDescriptor};
 pub use runner::{execute_files, Runner, RunnerError, MAX_DOCUMENT_BYTES};
 pub use safety::RECEIPT_PROTOCOL_VERSION;
+pub mod file_access;
+pub mod file_access_contract;

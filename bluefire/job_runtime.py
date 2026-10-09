@@ -290,6 +290,7 @@ class RunJobController:
         callback: ExecutionCallback | None = None,
         submission_id: str | None = None,
         intent_digest: str | None = None,
+        submission_factory: Callable[[], tuple[Mapping[str, Any], bool]] | None = None,
     ) -> Mapping[str, Any]:
         """Persist and enqueue one callback without exceeding queue capacity."""
 
@@ -300,6 +301,12 @@ class RunJobController:
             raise ValueError("requires_approval must be boolean")
         if (submission_id is None) != (intent_digest is None):
             raise ValueError("submission_id and intent_digest must be supplied together")
+        if submission_factory is not None and (
+            submission_id is None or not callable(submission_factory)
+        ):
+            raise ValueError(
+                "a trusted submission factory requires an immutable submission identity"
+            )
 
         with self._condition:
             if self._closed:
@@ -327,9 +334,25 @@ class RunJobController:
             enqueued = False
             try:
                 if submission_id is not None and intent_digest is not None:
-                    snapshot, created = self._store.create_idempotent_job(
-                        kind, request, submission_id=submission_id, intent_digest=intent_digest
-                    )
+                    if submission_factory is None:
+                        snapshot, created = self._store.create_idempotent_job(
+                            kind, request, submission_id=submission_id, intent_digest=intent_digest
+                        )
+                    else:
+                        snapshot, created = submission_factory()
+                        verified = self._store.get_job_submission(
+                            kind, submission_id=submission_id, intent_digest=intent_digest
+                        )
+                        if verified is not None and created is not False:
+                            created_submission_id = _job_id(verified)
+                        if (
+                            type(created) is not bool
+                            or verified != snapshot
+                            or snapshot.get("kind") != kind
+                        ):
+                            raise JobRuntimeError(
+                                "trusted submission factory returned a different durable identity"
+                            )
                     if not created:
                         self._capacity.release()
                         return snapshot
@@ -352,6 +375,18 @@ class RunJobController:
                 control.future = future
                 future.add_done_callback(lambda _future: self._release_control(control))
             except BaseException:
+                if (
+                    submission_factory is not None
+                    and submission_id is not None
+                    and intent_digest is not None
+                    and created_submission_id is None
+                    and control is None
+                ):
+                    reserved = self._store.get_job_submission(
+                        kind, submission_id=submission_id, intent_digest=intent_digest
+                    )
+                    if reserved is not None and reserved.get("state") == JobState.QUEUED.value:
+                        created_submission_id = _job_id(reserved)
                 if control is not None:
                     self._controls.pop(control.job_id, None)
                 self._capacity.release()
