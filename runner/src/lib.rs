@@ -5,6 +5,10 @@
 //! side effect.
 
 pub mod actions;
+pub mod ad_smb_descriptor;
+pub mod ad_smb_events;
+pub mod ad_smb_read;
+pub mod ad_smb_share;
 mod atomic_chmod;
 mod atomic_gzip;
 mod cancellation_witness;
