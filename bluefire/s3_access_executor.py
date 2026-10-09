@@ -231,7 +231,9 @@ class _ConfiguredExecutor(_UnavailableExecutor):
                 },
             )
             if before_dispatch(context) is not None:
-                raise S3AccessError("S3 original checkpoint callback did not complete synchronously")
+                raise S3AccessError(
+                    "S3 original checkpoint callback did not complete synchronously"
+                )
         except (OSError, ValueError, RuntimeError, KeyError, TypeError):
             raise S3AccessError(
                 "S3 original task could not be saved; execution was not dispatched"

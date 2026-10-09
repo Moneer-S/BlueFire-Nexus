@@ -149,7 +149,9 @@ def test_resealed_endpoint_binding_is_refused_before_cloud_admission():
     fixture["manifest"]["policy_digest"] = fixture["profile"]["policy_digest"]
     reseal(fixture)
     with pytest.raises(S3AccessError):
-        approved_request(fixture["manifest"], fixture["profile"], task_id=fixture["task_id"], now=NOW)
+        approved_request(
+            fixture["manifest"], fixture["profile"], task_id=fixture["task_id"], now=NOW
+        )
 
 
 def test_explicit_null_endpoint_binding_is_refused_before_profile_sealing(monkeypatch):
@@ -161,4 +163,6 @@ def test_explicit_null_endpoint_binding_is_refused_before_profile_sealing(monkey
 
     monkeypatch.setattr("bluefire.s3_access_admission.seal_profile", unexpected_sealing)
     with pytest.raises(S3AccessError):
-        approved_request(fixture["manifest"], fixture["profile"], task_id=fixture["task_id"], now=NOW)
+        approved_request(
+            fixture["manifest"], fixture["profile"], task_id=fixture["task_id"], now=NOW
+        )

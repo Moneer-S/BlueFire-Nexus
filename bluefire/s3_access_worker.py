@@ -123,7 +123,10 @@ def run_worker(
         request = S3WorkerRequest.from_mapping(decode_frame(channel.read(MAX_FRAME_BYTES)))
         channel.request = request
         row = request.to_dict()
-        if row["runtime_digest"] != expected_runtime_digest or row["worker_generation"] != expected_worker_generation:
+        if (
+            row["runtime_digest"] != expected_runtime_digest
+            or row["worker_generation"] != expected_worker_generation
+        ):
             raise S3AccessError("worker request differs from its protected runtime")
         channel.checkpoint()
         handshake = S3WorkerHandshake(

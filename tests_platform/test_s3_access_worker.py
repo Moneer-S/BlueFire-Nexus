@@ -173,11 +173,24 @@ def test_expired_request_closes_without_sdk_construction():
 def test_runtime_mismatch_refuses_before_ready_or_credentials(field):
     parent = Parent(worker_request())
     factory = FakeFactory(parent.request)
-    identity = {"expected_runtime_digest": parent.request.to_dict()["runtime_digest"],
-                "expected_worker_generation": parent.request.to_dict()["worker_generation"]}
+    identity = {
+        "expected_runtime_digest": parent.request.to_dict()["runtime_digest"],
+        "expected_worker_generation": parent.request.to_dict()["worker_generation"],
+    }
     identity[field] = "sha256:" + "0" * 64
-    assert run_worker(parent, parent, factory=factory, clock=lambda: NOW, process_id=123,
-                      creation_identity="456", nonce="9" * 64, **identity) == 1
+    assert (
+        run_worker(
+            parent,
+            parent,
+            factory=factory,
+            clock=lambda: NOW,
+            process_id=123,
+            creation_identity="456",
+            nonce="9" * 64,
+            **identity,
+        )
+        == 1
+    )
     assert [frame["kind"] for frame in parent.frames] == ["closed"]
     assert not factory.clients
 
