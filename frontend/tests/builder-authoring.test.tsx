@@ -4,7 +4,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { expect, it, vi } from "vitest";
-import { api } from "../src/lib/api";
+import { api, ApiError } from "../src/lib/api";
 import { demoCatalog, demoScenario } from "../src/lib/demo";
 import { guaranteedInputSources } from "../src/lib/graph-authoring";
 import { configurationForMode } from "../src/lib/run-configuration";
@@ -24,7 +24,7 @@ function renderBuilder(scenario = demoScenario) {
 }
 
 it("requires an authored question before saving and retains it across navigation", async () => {
-  const save = vi.spyOn(api, "saveScenarioVersion").mockRejectedValue(new Error("Service unavailable"));
+  const save = vi.spyOn(api, "saveScenarioVersion").mockRejectedValue(new ApiError("Service unavailable", "service_unavailable"));
   const user = userEvent.setup();
   renderBuilder({ ...structuredClone(demoScenario), purpose: "" });
   await user.click(await screen.findByRole("button", { name: "Save version" }));
@@ -36,7 +36,7 @@ it("requires an authored question before saving and retains it across navigation
   await user.click(screen.getByRole("button", { name: "Save version" }));
   await waitFor(() => expect(save).toHaveBeenCalledOnce());
   expect(save.mock.calls[0]![0].purpose).toBe("Does redaction prevent retained records from reaching staging?");
-  expect(await screen.findByText(/Save refused: Service unavailable/)).toBeVisible();
+  expect(await screen.findByText(/Save refused: The local service is unavailable/)).toBeVisible();
   await user.click(screen.getByRole("link", { name: "Browse examples" }));
   await user.click(screen.getByRole("link", { name: "Return to editor" }));
   await user.click(screen.getByText("Experiment purpose", { exact: true }));

@@ -74,6 +74,7 @@ describe("Builder selection and navigation", () => {
     expect(screen.getByRole("button", { name: "Copy selected node" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Duplicate selected node" })).toBeDisabled();
     expect(window.confirm).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   }, 15000);
 
   it("still copies and deletes the visible selected step", async () => {
@@ -82,14 +83,26 @@ describe("Builder selection and navigation", () => {
     renderBuilder();
     await user.click(await screen.findByRole("button", { name: "Steps" }));
     await user.keyboard("{Control>}c{/Control}");
+    expect(screen.getByText("Place deterministic fixture copied.")).toBeVisible();
+    expect(screen.queryByText(`${demoScenario.steps[0]!.id} copied.`)).not.toBeInTheDocument();
     await user.keyboard("{Control>}v{/Control}");
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!).steps).toHaveLength(demoScenario.steps.length + 1));
     const added = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!).steps.at(-1) as { id: string };
     expect(screen.getByLabelText(/^Step ID/)).toHaveValue(added.id);
     await waitFor(() => expect(screen.getByTestId(`rf__node-${added.id}`)).toHaveClass("selected"));
+    const beforeDeletion = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!);
     await user.click(screen.getByRole("button", { name: "Delete selected node" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete from experiment?" });
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
+    expect(within(dialog).getByText(`Place deterministic fixture (step ${demoScenario.steps.length + 1})`)).toBeVisible();
+    await user.keyboard("{Control>}z{/Control}{Control>}c{/Control}{Control>}v{/Control}{Control>}d{/Control}{Control>}k{/Control}{Delete}");
+    expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(beforeDeletion);
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(demoScenario));
-    expect(window.confirm).toHaveBeenCalledOnce();
+    expect(window.confirm).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(beforeDeletion));
   }, 15000);
 
   it("selects the replacement node after deleting the selected step", async () => {
@@ -104,12 +117,28 @@ describe("Builder selection and navigation", () => {
     const deletedId = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!).steps[1].id as string;
     expect(screen.getByTestId(`rf__node-${deletedId}`)).toHaveClass("selected");
     await user.click(screen.getByRole("button", { name: "Delete selected node" }));
+    await user.click(within(await screen.findByRole("dialog", { name: "Delete from experiment?" })).getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!).steps.map((step: { id: string }) => step.id)).not.toContain(deletedId));
     await waitFor(() => expect(screen.getByRole("button", { name: "Delete selected node" })).toBeEnabled());
     const replacementId = demoScenario.steps[0]!.id;
     expect(within(screen.getByRole("list", { name: "Experiment steps" })).getAllByRole("button")[0]).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByTestId(`rf__node-${replacementId}`)).toHaveClass("selected");
-    expect(window.confirm).toHaveBeenCalledOnce();
+    expect(window.confirm).not.toHaveBeenCalled();
+  }, 15000);
+
+  it("cancels node deletion with Escape and returns focus without leaving focus mode", async () => {
+    const user = userEvent.setup();
+    renderBuilder();
+    await user.click(await screen.findByRole("button", { name: "Enter graph focus mode" }));
+    const trigger = screen.getByRole("button", { name: "Delete selected node" });
+    await user.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "Delete from experiment?" });
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(screen.getByRole("button", { name: "Exit graph focus mode" })).toBeVisible();
+    expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(demoScenario);
   }, 15000);
 
   it("preserves the visible selection when changing sections and returning from the step list", async () => {
@@ -147,6 +176,9 @@ describe("Builder selection and navigation", () => {
     expect(screen.getByRole("combobox", { name: "Path section" })).toHaveValue(section);
     expect(screen.getByTestId(`rf__node-${deleted}`)).toHaveClass("selected");
     await user.click(screen.getByRole("button", { name: "Delete selected node" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete from experiment?" });
+    expect(within(dialog).getByText(`Place deterministic fixture (step ${scenario.steps.findIndex(step => step.id === deleted) + 1})`)).toBeVisible();
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(screen.queryByTestId(`rf__node-${deleted}`)).not.toBeInTheDocument());
     await waitFor(() => expect(screen.getByRole("button", { name: "Delete selected node" })).toBeEnabled());
     expect(screen.getByTestId(`rf__node-${replacement}`)).toHaveClass("selected");
@@ -156,6 +188,6 @@ describe("Builder selection and navigation", () => {
     const saved = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!);
     expect(saved.steps).toHaveLength(count - 1);
     expect(saved.steps.some((step: { id: string }) => step.id === deleted)).toBe(false);
-    expect(window.confirm).toHaveBeenCalledOnce();
+    expect(window.confirm).not.toHaveBeenCalled();
   }, 15000);
 });
