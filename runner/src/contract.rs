@@ -18,6 +18,9 @@ pub const PROVIDER_EXECUTION_BINDING_SCHEMA_VERSION: &str =
 pub const ACTION_PROGRAM_SCHEMA_VERSION: &str = "bluefire.action-program.v1";
 pub const ACTION_PROGRAM_ADAPTER: &str = "bluefire.builtin-runner-adapter.v1";
 
+/// Shared limit for the fixed owned-service payload and its installation contract.
+pub const OWNED_SERVICE_MAX_DURATION_SECONDS: u64 = 120;
+
 fn normalize_wire_datetime(value: DateTime<Utc>) -> DateTime<Utc> {
     value
         .with_nanosecond((value.nanosecond() / 1_000) * 1_000)
@@ -130,6 +133,69 @@ pub struct Approval {
     /// Binds the approval to the normalized manifest. This value is excluded
     /// while calculating the request hash to avoid a circular hash.
     pub request_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantAttempt {
+    pub schema_version: String,
+    pub issuer: String,
+    pub grant_id: String,
+    pub grant_digest: String,
+    pub attempt_id: String,
+    pub lease_digest: String,
+    pub compiled_digest: String,
+    pub plan_digest: String,
+    pub native_envelope_digest: String,
+    pub run_id: String,
+    pub issued_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub request_hash: String,
+}
+
+fn deserialize_grant_attempt<'de, D>(deserializer: D) -> Result<Option<GrantAttempt>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    GrantAttempt::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantCleanupReceipt {
+    pub receipt_id: String,
+    pub source_request_hash: String,
+    pub source_task_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantCleanup {
+    pub schema_version: String,
+    pub issuer: String,
+    pub grant_id: String,
+    pub grant_digest: String,
+    pub attempt_id: String,
+    pub lease_digest: String,
+    pub compiled_digest: String,
+    pub plan_digest: String,
+    pub native_envelope_digest: String,
+    pub obligation_digest: String,
+    pub run_id: String,
+    pub runner_policy_digest: String,
+    pub workspace_id: String,
+    pub receipts: Vec<GrantCleanupReceipt>,
+    pub issued_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub timeout_ms: u64,
+    pub request_hash: String,
+}
+
+fn deserialize_grant_cleanup<'de, D>(deserializer: D) -> Result<Option<GrantCleanup>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    GrantCleanup::deserialize(deserializer).map(Some)
 }
 
 fn deserialize_constants<'de, D>(deserializer: D) -> Result<BTreeMap<String, Value>, D::Error>
@@ -384,6 +450,18 @@ pub struct ExecutionManifest {
     pub policy_digest: String,
     #[serde(default)]
     pub approval: Option<Approval>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_grant_attempt",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub grant_attempt: Option<GrantAttempt>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_grant_cleanup",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub grant_cleanup: Option<GrantCleanup>,
     #[serde(default)]
     pub evidence_refs: Vec<String>,
     pub request_hash: String,
@@ -414,6 +492,12 @@ pub struct RunnerProfile {
     pub provider_artifacts: Vec<ProviderArtifact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub native_tool_installations: Vec<crate::native_tool_installations::NativeToolInstallation>,
+    #[serde(
+        default,
+        deserialize_with = "crate::file_access_contract::deserialize_binding",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub file_access_binding: Option<crate::file_access_contract::FileAccessBinding>,
     pub capabilities: Vec<Capability>,
     pub max_safety_tier: SafetyTier,
     #[serde(default)]
@@ -532,6 +616,12 @@ fn manifest_hash_value(manifest: &ExecutionManifest) -> Value {
         if let Some(Value::Object(approval)) = root.get_mut("approval") {
             approval.insert("request_hash".to_string(), Value::String(String::new()));
         }
+        if let Some(Value::Object(grant)) = root.get_mut("grant_attempt") {
+            grant.insert("request_hash".to_string(), Value::String(String::new()));
+        }
+        if let Some(Value::Object(cleanup)) = root.get_mut("grant_cleanup") {
+            cleanup.insert("request_hash".to_string(), Value::String(String::new()));
+        }
     }
     value
 }
@@ -545,10 +635,22 @@ pub fn seal_manifest(manifest: &mut ExecutionManifest) {
     if let Some(approval) = manifest.approval.as_mut() {
         approval.request_hash.clear();
     }
+    if let Some(grant) = manifest.grant_attempt.as_mut() {
+        grant.request_hash.clear();
+    }
+    if let Some(cleanup) = manifest.grant_cleanup.as_mut() {
+        cleanup.request_hash.clear();
+    }
     let digest = expected_manifest_hash(manifest);
     manifest.request_hash = digest.clone();
     if let Some(approval) = manifest.approval.as_mut() {
-        approval.request_hash = digest;
+        approval.request_hash = digest.clone();
+    }
+    if let Some(grant) = manifest.grant_attempt.as_mut() {
+        grant.request_hash = digest.clone();
+    }
+    if let Some(cleanup) = manifest.grant_cleanup.as_mut() {
+        cleanup.request_hash = digest;
     }
 }
 

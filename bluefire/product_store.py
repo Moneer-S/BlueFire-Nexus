@@ -25,7 +25,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, cast
 
 from . import product_store_ai_authorizations as ai_authorization_store
+from . import product_store_capability_api as capability_store_api
 from . import product_store_detection_evaluations as detection_evaluation_store
+from . import product_store_file_access as file_access_store
 from . import product_store_proposal_reviews as proposal_review_store
 from .contracts import ScenarioDefinition
 from .local_lock import (
@@ -56,6 +58,7 @@ from .product_store_errors import (
     DetectionRevisionLimitError,
     ProductStoreError,
     ResearchSourceIntegrityError,
+    ResourceConflictError,
 )
 from .product_store_serialization import canonical_json as _canonical_json
 from .product_store_serialization import utc_now
@@ -65,7 +68,7 @@ if TYPE_CHECKING:
     from .action_packages import VerifiedActionPackage, VerifiedActionPackageActivation
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 10
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ACTION_PACKAGE_VERSION = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
@@ -251,7 +254,9 @@ class ApprovalRequest:
         }
 
 
-class ProductStore:
+class ProductStore(
+    capability_store_api.CapabilityStoreMixin, file_access_store.FileAccessStoreMixin
+):
     """Thread-safe SQLite storage for local-first product state.
 
     Append-only tables are enforced transactionally by SQLite triggers for
@@ -826,6 +831,8 @@ class ProductStore:
             self._backfill_detection_revisions(connection)
             detection_evaluation_store.initialize_schema(connection)
             ai_authorization_store.initialize_schema(connection)
+            capability_store_api.initialize_schema(connection)
+            file_access_store.initialize_schema(connection)
             if current is None or int(current) < 6:
                 self._migrate_legacy_plugin_metadata(connection)
             if current is None or int(current) < SCHEMA_VERSION:
@@ -1183,6 +1190,7 @@ class ProductStore:
         *,
         status: str | None = None,
         replace_existing: bool = True,
+        expected_digest: str | None = None,
     ) -> Mapping[str, Any]:
         if kind not in _RESOURCE_KINDS:
             raise ProductStoreError("resource kind is unsupported")
@@ -1197,6 +1205,10 @@ class ProductStore:
             raise ResearchSourceIntegrityError("research source status must be draft or pinned")
         if not isinstance(replace_existing, bool):
             raise ProductStoreError("resource replacement choice must be boolean")
+        if expected_digest is not None and (
+            not isinstance(expected_digest, str) or _DIGEST.fullmatch(expected_digest) is None
+        ):
+            raise ProductStoreError("expected resource digest is invalid")
         payload = _safe_document(document, context=f"{kind}.{stable_id}")
         detection_identity = (
             _detection_revision_identity(payload, strict=True) if kind == "detection" else None
@@ -1213,6 +1225,8 @@ class ProductStore:
                 "SELECT * FROM resources WHERE kind = ? AND resource_id = ?",
                 (kind, stable_id),
             ).fetchone()
+            if expected_digest is not None and (row is None or row["digest"] != expected_digest):
+                raise ResourceConflictError("resource changed since its evaluation snapshot")
             if kind == "plugin" and row is not None:
                 legacy = connection.execute(
                     """
@@ -4236,6 +4250,12 @@ class ProductStore:
                 from .product_store_receiver_defense import guard as receiver_guard
 
                 receiver_guard(self, connection, job_kind, document)
+            if job_kind == "receiver.defense" and (document.get("context") or {}).get(
+                "source_control"
+            ):
+                from .product_store_receiver_defense import guard_source
+
+                guard_source(self, connection, {"request": document}, publication=True)
             if "method_comparison" in document:
                 from .product_store_method_comparison import publication_guard
 
@@ -4566,6 +4586,7 @@ __all__ = [
     "DetectionRevisionLimitError",
     "ProductStore",
     "ProductStoreError",
+    "ResourceConflictError",
     "ResearchSourceIntegrityError",
     "SCHEMA_VERSION",
     "utc_now",

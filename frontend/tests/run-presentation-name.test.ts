@@ -49,13 +49,19 @@ it("does not display another run's editable metadata or malformed names", () => 
 });
 
 it("persists only the requested display name through the normal authenticated API", async () => {
+  const syntheticSession = "s".repeat(64);
+  sessionStorage.setItem("bluefire.browser-session.v1", syntheticSession);
   const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(presentation), { status: 200 }));
   vi.stubGlobal("fetch", fetcher);
   expect(await api.renameRun(runId, "  Collection check  ")).toEqual(presentation);
   expect(fetcher).toHaveBeenCalledOnce();
   expect(fetcher).toHaveBeenCalledWith(`/api/v1/runs/${runId}/presentation`, expect.objectContaining({
-    method: "POST", credentials: "same-origin", body: JSON.stringify({ display_name: "  Collection check  " }),
+    method: "POST", credentials: "omit", redirect: "error", body: JSON.stringify({ display_name: "  Collection check  " }),
   }));
+  const headers = new Headers((fetcher.mock.calls[0]?.[1] as RequestInit | undefined)?.headers);
+  expect(headers.get("Accept")).toBe("application/json");
+  expect(headers.get("Content-Type")).toBe("application/json");
+  expect(headers.get("X-BlueFire-Session")).toBe(syntheticSession);
   expect(run.presentation).toEqual(presentation);
 });
 

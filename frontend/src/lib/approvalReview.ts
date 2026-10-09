@@ -1,4 +1,5 @@
 import type { AIProposalReview, PreflightReport, RunJob } from "../types";
+import { parseAdaptiveExecution } from "./adaptive-execution";
 
 export const approvalBindingFields = ["state_digest", "plan_digest", "target_scope_digest", "profile_id", "maximum_tier"] as const;
 
@@ -9,7 +10,33 @@ export function approvalDeadline(expiresAt: unknown): number {
 export function hasAdaptiveApprovalReview(report?: PreflightReport, required = false): boolean {
   const authorization = report?.adaptive_authorization;
   if (!authorization) return !required;
-  return authorization.schema_version === "bluefire.adaptive-authorization.v1"
+  let policy;
+  try { policy = parseAdaptiveExecution(authorization.policy); }
+  catch { return false; }
+  const policyVersion = policy.schema_version;
+  const versionMatches = (authorization.schema_version === "bluefire.adaptive-authorization.v1"
+      && policyVersion === "bluefire.adaptive-execution.v1")
+    || (authorization.schema_version === "bluefire.adaptive-authorization.v2"
+      && policyVersion === "bluefire.adaptive-execution.v2");
+  const v2ChoicesMatch = policyVersion !== "bluefire.adaptive-execution.v2" || (
+    Array.isArray(authorization.steps) && authorization.steps.length === policy.steps.length
+    && policy.steps.every((policyStep, index) => {
+      const reviewedStep = authorization.steps[index];
+      if (!object(reviewedStep)) return false;
+      const reviewedMethods = reviewedStep.methods;
+      return reviewedStep.step_id === policyStep.step_id && Array.isArray(reviewedMethods)
+        && reviewedMethods.length === policyStep.methods.length
+        && policyStep.methods.every((method, methodIndex) => {
+          const reviewedMethod = reviewedMethods[methodIndex];
+          if (!object(reviewedMethod)) return false;
+          const plan = reviewedMethod.plan_step;
+          if (!object(plan)) return false;
+          return plan.step_id === policyStep.step_id && plan.behavior_id === method.behavior_id && plan.action_id === method.action_id;
+        });
+    })
+  );
+  return versionMatches
+    && v2ChoicesMatch
     && authorization.plan_digest === report?.approval_binding?.plan_digest
     && /^sha256:[0-9a-f]{64}$/.test(authorization.authorization_digest)
     && Array.isArray(authorization.steps) && authorization.steps.length > 0;
@@ -73,6 +100,11 @@ export function continuationApprovalPreflight(job: RunJob, review?: AIProposalRe
   const originalId = job.request?.approval_request_id;
   const continuation = review?.resolution?.continuation;
   const audit = continuation && typeof continuation === "object" ? continuation as Record<string, unknown> : undefined;
+  const recordVersion = review?.record?.schema_version;
+  const recordRequiresAdaptive = recordVersion === "bluefire.ai-proposal-record.v4" || recordVersion === "bluefire.ai-proposal-record.v5";
+  const recordAuthorizationMatches = !recordRequiresAdaptive
+    || (recordVersion === "bluefire.ai-proposal-record.v4" && report?.adaptive_authorization?.schema_version === "bluefire.adaptive-authorization.v1")
+    || (recordVersion === "bluefire.ai-proposal-record.v5" && report?.adaptive_authorization?.schema_version === "bluefire.adaptive-authorization.v2");
   if (
     job.state !== "awaiting_approval" || job.progress.approval_kind !== "ai_proposal_execute"
     || review?.status !== "accepted" || review.job_id !== job.job_id
@@ -85,7 +117,8 @@ export function continuationApprovalPreflight(job: RunJob, review?: AIProposalRe
     || canonical.job_id !== job.job_id || canonical.proposal_record_id !== review.proposal_record_id
     || canonical.approval_request_id !== approvalId
     || !hasUsableStoredApprovalReview(report) || !binding
-    || !hasAdaptiveApprovalReview(report, requiresAdaptiveReview(job) || review.record.schema_version === "bluefire.ai-proposal-record.v4")
+    || !recordAuthorizationMatches
+    || !hasAdaptiveApprovalReview(report, requiresAdaptiveReview(job) || recordRequiresAdaptive)
     || !Array.isArray(report?.plan?.steps) || !report.plan.steps.length || report.plan.mode !== "execute"
     || !report.approval_envelope?.steps.length
     || audit?.continuation_plan_digest !== binding.plan_digest

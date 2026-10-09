@@ -16,9 +16,12 @@ from typing import Any, Mapping
 
 import pytest
 
+import bluefire.runner_history_upgrade as history_module
 import bluefire.runner_lifecycle as lifecycle_module
+import bluefire.runner_transport as transport_module
 from bluefire import __version__
 from bluefire.config import load_config
+from bluefire.owned_service_authority import OwnedServiceGrant
 from bluefire.registry import load_builtin_registry
 from bluefire.runner_bootstrap import (
     BootstrappedRunner,
@@ -34,7 +37,7 @@ from bluefire.runner_contracts import (
     seal_profile,
 )
 from bluefire.runner_lifecycle import ManagedRunnerLifecycle, RunnerLifecycleError
-from bluefire.runner_transport import runner_result_namespace_path
+from bluefire.runner_transport import AuthenticatedRunnerServer, runner_result_namespace_path
 from bluefire.runner_trust import load_local_enrollment
 from bluefire.util import canonical_json_bytes, content_hash, file_hash
 from tests_platform.runner_lifecycle_host_helper import ProcessTestSecretProvider
@@ -195,6 +198,101 @@ def _assert_review_refused(history: _HistoryFixture) -> None:
     assert history.old_binary.read_bytes() == old_binary
 
 
+def _report_review_failure(error: Exception, *, phase: str, boundary: str) -> None:
+    """Report fixed labels only; diagnostics cannot replace the original failure."""
+    try:
+        stages = {
+            ManagedRunnerLifecycle._ledger_preflight.__code__: "ledger_preflight",
+            history_module._validated_history.__code__: "settled_history",
+            history_module._file_snapshot.__code__: "ledger_file_snapshot",
+            transport_module.audit_runner_ledger.__code__: "ledger_audit",
+            transport_module._pinned_ledger_inspection.__wrapped__.__code__: "pinned_ledger",
+            transport_module._validated_ledger_schema.__code__: "ledger_schema",
+            transport_module._validated_ledger_generation.__code__: "ledger_generation",
+        }
+        classes = {
+            "RunnerLifecycleError",
+            "RunnerHistoryUpgradeError",
+            "AuthenticatedRunnerTransportError",
+            "RunnerTrustError",
+            "OSError",
+            "PermissionError",
+            "FileNotFoundError",
+            "RuntimeError",
+            "ValueError",
+            "TypeError",
+            "DatabaseError",
+            "OperationalError",
+            "IntegrityError",
+        }
+        chain, seen = [], set()
+        current: BaseException | None = error
+        while current is not None and id(current) not in seen and len(chain) < 8:
+            seen.add(id(current))
+            trace, entered = current.__traceback__, []
+            for _ in range(32):
+                if trace is None:
+                    break
+                stage = stages.get(trace.tb_frame.f_code)
+                if stage is not None and stage not in entered:
+                    entered.append(stage)
+                trace = trace.tb_next
+            name = type(current).__name__
+            chain.append({"error_class": name if name in classes else "other", "stages": entered})
+            current = current.__cause__ if current.__cause__ is not None else current.__context__
+        print(
+            "History review diagnostic: "
+            + json.dumps(
+                {
+                    "phase": phase if phase in {"initial_review", "recovery_review"} else "unknown",
+                    "boundary": (
+                        boundary
+                        if boundary in {"approved", "missing", "selected", "committed"}
+                        else "unknown"
+                    ),
+                    "exceptions": chain,
+                },
+                sort_keys=True,
+            )
+        )
+    except Exception:
+        # A failed diagnostic must not hide the actual test failure.
+        pass
+
+
+def test_review_failure_diagnostic_is_bounded_and_private(capsys) -> None:
+    private = "PRIVATE_DIAGNOSTIC_VALUE_MUST_NOT_APPEAR"
+    hidden_error = type(private, (Exception,), {})
+    chain = [hidden_error(private) for _ in range(12)]
+    for index, error in enumerate(chain):
+        error.__context__ = chain[(index + 1) % len(chain)]
+    _report_review_failure(chain[0], phase=private, boundary=private)
+    output = capsys.readouterr().out
+    assert private not in output
+    diagnostic = json.loads(output.removeprefix("History review diagnostic: "))
+    assert diagnostic == {
+        "phase": "unknown",
+        "boundary": "unknown",
+        "exceptions": [{"error_class": "other", "stages": []}] * 8,
+    }
+
+
+def test_review_failure_diagnostic_cannot_replace_original_failure(monkeypatch) -> None:
+    original = RunnerLifecycleError("Original synthetic review failure")
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError("Diagnostic output unavailable")
+
+    monkeypatch.setattr("builtins.print", unavailable)
+    with pytest.raises(RunnerLifecycleError) as caught:
+        try:
+            raise original
+        except Exception as exc:
+            _report_review_failure(exc, phase="initial_review", boundary="selected")
+            raise
+    assert caught.value is original
+
+
 def test_review_of_settled_history_does_not_activate_replacement(history: _HistoryFixture) -> None:
     bootstrap = history.lifecycle.bootstrap_record_path.read_bytes()
     preserved = _preserved_bytes(history)
@@ -278,6 +376,33 @@ def test_placeholder_execute_row_is_not_accepted_as_settled_history(
     _assert_review_refused(history)
 
 
+def test_validated_service_grant_is_not_discarded_during_history_review(
+    history: _HistoryFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = json.loads(
+        (ROOT / "tests_platform/fixtures/owned_service_admission_v1.json").read_text()
+    )
+    grant = OwnedServiceGrant.from_mapping(fixture["admission"]["grant"])
+    decode = AuthenticatedRunnerServer._stored_execute_payload
+
+    def service_payload(row):
+        manifest, profile, absent_grant = decode(row)
+        assert absent_grant is None
+        # Isolate the upgrade caller's handling of the typed decoder result.
+        # Request/grant binding validation remains the transport's contract.
+        return manifest, profile, grant
+
+    monkeypatch.setattr(
+        AuthenticatedRunnerServer, "_stored_execute_payload", staticmethod(service_payload)
+    )
+    bootstrap = history.lifecycle.bootstrap_record_path.read_bytes()
+    preserved = _preserved_bytes(history)
+    with pytest.raises(RunnerLifecycleError, match="owned-service history"):
+        history.review()
+    assert history.lifecycle.bootstrap_record_path.read_bytes() == bootstrap
+    assert _preserved_bytes(history) == preserved
+
+
 @pytest.mark.parametrize("document", ["manifest", "profile"])
 def test_outer_transport_hash_cannot_hide_invalid_internal_seal(
     history: _HistoryFixture, document: str
@@ -342,7 +467,11 @@ def test_interrupted_upgrade_requires_exact_review_and_preserves_all_history(
     boundary: str,
 ) -> None:
     before = _preserved_bytes(history)
-    review = history.review()
+    try:
+        review = history.review()
+    except Exception as exc:
+        _report_review_failure(exc, phase="initial_review", boundary=boundary)
+        raise
     write = lifecycle_module._write_private_json
 
     def interrupt(path: Path, value: Mapping[str, Any], **kwargs: Any) -> None:
@@ -374,7 +503,11 @@ def test_interrupted_upgrade_requires_exact_review_and_preserves_all_history(
     ):
         with pytest.raises(RunnerLifecycleError, match="interrupted"):
             operation()
-    rereview = history.review()
+    try:
+        rereview = history.review()
+    except Exception as exc:
+        _report_review_failure(exc, phase="recovery_review", boundary=boundary)
+        raise
     assert rereview["recovery_required"] is True
     assert rereview["review_digest"] == review["review_digest"]
     history.apply(rereview)

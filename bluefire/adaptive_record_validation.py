@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Mapping
 
@@ -19,6 +20,21 @@ ADAPTIVE_DECISION_CONTRACT = {
         "Keep the declared objective and every reviewed parameter and input unchanged.",
         "A resource refusal is not target prevention; retained records must still satisfy the objective.",
         "If no option is useful within these limits, stop or request a new operator decision.",
+    ],
+}
+
+ADAPTIVE_DECISION_CONTRACT_V5 = {
+    "allowed_proposal_types": ["select_registered_action", "stop", "request_approval"],
+    "selection_effect": (
+        "Choose one exact untried registered method within both the reviewed step "
+        "and lineage retry budgets."
+    ),
+    "constraints": [
+        *ADAPTIVE_DECISION_CONTRACT["constraints"],
+        "A method already attempted or reserved anywhere in this verified lineage "
+        "cannot be selected again for that step.",
+        "Selection does not reserve or dispatch an operation; the caller rechecks "
+        "authority and reserves budget before effects.",
     ],
 }
 
@@ -62,8 +78,8 @@ def _require(condition: bool, message: str) -> None:
         raise DurableProposalRecordError(message)
 
 
-def validate_v4_proposal_record(
-    record: Mapping[str, Any], *, require_proposal: bool = True
+def _validate_proposal_record(
+    record: Mapping[str, Any], *, require_proposal: bool, version: int
 ) -> Mapping[str, Any]:
     """Validate a reviewable record; authority must still bind to the source run.
 
@@ -71,6 +87,7 @@ def validate_v4_proposal_record(
     approval binding; runtime execution uses its separately verified authorization.
     Failed calls with no valid proposal are retained evidence, not replay commands.
     """
+    version_five = version == 5
     status = record.get("application_status")
     has_proposal = isinstance(record.get("proposal"), Mapping)
     _require(
@@ -91,8 +108,11 @@ def validate_v4_proposal_record(
     expected_fields = (
         _BASE_FIELDS if has_proposal else _BASE_FIELDS - {"proposal_digest"}
     ) | optional
-    _require(set(record) == expected_fields, "v4 proposal fields are invalid")
-    _require(record.get("schema_version") == "bluefire.ai-proposal-record.v4", "v4 schema invalid")
+    _require(set(record) == expected_fields, f"v{version} proposal fields are invalid")
+    _require(
+        record.get("schema_version") == f"bluefire.ai-proposal-record.v{version}",
+        f"v{version} schema invalid",
+    )
     _require(
         status
         in {
@@ -104,7 +124,7 @@ def validate_v4_proposal_record(
             "stopped_no_permitted_choice",
             "stopped_budget_exhausted",
         },
-        "v4 status invalid",
+        f"v{version} status invalid",
     )
     for field in (
         "state_digest",
@@ -116,11 +136,13 @@ def validate_v4_proposal_record(
     ):
         _require(
             isinstance(record.get(field), str) and bool(_DIGEST.fullmatch(record[field])),
-            "v4 digest invalid",
+            f"v{version} digest invalid",
         )
-    _require(record.get("autonomy") in {"assist", "auto"}, "v4 autonomy invalid")
-    _require(record.get("outcome") in {"blocked", "failed", "partial"}, "v4 outcome invalid")
-    _require(isinstance(record.get("stop_requested"), bool), "v4 stop disposition invalid")
+    _require(record.get("autonomy") in {"assist", "auto"}, f"v{version} autonomy invalid")
+    _require(
+        record.get("outcome") in {"blocked", "failed", "partial"}, f"v{version} outcome invalid"
+    )
+    _require(isinstance(record.get("stop_requested"), bool), f"v{version} stop disposition invalid")
     _require(
         record.get("decision_source")
         in {
@@ -130,12 +152,12 @@ def validate_v4_proposal_record(
             "configured_deterministic_fallback",
             *(("none",) if not has_proposal else ()),
         },
-        "v4 decision provenance invalid",
+        f"v{version} decision provenance invalid",
     )
     _require(
         isinstance(record.get("application_reason"), str)
         and 0 < len(record["application_reason"]) <= 4000,
-        "v4 reason invalid",
+        f"v{version} reason invalid",
     )
     policy = record.get("proposal_policy")
     _require(
@@ -152,32 +174,87 @@ def validate_v4_proposal_record(
             "adaptive_retries_used",
             "remaining_steps",
             "on_provider_failure",
-        },
-        "v4 policy fields invalid",
+        }
+        | (
+            {
+                "adaptive_policy_digest",
+                "maximum_step_retries",
+                "step_retries_used",
+                "attempted_methods",
+            }
+            if version_five
+            else set()
+        ),
+        f"v{version} policy fields invalid",
     )
     assert isinstance(policy, Mapping)
     _require(
-        policy["schema_version"] == "bluefire.ai-proposal-policy.v2"
+        policy["schema_version"]
+        == ("bluefire.ai-proposal-policy.v3" if version_five else "bluefire.ai-proposal-policy.v2")
         and policy["mode"] == "execute"
         and policy["autonomy"] == record["autonomy"]
         and policy["observed_outcome"] == record["outcome"]
         and policy["authorization_digest"] == record["authorization_digest"]
         and type(policy["maximum_adaptive_retries"]) is int
-        and policy["maximum_adaptive_retries"] == 1
+        and (
+            1 <= policy["maximum_adaptive_retries"] <= 8
+            if version_five
+            else policy["maximum_adaptive_retries"] == 1
+        )
         and type(policy["adaptive_retries_used"]) is int
-        and 0 <= policy["adaptive_retries_used"] <= 1
+        and 0 <= policy["adaptive_retries_used"] <= policy["maximum_adaptive_retries"]
         and type(policy["remaining_steps"]) is int
         and policy["remaining_steps"] >= 0
         and policy["on_provider_failure"] in {"stop", "deterministic"}
         and content_hash(policy) == record["proposal_policy_digest"],
-        "v4 policy boundary invalid",
+        f"v{version} policy boundary invalid",
     )
+    attempted = set()
+    if version_five:
+        _require(
+            isinstance(policy["adaptive_policy_digest"], str)
+            and bool(_DIGEST.fullmatch(policy["adaptive_policy_digest"]))
+            and type(policy["maximum_step_retries"]) is int
+            and 1 <= policy["maximum_step_retries"] <= 3
+            and type(policy["step_retries_used"]) is int
+            and 0
+            <= policy["step_retries_used"]
+            <= min(policy["maximum_step_retries"], policy["adaptive_retries_used"]),
+            "v5 per-step policy boundary invalid",
+        )
+        rows = policy["attempted_methods"]
+        _require(isinstance(rows, list) and 1 <= len(rows) <= 256, "v5 attempted methods invalid")
+        for row in rows:
+            _require(
+                isinstance(row, Mapping)
+                and set(row) == {"step_id", "behavior_id", "action_id"}
+                and all(
+                    isinstance(row[field], str) and 0 < len(row[field]) <= 200 for field in row
+                ),
+                "v5 attempted method identity invalid",
+            )
+            key = (row["step_id"], row["behavior_id"], row["action_id"])
+            _require(key not in attempted, "v5 duplicate attempted method")
+            attempted.add(key)
+        counts = {
+            step_id: sum(key[0] == step_id for key in attempted) for step_id, _, _ in attempted
+        }
+        _require(
+            record["current_step_id"] in counts
+            and policy["step_retries_used"] <= counts[record["current_step_id"]] <= 4
+            and len(counts) <= 64
+            and all(count <= 4 for count in counts.values())
+            and policy["adaptive_retries_used"] <= len(attempted)
+            and policy["step_retries_used"] >= counts[record["current_step_id"]] - 1
+            and policy["adaptive_retries_used"] >= sum(count - 1 for count in counts.values()),
+            "v5 attempted methods exceed retained retry counts",
+        )
     options = record.get("registered_options")
     _require(
         isinstance(options, list)
         and 0 <= len(options) <= 4
         and policy["registered_options"] == options,
-        "v4 method choices invalid",
+        f"v{version} method choices invalid",
     )
     assert isinstance(options, list)
     pairs = set()
@@ -193,12 +270,12 @@ def validate_v4_proposal_record(
                 "plan_step",
                 "plan_step_digest",
             },
-            "v4 method fields invalid",
+            f"v{version} method fields invalid",
         )
         step = option["plan_step"]
         _require(
             isinstance(step, Mapping) and option["plan_step_digest"] == content_hash(step),
-            "v4 method digest invalid",
+            f"v{version} method digest invalid",
         )
         _require(
             option["role"] == "retry"
@@ -207,10 +284,15 @@ def validate_v4_proposal_record(
                 option[field] == step.get(field)
                 for field in ("step_id", "behavior_id", "action_id")
             ),
-            "v4 method identity invalid",
+            f"v{version} method identity invalid",
         )
         pair = (option["behavior_id"], option["action_id"])
-        _require(pair not in pairs, "v4 duplicate method")
+        if version_five:
+            _require(
+                (option["step_id"], *pair) not in attempted,
+                "v5 method choice was already attempted or reserved",
+            )
+        _require(pair not in pairs, f"v{version} duplicate method")
         pairs.add(pair)
     _require(
         record["allowed_step_ids"] == ([record["current_step_id"]] if options else [])
@@ -219,7 +301,7 @@ def validate_v4_proposal_record(
         and record["allowed_action_ids"] == list(dict.fromkeys(o["action_id"] for o in options))
         and record["allowed_edges"] == []
         and record["allowed_parameter_schemas"] == {},
-        "v4 method allowlist projection invalid",
+        f"v{version} method allowlist projection invalid",
     )
     state = record.get("planner_state")
     state_fields = {
@@ -234,42 +316,72 @@ def validate_v4_proposal_record(
     }
     _require(
         isinstance(state, Mapping)
-        and set(state) in (state_fields, state_fields | {"decision_contract"}),
-        "v4 planner state fields invalid",
+        and set(state)
+        in (
+            (state_fields | {"decision_contract"},)
+            if version_five
+            else (state_fields, state_fields | {"decision_contract"})
+        ),
+        f"v{version} planner state fields invalid",
     )
     assert isinstance(state, Mapping)
     if "decision_contract" in state:
         _require(
-            state["decision_contract"] == ADAPTIVE_DECISION_CONTRACT,
-            "v4 advisory decision contract is invalid",
+            state["decision_contract"]
+            == (ADAPTIVE_DECISION_CONTRACT_V5 if version_five else ADAPTIVE_DECISION_CONTRACT),
+            f"v{version} advisory decision contract is invalid",
         )
     _require(
-        state["schema_version"] == "bluefire.planner-state.v2"
+        state["schema_version"]
+        == ("bluefire.planner-state.v3" if version_five else "bluefire.planner-state.v2")
         and state["source_state_digest"] == record["state_digest"]
         and state["current_step_id"] == record["current_step_id"]
         and state["outcome"] == record["outcome"]
         and state["authorization_digest"] == record["authorization_digest"]
         and state["registered_options"] == options
         and content_hash(state) == record["planner_state_digest"],
-        "v4 planner state binding invalid",
+        f"v{version} planner state binding invalid",
     )
     observations = state["observations"]
     _require(
         isinstance(observations, Mapping)
-        and observations.get("schema_version") == "bluefire.runtime-observations.v1"
+        and observations.get("schema_version")
+        == (
+            "bluefire.runtime-observations.v2"
+            if version_five
+            else "bluefire.runtime-observations.v1"
+        )
         and observations.get("projection_digest")
         == content_hash(
             {key: value for key, value in observations.items() if key != "projection_digest"}
         ),
-        "v4 observation projection invalid",
+        f"v{version} observation projection invalid",
     )
+    if version_five:
+        budgets = observations.get("remaining_budgets")
+        _require(
+            isinstance(budgets, Mapping)
+            and set(budgets) == {"steps", "seconds", "retries", "step_retries"}
+            and type(budgets["steps"]) is int
+            and budgets["steps"] == policy["remaining_steps"]
+            and type(budgets["seconds"]) in {int, float}
+            and math.isfinite(budgets["seconds"])
+            and budgets["seconds"] >= 0
+            and type(budgets["retries"]) is int
+            and budgets["retries"]
+            == policy["maximum_adaptive_retries"] - policy["adaptive_retries_used"]
+            and type(budgets["step_retries"]) is int
+            and budgets["step_retries"]
+            == policy["maximum_step_retries"] - policy["step_retries_used"],
+            "v5 observation budgets differ from the retained policy",
+        )
     deterministic = state["deterministic_decision"]
     _require(
         isinstance(deterministic, Mapping)
         and deterministic.get("decision_id") == record["deterministic_decision_id"]
         and deterministic.get("run_id") == record["run_id"]
         and deterministic.get("current_state_digest") == record["state_digest"],
-        "v4 deterministic decision binding invalid",
+        f"v{version} deterministic decision binding invalid",
     )
     configured = record["provider_attempt"]
     _require(
@@ -281,35 +393,39 @@ def validate_v4_proposal_record(
         )
         and configured["kind"] in {"deterministic", "openai_responses", "chat_completions"}
         and type(record["provider_called"]) is bool,
-        "v4 provider attempt identity invalid",
+        f"v{version} provider attempt identity invalid",
     )
     if not has_proposal:
         _require(
             record["proposal"] is None and record["provider"] is None,
-            "v4 absent response is ambiguous",
+            f"v{version} absent response is ambiguous",
         )
         if status in {"stopped_no_permitted_choice", "stopped_budget_exhausted"}:
             _require(
                 record["provider_called"] is False
                 and record["decision_source"] == "none"
                 and record["stop_requested"] is True,
-                "v4 no-call disposition invalid",
+                f"v{version} no-call disposition invalid",
             )
             if status == "stopped_no_permitted_choice":
-                _require(not options, "v4 no-choice refusal contains available choices")
+                _require(not options, f"v{version} no-choice refusal contains available choices")
             else:
                 budgets = observations.get("remaining_budgets", {})
                 _require(
                     policy["remaining_steps"] == 0
-                    or policy["adaptive_retries_used"] == 1
+                    or policy["adaptive_retries_used"] == policy["maximum_adaptive_retries"]
+                    or (
+                        version_five
+                        and policy["step_retries_used"] == policy["maximum_step_retries"]
+                    )
                     or budgets.get("seconds") == 0,
-                    "v4 budget refusal has remaining budget",
+                    f"v{version} budget refusal has remaining budget",
                 )
         else:
             _require(
                 status in {"rejected_policy", "configured_fallback"}
                 and record["provider_called"] is True,
-                "v4 failed call disposition invalid",
+                f"v{version} failed call disposition invalid",
             )
             _require(
                 (
@@ -324,23 +440,25 @@ def validate_v4_proposal_record(
                     and policy["on_provider_failure"] == "deterministic"
                     and record["autonomy"] == "auto"
                 ),
-                "v4 failed call fallback boundary invalid",
+                f"v{version} failed call fallback boundary invalid",
             )
         return state
-    _require(record["provider_called"] is True, "v4 response has no provider call")
+    _require(record["provider_called"] is True, f"v{version} response has no provider call")
     _validate_provider(record)
     proposal = record.get("proposal")
     _require(
         isinstance(proposal, Mapping) and content_hash(proposal) == record["proposal_digest"],
-        "v4 proposal digest invalid",
+        f"v{version} proposal digest invalid",
     )
     assert isinstance(proposal, Mapping)
     if status in {"awaiting_operator_approval", "applied_reviewed_method"}:
         _require(
             bool(options)
             and policy["remaining_steps"] > 0
-            and policy["adaptive_retries_used"] == 0,
-            "v4 applied/reviewed choice exceeds runtime budget",
+            and policy["adaptive_retries_used"] < policy["maximum_adaptive_retries"]
+            and (not version_five or policy["step_retries_used"] < policy["maximum_step_retries"])
+            and (not version_five or observations["remaining_budgets"]["seconds"] > 0),
+            f"v{version} applied/reviewed choice exceeds runtime budget",
         )
         selected = record[
             "registered_step" if status == "awaiting_operator_approval" else "applied_step"
@@ -352,7 +470,7 @@ def validate_v4_proposal_record(
                 selected.get(field) == proposal.get("selected_" + field)
                 for field in ("step_id", "behavior_id", "action_id")
             ),
-            "v4 applied choice was not an exact reviewed method",
+            f"v{version} applied choice was not an exact reviewed method",
         )
         if status == "applied_reviewed_method":
             _require(
@@ -360,23 +478,42 @@ def validate_v4_proposal_record(
                 and proposal.get("requires_operator_review") is False
                 and record["stop_requested"] is False
                 and record["applied_next_step_id"] == selected["step_id"],
-                "v4 application gate invalid",
+                f"v{version} application gate invalid",
             )
         else:
-            _require(record["stop_requested"] is True, "v4 review did not stop execution")
+            _require(record["stop_requested"] is True, f"v{version} review did not stop execution")
     elif status == "configured_fallback":
         _require(
             policy["on_provider_failure"] == "deterministic"
             and record["autonomy"] == "auto"
             and record["decision_source"] == "configured_deterministic_fallback"
             and record["stop_requested"] is False,
-            "v4 fallback boundary invalid",
+            f"v{version} fallback boundary invalid",
         )
     else:
-        _require(record["stop_requested"] is True, "v4 refusal did not stop execution")
+        _require(record["stop_requested"] is True, f"v{version} refusal did not stop execution")
     return state
+
+
+def validate_v4_proposal_record(
+    record: Mapping[str, Any], *, require_proposal: bool = True
+) -> Mapping[str, Any]:
+    """Validate historical one-retry records without changing their guidance."""
+    return _validate_proposal_record(record, require_proposal=require_proposal, version=4)
 
 
 def validate_v4_attempt_record(record: Mapping[str, Any]) -> Mapping[str, Any]:
     """Validate retained failures/no-calls as evidence, never as replay commands."""
     return validate_v4_proposal_record(record, require_proposal=False)
+
+
+def validate_v5_proposal_record(
+    record: Mapping[str, Any], *, require_proposal: bool = True
+) -> Mapping[str, Any]:
+    """Validate explicit lineage/step evidence; source approval still grants authority."""
+    return _validate_proposal_record(record, require_proposal=require_proposal, version=5)
+
+
+def validate_v5_attempt_record(record: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Validate v5 refusals and failed calls without making them replay commands."""
+    return validate_v5_proposal_record(record, require_proposal=False)

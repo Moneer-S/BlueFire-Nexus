@@ -12,7 +12,7 @@ from email.policy import default as email_policy
 from pathlib import Path
 from typing import Any, Mapping
 
-_RUNTIME_DISTRIBUTIONS = frozenset({"pyyaml", "cryptography", "pynacl"})
+_RUNTIME_DISTRIBUTIONS = frozenset({"pyyaml", "cryptography", "pynacl", "tomli"})
 _REQUIREMENT_NAME = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(.*)$")
 _REQUIREMENT_SPECIFIER = re.compile(r"^(?:~=|==|!=|<=|>=|<|>)[A-Za-z0-9][A-Za-z0-9.*+!_-]*$")
 
@@ -30,16 +30,27 @@ def _canonical_name(value: str) -> str:
 
 
 def _requirement_row(value: str) -> Mapping[str, str]:
-    if ";" in value or "[" in value or "]" in value or "@" in value:
-        raise ValueError("runtime dependency must be an unconditional distribution requirement")
-    match = _REQUIREMENT_NAME.fullmatch(value.strip())
+    requirement, separator, marker = value.partition(";")
+    if "[" in value or "]" in value or "@" in value:
+        raise ValueError("runtime dependency must be a reviewed distribution requirement")
+    match = _REQUIREMENT_NAME.fullmatch(requirement.strip())
     if match is None:
         raise ValueError("runtime dependency requirement is invalid")
     name = _canonical_name(match.group(1))
     specifiers = [part.strip() for part in match.group(2).split(",") if part.strip()]
     if not specifiers or any(_REQUIREMENT_SPECIFIER.fullmatch(part) is None for part in specifiers):
         raise ValueError("runtime dependency specifier is invalid")
-    return {"name": name, "specifier": ",".join(sorted(specifiers))}
+    row = {"name": name, "specifier": ",".join(sorted(specifiers))}
+    if separator:
+        if (
+            name != "tomli"
+            or re.fullmatch(r"\s*python_version\s*<\s*(['\"])3\.11\1\s*", marker) is None
+        ):
+            raise ValueError("runtime dependency marker is not reviewed")
+        row["marker"] = "python_version < '3.11'"
+    elif name == "tomli":
+        raise ValueError("TOML backport requires its reviewed Python version marker")
+    return row
 
 
 def _project_section(document: str) -> str:
@@ -251,7 +262,7 @@ def _wheel_dependency_metadata_report(source: Path, wheel: Path) -> Mapping[str,
             "built wheel Requires-Dist metadata does not match the project declaration"
         )
     return {
-        "schema_version": "bluefire.gate01-wheel-dependency-metadata.v1",
+        "schema_version": "bluefire.gate01-wheel-dependency-metadata.v2",
         "verified": True,
         "project_name": project_name,
         "project_version": project_version,

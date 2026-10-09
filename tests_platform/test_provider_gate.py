@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 from dataclasses import replace
@@ -98,12 +99,36 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/receiver_policy.py",
         "bluefire/receiver_session_contract.py",
         "bluefire/receiver_session_channel.py",
+        "bluefire/file_access_contract.py",
+        "bluefire/file_access_enrollment.py",
+        "bluefire/file_access_method.py",
+        "bluefire/file_access_probe.py",
+        "bluefire/file_access_closure.py",
+        "bluefire/capability_resources.py",
+        "bluefire/capability_grant.py",
+        "bluefire/capability_facts.py",
+        "bluefire/capability_composition.py",
+        "bluefire/composition_authority.py",
+        "bluefire/composition_dispatch.py",
+        "bluefire/composition_admission.py",
+        "bluefire/ai_composition_contract.py",
+        "bluefire/product_store_capability_api.py",
+        "bluefire/composition_context.py",
+        "bluefire/composition_jobs.py",
+        "bluefire/owned_receiver_registry.py",
+        "bluefire/product_store_capability_grants.py",
+        "bluefire/product_store_capability_cleanup.py",
+        "bluefire/ai_runtime_composition.py",
+        "bluefire/runner_contracts.py",
+        "bluefire/policy.py",
+        "bluefire/run_store.py",
         "bluefire/ai_receiver_inspection.py",
         "bluefire/assistance_receiver_context.py",
         "bluefire/assistance_receiver.py",
         "bluefire/product_store_assistance_receiver.py",
         "bluefire/receiver_defense_context.py",
         "bluefire/receiver_defense_contract.py",
+        "bluefire/receiver_defense_control.py",
         "bluefire/product_store_contracts.py",
         "bluefire/receiver_defense_jobs.py",
         "bluefire/receiver_defense_native.py",
@@ -111,6 +136,7 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/receiver_defense_result.py",
         "bluefire/receiver_defense_service.py",
         "bluefire/receiver_defense_view.py",
+        "bluefire/receiver_defense_workflow.py",
         "bluefire/product_store_receiver_defense.py",
         "bluefire/replay_preparation.py",
         "bluefire/orchestrator.py",
@@ -160,9 +186,25 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/cli.py",
         "bluefire/job_runtime.py",
         "bluefire/runner_host.py",
+        "bluefire/runner_host_identity.py",
+        "bluefire/runner_receipt_validation.py",
+        "bluefire/runner_transport_client.py",
+        "bluefire/owned_service_authority.py",
+        "bluefire/owned_service_orchestration.py",
+        "bluefire/owned_service_transport.py",
+        "bluefire/service_launch.py",
         "runner/src/providers.rs",
         "runner/src/provider_action.rs",
         "runner/src/runner.rs",
+        "runner/src/service_admission.rs",
+        "runner/src/service_admission_wire.rs",
+        "runner/src/service_admission_channel.rs",
+        "runner/src/service_reservation.rs",
+        "runner/src/service_reservation_storage.rs",
+        "runner/src/service_payload.rs",
+        "runner/src/file_access.rs",
+        "runner/src/file_access_linux.rs",
+        "runner/src/actions/file_access.rs",
         "bluefire/runner_client.py",
         "bluefire/runner_bootstrap.py",
         "bluefire/runner_darwin_containment.py",
@@ -183,7 +225,9 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/prepared_lab_broker.py",
         "bluefire/prepared_lab_ui_bootstrap.py",
         "bluefire/prepared_lab_product.py",
+        "bluefire/prepared_lab_file_access.py",
         "bluefire/browser_launch.py",
+        "bluefire/runner_python_environment.py",
         "runner/src/cancellation_witness.rs",
         "runner/src/process.rs",
         "runner/src/atomic_gzip.rs",
@@ -334,6 +378,12 @@ def _structural_report() -> dict[str, Any]:
                         "native_process_inventory_is_fixed": True,
                     },
                     "python_boundaries": {
+                        "prepared_lab_file_access.py": {
+                            "passed": True,
+                            "shell_imports": 1,
+                            "process_calls": ["subprocess.Popen"],
+                            "unexpected_findings": [],
+                        },
                         "ai_transport.py": {
                             "passed": True,
                             "shell_imports": 1,
@@ -499,6 +549,38 @@ def _structural_report() -> dict[str, Any]:
     }
 
 
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ("or self._kill_child_on_job_close", "or False"),
+        (
+            "argv, watchdog_executable, inherited_descriptors",
+            "argv, argv[0], inherited_descriptors",
+        ),
+        ('options["executable"] = watchdog_executable', 'options["executable"] = argv[0]'),
+    ],
+)
+def test_watchdog_executable_audit_refuses_unverified_override(old: str, new: str) -> None:
+    import ast
+
+    source = (REPOSITORY / "bluefire/runner_client.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    spawn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_spawn"
+    )
+    assert provider_gate_source_audit._watchdog_executable_contract(spawn)
+    changed = ast.unparse(spawn).replace(old, new, 1)
+    # unparse uses single quotes for string constants.
+    if changed == ast.unparse(spawn):
+        changed = ast.unparse(spawn).replace(old.replace('"', "'"), new.replace('"', "'"), 1)
+    assert changed != ast.unparse(spawn)
+    altered = ast.parse(changed).body[0]
+    assert isinstance(altered, ast.FunctionDef)
+    assert not provider_gate_source_audit._watchdog_executable_contract(altered)
+
+
 def test_live_source_audit_round_trips_locked_structural_validator() -> None:
     index, trusts, packages = _fixture_set(REPOSITORY)
     report = _live_structural_report(REPOSITORY, index, trusts, packages)
@@ -527,6 +609,8 @@ def test_live_source_audit_round_trips_locked_structural_validator() -> None:
         "bluefire/assistance_receiver.py",
         "bluefire/product_store_assistance_receiver.py",
         "bluefire/ai_detection_create.py",
+        "bluefire/receiver_defense_control.py",
+        "bluefire/receiver_defense_workflow.py",
         "bluefire/detection_create_candidate.py",
         "bluefire/detection_create_context.py",
         "bluefire/detection_create_jobs.py",
@@ -541,6 +625,20 @@ def test_live_source_audit_round_trips_locked_structural_validator() -> None:
         "bluefire/run_submissions.py",
         "bluefire/product_store_assistance_run.py",
         "bluefire/product_store_run_submissions.py",
+        "bluefire/runner_host_identity.py",
+        "bluefire/runner_python_environment.py",
+        "bluefire/runner_receipt_validation.py",
+        "bluefire/runner_transport_client.py",
+        "bluefire/owned_service_authority.py",
+        "bluefire/owned_service_orchestration.py",
+        "bluefire/owned_service_transport.py",
+        "bluefire/service_launch.py",
+        "runner/src/service_admission.rs",
+        "runner/src/service_admission_wire.rs",
+        "runner/src/service_admission_channel.rs",
+        "runner/src/service_reservation.rs",
+        "runner/src/service_reservation_storage.rs",
+        "runner/src/service_payload.rs",
     ],
 )
 def test_structural_validator_requires_each_saved_run_source(relative: str) -> None:
@@ -582,10 +680,77 @@ def test_containment_owner_remains_pinned_without_new_process_launches(
     assert any(item.get("kind") == "dynamic_execution_call" for item in findings)
 
 
+def test_runner_python_environment_source_pin_refuses_noop_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    relative = "bluefire/runner_python_environment.py"
+    assert relative in provider_gate_source_audit.TRUSTED_PROCESS_BOUNDARY_PATHS
+    sources = {
+        name: (REPOSITORY / name).read_text(encoding="utf-8")
+        for name in provider_gate_source_audit._REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES
+    }
+    assert provider_gate_source_audit._reviewed_python_process_boundary_sources(sources)
+
+    tree = ast.parse(sources[relative])
+    environment_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "ActivePythonEnvironment"
+    )
+    validate_exec = next(
+        node
+        for node in environment_class.body
+        if isinstance(node, ast.FunctionDef) and node.name == "validate_exec"
+    )
+    validate_exec.body = [ast.Pass()]
+    sources[relative] = ast.unparse(tree) + "\n"
+
+    # The previous inventory omitted this helper, so a no-op mutation was invisible.
+    old_sources = {name: source for name, source in sources.items() if name != relative}
+    old_inventory = {
+        name: digest
+        for name, digest in provider_gate_source_audit._REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES.items()
+        if name != relative
+    }
+    with monkeypatch.context() as old_audit:
+        old_audit.setattr(
+            provider_boundary_inventory,
+            "_REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES",
+            old_inventory,
+        )
+        old_audit.setattr(
+            provider_gate_source_audit,
+            "_REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES",
+            old_inventory,
+        )
+        assert provider_gate_source_audit._reviewed_python_process_boundary_sources(old_sources)
+
+    sources[relative] = ast.unparse(tree) + "\n"
+    assert not provider_gate_source_audit._reviewed_python_process_boundary_sources(sources)
+
+
 @pytest.mark.parametrize(
     "relative",
     [
         "bluefire/ai_detection_create.py",
+        "bluefire/composition_dispatch.py",
+        "bluefire/composition_admission.py",
+        "bluefire/ai_composition_contract.py",
+        "bluefire/product_store_capability_api.py",
+        "bluefire/capability_resources.py",
+        "bluefire/capability_grant.py",
+        "bluefire/capability_facts.py",
+        "bluefire/capability_composition.py",
+        "bluefire/composition_authority.py",
+        "bluefire/composition_context.py",
+        "bluefire/composition_jobs.py",
+        "bluefire/owned_receiver_registry.py",
+        "bluefire/product_store_capability_grants.py",
+        "bluefire/product_store_capability_cleanup.py",
+        "bluefire/ai_runtime_composition.py",
+        "bluefire/runner_contracts.py",
+        "bluefire/policy.py",
+        "bluefire/run_store.py",
         "bluefire/detection_create_candidate.py",
         "bluefire/detection_create_context.py",
         "bluefire/detection_create_jobs.py",
@@ -611,6 +776,7 @@ def test_containment_owner_remains_pinned_without_new_process_launches(
         "bluefire/product_store_assistance_receiver.py",
         "bluefire/receiver_defense_context.py",
         "bluefire/receiver_defense_contract.py",
+        "bluefire/receiver_defense_control.py",
         "bluefire/product_store_contracts.py",
         "bluefire/receiver_defense_jobs.py",
         "bluefire/receiver_defense_native.py",
@@ -618,6 +784,7 @@ def test_containment_owner_remains_pinned_without_new_process_launches(
         "bluefire/receiver_defense_result.py",
         "bluefire/receiver_defense_service.py",
         "bluefire/receiver_defense_view.py",
+        "bluefire/receiver_defense_workflow.py",
         "bluefire/product_store_receiver_defense.py",
         "bluefire/ai_provider_access.py",
         "bluefire/ai_live_authorization.py",
@@ -633,6 +800,13 @@ def test_containment_owner_remains_pinned_without_new_process_launches(
         "bluefire/prepared_lab_enrollment.py",
         "bluefire/prepared_lab_inference_input.py",
         "bluefire/prepared_lab_installation.py",
+        "bluefire/runner_host_identity.py",
+        "bluefire/runner_receipt_validation.py",
+        "bluefire/runner_transport_client.py",
+        "bluefire/owned_service_authority.py",
+        "bluefire/owned_service_orchestration.py",
+        "bluefire/owned_service_transport.py",
+        "bluefire/service_launch.py",
     ],
 )
 def test_extracted_boundaries_retain_strict_process_source_auditing(
@@ -983,6 +1157,8 @@ def test_provider_gate_core_action_count_is_pinned_to_the_runner_registry() -> N
     """
     assert provider_gate_validation._CORE_ACTION_COUNT == len(BUILTIN_RUNNER_ACTION_IDS)
     assert BUILTIN_RUNNER_ACTION_VERSIONS["sandbox.permission.chmod.v1"] == "1.0.0"
+    assert BUILTIN_RUNNER_ACTION_VERSIONS["file_access.probe.non_owner.v1"] == "1.0.0"
+    assert BUILTIN_RUNNER_ACTION_VERSIONS["file_access.verify.owner.v1"] == "1.0.0"
 
 
 def test_gate_02_emits_exact_unique_proofs_and_bundle_attachments(
@@ -1221,6 +1397,7 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
     assert not provider_gate_source_audit._reviewed_python_process_boundary_sources(
         hidden_lifecycle_launcher
     )
+
     for unreviewed_alias in (
         "bluefire/runner_private_files.py",
         "bluefire/runner_private_files.PY",
@@ -1288,6 +1465,46 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
     assert dynamic_parent_death_command != client_source
     mutated_client.write_text(dynamic_parent_death_command, encoding="utf-8")
     assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    for original, replacement in (
+        (
+            "                            str(canonical_argv0),\n",
+            "                            argv[0],\n",
+        ),
+        ("                            *argv[1:],\n", "                            *argv,\n"),
+        (
+            "                            str(target_descriptor),\n",
+            "                            str(canonical_argv0),\n",
+        ),
+        (
+            "                        canonical_argv0=interpreter,\n",
+            "                        canonical_argv0=self.runner_binary,\n",
+        ),
+        (
+            "                    canonical_argv0=self.runner_binary,\n",
+            "                    canonical_argv0=self._watchdog_interpreter,\n",
+        ),
+        (
+            "                    recheck_target()\n                    process = subprocess.Popen",
+            "                    process = subprocess.Popen",
+        ),
+        (
+            "                    recheck_target()\n                    parent_socket.sendall",
+            "                    parent_socket.sendall",
+        ),
+        (
+            "                visible = canonical_argv0.lstat()\n",
+            "                visible = canonical_argv0.stat()\n",
+        ),
+        (
+            "        if canonical_argv0 is None or canonical_argv0 not in (\n",
+            "        if False and canonical_argv0 not in (\n",
+        ),
+    ):
+        assert original in client_source
+        changed = client_source.replace(original, replacement, 1)
+        mutated_client.write_text(changed, encoding="utf-8")
+        assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
 
     factory_binding = "                popen_factory=registered_popen,\n"
     factory_bypass = "                popen_factory=subprocess.Popen,\n"
@@ -1551,6 +1768,25 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
     chmod_source = (REPOSITORY / "runner" / "src" / "atomic_chmod.rs").read_bytes()
     chmod_copy = command_inventory / "runner" / "src" / "atomic_chmod.rs"
     chmod_copy.write_bytes(chmod_source)
+    # Both reviewed query sources are required. Retain a refusal for the old
+    # four-file fixture and for either independently omitted new source.
+    assert not provider_gate_source_audit._native_command_source_inventory_is_fixed(
+        command_inventory
+    )
+    query_source = (REPOSITORY / "runner" / "src" / "service_query_process.rs").read_bytes()
+    query_fixture = (REPOSITORY / "runner" / "src" / "service_query_process_tests.rs").read_bytes()
+    query_copy = command_inventory / "runner" / "src" / "service_query_process.rs"
+    query_fixture_copy = command_inventory / "runner" / "src" / "service_query_process_tests.rs"
+    query_copy.write_bytes(query_source)
+    assert not provider_gate_source_audit._native_command_source_inventory_is_fixed(
+        command_inventory
+    )
+    query_copy.unlink()
+    query_fixture_copy.write_bytes(query_fixture)
+    assert not provider_gate_source_audit._native_command_source_inventory_is_fixed(
+        command_inventory
+    )
+    query_copy.write_bytes(query_source)
     assert provider_gate_source_audit._native_command_source_inventory_is_fixed(command_inventory)
     chmod_copy.write_bytes(
         chmod_source + b'\nfn unreviewed() { let _ = std::process::Command::new("unreviewed"); }\n'

@@ -6,10 +6,11 @@ import uuid
 from typing import Mapping
 
 from . import product_store_receiver_defense as records
+from . import receiver_defense_workflow as workflow
 from .application_errors import APIError
 from .job_runtime import JobResult, JobRuntimeError
 from .product_store_errors import ProductStoreError
-from .receiver_defense_context import OWNER_KIND, PHASES, POLICIES, PREPARE_KIND, context
+from .receiver_defense_context import OWNER_KIND, PREPARE_KIND, context
 from .receiver_defense_ownership import ReceiverOwners
 from .util import content_hash
 
@@ -106,7 +107,13 @@ class ReceiverDefenseJobs:
         with self.store._connection() as connection:
             require_active(self.store, connection, parent)
         request = parent["request"]["submitted_request"]
-        current = self.context({key: request[key] for key in ("selection", "run_intent")})
+        current = self.context(
+            {
+                key: request[key]
+                for key in ("selection", "run_intent", *workflow.OPTION_FIELDS)
+                if key in request
+            }
+        )
         if (
             current["context_digest"] != parent["request"]["context_digest"]
             or not current["eligible"]
@@ -119,7 +126,10 @@ class ReceiverDefenseJobs:
         return current
 
     def submit(self, request, *, _assistance_turn=None):
-        fields(request, {"submission_id", "selection", "run_intent", "context_digest"})
+        options = workflow.options(request)
+        fields(request, {"submission_id", "selection", "run_intent", "context_digest", *options})
+        if options and _assistance_turn is not None:
+            raise ProductStoreError("This retained-control workflow uses explicit native review.")
         digest = content_hash(request)
         previous = self.store.get_job_submission(
             OWNER_KIND, submission_id=request["submission_id"], intent_digest=digest
@@ -131,7 +141,9 @@ class ReceiverDefenseJobs:
         selected(request["selection"])
         intent(request["run_intent"])
         try:
-            current = self.context({key: request[key] for key in ("selection", "run_intent")})
+            current = self.context(
+                {key: request[key] for key in ("selection", "run_intent", *options)}
+            )
         except (APIError, ProductStoreError, ValueError):
             current = None
         document = {
@@ -248,7 +260,7 @@ class ReceiverDefenseJobs:
                 )
             ctx.checkpoint({"prepare_started": True})
             session = self.owners.prepare(
-                ctx.job_id, POLICIES[PHASES.index(marker["phase"])], current["handoff"]["port"]
+                ctx.job_id, workflow.policy(current, marker["phase"]), current["handoff"]["port"]
             )
             records.update(self.store, ctx.job_id, {"session": session}, active=True)
             ctx.checkpoint({"phase": "receiver_ready"})
@@ -264,6 +276,11 @@ class ReceiverDefenseJobs:
     def baseline(self, parent):
         from .receiver_defense_result import verified_result
 
+        current = parent["request"]["context"]
+        if current.get("source_control"):
+            from .receiver_defense_control import source_owner
+
+            return self.baseline(source_owner(self, current))
         baseline = parent["progress"].get("phases", {}).get("baseline")
         if baseline is None:
             raise ProductStoreError("The authenticated baseline is unavailable.")
@@ -289,12 +306,20 @@ class ReceiverDefenseJobs:
                 "exact": False,
                 **{key: value for key, value in current["run_intent"].items() if key != "mode"},
                 "defense_change": "Owned receiver content policy: "
-                + POLICIES[PHASES.index(marker["phase"])],
+                + workflow.policy(current, marker["phase"]),
             }
+            if marker["phase"] == "legitimate":
+                payload["parameter_overrides"] = {
+                    current["control"]["redaction_step_id"]: {"redact_values": True}
+                }
             replay = self.service.prepare_replay(
                 baseline["run_id"], payload, _receiver_defense=marker
             )
-            report, artifact, run_request = replay["preflight"], baseline["artifact"], None
+            report, artifact, run_request = (
+                replay["preflight"],
+                None if marker["phase"] == "legitimate" else baseline["artifact"],
+                None,
+            )
         problems = [
             item for item in report["problems"] if item != "Explicit operator approval is required."
         ]
@@ -304,7 +329,7 @@ class ReceiverDefenseJobs:
                 "The exact receiver execution is not ready. Review native preflight."
             )
         value = {
-            "schema_version": "bluefire.receiver-defense-preparation.v1",
+            "schema_version": workflow.schema(current, "-preparation"),
             **marker,
             "context_digest": current["context_digest"],
             "session": session,
@@ -319,6 +344,17 @@ class ReceiverDefenseJobs:
             "target_effects_started": False,
             "receiver_started": True,
         }
+        if workflow.retained(current):
+            value["control_binding"] = current["control"]
+            value["baseline_reference"] = (
+                None
+                if marker["phase"] == "baseline"
+                else {
+                    "run_id": baseline["run_id"],
+                    "artifact": baseline["artifact"],
+                    "source_binding": baseline["source_binding"],
+                }
+            )
         return {**value, "preparation_digest": content_hash(value)}
 
     def authority(self, marker):
@@ -329,13 +365,26 @@ class ReceiverDefenseJobs:
         self._fresh(parent)
         session = child["progress"]["session"]
         self.owners.current(child["job_id"], session)
-        return {
+        value = {
             **marker,
             "session": session,
             "baseline_artifact": (
-                None if marker["phase"] == "baseline" else self.baseline(parent)["artifact"]
+                None
+                if marker["phase"] in {"baseline", "legitimate"}
+                else self.baseline(parent)["artifact"]
             ),
         }
+        current = parent["request"]["context"]
+        if workflow.retained(current):
+            value["control_binding"] = current["control"]
+            if marker["phase"] != "baseline":
+                baseline = self.baseline(parent)
+                value["baseline_reference"] = {
+                    "run_id": baseline["run_id"],
+                    "artifact": baseline["artifact"],
+                    "source_binding": baseline["source_binding"],
+                }
+        return value
 
     def review(self, parent_id, request):
         fields(request, {"submission_id", "phase", "preparation_digest", "decision", "reviewed_by"})
@@ -412,3 +461,8 @@ class ReceiverDefenseJobs:
         from .receiver_defense_view import read
 
         return read(self, self._job(parent_id))
+
+    def control(self, parent_id, request):
+        fields(request, {"submission_id", "control_digest", "decision", "reviewed_by"})
+        records.rollback_control(self.store, parent_id, request)
+        return self.read(parent_id)

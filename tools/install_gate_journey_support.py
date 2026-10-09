@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from ctypes import wintypes
 from pathlib import Path
@@ -55,7 +56,6 @@ _DOM_MARKERS = (
     'href="#/runs"',
     "Detection Lab",
 )
-_MAX_DOM_BYTES = 16 * 1024 * 1024
 
 
 class SupportError(RuntimeError):
@@ -391,63 +391,128 @@ def _seeded_envelope_is_valid(value: Any, catalog: Mapping[str, Any]) -> bool:
     return True
 
 
-def _edge_dom(edge: Path, profile_root: Path, url: str) -> str:
-    command = [
-        os.fspath(edge),
-        "--headless=new",
-        "--disable-gpu",
-        "--no-sandbox",
-        "--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1",
-        "--disable-background-networking",
-        "--disable-component-update",
-        "--disable-default-apps",
-        "--disable-extensions",
-        "--disable-sync",
-        "--metrics-recording-only",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--no-proxy-server",
-        f"--user-data-dir={profile_root}",
-        "--virtual-time-budget=20000",
-        "--dump-dom",
-        url,
-    ]
+def _browser_probe_result(command: list[str], capability: str) -> Mapping[str, Any]:
+    """Pass the code only through the contained child's pipe; retain bounded output."""
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper()
+        in {"SYSTEMROOT", "WINDIR", "TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA", "APPDATA"}
+    }
+    environment["PATH"] = os.defpath
     process: subprocess.Popen[bytes] | None = None
     job_handle: int | None = None
+    readers: list[threading.Thread] = []
+    output = [bytearray(), bytearray()]
+    failed = threading.Event()
     try:
         process = subprocess.Popen(
             command,
             shell=False,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=environment,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         job_handle = attach_process_tree(process)
+        _require(
+            process.stdin is not None and process.stdout is not None and process.stderr is not None,
+            "ui_runtime_probe_pipes",
+            "packaged UI runtime pipes are unavailable",
+        )
+
+        def capture(stream: Any, destination: bytearray) -> None:
+            try:
+                while chunk := stream.read(4096):
+                    if len(destination) + len(chunk) > 16 * 1024:
+                        failed.set()
+                        try:
+                            process.kill()
+                        except OSError:
+                            pass
+                        break
+                    destination.extend(chunk)
+            except OSError:
+                failed.set()
+            finally:
+                stream.close()
+
+        for stream, destination in zip((process.stdout, process.stderr), output, strict=True):
+            reader = threading.Thread(target=capture, args=(stream, destination), daemon=True)
+            reader.start()
+            readers.append(reader)
         try:
-            stdout, _stderr = process.communicate(timeout=60)
+            process.stdin.write(json.dumps({"capability": capability}).encode("ascii"))
+            process.stdin.close()
+            process.wait(timeout=65)
         except subprocess.TimeoutExpired as exc:
             raise SupportError(
                 "ui_runtime_probe_timeout", "packaged UI runtime probe timed out"
             ) from exc
+        for reader in readers:
+            reader.join(timeout=5)
         _require(
-            process.returncode == 0 and 0 < len(stdout) <= _MAX_DOM_BYTES,
+            process.returncode == 0
+            and not failed.is_set()
+            and all(not reader.is_alive() for reader in readers)
+            and 0 < len(output[0]) <= 16 * 1024
+            and not output[1]
+            and capability.encode("ascii") not in output[0],
             "ui_runtime_probe_failed",
             "packaged UI runtime probe failed",
         )
         try:
-            dom = stdout.decode("utf-8")
-        except UnicodeDecodeError as exc:
+            report = json.loads(output[0].decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise SupportError(
-                "ui_runtime_dom_invalid", "packaged UI rendered invalid DOM"
+                "ui_runtime_report_invalid", "packaged UI runtime report is invalid"
             ) from exc
-        return dom
+        expected = {
+            "engine": "edge-headless",
+            "browser_sandbox": "disabled-for-ephemeral-probe",
+            "network_scope": "loopback-only",
+            "javascript_executed": True,
+            "authenticated_root_rendered": True,
+            "catalog_data_rendered": True,
+            "runs_navigation_present": True,
+            "runs_route_rendered": True,
+            "guided_execute_rendered": True,
+            "explicit_connection_form": True,
+            "same_tab_reload_authenticated": True,
+            "new_tab_requires_connection": True,
+        }
+        _require(
+            isinstance(report, dict)
+            and set(report) == set(expected)
+            and all(
+                report[key] is True if value is True else report[key] == value
+                for key, value in expected.items()
+            ),
+            "ui_runtime_report_invalid",
+            "packaged UI runtime report is invalid",
+        )
+        return expected
     finally:
         if process is not None:
             terminate_process_tree(process, job_handle)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None and not stream.closed:
+                    stream.close()
+            for reader in readers:
+                reader.join(timeout=5)
 
 
-def probe_packaged_ui(port: int, capability: str, profile_root: Path) -> dict[str, Any]:
+def probe_packaged_ui(
+    port: int,
+    capability: str,
+    profile_root: Path,
+    *,
+    node: Path,
+    module: Path,
+    probe: Path,
+    identity_path: Path,
+) -> dict[str, Any]:
     """Execute installed UI JavaScript and inspect authenticated root and Runs routes."""
 
     candidates = (
@@ -465,30 +530,42 @@ def probe_packaged_ui(port: int, capability: str, profile_root: Path) -> dict[st
     _require(
         edge is not None, "ui_runtime_engine_missing", "packaged UI runtime engine is unavailable"
     )
+    _require(
+        all(path.is_absolute() and path.is_file() for path in (node, module, probe))
+        and re.fullmatch(r"[A-Za-z0-9_-]{64}", capability) is not None
+        and type(port) is int
+        and 1 <= port <= 65535,
+        "ui_runtime_dependency_missing",
+        "packaged UI probe dependency is unavailable",
+    )
+    from bluefire.install_gate_browser_runtime import verify_browser_probe_runtime
+
+    try:
+        with identity_path.open("rb") as stream:
+            raw_identity = stream.read(4097)
+        if len(raw_identity) > 4096:
+            raise ValueError("tooling report exceeded its bound")
+        identity = json.loads(raw_identity)
+        verify_browser_probe_runtime(node, module, identity)
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        raise SupportError(
+            "ui_runtime_identity_changed", "packaged UI probe tooling identity is invalid"
+        ) from exc
     profile_root.mkdir(parents=False, exist_ok=False)
     try:
-        root_dom = _edge_dom(
-            edge,
-            profile_root,
-            f"http://127.0.0.1:{port}/#bluefire-session={capability}",
+        return dict(
+            _browser_probe_result(
+                [
+                    os.fspath(node),
+                    os.fspath(probe),
+                    os.fspath(module),
+                    os.fspath(edge),
+                    os.fspath(profile_root),
+                    str(port),
+                ],
+                capability,
+            )
         )
-        validate_rendered_dom(root_dom)
-        # The guided Execute panel renders only in Execute mode, which "setup=execute"
-        # selects. Asking for the plain route would leave the probe on the Simulate
-        # default and assert a panel the page was never told to show.
-        runs_dom = _edge_dom(edge, profile_root, f"http://127.0.0.1:{port}/#/runs?setup=execute")
-        validate_runs_dom(runs_dom)
-        return {
-            "engine": "edge-headless",
-            "browser_sandbox": "disabled-for-ephemeral-probe",
-            "network_scope": "loopback-only",
-            "javascript_executed": True,
-            "authenticated_root_rendered": True,
-            "catalog_data_rendered": True,
-            "runs_navigation_present": True,
-            "runs_route_rendered": True,
-            "guided_execute_rendered": True,
-        }
     finally:
         remove_ephemeral_tree(profile_root, expected_parent=profile_root.parent)
 

@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
+from .adaptive_budget import validate_budget
 from .config import AutonomyLevel
 from .contracts import ExecutionMode, ScenarioDefinition
 from .registry import BehaviorRegistry
@@ -156,6 +157,18 @@ def prepare_replay(
         raise ReplayError("source run has no immutable scenario snapshot")
     scenario = ScenarioDefinition.from_mapping(raw_scenario)
     registry.validate_scenario(scenario)
+    adaptive_budget = None
+    if (
+        source_mode is ExecutionMode.EXECUTE
+        and scenario.adaptive_execution is not None
+        and scenario.adaptive_execution.schema_version == "bluefire.adaptive-execution.v2"
+    ):
+        try:
+            adaptive_budget = validate_budget(
+                source.get("adaptive_retry"), scenario.adaptive_execution
+            )
+        except ValueError as exc:
+            raise ReplayError("source adaptive pivot budget is unavailable or invalid") from exc
 
     checkpoint: Mapping[str, Any] | None = None
     source_prefix: tuple[Mapping[str, Any], ...] = ()
@@ -348,6 +361,8 @@ def prepare_replay(
             content_hash({"defense_change": defense_change}) if defense_change is not None else None
         ),
     }
+    if adaptive_budget is not None:
+        lineage["adaptive_budget"] = adaptive_budget
     return PreparedReplay(
         scenario=scenario,
         resume_from_step_id=request.from_step_id,

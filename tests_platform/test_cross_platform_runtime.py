@@ -36,6 +36,7 @@ from bluefire.runner_lifecycle import (
 )
 from bluefire.runner_trust import create_local_enrollment
 from bluefire.service import BlueFireService
+from tests_platform.transport_recovery_diagnostics import diagnose_transport_recovery
 
 
 class _TrustMaterialEnrollment:
@@ -151,6 +152,7 @@ def test_disposable_receiver_retains_the_exact_process_handle_and_job(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="the packaged recovery journey is Windows-only")
+@diagnose_transport_recovery
 def test_authenticated_transport_recovery_is_full_and_independently_validated(
     tmp_path: Path,
 ) -> None:

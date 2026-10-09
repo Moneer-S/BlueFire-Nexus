@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping
 
-from .runner_client import reject_forbidden_execution_keys
+from .execution_contracts import reject_runner_execution_keys as reject_forbidden_execution_keys
 from .util import json_clone
 
 _PROVIDER_ACTION_OUTPUT_SCHEMA = "bluefire.provider-action-output.v1"

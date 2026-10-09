@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from .domain_errors import ProductStoreError as ProductStoreError
 
-class ProductStoreError(ValueError):
-    """Raised when product metadata or a state transition is invalid."""
+
+class ResourceConflictError(ProductStoreError):
+    """Raised when a resource changed after its expected snapshot was read."""
 
 
 class ResearchSourceIntegrityError(ProductStoreError):
@@ -33,5 +35,6 @@ __all__ = [
     "DetectionRevisionIntegrityError",
     "DetectionRevisionLimitError",
     "ProductStoreError",
+    "ResourceConflictError",
     "ResearchSourceIntegrityError",
 ]

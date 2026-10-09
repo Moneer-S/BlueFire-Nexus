@@ -15,7 +15,7 @@ const stopped: RunnerLifecycleStatus = { schema_version: "bluefire.runner-lifecy
 function mount(status = stopped) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const onBusy = vi.fn();
-  const view = render(<QueryClientProvider client={client}><RunnerUpgradeReview profileId={profile} status={status} onBusy={onBusy}/></QueryClientProvider>);
+  const view = render(<QueryClientProvider client={client}><MemoryRouter><RunnerUpgradeReview profileId={profile} status={status} onBusy={onBusy}/></MemoryRouter></QueryClientProvider>);
   return { ...view, client, onBusy };
 }
 
@@ -65,7 +65,7 @@ it.each([false, true])("does not present an earlier review refusal as current af
     await reject();
     expect(await screen.findByText(detail)).toBeVisible();
   }
-  view.rerender(<QueryClientProvider client={view.client}><RunnerUpgradeReview profileId={profile} status={{ ...stopped, state: "ready", process: "authenticated" }} onBusy={view.onBusy}/></QueryClientProvider>);
+  view.rerender(<QueryClientProvider client={view.client}><MemoryRouter><RunnerUpgradeReview profileId={profile} status={{ ...stopped, state: "ready", process: "authenticated" }} onBusy={view.onBusy}/></MemoryRouter></QueryClientProvider>);
   if (late) await reject();
   expect(await screen.findByText(/Its result no longer describes the current runner/)).toBeVisible();
   expect(screen.queryByText(detail)).not.toBeInTheDocument();
@@ -134,7 +134,7 @@ it("discards a late review after profile selection changes and does not reuse it
   const apply = vi.spyOn(api, "bootstrapRunner"); const user = userEvent.setup();
   const view = mount();
   await user.click(screen.getByRole("button", { name: "Review runner upgrade" }));
-  const show = (selected: string) => view.rerender(<QueryClientProvider client={view.client}><RunnerUpgradeReview profileId={selected} status={{ ...stopped, profile_id: selected }} onBusy={view.onBusy}/></QueryClientProvider>);
+  const show = (selected: string) => view.rerender(<QueryClientProvider client={view.client}><MemoryRouter><RunnerUpgradeReview profileId={selected} status={{ ...stopped, profile_id: selected }} onBusy={view.onBusy}/></MemoryRouter></QueryClientProvider>);
   show("another-execute.v1");
   await act(async () => finish(runnerUpgradeReview()));
   expect(screen.queryByRole("button", { name: "Apply reviewed runner upgrade" })).not.toBeInTheDocument();
@@ -176,6 +176,7 @@ it("offers exact reviewed recovery only when the service verifies an absent proc
   const review = vi.spyOn(api, "reviewRunnerUpgrade").mockResolvedValue({ ...runnerUpgradeReview(), recovery_required: true });
   const apply = vi.spyOn(api, "bootstrapRunner").mockResolvedValue(stopped);
   const user = userEvent.setup(); mount({ ...stopped, state: "unavailable", upgrade_recovery_required: true });
+  expect(screen.getByRole("link", { name: "Runner profiles" })).toHaveAttribute("href", "/runner-profiles");
   expect(review).not.toHaveBeenCalled();
   await user.click(screen.getByRole("button", { name: "Review runner upgrade" }));
   await user.click(await screen.findByRole("button", { name: "Apply reviewed runner upgrade" }));

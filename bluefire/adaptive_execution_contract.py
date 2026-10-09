@@ -42,20 +42,43 @@ class AdaptiveMethod:
 class AdaptiveStep:
     step_id: str
     methods: tuple[AdaptiveMethod, ...]
+    max_retries: int | None = None
 
     @classmethod
-    def from_mapping(cls, value: Any) -> "AdaptiveStep":
-        data = _object(value, {"step_id", "methods"}, "adaptive step")
+    def from_mapping(
+        cls, value: Any, *, schema_version: str = "bluefire.adaptive-execution.v1"
+    ) -> "AdaptiveStep":
+        if schema_version not in (
+            "bluefire.adaptive-execution.v1",
+            "bluefire.adaptive-execution.v2",
+        ):
+            raise AdaptiveContractError("adaptive execution schema version is unsupported")
+        version_two = schema_version == "bluefire.adaptive-execution.v2"
+        fields = {"step_id", "methods"} | ({"max_retries"} if version_two else set())
+        data = _object(value, fields, "adaptive step")
         methods = data["methods"]
         if not isinstance(methods, list) or not 2 <= len(methods) <= 4:
             raise AdaptiveContractError("adaptive step must contain 2..4 exact methods")
         parsed = tuple(AdaptiveMethod.from_mapping(method) for method in methods)
         if len(set(parsed)) != len(parsed):
             raise AdaptiveContractError("adaptive step contains duplicate methods")
-        return cls(_identity(data["step_id"], step=True), parsed)
+        maximum = data["max_retries"] if version_two else None
+        if version_two and (
+            type(maximum) is not int or not 1 <= maximum <= min(3, len(parsed) - 1)
+        ):
+            raise AdaptiveContractError(
+                "adaptive step retry cap must be 1..min(3, methods minus one)"
+            )
+        return cls(_identity(data["step_id"], step=True), parsed, maximum)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"step_id": self.step_id, "methods": [method.to_dict() for method in self.methods]}
+        document: dict[str, Any] = {
+            "step_id": self.step_id,
+            "methods": [method.to_dict() for method in self.methods],
+        }
+        if self.max_retries is not None:
+            document["max_retries"] = self.max_retries
+        return document
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +87,7 @@ class AdaptiveExecution:
     eligible_outcomes: tuple[str, ...]
     max_retries: int
     on_provider_failure: str
+    schema_version: str = "bluefire.adaptive-execution.v1"
 
     @classmethod
     def from_mapping(cls, value: Any) -> "AdaptiveExecution":
@@ -72,12 +96,13 @@ class AdaptiveExecution:
             {"schema_version", "steps", "eligible_outcomes", "max_retries", "on_provider_failure"},
             "adaptive execution",
         )
-        if data["schema_version"] != "bluefire.adaptive-execution.v1":
+        version = data["schema_version"]
+        if version not in ("bluefire.adaptive-execution.v1", "bluefire.adaptive-execution.v2"):
             raise AdaptiveContractError("adaptive execution schema version is unsupported")
         raw_steps = data["steps"]
         if not isinstance(raw_steps, list) or not 1 <= len(raw_steps) <= 64:
             raise AdaptiveContractError("adaptive execution must contain 1..64 steps")
-        steps = tuple(AdaptiveStep.from_mapping(step) for step in raw_steps)
+        steps = tuple(AdaptiveStep.from_mapping(step, schema_version=version) for step in raw_steps)
         if len({step.step_id for step in steps}) != len(steps):
             raise AdaptiveContractError("adaptive execution contains duplicate steps")
         outcomes = data["eligible_outcomes"]
@@ -93,17 +118,27 @@ class AdaptiveExecution:
             raise AdaptiveContractError(
                 "adaptive eligible outcomes must be a unique nonempty subset of blocked, failed, partial"
             )
-        if type(data["max_retries"]) is not int or data["max_retries"] != 1:
-            raise AdaptiveContractError("adaptive execution v1 permits exactly one retry")
+        maximum = data["max_retries"]
+        if version == "bluefire.adaptive-execution.v1":
+            if type(maximum) is not int or maximum != 1:
+                raise AdaptiveContractError("adaptive execution v1 permits exactly one retry")
+        elif (
+            type(maximum) is not int
+            or not 1 <= maximum <= 8
+            or maximum > sum(step.max_retries or 0 for step in steps)
+        ):
+            raise AdaptiveContractError(
+                "adaptive lineage retry cap must be 1..8 within the step caps"
+            )
         if data["on_provider_failure"] not in ("stop", "deterministic"):
             raise AdaptiveContractError(
                 "adaptive provider failure must stop or use configured deterministic fallback"
             )
-        return cls(steps, tuple(outcomes), 1, data["on_provider_failure"])
+        return cls(steps, tuple(outcomes), maximum, data["on_provider_failure"], version)
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": "bluefire.adaptive-execution.v1",
+            "schema_version": self.schema_version,
             "steps": [step.to_dict() for step in self.steps],
             "eligible_outcomes": list(self.eligible_outcomes),
             "max_retries": self.max_retries,

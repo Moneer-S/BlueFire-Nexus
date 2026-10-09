@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::fs;
@@ -155,6 +156,14 @@ pub struct ActionContext<'a> {
     pub manifest: &'a ExecutionManifest,
     pub profile: &'a RunnerProfile,
     pub root: &'a SafeRoot,
+    pub(crate) execution_started: Cell<bool>,
+}
+
+impl ActionContext<'_> {
+    // Includes attempted input inspection, not proof of content read or publication.
+    fn mark_execution_started(&self) {
+        self.execution_started.set(true);
+    }
 }
 
 #[derive(Debug)]
@@ -603,6 +612,7 @@ macro_rules! reviewed_descriptor {
 
 mod atomic_chmod_action;
 mod atomic_gzip_action;
+mod file_access;
 use atomic_chmod_action::AtomicChmodAction;
 use atomic_gzip_action::AtomicGzipAction;
 #[cfg(test)]
@@ -746,6 +756,7 @@ impl PreparedAction for ProcessTreeCancellationWitnessPrepared {
             context.root,
             remaining,
             &layout,
+            &context.execution_started,
         )
         .map(ActionOutcome::success)
         .map_err(map_failure)
@@ -877,6 +888,7 @@ impl PreparedAction for IdentityMaterialInspectPrepared {
             .root
             .resolve_existing(&path)
             .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
+        context.mark_execution_started();
         let bytes = read_file_bounded(&source, context.manifest.limits.max_artifact_bytes)
             .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
         if bytes.as_slice() != IDENTITY_MATERIAL_BYTES {
@@ -1162,6 +1174,7 @@ impl PreparedAction for FixtureTransformPrepared {
             .root
             .resolve_existing(&input)
             .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
+        context.mark_execution_started();
         let input_bytes =
             read_file_bounded(&input_path, context.manifest.limits.max_artifact_bytes)
                 .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
@@ -2193,6 +2206,7 @@ fn load_reviewed_staged_bundle(
         .root
         .resolve_existing(&relative)
         .map_err(|error| ActionFailure::blocked("staged_bundle_rejected", error))?;
+    context.mark_execution_started();
     let bytes = read_file_bounded(&source, context.manifest.limits.max_artifact_bytes)
         .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
     validate_reviewed_staged_bundle(&bytes, format)?;
@@ -3002,6 +3016,7 @@ impl PreparedAction for NetworkLoopbackPrepared {
                     .root
                     .resolve_existing(&artifact)
                     .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
+                context.mark_execution_started();
                 read_file_bounded(&artifact_path, context.manifest.limits.max_artifact_bytes)
                     .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?
             }
@@ -3385,6 +3400,7 @@ impl PreparedAction for ExportLocalPrepared {
             .root
             .resolve_existing(&source)
             .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
+        context.mark_execution_started();
         let bytes = read_file_bounded(&source_path, context.manifest.limits.max_artifact_bytes)
             .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
         let target = context
@@ -3584,8 +3600,20 @@ impl PreparedAction for CleanupPrepared {
                 "cleanup receipt count is empty or exceeds the manifest file limit",
             ));
         }
+        let timeout_ms = if let Some(authority) = &context.manifest.grant_cleanup {
+            let remaining = (authority.expires_at - crate::contract::utc_now()).num_milliseconds();
+            if remaining <= 0 {
+                return Err(ActionFailure::blocked(
+                    "grant_cleanup_expired",
+                    "the retained cleanup obligation deadline elapsed before execution",
+                ));
+            }
+            context.manifest.limits.timeout_ms.min(remaining as u64)
+        } else {
+            context.manifest.limits.timeout_ms
+        };
         let cleanup_deadline = Instant::now()
-            .checked_add(Duration::from_millis(context.manifest.limits.timeout_ms))
+            .checked_add(Duration::from_millis(timeout_ms))
             .ok_or_else(|| {
                 ActionFailure::blocked(
                     "invalid_resource_limits",
@@ -3838,6 +3866,10 @@ static COLLECTION_RECORDS: CollectionMethodAction = CollectionMethodAction { arc
 static COLLECTION_ARCHIVE: CollectionMethodAction = CollectionMethodAction { archive: true };
 static ATOMIC_GZIP: AtomicGzipAction = AtomicGzipAction;
 static ATOMIC_CHMOD: AtomicChmodAction = AtomicChmodAction;
+static FILE_ACCESS_PROBE: file_access::FileAccessAction =
+    file_access::FileAccessAction { owner: false };
+static FILE_ACCESS_OWNER: file_access::FileAccessAction =
+    file_access::FileAccessAction { owner: true };
 static NETWORK_LOOPBACK: NetworkLoopbackAction = NetworkLoopbackAction;
 static PEER_HANDOFF: PeerHandoffAction = PeerHandoffAction;
 static OBSERVABILITY_VARIANT: ObservabilityVariantAction = ObservabilityVariantAction;
@@ -3846,7 +3878,7 @@ static RESTRICTED_PERSISTENCE_MARKER: RestrictedPersistenceMarkerAction =
     RestrictedPersistenceMarkerAction;
 static CLEANUP: CleanupAction = CleanupAction;
 
-static REGISTRY: [&'static dyn Action; 24] = [
+static REGISTRY: [&'static dyn Action; 26] = [
     &NATIVE_CANARY,
     &PROCESS_TREE_CANCELLATION_WITNESS,
     &IDENTITY_MATERIAL_SEED,
@@ -3865,6 +3897,8 @@ static REGISTRY: [&'static dyn Action; 24] = [
     &COLLECTION_ARCHIVE,
     &ATOMIC_GZIP,
     &ATOMIC_CHMOD,
+    &FILE_ACCESS_PROBE,
+    &FILE_ACCESS_OWNER,
     &NETWORK_LOOPBACK,
     &PEER_HANDOFF,
     &OBSERVABILITY_VARIANT,
@@ -3957,6 +3991,7 @@ mod tests {
             manifest: &manifest,
             profile: &profile,
             root: &root,
+            execution_started: Cell::new(false),
         };
         fs::create_dir_all(path.join("staged/collection")).unwrap();
         let destination = "staged/collection/bundle.jsonl.gz";
@@ -3971,6 +4006,8 @@ mod tests {
                 bytes: b"synthetic compressed output".to_vec(),
                 executable: "/usr/bin/gzip".into(),
                 executable_sha256: "c".repeat(64),
+                installation_digest: format!("sha256:{}", "e".repeat(64)),
+                tool_version: "1.12-1ubuntu3.2".into(),
             },
             &"d".repeat(64),
             Instant::now(),
@@ -4035,6 +4072,8 @@ mod tests {
             "sandbox.collection.archive.v1",
             "sandbox.collection.atomic-gzip.v1",
             "sandbox.permission.chmod.v1",
+            "file_access.probe.non_owner.v1",
+            "file_access.verify.owner.v1",
             "sandbox.network.loopback.v1",
             "sandbox.peer.handoff.v1",
             "sandbox.observability.variant.v1",
@@ -4055,7 +4094,7 @@ mod tests {
             let value = serde_json::to_value(&descriptor).unwrap();
             assert_eq!(value["schema_version"], ACTION_SDK_SCHEMA_VERSION);
             let expected_version = match descriptor.action_id {
-                "sandbox.cleanup.v1" => "1.1.0",
+                "sandbox.cleanup.v1" | "sandbox.collection.atomic-gzip.v1" => "1.1.0",
                 "sandbox.collection.stage.v1"
                 | "sandbox.discovery.list.v1"
                 | "sandbox.discovery.metadata.v1"
@@ -4074,11 +4113,18 @@ mod tests {
             assert!(value["observation_hints"]
                 .as_array()
                 .is_some_and(|rows| !rows.is_empty()));
-            if descriptor.action_id == "sandbox.permission.chmod.v1" {
+            if matches!(
+                descriptor.action_id,
+                "sandbox.permission.chmod.v1" | "sandbox.collection.atomic-gzip.v1"
+            ) {
                 assert_eq!(value["readiness"], "structural");
                 assert_eq!(
                     value["native_tool_binding"]["tool_id"],
-                    "gnu.coreutils.chmod.v1"
+                    if descriptor.action_id == "sandbox.permission.chmod.v1" {
+                        "gnu.coreutils.chmod.v1"
+                    } else {
+                        "gnu.gzip.v1"
+                    }
                 );
                 assert_eq!(
                     value["native_tool_binding"]["adapter_id"],

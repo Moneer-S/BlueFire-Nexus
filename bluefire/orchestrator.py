@@ -2,26 +2,23 @@
 
 from __future__ import annotations
 
-import contextlib
-import hashlib
-import json
-import os
 import threading
 import time
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
-from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from . import composition_dispatch
+from .adaptive_budget import initial_budget, record_attempt, reserve_method
 from .adaptive_dispatch import (
+    ReviewedStepChecks,
     execution_steps,
     operation_identity,
     reviewed_operation,
     runner_authorization,
-    validate_dispatch,
 )
-from .adaptive_execution import compile_adaptive_authorization, validate_selected_method
+from .adaptive_execution import compile_adaptive_authorization
 from .adaptive_runtime import propose_reviewed_method
 from .ai import AIProvider, ProposalType
 from .ai_wire import AIProviderCancelled
@@ -55,6 +52,7 @@ from .collectors import (
     JsonLinesFixtureCollector,
     LoopbackReceiverCollector,
 )
+from .composition_authority import GrantExecution
 from .config import AutonomyLevel, CleanupPolicy, RunnerProfile
 from .contracts import ContractError, ExecutionMode, ScenarioDefinition, StepOutcome
 from .detections import DetectionCandidate, DetectionPipeline
@@ -70,10 +68,26 @@ from .execution_progress import (
     emergency_cleanup,
     persist_progress,
     record_interrupted_dispatch,
+    validate_cleanup_result,
 )
+from .file_access_contract import VerifiedFileAccessBinding
 from .job_runtime import JobCancelled
 from .native_tool_execution_readiness import inspected_tool_rows
 from .observation_integrity import evaluate_observation_integrity
+from .owned_service_authority import (
+    OwnedServiceScope,
+)
+from .owned_service_orchestration import (
+    compile_run_scope_orchestrator,
+    mint_step_grant,
+    owned_service_digest,
+    owned_service_policy,
+    plan_has_owned_service,
+    recheck_pending_service_operation_binding,
+    service_grant_kwargs,
+    validate_approval_scope_binding,
+    validate_run_options,
+)
 from .permission_method import existing_cleanup_receipts, permission_objective_evidence
 from .planned_runner_inventory import (
     PlannedRunnerInventoryError,
@@ -112,7 +126,6 @@ from .runner_client import (
     RunnerTaskCancelled,
     RunnerTransport,
     RunnerTransportError,
-    _PinnedPrivateDirectory,
     canonical_runner_inventory,
     execution_task_identity,
 )
@@ -122,6 +135,11 @@ from .runner_inventory import (
     validate_builtin_action_inventory,
 )
 from .runner_receipt_authority import validate_result_receipts
+from .runner_receipt_validation import (
+    _is_lower_hex_digest,
+    _safe_receipt_path,
+    discover_runner_receipts,
+)
 from .runtime_proposals import (
     RuntimeProposalError,
     RuntimeProposals,
@@ -129,35 +147,10 @@ from .runtime_proposals import (
     approved_replay_transition,
 )
 from .simulation import SimulationError, SimulationRegistry
-from .util import content_hash, parse_iso8601_datetime
+from .tool_adapters.service_journal import ServiceIntentJournal
+from .tool_adapters.service_operation_binding import ServiceOperationBinding
+from .util import content_hash
 
-_RECEIPT_FIELDS = frozenset(
-    {
-        "schema_version",
-        "receipt_id",
-        "request_hash",
-        "action_id",
-        "runner_profile_id",
-        "workspace_id",
-        "created_at",
-        "paths",
-    }
-)
-_RECEIPT_COMMIT_FIELDS = frozenset(
-    {
-        "schema_version",
-        "receipt_id",
-        "runner_profile_id",
-        "workspace_id",
-        "committed_at",
-    }
-)
-_OWNED_PATH_FIELDS = frozenset({"relative_path", "kind", "sha256", "size"})
-_LOWER_HEX_DIGEST = frozenset("0123456789abcdef")
-_MAX_DISCOVERED_RECEIPTS = 512
-_MAX_RECEIPT_BYTES = 256 * 1024
-_MAX_RECOVERY_FILES = 512
-_MAX_RECOVERY_FILE_BYTES = 1024 * 1024 * 1024 * 1024
 _CHECKPOINTABLE_PREFIX_ACTIONS = frozenset(
     {
         "sandbox.fixture.create.v1",
@@ -174,44 +167,6 @@ _CHECKPOINT_FILE_ARTIFACTS = frozenset(
     }
 )
 _CHECKPOINT_TRANSIENT_ARTIFACT_KEYS = frozenset({"receipt_id", "receipt_ids"})
-
-
-def _is_lower_hex_digest(value: Any) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in _LOWER_HEX_DIGEST for character in value)
-    )
-
-
-def _safe_receipt_path(value: Any) -> str | None:
-    if (
-        not isinstance(value, str)
-        or not 1 <= len(value) <= 4096
-        or "\\" in value
-        or ":" in value
-        or any(ord(character) < 32 for character in value)
-    ):
-        return None
-    candidate = PurePosixPath(value)
-    if candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts):
-        return None
-    for component in candidate.parts:
-        trimmed = component.rstrip(". ")
-        base = trimmed.split(".", 1)[0].upper()
-        if (
-            component.casefold() == ".bluefire"
-            or component.endswith((".", " "))
-            or base in {"CON", "PRN", "AUX", "NUL"}
-            or (
-                len(base) == 4
-                and (base.startswith("COM") or base.startswith("LPT"))
-                and base[-1] in "123456789"
-            )
-        ):
-            return None
-    normalized = candidate.as_posix()
-    return normalized if normalized == value else None
 
 
 def _checkpoint_artifact_value(value: Any, *, depth: int = 0) -> Any:
@@ -266,82 +221,6 @@ def _checkpoint_material_paths(value: Any, *, depth: int = 0) -> tuple[str, ...]
         for item in value:
             paths.extend(_checkpoint_material_paths(item, depth=depth + 1))
     return tuple(dict.fromkeys(paths))
-
-
-def _valid_owned_receipt_paths(paths: Any, *, max_files: int, max_bytes: int) -> bool:
-    if not isinstance(paths, list) or not paths or len(paths) > min(max_files * 8, 4096):
-        return False
-    seen: set[str] = set()
-    files: list[str] = []
-    directories: list[str] = []
-    total_size = 0
-    for raw in paths:
-        if not isinstance(raw, dict) or set(raw) != _OWNED_PATH_FIELDS:
-            return False
-        relative = _safe_receipt_path(raw.get("relative_path"))
-        kind = raw.get("kind")
-        if relative is None or relative in seen or kind not in {"file", "directory"}:
-            return False
-        seen.add(relative)
-        if kind == "file":
-            digest = raw.get("sha256")
-            size = raw.get("size")
-            if (
-                not _is_lower_hex_digest(digest)
-                or isinstance(size, bool)
-                or not isinstance(size, int)
-                or not 0 <= size <= max_bytes
-            ):
-                return False
-            files.append(relative)
-            total_size += size
-        else:
-            if raw.get("sha256") is not None or raw.get("size") is not None:
-                return False
-            directories.append(relative)
-    if not files or len(files) > max_files or total_size > max_files * max_bytes:
-        return False
-    return all(any(file.startswith(directory + "/") for file in files) for directory in directories)
-
-
-def _decode_receipt_document(payload: bytes) -> dict[str, Any]:
-    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError("duplicate JSON key")
-            result[key] = value
-        return result
-
-    def reject_non_finite(value: str) -> None:
-        raise ValueError(f"non-finite JSON number: {value}")
-
-    try:
-        document = json.loads(
-            payload.decode("utf-8"),
-            object_pairs_hook=reject_duplicate_keys,
-            parse_constant=reject_non_finite,
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
-        raise RunnerTransportError("runner receipt could not be decoded") from exc
-    if not isinstance(document, dict):
-        raise RunnerTransportError("runner receipt record is invalid")
-    return document
-
-
-def _workspace_id_candidates(sandbox_root: Path) -> frozenset[str]:
-    resolved = sandbox_root.resolve(strict=True)
-    spellings = {str(resolved)}
-    if os.name == "nt":
-        raw = str(resolved)
-        if raw.startswith("\\\\"):
-            spellings.add("\\\\?\\UNC\\" + raw[2:])
-        elif not raw.startswith("\\\\?\\"):
-            spellings.add("\\\\?\\" + raw)
-    return frozenset(
-        hashlib.sha256(spelling.replace("\\", "/").encode("utf-8")).hexdigest()
-        for spelling in spellings
-    )
 
 
 class OrchestrationError(ValueError):
@@ -424,6 +303,9 @@ class Orchestrator:
         collector_registry: CollectorRegistry | None = None,
         receiver_authority: Mapping[str, Any] | None = None,
         before_receiver_task: Callable[..., None] | None = None,
+        service_intent_journal: ServiceIntentJournal | None = None,
+        grant_execution: GrantExecution | None = None,
+        file_access_binding: VerifiedFileAccessBinding | None = None,
     ) -> None:
         self.registry = registry
         self.store = store
@@ -432,6 +314,16 @@ class Orchestrator:
         self.approval_store = approval_store
         self.receiver_authority = dict(receiver_authority or {})
         self.before_receiver_task = before_receiver_task
+        self.service_intent_journal = service_intent_journal
+        if grant_execution is not None and type(grant_execution) is not GrantExecution:
+            raise OrchestrationError("Composition requires its trusted execution adapter")
+        self.grant_execution = grant_execution
+        if (
+            file_access_binding is not None
+            and type(file_access_binding) is not VerifiedFileAccessBinding
+        ):
+            raise OrchestrationError("File-access execution requires its trusted stored binding")
+        self.file_access_binding = file_access_binding
         self.catalog_authority = dict(catalog_authority) if catalog_authority is not None else None
         self.action_bindings = {
             (str(behavior_id), str(action_id)): dict(binding)
@@ -594,8 +486,25 @@ class Orchestrator:
         collector_ids: Sequence[str] = (),
         collector_runtime_settings: CollectorRuntimeSettings | None = None,
         collector_registry_authority: Mapping[str, Any] | None = None,
+        owned_service_scope: Mapping[str, Any] | OwnedServiceScope | None = None,
     ) -> Mapping[str, Any]:
         execution_started = time.monotonic()
+        if self.grant_execution is not None:
+            if (
+                mode is not ExecutionMode.EXECUTE
+                or approval_record is not None
+                or approved_by is not None
+                or replay is not None
+                or resume_from_step_id is not None
+                or seed_artifacts
+                or scenario.adaptive_execution is not None
+                or self.receiver_authority
+                or self.before_receiver_task is not None
+            ):
+                raise OrchestrationError(
+                    "Grant attempts require a fresh, separate Execute authority"
+                )
+            self.grant_execution.check()
         if collector_ids and collector_runtime_settings is not None:
             raise OrchestrationError(
                 "Execute accepts either legacy collectors or collector runtime settings"
@@ -617,6 +526,18 @@ class Orchestrator:
             raise OrchestrationError("materialized checkpoint replay requires Execute mode")
         if replay_checkpoint is not None and resume_from_step_id is None:
             raise OrchestrationError("materialized checkpoint replay requires a restart node")
+        try:
+            validate_run_options(
+                owned_service_scope,
+                self.service_intent_journal is not None,
+                mode=mode,
+                execute_mode=ExecutionMode.EXECUTE,
+                replay=replay,
+                replay_checkpoint=replay_checkpoint,
+                resume_from_step_id=resume_from_step_id,
+            )
+        except ContractError as exc:
+            raise OrchestrationError(str(exc)) from exc
         if mode is ExecutionMode.EXECUTE and resume_from_step_id is not None and seed_artifacts:
             raise OrchestrationError("Execute restart cannot trust metadata-seeded artifacts")
         if checkpoint is not None:
@@ -628,7 +549,7 @@ class Orchestrator:
             autonomy=autonomy,
             ai_provider=ai_provider,
             ai_enabled=ai_enabled,
-            approval_present=approval_record is not None,
+            approval_present=approval_record is not None or self.grant_execution is not None,
             action_implementations=action_implementations,
             collector_runtime_settings=collector_runtime_settings,
         )
@@ -644,6 +565,9 @@ class Orchestrator:
             ai_enabled=ai_enabled,
             action_implementations=action_implementations,
         )
+        grant_document = (
+            self.grant_execution.validate_plan(plan) if self.grant_execution is not None else None
+        )
         collection_step_id = self._collector_schedule(
             plan,
             collector_runtime_settings,
@@ -653,6 +577,8 @@ class Orchestrator:
         observer: SandboxObserver | None = None
         authorized_target_scope: Mapping[str, Any] = {"scope_refs": []}
         adaptive_authorization: Mapping[str, Any] | None = None
+        compiled_owned_service_scope: OwnedServiceScope | None = None
+        compiled_owned_service_operation_binding: ServiceOperationBinding | None = None
         validated_approval: Mapping[str, Any] | None = None
         approval_binding: Mapping[str, str] | None = None
         approval_context: dict[str, Any] = dict(self.receiver_authority)
@@ -662,6 +588,20 @@ class Orchestrator:
                     "Execute requires an explicit profile, sandbox root, and Rust runner"
                 )
             authorized_target_scope = self._validated_target_scope(target_scope, profile)
+            try:
+                (
+                    compiled_owned_service_scope,
+                    compiled_owned_service_operation_binding,
+                ) = compile_run_scope_orchestrator(
+                    owned_service_scope,
+                    profile=profile,
+                    scenario_id=scenario.id,
+                    plan_steps=plan.steps,
+                    target_scope=authorized_target_scope,
+                    service_journal=self.service_intent_journal,
+                )
+            except ContractError as exc:
+                raise OrchestrationError(str(exc)) from exc
             adaptive_authorization = compile_adaptive_authorization(
                 registry=self.registry,
                 scenario=scenario,
@@ -720,31 +660,42 @@ class Orchestrator:
                 runner_readiness=runner_readiness,
                 catalog_authority=self.catalog_authority,
                 adaptive_authorization=adaptive_authorization,
+                owned_service_scope_digest=owned_service_digest(compiled_owned_service_scope),
             )
-            if self.approval_store is None:
-                raise OrchestrationError("Execute requires a durable approval verifier")
-            approval_id = approval_record.get("approval_id") if approval_record else None
-            nonce = approval_record.get("nonce") if approval_record else None
-            if not isinstance(approval_id, str) or not isinstance(nonce, str):
-                raise OrchestrationError("Execute approval capability is incomplete")
             try:
-                claimed_approval = self.approval_store.claim_consumed_approval(
-                    approval_id,
-                    nonce=nonce,
-                    approved_by=approved_by or "",
-                    expected_state_digest=approval_binding["state_digest"],
-                    expected_plan_digest=approval_binding["plan_digest"],
-                    expected_target_scope_digest=approval_binding["target_scope_digest"],
-                    expected_profile_id=approval_binding["profile_id"],
-                    expected_maximum_tier=approval_binding["maximum_tier"],
-                )
-                validated_approval = validate_claimed_approval(
-                    claimed_approval,
-                    binding=approval_binding,
-                    approved_by=approved_by,
-                )
-            except (ApprovalError, ValueError) as exc:
+                validate_approval_scope_binding(approval_binding, compiled_owned_service_scope)
+            except ContractError as exc:
                 raise OrchestrationError(str(exc)) from exc
+            if self.grant_execution is not None:
+                if not self._runner_supports_task_identity():
+                    raise OrchestrationError("Grant attempts require authenticated task transport")
+                self.grant_execution.check()
+                approval_binding = None
+            else:
+                if self.approval_store is None:
+                    raise OrchestrationError("Execute requires a durable approval verifier")
+                approval_id = approval_record.get("approval_id") if approval_record else None
+                nonce = approval_record.get("nonce") if approval_record else None
+                if not isinstance(approval_id, str) or not isinstance(nonce, str):
+                    raise OrchestrationError("Execute approval capability is incomplete")
+                try:
+                    claimed_approval = self.approval_store.claim_consumed_approval(
+                        approval_id,
+                        nonce=nonce,
+                        approved_by=approved_by or "",
+                        expected_state_digest=approval_binding["state_digest"],
+                        expected_plan_digest=approval_binding["plan_digest"],
+                        expected_target_scope_digest=approval_binding["target_scope_digest"],
+                        expected_profile_id=approval_binding["profile_id"],
+                        expected_maximum_tier=approval_binding["maximum_tier"],
+                    )
+                    validated_approval = validate_claimed_approval(
+                        claimed_approval,
+                        binding=approval_binding,
+                        approved_by=approved_by,
+                    )
+                except (ApprovalError, ValueError) as exc:
+                    raise OrchestrationError(str(exc)) from exc
             native_plan = replace(plan, steps=execution_steps(plan, adaptive_authorization))
             network_destinations = self._network_destinations(native_plan)
             reviewed_actions = {step.action_id for step in native_plan.steps}
@@ -770,8 +721,15 @@ class Orchestrator:
                     profile,
                     provider_bindings=provider_bindings,
                 ),
-                reviewed_execution=runner_authorization(plan, adaptive_authorization),
+                reviewed_execution=(
+                    self.grant_execution.envelope
+                    if self.grant_execution is not None
+                    else runner_authorization(plan, adaptive_authorization)
+                ),
+                file_access_binding=self.file_access_binding,
             )
+            if self.grant_execution is not None:
+                self.grant_execution.bind_profile(runner_profile_doc)
             observer = SandboxObserver(sandbox_root)
             if self.collector_registry is None:
                 self.collector_registry = CollectorRegistry(
@@ -820,6 +778,7 @@ class Orchestrator:
                     dict(approval_binding) if approval_binding is not None else None
                 ),
                 "approval_context": dict(approval_context),
+                **({"grant_attempt": grant_document} if grant_document is not None else {}),
                 **(
                     {"adaptive_authorization": adaptive_authorization}
                     if adaptive_authorization is not None
@@ -831,13 +790,31 @@ class Orchestrator:
                 "catalog_authority": (
                     dict(self.catalog_authority) if self.catalog_authority is not None else None
                 ),
+                **owned_service_policy(compiled_owned_service_scope),
             },
             profile=profile.to_dict() if profile else None,
             replay=replay,
+            _reserved_run_id=grant_document["run_id"] if grant_document is not None else None,
         )
         simulation = _SimulationProgress() if mode is ExecutionMode.SIMULATE else None
         receipt_ids: list[str] = []
         try:
+            starting_budget = (
+                initial_budget(scenario.adaptive_execution, replay)
+                if mode is ExecutionMode.EXECUTE
+                else None
+            )
+            if starting_budget is not None:
+                persist_progress(
+                    self.store,
+                    handle.run_id,
+                    steps=[],
+                    decisions=[],
+                    proposals=[],
+                    evidence=[],
+                    retries_used=starting_budget["used"],
+                    adaptive_budget=starting_budget,
+                )
             if checkpoint is not None:
                 checkpoint(
                     {
@@ -877,6 +854,8 @@ class Orchestrator:
                 collector_sandbox_root=(Path(sandbox_root) if sandbox_root is not None else None),
                 simulation=simulation,
                 adaptive_authorization=adaptive_authorization,
+                owned_service_scope=compiled_owned_service_scope,
+                owned_service_operation_binding=compiled_owned_service_operation_binding,
             )
         except BaseException as exc:
             if simulation is not None and isinstance(
@@ -927,6 +906,7 @@ class Orchestrator:
                 and runner_profile_doc is not None
                 and observer is not None
                 and receipt_ids
+                and compiled_owned_service_scope is None
             ):
                 self._attempt_emergency_cleanup(
                     run_id=handle.run_id,
@@ -974,6 +954,8 @@ class Orchestrator:
         collector_sandbox_root: Path | None = None,
         simulation: _SimulationProgress | None = None,
         adaptive_authorization: Mapping[str, Any] | None = None,
+        owned_service_scope: OwnedServiceScope | None = None,
+        owned_service_operation_binding: ServiceOperationBinding | None = None,
     ) -> Mapping[str, Any]:
         evidence = simulation.evidence if simulation is not None else EvidenceGraph()
         artifacts: dict[str, Any] = dict(seed_artifacts or {})
@@ -986,7 +968,14 @@ class Orchestrator:
         ai_proposals: list[dict[str, Any]] = simulation.proposals if simulation is not None else []
         step_overrides: dict[str, PlanStep] = {}
         visited: set[str] = set()
-        retries_used = self._adaptive_retry_count(replay)
+        pivot_budget = (
+            initial_budget(scenario.adaptive_execution, replay)
+            if mode is ExecutionMode.EXECUTE
+            else None
+        )
+        retries_used = (
+            pivot_budget["used"] if pivot_budget is not None else self._adaptive_retry_count(replay)
+        )
 
         def persist_execution_progress(reserved_retry: bool = False) -> None:
             if mode is ExecutionMode.EXECUTE:
@@ -998,6 +987,7 @@ class Orchestrator:
                     proposals=ai_proposals,
                     evidence=evidence.records(),
                     retries_used=retries_used + int(reserved_retry),
+                    adaptive_budget=pivot_budget,
                 )
 
         current_step_id: str | None = resume_from_step_id or scenario.start
@@ -1019,6 +1009,23 @@ class Orchestrator:
             min(5.0, max(0.25, total_seconds * 0.1), total_seconds / 2.0)
             if total_seconds is not None
             else 0.0
+        )
+        reviewed_checks = (
+            ReviewedStepChecks(
+                plan=plan,
+                authorization=adaptive_authorization,
+                expected_digest=adaptive_digest,
+                registry=self.registry,
+                profile=profile,
+                target_scope=authorized_target_scope,
+                platform=current_platform(),
+                catalog_authority=self.catalog_authority,
+                approval=approval_record,
+                deadline=deadline,
+                cleanup_reserve=cleanup_reserve,
+            )
+            if mode is ExecutionMode.EXECUTE
+            else None
         )
         budget_exhausted = False
         collector_elapsed_seconds = 0.0
@@ -1189,30 +1196,20 @@ class Orchestrator:
                 step_budget_exhausted = action_timeout_ms < 1
                 budget_exhausted = budget_exhausted or step_budget_exhausted
 
-                def recheck_reviewed_step(
-                    selected: PlanStep = plan_step, reserved_retries: int = retries_used
-                ) -> None:
-                    if adaptive_authorization is None:
-                        return
-                    assert adaptive_digest is not None and approval_record is not None
-                    validate_dispatch(
-                        step=selected,
-                        plan=plan,
-                        authorization=adaptive_authorization,
-                        expected_digest=adaptive_digest,
-                        registry=self.registry,
-                        profile=profile,
-                        target_scope=authorized_target_scope,
-                        platform=current_platform(),
-                        catalog_authority=self.catalog_authority,
-                        remaining_steps=max_steps - len(step_rows) - len(materialization_rows),
-                        remaining_seconds=max(
-                            (deadline or time.monotonic()) - time.monotonic() - cleanup_reserve, 0.0
-                        ),
-                        retries_used=reserved_retries,
-                        approval_expires_at=str(approval_record["expires_at"]),
-                    )
+                assert reviewed_checks is not None
+                recheck_reviewed_step = reviewed_checks.bind(
+                    step=plan_step,
+                    retries_used=retries_used,
+                    budget=pivot_budget,
+                    remaining_steps=max_steps - len(step_rows) - len(materialization_rows),
+                )
 
+                if pivot_budget is not None:
+                    assert scenario.adaptive_execution is not None
+                    pivot_budget = record_attempt(
+                        pivot_budget, scenario.adaptive_execution, plan_step.to_dict()
+                    )
+                    persist_execution_progress()
                 row, records, decision, _returned_receipts = self._execute_step(
                     run_id=handle.run_id,
                     step=plan_step,
@@ -1223,6 +1220,9 @@ class Orchestrator:
                     observer=observer,
                     approved_by=approved_by,
                     approval_record=approval_record,
+                    approval_binding=approval_binding,
+                    owned_service_scope=owned_service_scope,
+                    owned_service_operation_binding=owned_service_operation_binding,
                     authorized_target_scope=authorized_target_scope,
                     receipt_ids=receipt_ids,
                     action_timeout_ms=action_timeout_ms,
@@ -1430,7 +1430,7 @@ class Orchestrator:
                         "selected_step_id": replay_transition,
                     },
                 )
-            else:
+            if not replay_transition_applied or pivot_budget is not None:
                 adaptive_policy = scenario.adaptive_execution
                 if (
                     adaptive_authorization is not None
@@ -1438,7 +1438,7 @@ class Orchestrator:
                     and plan.autonomy is not AutonomyLevel.OFF
                     and self.proposal_provider is not None
                     and outcome.value in adaptive_policy.eligible_outcomes
-                    and retries_used < adaptive_policy.max_retries
+                    and (pivot_budget is not None or retries_used < adaptive_policy.max_retries)
                     and any(group.step_id == current_step_id for group in adaptive_policy.steps)
                     and not forced_cleanup
                 ):
@@ -1452,27 +1452,13 @@ class Orchestrator:
                         if cancel_event is not None and cancel_event.is_set():
                             raise AIProviderCancelled()
 
-                    def validate_choice(
-                        selected: PlanStep, reserved_retries: int = retries_used
-                    ) -> None:
-                        validate_selected_method(
-                            authorization=adaptive_authorization,
-                            expected_authorization_digest=adaptive_digest,
-                            step=selected,
-                            profile=profile,
-                            target_scope=authorized_target_scope,
-                            platform=current_platform(),
-                            registry=self.registry,
-                            remaining_steps=max_steps - len(step_rows) - len(materialization_rows),
-                            remaining_seconds=max(
-                                (deadline or time.monotonic()) - time.monotonic() - cleanup_reserve,
-                                0.0,
-                            ),
-                            retries_used=reserved_retries,
-                            approval_expires_at=str(approval_record["expires_at"]),
-                            is_retry=True,
-                            catalog_authority=self.catalog_authority,
-                        )
+                    assert reviewed_checks is not None
+                    validate_choice = reviewed_checks.bind(
+                        retries_used=retries_used,
+                        budget=pivot_budget,
+                        is_retry=True,
+                        remaining_steps=max_steps - len(step_rows) - len(materialization_rows),
+                    )
 
                     adaptive = propose_reviewed_method(
                         run_id=handle.run_id,
@@ -1492,6 +1478,14 @@ class Orchestrator:
                             (deadline or time.monotonic()) - time.monotonic() - cleanup_reserve, 0.0
                         ),
                         retries_used=retries_used,
+                        step_retries_used=(
+                            pivot_budget["per_step"][current_step_id]["used"]
+                            if pivot_budget is not None
+                            else None
+                        ),
+                        attempted_methods=(
+                            pivot_budget["attempted_methods"] if pivot_budget is not None else None
+                        ),
                         validate_choice=validate_choice,
                         check_cancelled=check_planning_cancelled,
                     )
@@ -1500,7 +1494,7 @@ class Orchestrator:
                     adaptive_next_step_id = (
                         alternate_step.step_id if alternate_step is not None else None
                     )
-                else:
+                elif pivot_budget is None:
                     proposal_record, alternate_step, adaptive_next_step_id, retry_applied = (
                         self._propose_next_step(
                             run_id=handle.run_id,
@@ -1519,6 +1513,11 @@ class Orchestrator:
                     )
             if proposal_record is not None:
                 ai_proposals.append(proposal_record)
+                if pivot_budget is not None and retry_applied:
+                    assert scenario.adaptive_execution is not None and alternate_step is not None
+                    pivot_budget = reserve_method(
+                        pivot_budget, scenario.adaptive_execution, alternate_step.to_dict()
+                    )
                 persist_execution_progress(reserved_retry=retry_applied)
                 self.store.append_event(handle.run_id, "ai.proposal", proposal_record)
                 planning_stopped = (
@@ -1733,6 +1732,7 @@ class Orchestrator:
                             runner_readiness=runner_readiness,
                             catalog_authority=self.catalog_authority,
                             adaptive_authorization=adaptive_authorization,
+                            owned_service_scope_digest=owned_service_digest(owned_service_scope),
                         ),
                     )
                 for draft in checkpoint_drafts:
@@ -1817,11 +1817,15 @@ class Orchestrator:
                 "collector_elapsed_seconds": round(collector_elapsed_seconds, 3),
                 "exhausted": budget_exhausted,
             },
-            "adaptive_retry": {
-                "maximum": 1,
-                "used": retries_used,
-                "remaining": max(1 - retries_used, 0),
-            },
+            "adaptive_retry": (
+                pivot_budget
+                if pivot_budget is not None
+                else {
+                    "maximum": 1,
+                    "used": retries_used,
+                    "remaining": max(1 - retries_used, 0),
+                }
+            ),
         }
         self.store.write_json(
             handle.run_id,
@@ -1844,6 +1848,11 @@ class Orchestrator:
                     dict(approval_binding) if approval_binding is not None else None
                 ),
                 "approval_context": dict(approval_context),
+                **(
+                    {"grant_attempt": self.grant_execution.document()}
+                    if self.grant_execution is not None
+                    else {}
+                ),
                 "runner_readiness": (
                     dict(runner_readiness) if runner_readiness is not None else None
                 ),
@@ -1888,6 +1897,10 @@ class Orchestrator:
             ai_provider=ai_provider,
             action_implementations=action_implementations,
         )
+        if plan_has_owned_service(plan.steps):
+            raise OrchestrationError(
+                "owned-service cleanup recovery requires its separate authenticated cleanup grant"
+            )
         authorized_scope = self._validated_target_scope(target_scope, profile)
         adaptive_authorization = compile_adaptive_authorization(
             registry=self.registry,
@@ -2604,6 +2617,10 @@ class Orchestrator:
         collector_ids: Sequence[str] = (),
         collector_runtime_active: bool = False,
         reviewed_step_check: Callable[[], None] | None = None,
+        approval_binding: Mapping[str, Any] | None = None,
+        owned_service_scope: OwnedServiceScope | None = None,
+        owned_service_operation_binding: ServiceOperationBinding | None = None,
+        task_lifecycle: Any = None,
     ) -> tuple[dict[str, Any], tuple[EvidenceRecord, ...], PolicyDecision, tuple[str, ...]]:
         action = self.registry.get_action(str(step.action_id))
         if reviewed_step_check is not None:
@@ -2684,6 +2701,21 @@ class Orchestrator:
             )
             return row, (record,), decision, ()
 
+        delegated, undispatched = composition_dispatch.step_authority(
+            self,
+            action=action,
+            runner_profile=runner_profile,
+            adapted=adapted,
+            observer=observer,
+            profile=profile,
+            run_id=run_id,
+            step=step,
+            parent_ids=parent_ids,
+        )
+        if undispatched is not None:
+            return undispatched
+        if "grant_cleanup" in delegated:
+            action_timeout_ms, cancel_event = None, None
         manifest = build_execution_manifest(
             run_id=run_id,
             step_id=step.step_id,
@@ -2699,6 +2731,7 @@ class Orchestrator:
             execution_binding=(step.execution_binding if provider_binding is None else None),
             provider_binding=provider_binding,
             reviewed_operation=reviewed_operation(step, runner_profile),
+            **delegated,
         )
         approval = self._approval_state(
             manifest,
@@ -2716,6 +2749,14 @@ class Orchestrator:
             target_scope=required_target_scope,
             request_hash=str(manifest["request_hash"]),
             approval=approval,
+            grant=composition_dispatch.policy_state(
+                self.grant_execution,
+                manifest,
+                action.id,
+                profile.id,
+                required_target_scope,
+                error_type=OrchestrationError,
+            ),
         )
         if not decision.allowed:
             record = self._control_record(run_id, step, decision, parent_ids)
@@ -2732,6 +2773,12 @@ class Orchestrator:
             return row, (record,), decision, ()
 
         assert self.runner is not None
+        task_id = self._execution_task_id(manifest, runner_profile)
+        service_step = (
+            owned_service_scope is not None
+            and owned_service_scope.to_dict()["step_id"] == step.step_id
+            and owned_service_scope.to_dict()["action_id"] == step.action_id
+        )
         receipt_limits = manifest.get("limits")
         if not isinstance(receipt_limits, Mapping):
             raise OrchestrationError("runner manifest has no receipt recovery limits")
@@ -2784,11 +2831,15 @@ class Orchestrator:
                 getattr(wrapped_runner, "execute_task", None)
             )
             if callable(execute_task) and wrapped_supports_tasks:
-                task_id = self._execution_task_id(
-                    manifest,
-                    runner_profile,
-                )
                 runner_task_id = task_id
+                composition_dispatch.before_task(
+                    task_lifecycle or self.grant_execution,
+                    step,
+                    bound_inputs,
+                    manifest,
+                    task_id,
+                    cancel_event,
+                )
                 if self.before_receiver_task is not None:
                     self.before_receiver_task(step, bound_inputs, manifest, task_id)
                     if cancel_event is not None and cancel_event.is_set():
@@ -2797,6 +2848,35 @@ class Orchestrator:
                         )
                 if reviewed_step_check is not None:
                     reviewed_step_check()
+                service_grant = None
+                if service_step:
+                    try:
+                        current_binding = recheck_pending_service_operation_binding(
+                            self.service_intent_journal,
+                            owned_service_scope,
+                            owned_service_operation_binding,
+                        )
+                        service_grant = mint_step_grant(
+                            owned_service_scope,
+                            approval_record=approval_record,
+                            approval_binding=approval_binding,
+                            operation_binding=current_binding,
+                            run_id=run_id,
+                            step=step,
+                            manifest=manifest,
+                            sealed_profile=runner_profile,
+                            task_id=task_id,
+                        )
+                        service_kwargs = service_grant_kwargs(
+                            self.runner, execute_task, service_grant
+                        )
+                    except ContractError as exc:
+                        raise OrchestrationError(str(exc)) from exc
+                else:
+                    try:
+                        service_kwargs = service_grant_kwargs(self.runner, execute_task, None)
+                    except ContractError as exc:
+                        raise OrchestrationError(str(exc)) from exc
                 dispatch_requested = True
                 runner_result = execute_task(
                     manifest,
@@ -2806,8 +2886,17 @@ class Orchestrator:
                     durable_result_path=(
                         self.store.root / ".bluefire-runner-results" / f"{task_id}.json"
                     ),
+                    **service_kwargs,
                 )
             else:
+                if self.grant_execution is not None or task_lifecycle is not None:
+                    raise RunnerTransportError(
+                        "Grant-owned execution requires authenticated task transport."
+                    )
+                if service_step:
+                    raise OrchestrationError(
+                        "owned-service dispatch requires authenticated task transport"
+                    )
                 if self.before_receiver_task is not None:
                     raise RunnerTransportError(
                         "Receiver-bound execution requires the native single-task transport."
@@ -2837,7 +2926,18 @@ class Orchestrator:
                 has_observable_paths=bool(adapted.observable_paths),
             )
             self._validate_cleanup_result(manifest, runner_result)
+            composition_dispatch.after_result(
+                task_lifecycle or self.grant_execution,
+                step,
+                manifest,
+                task_id,
+                runner_result,
+                discovered_request_receipts,
+            )
         except RunnerTaskCancelled as exc:
+            composition_dispatch.after_cancellation(
+                task_lifecycle or self.grant_execution, step, manifest, task_id, exc
+            )
             try:
                 for receipt_id in discover_current_receipts():
                     if receipt_id not in receipt_ids:
@@ -2862,6 +2962,14 @@ class Orchestrator:
                 raise ExecutionRecordFailure(exc) from record_error
             raise
         except RunnerTransportError as exc:
+            composition_dispatch.after_unsent(
+                task_lifecycle or self.grant_execution,
+                step,
+                manifest,
+                task_id,
+                dispatch_requested=dispatch_requested,
+                runner_task_id=runner_task_id,
+            )
             discovered_receipts = discover_current_receipts()
             for receipt_id in discovered_receipts:
                 if receipt_id not in receipt_ids:
@@ -3618,34 +3726,9 @@ class Orchestrator:
 
     @staticmethod
     def _filesystem_scope(plan: ExecutionPlan) -> tuple[str, ...]:
-        """Compile the fixed runner roots needed by this exact reviewed plan."""
+        from .runner_plan_scope import filesystem_scope
 
-        roots_by_action = {
-            "sandbox.identity-material.seed.v1": ("identity-material",),
-            "sandbox.identity-material.inspect.v1": ("identity-material",),
-            "sandbox.fixture.create.v1": ("fixtures",),
-            "sandbox.fixture.transform.v1": ("fixtures",),
-            "sandbox.discovery.list.v1": ("fixtures",),
-            "sandbox.discovery.metadata.v1": ("fixtures",),
-            "sandbox.discovery.recursive.v1": ("fixtures",),
-            "sandbox.archive.tar.v1": ("fixtures", "staged"),
-            "sandbox.collection.stage.v1": ("fixtures", "staged"),
-            "sandbox.collection.records.v1": ("fixtures", "staged"),
-            "sandbox.collection.archive.v1": ("fixtures", "staged"),
-            "sandbox.collection.atomic-gzip.v1": ("fixtures", "staged"),
-            "sandbox.permission.chmod.v1": ("fixtures",),
-            "sandbox.network.loopback.v1": ("staged",),
-            "sandbox.peer.handoff.v1": ("staged",),
-            "sandbox.observability.variant.v1": ("staged", "observability"),
-            "sandbox.export.local.v1": ("staged", "exports"),
-            "sandbox.restricted.persistence-marker.v1": ("restricted",),
-        }
-        selected: list[str] = []
-        for step in plan.steps:
-            for root in roots_by_action.get(Orchestrator._runner_opcode(step) or "", ()):
-                if root not in selected:
-                    selected.append(root)
-        return tuple(selected)
+        return filesystem_scope(plan, opcode_for_step=Orchestrator._runner_opcode)
 
     @staticmethod
     def _network_destinations(plan: ExecutionPlan) -> tuple[Mapping[str, Any], ...]:
@@ -3758,211 +3841,9 @@ class Orchestrator:
             result.append(receipt_id)
         return tuple(result)
 
-    @staticmethod
-    def _discover_runner_receipts(
-        sandbox_root: Path,
-        *,
-        expected_profile_id: str | None = None,
-        expected_request_hash: str | None = None,
-        expected_action_id: str | None = None,
-        require_commit: bool = False,
-        max_files: int = _MAX_RECOVERY_FILES,
-        max_bytes: int = _MAX_RECOVERY_FILE_BYTES,
-    ) -> tuple[str, ...]:
-        if (expected_request_hash is None) != (expected_action_id is None):
-            raise RunnerTransportError("runner receipt request filter is incomplete")
-        if (
-            not isinstance(require_commit, bool)
-            or isinstance(max_files, bool)
-            or not isinstance(max_files, int)
-            or not 1 <= max_files <= _MAX_RECOVERY_FILES
-            or isinstance(max_bytes, bool)
-            or not isinstance(max_bytes, int)
-            or not 1 <= max_bytes <= _MAX_RECOVERY_FILE_BYTES
-        ):
-            raise RunnerTransportError("runner receipt discovery limits are invalid")
-        receipt_root = sandbox_root / ".bluefire" / "receipts"
-        try:
-            receipt_root.lstat()
-        except FileNotFoundError:
-            return ()
-        except OSError as exc:
-            raise RunnerTransportError("runner receipt directory could not be inspected") from exc
-        try:
-            workspace_ids = _workspace_id_candidates(sandbox_root)
-            with contextlib.ExitStack() as stack:
-                pinned = stack.enter_context(_PinnedPrivateDirectory(receipt_root))
-                pinned_commits: _PinnedPrivateDirectory | None = None
-                if require_commit:
-                    commit_root = sandbox_root / ".bluefire" / "receipt-commits"
-                    try:
-                        commit_root.lstat()
-                    except FileNotFoundError:
-                        return ()
-                    except OSError as exc:
-                        raise RunnerTransportError(
-                            "runner receipt commit directory could not be inspected"
-                        ) from exc
-                    pinned_commits = stack.enter_context(_PinnedPrivateDirectory(commit_root))
-                names = pinned.names(maximum=_MAX_DISCOVERED_RECEIPTS)
-                receipt_rows: list[tuple[datetime, str]] = []
-                for name in names:
-                    entry = Path(name)
-                    receipt_id = entry.stem
-                    if entry.suffix != ".json" or not _is_lower_hex_digest(receipt_id):
-                        raise RunnerTransportError("runner receipt entry is unsafe")
-                    try:
-                        receipt_bytes = pinned.read(name, maximum=_MAX_RECEIPT_BYTES)
-                    except (OSError, RunnerTransportError) as exc:
-                        raise RunnerTransportError(
-                            "runner receipt could not be read safely"
-                        ) from exc
-                    payload = _decode_receipt_document(receipt_bytes)
-                    workspace_id = payload.get("workspace_id")
-                    created_at = payload.get("created_at")
-                    if (
-                        set(payload) != _RECEIPT_FIELDS
-                        or payload.get("schema_version") != "bluefire.receipt/v1"
-                        or payload.get("receipt_id") != receipt_id
-                        or not isinstance(payload.get("request_hash"), str)
-                        or not isinstance(payload.get("action_id"), str)
-                        or not isinstance(payload.get("runner_profile_id"), str)
-                        or workspace_id not in workspace_ids
-                        or not isinstance(created_at, str)
-                        or not 1 <= len(created_at) <= 128
-                        or not _valid_owned_receipt_paths(
-                            payload.get("paths"), max_files=max_files, max_bytes=max_bytes
-                        )
-                    ):
-                        raise RunnerTransportError("runner receipt record is invalid")
-                    identity = {
-                        "schema_version": "bluefire.receipt/v1",
-                        "request_hash": payload["request_hash"],
-                        "action_id": payload["action_id"],
-                        "runner_profile_id": payload["runner_profile_id"],
-                        "workspace_id": workspace_id,
-                        "created_at": created_at,
-                        "paths": payload["paths"],
-                    }
-                    if content_hash(identity) != f"sha256:{receipt_id}":
-                        raise RunnerTransportError("runner receipt content digest is invalid")
-                    if (
-                        expected_profile_id is not None
-                        and payload.get("runner_profile_id") != expected_profile_id
-                    ):
-                        raise RunnerTransportError("runner receipt belongs to another profile")
-                    if expected_request_hash is not None and (
-                        payload.get("request_hash") != expected_request_hash
-                        or payload.get("action_id") != expected_action_id
-                    ):
-                        continue
-                    if pinned_commits is not None:
-                        try:
-                            commit_bytes = pinned_commits.read(
-                                f"{receipt_id}.json", maximum=_MAX_RECEIPT_BYTES
-                            )
-                        except FileNotFoundError:
-                            continue
-                        except (OSError, RunnerTransportError) as exc:
-                            raise RunnerTransportError(
-                                "runner receipt commit could not be read safely"
-                            ) from exc
-                        commit = _decode_receipt_document(commit_bytes)
-                        committed_at = commit.get("committed_at")
-                        if (
-                            set(commit) != _RECEIPT_COMMIT_FIELDS
-                            or commit.get("schema_version") != "bluefire.receipt-commit/v1"
-                            or commit.get("receipt_id") != receipt_id
-                            or commit.get("runner_profile_id") != payload.get("runner_profile_id")
-                            or commit.get("workspace_id") != workspace_id
-                            or not isinstance(committed_at, str)
-                            or not 1 <= len(committed_at) <= 128
-                        ):
-                            raise RunnerTransportError("runner receipt commit record is invalid")
-                    try:
-                        parsed = parse_iso8601_datetime(created_at)
-                    except ValueError as exc:
-                        raise RunnerTransportError("runner receipt timestamp is invalid") from exc
-                    if parsed.tzinfo is None:
-                        raise RunnerTransportError("runner receipt timestamp is not timezone-aware")
-                    receipt_rows.append((parsed.astimezone(timezone.utc), receipt_id))
-        except FileNotFoundError:
-            raise RunnerTransportError(
-                "runner receipt directory changed during inspection"
-            ) from None
-        except RunnerTransportError:
-            raise
-        except OSError as exc:
-            raise RunnerTransportError("runner receipt directory could not be read") from exc
-        receipt_rows.sort()
-        return tuple(receipt_id for _created_at, receipt_id in receipt_rows)
+    _discover_runner_receipts = staticmethod(discover_runner_receipts)
 
-    @staticmethod
-    def _validate_cleanup_result(
-        manifest: Mapping[str, Any],
-        result: Mapping[str, Any],
-    ) -> None:
-        execution_binding = manifest.get("execution_binding")
-        bound_opcode = (
-            execution_binding.get("runner_opcode")
-            if isinstance(execution_binding, Mapping)
-            else None
-        )
-        if manifest.get("action_id") != "sandbox.cleanup.v1" and bound_opcode != (
-            "sandbox.cleanup.v1"
-        ):
-            return
-        cleanup = result.get("cleanup")
-        if not isinstance(cleanup, Mapping):
-            raise RunnerTransportError("cleanup result is missing its cleanup report")
-        expected_cleanup_fields = {
-            "requested_receipts",
-            "removed_paths",
-            "already_absent_receipts",
-            "retained_paths",
-            "errors",
-            "verification_performed",
-            "verified_removed_paths",
-            "verified_absent_paths",
-            "verified_receipts",
-        }
-        if set(cleanup) != expected_cleanup_fields:
-            raise RunnerTransportError("cleanup report shape is invalid")
-        for field in (
-            "removed_paths",
-            "already_absent_receipts",
-            "retained_paths",
-            "errors",
-        ):
-            values = cleanup.get(field)
-            if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
-                raise RunnerTransportError("cleanup report lists are invalid")
-        for field in (
-            "requested_receipts",
-            "verified_removed_paths",
-            "verified_absent_paths",
-            "verified_receipts",
-        ):
-            value = cleanup.get(field)
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                raise RunnerTransportError("cleanup verification counters are invalid")
-        output = result.get("output")
-        if not isinstance(output, Mapping) or dict(output) != dict(cleanup):
-            raise RunnerTransportError("cleanup output does not match its authoritative report")
-        params = manifest.get("params")
-        requested = params.get("receipt_ids") if isinstance(params, Mapping) else None
-        if not isinstance(requested, list):
-            raise RunnerTransportError("cleanup manifest has no receipt list")
-        if result.get("status") != "success":
-            return
-        if cleanup.get("requested_receipts") != len(requested):
-            raise RunnerTransportError("cleanup report does not cover every requested receipt")
-        if cleanup.get("errors") != [] or cleanup.get("retained_paths") != []:
-            raise RunnerTransportError("cleanup reported success with retained artifacts")
-        if cleanup.get("verification_performed") is not True:
-            raise RunnerTransportError("cleanup success lacks verified postconditions")
-        if cleanup.get("verified_receipts") != len(requested):
-            raise RunnerTransportError("cleanup did not verify every requested receipt")
+    _validate_cleanup_result = staticmethod(validate_cleanup_result)
 
     @staticmethod
     def _build_detections(records: Sequence[EvidenceRecord]) -> tuple[DetectionCandidate, ...]:

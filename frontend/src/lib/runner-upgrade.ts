@@ -26,7 +26,7 @@ export interface RunnerUpgradeReview {
 }
 
 export function canReviewRunnerUpgrade(profileId: string | undefined, status: RunnerLifecycleStatus | undefined): boolean {
-  return Boolean(profileId && status?.profile_id === profileId && status.enrollment === "active" && status.process === "absent" && (status.state === "stopped" || status.state === "unavailable" && status.upgrade_recovery_required === true));
+  return Boolean(profileId && status?.profile_id === profileId && !status.profile_enrollment && status.enrollment === "active" && status.process === "absent" && (status.state === "stopped" || status.state === "unavailable" && status.upgrade_recovery_required === true));
 }
 
 /** A partial or differently bound response must never become an apply control. */
