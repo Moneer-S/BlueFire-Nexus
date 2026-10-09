@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-import os
 import subprocess  # nosec B404
 from pathlib import Path
+
+from .linux_session_facts import KINDS as KINDS
+from .linux_session_facts import gid as gid
+from .linux_session_facts import namespaces as namespaces
+from .linux_session_facts import uid as uid
 
 ROOT = Path("/opt/bluefire-lab")
 HOME = Path("/home/bluefire")
@@ -21,19 +25,6 @@ ENV = {
     "PYTHONNOUSERSITE": "1",
 }
 STOP_FILE = ROOT / "session-stop"
-KINDS = ("mnt", "net", "pid", "ipc")
-
-
-def uid() -> int:
-    return int(getattr(os, "getuid", lambda: -1)())
-
-
-def gid() -> int:
-    return int(getattr(os, "getgid", lambda: -1)())
-
-
-def namespaces() -> dict[str, str]:
-    return {kind: os.readlink(f"/proc/self/ns/{kind}") for kind in KINDS}
 
 
 def guest_command(mode: str, port: int, *args: str) -> list[str]:

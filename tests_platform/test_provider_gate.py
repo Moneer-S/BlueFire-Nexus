@@ -99,6 +99,11 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/receiver_policy.py",
         "bluefire/receiver_session_contract.py",
         "bluefire/receiver_session_channel.py",
+        "bluefire/file_access_contract.py",
+        "bluefire/file_access_enrollment.py",
+        "bluefire/file_access_method.py",
+        "bluefire/file_access_probe.py",
+        "bluefire/file_access_closure.py",
         "bluefire/capability_resources.py",
         "bluefire/capability_grant.py",
         "bluefire/capability_facts.py",
@@ -197,6 +202,9 @@ def _structural_report() -> dict[str, Any]:
         "runner/src/service_reservation.rs",
         "runner/src/service_reservation_storage.rs",
         "runner/src/service_payload.rs",
+        "runner/src/file_access.rs",
+        "runner/src/file_access_linux.rs",
+        "runner/src/actions/file_access.rs",
         "bluefire/runner_client.py",
         "bluefire/runner_bootstrap.py",
         "bluefire/runner_darwin_containment.py",
@@ -217,6 +225,7 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/prepared_lab_broker.py",
         "bluefire/prepared_lab_ui_bootstrap.py",
         "bluefire/prepared_lab_product.py",
+        "bluefire/prepared_lab_file_access.py",
         "bluefire/browser_launch.py",
         "bluefire/runner_python_environment.py",
         "runner/src/cancellation_witness.rs",
@@ -369,6 +378,12 @@ def _structural_report() -> dict[str, Any]:
                         "native_process_inventory_is_fixed": True,
                     },
                     "python_boundaries": {
+                        "prepared_lab_file_access.py": {
+                            "passed": True,
+                            "shell_imports": 1,
+                            "process_calls": ["subprocess.Popen"],
+                            "unexpected_findings": [],
+                        },
                         "ai_transport.py": {
                             "passed": True,
                             "shell_imports": 1,
@@ -1142,6 +1157,8 @@ def test_provider_gate_core_action_count_is_pinned_to_the_runner_registry() -> N
     """
     assert provider_gate_validation._CORE_ACTION_COUNT == len(BUILTIN_RUNNER_ACTION_IDS)
     assert BUILTIN_RUNNER_ACTION_VERSIONS["sandbox.permission.chmod.v1"] == "1.0.0"
+    assert BUILTIN_RUNNER_ACTION_VERSIONS["file_access.probe.non_owner.v1"] == "1.0.0"
+    assert BUILTIN_RUNNER_ACTION_VERSIONS["file_access.verify.owner.v1"] == "1.0.0"
 
 
 def test_gate_02_emits_exact_unique_proofs_and_bundle_attachments(

@@ -435,6 +435,27 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
             return
+        file_access = self._routes._file_access_request(path)
+        if file_access is not None:
+            operations = {
+                "status": lambda: self.platform_server.service.file_access_status(),
+                "operation": lambda: self.platform_server.service.file_access_operation(
+                    file_access[1]
+                ),
+                "control": lambda: self.platform_server.service.file_access_control(file_access[1]),
+                "reconciliation": lambda: self.platform_server.service.file_access_reconciliation(
+                    file_access[1], file_access[2]
+                ),
+            }
+            if file_access[0] in operations:
+                self._dispatch(operations[file_access[0]])
+            elif file_access[0]:
+                self._error(
+                    HTTPStatus.METHOD_NOT_ALLOWED,
+                    "method_not_allowed",
+                    "This file-access route requires POST.",
+                )
+            return
         composition = self._routes._composition_request(path)
         if composition is not None:
             if composition[0] == "read":
@@ -1006,6 +1027,29 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         if path == f"{API_PREFIX}/comparisons":
             self._dispatch(lambda: self.platform_server.service.compare(body))
+            return
+        file_access = self._routes._file_access_request(path)
+        if file_access is not None:
+            operations = {
+                "review": lambda: self.platform_server.service.file_access_review(body),
+                "operations": lambda: self.platform_server.service.submit_file_access_operation(
+                    body
+                ),
+                "control-list": lambda: self.platform_server.service.list_file_access_controls(
+                    body
+                ),
+                "reconcile": lambda: self.platform_server.service.reconcile_file_access_operation(
+                    file_access[1], body
+                ),
+            }
+            if file_access[0] in operations:
+                self._dispatch(operations[file_access[0]])
+            elif file_access[0]:
+                self._error(
+                    HTTPStatus.METHOD_NOT_ALLOWED,
+                    "method_not_allowed",
+                    "This file-access route requires GET.",
+                )
             return
         composition = self._routes._composition_request(path)
         if composition is not None:

@@ -5,7 +5,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { CompositionSetup } from "../src/components/CompositionReview";
 import { CompositionPage } from "../src/pages/Composition";
-import { compositionApi, readCompositionPending, storeCompositionCancellation, storeCompositionControl, storeCompositionPending } from "../src/lib/composition";
+import { compositionApi, FILE_ACCESS_PACK, readCompositionPending, storeCompositionCancellation, storeCompositionControl, storeCompositionPending } from "../src/lib/composition";
+import { fileAccessObjectiveFixture } from "./file-access-fixture";
 import { attemptFixture, contextFixture, controlId, grantRequestFixture, objectiveFixture, ownerId, proposalFixture, proposalId, question, refusalFixture, reviewFixture, testDigest } from "./composition-fixture";
 
 vi.mock("../src/components/CompositionGraph", () => ({ CompositionGraph: () => <div>Read-only graph</div> }));
@@ -131,6 +132,17 @@ it("does not request revisions from an already established accepted attempt", as
   expect(await screen.findByRole("option", { name: "Attempt 1: established" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Request evidence-based revision" })).toBeDisabled();
   expect(compositionApi.context).not.toHaveBeenCalled();
+});
+it.each(["allowed", "permission_denied", "unknown"] as const)("keeps the %s file-access attempt in the existing workspace without inventing revision authority", async decision => {
+  vi.spyOn(compositionApi, "objective").mockResolvedValue(fileAccessObjectiveFixture(decision));
+  const submit = vi.spyOn(compositionApi, "submit");
+  mount(<CompositionPage />, `/composition?control=${controlId}&objective=${ownerId}&pack=${FILE_ACCESS_PACK}`);
+  expect(await screen.findByRole("link", { name: "Review retained file-access control" })).toHaveAttribute("href", `/file-access?control=${controlId}`);
+  expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Revoke" })).toBeEnabled();
+  expect(screen.queryByRole("button", { name: /Request.*revision/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Start fresh attempt within grant" })).not.toBeInTheDocument();
+  expect(compositionApi.context).not.toHaveBeenCalled(); expect(submit).not.toHaveBeenCalled();
 });
 it("recovers a stale-review refusal on reload and offers a new explicit review without replay", async () => {
   vi.spyOn(compositionApi, "objective").mockResolvedValue(refusalFixture());
