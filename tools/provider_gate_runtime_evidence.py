@@ -20,6 +20,7 @@ from bluefire.runner_bootstrap import (
     validate_runner_inventory,
 )
 from bluefire.runner_client import SubprocessRustRunner, runner_inventory_digest
+from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_IDS
 from bluefire.service import BlueFireService
 from bluefire.util import content_hash
 from tools.provider_gate_common import (
@@ -428,6 +429,30 @@ def _remove_version(
     return response
 
 
+def _advertised_core_action_count(inventory: Mapping[str, Any]) -> int:
+    actions = inventory.get("actions")
+    reserved_id = "owned.aws.s3_access.v1"
+    if not isinstance(actions, list) or not all(isinstance(row, Mapping) for row in actions):
+        raise ProviderGateError("packaged runner action inventory is invalid")
+    action_ids = [row.get("action_id") for row in actions]
+    if (
+        any(not isinstance(action_id, str) for action_id in action_ids)
+        or len(set(action_ids)) != len(action_ids)
+        or set(action_ids) != BUILTIN_RUNNER_ACTION_IDS | {reserved_id}
+    ):
+        raise ProviderGateError("packaged runner action inventory is invalid")
+    reserved = next(row for row in actions if row["action_id"] == reserved_id)
+    if (
+        reserved.get("action_version") != "1.0.0"
+        or reserved.get("readiness") != "structural"
+        or reserved.get("capabilities") != ["cloud_aws_s3_access"]
+        or reserved.get("platforms") != ["linux"]
+        or reserved.get("native_tool_binding") is not None
+    ):
+        raise ProviderGateError("packaged runner reserved cloud descriptor is invalid")
+    return len(actions)
+
+
 def _runner_context(
     repository: Path, evidence_dir: Path
 ) -> tuple[SubprocessRustRunner, dict[str, Any]]:
@@ -490,7 +515,7 @@ def _runner_context(
             "receipt_protocol": inventory.get("receipt_protocol"),
             "platform": inventory.get("platform"),
             "provider_runtime_count": len(runtimes),
-            "core_action_count": len(inventory.get("actions", [])),
+            "core_action_count": _advertised_core_action_count(inventory),
         },
         "provider_runtime": dict(runtime),
         "logical_action_absent_from_core_inventory": True,

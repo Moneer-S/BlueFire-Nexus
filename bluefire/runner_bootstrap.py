@@ -26,6 +26,7 @@ from .runner_inventory import (
     RUNNER_ACTION_SDK_SCHEMA_VERSION,
     RUNNER_INVENTORY_SCHEMA_VERSION,
     RunnerInventoryAuthorityError,
+    packaged_builtin_inventory,
     validate_builtin_action_inventory,
 )
 from .version import __version__
@@ -331,7 +332,7 @@ def validate_runner_inventory(
         raise RunnerBootstrapError("Runner health verification reported an incompatibility.")
     try:
         validate_builtin_action_inventory(
-            inventory,
+            packaged_builtin_inventory(inventory),
             required_action_ids=BUILTIN_RUNNER_ACTION_IDS,
             require_exact_catalog=True,
             structural_tool_action_ids=BUILTIN_STRUCTURAL_TOOL_ACTION_IDS,

@@ -4250,6 +4250,10 @@ class ProductStore(
                 from .product_store_receiver_defense import guard as receiver_guard
 
                 receiver_guard(self, connection, job_kind, document)
+            if "s3_access" in document:
+                from .product_store_s3_access import publication_guard as s3_guard
+
+                s3_guard(self, connection, job_kind, document)
             if job_kind == "receiver.defense" and (document.get("context") or {}).get(
                 "source_control"
             ):

@@ -23,7 +23,7 @@ class WorkflowService(AdSmbServiceMixin, StubService):
         self.ad_smb = jobs
 
 
-def test_actual_service_ad_startup_and_restart_never_admit_or_start_runner(tmp_path):
+def test_actual_service_ad_and_s3_startup_restart_never_admit_or_start_runner(tmp_path):
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()
     lifecycle = RecordingRunnerLifecycle(ReadyInventoryRunner(), sandbox)
@@ -54,6 +54,32 @@ def test_actual_service_ad_startup_and_restart_never_admit_or_start_runner(tmp_p
                     },
                 )
                 assert status == 409 and json_body(body)["error"]["code"] == "ad_smb_refused"
+                status, _, body = request(server, "GET", "/api/v1/s3-access/environments")
+                assert status == 200
+                environments = json_body(body)
+                assert environments["schema_version"] == "bluefire.s3-environments.v1"
+                assert environments["environments"] == []
+                assert environments["problem"].startswith("No S3 environment is enrolled.")
+                status, _, body = request(server, "GET", "/api/v1/s3-access/exercises")
+                assert status == 200
+                assert json_body(body) == {
+                    "schema_version": "bluefire.s3-exercise-list.v1",
+                    "truncated": False,
+                    "exercises": [],
+                }
+                status, _, body = request(
+                    server,
+                    "POST",
+                    "/api/v1/s3-access/exercises",
+                    body={
+                        "submission_id": str(uuid.uuid4()),
+                        "environment_id": "s3-env-" + "a" * 32,
+                        "context_digest": "sha256:" + "a" * 64,
+                    },
+                )
+                assert status == 409 and json_body(body)["error"]["code"] == "s3_access_refused"
+                assert service.ad_smb_workflows() == {"workflows": []}
+                assert service.s3_access_exercises()["exercises"] == []
             assert server.socket.fileno() == -1
             assert lifecycle.calls == []
         finally:

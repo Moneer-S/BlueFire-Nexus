@@ -15,7 +15,7 @@ import os
 import stat
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, Protocol
 
 from .owned_service_authority import (
     OwnedServiceAdmission,
@@ -35,6 +35,10 @@ _CONTEXT_ENV = "BLUEFIRE_SERVICE_CONTEXT_FD"
 _ENVELOPE_ENV = "BLUEFIRE_SERVICE_ENVELOPE_FD"
 _MAX_BYTES = 64 * 1024
 _DOMAIN = b"bluefire.owned-user-service-launch.v1\0"
+
+
+class _HostAdmission(Protocol):
+    def to_dict(self) -> dict[str, Any]: ...
 
 
 def _refuse() -> RunnerTransportError:
@@ -89,7 +93,7 @@ def _parse_host_arguments(raw: bytes) -> dict[str, str]:
 def _configured_host_enrollment(
     pid: int,
     *,
-    admission: OwnedServiceAdmission,
+    admission: _HostAdmission,
     profile: Mapping[str, Any],
     runner_digest: str,
     expected_root: Path | None = None,

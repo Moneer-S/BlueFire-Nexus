@@ -362,7 +362,9 @@ def test_server_rejects_non_enrolled_socket_before_tls(channel, source, destinat
         server._validate_raw_peer(fake)
 
 
-@pytest.mark.parametrize("operation", ["execute", "shutdown", "native_tool_inspect", "other"])
+@pytest.mark.parametrize(
+    "operation", ["execute", "shutdown", "native_tool_inspect", "s3_access_environments", "other"]
+)
 def test_no_general_dispatch_or_shutdown_in_channel(channel, operation, monkeypatch):
     client = bare_client(channel)
     monkeypatch.setattr(client, "_exchange", lambda *args, **kwargs: pytest.fail("no exchange"))
@@ -370,13 +372,14 @@ def test_no_general_dispatch_or_shutdown_in_channel(channel, operation, monkeypa
         client._call(operation, {}, task_id="task")
 
 
-def test_server_request_reuses_hmac_profile_validation_and_fixed_controls(channel):
+@pytest.mark.parametrize("forbidden", ["shutdown", "s3_access_environments"])
+def test_server_request_reuses_hmac_profile_validation_and_fixed_controls(channel, forbidden):
     server = object.__new__(transport.EnrolledAdSmbServer)
     server.channel = channel
     valid = request(channel)
     assert server._validated_request(valid, enrollment(channel)) == valid
     with pytest.raises(_RequestRefusal):
-        server._validated_request(request(channel, "shutdown"), enrollment(channel))
+        server._validated_request(request(channel, forbidden), enrollment(channel))
     invalid = {**valid, "authentication": pin("0")}
     with pytest.raises(_RequestRefusal):
         server._validated_request(invalid, enrollment(channel))

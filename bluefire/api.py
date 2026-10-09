@@ -473,6 +473,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
 
         if dispatch_ad_smb(self, path):
             return
+        from .api_s3_access import dispatch_s3_access
+
+        if dispatch_s3_access(self, path):
+            return
         receiver = self._routes._receiver_defense_request(path, listing=True)
         if receiver is not None:
             if receiver[0] == "read":
@@ -1090,6 +1094,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         from .api_ad_smb import dispatch_ad_smb
 
         if dispatch_ad_smb(self, path, body):
+            return
+        from .api_s3_access import dispatch_s3_access
+
+        if dispatch_s3_access(self, path, body):
             return
         receiver = self._routes._receiver_defense_request(path)
         if receiver is not None:

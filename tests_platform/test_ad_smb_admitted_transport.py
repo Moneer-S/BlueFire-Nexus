@@ -276,7 +276,8 @@ def test_profile_mutation_before_any_boundary(constructor, field, replacement):
     assert calls == []
 
 
-def test_admitted_receiver_validates_hmac_and_exact_execute_only():
+@pytest.mark.parametrize("forbidden", ["shutdown", "s3_access_environments"])
+def test_admitted_receiver_validates_hmac_and_exact_execute_only(forbidden):
     value, channel = original()
     server = object.__new__(admitted.AdmittedAdSmbReceiver)
     server.channel, server._ad_profile = channel, canonical_json_bytes(value["profile"])
@@ -289,10 +290,13 @@ def test_admitted_receiver_validates_hmac_and_exact_execute_only():
     with pytest.raises(RunnerAuthenticationError):
         server._validated_request({**submitted, "authentication": "bad"}, enrollment(channel))
     with pytest.raises(_RequestRefusal):
-        server._validated_request(request(channel, "shutdown"), enrollment(channel))
+        server._validated_request(request(channel, forbidden), enrollment(channel))
 
 
-@pytest.mark.parametrize("operation", ["shutdown", "native_tool_inspect", "owned_service_execute"])
+@pytest.mark.parametrize(
+    "operation",
+    ["shutdown", "native_tool_inspect", "owned_service_execute", "s3_access_environments"],
+)
 def test_client_rejects_non_ad_dispatch(operation):
     value, channel = original()
     with pytest.raises(RunnerAuthenticationError):
