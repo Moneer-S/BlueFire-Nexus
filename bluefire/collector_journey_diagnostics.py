@@ -16,6 +16,7 @@ from typing import Any, Callable, Mapping
 from .owned_service_authority import OwnedServiceAdmission
 from .run_store import RUN_ID_RE, RunStore
 from .runner_client import SubprocessRustRunner
+from .s3_access_launch import S3LaunchIntent
 
 FAILURE_REPORT = "gate05-failure-diagnostic.json"
 _STATUSES = frozenset(
@@ -256,11 +257,14 @@ class DiagnosticSubprocessRustRunner(SubprocessRustRunner):
         cancel_event: threading.Event,
         durable_result_path: str | Path,
         owned_service_admission: OwnedServiceAdmission | None = None,
+        s3_access_intent: S3LaunchIntent | None = None,
     ) -> Mapping[str, Any]:
         observe(self.diagnostic.begin, manifest, profile, self.timeout_seconds)
         admission_kwargs: dict[str, Any] = {}
         if owned_service_admission is not None:
             admission_kwargs["owned_service_admission"] = owned_service_admission
+        if s3_access_intent is not None:
+            admission_kwargs["s3_access_intent"] = s3_access_intent
         try:
             result = super().execute_task(
                 manifest,

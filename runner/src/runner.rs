@@ -72,6 +72,23 @@ impl Runner {
 
     pub fn execute(&self, manifest: ExecutionManifest, profile: RunnerProfile) -> TaskResult {
         let started_at = utc_now();
+        if manifest.action_id == crate::s3_admission::S3_ACTION_ID
+            || manifest
+                .execution_binding
+                .as_ref()
+                .is_some_and(|binding| binding.runner_opcode == crate::s3_admission::S3_ACTION_ID)
+        {
+            return failure_result(
+                &manifest,
+                &profile,
+                started_at,
+                ActionFailure {
+                    status: TaskStatus::Refused,
+                    code: "s3_admission_required",
+                    message: "S3 execution requires protected host admission.".into(),
+                },
+            );
+        }
         if manifest.action_id == crate::service_admission::SERVICE_ACTION_ID
             || manifest.execution_binding.as_ref().is_some_and(|binding| {
                 binding.runner_opcode == crate::service_admission::SERVICE_ACTION_ID
@@ -532,7 +549,9 @@ fn validate_profile(profile: &RunnerProfile) -> Result<(), ActionFailure> {
         } else {
             catalog_identity = Some(candidate_identity);
         }
-        if find_action(&binding.logical_action_id).is_some() {
+        if find_action(&binding.logical_action_id).is_some()
+            || binding.logical_action_id == crate::s3_admission::S3_ACTION_ID
+        {
             return Err(blocked(
                 "invalid_profile",
                 "provider binding cannot shadow a registered action",
@@ -551,6 +570,7 @@ fn validate_profile(profile: &RunnerProfile) -> Result<(), ActionFailure> {
         .chain(profile.control_blocked_actions.iter())
     {
         if find_action(action_id).is_none()
+            && action_id != crate::s3_admission::S3_ACTION_ID
             && !profile
                 .action_bindings
                 .iter()
@@ -1172,7 +1192,7 @@ fn make_evidence(
     evidence
 }
 
-fn failure_result(
+pub(crate) fn failure_result(
     manifest: &ExecutionManifest,
     profile: &RunnerProfile,
     started_at: chrono::DateTime<Utc>,
@@ -1313,7 +1333,7 @@ fn provider_result(
     }
 }
 
-fn outcome_result(
+pub(crate) fn outcome_result(
     manifest: &ExecutionManifest,
     profile: &RunnerProfile,
     started_at: chrono::DateTime<Utc>,

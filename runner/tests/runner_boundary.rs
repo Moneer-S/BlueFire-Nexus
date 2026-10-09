@@ -3246,7 +3246,14 @@ fn inventory_and_execute_cli_emit_the_versioned_json_contract() {
         "bluefire.runner-receipt-wal.v2"
     );
     let actions = inventory_json["actions"].as_array().unwrap();
-    assert_eq!(actions.len(), 26);
+    assert_eq!(actions.len(), 27);
+    let s3 = actions
+        .iter()
+        .find(|action| action["action_id"] == "owned.aws.s3_access.v1")
+        .expect("reserved S3 metadata must remain in the static inventory");
+    assert_eq!(s3["readiness"], "structural");
+    assert_eq!(s3["capabilities"], json!(["cloud_aws_s3_access"]));
+    assert!(s3.get("native_tool_binding").is_none());
     for action_id in [
         "file_access.probe.non_owner.v1",
         "file_access.verify.owner.v1",

@@ -17,7 +17,11 @@ import bluefire.provider_gate_validation as provider_gate_validation
 import tools.run_provider_gate_journey as provider_gate_helper
 from bluefire.product_acceptance import load_release_contract
 from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_IDS, BUILTIN_RUNNER_ACTION_VERSIONS
-from tools import provider_boundary_inventory, provider_gate_source_audit
+from tools import (
+    provider_boundary_inventory,
+    provider_gate_runtime_evidence,
+    provider_gate_source_audit,
+)
 from tools.provider_gate_fixture_evidence import (
     _fixture_set,
 )
@@ -202,6 +206,39 @@ def _structural_report() -> dict[str, Any]:
         "runner/src/service_reservation.rs",
         "runner/src/service_reservation_storage.rs",
         "runner/src/service_payload.rs",
+        "bluefire/s3_access_admission.py",
+        "bluefire/s3_access_contract.py",
+        "bluefire/s3_access_policy.py",
+        "bluefire/s3_access_wire.py",
+        "bluefire/s3_access_execution_contract.py",
+        "bluefire/s3_access_executor.py",
+        "bluefire/s3_access_recovery.py",
+        "bluefire/s3_access_host_config.py",
+        "bluefire/s3_access_launch.py",
+        "bluefire/s3_access_transport.py",
+        "bluefire/s3_access_runtime.py",
+        "bluefire/s3_access_sdk.py",
+        "bluefire/s3_access_sdk_boundary.py",
+        "bluefire/s3_access_sdk_transport.py",
+        "bluefire/s3_access_worker.py",
+        "bluefire/s3_access_worker_entry.py",
+        "runner/src/owned_child_identity.rs",
+        "runner/src/protected_launch_channel.rs",
+        "runner/src/reservation_storage.rs",
+        "runner/src/runner_s3_access.rs",
+        "runner/src/s3_access_binding.rs",
+        "runner/src/s3_access_scope.rs",
+        "runner/src/s3_access_policy.rs",
+        "runner/src/s3_access_send.rs",
+        "runner/src/s3_admission.rs",
+        "runner/src/s3_admission_wire.rs",
+        "runner/src/s3_reservation.rs",
+        "runner/src/s3_reservation_state.rs",
+        "runner/src/s3_runtime.rs",
+        "runner/src/s3_runtime_manifest.rs",
+        "runner/src/s3_worker_protocol.rs",
+        "runner/src/s3_worker_result.rs",
+        "runner/src/s3_worker_secret.rs",
         "runner/src/file_access.rs",
         "runner/src/file_access_linux.rs",
         "runner/src/actions/file_access.rs",
@@ -231,6 +268,7 @@ def _structural_report() -> dict[str, Any]:
         "runner/src/cancellation_witness.rs",
         "runner/src/process.rs",
         "runner/src/atomic_gzip.rs",
+        "runner/src/s3_worker_process.rs",
     )
     return {
         "schema_version": provider_gate.STRUCTURAL_SCHEMA,
@@ -639,6 +677,40 @@ def test_live_source_audit_round_trips_locked_structural_validator() -> None:
         "runner/src/service_reservation.rs",
         "runner/src/service_reservation_storage.rs",
         "runner/src/service_payload.rs",
+        "bluefire/s3_access_admission.py",
+        "bluefire/s3_access_contract.py",
+        "bluefire/s3_access_policy.py",
+        "bluefire/s3_access_wire.py",
+        "bluefire/s3_access_execution_contract.py",
+        "bluefire/s3_access_executor.py",
+        "bluefire/s3_access_recovery.py",
+        "bluefire/s3_access_host_config.py",
+        "bluefire/s3_access_launch.py",
+        "bluefire/s3_access_transport.py",
+        "bluefire/s3_access_runtime.py",
+        "bluefire/s3_access_sdk.py",
+        "bluefire/s3_access_sdk_boundary.py",
+        "bluefire/s3_access_sdk_transport.py",
+        "bluefire/s3_access_worker.py",
+        "bluefire/s3_access_worker_entry.py",
+        "runner/src/owned_child_identity.rs",
+        "runner/src/protected_launch_channel.rs",
+        "runner/src/reservation_storage.rs",
+        "runner/src/runner_s3_access.rs",
+        "runner/src/s3_access_binding.rs",
+        "runner/src/s3_access_scope.rs",
+        "runner/src/s3_access_policy.rs",
+        "runner/src/s3_access_send.rs",
+        "runner/src/s3_admission.rs",
+        "runner/src/s3_admission_wire.rs",
+        "runner/src/s3_reservation.rs",
+        "runner/src/s3_reservation_state.rs",
+        "runner/src/s3_runtime.rs",
+        "runner/src/s3_runtime_manifest.rs",
+        "runner/src/s3_worker_protocol.rs",
+        "runner/src/s3_worker_result.rs",
+        "runner/src/s3_worker_secret.rs",
+        "runner/src/s3_worker_process.rs",
     ],
 )
 def test_structural_validator_requires_each_saved_run_source(relative: str) -> None:
@@ -979,7 +1051,7 @@ def _journey_report() -> dict[str, Any]:
                 "provider_runtime_count": 1,
                 # The inventory advertises every built-in action on every platform;
                 # platform restrictions are enforced by policy at dispatch.
-                "core_action_count": len(BUILTIN_RUNNER_ACTION_IDS),
+                "core_action_count": len(BUILTIN_RUNNER_ACTION_IDS) + 1,
             },
             "provider_runtime": {
                 **runtime_contract,
@@ -1146,31 +1218,52 @@ def _install_passing_fakes(
     return suite_calls
 
 
-def test_provider_gate_core_action_count_is_pinned_to_the_runner_registry() -> None:
-    """The release gate cannot import the domain-layer registry, so pin it here instead.
-
-    ``bluefire.provider_gate_validation`` sits in the release layer, which GATE-10
-    forbids from depending on ``bluefire.runner_inventory`` (domain). Its action count
-    is therefore a literal, and a literal is exactly what went stale when the registry
-    last grew. This test is the guard: if you add or remove a built-in runner action,
-    update ``_CORE_ACTION_COUNT`` to match.
-    """
-    assert provider_gate_validation._CORE_ACTION_COUNT == len(BUILTIN_RUNNER_ACTION_IDS)
+def test_provider_gate_core_action_count_distinguishes_reserved_metadata() -> None:
+    """Advertised descriptors are not the ordinary registry's dispatch authority."""
+    assert len(BUILTIN_RUNNER_ACTION_IDS) == 26
+    assert "owned.aws.s3_access.v1" not in BUILTIN_RUNNER_ACTION_IDS
+    assert provider_gate_validation._CORE_ACTION_COUNT == len(BUILTIN_RUNNER_ACTION_IDS) + 1
     assert BUILTIN_RUNNER_ACTION_VERSIONS["sandbox.permission.chmod.v1"] == "1.0.0"
     assert BUILTIN_RUNNER_ACTION_VERSIONS["file_access.probe.non_owner.v1"] == "1.0.0"
     assert BUILTIN_RUNNER_ACTION_VERSIONS["file_access.verify.owner.v1"] == "1.0.0"
 
 
+def test_provider_gate_counts_the_actual_reserved_descriptor_shape() -> None:
+    actions = [{"action_id": action_id} for action_id in sorted(BUILTIN_RUNNER_ACTION_IDS)]
+    reserved = {
+        "action_id": "owned.aws.s3_access.v1",
+        "action_version": "1.0.0",
+        "readiness": "structural",
+        "capabilities": ["cloud_aws_s3_access"],
+        "platforms": ["linux"],
+    }
+    inventory = {"actions": actions + [reserved]}
+    count = provider_gate_runtime_evidence._advertised_core_action_count(inventory)
+    assert count == 27
+    report = _journey_report()
+    report["packaged_runner"]["inventory_contract"]["core_action_count"] = count
+    provider_gate._validate_journey(report)
+    for rows in (
+        actions,
+        actions + [reserved, reserved],
+        actions + [{**reserved, "readiness": "ready"}],
+        actions + [{**reserved, "native_tool_binding": {}}],
+    ):
+        with pytest.raises(provider_gate_runtime_evidence.ProviderGateError):
+            provider_gate_runtime_evidence._advertised_core_action_count({"actions": rows})
+
+
 def test_gate_02_emits_exact_unique_proofs_and_bundle_attachments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert _journey_report()["packaged_runner"]["inventory_contract"]["core_action_count"] == len(
-        BUILTIN_RUNNER_ACTION_IDS
+    assert (
+        _journey_report()["packaged_runner"]["inventory_contract"]["core_action_count"]
+        == len(BUILTIN_RUNNER_ACTION_IDS) + 1
     )
-    # drift in either direction must still be rejected, relative to the registry
+    # Drift in either direction must still be rejected, including a missing reserved row.
     for invalid_count in (
-        len(BUILTIN_RUNNER_ACTION_IDS) - 1,
-        len(BUILTIN_RUNNER_ACTION_IDS) + 1,
+        len(BUILTIN_RUNNER_ACTION_IDS),
+        len(BUILTIN_RUNNER_ACTION_IDS) + 2,
     ):
         drifted_inventory = _journey_report()
         drifted_inventory["packaged_runner"]["inventory_contract"][
@@ -1787,6 +1880,11 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
         command_inventory
     )
     query_copy.write_bytes(query_source)
+    assert not provider_gate_source_audit._native_command_source_inventory_is_fixed(
+        command_inventory
+    )
+    worker_source = (REPOSITORY / "runner" / "src" / "s3_worker_process.rs").read_bytes()
+    (command_inventory / "runner" / "src" / "s3_worker_process.rs").write_bytes(worker_source)
     assert provider_gate_source_audit._native_command_source_inventory_is_fixed(command_inventory)
     chmod_copy.write_bytes(
         chmod_source + b'\nfn unreviewed() { let _ = std::process::Command::new("unreviewed"); }\n'

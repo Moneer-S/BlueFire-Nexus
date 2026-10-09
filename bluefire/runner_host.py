@@ -138,6 +138,7 @@ def serve_managed_runner(
             enrollment_root,
             secret_provider=secret_provider,
         )
+        from .s3_access_launch import ConfiguredS3LaunchAuthority
         from .service_launch import ConfiguredServiceLaunchAuthority
 
         transport = runner or SubprocessRustRunner(
@@ -151,6 +152,7 @@ def serve_managed_runner(
             service_launch_authority=ConfiguredServiceLaunchAuthority(
                 enrollment.root, secret_provider
             ),
+            s3_launch_authority=ConfiguredS3LaunchAuthority(enrollment.root, secret_provider),
         )
         server = AuthenticatedRunnerServer(
             enrollment.root,

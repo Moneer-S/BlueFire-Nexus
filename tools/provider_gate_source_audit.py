@@ -30,6 +30,7 @@ from tools.provider_gate_common import (
     _sha256_bytes,
 )
 from tools.receiver_session_source_audit import receiver_boundary
+from tools.s3_python_source_audit import s3_python_findings
 
 # Compatibility aliases retained for existing provider-gate tests and callers.
 _REVIEWED_CANCELLATION_SOURCE_SHA256 = (
@@ -66,7 +67,7 @@ _REVIEWED_RUNNER_CLIENT_LAUNCH_SECTIONS = {
     "_run_darwin_launch_worker": "sha256:a969f6e5c14c2bc0b150be268321faf33dd00da035548706cb9eded992ac01aa",
 }
 _REVIEWED_RUNNER_CLIENT_SOURCE_SHA256 = (
-    "sha256:1a4b616e19aa92b5356d90f559cd206cfe433bbe0e192053826bfd902886f29d"
+    "sha256:2f6eefc94b6d47b2d21133a8215a10b52be4be4e794cb2f1053f0bd3912b32b0"
 )
 _REVIEWED_DARWIN_CONTAINMENT_SECTIONS = {
     "_validate_macos_launch_parent": "sha256:244beadfd89a4f2e6731109cd100042ba2a1ef8ea40e81bbd98f55211e7ebfb6",
@@ -1564,7 +1565,9 @@ def _source_audit(
         if relative in TRUSTED_PROCESS_BOUNDARY_PATHS:
             continue
         if path.suffix == ".py":
-            findings.extend(_python_shell_findings(path, repository))
+            findings.extend(
+                s3_python_findings(relative, text, _python_shell_findings(path, repository))
+            )
         else:
             for token in RUST_SHELL_TOKENS:
                 if token.casefold() in text.casefold():

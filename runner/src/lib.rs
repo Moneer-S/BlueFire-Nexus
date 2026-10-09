@@ -13,15 +13,41 @@ pub mod contract;
 mod native_tool_inspection;
 pub mod native_tool_installations;
 mod native_tool_setup;
+#[cfg(target_os = "linux")]
+mod owned_child_identity;
 mod process;
+#[cfg(target_os = "linux")]
+mod protected_launch_channel;
 pub mod provider_action;
 pub mod providers;
 mod receipt_store;
 mod receiver_auth;
+#[cfg(target_os = "linux")]
+mod reservation_storage;
 mod reviewed_chmod_builds;
 mod reviewed_gzip_builds;
 mod reviewed_native_builds;
 pub mod runner;
+pub mod runner_s3_access;
+pub mod s3_access_binding;
+mod s3_access_policy;
+mod s3_access_scope;
+pub mod s3_access_send;
+pub mod s3_admission;
+#[cfg(target_os = "linux")]
+mod s3_reservation;
+#[cfg(target_os = "linux")]
+mod s3_runtime;
+#[cfg(target_os = "linux")]
+mod s3_runtime_manifest;
+#[cfg(target_os = "linux")]
+mod s3_worker_process;
+#[cfg(target_os = "linux")]
+mod s3_worker_protocol;
+#[cfg(target_os = "linux")]
+mod s3_worker_result;
+#[cfg(target_os = "linux")]
+mod s3_worker_secret;
 pub mod safety;
 pub mod service_admission;
 #[cfg(target_os = "linux")]

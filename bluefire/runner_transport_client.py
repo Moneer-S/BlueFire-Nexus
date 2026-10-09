@@ -13,6 +13,29 @@ from .owned_service_transport import execute_owned_service_request, prepare_clie
 from .runner_transport_errors import RunnerAuthenticationError
 
 
+def validated_cancellation_payload(
+    payload: Mapping[str, Any], task_id: str, request_hash: str
+) -> Mapping[str, Any]:
+    if (
+        set(payload)
+        != {
+            "original_task_id",
+            "original_request_hash",
+            "state",
+            "cancellation_requested",
+            "cancelled",
+        }
+        or payload.get("original_task_id") != task_id
+        or payload.get("original_request_hash") != request_hash
+        or not isinstance(payload.get("state"), str)
+        or not isinstance(payload.get("cancellation_requested"), bool)
+        or not isinstance(payload.get("cancelled"), bool)
+        or (payload.get("cancelled") is True and payload.get("state") != "cancelled")
+    ):
+        raise RunnerAuthenticationError("Runner cancellation response is invalid.")
+    return payload
+
+
 def execute_authenticated_task(
     client: Any,
     manifest: Mapping[str, Any],
