@@ -615,3 +615,129 @@ def test_runtime_method_change_is_not_mislabeled_as_the_other_method(setup, monk
     monkeypatch.setattr(service, "prepare_replay", forbidden)
     with pytest.raises(APIError, match="recorded runtime method"):
         service.method_comparison._options(recorded, "stage_collection")
+
+
+def test_preflight_blocked_alternatives_refuse_privately_and_can_be_rechecked(setup, monkeypatch):
+    service, access, source, _, baseline = setup
+    retained_source = service.store.get_run(source)
+    original = service.prepare_replay
+    checked = []
+    blocked = True
+    private_problem = "synthetic-private-preflight-detail:/fixture/private/identity"
+
+    def prepare(run_id, request):
+        prepared = original(run_id, request)
+        checked.append(request["swap_behavior_id"])
+        if blocked:
+            prepared["preflight"]["problems"] = [
+                "Explicit operator approval is required.",
+                private_problem,
+            ]
+        return prepared
+
+    monkeypatch.setattr(service, "prepare_replay", prepare)
+    with pytest.raises(APIError) as refused:
+        service.method_comparison_context(source)
+    assert refused.value.status == 409
+    assert refused.value.code == "method_comparison_refused"
+    assert refused.value.message == (
+        "Compatible registered alternatives exist, but none currently passes replay "
+        "preflight. Review the original environment's readiness and retry method preparation."
+    )
+    assert refused.value.details is None and private_problem not in str(refused.value)
+    assert set(checked) == {option["behavior_to"] for option in baseline["options"]}
+    assert checked and not access.calls and service.product_store.list_jobs() == []
+    assert service.store.get_run(source) == retained_source
+
+    blocked = False
+    assert service.method_comparison_context(source) == baseline
+    assert not access.calls and service.product_store.list_jobs() == []
+    assert service.store.get_run(source) == retained_source
+
+
+@pytest.mark.parametrize(
+    "blocked_method", ["sandbox.collection.archive.v1", "sandbox.collection.atomic-gzip.v1"]
+)
+def test_preflight_blocked_alternative_does_not_hide_ready_choices(
+    setup, monkeypatch, blocked_method
+):
+    service, access, source, _, baseline = setup
+    original = service.prepare_replay
+    expected = [option for option in baseline["options"] if option["behavior_to"] != blocked_method]
+    assert expected and len(expected) < len(baseline["options"])
+
+    def prepare(run_id, request):
+        prepared = original(run_id, request)
+        if request["swap_behavior_id"] == blocked_method:
+            prepared["preflight"]["problems"] = ["A current readiness requirement is missing."]
+        return prepared
+
+    monkeypatch.setattr(service, "prepare_replay", prepare)
+    assert service.method_comparison_context(source) == {**baseline, "options": expected}
+    assert not access.calls and service.product_store.list_jobs() == []
+
+
+def test_approval_only_execute_alternative_remains_eligible(setup, tmp_path, monkeypatch):
+    from tests_platform.test_gzip_tool_binding import candidate
+    from tests_platform.test_optional_tool_defaults import OptionalToolRunner
+
+    service, access, _, _, _ = setup
+    runner = OptionalToolRunner()
+    sandbox = tmp_path / "readiness-runner-root"
+    sandbox.mkdir()
+    monkeypatch.setattr(service, "runner_factory", lambda profile: (runner, sandbox))
+    service._native_tool_setup_runner_factory = lambda profile: (runner, sandbox)
+    profile = service._profile("sandbox-execute.v1", ExecutionMode.EXECUTE)
+    selected_profile = replace(
+        profile,
+        platforms=("linux",),
+        enabled_actions=(*profile.enabled_actions, gzip.ADAPTER_ID),
+    ).to_dict()
+    service.save_resource(
+        "runner_profile",
+        selected_profile["id"],
+        {"document": selected_profile, "status": "draft"},
+    )
+    inspected = service.inspect_runner_profile_tool(selected_profile["id"], candidate())
+    selected_profile["native_tool_installations"] = [inspected["installation"]]
+    service.save_resource(
+        "runner_profile",
+        selected_profile["id"],
+        {"document": selected_profile, "status": "draft"},
+    )
+    test_ai_config = service._runtime_ai_config
+    service.activate_resource("runner_profile", selected_profile["id"], {})
+    service._runtime_ai_config = test_ai_config
+    source_root = tmp_path / "execute-readiness-source"
+    source_root.mkdir()
+    source = source_run(service, source_root, execute=True)
+    original = service.prepare_replay
+    preparations = {}
+
+    def prepare(run_id, request):
+        prepared = original(run_id, request)
+        preparations[request["swap_behavior_id"]] = prepared
+        return prepared
+
+    monkeypatch.setattr(service, "prepare_replay", prepare)
+    context = service.method_comparison_context(source)
+    assert context["options"]
+    for option in context["options"]:
+        prepared = preparations[option["behavior_to"]]
+        assert prepared["preflight"]["problems"] == ["Explicit operator approval is required."]
+        assert prepared["approval_created"] is False and prepared["effects_started"] is False
+    assert runner.execute_calls == 0 and not access.calls
+    assert service.product_store.list_jobs() == []
+
+
+def test_no_compatible_alternative_still_returns_empty_context(setup, monkeypatch):
+    service, access, source, _, baseline = setup
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("No compatible alternative must not prepare a replay")
+
+    monkeypatch.setattr(service, "prepare_replay", forbidden)
+    assert service.method_comparison._options(service.store.get_run(source), "create_fixture") == []
+    monkeypatch.setattr(service.registry, "compatible_behaviors", lambda behavior: ())
+    assert service.method_comparison_context(source) == {**baseline, "options": []}
+    assert not access.calls and service.product_store.list_jobs() == []
