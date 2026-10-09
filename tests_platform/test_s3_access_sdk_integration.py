@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from tests_platform.test_s3_access_native_binding import planned_sends
 from tests_platform.test_s3_access_policy import fixture
 from tests_platform.test_s3_access_sdk import DATA, worker_request
 from tests_platform.test_s3_access_wire import NOW, credential_row
@@ -116,6 +117,7 @@ def test_official_sdk_serialization_with_inert_transport(
     assert result["sdk_version"] == "1.43.110"
     assert result["result"]["outcome"] == expected
     assert result["http_calls"] == calls
+    assert result["send_projections"] == planned_sends(request)[: result["permits"]]
     # urllib3's import-time IPv6 availability probe attempts one socket
     # construction; the audit hook denies it before any socket is created.
     assert result["counters"] == {

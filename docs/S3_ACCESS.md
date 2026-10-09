@@ -143,6 +143,27 @@ durable reservation/reconciliation, supervised execution, generated-fixture and
 audit lifecycle, then one usable saved workspace workflow and authorized retesting.
 This component is not a completed cloud phase.
 
+## Native Consistency Boundary
+
+The unregistered Rust binding independently parses the worker's normalized UTC
+document, including closed nested scope and policy types. It rejects duplicate
+keys, unknown fields, implicit missing nulls, numeric coercions, scope drift and
+changes beyond the exact owned policy statement. It uses the existing canonical
+JSON hashing implementation and derives the same finite call sequence, resources,
+regional hosts, methods and payload digests. A shared synthetic corpus binds the
+Python and Rust tests; the opt-in official-SDK tests compare actual safe send
+projections with those independently derived expectations.
+
+The STS payload check binds the fixed SDK serializer's exact query-form ordering
+and escaping, not a new signing implementation. A serializer change must receive
+fresh compatibility review rather than silently accepting a different digest.
+The send-preview parser validates one bounded frame and its caller-supplied next
+sequence, but cannot issue an acknowledgement or consume authority. These types
+are consistency checks only. No action, network capability, runtime loader,
+credential channel, native admission token or durable send ledger is registered.
+Native supervision, durable accounting and live scoped execution remain separate
+required implementation and verification work.
+
 ## References
 
 - [AWS policy principals](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html)

@@ -232,6 +232,7 @@ def run_offline() -> dict:
         "counters": counters,
         "http_calls": len(http_calls),
         "permits": len(permits),
+        "send_projections": [frame["send"] for frame in permits],
         "sdk_version": botocore.__version__,
         "transport_mode": "official-sdk-with-inert-connection",
         "production_runtime_admitted": False,

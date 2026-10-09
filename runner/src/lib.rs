@@ -22,6 +22,10 @@ mod reviewed_chmod_builds;
 mod reviewed_gzip_builds;
 mod reviewed_native_builds;
 pub mod runner;
+pub mod s3_access_binding;
+mod s3_access_policy;
+mod s3_access_scope;
+pub mod s3_access_send;
 pub mod safety;
 pub mod service_admission;
 #[cfg(target_os = "linux")]
