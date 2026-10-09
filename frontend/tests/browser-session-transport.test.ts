@@ -9,7 +9,14 @@ it("uses only an explicit header and cannot attach it to another origin, port, o
   const { browserApiFetch } = await import("../src/lib/browser-session");
   const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
   vi.stubGlobal("fetch", fetcher);
-  for (const target of ["http://127.0.0.1:9999/api/v1/catalog", "https://example.com/api/v1/catalog", "//example.com/api/v1/catalog", "/ui/app.js", "/api/v1/catalog#private", `http://name:password@${location.host}/api/v1/catalog`]) {
+  for (const target of [
+    "http://127.0.0.1:9999/api/v1/catalog",
+    "https://example.com/api/v1/catalog",
+    "//example.com/api/v1/catalog",
+    "/ui/app.js",
+    "/api/v1/catalog#private",
+    `http://name:password@${location.host}/api/v1/catalog`, // pragma: allowlist secret -- synthetic rejected-URL fixture
+  ]) {
     await expect(browserApiFetch(target)).rejects.toThrow("The local API address is invalid.");
   }
   expect(fetcher).not.toHaveBeenCalled();
