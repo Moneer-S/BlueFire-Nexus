@@ -87,7 +87,8 @@ def test_changed_or_unbounded_process_identity_refused(monkeypatch, raw):
         entry._identity()
 
 
-def test_entry_binds_factory_process_and_expected_pins_before_worker(monkeypatch):
+@pytest.mark.parametrize("worker_status", [0, 1])
+def test_entry_binds_factory_process_and_expected_pins_before_worker(monkeypatch, worker_status):
     calls = []
     environ = {
         "AWS_PROFILE": "ignored",
@@ -132,7 +133,7 @@ def test_entry_binds_factory_process_and_expected_pins_before_worker(monkeypatch
         assert kwargs["expected_runtime_digest"] == verified.runtime_digest
         assert kwargs["expected_worker_generation"] == verified.worker_generation
         assert kwargs["clock"]().utcoffset().total_seconds() == 0
-        return 0
+        return worker_status
 
     spec = SimpleNamespace(
         name="bluefire.s3_access_runtime", loader=SimpleNamespace(exec_module=execute)
@@ -151,7 +152,8 @@ def test_entry_binds_factory_process_and_expected_pins_before_worker(monkeypatch
     monkeypatch.setattr(entry, "_identity", lambda: (42, "123"))
     monkeypatch.setattr(entry.secrets, "token_hex", lambda count: "c" * 64)
     assert (
-        entry.main(["--runtime-root", "/owned", "--runtime-digest", verified.runtime_digest]) == 0
+        entry.main(["--runtime-root", "/owned", "--runtime-digest", verified.runtime_digest])
+        == worker_status
     )
     assert calls == ["validated", "factory", "worker"]
     assert fake_sys.modules["bluefire"].__path__ == [str(root)]

@@ -26,7 +26,7 @@ _SOURCES = {
         ),
     ),
     "bluefire/s3_access_worker_entry.py": (
-        "d3f87e0cdf9ad862f42b557db0fb2a02164ba9ef1e3c9b9eb60ceb9afb4ad4c3",
+        "4af218c6386f98fa47c1b0dec51e8297a55abc978bbac45d0ca6d9c65337339b",
         ((65, "module", "bluefire.s3_access_worker"),),
     ),
 }

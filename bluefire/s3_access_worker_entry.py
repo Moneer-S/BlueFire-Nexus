@@ -64,7 +64,7 @@ def main(argv=None) -> int:
     factory = runtime.create_factory()
     worker = importlib.import_module("bluefire.s3_access_worker")
     pid, created = _identity()
-    return worker.run_worker(
+    status: int = worker.run_worker(
         sys.stdin.buffer,
         sys.stdout.buffer,
         factory=factory,
@@ -75,6 +75,7 @@ def main(argv=None) -> int:
         expected_runtime_digest=runtime.runtime_digest,
         expected_worker_generation=runtime.worker_generation,
     )
+    return status
 
 
 if __name__ == "__main__":
