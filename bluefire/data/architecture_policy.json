@@ -447,6 +447,7 @@
         "bluefire.capability_packs",
         "bluefire.file_access_contract",
         "bluefire.file_access_method",
+        "bluefire.file_access_observation",
         "bluefire.file_access_plan",
         "bluefire.file_access_preparation",
         "bluefire.file_access_receipts",

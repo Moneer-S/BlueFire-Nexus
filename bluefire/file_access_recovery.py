@@ -10,12 +10,13 @@ from pathlib import Path
 from .capability_packs import FILE_ACCESS_METHODS
 from .evidence import SandboxObserver
 from .file_access_closure import recover_file_access_closure
-from .file_access_contract import validate_file_access_observation, verify_file_access_binding
+from .file_access_contract import verify_file_access_binding
+from .file_access_observation import validate_task_observation as validate_task_observation
 from .file_access_receipts import original_receipts as original_receipts
 from .product_store_errors import ProductStoreError
 from .runner_client import execution_task_identity
 from .runner_receipt_authority import validate_result_receipts
-from .util import content_hash, parse_iso8601_datetime
+from .util import content_hash
 
 
 def receipt_snapshot(engine, profile):
@@ -134,25 +135,6 @@ def validate_terminal(engine, task, result):
     engine._validate_runner_result(task["manifest"], task["runner_profile"], result)
     engine._validated_receipt_ids(result.get("receipt_ids", []))
     engine._validate_cleanup_result(task["manifest"], result)
-
-
-def validate_task_observation(task, result, *, binding, reader, now_ms):
-    observation = validate_file_access_observation(
-        result.get("output", {}).get("observation"),
-        binding=binding,
-        request_hash=task["request_hash"],
-        reader=reader,
-    )
-    requested_at, expires_at = (
-        int(parse_iso8601_datetime(task["manifest"][key]).timestamp() * 1000)
-        for key in ("requested_at", "expires_at")
-    )
-    if (
-        not requested_at <= observation["observed_at_ms"] < expires_at
-        or observation["observed_at_ms"] > now_ms
-    ):
-        raise ProductStoreError("File-access observation is outside its original task lifetime.")
-    return observation
 
 
 def close_worker(control, task, result):

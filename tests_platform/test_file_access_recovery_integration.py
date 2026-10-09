@@ -112,10 +112,8 @@ def test_recovered_complete_reads_publish_exact_proof(completed_reads):
     assert result["control"]["status"] == (
         "baseline_verified" if value.operation == "baseline" else "rolled_back"
     )
-    assert (
-        value.published[0][1]["verified_observation"]["observed_at_ms"]
-        == value.owner["observed_at_ms"]
-    )
+    assert result["verified_observation"]["observed_at_ms"] == value.owner["observed_at_ms"]
+    assert value.published == []
     if value.operation == "rollback":
         assert result["control"]["baseline"] == value.prior_baseline
     else:

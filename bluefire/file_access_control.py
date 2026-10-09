@@ -280,19 +280,17 @@ class FileAccessControl:
             )
             records = self.store.file_access_operation_records(job_id)
         outcome = records["outcome"]
+        progress = {
+            key: value for key, value in job["progress"].items() if key != "verified_observation"
+        }
         if (
-            job["state"] not in ("completed", "failed", "cancelled", "interrupted")
-            or outcome is None
-            or outcome["state"] != "complete"
+            job["state"] in ("completed", "failed", "cancelled", "interrupted")
+            and outcome is not None
+            and outcome["state"] == "complete"
+            and outcome.get("verified_observation") is not None
         ):
-            job = {
-                **job,
-                "progress": {
-                    key: value
-                    for key, value in job["progress"].items()
-                    if key != "verified_observation"
-                },
-            }
+            progress["verified_observation"] = outcome["verified_observation"]
+        job = {**job, "progress": progress}
         return {
             "schema_version": "bluefire.file-access-operation.v1",
             "job": job,

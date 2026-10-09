@@ -410,53 +410,22 @@ def _finish(
         }
     observation = None
     if operation in ("baseline", "rollback"):
-        from .file_access_recovery import validate_task_observation
+        from .file_access_observation import baseline_record, control_observation
 
-        validated = {}
-        for step, reader in (("probe", "non_owner"), ("owner", "owner")):
-            task = task_by_step[step]
-            validated[reader] = validate_task_observation(
-                task["task"],
-                task["terminal"]["result"],
-                binding=binding,
-                reader=reader,
-                now_ms=control.clock(),
-            )
-        if (
-            any(row["outcome"] != "allowed" for row in validated.values())
-            or binding["mode"] != "0640"
-        ):
-            raise ProductStoreError("Both fresh legitimate baseline reads must actually succeed.")
+        observation = control_observation(
+            operation, records["tasks"], binding=binding, now_ms=control.clock()
+        )
+        probe = task_by_step["probe"]["terminal"]["result"]["output"]["observation"]
+        owner = task_by_step["owner"]["terminal"]["result"]["output"]["observation"]
         verification = outputs.get("owner", {}).get("verification", {})
         if (
-            validated["owner"]["observed_at_ms"] < validated["non_owner"]["observed_at_ms"]
-            or verification.get("probe_observation_digest") != content_hash(validated["non_owner"])
-            or verification.get("observation_digest") != content_hash(validated["owner"])
-            or verification.get("request_hash") != validated["owner"]["request_hash"]
+            verification.get("probe_observation_digest") != content_hash(probe)
+            or verification.get("observation_digest") != content_hash(owner)
+            or verification.get("request_hash") != owner["request_hash"]
         ):
             raise ProductStoreError("Owner verification lost its exact preceding fresh probe.")
-        digest = content_hash({"tasks": records["tasks"], "binding": binding})
-        observation = {
-            "schema_version": "bluefire.file-access-control-observation.v1",
-            "operation": operation,
-            "non_owner": "allowed",
-            "owner": "allowed",
-            "resource_generation": binding["resource_generation"],
-            "record_count": binding["resource"]["record_count"],
-            "sha256": binding["resource"]["sha256"],
-            "mode": "0640",
-            "source_digest": digest,
-            "observed_at_ms": validated["owner"]["observed_at_ms"],
-        }
         if operation == "baseline":
-            baseline = {
-                "baseline_digest": digest,
-                "non_owner": "allowed",
-                "owner": "allowed",
-                "record_count": observation["record_count"],
-                "sha256": observation["sha256"],
-                "source_binding": {"operation_job_id": job_id, "evidence_digest": digest},
-            }
+            baseline = baseline_record(job_id, observation)
     status = {
         "create": "created",
         "baseline": "baseline_verified",
@@ -480,9 +449,9 @@ def _finish(
         outcome={"state": "complete", "evidence_digest": content_hash(records["tasks"])},
         control=document,
         expected_outcome_digest=expected_outcome_digest,
+        verified_observation=observation,
+        now_ms=control.clock(),
     )
-    if observation is not None:
-        control._publish(job_id, {"verified_observation": observation})
 
 
 def execute(control, ctx, request):

@@ -522,7 +522,14 @@ class FileAccessStoreMixin:
             )
 
     def finish_file_access_operation(
-        self, job_id, *, outcome, control=None, expected_outcome_digest=None
+        self,
+        job_id,
+        *,
+        outcome,
+        control=None,
+        expected_outcome_digest=None,
+        verified_observation=None,
+        now_ms=None,
     ):
         """Publish verified control revision with all registered tasks terminal atomically."""
         store = cast(Any, self)
@@ -539,6 +546,15 @@ class FileAccessStoreMixin:
                 **outcome,
                 "control_digest": content_hash(control) if control is not None else None,
             }
+            if verified_observation is not None:
+                if outcome["state"] != "complete" or operation["operation"] not in (
+                    "baseline",
+                    "rollback",
+                ):
+                    raise ProductStoreError(
+                        "Only complete original reads can publish observation proof."
+                    )
+                record["verified_observation"] = verified_observation
             previous = _outcome_at(connection, job_id)
             if previous is not None:
                 previous_document = _document(previous)
@@ -557,6 +573,7 @@ class FileAccessStoreMixin:
             tasks = connection.execute(
                 "SELECT * FROM file_access_task_claims WHERE job_id=? ORDER BY rowid", (job_id,)
             ).fetchall()
+            originals = []
             if outcome["state"] != "unknown":
                 for task in tasks:
                     terminal = _document(
@@ -580,6 +597,7 @@ class FileAccessStoreMixin:
                             "A dispatched task cannot be dismissed as no effect."
                         )
                     claimed = _document(task)
+                    originals.append({"task": claimed, "terminal": terminal})
                     from .capability_packs import FILE_ACCESS_METHODS
 
                     if claimed["manifest"]["action_id"] == FILE_ACCESS_METHODS[0]:
@@ -638,21 +656,22 @@ class FileAccessStoreMixin:
                         raise ProductStoreError(
                             "Complete control requires the entire exact successful recipe."
                         )
+                    if operation["operation"] in ("baseline", "rollback"):
+                        from .file_access_observation import validate_committed_observation
+
+                        validate_committed_observation(
+                            job_id,
+                            operation["operation"],
+                            prepared,
+                            originals,
+                            control=control,
+                            outcome=outcome,
+                            observation=verified_observation,
+                            now_ms=now_ms,
+                        )
                 else:
                     from .file_access_receipts import validate_partial_sources
 
-                    originals = [
-                        {
-                            "task": _document(task),
-                            "terminal": _document(
-                                connection.execute(
-                                    "SELECT * FROM file_access_task_terminals WHERE task_id=?",
-                                    (task["task_id"],),
-                                ).fetchone()
-                            ),
-                        }
-                        for task in tasks
-                    ]
                     validate_partial_sources(prepared, originals, control)
                 owner_id = operation["control_owner_id"]
                 prior = (
