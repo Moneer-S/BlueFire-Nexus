@@ -11,8 +11,9 @@ cleanup and guarded explicit rollback are separate obligations.
 ## Implementation Status
 
 The pure contract/policy planner and an unregistered SDK-worker component are
-implemented. The planner accepts no credential values. The worker is tested only
-with deterministic fake clients and streams; it has no executable entrypoint,
+implemented. The planner accepts no credential values. The worker is tested with
+deterministic fake clients/streams and a pinned official SDK using inert transport;
+it has no executable entrypoint,
 runtime loader, secret channel or registered action. No AWS calls have been made.
 Neither component grants authority or establishes enrollment, effective access
 or prevention.
@@ -110,6 +111,15 @@ Python, dependency/service-model and CA tree is still an explicit execution bloc
 That loader must also isolate configuration and imports, prevent all ambient
 credential/auth-token resolution, and disable SDK/history/debug secret logging.
 No wire field can select a factory, executable, import or fake test driver.
+
+An explicit offline compatibility suite exercised Botocore `1.43.110` serialization,
+signing, response parsing and official HTTP-session behavior against inert
+connections. The dedicated five-distribution SDK tree is checked before and after
+the suite. Socket creation and network/name-resolution operations are denied before
+SDK import; the SDK's import-time IPv6 availability probe is recorded as a blocked
+socket-construction attempt. All API responses and credentials are synthetic.
+This is component-level compatibility evidence, not an installed-product test,
+OS-enforced process/network isolation or admission of that runtime for live use.
 
 The official SDK retains TLS, signing and parsing. Its private transport interface
 is wrapped before eager response consumption; every response status has a 64 KiB
