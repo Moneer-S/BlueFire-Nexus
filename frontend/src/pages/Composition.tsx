@@ -1,10 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Ban, GitBranch, Pause, Play, RefreshCw, Sparkles, X } from "lucide-react";
+import { Ban, ChevronDown, ChevronUp, GitBranch, Pause, Play, RefreshCw, Sparkles, X } from "lucide-react";
 import { api } from "../lib/api";
 import { checkedCompositionContext, checkedCompositionList, checkedCompositionObjective, checkedCompositionProposal, clearCompositionPending, compositionApi, compositionConfirmed, compositionJobId, compositionJobValid, compositionRecord, readCompositionPending, storeCompositionPending, type CompositionObjective, type CompositionPending, type CompositionProposal } from "../lib/composition";
-import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState, PageHeader, sentence } from "../components/Primitives";
+import { Badge, Button, Callout, DataList, ErrorState, Field, IconButton, LoadingState, PageHeader, sentence } from "../components/Primitives";
 import { CompositionCapabilities, CompositionSetup } from "../components/CompositionReview";
 import { CompositionAttempts } from "../components/CompositionAttempts";
 import { CompositionGraph } from "../components/CompositionGraph";
@@ -23,6 +23,7 @@ export function CompositionPage() {
   const [cancellations, setCancellations] = useState<Record<string, string>>(restored.cancellations);
   const [localError, setLocalError] = useState<unknown>(restored.error);
   const [reviewSeed, setReviewSeed] = useState<CompositionReviewRequest>();
+  const [expandedObjective, setExpandedObjective] = useState("");
   const locked = useRef(false);
   const stoppedOwners = useRef(new Set<string>());
   const id = params.get("objective") ?? pending?.owner ?? "";
@@ -74,9 +75,10 @@ export function CompositionPage() {
   const safety = useMutation({ mutationFn: async ({ owner, control: retainedControl, operation }: { owner: string; control: string; operation: CompositionControl }) => {
     storeCompositionControl(owner, operation); setPendingControls(readCompositionControls());
     if (operation !== "continue") stoppedOwners.current.add(owner);
+    await client.cancelQueries({ queryKey: ["composition-context", owner] });
     await client.cancelQueries({ queryKey: ["composition-objective", owner], exact: true });
     return checkedCompositionObjective(await compositionApi.control(owner, operation), owner, retainedControl || undefined);
-  }, onSuccess: (value, target) => { client.setQueryData(["composition-objective", target.owner], value); if (target.operation === "continue") stoppedOwners.current.delete(target.owner); void client.invalidateQueries({ queryKey: ["composition-list", target.control] }); void client.invalidateQueries({ queryKey: ["composition-context", target.owner] }); void client.invalidateQueries({ queryKey: ["composition-proposal"] }); } });
+  }, onSuccess: (value, target) => { client.setQueryData(["composition-objective", target.owner], value); if (target.operation === "continue") stoppedOwners.current.delete(target.owner); void client.invalidateQueries({ queryKey: ["composition-list", target.control] }); void client.invalidateQueries({ queryKey: ["composition-context", target.owner], refetchType: "none" }); void client.invalidateQueries({ queryKey: ["composition-proposal"] }); } });
   const controlObjective = (operation: CompositionControl) => safety.mutate({ owner: id, control, operation });
   const cancel = useMutation({ mutationFn: async ({ owner, job }: { owner: string; job: string }) => {
     storeCompositionCancellation(owner, job); setCancellations(readCompositionCancellations());
@@ -85,9 +87,9 @@ export function CompositionPage() {
   }, onSuccess: value => client.setQueryData(["composition-proposal", value.job.job_id], value) });
   const envelope = objective.data?.grant ? objective.data : undefined;
   const refusal = objective.data?.grant === null ? objective.data : undefined;
-  return <div className="page composition-page">
+  return <div className={`page composition-page${expandedObjective === id && id ? " composition-objective-expanded" : ""}`}>
     <Link to={compositionJobValid(control) ? `/compare?receiver_job=${encodeURIComponent(control)}` : "/compare"}>Retained receiver control</Link>
-    <PageHeader title={envelope?.grant.document.objective.question ?? "Composition workspace"} actions={compositionJobValid(id) && !refusal ? <div className="composition-actions"><Button variant="danger" disabled={safety.isPending} onClick={() => controlObjective("stop")}><Pause />Stop</Button><Button variant="danger" disabled={safety.isPending} onClick={() => controlObjective("revoke")}><Ban />Revoke</Button></div> : undefined} />
+    <PageHeader title={envelope?.grant.document.objective.question ?? "Composition workspace"} actions={compositionJobValid(id) && !refusal ? <div className="composition-actions">{envelope ? <IconButton label={expandedObjective === id ? "Collapse objective question" : "Show full objective question"} aria-expanded={expandedObjective === id} onClick={() => setExpandedObjective(expandedObjective === id ? "" : id)}>{expandedObjective === id ? <ChevronUp /> : <ChevronDown />}</IconButton> : null}<Button variant="danger" disabled={safety.isPending} onClick={() => controlObjective("stop")}><Pause />Stop</Button><Button variant="danger" disabled={safety.isPending} onClick={() => controlObjective("revoke")}><Ban />Revoke</Button></div> : undefined} />
     {localError ? <ErrorState title="Saved request needs attention" error={localError} /> : null}
     {!compositionJobValid(control) ? <Callout title="Select the original retained control">Open a completed retained receiver control to review its available composition capabilities.</Callout> : <>
       <section className="composition-section" aria-label="Saved objectives"><div className="composition-heading"><h2>Saved objectives</h2><Button size="small" disabled={list.isFetching} onClick={() => { void list.refetch(); }}><RefreshCw />Refresh</Button></div>
@@ -153,7 +155,7 @@ function CompositionPlanning({ objective, proposal, proposalId, pending, disable
   return <section className="composition-section" aria-label="Graph planning"><h2>{objective.attempts.length ? "Evidence-driven revision" : "Initial graph"}</h2>
     {objective.attempts.length ? <Field label="Verified prior attempt"><select value={prior} disabled={pending} onChange={event => { setPrior(event.target.value); setUseInitial(false); onProposal(""); }}><option value="">Select settled refusal evidence</option>{objective.attempts.map((item, index) => <option key={item.job_id} value={item.request.composition_attempt.attempt_id} disabled={!compositionCanRevise(item, objective)}>Attempt {index + 1}: {String(compositionRecord(compositionRecord(item.progress.verified_result).objective).established === true ? "established" : item.state)}{item.progress.settlement !== "settled" ? " / cleanup pending" : ""}</option>)}</select></Field> : null}
     {established ? <Callout title="Objective established">A settled verified attempt meets every reviewed success condition. No new graph or attempt is available for this objective.</Callout> : !active ? <Callout title="New dispatch unavailable">{grant.expires_at_ms <= now ? "The original grant has expired." : proposing ? "The selected provider request is still active. Its saved result or confirmed cancellation remains pending." : "A current active grant, reconciled submissions and verified cleanup are required."}</Callout> : null}
-    {context.error ? <ErrorState error={context.error} retry={() => { void context.refetch(); }} /> : context.isFetching ? <LoadingState label="Verifying current facts and capabilities" /> : null}
+    {active && priorValid ? context.isFetching ? <LoadingState label="Verifying current facts and capabilities" /> : context.error ? <ErrorState error={context.error} retry={() => { void context.refetch(); }} /> : null : null}
     <div className="composition-provider"><Field label="Configured model provider"><select value={provider} disabled={!active} onChange={event => setProvider(event.target.value)}><option value="">Select a provider</option>{providers.map(item => <option value={item.provider_id} key={item.provider_id}>{item.model} / {item.provider_id}</option>)}</select></Field><Link to="/settings#model-connection">Provider and model usage authorization</Link></div>
     {catalog.error ? <ErrorState error={catalog.error} /> : null}
     <div className="composition-actions"><Button disabled={!active || !priorValid || !current || context.isFetching || Boolean(context.error) || !providers.some(item => item.provider_id === provider)} onClick={() => { setUseInitial(false); newRequest("proposal", { provider_id: provider, context_digest: current!.context_digest, prior_attempt_id: prior || null }); }}><Sparkles />{objective.attempts.length ? "Request evidence-based revision" : "Request AI graph"}</Button>{!objective.attempts.length && current?.initial_proposal ? <Button disabled={!active} aria-pressed={useInitial} onClick={() => { setUseInitial(true); onProposal(""); }}>Review established graph</Button> : null}</div>
