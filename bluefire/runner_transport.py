@@ -30,7 +30,7 @@ from typing import Any, BinaryIO, Callable, Iterator, Mapping, cast
 from . import native_tool_transport as native_tools
 from . import owned_service_transport as service_transport
 from . import runner_transport_framing as framing
-from . import s3_access_transport
+from . import s3_access_setup_status, s3_access_transport
 from .owned_service_authority import (
     GRANT_SCHEMA,
     OwnedServiceAdmission,
@@ -53,7 +53,11 @@ from .runner_client import (
     runner_watchdog_control_root,
 )
 from .runner_result_persistence import commit_durable_result
-from .runner_transport_client import execute_authenticated_task, validated_cancellation_payload
+from .runner_transport_client import (
+    execute_authenticated_task,
+    validated_cancellation_payload,
+    validated_transport_identity,
+)
 from .runner_transport_errors import (
     AuthenticatedRunnerTransportError,
     RunnerAuthenticationError,
@@ -126,6 +130,7 @@ _OPERATIONS = native_tools.INSPECTION_OPERATIONS.union(
         "cancel",
         "shutdown",
         s3_access_transport.OPERATION,
+        s3_access_setup_status.OPERATION,
     }
 )
 _REQUEST_FIELDS = frozenset(
@@ -3014,6 +3019,8 @@ class AuthenticatedRunnerServer:
                 payload = s3_access_transport.server_environments(
                     self, request, enrollment, refusal=_RequestRefusal
                 )
+            elif operation == s3_access_setup_status.OPERATION:
+                payload = s3_access_setup_status.server_status(self, request, enrollment)
             elif operation == "execute":
                 raw_payload = request.get("payload")
                 if not isinstance(raw_payload, dict):
@@ -3987,43 +3994,12 @@ class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
     def s3_access_environments(self) -> list[dict[str, Any]]:
         return s3_access_transport.client_environments(self)
 
+    def s3_access_setup_status(self) -> Mapping[str, Any]:
+        return s3_access_setup_status.client_status(self)
+
     def transport_identity(self) -> Mapping[str, Any]:
         """Return the validated, secret-free identity of the authenticated host."""
-
-        health = self.health()
-        enrollment = self._active_enrollment()
-        client_fingerprint = str(enrollment.metadata["client_fingerprint"])
-        expected_generation = _enrollment_binding(enrollment, client_fingerprint)[
-            "enrollment_generation"
-        ]
-        binary_digest = health.get("runner_binary_digest")
-        inventory_digest = health.get("inventory_digest")
-        expected = {
-            "runner_id": enrollment.runner_id,
-            "client_id": enrollment.client_id,
-            "transport": self._transport_kind,
-            "tls": "TLSv1.3",
-            "server_fingerprint": enrollment.metadata["server_fingerprint"],
-            "client_fingerprint": client_fingerprint,
-            "authenticated_peer_fingerprint": client_fingerprint,
-            "enrollment_generation": expected_generation,
-        }
-        if (
-            any(health.get(field) != value for field, value in expected.items())
-            or not isinstance(inventory_digest, str)
-            or _DIGEST.fullmatch(inventory_digest) is None
-            or (
-                binary_digest is not None
-                and (not isinstance(binary_digest, str) or _DIGEST.fullmatch(binary_digest) is None)
-            )
-        ):
-            raise RunnerAuthenticationError("Runner transport identity is invalid.")
-        return {
-            "schema_version": "bluefire.runner-transport-identity.v1",
-            **expected,
-            "runner_binary_digest": binary_digest,
-            "inventory_digest": inventory_digest,
-        }
+        return validated_transport_identity(self)
 
     @staticmethod
     def execution_identity(

@@ -6,6 +6,9 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[path = "s3_reservation_fixture_tests.rs"]
+mod fixture_tests;
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 pub(crate) struct Directory {
     pub(crate) path: PathBuf,
@@ -134,6 +137,8 @@ fn operation(index: u64, phase: &str, operation: &str) -> Reserved {
         api_limit: 300,
         session_limit: 6,
         business_attempt_limit: 6,
+        fixture_authority_digest: None,
+        fixture: None,
     }
 }
 fn reserve_state(ledger: &mut Ledger, row: Reserved) -> String {
@@ -194,6 +199,7 @@ fn complete_state(ledger: &mut Ledger, hash: &str, position: PolicyPosition) {
                 observed: true,
                 policy_position: position,
                 cleanup_verified: true,
+                fixture_position: None,
             },
             String::new(),
         )
@@ -209,6 +215,7 @@ fn complete_failed(ledger: &mut Ledger, hash: &str, cleanup_verified: bool) {
                 observed: false,
                 policy_position: PolicyPosition::Unknown,
                 cleanup_verified,
+                fixture_position: None,
             },
             String::new(),
         )
@@ -293,6 +300,7 @@ fn fresh_read_retry_uses_new_identity_and_never_refunds_old_reservation() {
                     observed: false,
                     policy_position: PolicyPosition::Unknown,
                     cleanup_verified: true,
+                    fixture_position: None,
                 },
                 String::new(),
             )
@@ -377,6 +385,7 @@ fn failed_legitimate_reservations_never_refund_either_business_attempt() {
                     observed: false,
                     policy_position: PolicyPosition::Unknown,
                     cleanup_verified: true,
+                    fixture_position: None,
                 },
                 String::new(),
             )

@@ -190,6 +190,41 @@ def test_local_addresses_and_identity_generation_unchanged(channel):
     ] != content_hash(identity)
 
 
+@pytest.mark.parametrize("dedicated", [False, True])
+def test_extracted_identity_validator_retains_exact_transport_kind(channel, monkeypatch, dedicated):
+    client = bare_client(channel) if dedicated else object.__new__(AuthenticatedRunnerClient)
+    enrolled = enrollment(channel)
+    if not dedicated:
+        enrolled.transport_identity_scope = lambda: {}
+    row = channel.to_dict()
+    health = {
+        "runner_id": enrolled.runner_id,
+        "client_id": enrolled.client_id,
+        "transport": client._transport_kind,
+        "tls": "TLSv1.3",
+        "server_fingerprint": row["server_fingerprint"],
+        "client_fingerprint": row["client_fingerprint"],
+        "authenticated_peer_fingerprint": row["client_fingerprint"],
+        "enrollment_generation": _enrollment_binding(enrolled, row["client_fingerprint"])[
+            "enrollment_generation"
+        ],
+        "runner_binary_digest": row["runner_binary_digest"],
+        "inventory_digest": row["inventory_digest"],
+    }
+    monkeypatch.setattr(client, "_active_enrollment", lambda: enrolled)
+    monkeypatch.setattr(client, "health", lambda: dict(health))
+    identity = client.transport_identity()
+    assert identity["transport"] == client._transport_kind
+    assert identity["enrollment_generation"] == health["enrollment_generation"]
+    if dedicated:
+        assert identity["channel_digest"] == channel.digest
+        assert identity["ad_smb_execution_available"] is False
+    other = AuthenticatedRunnerClient if dedicated else transport.EnrolledAdSmbClient
+    health["transport"] = other._transport_kind
+    with pytest.raises(RunnerAuthenticationError, match="transport identity"):
+        client.transport_identity()
+
+
 @pytest.mark.parametrize("value", [True, False, -1, 65536, 1.0, "10", None])
 def test_legacy_port_rejects_same_noncanonical_values(value):
     with pytest.raises(AuthenticatedRunnerTransportError):

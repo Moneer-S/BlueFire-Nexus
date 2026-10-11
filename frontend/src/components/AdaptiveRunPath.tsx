@@ -27,7 +27,7 @@ export function AdaptiveRunPath({ run, catalog }: { run: RunRecord; catalog: Cat
 
 export function AdaptiveDecision({ run, record, catalog }: { run: RunRecord; record: RuntimeRecord; catalog: CatalogResponse }) {
   const proposed = record.proposal, attempted = selectedAttempt(run, record);
-  const provenance = decisionProvenance(record), observations = decisionObservations(record);
+  const provenance = decisionProvenance(record), observations = decisionObservations(run, record);
   const applied = record.application_status === "applied_reviewed_method";
   const method = proposed?.selected_action_id ? recordedMethodName(catalog, proposed.selected_behavior_id, proposed.selected_action_id) : null;
   const retryCount = (value: unknown) => `${value ?? "Unknown"} ${value === 1 ? "retry" : "retries"}`;
@@ -36,6 +36,23 @@ export function AdaptiveDecision({ run, record, catalog }: { run: RunRecord; rec
     <p>{applied ? attempted ? dispatchDescription(attempted, run) : "Selection applied; no matching attempt is recorded." : sentence(String(record.application_status ?? "Decision recorded"))}</p>
     <p>{provenance.label}{record.application_reason ? ` · ${String(record.application_reason)}` : ""}</p>
     {proposed?.rationale ? <p>{proposed.rationale}</p> : null}
+    <details aria-label="Recorded observations at this decision"><summary>Recorded observations at this decision</summary>
+      {!observations.available ? <p>This record does not contain a matching, readable observation summary for this attempt.</p> : <>
+        <p>These observations were retained when this decision was recorded. They do not establish what a provider received or whether the objective was achieved.</p>
+        <DataList items={[
+          { label: "Records retained", value: observations.evidence.length },
+          { label: "Missing evidence records", value: observations.missing },
+          { label: "Evidence records omitted from this summary", value: observations.omitted },
+          { label: "Earlier attempts omitted from this summary", value: observations.omittedAttempts },
+          { label: "Telemetry gap", value: observations.telemetryGap === true ? "Reported" : observations.telemetryGap === false ? "Not reported by this attempt" : "Unknown; not recorded" },
+        ]}/>
+        {observations.evidence.length ? <ol aria-label="Retained observation records">{observations.evidence.map((item, index) => <li key={item.evidence_id}>
+          <strong>Record {index + 1} · {item.label}</strong>
+          {item.facts === null ? <p>The recorded facts are unreadable or outside the supported format.</p> : item.facts.length ? <DataList items={item.facts}/> : <p>No normalized facts were retained for this record.</p>}
+          <details><summary>Record identity</summary><DataList items={[{ label: "Evidence ID", value: <code>{item.evidence_id}</code> }, { label: "Recorded hash", value: <code>{item.record_hash}</code> }]}/></details>
+        </li>)}</ol> : <p>No evidence records were retained in this summary. This does not establish that nothing happened.</p>}
+      </>}
+    </details>
     <details><summary>Decision, observations and limits</summary><DataList items={[
       { label: "Provider", value: provenance.provider }, { label: "Model", value: provenance.model },
       { label: "Observed result", value: sentence(String(record.outcome ?? "not recorded")) },

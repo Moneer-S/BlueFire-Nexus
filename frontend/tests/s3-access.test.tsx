@@ -28,6 +28,15 @@ it("shows actual missing enrollment without offering cloud dispatch", async () =
   expect(s3Api.send).not.toHaveBeenCalled();
 });
 
+it.each(["Temporary access has not been imported on the enrolled host.", "Temporary access has expired on the enrolled host."])("keeps an unavailable environment visible: %s", async problem => {
+  vi.mocked(s3Api.environments).mockResolvedValue({ schema_version: "bluefire.s3-environments.v1", environments: [{ environment: s3Environment, available: false, problem, context_digest: s3Hash }], problem: null });
+  mount("");
+  expect(await screen.findByText(problem)).toBeVisible();
+  expect(screen.getByRole("button", { name: "Open exercise" })).toBeDisabled();
+  expect(s3Api.send).not.toHaveBeenCalled();
+  expect(s3Api.review).not.toHaveBeenCalled();
+});
+
 it("requires fresh explicit reviewer and unchecked approval before a stage", async () => {
   const { user } = mount();
   await user.click(await screen.findByRole("button", { name: "Inspect policy" }));

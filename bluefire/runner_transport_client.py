@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import re
 import threading
 import time
 from pathlib import Path
@@ -11,6 +12,48 @@ from typing import Any, Callable, Mapping, cast
 from .owned_service_authority import OwnedServiceAuthorityError, OwnedServiceGrant
 from .owned_service_transport import execute_owned_service_request, prepare_client_service_payload
 from .runner_transport_errors import RunnerAuthenticationError
+from .runner_transport_security import enrollment_binding
+
+
+def validated_transport_identity(client: Any) -> Mapping[str, Any]:
+    """Validate the reported host identity against the current client enrollment."""
+    health = client.health()
+    enrollment = client._active_enrollment()
+    client_fingerprint = str(enrollment.metadata["client_fingerprint"])
+    expected_generation = enrollment_binding(enrollment, client_fingerprint)[
+        "enrollment_generation"
+    ]
+    binary_digest = health.get("runner_binary_digest")
+    inventory_digest = health.get("inventory_digest")
+    expected = {
+        "runner_id": enrollment.runner_id,
+        "client_id": enrollment.client_id,
+        "transport": client._transport_kind,
+        "tls": "TLSv1.3",
+        "server_fingerprint": enrollment.metadata["server_fingerprint"],
+        "client_fingerprint": client_fingerprint,
+        "authenticated_peer_fingerprint": client_fingerprint,
+        "enrollment_generation": expected_generation,
+    }
+    if (
+        any(health.get(field) != value for field, value in expected.items())
+        or not isinstance(inventory_digest, str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", inventory_digest) is None
+        or (
+            binary_digest is not None
+            and (
+                not isinstance(binary_digest, str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", binary_digest) is None
+            )
+        )
+    ):
+        raise RunnerAuthenticationError("Runner transport identity is invalid.")
+    return {
+        "schema_version": "bluefire.runner-transport-identity.v1",
+        **expected,
+        "runner_binary_digest": binary_digest,
+        "inventory_digest": inventory_digest,
+    }
 
 
 def validated_cancellation_payload(

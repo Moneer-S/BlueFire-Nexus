@@ -14,8 +14,18 @@ from tests_platform.test_s3_access_host_config import checked, configured
 @pytest.fixture
 def host(monkeypatch):
     configuration = checked(configured())
+    configuration["schema_version"] = "bluefire.s3-host-environments.v3"
     entry = configuration["environments"][0]
+    entry["managed_profile_digest"] = "sha256:" + "a" * 64
+    checked(configuration)
     monkeypatch.setattr(module, "read_configuration", lambda enrollment: configuration)
+    monkeypatch.setattr(
+        module,
+        "inspect_extension",
+        lambda enrollment: {
+            "references": [{"environment_id": entry["environment_id"], "state": "current"}]
+        },
+    )
     from bluefire import s3_access_runtime
 
     monkeypatch.setattr(
@@ -76,6 +86,32 @@ def test_protected_runtime_failure_retains_readable_unavailable_environment(host
     assert "private path" not in str(row)
 
 
+@pytest.mark.parametrize("state", ["absent", "expired"])
+def test_local_reference_metadata_blocks_readiness_without_a_cloud_request(
+    host, monkeypatch, state
+):
+    monkeypatch.setattr(
+        module,
+        "inspect_extension",
+        lambda enrollment: {
+            "references": [{"environment_id": host.entry["environment_id"], "state": state}]
+        },
+    )
+    payload = response(host)
+    row = payload["environments"][0]
+    assert row["available"] is False
+    assert row["problem"] == f"access_reference_{state}"
+    assert module.client_environments(client(host, payload)) == [row]
+
+
+@pytest.mark.parametrize("problem", ["arbitrary detail", None, {}, "access_reference_current"])
+def test_client_rejects_unrecognized_or_inconsistent_readiness_problem(host, problem):
+    payload = response(host)
+    payload["environments"][0].update(available=False, problem=problem)
+    with pytest.raises(RunnerAuthenticationError, match="response is invalid"):
+        module.client_environments(client(host, payload))
+
+
 def client(host, payload):
     return SimpleNamespace(
         profile_id=host.entry["profile"]["profile_id"],
@@ -87,6 +123,38 @@ def client(host, payload):
 def test_client_validates_exact_enrolled_response(host):
     payload = response(host)
     assert module.client_environments(client(host, payload)) == payload["environments"]
+    assert (
+        payload["environments"][0]["managed_profile_digest"] == host.entry["managed_profile_digest"]
+    )
+
+
+def test_legacy_discovery_remains_readable_but_cannot_claim_current_authority(host):
+    host.configuration["schema_version"] = "bluefire.s3-host-environments.v1"
+    del host.entry["managed_profile_digest"]
+    checked(host.configuration)
+    payload = response(host)
+    row = payload["environments"][0]
+    assert row["managed_profile_digest"] is None
+    assert row["available"] is False and row["problem"] == "profile_changed"
+    assert module.client_environments(client(host, payload)) == [row]
+    row.update(available=True, problem=None)
+    with pytest.raises(RunnerAuthenticationError):
+        module.client_environments(client(host, payload))
+
+
+@pytest.mark.parametrize("binding", ["unset", 1, {}, "sha256:" + "g" * 64])
+def test_discovery_rejects_malformed_retained_binding(host, binding):
+    payload = response(host)
+    payload["environments"][0]["managed_profile_digest"] = binding
+    with pytest.raises(RunnerAuthenticationError):
+        module.client_environments(client(host, payload))
+
+
+def test_old_response_without_binding_cannot_be_upgraded_by_the_client(host):
+    payload = response(host)
+    del payload["environments"][0]["managed_profile_digest"]
+    with pytest.raises(RunnerAuthenticationError):
+        module.client_environments(client(host, payload))
 
 
 @pytest.mark.parametrize("kind", ["extra", "duplicate", "seal", "profile", "boolean", "secret"])

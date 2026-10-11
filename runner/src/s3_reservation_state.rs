@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::canonical::{canonical_hash, canonical_json};
+use crate::s3_fixture_binding::FixtureOperation;
 
 use super::{Error, Result};
 
@@ -31,6 +32,17 @@ pub(super) struct Reserved {
     pub api_limit: u64,
     pub session_limit: u64,
     pub business_attempt_limit: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixture_authority_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixture: Option<FixtureOperation>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct FixturePosition {
+    pub state: String,
+    pub etag: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -60,6 +72,8 @@ pub(super) enum Record {
         observed: bool,
         policy_position: PolicyPosition,
         cleanup_verified: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fixture_position: Option<FixturePosition>,
     },
 }
 
@@ -79,6 +93,7 @@ pub(super) struct Retained {
     pub debits: u64,
     pub write_debited: bool,
     pub completion: Option<(bool, PolicyPosition, bool)>,
+    pub fixture_position: Option<FixturePosition>,
 }
 
 #[derive(Clone)]
@@ -161,10 +176,13 @@ impl Ledger {
                 || old.reserved.api_limit != next.api_limit
                 || old.reserved.session_limit != next.session_limit
                 || old.reserved.business_attempt_limit != next.business_attempt_limit
+                || old.reserved.fixture_authority_digest != next.fixture_authority_digest
                 || old.reserved.revision > next.revision
                 || (old.reserved.operation_id == next.operation_id
                     && (old.reserved.phase != next.phase
-                        || old.reserved.operation == next.operation
+                        || (old.reserved.operation == next.operation
+                            && old.reserved.fixture.as_ref().map(|f| &f.purpose)
+                                == next.fixture.as_ref().map(|f| &f.purpose))
                         || old.reserved.revision != next.revision))
             {
                 return Err(Error::Conflict);
@@ -177,6 +195,9 @@ impl Ledger {
             "inspect_policy" | "reconcile_policy" => 2,
             "probe_read" | "apply_policy" | "rollback_policy" => 4,
             "legitimate_read" => 5,
+            "prepare_fixture" => 6,
+            "reconcile_fixture" => 5,
+            "cleanup_fixture" => 7,
             _ => return Err(Error::Conflict),
         };
         if next.max_sends != fixed_sends {
@@ -184,15 +205,23 @@ impl Ledger {
         }
         let rollback_reserved = history.iter().any(|old| old.reserved.phase == "rollback");
         let retest_reserved = history.iter().any(|old| old.reserved.phase == "retest");
-        let required_calls = match next.phase.as_str() {
-            "apply" => 21,
-            "rollback" => 6,
-            "reconcile" if !rollback_reserved => 8 + if retest_reserved { 0 } else { 9 },
-            "retest" if !rollback_reserved => {
-                next.max_sends + 6 + if next.operation == "probe_read" { 5 } else { 0 }
+        let required_calls = if next.fixture.is_some() {
+            super::fixture::required_calls(&history, next)?
+        } else {
+            (match next.phase.as_str() {
+                "apply" => 21,
+                "rollback" => 6,
+                "reconcile" if !rollback_reserved => 8 + if retest_reserved { 0 } else { 9 },
+                "retest" if !rollback_reserved => {
+                    next.max_sends + 6 + if next.operation == "probe_read" { 5 } else { 0 }
+                }
+                "baseline" if next.operation == "probe_read" => 9,
+                _ => next.max_sends,
+            }) + if next.fixture_authority_digest.is_some() {
+                48
+            } else {
+                0
             }
-            "baseline" if next.operation == "probe_read" => 9,
-            _ => next.max_sends,
         };
         if calls + required_calls > next.api_limit {
             return Err(Error::Budget);
@@ -231,13 +260,26 @@ impl Ledger {
         {
             return Err(Error::Budget);
         }
+        if next.fixture_authority_digest.is_some() {
+            super::fixture::check(&history, next)?;
+            if next.fixture.is_some() {
+                return Ok(());
+            }
+        } else if next.fixture.is_some() {
+            return Err(Error::Conflict);
+        }
         let mut position = PolicyPosition::Unknown;
         let mut uncertain_write = false;
         let mut inspected = false;
         let mut baseline_probe = false;
         let mut baseline_legitimate = false;
         for old in &history {
-            if old.write_debited {
+            if old.write_debited
+                && matches!(
+                    old.reserved.operation.as_str(),
+                    "apply_policy" | "rollback_policy"
+                )
+            {
                 uncertain_write = true;
             }
             if let Some((observed, reported_position, cleanup)) = old.completion {
@@ -262,7 +304,13 @@ impl Ledger {
             return Err(Error::ReconcileRequired);
         }
         let allowed = match next.phase.as_str() {
-            "inspect" => !history.iter().any(|old| old.write_debited),
+            "inspect" => !history.iter().any(|old| {
+                old.write_debited
+                    && matches!(
+                        old.reserved.operation.as_str(),
+                        "apply_policy" | "rollback_policy"
+                    )
+            }),
             "baseline" => inspected && position == PolicyPosition::Before,
             "apply" => {
                 baseline_probe
@@ -310,6 +358,7 @@ impl Ledger {
                         debits: 0,
                         write_debited: false,
                         completion: None,
+                        fixture_position: None,
                     },
                 );
             }
@@ -330,11 +379,19 @@ impl Ledger {
                         && sequence == retained.debits + 1
                         && sequence <= retained.reserved.max_sends
                         && is_write
-                            == (sequence == 3
+                            == ((sequence == 3
                                 && matches!(
                                     retained.reserved.operation.as_str(),
                                     "apply_policy" | "rollback_policy"
-                                )),
+                                ))
+                                || (sequence == 5
+                                    && (retained.reserved.operation == "prepare_fixture"
+                                        || (retained.reserved.operation == "cleanup_fixture"
+                                            && retained
+                                                .reserved
+                                                .fixture
+                                                .as_ref()
+                                                .is_some_and(|f| f.expected_etag.is_some()))))),
                 )?;
                 retained.debits = sequence;
                 retained.write_debited |= is_write;
@@ -345,6 +402,7 @@ impl Ledger {
                 observed,
                 policy_position,
                 cleanup_verified,
+                fixture_position,
             } => {
                 require(super::digest(&result_digest))?;
                 let retained = self
@@ -353,7 +411,43 @@ impl Ledger {
                     .find(|old| old.digest == reservation_digest)
                     .ok_or(Error::Corrupt)?;
                 require(retained.completion.is_none() && (!observed || retained.debits > 0))?;
+                require(
+                    fixture_position.is_some() == (observed && retained.reserved.fixture.is_some()),
+                )?;
+                if let Some(position) = &fixture_position {
+                    require(
+                        matches!(position.state.as_str(), "owned" | "absent" | "drift")
+                            && if position.state == "owned" {
+                                position
+                                    .etag
+                                    .as_deref()
+                                    .is_some_and(crate::s3_fixture_binding::etag)
+                            } else {
+                                position.etag.is_none()
+                            },
+                    )?;
+                    require(match retained.reserved.operation.as_str() {
+                        "prepare_fixture" => position.state == "owned" && retained.debits == 6,
+                        "reconcile_fixture" => retained.debits == 5,
+                        "cleanup_fixture" => {
+                            position.state == "absent"
+                                && retained.debits
+                                    == if retained
+                                        .reserved
+                                        .fixture
+                                        .as_ref()
+                                        .is_some_and(|f| f.expected_etag.is_some())
+                                    {
+                                        7
+                                    } else {
+                                        5
+                                    }
+                        }
+                        _ => false,
+                    })?;
+                }
                 retained.completion = Some((observed, policy_position, cleanup_verified));
+                retained.fixture_position = fixture_position;
             }
         }
         Ok(())

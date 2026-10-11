@@ -151,6 +151,33 @@ def create(jobs):
     )
 
 
+@pytest.mark.parametrize(
+    "problem,expected",
+    [
+        ("access_reference_absent", "Temporary access has not been imported on the enrolled host."),
+        ("access_reference_expired", "Temporary access has expired on the enrolled host."),
+        ("runtime_unavailable", "The enrolled protected runtime is unavailable."),
+    ],
+)
+def test_setup_problem_remains_readable_but_prevents_new_exercise(
+    app, monkeypatch, problem, expected
+):
+    jobs, executor = app
+    original = executor.readiness
+    monkeypatch.setattr(
+        executor,
+        "readiness",
+        lambda scope: {**original(scope), "available": False, "problem": problem},
+    )
+    row = jobs.environments()["environments"][0]
+    assert row["available"] is False
+    assert row["problem"] == expected
+    with pytest.raises(S3AccessError, match="not ready"):
+        create(jobs)
+    assert jobs.list_exercises()["exercises"] == []
+    assert executor.calls == []
+
+
 def stage(jobs, owner_id, phase):
     review = jobs.review(owner_id, {"phase": phase})
     request = {

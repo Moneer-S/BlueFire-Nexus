@@ -30,6 +30,7 @@ pub struct VerifiedS3Admission {
     environment_id: String,
     phase: String,
     revision: u64,
+    fixture_authority_digest: Option<String>,
     owner_uid: u32,
     ledger_root: String,
     runtime_root: String,
@@ -68,6 +69,9 @@ impl VerifiedS3Admission {
     }
     pub(crate) fn revision(&self) -> u64 {
         self.revision
+    }
+    pub(crate) fn fixture_authority_digest(&self) -> Option<&str> {
+        self.fixture_authority_digest.as_deref()
     }
     pub(crate) fn owner_uid(&self) -> u32 {
         self.owner_uid

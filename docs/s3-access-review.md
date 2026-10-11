@@ -6,6 +6,42 @@ run evidence system. It is available under **More tools > S3 access**. A missing
 changed enrollment is shown as unavailable, while previously saved evidence
 remains readable.
 
+Setup and execution use the same active managed profile selection. The installed
+v3 configuration retains `managed_profile_digest`, the canonical content hash of
+the complete selected profile, including its step budget and environment references.
+Discovery transports that retained binding; it does not replace it with a freshly
+computed active-profile hash. The installed native policy must also match its
+exact execution limits, dedicated S3 permissions,
+approval requirement and supported local target scope, as well as the
+authenticated runner and sandbox. A same-ID profile edit does not make an older
+host policy current. Setup reports that mismatch without changing the host.
+Configuration drafts likewise require exact current profile limits, not merely
+lower limits. Changing those limits requires reviewing and installing the updated
+configuration before new execution. Profiles must allow the largest fixed reviewed
+stage (currently two worker tasks); a matching installation cannot bypass that
+minimum. Legacy configurations remain readable, but cannot authorize new product
+execution. This does not automatically migrate or replace retained authority.
+
+Execution rechecks the active profile version and exact discovered host bindings
+after retaining its original task checkpoint. Drift at that point refuses
+dispatch without removing the checkpoint or refunding reservations. Recovery
+continues to validate the historical task, not a newly active profile.
+
+## Saved configuration drafts
+
+Connection setup can save structurally reviewed, nonsecret configuration text in
+the workspace and reopen its exact bytes after a reload. Saving is explicit and
+uses the last accepted saved revision; a change from another window is a conflict,
+not permission to overwrite it. Failed saves and late responses preserve current
+inputs. Opening a different saved version asks before replacing unsaved text, and
+canceling does not accept that fetched revision as a future overwrite base.
+
+Saved drafts remain data only. Opening one clears the current structural review
+and does not install it, reconnect a host, recover an approval or renew authority.
+A retained previous profile selection can reopen its draft even when that profile
+is unavailable; review and saving still require a current profile. The source is
+bounded to 128 KiB, and backend validation refuses credential-bearing documents.
+
 ## Reviewed stages
 
 1. Inspect the enrolled baseline policy without changing it.
@@ -57,7 +93,11 @@ source, or widen the supported native action set.
 
 Product tests use an explicitly synthetic executor. Runner-reported read and
 policy observations remain distinct from independently collected cloud audit.
-The workspace currently reports audit as **not collected**, independent
-observations as **none**, and generated resources as **retained**. It does not
-claim live defensive effectiveness, separate-identity runtime isolation, or
-resource deletion from synthetic or runner-reported data alone.
+The workspace reports audit as **not collected** and independent observations as
+**none**. The original workflow retains generated resources. The v2 fixture
+workflow separately records whether its exact objects are not prepared, retained,
+in need of reconciliation, or removed. Fixture cleanup retains the policy state
+accepted at its review; it does not restore the original policy automatically.
+Synthetic and runner-reported fixture outcomes retain those provenance labels.
+They do not establish live defensive effectiveness, independent deletion proof,
+or separate-identity runtime isolation.

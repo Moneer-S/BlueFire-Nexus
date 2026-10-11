@@ -6763,7 +6763,10 @@ class BlueFireService(
         profile = RunnerProfile.from_mapping(document, "persisted runner profile")
         if profile.id != expected_id:
             raise ConfigError("persisted runner profile ID does not match its resource ID")
-        self.registry.validate_runner_profile(profile)
+        from .s3_access_profile import validate_managed_s3_profile
+
+        if not validate_managed_s3_profile(profile):
+            self.registry.validate_runner_profile(profile)
         return profile
 
     @staticmethod

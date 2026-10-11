@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, cast
 
+from . import s3_fixture_contract as fixtures
 from .s3_access_contract import S3AccessError, S3AccessScope, digest, document, exact, timestamp
 from .s3_access_policy import S3PolicyChange
 from .util import canonical_json_bytes, content_hash
@@ -81,6 +82,7 @@ class S3WorkerRequest:
     @classmethod
     def from_mapping(cls, value: Any) -> S3WorkerRequest:
         row = document(value, limit=MAX_FRAME_BYTES)
+        fixture_request = row.get("schema_version") == fixtures.REQUEST_SCHEMA
         exact(
             row,
             {
@@ -96,13 +98,14 @@ class S3WorkerRequest:
                 "deadline",
                 "max_sends",
                 "exclusive_writer_digest",
-            },
+            }
+            | ({"fixture", "fixture_authority_digest"} if fixture_request else set()),
             "worker request",
         )
         if (
-            row["schema_version"] != REQUEST_SCHEMA
+            row["schema_version"] not in (REQUEST_SCHEMA, fixtures.REQUEST_SCHEMA)
             or not isinstance(row["operation"], str)
-            or row["operation"] not in OPERATIONS
+            or row["operation"] not in (fixtures.OPERATIONS if fixture_request else OPERATIONS)
         ):
             raise S3AccessError("worker operation or schema is unsupported")
         _hex(row["launch_id"])
@@ -120,6 +123,7 @@ class S3WorkerRequest:
             "rollback_policy": 4,
             "probe_read": 4,
             "legitimate_read": 5,
+            **fixtures.SEND_LIMITS,
         }[row["operation"]]
         if type(row["max_sends"]) is not int or not 1 <= row["max_sends"] <= min(
             maximum, row["scope"]["limits"]["api_calls"]
@@ -142,7 +146,10 @@ class S3WorkerRequest:
             else:
                 digest(row["exclusive_writer_digest"])
         elif row["policy_change"] is not None or row["exclusive_writer_digest"] is not None:
-            raise S3AccessError("read operation cannot carry mutation authority")
+            raise S3AccessError("operation cannot carry policy mutation authority")
+        if fixture_request:
+            digest(row["fixture_authority_digest"])
+            row["fixture"] = fixtures.operation(scope, row["operation"], row["fixture"])
         return cls(canonical_json_bytes(row))
 
     def to_dict(self) -> dict[str, Any]:
@@ -286,7 +293,10 @@ def validate_permit(value: Any, requested: Mapping[str, Any]) -> None:
 
 
 def operation_plan(request: S3WorkerRequest) -> list[tuple[str, str, str]]:
-    selected = request.to_dict()["operation"]
+    row = request.to_dict()
+    if row["schema_version"] == fixtures.REQUEST_SCHEMA:
+        return fixtures.operation_plan(row)
+    selected = row["operation"]
     plan = [("sts", "GetCallerIdentity", "controller")]
     if selected in {"probe_read", "legitimate_read"}:
         reader = "probe" if selected == "probe_read" else "legitimate"
@@ -322,7 +332,12 @@ def validate_result(request: S3WorkerRequest, value: Any) -> dict[str, Any]:
         "worker result",
     )
     if (
-        row["schema_version"] != "bluefire.s3-worker-result.v1"
+        row["schema_version"]
+        != (
+            fixtures.RESULT_SCHEMA
+            if source["schema_version"] == fixtures.REQUEST_SCHEMA
+            else "bluefire.s3-worker-result.v1"
+        )
         or row["request_digest"] != request.digest
         or row["runtime_isolation_proven"] is not False
     ):
@@ -334,7 +349,7 @@ def validate_result(request: S3WorkerRequest, value: Any) -> dict[str, Any]:
     plan = operation_plan(request)
     if (
         type(consumed) is not int
-        or not 0 <= consumed <= source["max_sends"]
+        or not 0 <= consumed <= min(source["max_sends"], len(plan))
         or not isinstance(calls, list)
         or len(calls) > consumed
     ):
@@ -360,11 +375,23 @@ def validate_result(request: S3WorkerRequest, value: Any) -> dict[str, Any]:
         if "error_code" in call:
             if (
                 not isinstance(call["error_code"], str)
-                or call["error_code"] not in SAFE_ERROR_CODES
+                or call["error_code"]
+                not in (
+                    SAFE_ERROR_CODES
+                    | (
+                        fixtures.ERROR_CODES
+                        if source["schema_version"] == fixtures.REQUEST_SCHEMA
+                        else set()
+                    )
+                )
                 or not 400 <= status <= 599
             ):
                 raise S3AccessError("worker error projection is invalid")
-        elif status not in ({200, 204} if operation == "PutBucketPolicy" else {200}):
+        elif status not in (
+            {204}
+            if operation == "DeleteObject"
+            else {200, 204} if operation == "PutBucketPolicy" else {200}
+        ):
             raise S3AccessError("worker response status is invalid")
     if row["outcome"] != "observed":
         expected = (
@@ -375,13 +402,24 @@ def validate_result(request: S3WorkerRequest, value: Any) -> dict[str, Any]:
         if row["data"] is not None or row["problem"] != expected:
             raise S3AccessError("failed worker result cannot claim observations")
         if row["outcome"] == "reconcile_required" and (
-            source["operation"] not in {"apply_policy", "rollback_policy"} or consumed < 3
+            (
+                source["operation"]
+                not in {"apply_policy", "rollback_policy", "prepare_fixture", "cleanup_fixture"}
+            )
+            or consumed < (5 if source["operation"] in fixtures.OPERATIONS else 3)
+            or (
+                source["operation"] == "cleanup_fixture"
+                and source["fixture"]["expected_etag"] is None
+            )
         ):
             raise S3AccessError("worker reconciliation result has no write debit")
         return row
     if row["problem"] is not None or len(calls) != len(plan) or consumed != len(plan):
         raise S3AccessError("worker observations lack complete operation accounting")
     data = row["data"]
+    if source["schema_version"] == fixtures.REQUEST_SCHEMA:
+        fixtures.validate_observation(source, data, calls)
+        return row
     if source["operation"] in {"probe_read", "legitimate_read"}:
         exact(data, {"reader", "objects", "effective_access_claim"}, "worker read observations")
         reader = "probe" if source["operation"] == "probe_read" else "legitimate"

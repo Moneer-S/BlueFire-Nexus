@@ -14,13 +14,15 @@ from typing import Any, Callable, Mapping, Protocol
 
 from .runner_client import execution_task_identity
 from .runner_transport import AuthenticatedRunnerClient
-from .s3_access_admission import ACTION, approved_request
+from .s3_access_admission import ACTION as ACTION
+from .s3_access_admission import approved_request
 from .s3_access_contract import S3AccessError, S3AccessScope, document, exact
 from .s3_access_execution_contract import validate_execution as validate_execution
+from .s3_access_profile import validate_managed_s3_profile, validate_s3_host_binding
 from .s3_access_recovery import SCHEMA, validate_recovery_context
 from .s3_access_recovery import execution_manifest as _manifest
 from .s3_access_wire import S3WorkerRequest, timestamp
-from .util import canonical_json_bytes
+from .util import canonical_json_bytes, content_hash
 
 
 class S3AccessExecutor(Protocol):
@@ -127,29 +129,43 @@ class _ConfiguredExecutor(_UnavailableExecutor):
 
     def _discovered(self) -> list[tuple[AuthenticatedRunnerClient, Path, dict[str, Any]]]:
         found = []
-        profiles = getattr(getattr(self.service, "config", None), "runner_profiles", ())
         lifecycle = getattr(self.service, "runner_lifecycle", None)
         if lifecycle is None:
             return []
-        for profile in profiles:
-            if (
-                profile.mode.value != "execute"
-                or "linux" not in profile.platforms
-                or "cloud.aws.s3.access" not in profile.capabilities
-                or ACTION not in profile.enabled_actions
-                or ACTION in profile.blocked_actions
-            ):
-                continue
+        for profile in self.service._runner_profiles():
             try:
+                if not validate_managed_s3_profile(profile):
+                    continue
+                profile_digest = content_hash(profile.to_dict())
                 client, sandbox = lifecycle.client_for_profile(
                     profile.id, profile_budget_seconds=min(60, profile.budgets.max_seconds)
                 )
                 if not isinstance(client, AuthenticatedRunnerClient):
                     continue
+                identity = client.transport_identity()
                 for row in client.s3_access_environments():
+                    row = dict(row)
+                    row["active_profile_digest"] = profile_digest
+                    try:
+                        validate_s3_host_binding(
+                            row["profile"],
+                            profile,
+                            managed_profile_digest=row.get("managed_profile_digest"),
+                            runner_id=identity["runner_id"],
+                            sandbox=sandbox,
+                        )
+                    except (ValueError, TypeError, KeyError):
+                        row.update(available=False, problem="profile_changed")
                     found.append((client, sandbox, row))
-            except (OSError, ValueError, RuntimeError):
+            except (OSError, ValueError, RuntimeError, TypeError, KeyError):
                 continue
+        active = [(p.id, content_hash(p.to_dict())) for p in self.service._runner_profiles()]
+        found = [
+            item
+            for item in found
+            if active.count((item[2]["profile"]["profile_id"], item[2]["active_profile_digest"]))
+            == 1
+        ]
         # A changed scope must not hide a second journal for the same bucket.
         # This covers visible configured hosts, not undiscovered controllers.
         identifiers = [row[2]["environment"]["environment_id"] for row in found]
@@ -239,6 +255,19 @@ class _ConfiguredExecutor(_UnavailableExecutor):
                 "S3 original task could not be saved; execution was not dispatched"
             ) from None
         if cancellation_event.is_set():
+            return super().execute(
+                request, authorization=authorization, cancellation_event=cancellation_event
+            )
+        # Saving the original task can yield to profile edits or host replacement.
+        # Recheck without changing the saved task or borrowing fresh authority.
+        current = [
+            candidate
+            for candidate in self._discovered()
+            if candidate[2] == row
+            and candidate[1] == sandbox
+            and candidate[0].transport_identity() == context["transport_identity"]
+        ]
+        if len(current) != 1 or client.transport_identity() != context["transport_identity"]:
             return super().execute(
                 request, authorization=authorization, cancellation_event=cancellation_event
             )

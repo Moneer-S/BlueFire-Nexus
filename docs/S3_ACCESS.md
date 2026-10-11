@@ -25,8 +25,10 @@ authenticated task; installed recovery proof remains separate. One protected Lin
 interpreter prefix reached the actual fixed entry's Ready/EOF boundary offline,
 without a containment ACK, credentials or cloud calls. That historical component
 proof is not verification of the current integrated package or an authorized
-installed workflow. Fixture/audit lifecycle and broader composition integration
-remain required. The cloud phase is not complete.
+installed workflow. The explicit v2 fixture lifecycle is implemented in source
+with synthetic contract, SDK and saved-store tests; its fresh native, official-SDK
+and installed validation remain separate gates. Audit collection and broader
+composition integration remain required. The cloud phase is not complete.
 
 `S3AccessScope.from_mapping` validates an immutable structural scope with one
 commercial-partition account/region, three distinct same-account roles without
@@ -44,6 +46,123 @@ S3/STS plus global IAM hostname forms are derived. This is not a statement that 
 region, service or account is available or enabled. Enrollment must verify that
 separately and fail unavailable without fallback. GovCloud, China, custom endpoints,
 FIPS, dual-stack, access points and directory buckets are not supported here.
+
+## Owner-Local Setup
+
+The S3 workspace now includes a profile-specific connection panel. Listing profiles
+does not contact a host. An explicit connection check uses the existing authenticated
+runner transport, verifies the saved profile and transport identity before and after
+inspection, and reports missing, incomplete, invalid or configured local state.
+Runtime integrity, protected-reference expiry and scope time are separate fields;
+AWS access remains untested. Existing runner start, diagnostics, enrollment recovery
+and upgrade controls remain explicit and do not submit an experiment.
+
+Runner Profiles offers an `S3 access - Linux` starting configuration, including in
+an empty catalog. Saving creates an inactive durable draft through the existing
+resource lifecycle; explicit validation and activation remain separate. Managed
+S3 profiles must be dedicated Linux cloud-lab envelopes with required approval,
+no ordinary action methods, no network-target extensions and no credential or
+native-tool bindings. The reserved S3 method is not added to the ordinary action
+catalog. Their step budget must cover every fixed reviewed stage, currently at
+least two worker tasks. Activation alone does not enroll a host or grant AWS access.
+
+The configuration draft panel accepts at most 128 KiB of nonsecret configuration
+JSON. Review is structural only: it neither reads a referenced local path nor
+connects to a runner or AWS. It reuses the exact host-configuration, scope and
+policy validators. Browser intake additionally requires a dedicated S3-only native
+profile, the selected active saved profile, no network target extensions, finite
+standard sandbox targets and limits exactly matching that saved profile. Unknown fields,
+credential material, unrelated native integrations and implicit fixture upgrades
+are refused. This narrower intake does not relax the owner-local or native checks.
+
+New product drafts use `bluefire.s3-host-environments.v3`. Each environment includes
+`managed_profile_digest`, copied from the selected profile's `profile_digest` in
+`GET /s3-access/setup`. This is the canonical content hash of the complete
+managed profile's `to_dict()` document, not its narrower sealed native policy.
+The existing native `profile` document and its seal remain unchanged. The optional
+`fixture_lifecycle` descriptor is still required for fixture operations; a v3
+configuration without it does not gain fixture authority. Review preserves the
+exact source and never inserts or refreshes the digest implicitly.
+
+The protected host configuration retains this digest through installation and
+authenticated discovery. Setup and every new dispatch compare it with the current
+active profile, including fields absent from native execution limits. A changed
+same-ID profile requires separately reviewed authority. Legacy v1/v2 configuration
+and historical original-task results remain readable, but legacy discovery reports
+`profile_changed` and cannot authorize new product execution. An older host response
+without the binding is refused. No automatic migration or in-place authority
+replacement is provided; existing retained configurations still require the separate
+history review described below. Recovery never converts an old result into a new task.
+
+An export contains exactly the reviewed source bytes, bound to their SHA-256 and
+the selected saved profile digest. Editing the draft or selecting a changed profile
+invalidates its displayed review and export. Failed checks and late responses do
+not replace the current draft. Draft input is browser-memory state, not a durable
+configuration store or installation receipt. Full guided authoring from an empty
+scope, protected-runtime deployment and fresh installed/cloud verification remain
+separate requirements.
+
+Setup uses an existing enrolled, non-root Linux host and its selected cloud-capable
+profile. It does not create trust, install a runtime, acquire AWS credentials, start
+a worker or extend the approved scope. The fixed managed enrollment must already
+be valid, owner-private and active. Unsafe permissions are refused without repair.
+
+The local commands are:
+
+```text
+bluefire s3 status --profile PROFILE
+bluefire s3 configure review --profile PROFILE --draft CONFIGURATION_JSON
+bluefire s3 configure apply --profile PROFILE --draft CONFIGURATION_JSON --review REVIEW_JSON
+bluefire s3 credentials set --profile PROFILE --environment ENVIRONMENT --expected-revision REVISION_DIGEST --stdin
+bluefire s3 reconcile --profile PROFILE [--record-digest RECORD_DIGEST]
+bluefire s3 reconcile --profile PROFILE --record-digest RECORD_DIGEST --complete
+```
+
+The draft is the exact versioned host configuration described here, including the
+installed protected runtime and sealed profile. The review result is valid for at
+most two minutes and binds the configuration, enrollment generation and current
+revision. Applying the same configuration again is idempotent; changing retained
+authority is not an implicit update. Configuration and protected references live
+in a separate authenticated, append-only `s3-access` directory, not inside the TLS
+material directory. History is bounded to 32 revisions.
+
+Temporary material must already have been deliberately acquired for the approved
+scope. Import accepts a bounded noninteractive standard-input document using the
+existing temporary-material schema. There are no credential arguments, environment
+variable lookup, browser upload or ambient provider-chain fallback. Import protects
+the material under its exact generation/environment/scope purpose and checks the
+expected revision. It neither resets execution allowances nor extends expiry.
+
+Status reads protected-reference metadata without decrypting cloud material. Its
+`local_reference_metadata_only` scope is deliberate: a current reference does not
+prove AWS accepted it, that roles are reachable, or that an access outcome occurred.
+Authenticated discovery now keeps an environment visible but unavailable when its
+reference is absent or expired. The workspace reports that prerequisite separately
+from an unavailable runtime. Actual dispatch still validates the request deadline,
+runtime, scope and supplied credentials independently.
+
+Reconciliation checks the given original record digest without replaying a write.
+When a lost response leaves that digest unknown, omit `--record-digest` to inspect
+the authenticated pending or latest record's digest, operation and sequence only.
+An empty store reports `not_found` without creating storage. Inspection neither
+decrypts protected references nor publishes a pending record.
+To finish an interrupted local publication, explicitly pass `--complete` with the
+inspected digest. Completion authenticates the original pending record against
+the current enrollment and revision chain, then publishes those exact bytes. It
+does not acquire, decrypt or replace credentials, append another revision, renew
+expiry, refund execution allowances or contact AWS. A repeated completion of the
+current record reports `already_committed`. A changed digest, unsafe file, changed
+enrollment or unexpected record requires inspection; it is never silently removed.
+Publication uses atomic non-replacing rename, including the pending writer claim,
+so a crash cannot leave a two-link record. Files retained from older development
+versions with unexpected links or staging entries still fail closed and are not
+automatically adopted. No credential data appears in the result. This source
+implementation has local storage, authenticated loopback and workspace regression
+coverage. A native Linux filesystem probe verified atomic claims, destination
+collision refusal, unsupported-operation refusal and post-publication interruption
+with generated files and verified cleanup. That component check is not proof of
+configured cloud setup. Native Linux setup, integrated installed onboarding and
+live cloud verification remain separate requirements.
 
 ## Supported Policy Language
 
@@ -85,11 +204,45 @@ observations remain necessary. Existing approvals do not authorize this workflow
 
 `S3WorkerRequest.from_mapping` revalidates the complete scope, exact policy change,
 runtime/launch/generation bindings, operation deadline and send allowance. Supported
-operations are only policy inspection, read-only reconciliation, apply, rollback,
+v1 operations are only policy inspection, read-only reconciliation, apply, rollback,
 probe read and legitimate read. Writes require an exclusive-writer receipt digest;
 validating that digest's
 syntax is not verification of exclusive ownership. Fixture creation/deletion and
 audit collection are not silently added to this contract.
+
+## Explicit Fixture Lifecycle
+
+A newly reviewed v2 enrollment binds the existing scope, enrollment generation,
+exclusive-writer receipt and a never-versioned general-purpose bucket without
+Object Lock. Existing v1 enrollments cannot acquire fixture operations implicitly.
+The two scope-bound payloads are generated canonical JSON for the primary and
+health purposes, not arbitrary owner-provided bytes.
+
+Saved Prepare, Reconcile Fixtures and Cleanup stages use the existing jobs, runs,
+durable original-result recovery and exact review mechanism. Preparation confirms
+absence, creates with `If-None-Match: *`, then verifies size, SHA-256, scope/intent
+metadata and ETag. Cleanup verifies the full expected object first and uses the
+reviewed `If-Match` ETag, followed by absence and bounded exact-prefix readback.
+A known-absent cleanup is read-only. Versioning, Object Lock, foreign keys,
+incomplete listings and unsupported object metadata fail closed.
+
+ETag is a conditional content/identity token, not proof against every metadata or
+external-writer race. Exclusive ownership remains an explicit deployment premise.
+Lost write acknowledgement requires a fresh read-only reconciliation, never write
+replay. An accepted conditional-delete reservation remains consumed even when no
+send occurs. Bounded recovery allowances protect cleanup and reconciliation;
+they are not refunds or automatic retries.
+
+Object receipts retain the last exact observation and its request IDs/provenance.
+Failed reads stay in stage history without borrowing old observations. Uncertain
+object mutations and process cleanup are distinct. Cleanup may retain either a
+settled baseline or accepted hardened policy; it does not imply rollback. An
+uncertain or drifted policy must be reconciled first. Cloud audit remains
+`not_collected`; synthetic and worker-reported results are not independent audit
+evidence. The v2 source and test additions do not enroll a host or authorize AWS
+access.
+
+## Fixed Worker
 
 `S3WorkerHandshake` requires a matching ready/containment acknowledgement before
 accepting one bounded credential frame. That state machine does not prove isolation

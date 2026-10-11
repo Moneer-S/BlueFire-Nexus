@@ -71,6 +71,15 @@ The runner inventory advertises the provider runtime kind, ABI, runtime version,
 
 This is not a generic plugin, script, command, Python, native-library, or host-function interface. A module with imports, an unexpected export, a mismatched digest or ABI, an unbound activation/inventory contract, or an exceeded limit is refused.
 
+Provider outputs are provider-authored data, not native evidence or access grants. The
+`artifact.sandbox.`, `artifact.endpoint.`, `artifact.file_access.`, `artifact.permission.`,
+and `artifact.research.` namespaces are reserved across all versions. Package intake,
+runner binding validation, and output admission reject provider declarations in these
+namespaces, including previously signed packages. Use an independent namespace such as
+`artifact.acme.result.v1`. A matching JSON shape or a provider-supplied path cannot make
+that result compatible with a built-in filesystem consumer; a trusted conversion must
+independently establish the native artifact and its authority.
+
 ## Logical catalog contract
 
 A logical `bluefire.action.v1` entry contains:

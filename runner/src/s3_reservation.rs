@@ -11,10 +11,12 @@ use crate::reservation_storage::{JournalKind, Lease, Storage};
 use crate::s3_access_send::S3SendPreview;
 use crate::s3_admission::VerifiedS3Admission;
 
+#[path = "s3_reservation_fixture.rs"]
+mod fixture;
 #[path = "s3_reservation_state.rs"]
 mod state;
 pub(crate) use state::PolicyPosition;
-use state::{Entry, Ledger, Record, Reserved, SCHEMA};
+use state::{Entry, FixturePosition, Ledger, Record, Reserved, SCHEMA};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Error {
@@ -97,6 +99,8 @@ impl S3ReservationStore {
             api_limit: binding.api_limit(),
             session_limit: binding.session_limit(),
             business_attempt_limit: binding.business_attempt_limit(),
+            fixture_authority_digest: admission.fixture_authority_digest().map(str::to_owned),
+            fixture: binding.fixture().cloned(),
         };
         let mut lease = self.storage.lease()?;
         let mut ledger = Ledger::load(&lease.read()?, &self.enrollment)?;
@@ -178,6 +182,17 @@ impl S3Reservation<'_> {
         position: PolicyPosition,
         cleanup_verified: bool,
     ) -> Result<()> {
+        let fixture_position = if observed && self.binding().fixture().is_some() {
+            Some(FixturePosition {
+                state: result["data"]["state"]
+                    .as_str()
+                    .ok_or(Error::Conflict)?
+                    .into(),
+                etag: result["data"]["etag"].as_str().map(str::to_owned),
+            })
+        } else {
+            None
+        };
         append(
             &mut self.lease,
             &mut self.ledger,
@@ -187,6 +202,7 @@ impl S3Reservation<'_> {
                 observed,
                 policy_position: position,
                 cleanup_verified,
+                fixture_position,
             },
         )?;
         Ok(())

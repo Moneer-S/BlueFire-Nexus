@@ -11,9 +11,30 @@ ROOT = "/api/v1/s3-access"
 
 
 @pytest.mark.parametrize(
+    "method,path,operation",
+    [
+        ("GET", "/setup/drafts/s3-profile.v1", "s3_access_saved_setup_draft"),
+        ("POST", "/setup/drafts", "save_s3_access_setup_draft"),
+    ],
+)
+def test_saved_setup_routes_require_a_session_and_dispatch_exact_inputs(method, path, operation):
+    body = {"configuration_json": "{}"} if method == "POST" else None
+    with running_server(authenticate=False) as (server, service):
+        status, _, _ = request(server, method, ROOT + path, body=body)
+        assert status == 401 and service.calls == []
+    with running_server() as (server, service):
+        status, _, _ = request(server, method, ROOT + path, body=body)
+        assert status == 200
+        assert service.calls == [(operation, body if method == "POST" else "s3-profile.v1")]
+
+
+@pytest.mark.parametrize(
     ("method", "path", "operation", "has_identifier"),
     [
         ("GET", "/environments", "s3_access_environments", False),
+        ("GET", "/setup", "s3_access_setup_profiles", False),
+        ("POST", "/setup/check", "check_s3_access_setup", False),
+        ("POST", "/setup/review", "review_s3_access_setup_draft", False),
         ("GET", "/exercises", "s3_access_exercises", False),
         ("GET", f"/exercises/{JOB_ID}", "s3_access_exercise", True),
         ("POST", "/exercises", "create_s3_access", False),
@@ -64,6 +85,9 @@ def test_cross_origin_s3_command_never_dispatches():
     [
         "/exercises?phase=apply",
         "/environments?scope=other",
+        "/setup?profile=other",
+        "/setup/check/again",
+        "/setup/review?apply=1",
         "/exercises/not-a-job",
         f"/exercises/{JOB_ID}/apply",
         f"/exercises/{JOB_ID}/recover/again",
@@ -82,6 +106,9 @@ def test_noncanonical_s3_routes_never_dispatch(path):
         ("GET", f"/exercises/{JOB_ID}/operations"),
         ("GET", f"/exercises/{JOB_ID}/recover"),
         ("POST", "/environments"),
+        ("POST", "/setup"),
+        ("GET", "/setup/check"),
+        ("GET", "/setup/review"),
         ("POST", f"/exercises/{JOB_ID}"),
     ],
 )

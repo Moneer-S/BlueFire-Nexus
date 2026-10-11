@@ -7,6 +7,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
+from . import s3_fixture_contract as fixture_contract
+from . import s3_fixture_results as fixtures
 from .s3_access_contract import S3AccessError, S3AccessScope, digest, exact, timestamp
 from .s3_access_policy import plan_hardening
 from .util import content_hash
@@ -20,6 +22,7 @@ PHASES = {
     "retest": ("probe_read", "legitimate_read"),
     "reconcile": ("reconcile_policy",),
     "rollback": ("rollback_policy",),
+    **fixtures.PHASES,
 }
 SEND_LIMITS = {
     "inspect_policy": 2,
@@ -28,6 +31,7 @@ SEND_LIMITS = {
     "apply_policy": 4,
     "rollback_policy": 4,
     "reconcile_policy": 2,
+    **fixture_contract.SEND_LIMITS,
 }
 TERMINAL = {"completed", "failed", "cancelled", "interrupted"}
 _REFERENCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", re.ASCII)
@@ -60,9 +64,13 @@ def reviewer(value: Any) -> str:
 
 
 def environment(value: Any) -> dict[str, Any]:
+    fixture_keys = (
+        {"fixture_lifecycle"} if isinstance(value, dict) and "fixture_lifecycle" in value else set()
+    )
     row = exact(
         value,
-        {"environment_id", "display_name", "scope", "baseline_policy", "exclusive_writer_digest"},
+        {"environment_id", "display_name", "scope", "baseline_policy", "exclusive_writer_digest"}
+        | fixture_keys,
         "S3 environment",
     )
     if (
@@ -80,6 +88,10 @@ def environment(value: Any) -> dict[str, Any]:
     change = plan_hardening(scope, row["baseline_policy"])
     if row["exclusive_writer_digest"] is not None:
         digest(row["exclusive_writer_digest"])
+    if fixture_keys:
+        descriptor = fixture_contract.enrollment(scope, row["fixture_lifecycle"])
+        if descriptor["exclusive_writer_digest"] != row["exclusive_writer_digest"]:
+            raise S3AccessError("Fixture enrollment needs the same explicit exclusive writer.")
     return {**row, "scope": scope.to_dict(), "baseline_policy": change.to_dict()["before"]}
 
 
@@ -118,6 +130,8 @@ def required_remaining(owner: Mapping[str, Any], phase: str) -> dict[str, int]:
     for recovery in future:
         allowance = phase_budget(recovery)
         required = {name: amount + allowance[name] for name, amount in required.items()}
+    if fixtures.enabled(owner):
+        required["api_calls"] += fixtures.recovery_floor(owner, phase)
     return required
 
 
@@ -146,7 +160,11 @@ def allowed_phases(owner: Mapping[str, Any]) -> list[str]:
     rolled_back = latest(owner, "rollback")
     reconciliation = latest(owner, "reconcile")
     policy = progress.get("policy_state", "baseline")
-    if rolled_back and rolled_back["outcome"]["state"] == "observed":
+    if (
+        rolled_back
+        and rolled_back["outcome"]["state"] == "observed"
+        and not fixtures.enabled(owner)
+    ):
         return []
     if not applied and not reconciliation and not progress.get("stopped"):
         inspected = latest(owner, "inspect")
@@ -167,13 +185,15 @@ def allowed_phases(owner: Mapping[str, Any]) -> list[str]:
         choices = ["reconcile"] if applied else []
     else:
         choices = []
+    if fixtures.enabled(owner):
+        choices = fixtures.choices(owner, choices)
     return [phase for phase in choices if stage_affordable(owner, phase)]
 
 
 def assert_phase_current(scope: S3AccessScope, phase: str, now: datetime) -> None:
     scope.assert_current(clock=lambda: now)
     row = scope.to_dict()
-    if phase not in {"reconcile", "rollback"} and now >= timestamp(row["created_at"]) + timedelta(
+    if phase not in fixtures.RECOVERY_PHASES and now >= timestamp(row["created_at"]) + timedelta(
         seconds=row["limits"]["business_seconds"]
     ):
         raise S3AccessError("The business window ended; only scoped recovery remains available.")
@@ -229,6 +249,12 @@ def outcome(phase: str, executions: Sequence[Mapping[str, Any]]) -> dict[str, An
         policy = executions[0]["result"]["data"]["structural_review"]
         if policy == "drift":
             state = "drift"
+    if (
+        phase in fixtures.PHASES
+        and observed
+        and any(row["result"]["data"]["state"] == "drift" for row in executions)
+    ):
+        state = "drift"
     return {
         "state": state,
         "cleanup": cleanup,
@@ -266,6 +292,11 @@ def review_document(owner: Mapping[str, Any], phase: str) -> dict[str, Any]:
             run for row in owner["progress"].get("operations", []) for run in row["run_ids"]
         ],
     }
+    if fixtures.enabled(owner):
+        value.update(
+            schema_version="bluefire.s3-stage-review.v2",
+            fixture_lifecycle=fixtures.review(owner, phase),
+        )
     return {**value, "review_digest": content_hash(value)}
 
 

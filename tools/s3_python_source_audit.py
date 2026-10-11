@@ -7,22 +7,26 @@ from typing import Any
 
 _SOURCES = {
     "bluefire/s3_access_host_config.py": (
-        "584ad043beab2e597fe938dae53605415c00aa24bed0ffc4914e0dbb9247b6b2",
-        ((123, "call", "os.<dynamic>"), (124, "call", "os.<dynamic>")),
+        "ee69ad78d79c0b883cf4b855eb76dba7888a82250d20f03d5d01c0791c31bfdd",
+        ((26, "call", "os.<dynamic>"), (27, "call", "os.<dynamic>")),
+    ),
+    "bluefire/s3_access_setup_cli.py": (
+        "187c9d57828bbb0ba28c47d5fa4c0bfe125c85d90425378e97b91d6cc8cff59a",
+        ((48, "call", "os.<dynamic>"), (62, "call", "os.<dynamic>")),
     ),
     "bluefire/s3_access_runtime.py": (
-        "ce965801943cfc70d2dbca2714fdbac3eb05f859c4a959bd44a0fd984ba09b55",
+        "b9bd01ca55c242b289f4746ea287a0c04c95e31842433b42df9fefa4626a1480",
         (
-            (230, "call", "os.<dynamic>"),
-            (341, "module", "importlib.metadata"),
-            (350, "module", "botocore.session"),
-            (351, "module", "botocore.config"),
-            (352, "module", "botocore.exceptions"),
-            (353, "module", "botocore.loaders"),
-            (354, "module", "botocore.credentials"),
-            (355, "module", "botocore.tokens"),
-            (356, "module", "botocore.history"),
-            (358, "module", "bluefire.s3_access_sdk_boundary"),
+            (233, "call", "os.<dynamic>"),
+            (344, "module", "importlib.metadata"),
+            (353, "module", "botocore.session"),
+            (354, "module", "botocore.config"),
+            (355, "module", "botocore.exceptions"),
+            (356, "module", "botocore.loaders"),
+            (357, "module", "botocore.credentials"),
+            (358, "module", "botocore.tokens"),
+            (359, "module", "botocore.history"),
+            (361, "module", "bluefire.s3_access_sdk_boundary"),
         ),
     ),
     "bluefire/s3_access_worker_entry.py": (

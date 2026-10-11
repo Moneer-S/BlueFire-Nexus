@@ -73,6 +73,29 @@ def test_exact_configuration_has_only_a_safe_public_environment_projection():
     assert public_environments(None) == []
 
 
+@pytest.mark.parametrize("binding", [None, "unset", True, {}, "sha256:" + "g" * 64])
+def test_bound_configuration_requires_a_valid_explicit_managed_profile_digest(binding):
+    row = configured()
+    row["schema_version"] = "bluefire.s3-host-environments.v3"
+    if binding is not None:
+        row["environments"][0]["managed_profile_digest"] = binding
+    with pytest.raises(S3AccessError):
+        checked(row)
+
+
+def test_bound_configuration_preserves_exact_input_without_exposing_private_binding():
+    row = configured()
+    public = public_environments(row)
+    row["schema_version"] = "bluefire.s3-host-environments.v3"
+    row["environments"][0]["managed_profile_digest"] = "sha256:" + "a" * 64
+    original = deepcopy(row)
+    assert checked(row) == original
+    assert public_environments(row) == public
+    row["environments"][0]["unreviewed"] = True
+    with pytest.raises(S3AccessError):
+        checked(row)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -174,7 +197,7 @@ def test_exact_request_selection_cannot_rebind_scope_profile_or_exclusive_writer
         selected_environment(row, S3WorkerRequest.from_mapping(source), approval, entry["profile"])
 
 
-def test_temporary_material_uses_only_exact_purpose_bound_synthetic_reference():
+def test_temporary_material_refuses_unvalidated_enrollment_before_secret_access():
     row = checked(configured())
     calls = []
 
@@ -184,6 +207,6 @@ def test_temporary_material_uses_only_exact_purpose_bound_synthetic_reference():
             return canonical_json_bytes(credential_row())
 
     request = S3WorkerRequest.from_mapping(request_row("inspect_policy"))
-    encoded = temporary_material(Enrollment(), row["environments"][0], request, lambda: NOW)
-    assert json.loads(encoded) == credential_row()
-    assert calls == [("s3-test-environment.secret", "s3-temporary:test-environment")]
+    with pytest.raises(S3AccessError, match="actual managed enrollment"):
+        temporary_material(Enrollment(), row["environments"][0], request, lambda: NOW)
+    assert calls == []
