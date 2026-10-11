@@ -57,7 +57,11 @@ source, or widen the supported native action set.
 
 Product tests use an explicitly synthetic executor. Runner-reported read and
 policy observations remain distinct from independently collected cloud audit.
-The workspace currently reports audit as **not collected**, independent
-observations as **none**, and generated resources as **retained**. It does not
-claim live defensive effectiveness, separate-identity runtime isolation, or
-resource deletion from synthetic or runner-reported data alone.
+The workspace reports audit as **not collected** and independent observations as
+**none**. The original workflow retains generated resources. The v2 fixture
+workflow separately records whether its exact objects are not prepared, retained,
+in need of reconciliation, or removed. Fixture cleanup retains the policy state
+accepted at its review; it does not restore the original policy automatically.
+Synthetic and runner-reported fixture outcomes retain those provenance labels.
+They do not establish live defensive effectiveness, independent deletion proof,
+or separate-identity runtime isolation.
