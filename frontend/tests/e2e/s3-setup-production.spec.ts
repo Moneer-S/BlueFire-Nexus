@@ -30,6 +30,7 @@ async function fixture(page: Page) {
       if (method === "GET" && !state.connected) { await route.fulfill({ status: 401, contentType: "application/json", body: JSON.stringify({ error: { code: "browser_session_unavailable", message: "Synthetic browser session unavailable." } }) }); return; }
     }
     if (!state.connected || request.headers()["x-bluefire-session"] !== session) { state.unexpected += 1; await route.abort(); return; }
+    if (method === "GET" && url.pathname === "/api/v1/resources/runner-profiles") { await json({ schema_version: "bluefire.resource-list.v1", kind: "runner-profiles", resources: [] }); return; }
     if (method === "GET" && url.pathname === "/api/v1/catalog") { await json({ behaviors: [], actions: [], runner_profiles: [], runners: [], ai: { providers: [] } }); return; }
     if (method === "GET" && url.pathname === "/api/v1/scenarios") { await json({ scenarios: [] }); return; }
     if (method === "GET" && url.pathname === "/api/v1/s3-access/environments") { await json({ schema_version: "bluefire.s3-environments.v1", environments: [], problem: "No S3 environment is enrolled." }); return; }

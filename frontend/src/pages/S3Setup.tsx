@@ -3,7 +3,8 @@ import { ArrowLeft, FileCheck2, RefreshCw } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ExecuteRunnerReadiness } from "../components/ExecuteRunnerReadiness";
 import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState } from "../components/Primitives";
-import { s3SetupApi, type S3ConfigurationState, type S3SetupEnvironment } from "../lib/s3-setup";
+import { api } from "../lib/api";
+import { s3SetupApi, savedDraftProfileId, type S3ConfigurationState, type S3SetupEnvironment } from "../lib/s3-setup";
 import { S3SetupDraft } from "./S3SetupDraft";
 
 const configuration: Record<S3ConfigurationState, { title: string; detail: string }> = {
@@ -32,7 +33,16 @@ export function S3Setup({ onClose }: { onClose: () => void }) {
   const [params, setParams] = useSearchParams();
   const cache = useQueryClient();
   const profiles = useQuery({ queryKey: ["s3-setup-profiles"], queryFn: s3SetupApi.profiles, retry: false });
-  const selectedId = params.get("setup_profile") ?? (profiles.data?.profiles.length === 1 ? profiles.data.profiles[0]?.profile_id ?? "" : "");
+  const resources = useQuery({ queryKey: ["resources", "runner-profiles"], queryFn: () => api.resources("runner-profiles"), retry: false });
+  // Resource metadata supplies recovery choices only, never an active profile digest.
+  const activeIds = new Set(profiles.data?.profiles.map(row => row.profile_id) ?? []);
+  const recoveryIds = [...new Set((resources.error ? [] : resources.data?.resources ?? []).filter(row =>
+    savedDraftProfileId(row.id) && row.document?.id === row.id && !activeIds.has(row.id) &&
+    ((Array.isArray(row.document.capabilities) && row.document.capabilities.includes("cloud.aws.s3.access")) ||
+     (Array.isArray(row.document.enabled_actions) && row.document.enabled_actions.includes("owned.aws.s3_access.v1")))
+  ).map(row => row.id))].sort();
+  const choices = [...activeIds, ...recoveryIds.slice(0, 64)];
+  const selectedId = params.get("setup_profile") ?? (activeIds.size === 1 ? [...activeIds][0] ?? "" : choices.length === 1 ? choices[0] ?? "" : "");
   const selected = profiles.data?.profiles.find(row => row.profile_id === selectedId);
   const check = useMutation({ mutationFn: s3SetupApi.check, onSuccess: () => { void cache.invalidateQueries({ queryKey: ["s3-environments"] }); } });
   const current = selected && !profiles.error && check.data?.profile_id === selected.profile_id && check.data.profile_digest === selected.profile_digest ? check.data : null;
@@ -42,11 +52,14 @@ export function S3Setup({ onClose }: { onClose: () => void }) {
     <div className="s3-setup-heading"><h2>S3 connection</h2><Button variant="ghost" onClick={onClose}><ArrowLeft />Back to workspace</Button></div>
     <div className="s3-setup-columns"><div>
       {profiles.isPending ? <LoadingState label="Opening saved S3 profiles" /> : profiles.error ? <ErrorState title="S3 profiles unavailable" error={profiles.error} /> : <>
-        <Field label="Linux S3 profile"><select value={selectedId} onChange={event => choose(event.target.value)} disabled={check.isPending}><option value="">Select a saved profile</option>{profiles.data?.profiles.map(row => <option key={row.profile_id} value={row.profile_id}>{row.profile_id}</option>)}</select></Field>
+        <Field label="Linux S3 profile"><select value={selectedId} onChange={event => choose(event.target.value)} disabled={check.isPending}><option value="">Select a saved profile</option>{profiles.data?.profiles.map(row => <option key={row.profile_id} value={row.profile_id}>{row.profile_id}</option>)}{recoveryIds.slice(0, 64).map(id => <option key={id} value={id}>{id} (draft recovery only)</option>)}</select></Field>
         {!profiles.data?.profiles.length ? <Callout tone="warning" title="No active Linux S3 profile"><Link to="/runner-profiles">Open runner profiles</Link></Callout> : !selected ? <p>The previous profile is no longer available. Choose a current saved profile.</p> : null}
         {profiles.data?.truncated ? <p>The first 64 eligible profiles are shown.</p> : null}
+        {recoveryIds.length > 64 ? <p>The first 64 recovery-only profiles are shown.</p> : null}
+        {selectedId && !selected && recoveryIds.includes(selectedId) ? <p>Saved draft recovery only. Connection checks and configuration review are unavailable for this profile.</p> : null}
       </>}
-      <div className="s3-actions"><Button variant="primary" disabled={!selected || Boolean(profiles.error) || profiles.isFetching || check.isPending} onClick={() => selected && check.mutate(selected)}><FileCheck2 />{check.isPending ? "Checking connection" : "Check connection"}</Button><Button disabled={profiles.isFetching || check.isPending} onClick={() => { check.reset(); void profiles.refetch(); }}><RefreshCw />Refresh profiles</Button></div>
+      {resources.error ? <ErrorState title="Saved profile recovery choices unavailable" error={resources.error} /> : null}
+      <div className="s3-actions"><Button variant="primary" disabled={!selected || Boolean(profiles.error) || profiles.isFetching || check.isPending} onClick={() => selected && check.mutate(selected)}><FileCheck2 />{check.isPending ? "Checking connection" : "Check connection"}</Button><Button disabled={profiles.isFetching || resources.isFetching || check.isPending} onClick={() => { check.reset(); void profiles.refetch(); void resources.refetch(); }}><RefreshCw />Refresh profiles</Button></div>
       {check.error && matchingRequest ? <ErrorState title="Connection check not confirmed" error={check.error} /> : null}
       {current ? <div className="s3-setup-result" aria-live="polite"><Badge tone={current.host_state === "authenticated" ? "info" : "warning"}>{current.host_state === "authenticated" ? "Authenticated connection" : "Runner unavailable"}</Badge>{current.setup ? <><h3>{configuration[current.setup.configuration_state].title}</h3><p>{configuration[current.setup.configuration_state].detail}</p>{current.setup.environments.map(row => <SetupEnvironment key={row.environment_id} value={row} />)}</> : <p>The selected runner could not provide a consistent setup check.</p>}</div> : <p role="status">No current S3 connection check.</p>}
     </div><div><ExecuteRunnerReadiness profileId={selected?.profile_id} /><section className="s3-band"><h3>Owner-local prerequisites</h3><DataList items={[

@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import { S3Setup } from "../src/pages/S3Setup";
+import { api } from "../src/lib/api";
 import { checkedSetup, checkedSetupProfiles, s3SetupApi, type S3ConfigurationState, type S3SetupCheck, type S3SetupProfile } from "../src/lib/s3-setup";
 
 vi.mock("../src/components/ExecuteRunnerReadiness", () => ({ ExecuteRunnerReadiness: ({ profileId }: { profileId: string }) => <section aria-label="Existing runner controls">{profileId}</section> }));
@@ -20,8 +21,49 @@ function mount(path = "/s3-access?setup=1") {
   return { cache, close, user: userEvent.setup(), ...render(<QueryClientProvider client={cache}><MemoryRouter initialEntries={[path]}><S3Setup onClose={close} /><Location /><Link to="/s3-access?setup=1&setup_profile=s3-secondary">Select second through navigation</Link></MemoryRouter></QueryClientProvider>) };
 }
 beforeEach(() => {
+  vi.spyOn(api, "resources").mockResolvedValue({ schema_version: "bluefire.resource-list.v1", kind: "runner-profiles", resources: [] });
   vi.spyOn(s3SetupApi, "profiles").mockResolvedValue({ schema_version: "bluefire.s3-onboarding.v1", profiles: [selected], truncated: false });
   vi.spyOn(s3SetupApi, "check").mockResolvedValue(result());
+});
+
+it("recovers an inactive S3 draft after reload without restoring current authority", async () => {
+  vi.mocked(s3SetupApi.profiles).mockResolvedValue({ schema_version: "bluefire.s3-onboarding.v1", profiles: [], truncated: false });
+  vi.mocked(api.resources).mockResolvedValue({ schema_version: "bluefire.resource-list.v1", kind: "runner-profiles", resources: [{
+    kind: "runner-profiles", id: selected.profile_id, status: "inactive", digest: hash,
+    created_at: "2026-10-11T00:00:00Z", updated_at: "2026-10-11T00:00:00Z",
+    document: { id: selected.profile_id, capabilities: ["cloud.aws.s3.access"] },
+  }] });
+  const source = '{"synthetic":"retained"}';
+  vi.spyOn(s3SetupApi, "savedDraft").mockResolvedValue({ schema_version: "bluefire.s3-saved-setup-draft.v1", draft: { ...selected, configuration_json: source, digest: hash, updated_at: "2026-10-11T00:00:00Z" } });
+  const { user } = mount();
+  await waitFor(() => expect(screen.getByLabelText("Linux S3 profile")).toHaveValue(selected.profile_id));
+  expect(screen.getByRole("option", { name: `${selected.profile_id} (draft recovery only)` })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Open saved draft" }));
+  await waitFor(() => expect(screen.getByLabelText("Non-secret configuration JSON")).toHaveValue(source));
+  for (const name of ["Check connection", "Review configuration", "Save draft", "Export configuration"]) expect(screen.getByRole("button", { name })).toBeDisabled();
+  expect(screen.getByLabelText("Existing runner controls")).toBeEmptyDOMElement();
+  expect(s3SetupApi.check).not.toHaveBeenCalled();
+});
+
+it("does not promote recovery metadata into an active profile", async () => {
+  vi.mocked(api.resources).mockResolvedValue({ schema_version: "bluefire.resource-list.v1", kind: "runner-profiles", resources: [{
+    kind: "runner-profiles", id: other.profile_id, status: "active", digest: hash,
+    created_at: "2026-10-11T00:00:00Z", updated_at: "2026-10-11T00:00:00Z",
+    document: { id: other.profile_id, enabled_actions: ["owned.aws.s3_access.v1"] },
+  }] });
+  const { user } = mount();
+  await screen.findByRole("option", { name: `${other.profile_id} (draft recovery only)` });
+  await user.selectOptions(screen.getByLabelText("Linux S3 profile"), other.profile_id);
+  expect(screen.getByRole("button", { name: "Check connection" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Open saved draft" })).toBeEnabled();
+  expect(screen.getByLabelText("Existing runner controls")).toBeEmptyDOMElement();
+});
+
+it("keeps active setup usable if recovery metadata is unavailable", async () => {
+  vi.mocked(api.resources).mockRejectedValue(new Error("Recovery inventory unavailable"));
+  mount();
+  expect(await screen.findByText("Saved profile recovery choices unavailable")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Check connection" })).toBeEnabled();
 });
 
 it("requires an explicit check and keeps cloud access unverified", async () => {
