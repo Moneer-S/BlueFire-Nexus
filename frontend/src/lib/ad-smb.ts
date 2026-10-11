@@ -11,7 +11,18 @@ export interface AdEnvironment {
   principals: { probe: string; legitimate: string; controller: string };
   files: { purpose: "primary" | "health"; name: string; bytes: number; digest: string }[];
 }
-export interface AdReadiness { available: boolean; member: boolean; client: boolean; channel: boolean; problem: string | null }
+export const adReadinessProblems = ["native_admission_unavailable", "enrollment_unavailable", "changed", "scope_not_current", "member_channel_unavailable", "client_channel_unavailable", "role_channels_unavailable"] as const;
+export type AdReadinessProblem = typeof adReadinessProblems[number];
+export const adReadinessLabels: Record<AdReadinessProblem, string> = {
+  native_admission_unavailable: "No native admission is configured.",
+  enrollment_unavailable: "The exact enrolled configuration is unavailable or has changed.",
+  changed: "The enrolled configuration has changed.",
+  scope_not_current: "The authorized scope window is not current.",
+  member_channel_unavailable: "The member channel did not confirm its enrolled configuration.",
+  client_channel_unavailable: "The client channel did not confirm its enrolled configuration.",
+  role_channels_unavailable: "Neither channel confirmed its enrolled configuration.",
+};
+export interface AdReadiness { available: boolean; member: boolean; client: boolean; channel: boolean; problem: AdReadinessProblem | null }
 export interface AdEnvironments { nativeAvailable: boolean; environments: { environment: AdEnvironment; readiness: AdReadiness; available: boolean }[] }
 export interface AdAce { sid: string; right: "Read" | "Full"; digest: string }
 export interface AdDescriptor { digest: string; owner: string; group: string; control: number; aces: AdAce[] }
@@ -50,7 +61,7 @@ function environment(value: unknown): AdEnvironment {
 }
 export function checkedAdEnvironments(value: unknown): AdEnvironments {
   const row = object(value);
-  const environments = list(row.environments, 16).map(value => { const entry = object(value), ready = object(entry.readiness); const readiness = { available: bool(ready.available), member: bool(ready.member_observation), client: bool(ready.client_read_admission), channel: bool(ready.secret_channel_available), problem: ready.problem === null ? null : oneOf(ready.problem, ["native_admission_unavailable", "enrollment_unavailable", "changed"]) }; if (readiness.available && (!readiness.member || !readiness.client || !readiness.channel || readiness.problem !== null)) throw bad(); const available = bool(entry.available); if (available && !readiness.available) throw bad(); return { environment: environment(entry.environment), readiness, available }; });
+  const environments = list(row.environments, 16).map(value => { const entry = object(value), ready = object(entry.readiness); const readiness = { available: bool(ready.available), member: bool(ready.member_observation), client: bool(ready.client_read_admission), channel: bool(ready.secret_channel_available), problem: ready.problem === null ? null : oneOf(ready.problem, adReadinessProblems) }; if (readiness.available && (!readiness.member || !readiness.client || !readiness.channel || readiness.problem !== null)) throw bad(); const available = bool(entry.available); if (available && !readiness.available) throw bad(); return { environment: environment(entry.environment), readiness, available }; });
   if (new Set(environments.map(entry => entry.environment.id)).size !== environments.length) throw bad();
   const nativeAvailable = bool(row.native_execution_available);
   if (nativeAvailable !== environments.some(entry => entry.available && entry.environment.provenance === "runner_reported")) throw bad();

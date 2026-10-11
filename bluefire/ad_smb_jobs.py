@@ -30,11 +30,18 @@ class AdSmbJobs:
         self.store: ProductStore = service.product_store
         self.runs: RunStore = service.store
         self.controller: RunJobController = service.job_controller
-        self.executor: AdSmbExecutor = executor or configured_executor(service)
+        self._executor = executor
+        self._service = service
         self.clock = clock
 
+    @property
+    def executor(self) -> AdSmbExecutor:
+        # Missing startup enrollment is not a permanent adapter selection.
+        return self._executor if self._executor is not None else configured_executor(self._service)
+
     def environments(self) -> dict[str, Any]:
-        entries = self.executor.environments()
+        executor = self.executor
+        entries = executor.environments()
         if not isinstance(entries, list) or len(entries) > 16:
             raise AdSmbError("AD enrolled environment inventory exceeds its bound.")
         rows: list[dict[str, Any]] = []
@@ -46,7 +53,7 @@ class AdSmbJobs:
                 raise AdSmbError("AD enrolled environment identity is ambiguous.")
             identities.add(identity)
             scope = AdSmbScope.from_mapping(selected["scope"])
-            ready = results.readiness(self.executor.readiness(scope))
+            ready = results.readiness(executor.readiness(scope))
             current = True
             try:
                 scope.assert_current(self.clock)
@@ -108,6 +115,7 @@ class AdSmbJobs:
 
     def read(self, identifier) -> dict[str, Any]:
         owner = self._owner(identifier)
+        executor = self.executor
         return {
             "workflow": owner,
             "allowed_phases": results.allowed_phases(owner),
@@ -115,10 +123,10 @@ class AdSmbJobs:
             "effective_access_claim": False,
             "execution_integration": (
                 "unavailable"
-                if isinstance(self.executor, UnavailableAdSmbExecutor)
+                if isinstance(executor, UnavailableAdSmbExecutor)
                 else (
                     "configured_admission"
-                    if isinstance(self.executor, InstalledAdSmbExecutor)
+                    if isinstance(executor, InstalledAdSmbExecutor)
                     else "injected_adapter"
                 )
             ),
