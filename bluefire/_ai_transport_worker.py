@@ -67,6 +67,7 @@ def _pinned_opener(url: str, policy: str) -> urllib.request.OpenerDirector:
         )
         if (
             (policy == "public_https" and not public)
+            or (host in {"localhost", "127.0.0.1", "::1"} and not literal.is_loopback)
             or address[1] != port
             or literal.version != (4 if family == socket.AF_INET else 6)
         ):
@@ -150,11 +151,14 @@ def perform_request(document: dict[str, Any]) -> dict[str, Any]:
         )
         # Keep TLS verification defaults; never follow redirects or implicitly
         # route explicit endpoints through ambient proxy settings.
-        opener = (
-            _pinned_opener(document["url"], document["destination_policy"])
-            if "destination_policy" in document
-            else urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirectHandler())
+        # Direct calls have no broker enrollment. They still require public
+        # HTTPS, except for the separately authorized literal loopback route.
+        default_policy = (
+            "explicit_endpoint"
+            if urlsplit(document["url"]).hostname in {"localhost", "127.0.0.1", "::1"}
+            else "public_https"
         )
+        opener = _pinned_opener(document["url"], document.get("destination_policy", default_policy))
         with opener.open(request, timeout=document["timeout_seconds"]) as response:  # nosec B310
             status = int(getattr(response, "status", 200))
             if not 200 <= status <= 299:

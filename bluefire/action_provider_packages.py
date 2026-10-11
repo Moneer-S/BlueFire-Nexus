@@ -16,6 +16,7 @@ from typing import Any
 
 from .action_package_errors import ActionPackageError
 from .contracts import ActionDefinition, ParameterType, SafetyTier
+from .execution_contracts import provider_artifact_type_allowed
 from .util import canonical_json_bytes, content_hash
 
 ACTION_PACKAGE_V2_SCHEMA = "bluefire.action-package.v2"
@@ -272,6 +273,8 @@ def validate_provider_action(action: ActionDefinition, context: str) -> None:
         raise ActionPackageError(f"{context} provider action must be effect-free")
     if action.inputs:
         raise ActionPackageError(f"{context} provider action cannot accept artifact inputs")
+    if any(not provider_artifact_type_allowed(output.type) for output in action.outputs):
+        raise ActionPackageError(f"{context} provider output uses a reserved artifact namespace")
     if action.capabilities != ("native.execution",):
         raise ActionPackageError(
             f"{context} provider action capabilities must be exactly native.execution"

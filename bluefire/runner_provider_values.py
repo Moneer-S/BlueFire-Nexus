@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping
 
+from .execution_contracts import provider_artifact_type_allowed
 from .execution_contracts import reject_runner_execution_keys as reject_forbidden_execution_keys
 from .util import json_clone
 
@@ -65,6 +66,8 @@ def _provider_parameters(
 
 def _provider_output_value(spec: Mapping[str, Any], value: Any, context: str) -> Any:
     artifact_type = spec.get("type")
+    if not provider_artifact_type_allowed(artifact_type):
+        raise RunnerAdapterError(f"{context} uses a reserved artifact namespace")
 
     def validate_one(item: Any, label: str) -> Mapping[str, Any]:
         if not isinstance(item, Mapping) or item.get("type") != artifact_type:
