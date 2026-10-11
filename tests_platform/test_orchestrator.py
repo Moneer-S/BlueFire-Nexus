@@ -409,16 +409,20 @@ def test_cleanup_success_rejects_boolean_receipt_and_verification_counters(
         Orchestrator._validate_cleanup_result(manifest, result)
 
 
+@pytest.mark.parametrize("directory", ["receipts", "receipt-commits"])
 def test_receipt_root_inspection_io_failure_is_a_transport_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, directory: str
 ) -> None:
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()
-    receipt_root = sandbox / ".bluefire" / "receipts"
+    (sandbox / ".bluefire" / "receipts").mkdir(parents=True)
+    probe_root = sandbox / ".bluefire" / directory
+    if os.name == "nt":
+        probe_root = _windows_extended_path(probe_root)
     original_lstat = Path.lstat
 
     def fail_receipt_root_inspection(path: Path):
-        if path == receipt_root:
+        if path == probe_root:
             raise OSError("injected receipt root metadata failure")
         return original_lstat(path)
 
@@ -427,6 +431,7 @@ def test_receipt_root_inspection_io_failure_is_a_transport_error(
         Orchestrator._discover_runner_receipts(
             sandbox,
             expected_profile_id="sandbox-execute.v1",
+            require_commit=True,
         )
 
 
@@ -465,11 +470,13 @@ def test_receipt_discovery_requires_full_identity_and_optional_commit(tmp_path: 
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows long-path fake receipt I/O")
+@pytest.mark.parametrize("target_length", [180, 244])
 def test_fake_runner_long_receipts_preserve_binding_and_are_actually_removed(
     tmp_path: Path,
+    target_length: int,
 ) -> None:
     sandbox = tmp_path / "long-receipt-sandbox"
-    target_length = max(180, len(str(sandbox)) + 2)
+    target_length = max(target_length, len(str(sandbox)) + 2)
     while len(str(sandbox)) < target_length:
         remaining = target_length - len(str(sandbox))
         length = min(60, remaining - 1)
@@ -500,6 +507,9 @@ def test_fake_runner_long_receipts_preserve_binding_and_are_actually_removed(
     receipt = io_root / ".bluefire" / "receipts" / f"{receipt_id}.json"
     commit = io_root / ".bluefire" / "receipt-commits" / f"{receipt_id}.json"
     assert len(str(sandbox / ".bluefire" / "receipts" / receipt.name)) > 260
+    if target_length >= 244:
+        assert len(str(sandbox / ".bluefire" / "receipts")) > 260
+        assert len(str(sandbox / ".bluefire" / "receipt-commits")) > 260
     payload_bytes = receipt.read_bytes()
     payload = json.loads(payload_bytes)
     workspace_id = hashlib.sha256(
@@ -522,6 +532,7 @@ def test_fake_runner_long_receipts_preserve_binding_and_are_actually_removed(
         == "sha256:" + receipt_id
     )
     assert not commit.exists()
+    assert Orchestrator._discover_runner_receipts(sandbox, require_commit=True) == ()
     assert _write_bound_receipt(manifest, profile) == receipt_id
     assert receipt.read_bytes() == payload_bytes
     assert json.loads(commit.read_bytes()) == {
@@ -538,6 +549,22 @@ def test_fake_runner_long_receipts_preserve_binding_and_are_actually_removed(
         expected_action_id=manifest["action_id"],
         require_commit=True,
     ) == (receipt_id,)
+    assert (
+        Orchestrator._discover_runner_receipts(
+            sandbox,
+            expected_request_hash="sha256:" + "9" * 64,
+            expected_action_id=manifest["action_id"],
+            require_commit=True,
+        )
+        == ()
+    )
+    original_commit = commit.read_bytes()
+    changed_commit = json.loads(original_commit)
+    changed_commit["runner_profile_id"] = "wrong-profile"
+    commit.write_text(json.dumps(changed_commit), encoding="utf-8")
+    with pytest.raises(RunnerTransportError, match="commit record is invalid"):
+        Orchestrator._discover_runner_receipts(sandbox, require_commit=True)
+    commit.write_bytes(original_commit)
     cleanup = {
         **manifest,
         "action_id": "sandbox.cleanup.v1",

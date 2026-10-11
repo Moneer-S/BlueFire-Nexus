@@ -21,8 +21,12 @@ function fixture(observations: Record<string, unknown> = producerContract.projec
   };
 }
 
-function authoredAttempt(failure: unknown, stepId = producerContract.source_step.step_id) {
-  return { step_id: stepId, failure, evidence: [] };
+function authoredAttempt(failure: unknown, stepId = producerContract.source_step.step_id, attemptIndex = 0) {
+  return { ...structuredClone(producerContract.projection.attempts[0]!), step_id: stepId, attempt_index: attemptIndex, failure };
+}
+
+function authoredProjection(attempts: ReturnType<typeof authoredAttempt>[]) {
+  return { ...producerContract.projection, attempts };
 }
 
 async function showDecision(value: RunRecord) {
@@ -62,7 +66,7 @@ describe("recorded observation coverage (software fixtures)", () => {
     { name: "integer one", failure: { classification: "execution_timeout", telemetry_gap: 1 }, expected: "Not recorded." },
     { name: "null", failure: { classification: "execution_timeout", telemetry_gap: null }, expected: "Not recorded." },
   ])("handles $name conservatively while preserving classification", async ({ failure, expected }) => {
-    const value = fixture({ attempts: [authoredAttempt(failure)] });
+    const value = fixture(authoredProjection([authoredAttempt(failure)]));
     const before = JSON.stringify(value);
     const decision = await showDecision(value);
 
@@ -84,10 +88,11 @@ describe("recorded observation coverage (software fixtures)", () => {
   });
 
   it("keeps an earlier different step's gap out of the current false coverage", async () => {
-    const value = fixture({ attempts: [
+    const value = fixture(authoredProjection([
       authoredAttempt({ classification: "execution_failure", telemetry_gap: true }, "earlier-step"),
-      authoredAttempt({ classification: "execution_timeout", telemetry_gap: false }),
-    ] });
+      authoredAttempt({ classification: "execution_timeout", telemetry_gap: false }, producerContract.source_step.step_id, 1),
+    ]));
+    value.steps.unshift({ ...value.steps[0]!, step_id: "earlier-step", planner_decision_id: "earlier-decision" });
     const before = JSON.stringify(value);
     const decision = await showDecision(value);
 
@@ -97,12 +102,14 @@ describe("recorded observation coverage (software fixtures)", () => {
     expect(JSON.stringify(value)).toBe(before);
   });
 
-  it("uses the latest matching attempt when the same step was retried", async () => {
-    const decision = await showDecision(fixture({ attempts: [
+  it("uses the exact decision attempt when the same step was retried and a later step exists", async () => {
+    const value = fixture(authoredProjection([
       authoredAttempt({ classification: "execution_failure", telemetry_gap: true }),
-      authoredAttempt({ classification: "execution_timeout", telemetry_gap: false }),
-      authoredAttempt({ classification: "execution_failure", telemetry_gap: true }, "other-step"),
-    ] }));
+      authoredAttempt({ classification: "execution_timeout", telemetry_gap: false }, producerContract.source_step.step_id, 1),
+    ]));
+    value.steps.unshift({ ...value.steps[0]!, planner_decision_id: "earlier-decision" });
+    value.steps.push({ ...value.steps[0]!, step_id: "other-step", planner_decision_id: "later-decision" });
+    const decision = await showDecision(value);
 
     expectCoverage(decision, "Completeness not established.");
     expectTimeout(decision);
