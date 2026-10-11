@@ -1,10 +1,11 @@
 {
-  "schema_version": "bluefire.s3-host-environments.v1",
+  "schema_version": "bluefire.s3-host-environments.v3",
   "runner_id": "bluefire-rust-runner.v1",
   "environments": [
     {
       "environment_id": "test-environment",
       "display_name": "Owned test bucket",
+      "managed_profile_digest": "sha256:8122af83f4e9ea039d31ca6b2feede57b65251024c403e9916ad8d268d13d37d",
       "profile": {
         "allowed_actions": [
           "owned.aws.s3_access.v1"

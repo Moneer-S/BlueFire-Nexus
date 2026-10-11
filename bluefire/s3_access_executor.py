@@ -150,6 +150,7 @@ class _ConfiguredExecutor(_UnavailableExecutor):
                         validate_s3_host_binding(
                             row["profile"],
                             profile,
+                            managed_profile_digest=row.get("managed_profile_digest"),
                             runner_id=identity["runner_id"],
                             sandbox=sandbox,
                         )

@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import type { S3SavedSetupDraft, S3SetupCheck } from "../../src/lib/s3-setup";
-import configuration from "../../../tests_platform/fixtures/s3_setup_draft_v1.json" with { type: "json" };
+import configuration from "../../../tests_platform/fixtures/s3_setup_draft_v3.json" with { type: "json" };
 
 const output = process.env.BLUEFIRE_S3_BROWSER_OUTPUT!;
 const hash = `sha256:${"a".repeat(64)}`;

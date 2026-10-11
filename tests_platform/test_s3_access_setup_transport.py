@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import replace
 from datetime import timedelta
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,8 +26,12 @@ from bluefire.runner_transport import (
     RunnerRemoteError,
 )
 from bluefire.runner_trust import load_local_enrollment, revoke_local_enrollment
+from bluefire.s3_access_contract import S3AccessScope
+from bluefire.s3_access_executor import configured_executor
 from bluefire.s3_access_extension_store import S3ExtensionStore
 from bluefire.s3_access_host_config import public_environments
+from bluefire.util import content_hash
+from tests_platform.s3_profile_fixtures import managed_profile
 from tests_platform.test_s3_access_extension import imported, publish
 from tests_platform.test_s3_access_extension import local as local
 from tests_platform.test_s3_access_wire import NOW, credential_row
@@ -90,8 +97,17 @@ def snapshot(root):
     return {path.name: path.read_bytes() for path in root.iterdir()}
 
 
+def bind_profile(local):
+    configuration = local[1]
+    entry = configuration["environments"][0]
+    profile = managed_profile(entry["profile"]["profile_id"])
+    configuration["schema_version"] = "bluefire.s3-host-environments.v3"
+    entry["managed_profile_digest"] = content_hash(profile.to_dict())
+
+
 @pytest.fixture
 def portable_projection(local, monkeypatch):
+    bind_profile(local)
     imported(local)
     # Bypass the OS gate, not the real directory, trust, HMAC or revision checks.
     monkeypatch.setattr(transport, "read_configuration", setup.read_configuration)
@@ -108,6 +124,7 @@ def test_real_mtls_reports_missing_or_expired_reference_without_decryption(
     local, monkeypatch, state
 ):
     enrollment, _, provider = local
+    bind_profile(local)
     if state == "absent":
         publish(local)
     else:
@@ -155,6 +172,10 @@ def test_real_mtls_projection_survives_restart_without_decrypting_cloud_material
             rows = client(portable_projection, host).s3_access_environments()
             assert len(rows) == 1
             assert rows[0]["environment"] == public_environments(configuration)[0]
+            assert (
+                rows[0]["managed_profile_digest"]
+                == configuration["environments"][0]["managed_profile_digest"]
+            )
             assert rows[0]["available"] is True
             assert host.runner.calls == 0
             for forbidden in ("credential_reference", "runtime_root", "ledger_root"):
@@ -168,6 +189,53 @@ def test_real_mtls_projection_survives_restart_without_decrypting_cloud_material
         load_local_enrollment(enrollment.root, secret_provider=provider).metadata
         == enrollment.metadata
     )
+
+
+def test_complete_profile_drift_reaches_executor_over_real_authenticated_transport(
+    portable_projection,
+):
+    enrollment, configuration, _ = portable_projection
+    entry = configuration["environments"][0]
+    profile = managed_profile(entry["profile"]["profile_id"])
+    scope = S3AccessScope.from_mapping(entry["scope"])
+    before = snapshot(S3ExtensionStore(enrollment).root)
+    with server(portable_projection) as host:
+        caller = client(portable_projection, host)
+        service = SimpleNamespace(
+            _runner_profiles=lambda: (profile,),
+            runner_lifecycle=SimpleNamespace(
+                client_for_profile=lambda *args, **kwargs: (
+                    caller,
+                    Path(entry["profile"]["sandbox_root"]),
+                )
+            ),
+        )
+        executor = configured_executor(service)
+        assert executor.readiness(scope)["available"] is True
+        profile.budgets = replace(profile.budgets, max_steps=11)
+        readiness = executor.readiness(scope)
+        assert readiness["available"] is False and readiness["problem"] == "profile_changed"
+        assert entry["managed_profile_digest"] != content_hash(profile.to_dict())
+        assert host.runner.calls == 0
+    assert snapshot(S3ExtensionStore(enrollment).root) == before
+
+
+def test_real_mtls_keeps_legacy_configuration_readable_without_new_authority(local, monkeypatch):
+    imported(local)
+    monkeypatch.setattr(transport, "read_configuration", setup.read_configuration)
+    monkeypatch.setattr(
+        transport,
+        "inspect_extension",
+        lambda enrollment: setup.inspect_extension(enrollment, clock=lambda: NOW),
+    )
+    before = snapshot(S3ExtensionStore(local[0]).root)
+    with server(local) as host:
+        rows = client(local, host).s3_access_environments()
+        assert rows[0]["environment"] == public_environments(local[1])[0]
+        assert rows[0]["managed_profile_digest"] is None
+        assert rows[0]["available"] is False and rows[0]["problem"] == "profile_changed"
+        assert host.runner.calls == 0
+    assert snapshot(S3ExtensionStore(local[0]).root) == before
 
 
 def test_incomplete_extension_refuses_authenticated_discovery_without_repair(portable_projection):

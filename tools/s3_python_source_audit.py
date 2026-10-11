@@ -7,7 +7,7 @@ from typing import Any
 
 _SOURCES = {
     "bluefire/s3_access_host_config.py": (
-        "60701b9661489b52225610ba397180dc008c137aed8aaf53b3337f7b53bd1d5d",
+        "ee69ad78d79c0b883cf4b855eb76dba7888a82250d20f03d5d01c0791c31bfdd",
         ((26, "call", "os.<dynamic>"), (27, "call", "os.<dynamic>")),
     ),
     "bluefire/s3_access_setup_cli.py": (

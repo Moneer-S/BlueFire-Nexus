@@ -101,6 +101,7 @@ def check_setup(service: Any, request: Mapping[str, Any]) -> Mapping[str, Any]:
                     validate_s3_host_binding(
                         row["profile"],
                         profile,
+                        managed_profile_digest=row.get("managed_profile_digest"),
                         runner_id=identity["runner_id"],
                         sandbox=sandbox,
                     )
@@ -140,9 +141,9 @@ def check_setup(service: Any, request: Mapping[str, Any]) -> Mapping[str, Any]:
     }
 
 
-def _draft_profile(value, selected):
+def _draft_profile(value, selected, managed_profile_digest):
     # Browser draft intake is deliberately narrower than the native profile contract.
-    validate_s3_profile_binding(value, selected)
+    validate_s3_profile_binding(value, selected, managed_profile_digest=managed_profile_digest)
     _identifier(value["runner_id"])
     _path(value["sandbox_root"])
 
@@ -168,8 +169,9 @@ def review_draft(service: Any, request: Mapping[str, Any]) -> Mapping[str, Any]:
     try:
         row = validate_configuration(row, runner_id=row["runner_id"], profile_ids=(profile_id,))
         for entry in row["environments"]:
-            _draft_profile(entry["profile"], selected)
+            _draft_profile(entry["profile"], selected, entry.get("managed_profile_digest"))
     except (S3AccessError, KeyError, TypeError, ValueError):
+        _selected(service, profile_id, expected)
         raise APIError(
             HTTPStatus.BAD_REQUEST,
             "s3_setup_draft_invalid",

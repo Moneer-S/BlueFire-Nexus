@@ -4,6 +4,7 @@ from .config import CleanupPolicy, ConfigError, EnvironmentType, RunnerProfile
 from .contracts import ExecutionMode, SafetyTier
 from .runner_contracts import execution_limits, seal_profile
 from .s3_access_contract import S3AccessError, exact
+from .util import content_hash
 
 ACTION = "owned.aws.s3_access.v1"
 CAPABILITY = "cloud.aws.s3.access"
@@ -32,13 +33,20 @@ def validate_managed_s3_profile(profile: RunnerProfile) -> bool:
         or profile.native_tool_installations
     ):
         raise ConfigError("S3 setup requires a dedicated approved Linux cloud-lab profile")
+    from .s3_access_results import PHASES
+
+    # Each reviewed stage is finite and must fit before its first task is dispatched.
+    if profile.budgets.max_steps < max(map(len, PHASES.values())):
+        raise ConfigError("S3 setup step budget must cover every fixed stage")
     return True
 
 
-def validate_s3_profile_binding(value, selected):
+def validate_s3_profile_binding(value, selected, *, managed_profile_digest):
     """Match the installed native policy to the current dedicated profile, without IO."""
     if not validate_managed_s3_profile(selected):
         raise S3AccessError("S3 requires a dedicated active profile")
+    if managed_profile_digest != content_hash(selected.to_dict()):
+        raise S3AccessError("S3 configuration does not retain the current complete profile")
     exact(
         value,
         {
@@ -87,10 +95,10 @@ def validate_s3_profile_binding(value, selected):
         raise S3AccessError("S3 configuration policy seal is invalid")
 
 
-def validate_s3_host_binding(value, selected, *, runner_id, sandbox):
+def validate_s3_host_binding(value, selected, *, managed_profile_digest, runner_id, sandbox):
     """Also bind the sealed policy to the authenticated lifecycle's exact host."""
     from pathlib import Path
 
-    validate_s3_profile_binding(value, selected)
+    validate_s3_profile_binding(value, selected, managed_profile_digest=managed_profile_digest)
     if value["runner_id"] != runner_id or Path(value["sandbox_root"]) != sandbox:
         raise S3AccessError("S3 configuration belongs to a different runner or sandbox")

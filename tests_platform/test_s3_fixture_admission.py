@@ -53,8 +53,12 @@ def check_configuration(value):
     )
 
 
-def test_fresh_configuration_and_admission_bind_fixture_generation():
+@pytest.mark.parametrize("bound", [False, True])
+def test_fresh_configuration_and_admission_bind_fixture_generation(bound):
     value = configured_fixture()
+    if bound:
+        value["configuration"]["schema_version"] = "bluefire.s3-host-environments.v3"
+        value["configuration"]["environments"][0]["managed_profile_digest"] = "sha256:" + "a" * 64
     assert check_configuration(value) == value["configuration"]
     admission = S3HostAdmission.issue(**value)
     admission.recheck(**value)

@@ -149,6 +149,25 @@ def test_same_configuration_reapply_is_inert_and_complete_authority_is_compared(
             setup.review_configuration(enrollment, changed, clock=lambda: NOW)
 
 
+def test_complete_profile_binding_is_retained_and_cannot_be_silently_rebound(local):
+    enrollment, configuration, provider = local
+    configuration["schema_version"] = "bluefire.s3-host-environments.v3"
+    configuration["environments"][0]["managed_profile_digest"] = "sha256:" + "a" * 64
+    committed = publish(local)
+    loaded = load_local_enrollment(enrollment.root, secret_provider=provider)
+    retained = setup.read_configuration(loaded)
+    assert retained == configuration
+    changed = deepcopy(configuration)
+    changed["environments"][0]["managed_profile_digest"] = "sha256:" + "b" * 64
+    with pytest.raises(S3AccessError, match="history review"):
+        setup.review_configuration(loaded, changed, clock=lambda: NOW)
+    assert setup.read_configuration(loaded) == retained
+    assert (
+        setup.inspect_extension(loaded, clock=lambda: NOW)["revision_digest"]
+        == committed["revision_digest"]
+    )
+
+
 @pytest.mark.parametrize("kind", ["expired", "changed", "stale_revision"])
 def test_configuration_review_refuses_changed_binding(local, kind):
     enrollment, configuration, _ = local

@@ -14,7 +14,10 @@ from tests_platform.test_s3_access_host_config import checked, configured
 @pytest.fixture
 def host(monkeypatch):
     configuration = checked(configured())
+    configuration["schema_version"] = "bluefire.s3-host-environments.v3"
     entry = configuration["environments"][0]
+    entry["managed_profile_digest"] = "sha256:" + "a" * 64
+    checked(configuration)
     monkeypatch.setattr(module, "read_configuration", lambda enrollment: configuration)
     monkeypatch.setattr(
         module,
@@ -120,6 +123,38 @@ def client(host, payload):
 def test_client_validates_exact_enrolled_response(host):
     payload = response(host)
     assert module.client_environments(client(host, payload)) == payload["environments"]
+    assert (
+        payload["environments"][0]["managed_profile_digest"] == host.entry["managed_profile_digest"]
+    )
+
+
+def test_legacy_discovery_remains_readable_but_cannot_claim_current_authority(host):
+    host.configuration["schema_version"] = "bluefire.s3-host-environments.v1"
+    del host.entry["managed_profile_digest"]
+    checked(host.configuration)
+    payload = response(host)
+    row = payload["environments"][0]
+    assert row["managed_profile_digest"] is None
+    assert row["available"] is False and row["problem"] == "profile_changed"
+    assert module.client_environments(client(host, payload)) == [row]
+    row.update(available=True, problem=None)
+    with pytest.raises(RunnerAuthenticationError):
+        module.client_environments(client(host, payload))
+
+
+@pytest.mark.parametrize("binding", ["unset", 1, {}, "sha256:" + "g" * 64])
+def test_discovery_rejects_malformed_retained_binding(host, binding):
+    payload = response(host)
+    payload["environments"][0]["managed_profile_digest"] = binding
+    with pytest.raises(RunnerAuthenticationError):
+        module.client_environments(client(host, payload))
+
+
+def test_old_response_without_binding_cannot_be_upgraded_by_the_client(host):
+    payload = response(host)
+    del payload["environments"][0]["managed_profile_digest"]
+    with pytest.raises(RunnerAuthenticationError):
+        module.client_environments(client(host, payload))
 
 
 @pytest.mark.parametrize("kind", ["extra", "duplicate", "seal", "profile", "boolean", "secret"])
