@@ -10,6 +10,21 @@ from pathlib import Path
 from .runner_bootstrap import managed_product_root
 
 
+def broad_root(root: Path) -> bool:
+    lexical = os.path.normcase(os.path.normpath(str(root)))
+    candidates = {os.path.normcase(os.path.normpath(str(Path(root.anchor))))}
+    for provider in (Path.home, Path.cwd):
+        try:
+            candidate = provider()
+        except (OSError, RuntimeError):
+            continue
+        try:
+            candidates.add(os.path.normcase(os.path.normpath(str(candidate.resolve()))))
+        except OSError:
+            candidates.add(os.path.normcase(os.path.normpath(str(candidate))))
+    return lexical in candidates
+
+
 def prepare_default_managed_root(root: Path) -> None:
     """Prepare a fresh default root through pinned, unlinked directory handles.
 

@@ -33,6 +33,7 @@ from .runner_bootstrap_record import (
 )
 from .runner_bootstrap_record import (
     BOOTSTRAP_RECORD_SCHEMA_VERSION,
+    ROOT_MARKER_SCHEMA_VERSION,
     BootstrapRecordValidator,
     _bootstrap_record_payload,
     _BootstrapRecord,
@@ -43,6 +44,7 @@ from .runner_bootstrap_record import (
 from .runner_bootstrap_record import (
     lifecycle_root_digest as _root_digest,
 )
+from .runner_bootstrap_record import valid_root_marker as _valid_root_marker
 from .runner_client import _darwin_child_exited_without_reap
 from .runner_darwin_containment import (
     _private_process_group_members as _darwin_private_process_group_members,
@@ -64,6 +66,7 @@ from .runner_host import (
     default_host_command,
     read_process_record,
 )
+from .runner_state_directory import broad_root as _broad_root
 from .runner_state_directory import prepare_default_managed_root
 from .runner_transport import (
     AuthenticatedRunnerClient,
@@ -93,7 +96,6 @@ from .util import canonical_json_bytes
 from .version import __version__
 
 LIFECYCLE_STATUS_SCHEMA_VERSION = "bluefire.runner-lifecycle-status.v1"
-ROOT_MARKER_SCHEMA_VERSION = "bluefire.runner-lifecycle-root.v1"
 REMOVAL_JOURNAL_SCHEMA_VERSION = "bluefire.runner-enrollment-removal.v1"
 PENDING_LAUNCH_SCHEMA_VERSION = "bluefire.runner-pending-launch.v1"
 BOOTSTRAP_RECORD_MAX_BYTES = 64 * 1024
@@ -111,7 +113,6 @@ _DURABLE_RESULT_NAME = re.compile(r"^[0-9a-f]{40}\.json$")
 _PENDING_RESULT_NAME = re.compile(r"^\.bluefire-result-[0-9a-f]{64}\.pending$")
 _WATCHDOG_DIRECTORY_NAME = re.compile(r"^\.bluefire-watchdog-[0-9a-f]{64}$")
 _WATCHDOG_FILES = frozenset({"config.json", "start", "cancel", "ready.json", "status.json"})
-_ROOT_MARKER_FIELDS = frozenset({"schema_version", "runner_id", "root_digest", "marker_id"})
 _REMOVAL_JOURNAL_FIELDS = frozenset(
     {
         "schema_version",
@@ -2839,33 +2840,6 @@ def _unlock_file(handle: Any) -> None:
             )
     except OSError:
         pass
-
-
-def _valid_root_marker(value: Any, runner_id: str, resolved_root: Path) -> bool:
-    return bool(
-        isinstance(value, dict)
-        and set(value) == _ROOT_MARKER_FIELDS
-        and value.get("schema_version") == ROOT_MARKER_SCHEMA_VERSION
-        and value.get("runner_id") == runner_id
-        and value.get("root_digest") == _root_digest(resolved_root)
-        and isinstance(value.get("marker_id"), str)
-        and _DIGEST.fullmatch("sha256:" + str(value["marker_id"])) is not None
-    )
-
-
-def _broad_root(root: Path) -> bool:
-    lexical = os.path.normcase(os.path.normpath(str(root)))
-    candidates = {os.path.normcase(os.path.normpath(str(Path(root.anchor))))}
-    for provider in (Path.home, Path.cwd):
-        try:
-            candidate = provider()
-        except (OSError, RuntimeError):
-            continue
-        try:
-            candidates.add(os.path.normcase(os.path.normpath(str(candidate.resolve()))))
-        except OSError:
-            candidates.add(os.path.normcase(os.path.normpath(str(candidate))))
-    return lexical in candidates
 
 
 def _canonical_record_path(path: Path) -> Path:

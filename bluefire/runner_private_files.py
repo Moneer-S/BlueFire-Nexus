@@ -13,6 +13,8 @@ from . import windows_owner_acl as _windows_owner_acl
 from .runner_descriptor_io import _LINUX_AT_EMPTY_PATH as _LINUX_AT_EMPTY_PATH
 from .runner_descriptor_io import _LINUX_STATX_MNT_ID as _LINUX_STATX_MNT_ID
 from .runner_descriptor_io import _descriptor_mount_identity, _read_descriptor_bounded
+from .runner_descriptor_io import _PrivateFileTwoLinksError as _PrivateFileTwoLinksError
+from .runner_descriptor_io import _require_single_link as _require_single_link
 from .runner_transport_errors import RunnerTransportError
 from .windows_owner_acl import (
     _WINDOWS_CREATE_NEW as _WINDOWS_CREATE_NEW,
@@ -110,17 +112,6 @@ def _verify_private_permissions(descriptor: int, *, directory: bool) -> None:
             or stat.S_IMODE(details.st_mode) != (0o700 if directory else 0o600)
         ):
             raise OSError("private-object permissions are invalid")
-
-
-class _PrivateFileTwoLinksError(OSError):
-    """A strict private-file read found two links; no contents were accepted."""
-
-
-def _require_single_link(details: os.stat_result) -> None:
-    if details.st_nlink == 2:
-        raise _PrivateFileTwoLinksError("private file has two links")
-    if details.st_nlink != 1:
-        raise OSError("unsafe private file link count")
 
 
 class _PrivateFileCleanupError(RunnerTransportError):

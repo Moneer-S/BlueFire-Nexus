@@ -16,12 +16,26 @@ from .runner_trust import RunnerEnrollment, RunnerTrustError
 from .util import canonical_json_bytes, file_hash
 
 BOOTSTRAP_RECORD_SCHEMA_VERSION = "bluefire.runner-lifecycle-bootstrap.v1"
+ROOT_MARKER_SCHEMA_VERSION = "bluefire.runner-lifecycle-root.v1"
+_ROOT_MARKER_FIELDS = frozenset({"schema_version", "runner_id", "root_digest", "marker_id"})
 
 
 def lifecycle_root_digest(root: Path) -> str:
     return (
         "sha256:"
         + hashlib.sha256(os.path.normcase(os.path.normpath(str(root))).encode("utf-8")).hexdigest()
+    )
+
+
+def valid_root_marker(value: Any, runner_id: str, resolved_root: Path) -> bool:
+    return bool(
+        isinstance(value, dict)
+        and set(value) == _ROOT_MARKER_FIELDS
+        and value.get("schema_version") == ROOT_MARKER_SCHEMA_VERSION
+        and value.get("runner_id") == runner_id
+        and value.get("root_digest") == lifecycle_root_digest(resolved_root)
+        and isinstance(value.get("marker_id"), str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", "sha256:" + str(value["marker_id"])) is not None
     )
 
 

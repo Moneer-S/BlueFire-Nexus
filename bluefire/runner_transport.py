@@ -54,7 +54,11 @@ from .runner_client import (
     runner_watchdog_control_root,
 )
 from .runner_result_persistence import commit_durable_result
-from .runner_transport_client import execute_authenticated_task, validated_cancellation_payload
+from .runner_transport_client import (
+    execute_authenticated_task,
+    validated_cancellation_payload,
+    validated_transport_identity,
+)
 from .runner_transport_errors import (
     AuthenticatedRunnerTransportError,
     RunnerAuthenticationError,
@@ -4005,41 +4009,7 @@ class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
 
     def transport_identity(self) -> Mapping[str, Any]:
         """Return the validated, secret-free identity of the authenticated host."""
-
-        health = self.health()
-        enrollment = self._active_enrollment()
-        client_fingerprint = str(enrollment.metadata["client_fingerprint"])
-        expected_generation = _enrollment_binding(enrollment, client_fingerprint)[
-            "enrollment_generation"
-        ]
-        binary_digest = health.get("runner_binary_digest")
-        inventory_digest = health.get("inventory_digest")
-        expected = {
-            "runner_id": enrollment.runner_id,
-            "client_id": enrollment.client_id,
-            "transport": "mutual-tls-loopback",
-            "tls": "TLSv1.3",
-            "server_fingerprint": enrollment.metadata["server_fingerprint"],
-            "client_fingerprint": client_fingerprint,
-            "authenticated_peer_fingerprint": client_fingerprint,
-            "enrollment_generation": expected_generation,
-        }
-        if (
-            any(health.get(field) != value for field, value in expected.items())
-            or not isinstance(inventory_digest, str)
-            or _DIGEST.fullmatch(inventory_digest) is None
-            or (
-                binary_digest is not None
-                and (not isinstance(binary_digest, str) or _DIGEST.fullmatch(binary_digest) is None)
-            )
-        ):
-            raise RunnerAuthenticationError("Runner transport identity is invalid.")
-        return {
-            "schema_version": "bluefire.runner-transport-identity.v1",
-            **expected,
-            "runner_binary_digest": binary_digest,
-            "inventory_digest": inventory_digest,
-        }
+        return validated_transport_identity(self)
 
     @staticmethod
     def execution_identity(

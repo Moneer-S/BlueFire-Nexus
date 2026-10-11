@@ -549,6 +549,7 @@
         "bluefire.research",
         "bluefire.s3_access_contract",
         "bluefire.s3_access_configuration",
+        "bluefire.s3_access_profile",
         "bluefire.s3_access_extension_contract",
         "bluefire.s3_access_audit",
         "bluefire.s3_access_policy",
