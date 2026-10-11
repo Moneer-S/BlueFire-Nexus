@@ -1,6 +1,7 @@
 """Workspace persistence is neither host setup nor renewed execution authority."""
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -8,6 +9,7 @@ from bluefire.application_errors import APIError
 from bluefire.product_store import ProductStore
 from bluefire.product_store_errors import ProductStoreError
 from bluefire.s3_access_setup_drafts import KIND, SCHEMA, read_saved_draft, save_draft
+from bluefire.util import content_hash
 from tests_platform.test_s3_access_onboarding import configured as configured
 from tests_platform.test_s3_access_onboarding import draft_request
 
@@ -103,6 +105,52 @@ def test_stale_profile_draft_remains_readable_but_cannot_be_saved_as_current(sav
     with pytest.raises(APIError) as caught:
         save_draft(ctx.service, {**ctx.save_request, "expected_digest": saved["draft"]["digest"]})
     assert caught.value.code == "s3_setup_profile_changed"
+    assert ctx.calls == []
+
+
+def test_legacy_saved_source_stays_readable_without_implicit_binding(saved_context):
+    ctx = saved_context
+    source = json.loads(ctx.save_request["configuration_json"])
+    source["schema_version"] = "bluefire.s3-host-environments.v1"
+    del source["environments"][0]["managed_profile_digest"]
+    text = json.dumps(source, indent=2) + "\n"
+    payload = {"schema_version": SCHEMA, **ctx.request, "configuration_json": text}
+    stored = ctx.service.product_store.save_resource(KIND, ctx.profile.id, payload, status="draft")
+    before = read_saved_draft(ctx.service, ctx.profile.id)
+    assert before["draft"]["configuration_json"] == text
+    with pytest.raises(APIError) as caught:
+        save_draft(
+            ctx.service,
+            {**ctx.request, "configuration_json": text, "expected_digest": stored["digest"]},
+        )
+    assert caught.value.code == "s3_setup_draft_invalid"
+    assert read_saved_draft(ctx.service, ctx.profile.id) == before
+    assert ctx.service.product_store.get_resource(KIND, ctx.profile.id) == stored
+    assert ctx.calls == []
+
+
+def test_changed_profile_requires_explicit_source_binding_before_replacement(saved_context):
+    ctx = saved_context
+    initial = save_draft(ctx.service, ctx.save_request)
+    ctx.profile.budgets = replace(ctx.profile.budgets, max_steps=11)
+    current = content_hash(ctx.profile.to_dict())
+    request = {
+        **ctx.save_request,
+        "profile_digest": current,
+        "expected_digest": initial["draft"]["digest"],
+    }
+    with pytest.raises(APIError) as caught:
+        save_draft(ctx.service, request)
+    assert caught.value.code == "s3_setup_draft_invalid"
+    assert read_saved_draft(ctx.service, ctx.profile.id) == initial
+    source = json.loads(request["configuration_json"])
+    source["environments"][0]["managed_profile_digest"] = current
+    request["configuration_json"] = json.dumps(source, indent=2) + "\n"
+    changed = save_draft(ctx.service, request)
+    assert changed["draft"]["profile_digest"] == current
+    assert changed["draft"]["configuration_json"] == request["configuration_json"]
+    assert changed["draft"]["digest"] != initial["draft"]["digest"]
+    assert read_saved_draft(ctx.service, ctx.profile.id) == changed
     assert ctx.calls == []
 
 
