@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import ssl
 import struct
 import threading
@@ -9,6 +10,38 @@ from typing import Any, Callable, Mapping, Protocol
 
 from .runner_transport_errors import RunnerAuthenticationError, RunnerConnectionError
 from .util import canonical_json_bytes
+
+
+def _duplicates_rejected(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"unsupported JSON constant: {value}")
+
+
+def _decode_json_object(payload: bytes) -> dict[str, Any]:
+    try:
+        value = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=_duplicates_rejected,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError):
+        raise RunnerAuthenticationError("Runner message is not valid canonical JSON.") from None
+    if not isinstance(value, dict):
+        raise RunnerAuthenticationError("Runner message must be a JSON object.")
+    try:
+        if canonical_json_bytes(value) != payload:
+            raise RunnerAuthenticationError("Runner message is not canonical JSON.")
+    except (RecursionError, TypeError, ValueError):
+        raise RunnerAuthenticationError("Runner message contains unsupported JSON.") from None
+    return value
 
 
 class ReceiveExact(Protocol):

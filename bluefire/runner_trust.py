@@ -216,6 +216,10 @@ class RunnerEnrollment:
     def _purpose(self, purpose: str) -> str:
         return f"bluefire.runner-enrollment.v1:{self.runner_id}:{self.client_id}:{purpose}"
 
+    def transport_identity_scope(self) -> Mapping[str, str]:
+        """Additional validated identity bound into a specialized transport generation."""
+        return {}
+
 
 def create_local_enrollment(
     root: str | Path,

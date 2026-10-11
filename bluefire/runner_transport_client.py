@@ -28,7 +28,7 @@ def validated_transport_identity(client: Any) -> Mapping[str, Any]:
     expected = {
         "runner_id": enrollment.runner_id,
         "client_id": enrollment.client_id,
-        "transport": "mutual-tls-loopback",
+        "transport": client._transport_kind,
         "tls": "TLSv1.3",
         "server_fingerprint": enrollment.metadata["server_fingerprint"],
         "client_fingerprint": client_fingerprint,

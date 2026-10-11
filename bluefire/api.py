@@ -469,6 +469,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             elif composition[0]:
                 self._method_not_allowed("POST")
             return
+        from .api_ad_smb import dispatch_ad_smb
+
+        if dispatch_ad_smb(self, path):
+            return
         from .api_s3_access import dispatch_s3_access
 
         if dispatch_s3_access(self, path):
@@ -1086,6 +1090,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 self._dispatch(operations[composition[0]])
             elif composition[0]:
                 self._method_not_allowed("GET")
+            return
+        from .api_ad_smb import dispatch_ad_smb
+
+        if dispatch_ad_smb(self, path, body):
             return
         from .api_s3_access import dispatch_s3_access
 
