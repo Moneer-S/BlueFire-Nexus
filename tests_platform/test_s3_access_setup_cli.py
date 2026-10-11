@@ -24,6 +24,34 @@ from tests_platform.test_s3_access_onboarding import configured as configured
 from tests_platform.test_s3_access_wire import NOW, credential_row
 
 
+def portable_input_stat(descriptor):
+    value = os.fstat(descriptor)
+    # Windows fstat ctime can mean change time while lstat reports creation time.
+    # This test-only shim is not proof of POSIX no-follow or timestamp-race checks.
+    return SimpleNamespace(
+        **{
+            name: getattr(value, name)
+            for name in ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns")
+        },
+        st_ctime_ns=getattr(value, "st_birthtime_ns", value.st_ctime_ns),
+    )
+
+
+def test_portable_stat_keeps_all_non_ctime_identity_fields(tmp_path):
+    path = tmp_path / "portable.json"
+    path.write_bytes(b"{}")
+    with path.open("rb") as stream:
+        raw = os.fstat(stream.fileno())
+        adapted = portable_input_stat(stream.fileno())
+    assert vars(adapted) == {
+        **{
+            name: getattr(raw, name)
+            for name in ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns")
+        },
+        "st_ctime_ns": getattr(raw, "st_birthtime_ns", raw.st_ctime_ns),
+    }
+
+
 @pytest.fixture
 def owner(local, monkeypatch, tmp_path):
     enrollment, configuration, provider = local
@@ -44,7 +72,7 @@ def owner(local, monkeypatch, tmp_path):
             SimpleNamespace(
                 open=os.open,
                 close=os.close,
-                fstat=os.fstat,
+                fstat=portable_input_stat,
                 fdopen=os.fdopen,
                 O_RDONLY=os.O_RDONLY,
                 O_NOFOLLOW=0,
@@ -116,6 +144,11 @@ def test_browser_structural_review_cannot_authorize_local_installation(owner, co
     selected = configured.profile
     selected.id = owner.profile
     selected.budgets = replace(selected.budgets, max_seconds=120)
+    owner.configuration["schema_version"] = "bluefire.s3-host-environments.v3"
+    owner.configuration["environments"][0]["managed_profile_digest"] = content_hash(
+        selected.to_dict()
+    )
+    owner.draft.write_bytes(canonical_json_bytes(owner.configuration))
     reviewed = review_draft(
         configured.service,
         {

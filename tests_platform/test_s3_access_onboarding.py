@@ -3,6 +3,7 @@
 import hashlib
 import json
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -151,6 +152,8 @@ def test_changed_or_widened_request_does_not_connect(configured, mutation):
 
 def draft_request(configured):
     row = host_configuration()
+    row["schema_version"] = "bluefire.s3-host-environments.v3"
+    row["environments"][0]["managed_profile_digest"] = configured.request["profile_digest"]
     profile = row["environments"][0]["profile"]
     profile["profile_id"] = configured.profile.id
     profile["limits"] = execution_limits(configured.profile)
@@ -183,7 +186,11 @@ def installed(configured):
     )
     configured.client.s3_access_setup_status = lambda: deepcopy(status)
     configured.client.s3_access_environments = lambda: [
-        {"environment": {"environment_id": entry["environment_id"]}, "profile": native}
+        {
+            "environment": {"environment_id": entry["environment_id"]},
+            "profile": native,
+            "managed_profile_digest": entry["managed_profile_digest"],
+        }
     ]
     return configured, native, status
 
@@ -193,6 +200,18 @@ def test_configured_status_requires_matching_current_native_policy(installed):
     result = onboarding.check_setup(configured.service, configured.request)
     assert result["host_state"] == "authenticated"
     assert result["setup"]["configuration_state"] == "configured"
+
+
+@pytest.mark.parametrize("steps", [1, 11, 13])
+def test_setup_cannot_rebind_an_older_install_to_a_fresh_current_step_budget(installed, steps):
+    configured, _, status = installed
+    configured.profile.budgets = replace(configured.profile.budgets, max_steps=steps)
+    configured.request["profile_digest"] = content_hash(configured.profile.to_dict())
+    result = onboarding.check_setup(configured.service, configured.request)
+    assert result["host_state"] == "authenticated"
+    assert result["setup"]["configuration_state"] == "profile_changed"
+    assert result["setup"]["environments"] == []
+    assert result["setup"]["revision_digest"] == status["revision_digest"]
 
 
 @pytest.mark.parametrize("change", ["limits", "network", "runner", "sandbox", "approval"])
@@ -238,6 +257,32 @@ def test_draft_limits_must_match_current_profile_not_only_fit_under_it(configure
     request["configuration_json"] = json.dumps(configuration)
     with pytest.raises(APIError) as caught:
         onboarding.review_draft(configured.service, request)
+    assert caught.value.code == "s3_setup_draft_invalid"
+    assert configured.calls == []
+
+
+@pytest.mark.parametrize("binding", [None, "sha256:" + "f" * 64])
+def test_draft_requires_explicit_complete_profile_binding(configured, binding):
+    request = draft_request(configured)
+    row = json.loads(request["configuration_json"])
+    if binding is None:
+        row["schema_version"] = "bluefire.s3-host-environments.v1"
+        del row["environments"][0]["managed_profile_digest"]
+    else:
+        row["environments"][0]["managed_profile_digest"] = binding
+    request["configuration_json"] = json.dumps(row)
+    source = deepcopy(request)
+    with pytest.raises(APIError) as caught:
+        onboarding.review_draft(configured.service, request)
+    assert caught.value.code == "s3_setup_draft_invalid"
+    assert request == source and configured.calls == []
+
+
+def test_draft_with_current_binding_still_requires_sufficient_stage_steps(configured):
+    configured.profile.budgets = replace(configured.profile.budgets, max_steps=1)
+    configured.request["profile_digest"] = content_hash(configured.profile.to_dict())
+    with pytest.raises(APIError) as caught:
+        onboarding.review_draft(configured.service, draft_request(configured))
     assert caught.value.code == "s3_setup_draft_invalid"
     assert configured.calls == []
 
@@ -392,7 +437,7 @@ def test_draft_does_not_implicitly_add_fixture_authority(configured):
 
 
 def test_browser_draft_fixture_passes_the_real_structural_contract(configured):
-    source = (Path(__file__).parent / "fixtures/s3_setup_draft_v1.json").read_text(encoding="utf-8")
+    source = (Path(__file__).parent / "fixtures/s3_setup_draft_v3.json").read_text(encoding="utf-8")
     value = onboarding.review_draft(
         configured.service, {**configured.request, "configuration_json": source}
     )

@@ -14,8 +14,8 @@ import sys
 from typing import Any, Mapping, cast
 
 from . import s3_fixture_contract as fixtures
+from .s3_access_configuration import BOUND_SCHEMA, _identifier
 from .s3_access_configuration import SCHEMA as SCHEMA
-from .s3_access_configuration import _identifier
 from .s3_access_configuration import validate_configuration as validate_configuration
 from .s3_access_contract import S3AccessError, S3AccessScope
 from .s3_access_wire import S3WorkerRequest
@@ -91,7 +91,8 @@ def selected_environment(
     entry = matches[0]
     if source["schema_version"] == fixtures.REQUEST_SCHEMA:
         if (
-            configuration["schema_version"] != "bluefire.s3-host-environments.v2"
+            configuration["schema_version"]
+            not in ("bluefire.s3-host-environments.v2", BOUND_SCHEMA)
             or "fixture_lifecycle" not in entry
             or source["fixture_authority_digest"]
             != fixtures.authority_digest(

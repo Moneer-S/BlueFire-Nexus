@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import configuration from "../../tests_platform/fixtures/s3_setup_draft_v1.json";
+import configuration from "../../tests_platform/fixtures/s3_setup_draft_v3.json";
 import * as downloads from "../src/lib/download";
 import { checkedDraftReview, draftSourceDigest, MAX_S3_DRAFT_BYTES, s3SetupApi, type S3SetupDraftRequest, type S3SetupDraftReview, type S3SetupProfile } from "../src/lib/s3-setup";
 import { S3SetupDraft } from "../src/pages/S3SetupDraft";

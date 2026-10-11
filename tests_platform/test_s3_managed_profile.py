@@ -16,6 +16,7 @@ from bluefire.s3_access_executor import configured_executor
 from bluefire.s3_access_onboarding import setup_profiles
 from bluefire.s3_access_profile import ACTION, validate_managed_s3_profile
 from bluefire.service import BlueFireService
+from bluefire.util import content_hash
 from tests_platform.test_s3_access_executor import configured as configured
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -111,12 +112,38 @@ def test_ordinary_profiles_still_use_normal_registry(service):
     assert service._validated_runner_profile(profile.to_dict(), profile.id) == profile
 
 
+def test_activation_requires_budget_for_largest_fixed_stage(service, document):
+    from bluefire.s3_access_results import PHASES
+
+    minimum = max(map(len, PHASES.values()))
+    assert minimum == 2
+    document["budgets"]["max_steps"] = minimum - 1
+    service.save_resource(
+        "runner_profile", document["id"], {"document": document, "status": "draft"}
+    )
+    with pytest.raises(APIError) as caught:
+        service.activate_resource("runner_profile", document["id"], {})
+    assert caught.value.code == "resource_activation_invalid"
+    assert setup_profiles(service)["profiles"] == []
+    document["budgets"]["max_steps"] = minimum
+    service.save_resource(
+        "runner_profile", document["id"], {"document": document, "status": "draft"}
+    )
+    service.activate_resource("runner_profile", document["id"], {})
+    assert setup_profiles(service)["profiles"][0]["profile_digest"] == content_hash(
+        RunnerProfile.from_mapping(document).to_dict()
+    )
+
+
 def test_managed_only_activation_edit_and_deactivation_reach_the_executor(
     service, document, configured, monkeypatch
 ):
     native = configured.row["profile"]
     native["profile_id"] = document["id"]
     configured.row["profile"] = seal_profile(native)
+    configured.row["managed_profile_digest"] = content_hash(
+        RunnerProfile.from_mapping(document).to_dict()
+    )
     monkeypatch.setattr(
         service.runner_lifecycle,
         "client_for_profile",

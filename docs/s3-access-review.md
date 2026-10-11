@@ -7,13 +7,20 @@ changed enrollment is shown as unavailable, while previously saved evidence
 remains readable.
 
 Setup and execution use the same active managed profile selection. The installed
-native policy must match its exact execution limits, dedicated S3 permissions,
+v3 configuration retains `managed_profile_digest`, the canonical content hash of
+the complete selected profile, including its step budget and environment references.
+Discovery transports that retained binding; it does not replace it with a freshly
+computed active-profile hash. The installed native policy must also match its
+exact execution limits, dedicated S3 permissions,
 approval requirement and supported local target scope, as well as the
 authenticated runner and sandbox. A same-ID profile edit does not make an older
 host policy current. Setup reports that mismatch without changing the host.
 Configuration drafts likewise require exact current profile limits, not merely
 lower limits. Changing those limits requires reviewing and installing the updated
-configuration before new execution.
+configuration before new execution. Profiles must allow the largest fixed reviewed
+stage (currently two worker tasks); a matching installation cannot bypass that
+minimum. Legacy configurations remain readable, but cannot authorize new product
+execution. This does not automatically migrate or replace retained authority.
 
 Execution rechecks the active profile version and exact discovered host bindings
 after retaining its original task checkpoint. Drift at that point refuses

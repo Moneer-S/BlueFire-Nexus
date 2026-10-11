@@ -18,7 +18,12 @@ from .util import canonical_json_bytes
 
 OPERATION = "s3_access_environments"
 UNAVAILABLE_PROBLEMS = frozenset(
-    {"runtime_unavailable", "access_reference_absent", "access_reference_expired"}
+    {
+        "runtime_unavailable",
+        "access_reference_absent",
+        "access_reference_expired",
+        "profile_changed",
+    }
 )
 
 
@@ -57,14 +62,19 @@ def server_environments(server, request, enrollment, *, refusal):
             if state not in {"current", "absent", "expired"}:
                 raise S3AccessError("S3 local reference status is invalid")
             problem = (
-                "runtime_unavailable"
-                if not available
-                else None if state == "current" else f"access_reference_{state}"
+                "profile_changed"
+                if entry.get("managed_profile_digest") is None
+                else (
+                    "runtime_unavailable"
+                    if not available
+                    else None if state == "current" else f"access_reference_{state}"
+                )
             )
             rows.append(
                 {
                     "environment": public,
                     "profile": entry["profile"],
+                    "managed_profile_digest": entry.get("managed_profile_digest"),
                     "runtime_digest": entry["runtime_digest"],
                     "worker_generation": entry["worker_generation"],
                     "available": problem is None,
@@ -106,6 +116,7 @@ def client_environments(client: Any) -> list[dict[str, Any]]:
                 {
                     "environment",
                     "profile",
+                    "managed_profile_digest",
                     "runtime_digest",
                     "worker_generation",
                     "available",
@@ -121,6 +132,11 @@ def client_environments(client: Any) -> list[dict[str, Any]]:
             identifiers.add(public["environment_id"])
             digest(row["runtime_digest"])
             digest(row["worker_generation"])
+            if row["managed_profile_digest"] is None:
+                if row["available"] or row["problem"] != "profile_changed":
+                    raise S3AccessError("Unbound S3 configuration cannot authorize execution")
+            else:
+                digest(row["managed_profile_digest"])
             profile = row["profile"]
             if (
                 type(row["available"]) is not bool
