@@ -10,6 +10,8 @@ import producerContract from "./fixtures/adaptive-observation-contract.json";
 const behavior = "endpoint.discovery.system.v1";
 const action = "sandbox.discovery.list.v1";
 const catalog = demoCatalog;
+let nextEvidence = 0;
+const recordHash = `sha256:${"a".repeat(64)}`;
 
 function permissionFields(mode: string) {
   const bits = Number.parseInt(mode, 8);
@@ -24,12 +26,11 @@ function permissionFields(mode: string) {
 }
 
 function record(content: Record<string, unknown>, provenance: EvidenceRecord["provenance"] = "observed"): EvidenceRecord {
-  const identity = String(content.permission_mode_octal ?? content.permission_status ?? content.observation_kind ?? "legacy");
-  return { evidence_id: `evidence-${identity}-${provenance}`, provenance, producer: "authored-fixture", content };
+  return { evidence_id: `evidence-${(++nextEvidence).toString(16).padStart(20, "0")}`, provenance, producer: "authored-fixture", content };
 }
 
 function run(records: EvidenceRecord[], evidenceIds = records.map(item => item.evidence_id!)): RunRecord {
-  const projectedEvidence = records.filter(item => evidenceIds.includes(item.evidence_id!)).map(item => ({ evidence_id: item.evidence_id, provenance: item.provenance, facts: item.content }));
+  const projectedEvidence = records.filter(item => evidenceIds.includes(item.evidence_id!)).map(item => ({ evidence_id: item.evidence_id, record_hash: recordHash, provenance: item.provenance, facts: item.content }));
   const proposal: AIProposal = {
     schema_version: "bluefire.ai-proposal.v2", proposal_id: "proposal-permissions", proposal_type: "select_registered_action",
     selected_step_id: "inspect", selected_behavior_id: behavior, selected_action_id: action, selected_edge: null,
@@ -39,7 +40,11 @@ function run(records: EvidenceRecord[], evidenceIds = records.map(item => item.e
     run_id: "authored-permission-run", mode: "execute", status: "completed",
     steps: [{ step_id: "inspect", behavior_id: behavior, action_id: action, status: "success", execution_disposition: "execute", planner_decision_id: "decision-1", evidence_ids: evidenceIds }],
     evidence: { records },
-    ai_proposals: [{ schema_version: "bluefire.ai-proposal-record.v4", run_id: "authored-permission-run", current_step_id: "inspect", deterministic_decision_id: "decision-1", outcome: "success", application_status: "applied_reviewed_method", proposal, applied_step: { step_id: "inspect", behavior_id: behavior, action_id: action }, provider_called: false, planner_state: { observations: { attempts: [{ attempt_index: 0, step_id: "inspect", evidence: projectedEvidence }], remaining_budgets: { steps: 1, seconds: 5, retries: 0 }, unknowns: [] } } }],
+    ai_proposals: [{ schema_version: "bluefire.ai-proposal-record.v4", run_id: "authored-permission-run", current_step_id: "inspect", deterministic_decision_id: "decision-1", outcome: "success", application_status: "applied_reviewed_method", proposal, applied_step: { step_id: "inspect", behavior_id: behavior, action_id: action }, provider_called: false, planner_state: { observations: {
+      schema_version: "bluefire.runtime-observations.v1", omitted_attempt_count: 0,
+      attempts: [{ attempt_index: 0, step_id: "inspect", behavior_id: behavior, action_id: action, outcome: "success",
+        missing_evidence_count: evidenceIds.length - projectedEvidence.length, omitted_evidence_count: 0, evidence: projectedEvidence }],
+      remaining_budgets: { steps: 1, seconds: 5, retries: 0 }, unknowns: [] } } }],
   };
 }
 
@@ -129,7 +134,9 @@ it.each([
   render(<AdaptiveRunPath run={run([evidence])} catalog={catalog} />);
   await openObservations();
   const region = screen.getByRole("region", { name: "Recorded adaptive decision" });
-  expect(within(region).getByText("Permission metadata is incomplete or inconsistent.")).toBeVisible();
+  await userEvent.setup().click(within(region).getByText("Recorded observations at this decision", { selector: "summary" }));
+  expect(within(region).getByText("The recorded facts are unreadable or outside the supported format.")).toBeVisible();
+  expect(within(region).queryByRole("region", { name: "Observed file permissions" })).not.toBeInTheDocument();
   expect(within(region).queryByText("0660", { selector: "dd" })).not.toBeInTheDocument();
 });
 
@@ -152,8 +159,9 @@ it("keeps distinct current-attempt observations separate", async () => {
   const region = screen.getByRole("region", { name: "Recorded adaptive decision" });
   expect(within(region).getAllByText("Observation 1", { selector: "strong" })).toHaveLength(1);
   expect(within(region).getAllByText("Observation 2", { selector: "strong" })).toHaveLength(1);
-  expect(within(region).getByText("0640")).toBeVisible();
-  expect(within(region).getByText("0666")).toBeVisible();
+  const permissions = within(region).getByRole("region", { name: "Observed file permissions" });
+  expect(within(permissions).getByText("0640")).toBeVisible();
+  expect(within(permissions).getByText("0666")).toBeVisible();
 });
 
 it("uses the decision projection instead of newer unrelated run evidence", async () => {
@@ -162,7 +170,8 @@ it("uses the decision projection instead of newer unrelated run evidence", async
   render(<AdaptiveRunPath run={run([current, newer], [current.evidence_id!])} catalog={catalog} />);
   await openObservations();
   const region = screen.getByRole("region", { name: "Recorded adaptive decision" });
-  expect(within(region).getByText("0640")).toBeVisible();
+  const permissions = within(region).getByRole("region", { name: "Observed file permissions" });
+  expect(within(permissions).getByText("0640")).toBeVisible();
   expect(within(region).queryByText("0666")).not.toBeInTheDocument();
 });
 
@@ -172,9 +181,13 @@ it("retains earlier projected permission evidence with its source position and s
   const value = run([earlier, newer], [newer.evidence_id!]);
   const decision = value.ai_proposals![0]!;
   const observations = (decision.planner_state as Record<string, unknown>).observations as Record<string, unknown>;
+  value.steps.unshift({ ...value.steps[0]!, step_id: "earlier-inspect", planner_decision_id: "earlier-decision", evidence_ids: [earlier.evidence_id!] });
+  value.steps[1]!.evidence_ids = [];
   observations.attempts = [
-    { attempt_index: 0, step_id: "earlier-inspect", evidence: [{ evidence_id: earlier.evidence_id, provenance: earlier.provenance, facts: earlier.content }] },
-    { attempt_index: 1, step_id: "inspect", evidence: [] },
+    { attempt_index: 0, step_id: "earlier-inspect", behavior_id: behavior, action_id: action, outcome: "success",
+      missing_evidence_count: 0, omitted_evidence_count: 0,
+      evidence: [{ evidence_id: earlier.evidence_id, record_hash: recordHash, provenance: earlier.provenance, facts: earlier.content }] },
+    { attempt_index: 1, step_id: "inspect", behavior_id: behavior, action_id: action, outcome: "success", missing_evidence_count: 0, omitted_evidence_count: 0, evidence: [] },
   ];
   render(<AdaptiveRunPath run={value} catalog={catalog} />);
   await openObservations();
