@@ -57,6 +57,19 @@ it("restores a valid direct URL without triggering preparation and permits clear
   expect(screen.getByLabelText("Current location")).toHaveTextContent("/getting-started?context=retained");
 });
 
+it.each(["data-handoff", "file-access", "ad-access", "s3-access"])("labels direct %s scope as requirements, not verified resources", (goal) => {
+  const before = { ...localStorage };
+  mount(`/getting-started?goal=${goal}`);
+  expect(screen.getByText("Required environment")).toBeVisible();
+  expect(screen.getByText("Planned test data")).toBeVisible();
+  expect(screen.getByText("Proposed change")).toBeVisible();
+  expect(screen.getByText("Readiness")).toBeVisible();
+  expect(screen.getByText("Not checked")).toBeVisible();
+  expect(screen.queryByText("Environment", { exact: true })).not.toBeInTheDocument();
+  expect(screen.queryByText("Test data", { exact: true })).not.toBeInTheDocument();
+  expect({ ...localStorage }).toEqual(before);
+});
+
 it.each(["unknown", "__proto__", "https://example.test"])("refuses an unsupported goal %s without selecting another question", (goal) => {
   mount(`/getting-started?goal=${encodeURIComponent(goal)}`);
   expect(screen.getByRole("alert")).toHaveTextContent("This objective is unavailable");

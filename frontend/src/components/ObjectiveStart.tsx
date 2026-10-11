@@ -60,10 +60,10 @@ export function ObjectiveStart() {
     {selected ? <div className="objective-start-scope" aria-live="polite">
       <h3>{selected.question}</h3>
       <DataList items={[
-        { label: "Environment", value: selected.environment },
-        { label: "Test data", value: selected.data },
-        { label: "Defensive change", value: selected.change },
-        { label: "Access", value: <Badge tone="warning">Not checked</Badge> },
+        { label: "Required environment", value: selected.environment },
+        { label: "Planned test data", value: selected.data },
+        { label: "Proposed change", value: selected.change },
+        { label: "Readiness", value: <Badge tone="warning">Not checked</Badge> },
       ]} />
     </div> : null}
   </section>;
