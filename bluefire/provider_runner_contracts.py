@@ -7,6 +7,7 @@ import math
 import re
 from typing import Any, Mapping, Sequence
 
+from .execution_contracts import provider_artifact_type_allowed
 from .util import canonical_json_bytes, content_hash, json_clone
 
 
@@ -157,6 +158,10 @@ def _canonical_io_specs(value: Any, context: str, *, allow_empty: bool) -> list[
             raise ProviderRunnerContractError(f"{context}[{index}] has unknown fields")
         name = _field_name(raw.get("name"), f"{context}[{index}].name")
         artifact_type = _stable_id(raw.get("type"), f"{context}[{index}].type")
+        if not provider_artifact_type_allowed(artifact_type):
+            raise ProviderRunnerContractError(
+                f"{context}[{index}].type uses a reserved artifact namespace"
+            )
         required = raw.get("required")
         multiple = raw.get("multiple")
         if name in names or not isinstance(required, bool) or not isinstance(multiple, bool):
