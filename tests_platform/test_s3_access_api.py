@@ -11,6 +11,24 @@ ROOT = "/api/v1/s3-access"
 
 
 @pytest.mark.parametrize(
+    "method,path,operation",
+    [
+        ("GET", "/setup/drafts/s3-profile.v1", "s3_access_saved_setup_draft"),
+        ("POST", "/setup/drafts", "save_s3_access_setup_draft"),
+    ],
+)
+def test_saved_setup_routes_require_a_session_and_dispatch_exact_inputs(method, path, operation):
+    body = {"configuration_json": "{}"} if method == "POST" else None
+    with running_server(authenticate=False) as (server, service):
+        status, _, _ = request(server, method, ROOT + path, body=body)
+        assert status == 401 and service.calls == []
+    with running_server() as (server, service):
+        status, _, _ = request(server, method, ROOT + path, body=body)
+        assert status == 200
+        assert service.calls == [(operation, body if method == "POST" else "s3-profile.v1")]
+
+
+@pytest.mark.parametrize(
     ("method", "path", "operation", "has_identifier"),
     [
         ("GET", "/environments", "s3_access_environments", False),

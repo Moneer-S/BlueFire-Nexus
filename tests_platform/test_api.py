@@ -57,6 +57,14 @@ class StubService:
         self.calls.append(("review_s3_access_setup_draft", body))
         return {"validation_scope": "structural_only"}
 
+    def s3_access_saved_setup_draft(self, profile_id):
+        self.calls.append(("s3_access_saved_setup_draft", profile_id))
+        return {"draft": None}
+
+    def save_s3_access_setup_draft(self, body):
+        self.calls.append(("save_s3_access_setup_draft", body))
+        return {"draft": {}}
+
     def s3_access_exercises(self):
         self.calls.append(("s3_access_exercises",))
         return {"exercises": []}

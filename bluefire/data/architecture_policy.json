@@ -341,6 +341,7 @@
         "bluefire.s3_access_jobs",
         "bluefire.s3_access_service",
         "bluefire.s3_access_onboarding",
+        "bluefire.s3_access_setup_drafts",
         "bluefire.retained_run_observations",
         "bluefire.replay",
         "bluefire.replay_preparation",

@@ -17,18 +17,24 @@ def dispatch_s3_access(handler: Any, path: str, body: Mapping[str, Any] | None =
     match = re.fullmatch(
         r"exercises/(job-[0-9a-f]{32})(?:/(review|operations|stop|recover))?", suffix
     )
+    draft = re.fullmatch(r"setup/drafts/([a-z][a-z0-9]*(?:[._-][a-z0-9]+)*)", suffix)
     if (
-        suffix not in {"environments", "exercises", "setup", "setup/check", "setup/review"}
+        suffix
+        not in {"environments", "exercises", "setup", "setup/check", "setup/review", "setup/drafts"}
         and match is None
+        and draft is None
     ):
         handler._error(
             HTTPStatus.BAD_REQUEST, "s3_access_invalid", "Select a canonical saved S3 exercise."
         )
         return True
     operation, identifier = (match.group(2) or "read", match.group(1)) if match else (suffix, "")
+    if draft:
+        operation, identifier = "setup/draft", draft.group(1)
     service = handler.platform_server.service
     reads = {
         "setup": service.s3_access_setup_profiles,
+        "setup/draft": lambda: service.s3_access_saved_setup_draft(identifier),
         "environments": service.s3_access_environments,
         "exercises": service.s3_access_exercises,
         "read": lambda: service.s3_access_exercise(identifier),
@@ -36,6 +42,7 @@ def dispatch_s3_access(handler: Any, path: str, body: Mapping[str, Any] | None =
     writes = {
         "setup/check": lambda: service.check_s3_access_setup(body),
         "setup/review": lambda: service.review_s3_access_setup_draft(body),
+        "setup/drafts": lambda: service.save_s3_access_setup_draft(body),
         "exercises": lambda: service.create_s3_access(body),
         "review": lambda: service.review_s3_access(identifier, body),
         "operations": lambda: service.submit_s3_access(identifier, body),

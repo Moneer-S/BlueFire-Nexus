@@ -52,6 +52,16 @@ class S3AccessServiceMixin:
 
         return review_draft(self, request)
 
+    def s3_access_saved_setup_draft(self, profile_id: str) -> Mapping[str, Any]:
+        from .s3_access_setup_drafts import read_saved_draft
+
+        return read_saved_draft(self, profile_id)
+
+    def save_s3_access_setup_draft(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        from .s3_access_setup_drafts import save_draft
+
+        return save_draft(self, request)
+
     def s3_access_exercises(self) -> Mapping[str, Any]:
         return self._s3_call(self.s3_access.list_exercises)
 

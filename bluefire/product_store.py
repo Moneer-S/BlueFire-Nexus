@@ -93,6 +93,7 @@ _RESOURCE_KINDS = {
     "run_presentation",
     "runner",
     "runner_profile",
+    "s3_setup_draft",
 }
 _JOB_STATES = {
     "queued",
@@ -1439,11 +1440,16 @@ class ProductStore(
         return self._resource_row(row)
 
     def get_resource(self, kind: str, resource_id: str) -> Mapping[str, Any]:
+        resource = self.find_resource(kind, resource_id)
+        if resource is None:
+            raise ProductStoreError("resource was not found")
+        return resource
+
+    def find_resource(self, kind: str, resource_id: str) -> Mapping[str, Any] | None:
+        """Only an absent row is None; invalid or unreadable storage remains an error."""
         stable_id = _identifier(resource_id, f"{kind} ID")
         rows = self._resource_rows(kind, resource_id=stable_id)
-        if not rows:
-            raise ProductStoreError("resource was not found")
-        return rows[0]
+        return rows[0] if rows else None
 
     def list_resources(self, kind: str) -> list[Mapping[str, Any]]:
         return self._resource_rows(kind)
