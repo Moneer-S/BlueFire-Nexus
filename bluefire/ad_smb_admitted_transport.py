@@ -144,6 +144,12 @@ def _original(
 class AdmittedAdSmbReceiver(AdSmbReceiver):
     """Explicit installed native admission, with the unchanged owned receiver ledger."""
 
+    _ad_profile: bytes
+    _ad_credential_digest: str | None
+    _ad_credential_root: Path | None
+    _ad_scope: AdSmbScope
+    _ad_secret_provider: SecretProvider | None
+
     def __init__(
         self,
         enrollment_root: str | Path,
