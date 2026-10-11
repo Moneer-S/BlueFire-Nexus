@@ -1,0 +1,602 @@
+{
+  "schema_version": "bluefire.ad-smb-synthetic-native-corpus.v1",
+  "synthetic_only": true,
+  "fixture_sha256": "fa41abad7c00942b99dfbe653af7dc8c010fbb102e4ed0e19dd13785e8e08764",
+  "native_stdout_sha256": "1f98773f28df8baace649a22978bc240d4b982fdd681a714d0f4a944958b787a",
+  "cases": {
+    "denied_read": {
+      "case": "denied_read",
+      "operation": "read_probe_primary",
+      "request_digest": "sha256:2f0db0abc3eb29f7e8acff35ce707851ba9c30068d9e6b08d723eb13b8eedc43",
+      "result": {
+        "authenticated_remote_reader": false,
+        "bytes_read": 0,
+        "cleanup": {
+          "exact_unc_cancel_status": 0,
+          "file_closed": true,
+          "impersonation_reverted": true,
+          "observation_tokens_closed": null,
+          "owned_process_exit_required": false,
+          "server_session_closed": null,
+          "token_closed": true
+        },
+        "client_identity_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "credential_binding_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+        "effective_access_claim": false,
+        "expected_remote_sid": "S-1-5-21-101-202-303-1001",
+        "expected_volume_serial": 18364758544493064720,
+        "failed_stage": "open",
+        "file_open_attempted": true,
+        "fresh_server_logon": false,
+        "hardened_unc_receipt_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "independent_observation": false,
+        "issue": "win32_failure",
+        "local_logon": {
+          "authentication_id": 2305843009213693954,
+          "local_token_user_sid": "S-1-5-21-8-9-10-1100"
+        },
+        "observed_file_id": null,
+        "observed_sha256": null,
+        "observed_volume_serial": null,
+        "protocol": null,
+        "purpose": "primary",
+        "reader": "probe",
+        "request_id": "cfd7aba15dc8aaaf9e706fd37e2af0a2",
+        "schema_version": "bluefire.ad-smb-fresh-read.v1",
+        "scope_digest": "sha256:be810511c486edecbba54a2b4a5d7615f6a38312667ec057e2870eecf63461d1",
+        "state": "open_access_denied",
+        "win32_error": 5
+      },
+      "schema_version": "bluefire.ad-smb-synthetic-native-case.v1",
+      "synthetic_only": true
+    },
+    "inspect": {
+      "case": "inspect",
+      "operation": "inspect_member",
+      "request_digest": "sha256:2575b1020a96c5f4ab9dd4987fd5d17d2e97e5842072e9956519cdb5605706a0",
+      "result": {
+        "after_descriptor": {
+          "binary_b64": "AQAEgIgAAACkAAAAAAAAABQAAAACAHQAAgAAAAAAJACpABIAAQUAAAAAAAUVAAAAZQAAAMoAAAAvAQAA6gMAAAAAJAD/AR8AAQUAAAAAAAUVAAAAZQAAAMoAAAAvAQAA6wMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEFAAAAAAAFFQAAAGUAAADKAAAALwEAAOsDAAABBQAAAAAABRUAAABlAAAAygAAAC8BAADrAwAA",
+          "control": 32772,
+          "dacl": {
+            "aces": [
+              {
+                "ace_type": "access_allowed",
+                "flags": 0,
+                "raw_ace_digest": "sha256:621ba2b56eed68db88cbd47797e06a1a57ac3ff80e293577d2083ef3dc87d9a0",
+                "smb_right": "Read",
+                "trustee_sid": "S-1-5-21-101-202-303-1002"
+              },
+              {
+                "ace_type": "access_allowed",
+                "flags": 0,
+                "raw_ace_digest": "sha256:7c810b50ee98aa9693601d9c76aeb31d12e3e192271da348506b52749ce79925",
+                "smb_right": "Full",
+                "trustee_sid": "S-1-5-21-101-202-303-1003"
+              }
+            ],
+            "revision": 2
+          },
+          "group_sid": "S-1-5-21-101-202-303-1003",
+          "owner_sid": "S-1-5-21-101-202-303-1003",
+          "revision": 1,
+          "sacl": null,
+          "sha256": "sha256:a191f16bed3bb157545123186f2d10459c10bff4cf664112d59f912d7b4a0695"
+        },
+        "files": {
+          "issue": null,
+          "observation": {
+            "authenticated_member_identity": false,
+            "effective_access_proved": false,
+            "files": [
+              {
+                "bytes": 3,
+                "name": "records.jsonl",
+                "sha256": "sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+              },
+              {
+                "bytes": 3,
+                "name": "health.jsonl",
+                "sha256": "sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+              }
+            ],
+            "local_path": "C:\\BlueFire\\AD\\0123456789abcdef0123456789abcdef",
+            "objects": [
+              {
+                "attributes": 16,
+                "change_time": 3,
+                "creation_time": 1,
+                "delete_pending": false,
+                "directory": true,
+                "disk_file": true,
+                "file_id": "00000000000000000000000000000001",
+                "final_path": "\\\\?\\C:\\",
+                "last_write_time": 2,
+                "links": 1,
+                "ntfs": true,
+                "reparse_tag": 0,
+                "selected_security": {
+                  "binary_hex": "0100048088000000a40000000000000014000000020074000300000000002400a900120001050000000000051500000065000000ca0000002f010000e903000000002400a900120001050000000000051500000065000000ca0000002f010000ea03000000002400ff011f0001050000000000051500000065000000ca0000002f010000eb03000001050000000000051500000065000000ca0000002f010000eb03000001050000000000051500000065000000ca0000002f010000eb030000",
+                  "finite_descriptor": null,
+                  "sacl_observed": false,
+                  "security_information": 7,
+                  "sha256": "sha256:b847d263b3541de849385a1c924da9cf7f495e1bff984fcdcee12e7692ba0d01"
+                },
+                "size": 0,
+                "volume_serial": "fedcba9876543210"
+              },
+              {
+                "attributes": 16,
+                "change_time": 3,
+                "creation_time": 1,
+                "delete_pending": false,
+                "directory": true,
+                "disk_file": true,
+                "file_id": "00000000000000000000000000000002",
+                "final_path": "\\\\?\\C:\\BlueFire",
+                "last_write_time": 2,
+                "links": 1,
+                "ntfs": true,
+                "reparse_tag": 0,
+                "selected_security": {
+                  "binary_hex": "0100048088000000a40000000000000014000000020074000300000000002400a900120001050000000000051500000065000000ca0000002f010000e903000000002400a900120001050000000000051500000065000000ca0000002f010000ea03000000002400ff011f0001050000000000051500000065000000ca0000002f010000eb03000001050000000000051500000065000000ca0000002f010000eb03000001050000000000051500000065000000ca0000002f010000eb030000",
+                  "finite_descriptor": null,
+                  "sacl_observed": false,
+                  "security_information": 7,
+                  "sha256": "sha256:b847d263b3541de849385a1c924da9cf7f495e1bff984fcdcee12e7692ba0d01"
+                },
+                "size": 0,
+                "volume_serial": "fedcba9876543210"
+              },
+              {
+                "attributes": 16,
+                "change_time": 3,
+                "creation_time": 1,
+                "delete_pending": false,
+                "directory": true,
+                "disk_file": true,
+                "file_id": "00000000000000000000000000000003",
+                "final_path": "\\\\?\\C:\\BlueFire\\AD",
+                "last_write_time": 2,
+                "links": 1,
+                "ntfs": true,
+                "reparse_tag": 0,
+                "selected_security": {
+                  "binary_hex": "0100048088000000a40000000000000014000000020074000300000000002400a900120001050000000000051500000065000000ca0000002f010000e903000000002400a900120001050000000000051500000065000000ca0000002f010000ea03000000002400ff011f0001050000000000051500000065000000ca0000002f010000eb03000001050000000000051500000065000000ca0000002f010000eb03000001050000000000051500000065000000ca0000002f010000eb030000",
+                  "finite_descriptor": null,
+                  "sacl_observed": false,
+                  "security_information": 7,
+                  "sha256": "sha256:b847d263b3541de849385a1c924da9cf7f495e1bff984fcdcee12e7692ba0d01"
+                },
+                "size": 0,
+                "volume_serial": "fedcba9876543210"
+              },
+              {
+                "attributes": 16,
+                "change_time": 3,
+                "creation_time": 1,
+                "delete_pending": false,
+                "directory": true,
+                "disk_file": true,
+                "file_id": "00000000000000000000000000000004",
+                "final_path": "\\\\?\\C:\\BlueFire\\AD\\0123456789abcdef0123456789abcdef",
+                "last_write_time": 2,
+                "links": 1,
+                "ntfs": true,
+                "reparse_tag": 0,
+                "selected_security": {
+                  "binary_hex": "0100048088000000a40000000000000014000000020074000300000000002400a900120001050000000000051500000065000000ca0000002f010000e903000000002400a900120001050000000000051500000065000000ca0000002f010000ea03000000002400ff011f0001050000000000051500000065000000ca0000002f010000eb03000001050000000000051500000065000000ca0000002f010000eb03000001050000000000051500000065000000ca0000002f010000eb030000",
+                  "finite_descriptor": {
+                    "binary_b64": "AQAEgIgAAACkAAAAAAAAABQAAAACAHQAAwAAAAAAJACpABIAAQUAAAAAAAUVAAAAZQAAAMoAAAAvAQAA6QMAAAAAJACpABIAAQUAAAAAAAUVAAAAZQAAAMoAAAAvAQAA6gMAAAAAJAD/AR8AAQUAAAAAAAUVAAAAZQAAAMoAAAAvAQAA6wMAAAEFAAAAAAAFFQAAAGUAAADKAAAALwEAAOsDAAABBQAAAAAABRUAAABlAAAAygAAAC8BAADrAwAA",
+                    "control": 32772,
+                    "dacl": {
+                      "aces": [
+                        {
+                          "ace_type": "access_allowed",
+                          "flags": 0,
+                          "raw_ace_digest": "sha256:47aabc2c05869fe7e6d6b0ca82d5a81faf840596cd4c570f6d1f80a7fe950859",
+                          "smb_right": "Read",
+                          "trustee_sid": "S-1-5-21-101-202-303-1001"
+                        },
+                        {
+                          "ace_type": "access_allowed",
+                          "flags": 0,
+                          "raw_ace_digest": "sha256:621ba2b56eed68db88cbd47797e06a1a57ac3ff80e293577d2083ef3dc87d9a0",
+                          "smb_right": "Read",
+                          "trustee_sid": "S-1-5-21-101-202-303-1002"
+                        },
+                        {
+                          "ace_type": "access_allowed",
+                          "flags": 0,
+                          "raw_ace_digest": "sha256:7c810b50ee98aa9693601d9c76aeb31d12e3e192271da348506b52749ce79925",
+                          "smb_right": "Full",
+                          "trustee_sid": "S-1-5-21-101-202-303-1003"
+                        }
+                      ],
+                      "revision": 2
+                    },
+                    "group_sid": "S-1-5-21-101-202-303-1003",
+                    "owner_sid": "S-1-5-21-101-202-303-1003",
+                    "revision": 1,
+                    "sacl": null,
+                    "sha256": "sha256:b847d263b3541de849385a1c924da9cf7f495e1bff984fcdcee12e7692ba0d01"
+                  },
+                  "sacl_observed": false,
+                  "security_information": 7,
+                  "sha256": "sha256:b847d263b3541de849385a1c924da9cf7f495e1bff984fcdcee12e7692ba0d01"
+                },
+                "size": 0,
+                "volume_serial": "fedcba9876543210"
+              },
+              {
+                "attributes": 128,
+                "change_time": 3,
+                "creation_time": 1,
+                "delete_pending": false,
+                "directory": false,
+                "disk_file": true,
+                "file_id": "00000000000000000000000000000005",
+                "final_path": "\\\\?\\C:\\BlueFire\\AD\\0123456789abcdef0123456789abcdef\\records.jsonl",
+                "last_write_time": 2,
+                "links": 1,
+                "ntfs": true,
+                "reparse_tag": 0,
+                "selected_security": {
+                  "binary_hex": "0100048088000000a40000000000000014000000020074000300000000002400a900120001050000000000051500000065000000ca0000002f010000e903000000002400a900120001050000000000051500000065000000ca0000002f010000ea03000000002400ff011f0001050000000000051500000065000000ca0000002f010000eb03000001050000000000051500000065000000ca0000002f010000eb03000001050000000000051500000065000000ca0000002f010000eb030000",
+                  "finite_descriptor": {
+                    "binary_b64": "AQAEgIgAAACkAAAAAAAAABQAAAACAHQAAwAAAAAAJACpABIAAQUAAAAAAAUVAAAAZQAAAMoAAAAvAQAA6QMAAAAAJACpABIAAQUAAAAAAAUVAAAAZQAAAMoAAAAvAQAA6gMAAAAAJAD/AR8AAQUAAAAAAAUVAAAAZQAAAMoAAAAvAQAA6wMAAAEFAAAAAAAFFQAAAGUAAADKAAAALwEAAOsDAAABBQAAAAAABRUAAABlAAAAygAAAC8BAADrAwAA",
+                    "control": 32772,
+                    "dacl": {
+                      "aces": [
+                        {
+                          "ace_type": "access_allowed",
+                          "flags": 0,
+                          "raw_ace_digest": "sha256:47aabc2c05869fe7e6d6b0ca82d5a81faf840596cd4c570f6d1f80a7fe950859",
+                          "smb_right": "Read",
+                          "trustee_sid": "S-1-5-21-101-202-303-1001"
+                        },
+                        {
+                          "ace_type": "access_allowed",
+                          "flags": 0,
+                          "raw_ace_digest": "sha256:621ba2b56eed68db88cbd47797e06a1a57ac3ff80e293577d2083ef3dc87d9a0",
+                          "smb_right": "Read",
+                          "trustee_sid": "S-1-5-21-101-202-303-1002"
+                        },
+                        {
+                          "ace_type": "access_allowed",
+                          "flags": 0,
+                          "raw_ace_digest": "sha256:7c810b50ee98aa9693601d9c76aeb31d12e3e192271da348506b52749ce79925",
+                          "smb_right": "Full",
+                          "trustee_sid": "S-1-5-21-101-202-303-1003"
+                        }
+                      ],
+                      "revision": 2
+                    },
+                    "group_sid": "S-1-5-21-101-202-303-1003",
+                    "owner_sid": "S-1-5-21-101-202-303-1003",
+                    "revision": 1,
+                    "sacl": null,
+                    "sha256": "sha256:b847d263b3541de849385a1c924da9cf7f495e1bff984fcdcee12e7692ba0d01"
+                  },
+                  "sacl_observed": false,
+                  "security_information": 7,
+                  "sha256": "sha256:b847d263b3541de849385a1c924da9cf7f495e1bff984fcdcee12e7692ba0d01"
+                },
+                "size": 3,
+                "volume_serial": "fedcba9876543210"
+              },
+              {
+                "attributes": 128,
+                "change_time": 3,
+                "creation_time": 1,
+                "delete_pending": false,
+                "directory": false,
+                "disk_file": true,
+                "file_id": "00000000000000000000000000000006",
+                "final_path": "\\\\?\\C:\\BlueFire\\AD\\0123456789abcdef0123456789abcdef\\health.jsonl",
+                "last_write_time": 2,
+                "links": 1,
+                "ntfs": true,
+                "reparse_tag": 0,
+                "selected_security": {
+                  "binary_hex": "0100048088000000a40000000000000014000000020074000300000000002400a900120001050000000000051500000065000000ca0000002f010000e903000000002400a900120001050000000000051500000065000000ca0000002f010000ea03000000002400ff011f0001050000000000051500000065000000ca0000002f010000eb03000001050000000000051500000065000000ca0000002f010000eb03000001050000000000051500000065000000ca0000002f010000eb030000",
+                  "finite_descriptor": {
+                    "binary_b64": "AQAEgIgAAACkAAAAAAAAABQAAAACAHQAAwAAAAAAJACpABIAAQUAAAAAAAUVAAAAZQAAAMoAAAAvAQAA6QMAAAAAJACpABIAAQUAAAAAAAUVAAAAZQAAAMoAAAAvAQAA6gMAAAAAJAD/AR8AAQUAAAAAAAUVAAAAZQAAAMoAAAAvAQAA6wMAAAEFAAAAAAAFFQAAAGUAAADKAAAALwEAAOsDAAABBQAAAAAABRUAAABlAAAAygAAAC8BAADrAwAA",
+                    "control": 32772,
+                    "dacl": {
+                      "aces": [
+                        {
+                          "ace_type": "access_allowed",
+                          "flags": 0,
+                          "raw_ace_digest": "sha256:47aabc2c05869fe7e6d6b0ca82d5a81faf840596cd4c570f6d1f80a7fe950859",
+                          "smb_right": "Read",
+                          "trustee_sid": "S-1-5-21-101-202-303-1001"
+                        },
+                        {
+                          "ace_type": "access_allowed",
+                          "flags": 0,
+                          "raw_ace_digest": "sha256:621ba2b56eed68db88cbd47797e06a1a57ac3ff80e293577d2083ef3dc87d9a0",
+                          "smb_right": "Read",
+                          "trustee_sid": "S-1-5-21-101-202-303-1002"
+                        },
+                        {
+                          "ace_type": "access_allowed",
+                          "flags": 0,
+                          "raw_ace_digest": "sha256:7c810b50ee98aa9693601d9c76aeb31d12e3e192271da348506b52749ce79925",
+                          "smb_right": "Full",
+                          "trustee_sid": "S-1-5-21-101-202-303-1003"
+                        }
+                      ],
+                      "revision": 2
+                    },
+                    "group_sid": "S-1-5-21-101-202-303-1003",
+                    "owner_sid": "S-1-5-21-101-202-303-1003",
+                    "revision": 1,
+                    "sacl": null,
+                    "sha256": "sha256:b847d263b3541de849385a1c924da9cf7f495e1bff984fcdcee12e7692ba0d01"
+                  },
+                  "sacl_observed": false,
+                  "security_information": 7,
+                  "sha256": "sha256:b847d263b3541de849385a1c924da9cf7f495e1bff984fcdcee12e7692ba0d01"
+                },
+                "size": 3,
+                "volume_serial": "fedcba9876543210"
+              }
+            ],
+            "schema_version": "bluefire.ad-smb-local-files.v1",
+            "selected_facts_unchanged": true,
+            "share_name": "bf_0123456789abcdef0123456789abcdef"
+          },
+          "owned_handles_closed": true
+        },
+        "share": {
+          "current_uses": 0,
+          "descriptor": {
+            "binary_b64": "AQAEgIgAAACkAAAAAAAAABQAAAACAHQAAwAAAAAAJACpABIAAQUAAAAAAAUVAAAAZQAAAMoAAAAvAQAA6QMAAAAAJACpABIAAQUAAAAAAAUVAAAAZQAAAMoAAAAvAQAA6gMAAAAAJAD/AR8AAQUAAAAAAAUVAAAAZQAAAMoAAAAvAQAA6wMAAAEFAAAAAAAFFQAAAGUAAADKAAAALwEAAOsDAAABBQAAAAAABRUAAABlAAAAygAAAC8BAADrAwAA",
+            "control": 32772,
+            "dacl": {
+              "aces": [
+                {
+                  "ace_type": "access_allowed",
+                  "flags": 0,
+                  "raw_ace_digest": "sha256:47aabc2c05869fe7e6d6b0ca82d5a81faf840596cd4c570f6d1f80a7fe950859",
+                  "smb_right": "Read",
+                  "trustee_sid": "S-1-5-21-101-202-303-1001"
+                },
+                {
+                  "ace_type": "access_allowed",
+                  "flags": 0,
+                  "raw_ace_digest": "sha256:621ba2b56eed68db88cbd47797e06a1a57ac3ff80e293577d2083ef3dc87d9a0",
+                  "smb_right": "Read",
+                  "trustee_sid": "S-1-5-21-101-202-303-1002"
+                },
+                {
+                  "ace_type": "access_allowed",
+                  "flags": 0,
+                  "raw_ace_digest": "sha256:7c810b50ee98aa9693601d9c76aeb31d12e3e192271da348506b52749ce79925",
+                  "smb_right": "Full",
+                  "trustee_sid": "S-1-5-21-101-202-303-1003"
+                }
+              ],
+              "revision": 2
+            },
+            "group_sid": "S-1-5-21-101-202-303-1003",
+            "owner_sid": "S-1-5-21-101-202-303-1003",
+            "revision": 1,
+            "sacl": null,
+            "sha256": "sha256:b847d263b3541de849385a1c924da9cf7f495e1bff984fcdcee12e7692ba0d01"
+          },
+          "metadata": {
+            "client_cache_flags": 48,
+            "encrypt_data_flag": true,
+            "flags": 32816,
+            "local_path": "C:\\BlueFire\\AD\\0123456789abcdef0123456789abcdef",
+            "maximum_uses": 4294967295,
+            "name": "bf_0123456789abcdef0123456789abcdef",
+            "permissions": 0,
+            "remark_digest": "sha256:ab0aa4e315fe3d4545eae3d1ad688a1a97a829893e0eb6b48061f397c95115a3",
+            "share_type": 0
+          },
+          "schema_version": "bluefire.ad-smb-local-share.v1"
+        }
+      },
+      "schema_version": "bluefire.ad-smb-synthetic-native-case.v1",
+      "synthetic_only": true
+    },
+    "matched_read": {
+      "case": "matched_read",
+      "operation": "read_probe_primary",
+      "request_digest": "sha256:a8009a9ec5bfec2c0a307e7e33802ef7aa16dab6d669f76ba15edf6d1d8e7eb4",
+      "result": {
+        "authenticated_remote_reader": false,
+        "bytes_read": 3,
+        "cleanup": {
+          "exact_unc_cancel_status": 0,
+          "file_closed": true,
+          "impersonation_reverted": true,
+          "observation_tokens_closed": null,
+          "owned_process_exit_required": false,
+          "server_session_closed": null,
+          "token_closed": true
+        },
+        "client_identity_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "credential_binding_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+        "effective_access_claim": false,
+        "expected_remote_sid": "S-1-5-21-101-202-303-1001",
+        "expected_volume_serial": 18364758544493064720,
+        "failed_stage": null,
+        "file_open_attempted": true,
+        "fresh_server_logon": false,
+        "hardened_unc_receipt_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "independent_observation": false,
+        "issue": null,
+        "local_logon": {
+          "authentication_id": 2305843009213693953,
+          "local_token_user_sid": "S-1-5-21-8-9-10-1100"
+        },
+        "observed_file_id": "00000000000000000000000000000005",
+        "observed_sha256": "sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+        "observed_volume_serial": 18364758544493064720,
+        "protocol": {
+          "flags": 40,
+          "major": 3,
+          "protocol": 131072,
+          "size": 116,
+          "version": 2
+        },
+        "purpose": "primary",
+        "reader": "probe",
+        "request_id": "87ad878e5ec8f1bef060e5d69723c92b",
+        "schema_version": "bluefire.ad-smb-fresh-read.v1",
+        "scope_digest": "sha256:be810511c486edecbba54a2b4a5d7615f6a38312667ec057e2870eecf63461d1",
+        "state": "bytes_matched",
+        "win32_error": null
+      },
+      "schema_version": "bluefire.ad-smb-synthetic-native-case.v1",
+      "synthetic_only": true
+    },
+    "matched_write": {
+      "case": "matched_write",
+      "operation": "harden_share",
+      "request_digest": "sha256:1785230a65209f6c753c93b21540c94e56024edd86ccf21ad5a8e9c9d16b0e91",
+      "result": {
+        "issue": null,
+        "readback": {
+          "current_uses": 0,
+          "descriptor": {
+            "binary_b64": "AQAEgIgAAACkAAAAAAAAABQAAAACAHQAAgAAAAAAJACpABIAAQUAAAAAAAUVAAAAZQAAAMoAAAAvAQAA6gMAAAAAJAD/AR8AAQUAAAAAAAUVAAAAZQAAAMoAAAAvAQAA6wMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEFAAAAAAAFFQAAAGUAAADKAAAALwEAAOsDAAABBQAAAAAABRUAAABlAAAAygAAAC8BAADrAwAA",
+            "control": 32772,
+            "dacl": {
+              "aces": [
+                {
+                  "ace_type": "access_allowed",
+                  "flags": 0,
+                  "raw_ace_digest": "sha256:621ba2b56eed68db88cbd47797e06a1a57ac3ff80e293577d2083ef3dc87d9a0",
+                  "smb_right": "Read",
+                  "trustee_sid": "S-1-5-21-101-202-303-1002"
+                },
+                {
+                  "ace_type": "access_allowed",
+                  "flags": 0,
+                  "raw_ace_digest": "sha256:7c810b50ee98aa9693601d9c76aeb31d12e3e192271da348506b52749ce79925",
+                  "smb_right": "Full",
+                  "trustee_sid": "S-1-5-21-101-202-303-1003"
+                }
+              ],
+              "revision": 2
+            },
+            "group_sid": "S-1-5-21-101-202-303-1003",
+            "owner_sid": "S-1-5-21-101-202-303-1003",
+            "revision": 1,
+            "sacl": null,
+            "sha256": "sha256:a191f16bed3bb157545123186f2d10459c10bff4cf664112d59f912d7b4a0695"
+          },
+          "metadata": {
+            "client_cache_flags": 48,
+            "encrypt_data_flag": true,
+            "flags": 32816,
+            "local_path": "C:\\BlueFire\\AD\\0123456789abcdef0123456789abcdef",
+            "maximum_uses": 4294967295,
+            "name": "bf_0123456789abcdef0123456789abcdef",
+            "permissions": 0,
+            "remark_digest": "sha256:ab0aa4e315fe3d4545eae3d1ad688a1a97a829893e0eb6b48061f397c95115a3",
+            "share_type": 0
+          },
+          "schema_version": "bluefire.ad-smb-local-share.v1"
+        },
+        "set_status": 0,
+        "state": "readback_matched",
+        "write_attempted": true
+      },
+      "schema_version": "bluefire.ad-smb-synthetic-native-case.v1",
+      "synthetic_only": true
+    },
+    "partial_audit": {
+      "case": "partial_audit",
+      "operation": "collect_audit",
+      "request_digest": "sha256:e5614e6311dac7c6f78e0cf998f1308084238adca2eb8bb76726647c5a07e33e",
+      "result": {
+        "authenticated_source_claim": false,
+        "channel": "Security",
+        "effective_access_claim": false,
+        "handles_closed": true,
+        "independent_evidence_claim": false,
+        "log_continuity_verified": false,
+        "raw_events": [
+          "<Event/>"
+        ],
+        "schema_version": "bluefire.ad-smb-native-audit-capture.v1",
+        "state": "byte_limit",
+        "system_error": 122,
+        "utf8_bytes": 8,
+        "window_end": "2026-10-09T00:00:01.0000000Z",
+        "window_start": "2026-10-09T00:00:00.0000000Z"
+      },
+      "schema_version": "bluefire.ad-smb-synthetic-native-case.v1",
+      "synthetic_only": true
+    },
+    "unknown_write": {
+      "case": "unknown_write",
+      "operation": "harden_share",
+      "request_digest": "sha256:23f24676f2574e1ef2860a96d5d91586617674a513fdd07574ef5482b5b3d8ba",
+      "result": {
+        "issue": "set_response_failed_state_unknown",
+        "readback": {
+          "current_uses": 0,
+          "descriptor": {
+            "binary_b64": "AQAEgIgAAACkAAAAAAAAABQAAAACAHQAAgAAAAAAJACpABIAAQUAAAAAAAUVAAAAZQAAAMoAAAAvAQAA6gMAAAAAJAD/AR8AAQUAAAAAAAUVAAAAZQAAAMoAAAAvAQAA6wMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEFAAAAAAAFFQAAAGUAAADKAAAALwEAAOsDAAABBQAAAAAABRUAAABlAAAAygAAAC8BAADrAwAA",
+            "control": 32772,
+            "dacl": {
+              "aces": [
+                {
+                  "ace_type": "access_allowed",
+                  "flags": 0,
+                  "raw_ace_digest": "sha256:621ba2b56eed68db88cbd47797e06a1a57ac3ff80e293577d2083ef3dc87d9a0",
+                  "smb_right": "Read",
+                  "trustee_sid": "S-1-5-21-101-202-303-1002"
+                },
+                {
+                  "ace_type": "access_allowed",
+                  "flags": 0,
+                  "raw_ace_digest": "sha256:7c810b50ee98aa9693601d9c76aeb31d12e3e192271da348506b52749ce79925",
+                  "smb_right": "Full",
+                  "trustee_sid": "S-1-5-21-101-202-303-1003"
+                }
+              ],
+              "revision": 2
+            },
+            "group_sid": "S-1-5-21-101-202-303-1003",
+            "owner_sid": "S-1-5-21-101-202-303-1003",
+            "revision": 1,
+            "sacl": null,
+            "sha256": "sha256:a191f16bed3bb157545123186f2d10459c10bff4cf664112d59f912d7b4a0695"
+          },
+          "metadata": {
+            "client_cache_flags": 48,
+            "encrypt_data_flag": true,
+            "flags": 32816,
+            "local_path": "C:\\BlueFire\\AD\\0123456789abcdef0123456789abcdef",
+            "maximum_uses": 4294967295,
+            "name": "bf_0123456789abcdef0123456789abcdef",
+            "permissions": 0,
+            "remark_digest": "sha256:ab0aa4e315fe3d4545eae3d1ad688a1a97a829893e0eb6b48061f397c95115a3",
+            "share_type": 0
+          },
+          "schema_version": "bluefire.ad-smb-local-share.v1"
+        },
+        "set_status": 5,
+        "state": "unknown",
+        "write_attempted": true
+      },
+      "schema_version": "bluefire.ad-smb-synthetic-native-case.v1",
+      "synthetic_only": true
+    }
+  },
+  "claims": {
+    "actual_native_serialization": true,
+    "fake_operation_backends": true,
+    "live_ad_operations": false,
+    "authenticated_transport": false,
+    "effective_access": false
+  }
+}

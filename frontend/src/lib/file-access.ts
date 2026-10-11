@@ -167,19 +167,22 @@ export function clearFileAccessPending(value: FileAccessPending) {
 export function fileAccessConfirmed(value: FileAccessOperationEnvelope, pending: FileAccessPending) {
   return value.job.job_id === pending.id && sameJson(value.job.progress.submitted_request, pending.body);
 }
-async function post<T>(path: string, body: unknown): Promise<T> {
+async function live<T>(callback: () => Promise<T>): Promise<T> {
   if (DEMO_MODE) throw new Error("Effective file access requires an explicitly enrolled Linux session. Demo mode cannot execute it.");
-  return request<T>(`/file-access/${path}`, { method: "POST", body: JSON.stringify(body) });
+  return callback();
+}
+function post<T>(path: string, body: unknown): Promise<T> {
+  return live(() => request<T>(`/file-access/${path}`, { method: "POST", body: JSON.stringify(body) }));
 }
 export const fileAccessApi = {
   review: (body: FileAccessReviewRequest) => post<FileAccessReview>("review", body),
-  status: () => request<FileAccessStatus>("/file-access/status"),
-  list: () => post<FileAccessControlList>("control-list", {}),
-  control: (id: string) => request<FileAccessControl>(`/file-access/controls/${encodeURIComponent(id)}`),
-  operation: (id: string) => request<FileAccessOperationEnvelope>(`/file-access/operations/${encodeURIComponent(id)}`),
+  status: (): Promise<FileAccessStatus> => DEMO_MODE ? Promise.resolve({ schema_version: "bluefire.file-access-status.v1", available: false, enrollment: null, allowed_operations: [], problem: { code: "demo_no_enrollment", message: "Demo mode has no enrolled test identity or generated application file." } }) : request<FileAccessStatus>("/file-access/status"),
+  list: (): Promise<FileAccessControlList> => DEMO_MODE ? Promise.resolve({ schema_version: "bluefire.file-access-control-list.v1", controls: [] }) : post<FileAccessControlList>("control-list", {}),
+  control: (id: string) => live(() => request<FileAccessControl>(`/file-access/controls/${encodeURIComponent(id)}`)),
+  operation: (id: string) => live(() => request<FileAccessOperationEnvelope>(`/file-access/operations/${encodeURIComponent(id)}`)),
   submit: (body: FileAccessSubmission) => post<FileAccessOperationEnvelope>("operations", body),
   reconcile: (id: string, body: FileAccessReconciliationSubmission) => post<FileAccessOperationEnvelope>(`operations/${encodeURIComponent(id)}/reconcile`, body),
-  reconciliation: (id: string, submission: string) => request<FileAccessReconciliationEnvelope>(`/file-access/operations/${encodeURIComponent(id)}/reconciliations/${encodeURIComponent(submission)}`),
+  reconciliation: (id: string, submission: string) => live(() => request<FileAccessReconciliationEnvelope>(`/file-access/operations/${encodeURIComponent(id)}/reconciliations/${encodeURIComponent(submission)}`)),
 };
 export interface FileAccessReconciliationPending { operation_job_id: string; control_owner_id: string; body: FileAccessReconciliationSubmission }
 const reconciliationKey = "bluefire.file-access.reconciliation.v1";

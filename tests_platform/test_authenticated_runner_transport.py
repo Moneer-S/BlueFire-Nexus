@@ -750,6 +750,26 @@ def test_decoder_rejects_noncanonical_and_duplicate_key_json() -> None:
         wire._decode_json_object(b'{"a":1,"a":2}')
 
 
+@pytest.mark.parametrize(
+    "payload,message",
+    [
+        (b'{"a":NaN}', "not valid canonical JSON"),
+        (b'{"a":Infinity}', "not valid canonical JSON"),
+        (b'{"a":-Infinity}', "not valid canonical JSON"),
+        (b'{"a":1e999}', "unsupported JSON"),
+        (b"\xff", "not valid canonical JSON"),
+        (b"[]", "must be a JSON object"),
+    ],
+)
+def test_shared_frame_decoder_preserves_canonical_refusals(payload, message) -> None:
+    from bluefire import runner_transport_framing as framing
+
+    assert wire._decode_json_object is framing._decode_json_object
+    assert wire._decode_json_object(b'{"a":1}') == {"a": 1}
+    with pytest.raises(RunnerAuthenticationError, match=message):
+        wire._decode_json_object(payload)
+
+
 def test_receive_deadline_rejects_slow_trickle_even_when_each_read_progresses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -69,6 +69,17 @@ function mount(path: string, initialMode: RunConfiguration["mode"], job?: RunJob
 
 afterEach(() => vi.unstubAllGlobals());
 
+it.each(["data-handoff", "file-access", "ad-access", "s3-access"])("choosing the %s objective preserves the experiment, approval, and provider without preparation calls", async (goal) => {
+  const { user, config, nonReads } = mount("/getting-started", "execute");
+  const choice = await screen.findByRole("combobox", { name: "Objective" });
+  await user.click(screen.getByRole("button", { name: "Acknowledge current draft in test" }));
+  const before = config();
+  await user.selectOptions(choice, goal);
+  expect(config()).toEqual(before);
+  expect(JSON.parse(screen.getByLabelText("Current draft graph").textContent!)).toEqual(demoScenario);
+  expect(nonReads()).toEqual([]);
+});
+
 it.each(["simulate", "execute"] as const)("the Getting Started %s link selects setup without changing the operator's graph, scope, or provider", async (mode) => {
   const opposite = mode === "execute" ? "simulate" : "execute";
   const { user, config, nonReads, client } = mount("/getting-started", opposite);

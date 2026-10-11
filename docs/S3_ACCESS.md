@@ -97,10 +97,22 @@ history review described below. Recovery never converts an old result into a new
 An export contains exactly the reviewed source bytes, bound to their SHA-256 and
 the selected saved profile digest. Editing the draft or selecting a changed profile
 invalidates its displayed review and export. Failed checks and late responses do
-not replace the current draft. Draft input is browser-memory state, not a durable
-configuration store or installation receipt. Full guided authoring from an empty
-scope, protected-runtime deployment and fresh installed/cloud verification remain
-separate requirements.
+not replace the current draft. Unsaved input stays in browser memory. Explicit
+**Save draft** persists the reviewed nonsecret source and its profile binding in
+product state; it does not install configuration or grant execution authority.
+Saving compares the expected saved revision and refuses an intervening change
+instead of overwriting it. **Open saved draft** restores the exact saved source;
+replacing different unsaved input requires confirmation.
+
+A saved draft remains recoverable when its profile is inactive or changed. An
+inactive or unavailable profile appears as a recovery-only choice, with connection
+checks, configuration review, export, saving and runner preparation unavailable.
+A changed active profile requires a new successful review against its current
+digest before export or saving; opening the old source never updates that binding
+implicitly. Opening historical bytes does not reactivate a profile, renew scope
+expiry or restore authorization. The recovered draft's saved state and its current
+readiness are separate. Full guided authoring from an empty scope, protected-runtime
+deployment and live cloud verification remain separate requirements.
 
 Setup uses an existing enrolled, non-root Linux host and its selected cloud-capable
 profile. It does not create trust, install a runtime, acquire AWS credentials, start
