@@ -242,6 +242,8 @@ it("opens stale-profile data without making it current or enabling a save", asyn
   await user.click(screen.getByRole("button", { name: "Open saved draft" }));
   await waitFor(() => expect(screen.getByLabelText("Non-secret configuration JSON")).toHaveValue(source));
   expect(screen.getByText(/Saved for a different or unavailable profile version/)).toBeVisible();
+  expect(screen.getByText(/^Draft saved/)).toBeVisible();
+  expect(screen.queryByText(/^Current inputs differ/)).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Review configuration" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Save draft" })).toBeDisabled();
 });

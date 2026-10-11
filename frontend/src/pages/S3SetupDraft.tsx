@@ -69,7 +69,8 @@ export function S3SetupDraft({ selected, profileId = selected?.profile_id ?? "" 
     } finally { if (id === operationId.current) setOperation(undefined); }
   };
   const retained = saved[profileId];
-  const unchanged = retained?.configuration_json === source && retained.profile_digest === selected?.profile_digest;
+  const unchangedSource = retained?.configuration_json === source;
+  const unchanged = unchangedSource && retained?.profile_digest === selected?.profile_digest;
   const replacing = replacement?.key === selectionKey && replacement.generation === inputGeneration.current;
   const importFile = async (file?: File) => {
     const generation = ++inputGeneration.current;
@@ -92,7 +93,7 @@ export function S3SetupDraft({ selected, profileId = selected?.profile_id ?? "" 
     <Field label="Non-secret configuration file"><input type="file" accept="application/json,.json" onChange={event => { void importFile(event.target.files?.[0]); event.target.value = ""; }} /></Field>
     <details><summary>Configuration JSON</summary><Field label="Non-secret configuration JSON"><textarea rows={12} spellCheck={false} value={source} maxLength={MAX_S3_DRAFT_BYTES} onChange={event => edit(event.target.value)} /></Field></details>
     <div className="s3-actions"><Button disabled={!selected || !source.trim() || review.isPending} onClick={() => selected && review.mutate({ ...selected, configuration_json: source })}><FileCheck2 />{review.isPending ? "Reviewing draft" : "Review configuration"}</Button><Button disabled={!current} onClick={download}><Download />Export configuration</Button><Button disabled={!current || selected?.profile_id !== profileId || busy || Boolean(replacement) || unchanged} onClick={() => { void save(); }}><Save />{busy && operation.kind === "save" ? "Saving draft" : "Save draft"}</Button><button ref={openButton} className="button button-secondary button-medium" disabled={!savedDraftProfileId(profileId) || busy} onClick={() => { void openSaved(); }}><FolderOpen />{busy && operation.kind === "load" ? "Opening draft" : "Open saved draft"}</button></div>
-    {retained ? <p role="status">{unchanged ? "Draft saved" : "Current inputs differ from the saved draft"}{retained.profile_digest !== selected?.profile_digest ? ". Saved for a different or unavailable profile version." : "."}</p> : null}
+    {retained ? <p role="status">{unchangedSource ? "Draft saved" : "Current inputs differ from the saved draft"}{retained.profile_digest !== selected?.profile_digest ? ". Saved for a different or unavailable profile version." : "."}</p> : null}
     {storageNotice ? <p role="status">{storageNotice}</p> : null}
     {storageError ? <ErrorState title="Saved draft not confirmed" error={storageError} /> : null}
     {inputError ? <ErrorState title="Configuration input unavailable" error={inputError} /> : null}
