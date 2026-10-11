@@ -10,6 +10,7 @@ import { demoRuns, demoScenario } from "../src/lib/demo";
 
 let clients: QueryClient[] = [];
 beforeEach(() => {
+  vi.spyOn(api, "receiverTests").mockResolvedValue({ schema_version: "bluefire.receiver-defense-list.v1", jobs: [], truncated: false, next_cursor: null });
   vi.spyOn(api, "runs").mockResolvedValue({ runs: [], unavailable_run_count: 0 });
   vi.spyOn(api, "scenarios").mockResolvedValue({ scenarios: [demoScenario] });
 });
