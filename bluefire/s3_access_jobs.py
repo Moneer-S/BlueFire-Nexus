@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from . import product_store_s3_access as records
 from . import s3_access_results as results
+from . import s3_fixture_results as fixtures
 from .evidence import EvidenceProvenance, EvidenceRecord
 from .job_runtime import JobResult, JobRuntimeError, RunJobController
 from .product_store import ProductStore
@@ -19,6 +20,12 @@ from .s3_access_executor import S3AccessExecutor, validate_execution
 from .s3_access_policy import plan_hardening
 from .s3_access_wire import REQUEST_SCHEMA, S3WorkerRequest
 from .util import content_hash
+
+_SETUP_PROBLEMS = {
+    "runtime_unavailable": "The enrolled protected runtime is unavailable.",
+    "access_reference_absent": "Temporary access has not been imported on the enrolled host.",
+    "access_reference_expired": "Temporary access has expired on the enrolled host.",
+}
 
 
 class S3AccessJobs:
@@ -39,6 +46,8 @@ class S3AccessJobs:
         )
         if type(value["available"]) is not bool:
             raise S3AccessError("The runtime readiness response is invalid.")
+        if not value["available"] and not isinstance(value["problem"], str):
+            raise S3AccessError("The runtime readiness problem is invalid.")
         if value["available"]:
             if (
                 value["problem"] is not None
@@ -72,7 +81,14 @@ class S3AccessJobs:
                     "problem": (
                         None
                         if runtime["available"] and current
-                        else "The exact enrolled scope, protected runtime and temporary access must be ready."
+                        else (
+                            "The enrolled scope has expired."
+                            if not current
+                            else _SETUP_PROBLEMS.get(
+                                runtime["problem"],
+                                "The exact enrolled scope, protected runtime and temporary access must be ready.",
+                            )
+                        )
                     ),
                     "context_digest": content_hash({"environment": selected, "runtime": runtime}),
                 }
@@ -118,6 +134,11 @@ class S3AccessJobs:
                 "submitted_request": dict(request),
                 "environment": selected["environment"],
                 "runtime": selected["runtime"],
+                **(
+                    {"fixture_intent_id": uuid.uuid4().hex + uuid.uuid4().hex}
+                    if "fixture_lifecycle" in selected["environment"]
+                    else {}
+                ),
             },
             submission_id=identifier,
             intent_digest=intent,
@@ -245,6 +266,7 @@ class S3AccessJobs:
             "resource_disposition": "retained",
             "independent_observations": 0,
             "live_outcome_verified": False,
+            **(fixtures.projection(owner) if fixtures.enabled(owner) else {}),
         }
 
     def review(self, identifier: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -329,6 +351,7 @@ class S3AccessJobs:
                     ),
                     "deadline": deadline.isoformat().replace("+00:00", "Z"),
                     "max_sends": results.SEND_LIMITS[operation],
+                    **fixtures.request_fields(owner, phase, index),
                 }
             )
             for index, operation in enumerate(results.PHASES[phase])

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, cast
 
+from . import s3_fixture_contract as fixtures
 from .runner_contracts import seal_manifest, seal_profile
 from .s3_access_contract import S3AccessError, digest, document, exact
 from .s3_access_host_config import selected_environment
@@ -39,6 +40,9 @@ _PHASES = {
     "apply": {"apply_policy"},
     "reconcile": {"reconcile_policy"},
     "rollback": {"rollback_policy"},
+    "prepare": {"prepare_fixture"},
+    "reconcile_fixtures": {"reconcile_fixture"},
+    "cleanup": {"cleanup_fixture"},
 }
 
 
@@ -64,9 +68,28 @@ def approved_request(
     exact(params, {"worker_request", "workflow_approval"}, "S3 task parameters")
     request = S3WorkerRequest.from_mapping(params["worker_request"])
     request.assert_current(lambda: now)
+    row = request.to_dict()
+    fixture_request = row["schema_version"] == fixtures.REQUEST_SCHEMA
     workflow = params["workflow_approval"]
-    exact(workflow, _APPROVAL, "S3 workflow approval")
-    _require(workflow["schema_version"] == "bluefire.s3-workflow-approval.v1")
+    exact(
+        workflow,
+        _APPROVAL
+        | ({"fixture_authority_digest", "fixture_intent_id"} if fixture_request else set()),
+        "S3 workflow approval",
+    )
+    _require(
+        workflow["schema_version"]
+        == (
+            "bluefire.s3-workflow-approval.v2"
+            if fixture_request
+            else "bluefire.s3-workflow-approval.v1"
+        )
+    )
+    if fixture_request:
+        _require(
+            workflow["fixture_authority_digest"] == row["fixture_authority_digest"]
+            and workflow["fixture_intent_id"] == row["fixture"]["intent_id"]
+        )
     for name in ("workflow_job_id", "operation_job_id", "environment_id"):
         _identifier(workflow[name])
     _require(workflow["reviewed_by"] == reviewer(workflow["reviewed_by"]))
@@ -191,6 +214,11 @@ class S3HostAdmission:
             _identifier(issuer[name])
         for name in ("enrollment_generation", "peer_fingerprint"):
             digest(issuer[name])
+        fixture_host = "fixture_lifecycle" in entry
+        if fixture_host:
+            _require(
+                entry["fixture_lifecycle"]["generation_digest"] == issuer["enrollment_generation"]
+            )
         digest(runner_digest)
         digest(credential_digest)
         _require(
@@ -207,7 +235,7 @@ class S3HostAdmission:
         return cls(
             canonical_json_bytes(
                 {
-                    "schema_version": SCHEMA,
+                    "schema_version": "bluefire.s3-access-admission.v2" if fixture_host else SCHEMA,
                     "issuer": dict(issuer),
                     "manifest_digest": content_hash(manifest),
                     "profile_digest": content_hash(profile),
@@ -221,6 +249,11 @@ class S3HostAdmission:
                         "ledger_root": entry["ledger_root"],
                         "runtime_root": entry["runtime_root"],
                         "owner_uid": owner_uid,
+                        **(
+                            {"fixture_lifecycle": entry["fixture_lifecycle"]}
+                            if fixture_host
+                            else {}
+                        ),
                     },
                     "native_runner_digest": runner_digest,
                     "credential_digest": credential_digest,

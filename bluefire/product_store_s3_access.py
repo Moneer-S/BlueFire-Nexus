@@ -8,6 +8,7 @@ import uuid
 from contextlib import contextmanager
 from typing import Any, Mapping
 
+from . import s3_fixture_results as fixtures
 from .product_store_assistance import job_at, patch
 from .product_store_contracts import safe_document
 from .product_store_errors import ProductStoreError
@@ -91,6 +92,10 @@ def publication_guard(store, connection, kind: str, document: Mapping[str, Any])
             peer["progress"].get("pending_operation")
             or peer["progress"].get("policy_state") in {"hardened", "uncertain", "drift"}
             or bool(history and history[-1]["outcome"]["cleanup"] != "verified")
+            or (
+                fixtures.enabled(peer)
+                and fixtures.projection(peer)["fixture_state"] not in {"not_prepared", "absent"}
+            )
         )
         if (scope["account_id"], scope["region"], scope["bucket"]) == (
             resource["account_id"],
@@ -140,6 +145,7 @@ def validate_requests(owner, document) -> list[S3WorkerRequest]:
             "exclusive_writer_digest": (
                 selected["exclusive_writer_digest"] if phase in {"apply", "rollback"} else None
             ),
+            **fixtures.request_fields(owner, phase, index, marker["review"]),
         }
         if any(row[key] != value for key, value in expected.items()):
             raise ProductStoreError(
@@ -158,8 +164,7 @@ def guard_execution(store, operation_id: str) -> Mapping[str, Any]:
             or marker["operation_job_id"] != operation_id
             or owner["progress"].get("pending_operation") != operation_id
             or (
-                owner["progress"].get("stopped")
-                and marker["phase"] not in {"reconcile", "rollback"}
+                owner["progress"].get("stopped") and marker["phase"] not in fixtures.RECOVERY_PHASES
             )
         ):
             raise ProductStoreError("This S3 operation is no longer the active saved stage.")
@@ -168,7 +173,7 @@ def guard_execution(store, operation_id: str) -> Mapping[str, Any]:
 
 def workflow_approval(owner, operation_id, document, request) -> dict[str, Any]:
     marker, payload = document["s3_access"], request.to_dict()
-    return {
+    value = {
         "schema_version": "bluefire.s3-workflow-approval.v1",
         "workflow_job_id": owner["job_id"],
         "operation_job_id": operation_id,
@@ -184,6 +189,13 @@ def workflow_approval(owner, operation_id, document, request) -> dict[str, Any]:
             content_hash(payload["policy_change"]) if payload["policy_change"] else None
         ),
     }
+    if marker["phase"] in fixtures.PHASES:
+        value.update(
+            schema_version="bluefire.s3-workflow-approval.v2",
+            fixture_authority_digest=payload["fixture_authority_digest"],
+            fixture_intent_id=payload["fixture"]["intent_id"],
+        )
+    return value
 
 
 def validate_run_request(owner, child, run_id, request) -> None:
@@ -224,8 +236,7 @@ def retain_original_task(store, operation_id, run_id, request, value) -> None:
             child["state"] != "running"
             or owner["progress"].get("pending_operation") != operation_id
             or (
-                owner["progress"].get("stopped")
-                and marker["phase"] not in {"rollback", "reconcile"}
+                owner["progress"].get("stopped") and marker["phase"] not in fixtures.RECOVERY_PHASES
             )
         ):
             raise ProductStoreError("The original S3 task no longer has an active reservation.")
@@ -338,7 +349,7 @@ def finish(
             checked or child["progress"].get("execution_started")
         ):
             policy = "uncertain"
-        if summary["state"] == "drift":
+        if summary["state"] == "drift" and phase not in fixtures.PHASES:
             policy = "drift"
         patch(
             connection,
@@ -348,6 +359,7 @@ def finish(
                 "pending_operation": None,
                 "policy_state": policy,
                 "revision": owner["progress"]["revision"] + 1,
+                **(fixtures.completion(owner, phase, value) if fixtures.enabled(owner) else {}),
             },
         )
         return value

@@ -6,6 +6,7 @@ import re
 from datetime import datetime
 from typing import Any, Callable, Mapping
 
+from . import s3_fixture_contract as fixtures
 from .s3_access_contract import S3AccessError, S3AccessScope, timestamp
 from .s3_access_policy import (
     S3PolicyChange,
@@ -21,14 +22,12 @@ from .s3_access_sdk_boundary import (
     metadata,
     object_digest,
 )
+from .s3_access_sdk_boundary import (
+    S3ServiceFailure as _ServiceFailure,
+)
 from .s3_access_wire import Clock, S3Credentials, S3WorkerRequest, aware_now, validate_result
+from .s3_fixture_sdk import FixtureSdk
 from .util import canonical_json_bytes, content_hash
-
-
-class _ServiceFailure(Exception):
-    def __init__(self, public: Mapping[str, Any]):
-        super().__init__("AWS service refused the scoped request")
-        self.public = dict(public)
 
 
 class S3SdkAdapter:
@@ -82,7 +81,9 @@ class S3SdkAdapter:
             self.guard.finish()
             if not isinstance(response, Mapping):
                 raise S3AccessError("SDK response is invalid")
-            public = metadata(response, success=True, put=operation == "PutBucketPolicy")
+            public = metadata(
+                response, success=True, put=operation in {"PutBucketPolicy", "DeleteObject"}
+            )
             self.calls.append({"operation": operation, "role": role, **public})
             self._checkpoint()
             return response
@@ -92,7 +93,11 @@ class S3SdkAdapter:
             if raw is not None:
                 close_body(raw)
                 self.guard.finish()
-                public = metadata(raw, success=False)
+                public = metadata(
+                    raw,
+                    success=False,
+                    fixture=self.row["schema_version"] == fixtures.REQUEST_SCHEMA,
+                )
                 self.calls.append({"operation": operation, "role": role, **public})
                 raise _ServiceFailure(public) from None
             raise
@@ -250,9 +255,13 @@ class S3SdkAdapter:
             controller = self._client("sts", self.credentials)
             self._identity(controller, "controller")
             data = (
-                self._reads(controller)
-                if self.row["operation"] in {"probe_read", "legitimate_read"}
-                else self._policies()
+                FixtureSdk(self).execute()
+                if self.row["schema_version"] == fixtures.REQUEST_SCHEMA
+                else (
+                    self._reads(controller)
+                    if self.row["operation"] in {"probe_read", "legitimate_read"}
+                    else self._policies()
+                )
             )
             outcome, problem = "observed", None
         except Exception:
@@ -267,7 +276,11 @@ class S3SdkAdapter:
         return validate_result(
             self.request,
             {
-                "schema_version": "bluefire.s3-worker-result.v1",
+                "schema_version": (
+                    fixtures.RESULT_SCHEMA
+                    if self.row["schema_version"] == fixtures.REQUEST_SCHEMA
+                    else "bluefire.s3-worker-result.v1"
+                ),
                 "request_digest": self.request.digest,
                 "outcome": outcome,
                 "data": data,

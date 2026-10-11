@@ -34,6 +34,7 @@ mod s3_access_policy;
 mod s3_access_scope;
 pub mod s3_access_send;
 pub mod s3_admission;
+mod s3_fixture_binding;
 #[cfg(target_os = "linux")]
 mod s3_reservation;
 #[cfg(target_os = "linux")]

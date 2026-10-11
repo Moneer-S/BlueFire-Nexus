@@ -165,6 +165,10 @@ def _parser() -> argparse.ArgumentParser:
         help="Exact runner ID required for destructive removal",
     )
 
+    from .s3_access_setup_cli import register as register_s3_setup
+
+    register_s3_setup(commands)
+
     packages = commands.add_parser("packages", help="Manage signed declarative action packages")
     package_commands = packages.add_subparsers(dest="package_command", required=True)
     package_commands.add_parser(
@@ -531,6 +535,10 @@ def _execute(
     ai_provider_access: AIProviderAccess | None = None,
     config: BlueFireConfig | None = None,
 ) -> Mapping[str, Any] | Sequence[Any] | None:
+    if args.command == "s3":
+        from .s3_access_setup_cli import execute as execute_s3_setup
+
+        return execute_s3_setup(args)
     if args.command == "receiver":
         max_connections = args.max_connections
         if max_connections is None:

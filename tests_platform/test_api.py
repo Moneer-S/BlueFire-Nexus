@@ -45,6 +45,18 @@ class StubService:
         self.calls.append(("s3_access_environments",))
         return {"environments": []}
 
+    def s3_access_setup_profiles(self):
+        self.calls.append(("s3_access_setup_profiles",))
+        return {"profiles": []}
+
+    def check_s3_access_setup(self, body):
+        self.calls.append(("check_s3_access_setup", body))
+        return {"host_state": "unavailable"}
+
+    def review_s3_access_setup_draft(self, body):
+        self.calls.append(("review_s3_access_setup_draft", body))
+        return {"validation_scope": "structural_only"}
+
     def s3_access_exercises(self):
         self.calls.append(("s3_access_exercises",))
         return {"exercises": []}

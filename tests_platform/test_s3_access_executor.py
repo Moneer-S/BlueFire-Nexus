@@ -142,6 +142,22 @@ def test_only_safe_environment_fields_are_exposed(configured):
     assert "profile" not in readiness and "runtime_root" not in readiness
 
 
+@pytest.mark.parametrize("problem", ["access_reference_absent", "access_reference_expired"])
+def test_unready_reference_retains_environment_and_never_dispatches(configured, problem):
+    configured.row.update(available=False, problem=problem)
+    executor = configured.executor
+    assert executor.environments() == [configured.row["environment"]]
+    readiness = executor.readiness(
+        S3AccessScope.from_mapping(configured.row["environment"]["scope"])
+    )
+    assert readiness["available"] is False and readiness["problem"] == problem
+    result = executor.execute(
+        configured.request, authorization=configured.approval, cancellation_event=Event()
+    )
+    assert result["dispatch"] == "not_started"
+    assert configured.client.calls == []
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

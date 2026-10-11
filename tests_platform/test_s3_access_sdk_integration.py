@@ -93,6 +93,15 @@ def test_official_sdk_serialization_with_inert_transport(
         "objects": [data.decode() for data in DATA],
         "scenario": scenario,
     }
+    result = run_probe(executable, payload)
+    assert result["result"]["outcome"] == expected
+    assert result["http_calls"] == calls
+    assert result["send_projections"] == planned_sends(request)[: result["permits"]]
+    if scenario == "denied":
+        assert result["result"]["data"]["objects"][0]["result"] == "service_denied"
+
+
+def run_probe(executable, payload):
     environment = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR") if key in os.environ}
     environment.update(
         HOME=str(executable.parent),
@@ -118,9 +127,6 @@ def test_official_sdk_serialization_with_inert_transport(
     assert len(completed.stdout) < 16 * 1024 and not completed.stderr
     result = json.loads(completed.stdout)
     assert result["sdk_version"] == "1.43.110"
-    assert result["result"]["outcome"] == expected
-    assert result["http_calls"] == calls
-    assert result["send_projections"] == planned_sends(request)[: result["permits"]]
     # urllib3's import-time IPv6 availability probe attempts one socket
     # construction; the audit hook denies it before any socket is created.
     assert result["counters"] == {
@@ -132,7 +138,32 @@ def test_official_sdk_serialization_with_inert_transport(
     assert result["production_runtime_admitted"] is False
     assert result["transport_mode"] == "official-sdk-with-inert-connection"
     assert result["session_configuration"] == (
-        "fixed-runtime" if scenario == "fixed_session" else "injected-test-session"
+        "fixed-runtime" if payload["scenario"] == "fixed_session" else "injected-test-session"
     )
-    if scenario == "denied":
-        assert result["result"]["data"]["objects"][0]["result"] == "service_denied"
+    return result
+
+
+@pytest.mark.parametrize("case_index", range(4))
+def test_official_fixture_sdk_serialization_with_inert_transport(case_index, offline_runtime):
+    corpus = json.loads(
+        (Path(__file__).parent / "fixtures" / "s3_fixture_v2.json").read_text(encoding="utf-8")
+    )
+    case = corpus["cases"][case_index]
+    result = run_probe(
+        offline_runtime,
+        {
+            "repository": str(Path(__file__).absolute().parents[1]),
+            "request": case["request"],
+            "now": NOW.isoformat(),
+            "credentials": credential_row(),
+            "policy": {},
+            "objects": [],
+            "scenario": "fixed_session",
+        },
+    )
+    assert result["result"]["outcome"] == "observed"
+    assert result["result"]["data"] == case["result"]["data"]
+    assert result["http_calls"] == len(case["sends"])
+    assert result["permits"] == len(case["sends"])
+    assert result["send_projections"] == [frame["send"] for frame in case["sends"]]
+    assert result["session_configuration"] == "fixed-runtime"

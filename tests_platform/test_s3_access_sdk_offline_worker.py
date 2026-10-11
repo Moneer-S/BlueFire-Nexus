@@ -7,9 +7,10 @@ import json
 import os
 import sys
 from datetime import datetime
+from html import escape
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 
 def run_offline() -> dict:
@@ -110,6 +111,8 @@ def run_offline() -> dict:
     from bluefire.s3_access_sdk import S3SdkAdapter
     from bluefire.s3_access_sdk_boundary import BotocoreFactory
     from bluefire.s3_access_wire import S3Credentials, S3WorkerRequest
+    from bluefire.s3_fixture_contract import object_metadata
+    from bluefire.s3_fixture_contract import payload as fixture_payload
     from bluefire.util import canonical_json_bytes
 
     def deny_resolver(*_args, **_kwargs):
@@ -134,6 +137,18 @@ def run_offline() -> dict:
     scenario = payload["scenario"]
     opened_sessions = []
     private_config = repository.parent / "s3-sdk-offline-empty-config"
+    fixture_objects = {}
+    if row["schema_version"] == "bluefire.s3-worker-request.v2" and (
+        row["operation"] == "reconcile_fixture" or row["fixture"]["expected_etag"] is not None
+    ):
+        obj = next(
+            obj for obj in row["scope"]["objects"] if obj["purpose"] == row["fixture"]["purpose"]
+        )
+        fixture_objects[obj["key"]] = {
+            "body": fixture_payload(row["scope"]["scope_id"], obj["purpose"]),
+            "metadata": object_metadata(row["scope"], row["fixture"]),
+            "etag": '"owned-token"',
+        }
 
     def response(body, *, status=200, media="application/xml", identifier=True, extra=None):
         headers = {"content-type": media, "content-length": str(len(body))}
@@ -160,6 +175,80 @@ def run_offline() -> dict:
             (
                 f'<{operation}Response xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><{operation}Result>{content}</{operation}Result><ResponseMetadata><RequestId>offline-request-id</RequestId></ResponseMetadata></{operation}Response>'
             ).encode()
+        )
+
+    def fixture_response(method, target, arguments):
+        parsed = urlsplit(target)
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        if query == {"versioning": [""]}:
+            assert method == "GET"
+            return response(
+                b'<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>'
+            )
+        if query == {"object-lock": [""]}:
+            assert method == "GET"
+            return response(
+                b"<Error><Code>ObjectLockConfigurationNotFoundError</Code><RequestId>offline-request-id</RequestId></Error>",
+                status=404,
+            )
+        if query.get("list-type") == ["2"]:
+            assert method == "GET" and query == {
+                "list-type": ["2"],
+                "prefix": [row["scope"]["prefix"]],
+                "max-keys": ["3"],
+                "encoding-type": ["url"],
+            }
+            contents = "".join(
+                f"<Contents><Key>{escape(quote(key, safe=''))}</Key><Size>{len(value['body'])}</Size><ETag>{escape(value['etag'])}</ETag></Contents>"
+                for key, value in fixture_objects.items()
+            )
+            return response(
+                (
+                    f'<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>{row["scope"]["bucket"]}</Name><Prefix>{escape(quote(row["scope"]["prefix"], safe=""))}</Prefix><EncodingType>url</EncodingType><MaxKeys>3</MaxKeys><KeyCount>{len(fixture_objects)}</KeyCount><IsTruncated>false</IsTruncated>{contents}</ListBucketResult>'
+                ).encode()
+            )
+        assert not query
+        prefix = "/" + row["scope"]["bucket"] + "/"
+        assert parsed.path.startswith(prefix)
+        key = unquote(parsed.path[len(prefix) :])
+        assert key in {obj["key"] for obj in row["scope"]["objects"]}
+        headers = {
+            str(name).lower(): value.decode("ascii") if isinstance(value, bytes) else value
+            for name, value in arguments["headers"].items()
+        }
+        if method == "PUT":
+            assert key not in fixture_objects and headers["if-none-match"] == "*"
+            assert headers["expect"] == "100-continue"
+            body = arguments["body"].read(65537)
+            assert body == fixture_payload(row["scope"]["scope_id"], row["fixture"]["purpose"])
+            fixture_objects[key] = {
+                "body": body,
+                "metadata": object_metadata(row["scope"], row["fixture"]),
+                "etag": '"owned-token"',
+            }
+            return response(
+                b"", extra={"etag": '"owned-token"', "x-amz-server-side-encryption": "AES256"}
+            )
+        if method == "DELETE":
+            assert headers["content-length"] == "0" and not arguments["body"]
+            assert headers["if-match"] == fixture_objects[key]["etag"]
+            del fixture_objects[key]
+            return response(b"", status=204)
+        assert method == "GET"
+        if key not in fixture_objects:
+            return response(
+                b"<Error><Code>NoSuchKey</Code><RequestId>offline-request-id</RequestId></Error>",
+                status=404,
+            )
+        obj = fixture_objects[key]
+        return response(
+            obj["body"],
+            media="application/x-ndjson",
+            extra={
+                "etag": obj["etag"],
+                "x-amz-server-side-encryption": "AES256",
+                **{"x-amz-meta-" + key: value for key, value in obj["metadata"].items()},
+            },
         )
 
     class Connection:
@@ -191,6 +280,8 @@ def run_offline() -> dict:
                 content = f"<Credentials><AccessKeyId>ASIARRRRRRRRRRRRRRRR</AccessKeyId><SecretAccessKey>{'R' * 40}</SecretAccessKey><SessionToken>{'R' * 64}</SessionToken><Expiration>{expiry}</Expiration></Credentials><AssumedRoleUser><Arn>arn:aws:sts::{account}:assumed-role/{name}/{session_name}</Arn><AssumedRoleId>AROAFFFFFFFFFFFFFFFF:{session_name}</AssumedRoleId></AssumedRoleUser>"
                 return query_response(operation, content)
             assert self.host == scope.service_hosts["s3"]
+            if row["schema_version"] == "bluefire.s3-worker-request.v2":
+                return fixture_response(method, target, arguments)
             if target.endswith("?policy"):
                 if method == "PUT":
                     policy = json.loads(arguments["body"])

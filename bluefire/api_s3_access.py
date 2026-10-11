@@ -17,7 +17,10 @@ def dispatch_s3_access(handler: Any, path: str, body: Mapping[str, Any] | None =
     match = re.fullmatch(
         r"exercises/(job-[0-9a-f]{32})(?:/(review|operations|stop|recover))?", suffix
     )
-    if suffix not in {"environments", "exercises"} and match is None:
+    if (
+        suffix not in {"environments", "exercises", "setup", "setup/check", "setup/review"}
+        and match is None
+    ):
         handler._error(
             HTTPStatus.BAD_REQUEST, "s3_access_invalid", "Select a canonical saved S3 exercise."
         )
@@ -25,11 +28,14 @@ def dispatch_s3_access(handler: Any, path: str, body: Mapping[str, Any] | None =
     operation, identifier = (match.group(2) or "read", match.group(1)) if match else (suffix, "")
     service = handler.platform_server.service
     reads = {
+        "setup": service.s3_access_setup_profiles,
         "environments": service.s3_access_environments,
         "exercises": service.s3_access_exercises,
         "read": lambda: service.s3_access_exercise(identifier),
     }
     writes = {
+        "setup/check": lambda: service.check_s3_access_setup(body),
+        "setup/review": lambda: service.review_s3_access_setup_draft(body),
         "exercises": lambda: service.create_s3_access(body),
         "review": lambda: service.review_s3_access(identifier, body),
         "operations": lambda: service.submit_s3_access(identifier, body),

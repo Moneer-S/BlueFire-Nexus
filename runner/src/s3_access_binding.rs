@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::canonical::{canonical_hash, canonical_json, sha256_hex};
 use crate::s3_access_policy::{encoded, PolicyChange};
 use crate::s3_access_scope::{digest, lower_hex, require, utc_time, Checked, Scope};
+use crate::s3_fixture_binding::{self as fixtures, FixtureEnrollment, FixtureOperation};
 
 pub const MAX_DOCUMENT_BYTES: usize = 80 * 1024;
 
@@ -24,6 +25,10 @@ struct Request {
     deadline: String,
     max_sends: u64,
     exclusive_writer_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fixture_authority_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fixture: Option<FixtureOperation>,
 }
 
 /// A finite operation description, not a send permit or execution capability.
@@ -76,16 +81,24 @@ impl S3WorkerBinding {
             serde_json::from_slice(bytes).map_err(|_| "S3 worker request is not JSON")?;
         // Option<T> alone permits absent keys; the wire requires explicit nulls.
         require(value == supplied)?;
-        require(request.schema_version == "bluefire.s3-worker-request.v1")?;
+        let is_fixture = request.schema_version == fixtures::REQUEST_SCHEMA;
+        require(is_fixture || request.schema_version == "bluefire.s3-worker-request.v1")?;
+        require(
+            is_fixture == request.fixture.is_some()
+                && is_fixture == request.fixture_authority_digest.is_some(),
+        )?;
         require(lower_hex(&request.launch_id, 64) && lower_hex(&request.request_id, 64))?;
         require(digest(&request.worker_generation) && digest(&request.runtime_digest))?;
         request.scope.validate()?;
         require(canonical_json(&encoded(&request.scope)?).len() <= 32 * 1024)?;
         require(request.scope_digest == canonical_hash(&encoded(&request.scope)?))?;
-        let maximum = match request.operation.as_str() {
-            "inspect_policy" | "reconcile_policy" => 2,
-            "apply_policy" | "rollback_policy" | "probe_read" => 4,
-            "legitimate_read" => 5,
+        let maximum = match (is_fixture, request.operation.as_str()) {
+            (false, "inspect_policy" | "reconcile_policy") => 2,
+            (false, "apply_policy" | "rollback_policy" | "probe_read") => 4,
+            (false, "legitimate_read") => 5,
+            (true, "prepare_fixture") => 6,
+            (true, "reconcile_fixture") => 5,
+            (true, "cleanup_fixture") => 7,
             _ => return Err("S3 worker operation is unsupported"),
         };
         require((1..=maximum.min(request.scope.limits.api_calls)).contains(&request.max_sends))?;
@@ -114,6 +127,15 @@ impl S3WorkerBinding {
             }
         } else {
             require(request.policy_change.is_none() && request.exclusive_writer_digest.is_none())?;
+        }
+        if let Some(fixture) = &request.fixture {
+            require(
+                request
+                    .fixture_authority_digest
+                    .as_deref()
+                    .is_some_and(digest),
+            )?;
+            fixture.validate(&request.operation, &request.scope)?;
         }
         Ok(Self {
             canonical: canonical_json(&value),
@@ -151,6 +173,29 @@ impl S3WorkerBinding {
     }
     pub(crate) fn operation(&self) -> &str {
         &self.request.operation
+    }
+    pub(crate) fn fixture(&self) -> Option<&FixtureOperation> {
+        self.request.fixture.as_ref()
+    }
+    pub(crate) fn fixture_authority_digest(&self) -> Option<&str> {
+        self.request.fixture_authority_digest.as_deref()
+    }
+    pub(crate) fn checked_fixture_enrollment(&self, value: &serde_json::Value) -> Checked<String> {
+        let digest = FixtureEnrollment::checked(value, &self.request.scope)?;
+        require(
+            self.fixture_authority_digest()
+                .is_none_or(|expected| expected == digest.as_str()),
+        )?;
+        Ok(digest)
+    }
+    pub(crate) fn validate_fixture_observation(
+        &self,
+        data: &serde_json::Value,
+        calls: &[serde_json::Value],
+    ) -> Checked<()> {
+        self.fixture()
+            .ok_or("fixture operation is absent")?
+            .validate_observation(&self.request.scope, self.operation(), data, calls)
     }
     pub(crate) fn api_limit(&self) -> u64 {
         self.request.scope.limits.api_calls
@@ -192,6 +237,23 @@ impl S3WorkerBinding {
 
     pub fn operation_plan(&self) -> Vec<S3PlannedCall> {
         let selected = self.request.operation.as_str();
+        if let Some(fixture) = self.fixture() {
+            return fixture
+                .operations(selected)
+                .into_iter()
+                .map(|operation| {
+                    S3PlannedCall::new(
+                        if operation == "GetCallerIdentity" {
+                            "sts"
+                        } else {
+                            "s3"
+                        },
+                        operation,
+                        "controller",
+                    )
+                })
+                .collect();
+        }
         let mut plan = vec![S3PlannedCall::new("sts", "GetCallerIdentity", "controller")];
         if ["probe_read", "legitimate_read"].contains(&selected) {
             let reader = if selected == "probe_read" {
@@ -221,6 +283,14 @@ impl S3WorkerBinding {
         require(sequence > 0 && sequence <= plan.len())?;
         let call = &plan[sequence - 1];
         let scope = &self.request.scope;
+        if let Some(fixture) = self.fixture() {
+            return fixture.resource(
+                scope,
+                self.fixture_authority_digest()
+                    .ok_or("fixture authority is absent")?,
+                call.operation,
+            );
+        }
         match call.operation {
             "GetCallerIdentity" => Ok(serde_json::json!({})),
             "AssumeRole" => {
@@ -262,12 +332,23 @@ impl S3WorkerBinding {
         let call = &plan[sequence - 1];
         let method = if call.service == "sts" {
             "POST"
-        } else if call.operation == "PutBucketPolicy" {
+        } else if ["PutBucketPolicy", "PutObject"].contains(&call.operation) {
             "PUT"
+        } else if call.operation == "DeleteObject" {
+            "DELETE"
         } else {
             "GET"
         };
-        let payload_digest = if call.operation == "PutBucketPolicy" {
+        let payload_digest = if call.operation == "PutObject" {
+            let fixture = self.fixture().ok_or("fixture operation is absent")?;
+            format!(
+                "sha256:{}",
+                sha256_hex(&fixtures::payload(
+                    &self.request.scope.scope_id,
+                    &fixture.purpose
+                ))
+            )
+        } else if call.operation == "PutBucketPolicy" {
             self.policy_payload_digest()?
         } else {
             let body = match call.operation {

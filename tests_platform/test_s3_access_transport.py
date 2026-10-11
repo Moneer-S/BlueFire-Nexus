@@ -16,6 +16,13 @@ def host(monkeypatch):
     configuration = checked(configured())
     entry = configuration["environments"][0]
     monkeypatch.setattr(module, "read_configuration", lambda enrollment: configuration)
+    monkeypatch.setattr(
+        module,
+        "inspect_extension",
+        lambda enrollment: {
+            "references": [{"environment_id": entry["environment_id"], "state": "current"}]
+        },
+    )
     from bluefire import s3_access_runtime
 
     monkeypatch.setattr(
@@ -74,6 +81,32 @@ def test_protected_runtime_failure_retains_readable_unavailable_environment(host
     row = response(host)["environments"][0]
     assert row["available"] is False and row["problem"] == "runtime_unavailable"
     assert "private path" not in str(row)
+
+
+@pytest.mark.parametrize("state", ["absent", "expired"])
+def test_local_reference_metadata_blocks_readiness_without_a_cloud_request(
+    host, monkeypatch, state
+):
+    monkeypatch.setattr(
+        module,
+        "inspect_extension",
+        lambda enrollment: {
+            "references": [{"environment_id": host.entry["environment_id"], "state": state}]
+        },
+    )
+    payload = response(host)
+    row = payload["environments"][0]
+    assert row["available"] is False
+    assert row["problem"] == f"access_reference_{state}"
+    assert module.client_environments(client(host, payload)) == [row]
+
+
+@pytest.mark.parametrize("problem", ["arbitrary detail", None, {}, "access_reference_current"])
+def test_client_rejects_unrecognized_or_inconsistent_readiness_problem(host, problem):
+    payload = response(host)
+    payload["environments"][0].update(available=False, problem=problem)
+    with pytest.raises(RunnerAuthenticationError, match="response is invalid"):
+        module.client_environments(client(host, payload))
 
 
 def client(host, payload):

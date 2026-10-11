@@ -74,7 +74,8 @@ pub(super) fn validate(
     now: DateTime<FixedOffset>,
 ) -> Result<VerifiedS3Admission, String> {
     fields(admission, "schema_version issuer manifest_digest profile_digest request_digest approval_digest host native_runner_digest credential_digest issued_at expires_at")?;
-    require(admission["schema_version"] == "bluefire.s3-access-admission.v1")?;
+    let fixture_enrolled = admission["schema_version"] == "bluefire.s3-access-admission.v2";
+    require(fixture_enrolled || admission["schema_version"] == "bluefire.s3-access-admission.v1")?;
     fields(
         expected_issuer,
         "runner_id client_id enrollment_generation peer_fingerprint",
@@ -106,8 +107,31 @@ pub(super) fn validate(
         canonical_json(&manifest["params"]["worker_request"]).as_bytes(),
     )?;
     let workflow = &manifest["params"]["workflow_approval"];
-    fields(workflow, "schema_version workflow_job_id operation_job_id environment_id scope_digest request_digest phase reviewed_by review_digest expected_workflow_revision prior_run_ids policy_change_digest")?;
-    require(workflow["schema_version"] == "bluefire.s3-workflow-approval.v1")?;
+    let fixture = binding.fixture();
+    fields(
+        workflow,
+        if fixture.is_some() {
+            "schema_version workflow_job_id operation_job_id environment_id scope_digest request_digest phase reviewed_by review_digest expected_workflow_revision prior_run_ids policy_change_digest fixture_authority_digest fixture_intent_id"
+        } else {
+            "schema_version workflow_job_id operation_job_id environment_id scope_digest request_digest phase reviewed_by review_digest expected_workflow_revision prior_run_ids policy_change_digest"
+        },
+    )?;
+    require(
+        workflow["schema_version"]
+            == if fixture.is_some() {
+                "bluefire.s3-workflow-approval.v2"
+            } else {
+                "bluefire.s3-workflow-approval.v1"
+            },
+    )?;
+    if let Some(fixture) = fixture {
+        require(
+            fixture_enrolled
+                && workflow["fixture_authority_digest"]
+                    == binding.fixture_authority_digest().ok_or(REFUSAL)?
+                && workflow["fixture_intent_id"] == fixture.intent_id,
+        )?;
+    }
     for field in ["workflow_job_id", "operation_job_id", "environment_id"] {
         identifier(&workflow[field])?;
     }
@@ -137,6 +161,9 @@ pub(super) fn validate(
         "apply" => &["apply_policy"],
         "rollback" => &["rollback_policy"],
         "reconcile" => &["reconcile_policy"],
+        "prepare" => &["prepare_fixture"],
+        "reconcile_fixtures" => &["reconcile_fixture"],
+        "cleanup" => &["cleanup_fixture"],
         _ => return Err(REFUSAL.into()),
     };
     require(operations.contains(&binding.operation()))?;
@@ -147,7 +174,20 @@ pub(super) fn validate(
             && workflow["request_digest"] == binding.digest(),
     )?;
     let host = &admission["host"];
-    fields(host, "environment_id scope_digest runtime_digest worker_generation ledger_root runtime_root owner_uid")?;
+    fields(
+        host,
+        if fixture_enrolled {
+            "environment_id scope_digest runtime_digest worker_generation ledger_root runtime_root owner_uid fixture_lifecycle"
+        } else {
+            "environment_id scope_digest runtime_digest worker_generation ledger_root runtime_root owner_uid"
+        },
+    )?;
+    let fixture_authority_digest = if fixture_enrolled {
+        require(host["fixture_lifecycle"]["generation_digest"] == issuer["enrollment_generation"])?;
+        Some(binding.checked_fixture_enrollment(&host["fixture_lifecycle"])?)
+    } else {
+        None
+    };
     let owner_uid = host["owner_uid"]
         .as_u64()
         .filter(|uid| (1..u32::MAX as u64).contains(uid))
@@ -220,6 +260,7 @@ pub(super) fn validate(
         environment_id: text(&workflow["environment_id"])?.into(),
         phase: phase.into(),
         revision,
+        fixture_authority_digest,
         owner_uid,
         ledger_root: path(&host["ledger_root"])?,
         runtime_root: path(&host["runtime_root"])?,

@@ -32,12 +32,51 @@ struct ObjectResource {
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureBucketResource {
+    bucket: String,
+    fixture_authority_digest: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureObjectResource {
+    bucket: String,
+    fixture_authority_digest: String,
+    key: String,
+    intent_id: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureDeleteResource {
+    bucket: String,
+    fixture_authority_digest: String,
+    key: String,
+    intent_id: String,
+    expected_etag: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureListResource {
+    bucket: String,
+    fixture_authority_digest: String,
+    prefix: String,
+    max_keys: u64,
+}
+
+#[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 enum Resource {
     Empty(EmptyResource),
     Session(SessionResource),
     Bucket(BucketResource),
     Object(ObjectResource),
+    FixtureBucket(FixtureBucketResource),
+    FixtureObject(FixtureObjectResource),
+    FixtureDelete(FixtureDeleteResource),
+    FixtureList(FixtureListResource),
 }
 
 #[derive(Deserialize, Serialize)]
@@ -93,7 +132,8 @@ impl S3SendPreview {
             canonical: canonical_json(&encoded(&frame)?),
             digest: frame.send_digest,
             sequence: next,
-            is_write: frame.send.operation == "PutBucketPolicy",
+            is_write: ["PutBucketPolicy", "PutObject", "DeleteObject"]
+                .contains(&frame.send.operation.as_str()),
         })
     }
 

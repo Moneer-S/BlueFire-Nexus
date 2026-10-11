@@ -31,7 +31,7 @@ from typing import Any, BinaryIO, Callable, Iterator, Mapping, cast
 from . import native_tool_transport as native_tools
 from . import owned_service_transport as service_transport
 from . import runner_transport_framing as framing
-from . import s3_access_transport
+from . import s3_access_setup_status, s3_access_transport
 from .owned_service_authority import (
     GRANT_SCHEMA,
     OwnedServiceAdmission,
@@ -114,6 +114,7 @@ _OPERATIONS = native_tools.INSPECTION_OPERATIONS.union(
         "cancel",
         "shutdown",
         s3_access_transport.OPERATION,
+        s3_access_setup_status.OPERATION,
     }
 )
 _REQUEST_FIELDS = frozenset(
@@ -3043,6 +3044,8 @@ class AuthenticatedRunnerServer:
                 payload = s3_access_transport.server_environments(
                     self, request, enrollment, refusal=_RequestRefusal
                 )
+            elif operation == s3_access_setup_status.OPERATION:
+                payload = s3_access_setup_status.server_status(self, request, enrollment)
             elif operation == "execute":
                 raw_payload = request.get("payload")
                 if not isinstance(raw_payload, dict):
@@ -3996,6 +3999,9 @@ class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
 
     def s3_access_environments(self) -> list[dict[str, Any]]:
         return s3_access_transport.client_environments(self)
+
+    def s3_access_setup_status(self) -> Mapping[str, Any]:
+        return s3_access_setup_status.client_status(self)
 
     def transport_identity(self) -> Mapping[str, Any]:
         """Return the validated, secret-free identity of the authenticated host."""

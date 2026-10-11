@@ -95,6 +95,23 @@ def _owner_private_handle(descriptor: int, *, directory: bool) -> None:
         raise OSError("Windows private-object permissions are unavailable") from None
 
 
+def _verify_private_permissions(descriptor: int, *, directory: bool) -> None:
+    if os.name == "nt":
+        try:
+            _windows_owner_acl.verify_owner_private_acl(descriptor, directory=directory)
+        except (OSError, _windows_owner_acl.WindowsOwnerAclError):
+            raise OSError("private-object permissions are invalid") from None
+    else:
+        details = os.fstat(descriptor)
+        getuid = getattr(os, "getuid", None)
+        if (
+            not callable(getuid)
+            or details.st_uid != getuid()
+            or stat.S_IMODE(details.st_mode) != (0o700 if directory else 0o600)
+        ):
+            raise OSError("private-object permissions are invalid")
+
+
 class _PrivateFileTwoLinksError(OSError):
     """A strict private-file read found two links; no contents were accepted."""
 
@@ -144,13 +161,17 @@ class _PinnedPrivateDirectory:
         expected_identity: tuple[int, int] | None = None,
         expected_mount_identity: int | None = None,
         parent: _PinnedPrivateDirectory | None = None,
+        verify_permissions_only: bool = False,
     ) -> None:
+        if type(verify_permissions_only) is not bool:
+            raise RunnerTransportError("private directory permission mode is invalid")
         self.path = path
         self.delete = delete
         self.share_delete = share_delete
         self.expected_identity = expected_identity
         self.expected_mount_identity = expected_mount_identity
         self._pinned_parent = parent
+        self._verify_permissions_only = verify_permissions_only
         self._descriptor: int | None = None
         self._parent_descriptor: int | None = None
         self._identity: tuple[int, int] | None = None
@@ -171,7 +192,7 @@ class _PinnedPrivateDirectory:
                 self._descriptor = _windows_open_descriptor(
                     self.path,
                     directory=True,
-                    write_dac=True,
+                    write_dac=not self._verify_permissions_only,
                     delete=self.delete,
                     share_delete=self.share_delete,
                 )
@@ -210,7 +231,9 @@ class _PinnedPrivateDirectory:
                 raise OSError("unsafe private directory")
             self._identity = details.st_dev, details.st_ino
             self._mount_identity = mount_identity
-            if os.name == "nt":
+            if self._verify_permissions_only:
+                _verify_private_permissions(self._require_descriptor(), directory=True)
+            elif os.name == "nt":
                 _owner_private_handle(self._require_descriptor(), directory=True)
             else:
                 getattr(os, "fchmod")(  # noqa: B009 - absent on Windows
@@ -299,6 +322,8 @@ class _PinnedPrivateDirectory:
             or current_mount_identity != self._mount_identity
         ):
             raise OSError("private directory identity changed")
+        if self._verify_permissions_only:
+            _verify_private_permissions(descriptor, directory=True)
 
     def directory_identity(self) -> tuple[int, int]:
         self._validate_directory()
@@ -520,7 +545,9 @@ class _PinnedPrivateDirectory:
         ):
             raise OSError("unsafe private file")
         _require_single_link(details)
-        if apply_permissions:
+        if self._verify_permissions_only:
+            _verify_private_permissions(descriptor, directory=False)
+        elif apply_permissions:
             if os.name == "nt":
                 _owner_private_handle(descriptor, directory=False)
             else:
@@ -598,7 +625,9 @@ class _PinnedPrivateDirectory:
     ) -> tuple[bytes, tuple[int, int], tuple[int, int, int]]:
         """Read one file with an ABA-resistant metadata snapshot."""
 
-        descriptor = self._open_existing(name, write_dac=apply_permissions)
+        descriptor = self._open_existing(
+            name, write_dac=apply_permissions and not self._verify_permissions_only
+        )
         try:
             before = self._validate_file(
                 name,
@@ -632,7 +661,9 @@ class _PinnedPrivateDirectory:
         maximum: int,
         apply_permissions: bool = True,
     ) -> tuple[int, int]:
-        descriptor = self._open_existing(name, write_dac=apply_permissions)
+        descriptor = self._open_existing(
+            name, write_dac=apply_permissions and not self._verify_permissions_only
+        )
         try:
             details = self._validate_file(
                 name,
@@ -652,7 +683,10 @@ class _PinnedPrivateDirectory:
         maximum: int,
         executable: bool = False,
         consumable: bool = False,
+        atomic_no_replace: bool = False,
     ) -> None:
+        if type(atomic_no_replace) is not bool:
+            raise OSError("private publication mode is invalid")
         if not 0 <= len(payload) <= maximum:
             raise OSError("private payload exceeds its size limit")
         name = self._name(name)
@@ -717,6 +751,7 @@ class _PinnedPrivateDirectory:
                     permissions_already_private=True,
                     expected_identity=temporary_identity,
                     consumable=True,
+                    atomic_no_replace=atomic_no_replace,
                 )
             else:
                 self.promote(
@@ -726,6 +761,7 @@ class _PinnedPrivateDirectory:
                     expected=payload,
                     permissions_already_private=True,
                     expected_identity=temporary_identity,
+                    atomic_no_replace=atomic_no_replace,
                 )
         except BaseException:
             try:
@@ -814,7 +850,10 @@ class _PinnedPrivateDirectory:
         permissions_already_private: bool = False,
         expected_identity: tuple[int, int] | None = None,
         consumable: bool = False,
+        atomic_no_replace: bool = False,
     ) -> None:
+        if type(atomic_no_replace) is not bool:
+            raise OSError("private publication mode is invalid")
         source = self._name(source)
         destination = self._name(destination)
         descriptor = self._open_existing(source, delete=True)
@@ -856,6 +895,19 @@ class _PinnedPrivateDirectory:
                         )
                     finally:
                         os.close(final_descriptor)
+            elif atomic_no_replace:
+                from .source_intake import _posix_rename_no_replace
+
+                # Keep recoverable writer claims single-linked across publication.
+                _posix_rename_no_replace(self._require_descriptor(), source, destination)
+                if not consumable:
+                    self._validate_file(
+                        destination,
+                        descriptor,
+                        maximum=maximum,
+                        apply_permissions=False,
+                        expected_identity=(source_details.st_dev, source_details.st_ino),
+                    )
             else:
                 os.link(
                     source,

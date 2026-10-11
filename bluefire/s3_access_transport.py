@@ -13,9 +13,13 @@ from .s3_access_contract import S3AccessError, digest, document, exact
 from .s3_access_host_config import public_environments, read_configuration, selected_environment
 from .s3_access_launch import S3LaunchIntent
 from .s3_access_results import environment
+from .s3_access_setup import inspect_extension
 from .util import canonical_json_bytes
 
 OPERATION = "s3_access_environments"
+UNAVAILABLE_PROBLEMS = frozenset(
+    {"runtime_unavailable", "access_reference_absent", "access_reference_expired"}
+)
 
 
 def server_environments(server, request, enrollment, *, refusal):
@@ -33,6 +37,10 @@ def server_environments(server, request, enrollment, *, refusal):
             return {"environments": []}
         from .s3_access_runtime import validate_runtime
 
+        references = {
+            row["environment_id"]: row["state"]
+            for row in inspect_extension(enrollment)["references"]
+        }
         rows = []
         for entry, public in zip(
             configuration["environments"], public_environments(configuration), strict=True
@@ -45,14 +53,22 @@ def server_environments(server, request, enrollment, *, refusal):
                 available = runtime.worker_generation == entry["worker_generation"]
             except (OSError, ValueError, RuntimeError):
                 pass
+            state = references.get(entry["environment_id"], "absent")
+            if state not in {"current", "absent", "expired"}:
+                raise S3AccessError("S3 local reference status is invalid")
+            problem = (
+                "runtime_unavailable"
+                if not available
+                else None if state == "current" else f"access_reference_{state}"
+            )
             rows.append(
                 {
                     "environment": public,
                     "profile": entry["profile"],
                     "runtime_digest": entry["runtime_digest"],
                     "worker_generation": entry["worker_generation"],
-                    "available": available,
-                    "problem": None if available else "runtime_unavailable",
+                    "available": problem is None,
+                    "problem": problem,
                 }
             )
         return {"environments": rows}
@@ -108,7 +124,12 @@ def client_environments(client: Any) -> list[dict[str, Any]]:
             profile = row["profile"]
             if (
                 type(row["available"]) is not bool
-                or row["problem"] != (None if row["available"] else "runtime_unavailable")
+                or (
+                    row["problem"] is not None
+                    if row["available"]
+                    else not isinstance(row["problem"], str)
+                    or row["problem"] not in UNAVAILABLE_PROBLEMS
+                )
                 or not isinstance(profile, Mapping)
                 or profile.get("profile_id") != client.profile_id
                 or profile.get("platform") != "linux"

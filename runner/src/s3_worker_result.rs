@@ -59,8 +59,13 @@ impl WorkerResult {
         require(frame["kind"] == "result")?;
         let row = &frame["result"];
         fields(row, "schema_version request_digest outcome data problem send_permits_consumed calls runtime_isolation_proven")?;
+        let schema = if binding.fixture().is_some() {
+            crate::s3_fixture_binding::RESULT_SCHEMA
+        } else {
+            "bluefire.s3-worker-result.v1"
+        };
         require(
-            row["schema_version"] == "bluefire.s3-worker-result.v1"
+            row["schema_version"] == schema
                 && row["request_digest"] == binding.digest()
                 && row["runtime_isolation_proven"] == false,
         )?;
@@ -70,7 +75,11 @@ impl WorkerResult {
         let calls = row["calls"].as_array().ok_or("invalid S3 calls")?;
         let plan = binding.operation_plan();
         require(
-            consumed <= debits && debits <= binding.max_sends() && calls.len() as u64 <= consumed,
+            consumed <= debits
+                && debits <= binding.max_sends()
+                && consumed <= plan.len() as u64
+                && calls.len() as u64 <= consumed
+                && calls.len() <= plan.len(),
         )?;
         for (index, call) in calls.iter().enumerate() {
             fields(
@@ -95,13 +104,23 @@ impl WorkerResult {
             let status = call["http_status"].as_u64().ok_or("invalid S3 status")?;
             if let Some(code) = call.get("error_code") {
                 require(
-                    code.as_str()
-                        .is_some_and(|code| ERROR_CODES.contains(&code))
-                        && (400..=599).contains(&status),
+                    code.as_str().is_some_and(|code| {
+                        ERROR_CODES.contains(&code)
+                            || (binding.fixture().is_some()
+                                && [
+                                    "ObjectLockConfigurationNotFoundError",
+                                    "ConditionalRequestConflict",
+                                ]
+                                .contains(&code))
+                    }) && (400..=599).contains(&status),
                 )?;
             } else {
                 require(
-                    status == 200 || (status == 204 && call["operation"] == "PutBucketPolicy"),
+                    if binding.fixture().is_some() && call["operation"] == "DeleteObject" {
+                        status == 204
+                    } else {
+                        status == 200 || (status == 204 && call["operation"] == "PutBucketPolicy")
+                    },
                 )?;
             }
         }
@@ -125,8 +144,13 @@ impl WorkerResult {
             )?;
             if outcome == "reconcile_required" {
                 require(
-                    ["apply_policy", "rollback_policy"].contains(&binding.operation())
-                        && consumed >= 3,
+                    (["apply_policy", "rollback_policy"].contains(&binding.operation())
+                        && consumed >= 3)
+                        || (matches!(binding.operation(), "prepare_fixture" | "cleanup_fixture")
+                            && binding.operation_plan().iter().any(|call| {
+                                matches!(call.operation, "PutObject" | "DeleteObject")
+                            })
+                            && consumed >= 5),
                 )?;
             }
             return Ok(result);
@@ -137,7 +161,9 @@ impl WorkerResult {
         let request: Value =
             serde_json::from_str(binding.canonical_json()).map_err(|_| "invalid S3 binding")?;
         let data = &row["data"];
-        if ["probe_read", "legitimate_read"].contains(&binding.operation()) {
+        if binding.fixture().is_some() {
+            binding.validate_fixture_observation(data, calls)?;
+        } else if ["probe_read", "legitimate_read"].contains(&binding.operation()) {
             fields(data, "reader objects effective_access_claim")?;
             let probe = binding.operation() == "probe_read";
             require(

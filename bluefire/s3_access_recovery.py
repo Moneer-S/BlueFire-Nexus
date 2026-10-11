@@ -6,6 +6,7 @@ import re
 from datetime import timedelta
 from typing import Any, Mapping
 
+from . import s3_fixture_contract as fixtures
 from .runner_contracts import seal_manifest, seal_profile
 from .s3_access_contract import S3AccessError, digest, document, exact
 from .s3_access_results import reviewer
@@ -63,7 +64,14 @@ _TRANSPORT = {
 
 
 def _review(request: S3WorkerRequest, approval: Any) -> None:
-    exact(approval, _APPROVAL, "S3 original review")
+    row = request.to_dict()
+    fixture_request = row["schema_version"] == fixtures.REQUEST_SCHEMA
+    exact(
+        approval,
+        _APPROVAL
+        | ({"fixture_authority_digest", "fixture_intent_id"} if fixture_request else set()),
+        "S3 original review",
+    )
     for key in ("workflow_job_id", "operation_job_id", "environment_id"):
         if (
             not isinstance(approval[key], str)
@@ -90,10 +98,18 @@ def _review(request: S3WorkerRequest, approval: Any) -> None:
         "apply": {"apply_policy"},
         "reconcile": {"reconcile_policy"},
         "rollback": {"rollback_policy"},
+        "prepare": {"prepare_fixture"},
+        "reconcile_fixtures": {"reconcile_fixture"},
+        "cleanup": {"cleanup_fixture"},
     }
     change = row["policy_change"]
     if (
-        approval["schema_version"] != "bluefire.s3-workflow-approval.v1"
+        approval["schema_version"]
+        != (
+            "bluefire.s3-workflow-approval.v2"
+            if fixture_request
+            else "bluefire.s3-workflow-approval.v1"
+        )
         or not isinstance(approval["phase"], str)
         or row["operation"] not in phases.get(approval["phase"], set())
         or approval["reviewed_by"] != reviewer(approval["reviewed_by"])
@@ -105,6 +121,11 @@ def _review(request: S3WorkerRequest, approval: Any) -> None:
         != (content_hash(change) if change is not None else None)
     ):
         raise S3AccessError("S3 original review differs from its request")
+    if fixture_request and (
+        approval["fixture_authority_digest"] != row["fixture_authority_digest"]
+        or approval["fixture_intent_id"] != row["fixture"]["intent_id"]
+    ):
+        raise S3AccessError("The original fixture review differs from its exact enrolled intent")
     digest(approval["review_digest"])
 
 

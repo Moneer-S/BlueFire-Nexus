@@ -1,0 +1,1893 @@
+{
+  "provenance": "synthetic",
+  "schema_version": "bluefire.s3-fixture-product-golden.v2",
+  "snapshots": [
+    {
+      "exercise": {
+        "active_job": null,
+        "allowed_phases": [
+          "prepare"
+        ],
+        "audit": "not_collected",
+        "context_digest": "sha256:12a35676526757397761d34463ebe76e618ad1dc7b754e08ffb7f5e4d9f26e74",
+        "environment": {
+          "baseline_policy": {
+            "Statement": [
+              {
+                "Action": [
+                  "s3:GetObject"
+                ],
+                "Effect": "Allow",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/unrelated-reader"
+                },
+                "Resource": [
+                  "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/health.jsonl"
+                ],
+                "Sid": "PreservedRead"
+              },
+              {
+                "Action": "s3:GetObject",
+                "Effect": "Allow",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/bluefire-probe"
+                },
+                "Resource": "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                "Sid": "BlueFireProbe00000000000000000000000000000000"
+              },
+              {
+                "Action": "s3:GetObject",
+                "Effect": "Allow",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/bluefire-legitimate"
+                },
+                "Resource": [
+                  "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                  "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/health.jsonl"
+                ],
+                "Sid": "BlueFireLegitimate00000000000000000000000000000000"
+              },
+              {
+                "Action": "s3:GetObject",
+                "Effect": "Deny",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/unrelated-denied"
+                },
+                "Resource": "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                "Sid": "PreservedDeny"
+              }
+            ],
+            "Version": "2012-10-17"
+          },
+          "display_name": "Synthetic S3 environment",
+          "environment_id": "test-environment",
+          "exclusive_writer_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+          "fixture_lifecycle": {
+            "bucket_shape": "never_versioned_no_object_lock",
+            "exclusive_writer_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+            "generation_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+            "schema_version": "bluefire.s3-fixture-enrollment.v2",
+            "scope_digest": "sha256:3204ede75ca9270b322032e650368525eb77a443b733fa9d580134e935beca9d"
+          },
+          "scope": {
+            "account_id": "123456789012",
+            "bucket": "bluefire-owned-fixture",
+            "created_at": "2026-10-09T00:00:00Z",
+            "expires_at": "2026-10-09T01:00:00Z",
+            "limits": {
+              "api_calls": 100,
+              "audit_bytes": 20971520,
+              "audit_events": 1000,
+              "audit_seconds": 1800,
+              "business_attempts": 6,
+              "business_seconds": 1800,
+              "cleanup_seconds": 900,
+              "convergence_seconds": 300,
+              "object_bytes": 65536,
+              "policy_changes": 1,
+              "request_seconds": 30,
+              "rollbacks": 1,
+              "session_seconds": 900,
+              "sessions": 6
+            },
+            "objects": [
+              {
+                "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                "purpose": "primary",
+                "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+                "size_bytes": 123
+              },
+              {
+                "key": "bluefire/s3-00000000000000000000000000000000/health.jsonl",
+                "purpose": "health",
+                "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+                "size_bytes": 122
+              }
+            ],
+            "ownership_receipt_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "policy": {
+              "baseline_digest": "sha256:c4968fa7f97c0855d1f111ae972bb664331b359f155be7fe48a74699d4f0bba2",
+              "legitimate_sid": "BlueFireLegitimate00000000000000000000000000000000",
+              "probe_sid": "BlueFireProbe00000000000000000000000000000000"
+            },
+            "prefix": "bluefire/s3-00000000000000000000000000000000/",
+            "region": "us-east-1",
+            "roles": {
+              "controller": "arn:aws:iam::123456789012:role/bluefire-controller",
+              "legitimate": "arn:aws:iam::123456789012:role/bluefire-legitimate",
+              "probe": "arn:aws:iam::123456789012:role/bluefire-probe"
+            },
+            "schema_version": "bluefire.s3-access-scope.v1",
+            "scope_id": "s3-00000000000000000000000000000000"
+          }
+        },
+        "fixture_state": "not_prepared",
+        "fixtures": [
+          {
+            "etag": null,
+            "intent_id": "848554ddbf174581b7fe246b3ce7bd2183ab46c77d664ad5b82dc1a52549b156",
+            "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+            "provenance": "not_observed",
+            "purpose": "primary",
+            "request_ids": [],
+            "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+            "size_bytes": 123,
+            "state": "not_prepared"
+          },
+          {
+            "etag": null,
+            "intent_id": "848554ddbf174581b7fe246b3ce7bd2183ab46c77d664ad5b82dc1a52549b156",
+            "key": "bluefire/s3-00000000000000000000000000000000/health.jsonl",
+            "provenance": "not_observed",
+            "purpose": "health",
+            "request_ids": [],
+            "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+            "size_bytes": 122,
+            "state": "not_prepared"
+          }
+        ],
+        "independent_observations": 0,
+        "live_outcome_verified": false,
+        "operations": [],
+        "policy_retention": null,
+        "policy_state": "baseline",
+        "problem": null,
+        "remaining": {
+          "api_calls": 100,
+          "business_attempts": 6,
+          "policy_changes": 1,
+          "rollbacks": 1,
+          "sessions": 6
+        },
+        "resource_disposition": "not_prepared",
+        "revision": 0,
+        "saved_result_recovery_available": false,
+        "schema_version": "bluefire.s3-exercise.v2",
+        "stopped": false,
+        "workflow_job_id": "job-c4ca0bd9d77c4849831c75aee5cdd578"
+      },
+      "name": "initial",
+      "review": {
+        "environment_id": "test-environment",
+        "fixture_lifecycle": {
+          "authority_digest": "sha256:95a0be259869b0262b656454bd8babe6aa0b01bc996d80bea9b860cbd309ca52",
+          "intent_id": "848554ddbf174581b7fe246b3ce7bd2183ab46c77d664ad5b82dc1a52549b156",
+          "objects": [
+            {
+              "expected_etag": null,
+              "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+              "payload_preview": "{\"purpose\":\"primary\",\"schema_version\":\"bluefire.s3-generated-fixture.v1\",\"scope_id\":\"s3-00000000000000000000000000000000\"}\n",
+              "purpose": "primary",
+              "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+              "size_bytes": 123
+            },
+            {
+              "expected_etag": null,
+              "key": "bluefire/s3-00000000000000000000000000000000/health.jsonl",
+              "payload_preview": "{\"purpose\":\"health\",\"schema_version\":\"bluefire.s3-generated-fixture.v1\",\"scope_id\":\"s3-00000000000000000000000000000000\"}\n",
+              "purpose": "health",
+              "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+              "size_bytes": 122
+            }
+          ],
+          "policy_disposition": "retain_current",
+          "policy_state": "baseline"
+        },
+        "phase": "prepare",
+        "policy_change": null,
+        "prior_run_ids": [],
+        "remaining": {
+          "api_calls": 100,
+          "business_attempts": 6,
+          "policy_changes": 1,
+          "rollbacks": 1,
+          "sessions": 6
+        },
+        "required_remaining": {
+          "api_calls": 70,
+          "business_attempts": 0,
+          "policy_changes": 0,
+          "rollbacks": 0,
+          "sessions": 0
+        },
+        "reserved": {
+          "api_calls": 12,
+          "business_attempts": 0,
+          "policy_changes": 0,
+          "rollbacks": 0,
+          "sessions": 0
+        },
+        "review_digest": "sha256:22eb2b3069523a219e3460d486ce58898ca4f68138a71cf211959885d929d5d6",
+        "revision": 0,
+        "runtime": {
+          "available": true,
+          "problem": null,
+          "runner_profile_id": "synthetic-s3",
+          "runtime_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "worker_generation": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "schema_version": "bluefire.s3-stage-review.v2",
+        "scope_digest": "sha256:3204ede75ca9270b322032e650368525eb77a443b733fa9d580134e935beca9d",
+        "workflow_job_id": "job-c4ca0bd9d77c4849831c75aee5cdd578"
+      }
+    },
+    {
+      "exercise": {
+        "active_job": null,
+        "allowed_phases": [
+          "rollback",
+          "reconcile",
+          "cleanup",
+          "reconcile_fixtures"
+        ],
+        "audit": "not_collected",
+        "context_digest": "sha256:12a35676526757397761d34463ebe76e618ad1dc7b754e08ffb7f5e4d9f26e74",
+        "environment": {
+          "baseline_policy": {
+            "Statement": [
+              {
+                "Action": [
+                  "s3:GetObject"
+                ],
+                "Effect": "Allow",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/unrelated-reader"
+                },
+                "Resource": [
+                  "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/health.jsonl"
+                ],
+                "Sid": "PreservedRead"
+              },
+              {
+                "Action": "s3:GetObject",
+                "Effect": "Allow",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/bluefire-probe"
+                },
+                "Resource": "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                "Sid": "BlueFireProbe00000000000000000000000000000000"
+              },
+              {
+                "Action": "s3:GetObject",
+                "Effect": "Allow",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/bluefire-legitimate"
+                },
+                "Resource": [
+                  "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                  "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/health.jsonl"
+                ],
+                "Sid": "BlueFireLegitimate00000000000000000000000000000000"
+              },
+              {
+                "Action": "s3:GetObject",
+                "Effect": "Deny",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/unrelated-denied"
+                },
+                "Resource": "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                "Sid": "PreservedDeny"
+              }
+            ],
+            "Version": "2012-10-17"
+          },
+          "display_name": "Synthetic S3 environment",
+          "environment_id": "test-environment",
+          "exclusive_writer_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+          "fixture_lifecycle": {
+            "bucket_shape": "never_versioned_no_object_lock",
+            "exclusive_writer_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+            "generation_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+            "schema_version": "bluefire.s3-fixture-enrollment.v2",
+            "scope_digest": "sha256:3204ede75ca9270b322032e650368525eb77a443b733fa9d580134e935beca9d"
+          },
+          "scope": {
+            "account_id": "123456789012",
+            "bucket": "bluefire-owned-fixture",
+            "created_at": "2026-10-09T00:00:00Z",
+            "expires_at": "2026-10-09T01:00:00Z",
+            "limits": {
+              "api_calls": 100,
+              "audit_bytes": 20971520,
+              "audit_events": 1000,
+              "audit_seconds": 1800,
+              "business_attempts": 6,
+              "business_seconds": 1800,
+              "cleanup_seconds": 900,
+              "convergence_seconds": 300,
+              "object_bytes": 65536,
+              "policy_changes": 1,
+              "request_seconds": 30,
+              "rollbacks": 1,
+              "session_seconds": 900,
+              "sessions": 6
+            },
+            "objects": [
+              {
+                "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                "purpose": "primary",
+                "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+                "size_bytes": 123
+              },
+              {
+                "key": "bluefire/s3-00000000000000000000000000000000/health.jsonl",
+                "purpose": "health",
+                "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+                "size_bytes": 122
+              }
+            ],
+            "ownership_receipt_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "policy": {
+              "baseline_digest": "sha256:c4968fa7f97c0855d1f111ae972bb664331b359f155be7fe48a74699d4f0bba2",
+              "legitimate_sid": "BlueFireLegitimate00000000000000000000000000000000",
+              "probe_sid": "BlueFireProbe00000000000000000000000000000000"
+            },
+            "prefix": "bluefire/s3-00000000000000000000000000000000/",
+            "region": "us-east-1",
+            "roles": {
+              "controller": "arn:aws:iam::123456789012:role/bluefire-controller",
+              "legitimate": "arn:aws:iam::123456789012:role/bluefire-legitimate",
+              "probe": "arn:aws:iam::123456789012:role/bluefire-probe"
+            },
+            "schema_version": "bluefire.s3-access-scope.v1",
+            "scope_id": "s3-00000000000000000000000000000000"
+          }
+        },
+        "fixture_state": "owned",
+        "fixtures": [
+          {
+            "etag": "\"owned-token\"",
+            "intent_id": "848554ddbf174581b7fe246b3ce7bd2183ab46c77d664ad5b82dc1a52549b156",
+            "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+            "provenance": "synthetic",
+            "purpose": "primary",
+            "request_ids": [
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID"
+            ],
+            "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+            "size_bytes": 123,
+            "state": "owned"
+          },
+          {
+            "etag": "\"owned-token\"",
+            "intent_id": "848554ddbf174581b7fe246b3ce7bd2183ab46c77d664ad5b82dc1a52549b156",
+            "key": "bluefire/s3-00000000000000000000000000000000/health.jsonl",
+            "provenance": "synthetic",
+            "purpose": "health",
+            "request_ids": [
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID"
+            ],
+            "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+            "size_bytes": 122,
+            "state": "owned"
+          }
+        ],
+        "independent_observations": 0,
+        "live_outcome_verified": false,
+        "operations": [
+          {
+            "operation_job_id": "job-9df3f4274e0d43a8a011e32b0317e867",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "observed"
+            },
+            "outcome_digest": "sha256:53c8fdf714cbffd40b6897f1576a55b8e585fed242178bc3abf4082f89c99656",
+            "phase": "prepare",
+            "review_digest": "sha256:22eb2b3069523a219e3460d486ce58898ca4f68138a71cf211959885d929d5d6",
+            "run_ids": [
+              "run-20261009T201205Z-f76ece22793d4d7f",
+              "run-20261009T201205Z-04dff1ed3b6d4360"
+            ]
+          },
+          {
+            "operation_job_id": "job-6d9b758b48f24a74966a333699e17dce",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "observed"
+            },
+            "outcome_digest": "sha256:e9ede750b76cfa14821fc3c8a961b93d6f582197fd32b2a12bf0c0586dca8373",
+            "phase": "inspect",
+            "review_digest": "sha256:1b3108b31b14a32cd0d29ec6c1c1b0c54516a0adb99ff20a01c1a2ffccaa3e8d",
+            "run_ids": [
+              "run-20261009T201206Z-4d39873f99a34b57"
+            ]
+          },
+          {
+            "operation_job_id": "job-e2e9cdeba51142e6bbbed81d43175ac8",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [
+                {
+                  "purpose": "primary",
+                  "reader": "probe",
+                  "result": "read",
+                  "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+                  "size_bytes": 123
+                },
+                {
+                  "purpose": "primary",
+                  "reader": "legitimate",
+                  "result": "read",
+                  "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+                  "size_bytes": 123
+                },
+                {
+                  "purpose": "health",
+                  "reader": "legitimate",
+                  "result": "read",
+                  "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+                  "size_bytes": 122
+                }
+              ],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "observed"
+            },
+            "outcome_digest": "sha256:2f47c355752bda595c0ebe2357a726540b5085c847bacb797a494dcdbb63794d",
+            "phase": "baseline",
+            "review_digest": "sha256:f990d12da71b42b20ca1a20cdd720d3ab9547febee8f03026839aee8aa7d5470",
+            "run_ids": [
+              "run-20261009T201207Z-b4294766ef5c4de6",
+              "run-20261009T201207Z-e6e86e96b94b4167"
+            ]
+          },
+          {
+            "operation_job_id": "job-6c51ad90c25f48b9b4ec889e756d0407",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "observed"
+            },
+            "outcome_digest": "sha256:bae3dbf9befd7cbadceff68e5cbf52b88c249e1d87c41009da1251a7cfa6908e",
+            "phase": "apply",
+            "review_digest": "sha256:4c2c98b658f9d0fbd533ab8f03bc0f5310ed444bf959ce835aa68a4da88a4825",
+            "run_ids": [
+              "run-20261009T201208Z-be86ab0f6b9240f8"
+            ]
+          },
+          {
+            "operation_job_id": "job-756dfe0168f84f4481ab6e90dd7a55d4",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [
+                {
+                  "purpose": "primary",
+                  "reader": "probe",
+                  "result": "service_denied"
+                },
+                {
+                  "purpose": "primary",
+                  "reader": "legitimate",
+                  "result": "read",
+                  "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+                  "size_bytes": 123
+                },
+                {
+                  "purpose": "health",
+                  "reader": "legitimate",
+                  "result": "read",
+                  "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+                  "size_bytes": 122
+                }
+              ],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "denied_with_legitimate_reads"
+            },
+            "outcome_digest": "sha256:02381b18fa7daa01258c108842a703b5040870722f4d4a4b99cebb47ead374c6",
+            "phase": "retest",
+            "review_digest": "sha256:6fec2bd1eaac6df661156818849574dccd45c29104690629ad235e9eb9355090",
+            "run_ids": [
+              "run-20261009T201210Z-d76a9c1787cc4437",
+              "run-20261009T201210Z-52278465cd1b47ce"
+            ]
+          }
+        ],
+        "policy_retention": null,
+        "policy_state": "hardened",
+        "problem": null,
+        "remaining": {
+          "api_calls": 64,
+          "business_attempts": 0,
+          "policy_changes": 0,
+          "rollbacks": 1,
+          "sessions": 2
+        },
+        "resource_disposition": "retained",
+        "revision": 10,
+        "saved_result_recovery_available": false,
+        "schema_version": "bluefire.s3-exercise.v2",
+        "stopped": false,
+        "workflow_job_id": "job-c4ca0bd9d77c4849831c75aee5cdd578"
+      },
+      "name": "owned",
+      "review": {
+        "environment_id": "test-environment",
+        "fixture_lifecycle": {
+          "authority_digest": "sha256:95a0be259869b0262b656454bd8babe6aa0b01bc996d80bea9b860cbd309ca52",
+          "intent_id": "848554ddbf174581b7fe246b3ce7bd2183ab46c77d664ad5b82dc1a52549b156",
+          "objects": [
+            {
+              "expected_etag": "\"owned-token\"",
+              "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+              "payload_preview": "{\"purpose\":\"primary\",\"schema_version\":\"bluefire.s3-generated-fixture.v1\",\"scope_id\":\"s3-00000000000000000000000000000000\"}\n",
+              "purpose": "primary",
+              "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+              "size_bytes": 123
+            },
+            {
+              "expected_etag": "\"owned-token\"",
+              "key": "bluefire/s3-00000000000000000000000000000000/health.jsonl",
+              "payload_preview": "{\"purpose\":\"health\",\"schema_version\":\"bluefire.s3-generated-fixture.v1\",\"scope_id\":\"s3-00000000000000000000000000000000\"}\n",
+              "purpose": "health",
+              "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+              "size_bytes": 122
+            }
+          ],
+          "policy_disposition": "retain_current",
+          "policy_state": "hardened"
+        },
+        "phase": "cleanup",
+        "policy_change": null,
+        "prior_run_ids": [
+          "run-20261009T201205Z-f76ece22793d4d7f",
+          "run-20261009T201205Z-04dff1ed3b6d4360",
+          "run-20261009T201206Z-4d39873f99a34b57",
+          "run-20261009T201207Z-b4294766ef5c4de6",
+          "run-20261009T201207Z-e6e86e96b94b4167",
+          "run-20261009T201208Z-be86ab0f6b9240f8",
+          "run-20261009T201210Z-d76a9c1787cc4437",
+          "run-20261009T201210Z-52278465cd1b47ce"
+        ],
+        "remaining": {
+          "api_calls": 64,
+          "business_attempts": 0,
+          "policy_changes": 0,
+          "rollbacks": 1,
+          "sessions": 2
+        },
+        "required_remaining": {
+          "api_calls": 48,
+          "business_attempts": 0,
+          "policy_changes": 0,
+          "rollbacks": 0,
+          "sessions": 0
+        },
+        "reserved": {
+          "api_calls": 14,
+          "business_attempts": 0,
+          "policy_changes": 0,
+          "rollbacks": 0,
+          "sessions": 0
+        },
+        "review_digest": "sha256:731c5bc1671c637477aa6741e0c171c3bb7ad3bf9260c4ebf4ca70c41f4fc24f",
+        "revision": 10,
+        "runtime": {
+          "available": true,
+          "problem": null,
+          "runner_profile_id": "synthetic-s3",
+          "runtime_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "worker_generation": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "schema_version": "bluefire.s3-stage-review.v2",
+        "scope_digest": "sha256:3204ede75ca9270b322032e650368525eb77a443b733fa9d580134e935beca9d",
+        "workflow_job_id": "job-c4ca0bd9d77c4849831c75aee5cdd578"
+      }
+    },
+    {
+      "exercise": {
+        "active_job": null,
+        "allowed_phases": [
+          "reconcile_fixtures"
+        ],
+        "audit": "not_collected",
+        "context_digest": "sha256:12a35676526757397761d34463ebe76e618ad1dc7b754e08ffb7f5e4d9f26e74",
+        "environment": {
+          "baseline_policy": {
+            "Statement": [
+              {
+                "Action": [
+                  "s3:GetObject"
+                ],
+                "Effect": "Allow",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/unrelated-reader"
+                },
+                "Resource": [
+                  "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/health.jsonl"
+                ],
+                "Sid": "PreservedRead"
+              },
+              {
+                "Action": "s3:GetObject",
+                "Effect": "Allow",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/bluefire-probe"
+                },
+                "Resource": "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                "Sid": "BlueFireProbe00000000000000000000000000000000"
+              },
+              {
+                "Action": "s3:GetObject",
+                "Effect": "Allow",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/bluefire-legitimate"
+                },
+                "Resource": [
+                  "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                  "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/health.jsonl"
+                ],
+                "Sid": "BlueFireLegitimate00000000000000000000000000000000"
+              },
+              {
+                "Action": "s3:GetObject",
+                "Effect": "Deny",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/unrelated-denied"
+                },
+                "Resource": "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                "Sid": "PreservedDeny"
+              }
+            ],
+            "Version": "2012-10-17"
+          },
+          "display_name": "Synthetic S3 environment",
+          "environment_id": "test-environment",
+          "exclusive_writer_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+          "fixture_lifecycle": {
+            "bucket_shape": "never_versioned_no_object_lock",
+            "exclusive_writer_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+            "generation_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+            "schema_version": "bluefire.s3-fixture-enrollment.v2",
+            "scope_digest": "sha256:3204ede75ca9270b322032e650368525eb77a443b733fa9d580134e935beca9d"
+          },
+          "scope": {
+            "account_id": "123456789012",
+            "bucket": "bluefire-owned-fixture",
+            "created_at": "2026-10-09T00:00:00Z",
+            "expires_at": "2026-10-09T01:00:00Z",
+            "limits": {
+              "api_calls": 100,
+              "audit_bytes": 20971520,
+              "audit_events": 1000,
+              "audit_seconds": 1800,
+              "business_attempts": 6,
+              "business_seconds": 1800,
+              "cleanup_seconds": 900,
+              "convergence_seconds": 300,
+              "object_bytes": 65536,
+              "policy_changes": 1,
+              "request_seconds": 30,
+              "rollbacks": 1,
+              "session_seconds": 900,
+              "sessions": 6
+            },
+            "objects": [
+              {
+                "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                "purpose": "primary",
+                "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+                "size_bytes": 123
+              },
+              {
+                "key": "bluefire/s3-00000000000000000000000000000000/health.jsonl",
+                "purpose": "health",
+                "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+                "size_bytes": 122
+              }
+            ],
+            "ownership_receipt_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "policy": {
+              "baseline_digest": "sha256:c4968fa7f97c0855d1f111ae972bb664331b359f155be7fe48a74699d4f0bba2",
+              "legitimate_sid": "BlueFireLegitimate00000000000000000000000000000000",
+              "probe_sid": "BlueFireProbe00000000000000000000000000000000"
+            },
+            "prefix": "bluefire/s3-00000000000000000000000000000000/",
+            "region": "us-east-1",
+            "roles": {
+              "controller": "arn:aws:iam::123456789012:role/bluefire-controller",
+              "legitimate": "arn:aws:iam::123456789012:role/bluefire-legitimate",
+              "probe": "arn:aws:iam::123456789012:role/bluefire-probe"
+            },
+            "schema_version": "bluefire.s3-access-scope.v1",
+            "scope_id": "s3-00000000000000000000000000000000"
+          }
+        },
+        "fixture_state": "uncertain",
+        "fixtures": [
+          {
+            "etag": null,
+            "intent_id": "848554ddbf174581b7fe246b3ce7bd2183ab46c77d664ad5b82dc1a52549b156",
+            "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+            "provenance": "synthetic",
+            "purpose": "primary",
+            "request_ids": [
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID"
+            ],
+            "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+            "size_bytes": 123,
+            "state": "uncertain"
+          },
+          {
+            "etag": "\"owned-token\"",
+            "intent_id": "848554ddbf174581b7fe246b3ce7bd2183ab46c77d664ad5b82dc1a52549b156",
+            "key": "bluefire/s3-00000000000000000000000000000000/health.jsonl",
+            "provenance": "synthetic",
+            "purpose": "health",
+            "request_ids": [
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID"
+            ],
+            "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+            "size_bytes": 122,
+            "state": "owned"
+          }
+        ],
+        "independent_observations": 0,
+        "live_outcome_verified": false,
+        "operations": [
+          {
+            "operation_job_id": "job-9df3f4274e0d43a8a011e32b0317e867",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "observed"
+            },
+            "outcome_digest": "sha256:53c8fdf714cbffd40b6897f1576a55b8e585fed242178bc3abf4082f89c99656",
+            "phase": "prepare",
+            "review_digest": "sha256:22eb2b3069523a219e3460d486ce58898ca4f68138a71cf211959885d929d5d6",
+            "run_ids": [
+              "run-20261009T201205Z-f76ece22793d4d7f",
+              "run-20261009T201205Z-04dff1ed3b6d4360"
+            ]
+          },
+          {
+            "operation_job_id": "job-6d9b758b48f24a74966a333699e17dce",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "observed"
+            },
+            "outcome_digest": "sha256:e9ede750b76cfa14821fc3c8a961b93d6f582197fd32b2a12bf0c0586dca8373",
+            "phase": "inspect",
+            "review_digest": "sha256:1b3108b31b14a32cd0d29ec6c1c1b0c54516a0adb99ff20a01c1a2ffccaa3e8d",
+            "run_ids": [
+              "run-20261009T201206Z-4d39873f99a34b57"
+            ]
+          },
+          {
+            "operation_job_id": "job-e2e9cdeba51142e6bbbed81d43175ac8",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [
+                {
+                  "purpose": "primary",
+                  "reader": "probe",
+                  "result": "read",
+                  "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+                  "size_bytes": 123
+                },
+                {
+                  "purpose": "primary",
+                  "reader": "legitimate",
+                  "result": "read",
+                  "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+                  "size_bytes": 123
+                },
+                {
+                  "purpose": "health",
+                  "reader": "legitimate",
+                  "result": "read",
+                  "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+                  "size_bytes": 122
+                }
+              ],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "observed"
+            },
+            "outcome_digest": "sha256:2f47c355752bda595c0ebe2357a726540b5085c847bacb797a494dcdbb63794d",
+            "phase": "baseline",
+            "review_digest": "sha256:f990d12da71b42b20ca1a20cdd720d3ab9547febee8f03026839aee8aa7d5470",
+            "run_ids": [
+              "run-20261009T201207Z-b4294766ef5c4de6",
+              "run-20261009T201207Z-e6e86e96b94b4167"
+            ]
+          },
+          {
+            "operation_job_id": "job-6c51ad90c25f48b9b4ec889e756d0407",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "observed"
+            },
+            "outcome_digest": "sha256:bae3dbf9befd7cbadceff68e5cbf52b88c249e1d87c41009da1251a7cfa6908e",
+            "phase": "apply",
+            "review_digest": "sha256:4c2c98b658f9d0fbd533ab8f03bc0f5310ed444bf959ce835aa68a4da88a4825",
+            "run_ids": [
+              "run-20261009T201208Z-be86ab0f6b9240f8"
+            ]
+          },
+          {
+            "operation_job_id": "job-756dfe0168f84f4481ab6e90dd7a55d4",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [
+                {
+                  "purpose": "primary",
+                  "reader": "probe",
+                  "result": "service_denied"
+                },
+                {
+                  "purpose": "primary",
+                  "reader": "legitimate",
+                  "result": "read",
+                  "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+                  "size_bytes": 123
+                },
+                {
+                  "purpose": "health",
+                  "reader": "legitimate",
+                  "result": "read",
+                  "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+                  "size_bytes": 122
+                }
+              ],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "denied_with_legitimate_reads"
+            },
+            "outcome_digest": "sha256:02381b18fa7daa01258c108842a703b5040870722f4d4a4b99cebb47ead374c6",
+            "phase": "retest",
+            "review_digest": "sha256:6fec2bd1eaac6df661156818849574dccd45c29104690629ad235e9eb9355090",
+            "run_ids": [
+              "run-20261009T201210Z-d76a9c1787cc4437",
+              "run-20261009T201210Z-52278465cd1b47ce"
+            ]
+          },
+          {
+            "operation_job_id": "job-4de36237fe2046388a95c1287e5ed3d4",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": false,
+              "facts": [],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "uncertain"
+            },
+            "outcome_digest": "sha256:e77dfbc00e1c804feab0a781d66845493003f193a5c4f98a5be8a27c1dd0410c",
+            "phase": "cleanup",
+            "review_digest": "sha256:731c5bc1671c637477aa6741e0c171c3bb7ad3bf9260c4ebf4ca70c41f4fc24f",
+            "run_ids": [
+              "run-20261009T201212Z-c86d60188f6e42c9"
+            ]
+          }
+        ],
+        "policy_retention": {
+          "operation_job_id": "job-4de36237fe2046388a95c1287e5ed3d4",
+          "policy_state": "hardened",
+          "review_digest": "sha256:731c5bc1671c637477aa6741e0c171c3bb7ad3bf9260c4ebf4ca70c41f4fc24f"
+        },
+        "policy_state": "hardened",
+        "problem": null,
+        "remaining": {
+          "api_calls": 50,
+          "business_attempts": 0,
+          "policy_changes": 0,
+          "rollbacks": 1,
+          "sessions": 2
+        },
+        "resource_disposition": "cleanup_required",
+        "revision": 12,
+        "saved_result_recovery_available": false,
+        "schema_version": "bluefire.s3-exercise.v2",
+        "stopped": false,
+        "workflow_job_id": "job-c4ca0bd9d77c4849831c75aee5cdd578"
+      },
+      "name": "uncertain",
+      "review": {
+        "environment_id": "test-environment",
+        "fixture_lifecycle": {
+          "authority_digest": "sha256:95a0be259869b0262b656454bd8babe6aa0b01bc996d80bea9b860cbd309ca52",
+          "intent_id": "848554ddbf174581b7fe246b3ce7bd2183ab46c77d664ad5b82dc1a52549b156",
+          "objects": [
+            {
+              "expected_etag": null,
+              "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+              "payload_preview": "{\"purpose\":\"primary\",\"schema_version\":\"bluefire.s3-generated-fixture.v1\",\"scope_id\":\"s3-00000000000000000000000000000000\"}\n",
+              "purpose": "primary",
+              "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+              "size_bytes": 123
+            },
+            {
+              "expected_etag": "\"owned-token\"",
+              "key": "bluefire/s3-00000000000000000000000000000000/health.jsonl",
+              "payload_preview": "{\"purpose\":\"health\",\"schema_version\":\"bluefire.s3-generated-fixture.v1\",\"scope_id\":\"s3-00000000000000000000000000000000\"}\n",
+              "purpose": "health",
+              "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+              "size_bytes": 122
+            }
+          ],
+          "policy_disposition": "retain_current",
+          "policy_state": "hardened"
+        },
+        "phase": "reconcile_fixtures",
+        "policy_change": null,
+        "prior_run_ids": [
+          "run-20261009T201205Z-f76ece22793d4d7f",
+          "run-20261009T201205Z-04dff1ed3b6d4360",
+          "run-20261009T201206Z-4d39873f99a34b57",
+          "run-20261009T201207Z-b4294766ef5c4de6",
+          "run-20261009T201207Z-e6e86e96b94b4167",
+          "run-20261009T201208Z-be86ab0f6b9240f8",
+          "run-20261009T201210Z-d76a9c1787cc4437",
+          "run-20261009T201210Z-52278465cd1b47ce",
+          "run-20261009T201212Z-c86d60188f6e42c9"
+        ],
+        "remaining": {
+          "api_calls": 50,
+          "business_attempts": 0,
+          "policy_changes": 0,
+          "rollbacks": 1,
+          "sessions": 2
+        },
+        "required_remaining": {
+          "api_calls": 34,
+          "business_attempts": 0,
+          "policy_changes": 0,
+          "rollbacks": 0,
+          "sessions": 0
+        },
+        "reserved": {
+          "api_calls": 10,
+          "business_attempts": 0,
+          "policy_changes": 0,
+          "rollbacks": 0,
+          "sessions": 0
+        },
+        "review_digest": "sha256:9459677f257ca1b43c2cc4cdd2acdba0aaa50eed01c96481ecf08773da378717",
+        "revision": 12,
+        "runtime": {
+          "available": true,
+          "problem": null,
+          "runner_profile_id": "synthetic-s3",
+          "runtime_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "worker_generation": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "schema_version": "bluefire.s3-stage-review.v2",
+        "scope_digest": "sha256:3204ede75ca9270b322032e650368525eb77a443b733fa9d580134e935beca9d",
+        "workflow_job_id": "job-c4ca0bd9d77c4849831c75aee5cdd578"
+      }
+    },
+    {
+      "exercise": {
+        "active_job": null,
+        "allowed_phases": [
+          "cleanup",
+          "reconcile_fixtures"
+        ],
+        "audit": "not_collected",
+        "context_digest": "sha256:12a35676526757397761d34463ebe76e618ad1dc7b754e08ffb7f5e4d9f26e74",
+        "environment": {
+          "baseline_policy": {
+            "Statement": [
+              {
+                "Action": [
+                  "s3:GetObject"
+                ],
+                "Effect": "Allow",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/unrelated-reader"
+                },
+                "Resource": [
+                  "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/health.jsonl"
+                ],
+                "Sid": "PreservedRead"
+              },
+              {
+                "Action": "s3:GetObject",
+                "Effect": "Allow",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/bluefire-probe"
+                },
+                "Resource": "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                "Sid": "BlueFireProbe00000000000000000000000000000000"
+              },
+              {
+                "Action": "s3:GetObject",
+                "Effect": "Allow",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/bluefire-legitimate"
+                },
+                "Resource": [
+                  "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                  "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/health.jsonl"
+                ],
+                "Sid": "BlueFireLegitimate00000000000000000000000000000000"
+              },
+              {
+                "Action": "s3:GetObject",
+                "Effect": "Deny",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/unrelated-denied"
+                },
+                "Resource": "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                "Sid": "PreservedDeny"
+              }
+            ],
+            "Version": "2012-10-17"
+          },
+          "display_name": "Synthetic S3 environment",
+          "environment_id": "test-environment",
+          "exclusive_writer_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+          "fixture_lifecycle": {
+            "bucket_shape": "never_versioned_no_object_lock",
+            "exclusive_writer_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+            "generation_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+            "schema_version": "bluefire.s3-fixture-enrollment.v2",
+            "scope_digest": "sha256:3204ede75ca9270b322032e650368525eb77a443b733fa9d580134e935beca9d"
+          },
+          "scope": {
+            "account_id": "123456789012",
+            "bucket": "bluefire-owned-fixture",
+            "created_at": "2026-10-09T00:00:00Z",
+            "expires_at": "2026-10-09T01:00:00Z",
+            "limits": {
+              "api_calls": 100,
+              "audit_bytes": 20971520,
+              "audit_events": 1000,
+              "audit_seconds": 1800,
+              "business_attempts": 6,
+              "business_seconds": 1800,
+              "cleanup_seconds": 900,
+              "convergence_seconds": 300,
+              "object_bytes": 65536,
+              "policy_changes": 1,
+              "request_seconds": 30,
+              "rollbacks": 1,
+              "session_seconds": 900,
+              "sessions": 6
+            },
+            "objects": [
+              {
+                "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                "purpose": "primary",
+                "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+                "size_bytes": 123
+              },
+              {
+                "key": "bluefire/s3-00000000000000000000000000000000/health.jsonl",
+                "purpose": "health",
+                "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+                "size_bytes": 122
+              }
+            ],
+            "ownership_receipt_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "policy": {
+              "baseline_digest": "sha256:c4968fa7f97c0855d1f111ae972bb664331b359f155be7fe48a74699d4f0bba2",
+              "legitimate_sid": "BlueFireLegitimate00000000000000000000000000000000",
+              "probe_sid": "BlueFireProbe00000000000000000000000000000000"
+            },
+            "prefix": "bluefire/s3-00000000000000000000000000000000/",
+            "region": "us-east-1",
+            "roles": {
+              "controller": "arn:aws:iam::123456789012:role/bluefire-controller",
+              "legitimate": "arn:aws:iam::123456789012:role/bluefire-legitimate",
+              "probe": "arn:aws:iam::123456789012:role/bluefire-probe"
+            },
+            "schema_version": "bluefire.s3-access-scope.v1",
+            "scope_id": "s3-00000000000000000000000000000000"
+          }
+        },
+        "fixture_state": "partial",
+        "fixtures": [
+          {
+            "etag": null,
+            "intent_id": "848554ddbf174581b7fe246b3ce7bd2183ab46c77d664ad5b82dc1a52549b156",
+            "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+            "provenance": "synthetic",
+            "purpose": "primary",
+            "request_ids": [
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID"
+            ],
+            "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+            "size_bytes": 123,
+            "state": "absent"
+          },
+          {
+            "etag": "\"owned-token\"",
+            "intent_id": "848554ddbf174581b7fe246b3ce7bd2183ab46c77d664ad5b82dc1a52549b156",
+            "key": "bluefire/s3-00000000000000000000000000000000/health.jsonl",
+            "provenance": "synthetic",
+            "purpose": "health",
+            "request_ids": [
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID"
+            ],
+            "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+            "size_bytes": 122,
+            "state": "owned"
+          }
+        ],
+        "independent_observations": 0,
+        "live_outcome_verified": false,
+        "operations": [
+          {
+            "operation_job_id": "job-9df3f4274e0d43a8a011e32b0317e867",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "observed"
+            },
+            "outcome_digest": "sha256:53c8fdf714cbffd40b6897f1576a55b8e585fed242178bc3abf4082f89c99656",
+            "phase": "prepare",
+            "review_digest": "sha256:22eb2b3069523a219e3460d486ce58898ca4f68138a71cf211959885d929d5d6",
+            "run_ids": [
+              "run-20261009T201205Z-f76ece22793d4d7f",
+              "run-20261009T201205Z-04dff1ed3b6d4360"
+            ]
+          },
+          {
+            "operation_job_id": "job-6d9b758b48f24a74966a333699e17dce",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "observed"
+            },
+            "outcome_digest": "sha256:e9ede750b76cfa14821fc3c8a961b93d6f582197fd32b2a12bf0c0586dca8373",
+            "phase": "inspect",
+            "review_digest": "sha256:1b3108b31b14a32cd0d29ec6c1c1b0c54516a0adb99ff20a01c1a2ffccaa3e8d",
+            "run_ids": [
+              "run-20261009T201206Z-4d39873f99a34b57"
+            ]
+          },
+          {
+            "operation_job_id": "job-e2e9cdeba51142e6bbbed81d43175ac8",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [
+                {
+                  "purpose": "primary",
+                  "reader": "probe",
+                  "result": "read",
+                  "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+                  "size_bytes": 123
+                },
+                {
+                  "purpose": "primary",
+                  "reader": "legitimate",
+                  "result": "read",
+                  "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+                  "size_bytes": 123
+                },
+                {
+                  "purpose": "health",
+                  "reader": "legitimate",
+                  "result": "read",
+                  "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+                  "size_bytes": 122
+                }
+              ],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "observed"
+            },
+            "outcome_digest": "sha256:2f47c355752bda595c0ebe2357a726540b5085c847bacb797a494dcdbb63794d",
+            "phase": "baseline",
+            "review_digest": "sha256:f990d12da71b42b20ca1a20cdd720d3ab9547febee8f03026839aee8aa7d5470",
+            "run_ids": [
+              "run-20261009T201207Z-b4294766ef5c4de6",
+              "run-20261009T201207Z-e6e86e96b94b4167"
+            ]
+          },
+          {
+            "operation_job_id": "job-6c51ad90c25f48b9b4ec889e756d0407",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "observed"
+            },
+            "outcome_digest": "sha256:bae3dbf9befd7cbadceff68e5cbf52b88c249e1d87c41009da1251a7cfa6908e",
+            "phase": "apply",
+            "review_digest": "sha256:4c2c98b658f9d0fbd533ab8f03bc0f5310ed444bf959ce835aa68a4da88a4825",
+            "run_ids": [
+              "run-20261009T201208Z-be86ab0f6b9240f8"
+            ]
+          },
+          {
+            "operation_job_id": "job-756dfe0168f84f4481ab6e90dd7a55d4",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [
+                {
+                  "purpose": "primary",
+                  "reader": "probe",
+                  "result": "service_denied"
+                },
+                {
+                  "purpose": "primary",
+                  "reader": "legitimate",
+                  "result": "read",
+                  "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+                  "size_bytes": 123
+                },
+                {
+                  "purpose": "health",
+                  "reader": "legitimate",
+                  "result": "read",
+                  "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+                  "size_bytes": 122
+                }
+              ],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "denied_with_legitimate_reads"
+            },
+            "outcome_digest": "sha256:02381b18fa7daa01258c108842a703b5040870722f4d4a4b99cebb47ead374c6",
+            "phase": "retest",
+            "review_digest": "sha256:6fec2bd1eaac6df661156818849574dccd45c29104690629ad235e9eb9355090",
+            "run_ids": [
+              "run-20261009T201210Z-d76a9c1787cc4437",
+              "run-20261009T201210Z-52278465cd1b47ce"
+            ]
+          },
+          {
+            "operation_job_id": "job-4de36237fe2046388a95c1287e5ed3d4",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": false,
+              "facts": [],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "uncertain"
+            },
+            "outcome_digest": "sha256:e77dfbc00e1c804feab0a781d66845493003f193a5c4f98a5be8a27c1dd0410c",
+            "phase": "cleanup",
+            "review_digest": "sha256:731c5bc1671c637477aa6741e0c171c3bb7ad3bf9260c4ebf4ca70c41f4fc24f",
+            "run_ids": [
+              "run-20261009T201212Z-c86d60188f6e42c9"
+            ]
+          },
+          {
+            "operation_job_id": "job-1846671cc2d0402f9b7bb1499d3399e1",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "observed"
+            },
+            "outcome_digest": "sha256:b3321a59f088a51d839fec4951c292bc520b8ef79a9e87a397bd8a143938c883",
+            "phase": "reconcile_fixtures",
+            "review_digest": "sha256:9459677f257ca1b43c2cc4cdd2acdba0aaa50eed01c96481ecf08773da378717",
+            "run_ids": [
+              "run-20261009T201214Z-eb8b629e67c04317",
+              "run-20261009T201215Z-09640f6d818c4d12"
+            ]
+          }
+        ],
+        "policy_retention": {
+          "operation_job_id": "job-4de36237fe2046388a95c1287e5ed3d4",
+          "policy_state": "hardened",
+          "review_digest": "sha256:731c5bc1671c637477aa6741e0c171c3bb7ad3bf9260c4ebf4ca70c41f4fc24f"
+        },
+        "policy_state": "hardened",
+        "problem": null,
+        "remaining": {
+          "api_calls": 40,
+          "business_attempts": 0,
+          "policy_changes": 0,
+          "rollbacks": 1,
+          "sessions": 2
+        },
+        "resource_disposition": "cleanup_required",
+        "revision": 14,
+        "saved_result_recovery_available": false,
+        "schema_version": "bluefire.s3-exercise.v2",
+        "stopped": false,
+        "workflow_job_id": "job-c4ca0bd9d77c4849831c75aee5cdd578"
+      },
+      "name": "partial_cleanup",
+      "review": {
+        "environment_id": "test-environment",
+        "fixture_lifecycle": {
+          "authority_digest": "sha256:95a0be259869b0262b656454bd8babe6aa0b01bc996d80bea9b860cbd309ca52",
+          "intent_id": "848554ddbf174581b7fe246b3ce7bd2183ab46c77d664ad5b82dc1a52549b156",
+          "objects": [
+            {
+              "expected_etag": null,
+              "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+              "payload_preview": "{\"purpose\":\"primary\",\"schema_version\":\"bluefire.s3-generated-fixture.v1\",\"scope_id\":\"s3-00000000000000000000000000000000\"}\n",
+              "purpose": "primary",
+              "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+              "size_bytes": 123
+            },
+            {
+              "expected_etag": "\"owned-token\"",
+              "key": "bluefire/s3-00000000000000000000000000000000/health.jsonl",
+              "payload_preview": "{\"purpose\":\"health\",\"schema_version\":\"bluefire.s3-generated-fixture.v1\",\"scope_id\":\"s3-00000000000000000000000000000000\"}\n",
+              "purpose": "health",
+              "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+              "size_bytes": 122
+            }
+          ],
+          "policy_disposition": "retain_current",
+          "policy_state": "hardened"
+        },
+        "phase": "cleanup",
+        "policy_change": null,
+        "prior_run_ids": [
+          "run-20261009T201205Z-f76ece22793d4d7f",
+          "run-20261009T201205Z-04dff1ed3b6d4360",
+          "run-20261009T201206Z-4d39873f99a34b57",
+          "run-20261009T201207Z-b4294766ef5c4de6",
+          "run-20261009T201207Z-e6e86e96b94b4167",
+          "run-20261009T201208Z-be86ab0f6b9240f8",
+          "run-20261009T201210Z-d76a9c1787cc4437",
+          "run-20261009T201210Z-52278465cd1b47ce",
+          "run-20261009T201212Z-c86d60188f6e42c9",
+          "run-20261009T201214Z-eb8b629e67c04317",
+          "run-20261009T201215Z-09640f6d818c4d12"
+        ],
+        "remaining": {
+          "api_calls": 40,
+          "business_attempts": 0,
+          "policy_changes": 0,
+          "rollbacks": 1,
+          "sessions": 2
+        },
+        "required_remaining": {
+          "api_calls": 24,
+          "business_attempts": 0,
+          "policy_changes": 0,
+          "rollbacks": 0,
+          "sessions": 0
+        },
+        "reserved": {
+          "api_calls": 14,
+          "business_attempts": 0,
+          "policy_changes": 0,
+          "rollbacks": 0,
+          "sessions": 0
+        },
+        "review_digest": "sha256:34218dcd8bcbc2eb35afcb65cec40810bc692a192466e51b50266f18163ac6e7",
+        "revision": 14,
+        "runtime": {
+          "available": true,
+          "problem": null,
+          "runner_profile_id": "synthetic-s3",
+          "runtime_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "worker_generation": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "schema_version": "bluefire.s3-stage-review.v2",
+        "scope_digest": "sha256:3204ede75ca9270b322032e650368525eb77a443b733fa9d580134e935beca9d",
+        "workflow_job_id": "job-c4ca0bd9d77c4849831c75aee5cdd578"
+      }
+    },
+    {
+      "exercise": {
+        "active_job": null,
+        "allowed_phases": [],
+        "audit": "not_collected",
+        "context_digest": "sha256:12a35676526757397761d34463ebe76e618ad1dc7b754e08ffb7f5e4d9f26e74",
+        "environment": {
+          "baseline_policy": {
+            "Statement": [
+              {
+                "Action": [
+                  "s3:GetObject"
+                ],
+                "Effect": "Allow",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/unrelated-reader"
+                },
+                "Resource": [
+                  "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/health.jsonl"
+                ],
+                "Sid": "PreservedRead"
+              },
+              {
+                "Action": "s3:GetObject",
+                "Effect": "Allow",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/bluefire-probe"
+                },
+                "Resource": "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                "Sid": "BlueFireProbe00000000000000000000000000000000"
+              },
+              {
+                "Action": "s3:GetObject",
+                "Effect": "Allow",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/bluefire-legitimate"
+                },
+                "Resource": [
+                  "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                  "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/health.jsonl"
+                ],
+                "Sid": "BlueFireLegitimate00000000000000000000000000000000"
+              },
+              {
+                "Action": "s3:GetObject",
+                "Effect": "Deny",
+                "Principal": {
+                  "AWS": "arn:aws:iam::123456789012:role/unrelated-denied"
+                },
+                "Resource": "arn:aws:s3:::bluefire-owned-fixture/bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                "Sid": "PreservedDeny"
+              }
+            ],
+            "Version": "2012-10-17"
+          },
+          "display_name": "Synthetic S3 environment",
+          "environment_id": "test-environment",
+          "exclusive_writer_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+          "fixture_lifecycle": {
+            "bucket_shape": "never_versioned_no_object_lock",
+            "exclusive_writer_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+            "generation_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+            "schema_version": "bluefire.s3-fixture-enrollment.v2",
+            "scope_digest": "sha256:3204ede75ca9270b322032e650368525eb77a443b733fa9d580134e935beca9d"
+          },
+          "scope": {
+            "account_id": "123456789012",
+            "bucket": "bluefire-owned-fixture",
+            "created_at": "2026-10-09T00:00:00Z",
+            "expires_at": "2026-10-09T01:00:00Z",
+            "limits": {
+              "api_calls": 100,
+              "audit_bytes": 20971520,
+              "audit_events": 1000,
+              "audit_seconds": 1800,
+              "business_attempts": 6,
+              "business_seconds": 1800,
+              "cleanup_seconds": 900,
+              "convergence_seconds": 300,
+              "object_bytes": 65536,
+              "policy_changes": 1,
+              "request_seconds": 30,
+              "rollbacks": 1,
+              "session_seconds": 900,
+              "sessions": 6
+            },
+            "objects": [
+              {
+                "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+                "purpose": "primary",
+                "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+                "size_bytes": 123
+              },
+              {
+                "key": "bluefire/s3-00000000000000000000000000000000/health.jsonl",
+                "purpose": "health",
+                "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+                "size_bytes": 122
+              }
+            ],
+            "ownership_receipt_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "policy": {
+              "baseline_digest": "sha256:c4968fa7f97c0855d1f111ae972bb664331b359f155be7fe48a74699d4f0bba2",
+              "legitimate_sid": "BlueFireLegitimate00000000000000000000000000000000",
+              "probe_sid": "BlueFireProbe00000000000000000000000000000000"
+            },
+            "prefix": "bluefire/s3-00000000000000000000000000000000/",
+            "region": "us-east-1",
+            "roles": {
+              "controller": "arn:aws:iam::123456789012:role/bluefire-controller",
+              "legitimate": "arn:aws:iam::123456789012:role/bluefire-legitimate",
+              "probe": "arn:aws:iam::123456789012:role/bluefire-probe"
+            },
+            "schema_version": "bluefire.s3-access-scope.v1",
+            "scope_id": "s3-00000000000000000000000000000000"
+          }
+        },
+        "fixture_state": "absent",
+        "fixtures": [
+          {
+            "etag": null,
+            "intent_id": "848554ddbf174581b7fe246b3ce7bd2183ab46c77d664ad5b82dc1a52549b156",
+            "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+            "provenance": "synthetic",
+            "purpose": "primary",
+            "request_ids": [
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID"
+            ],
+            "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+            "size_bytes": 123,
+            "state": "absent"
+          },
+          {
+            "etag": null,
+            "intent_id": "848554ddbf174581b7fe246b3ce7bd2183ab46c77d664ad5b82dc1a52549b156",
+            "key": "bluefire/s3-00000000000000000000000000000000/health.jsonl",
+            "provenance": "synthetic",
+            "purpose": "health",
+            "request_ids": [
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID",
+              "SAFE-REQUEST-ID"
+            ],
+            "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+            "size_bytes": 122,
+            "state": "absent"
+          }
+        ],
+        "independent_observations": 0,
+        "live_outcome_verified": false,
+        "operations": [
+          {
+            "operation_job_id": "job-9df3f4274e0d43a8a011e32b0317e867",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "observed"
+            },
+            "outcome_digest": "sha256:53c8fdf714cbffd40b6897f1576a55b8e585fed242178bc3abf4082f89c99656",
+            "phase": "prepare",
+            "review_digest": "sha256:22eb2b3069523a219e3460d486ce58898ca4f68138a71cf211959885d929d5d6",
+            "run_ids": [
+              "run-20261009T201205Z-f76ece22793d4d7f",
+              "run-20261009T201205Z-04dff1ed3b6d4360"
+            ]
+          },
+          {
+            "operation_job_id": "job-6d9b758b48f24a74966a333699e17dce",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "observed"
+            },
+            "outcome_digest": "sha256:e9ede750b76cfa14821fc3c8a961b93d6f582197fd32b2a12bf0c0586dca8373",
+            "phase": "inspect",
+            "review_digest": "sha256:1b3108b31b14a32cd0d29ec6c1c1b0c54516a0adb99ff20a01c1a2ffccaa3e8d",
+            "run_ids": [
+              "run-20261009T201206Z-4d39873f99a34b57"
+            ]
+          },
+          {
+            "operation_job_id": "job-e2e9cdeba51142e6bbbed81d43175ac8",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [
+                {
+                  "purpose": "primary",
+                  "reader": "probe",
+                  "result": "read",
+                  "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+                  "size_bytes": 123
+                },
+                {
+                  "purpose": "primary",
+                  "reader": "legitimate",
+                  "result": "read",
+                  "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+                  "size_bytes": 123
+                },
+                {
+                  "purpose": "health",
+                  "reader": "legitimate",
+                  "result": "read",
+                  "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+                  "size_bytes": 122
+                }
+              ],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "observed"
+            },
+            "outcome_digest": "sha256:2f47c355752bda595c0ebe2357a726540b5085c847bacb797a494dcdbb63794d",
+            "phase": "baseline",
+            "review_digest": "sha256:f990d12da71b42b20ca1a20cdd720d3ab9547febee8f03026839aee8aa7d5470",
+            "run_ids": [
+              "run-20261009T201207Z-b4294766ef5c4de6",
+              "run-20261009T201207Z-e6e86e96b94b4167"
+            ]
+          },
+          {
+            "operation_job_id": "job-6c51ad90c25f48b9b4ec889e756d0407",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "observed"
+            },
+            "outcome_digest": "sha256:bae3dbf9befd7cbadceff68e5cbf52b88c249e1d87c41009da1251a7cfa6908e",
+            "phase": "apply",
+            "review_digest": "sha256:4c2c98b658f9d0fbd533ab8f03bc0f5310ed444bf959ce835aa68a4da88a4825",
+            "run_ids": [
+              "run-20261009T201208Z-be86ab0f6b9240f8"
+            ]
+          },
+          {
+            "operation_job_id": "job-756dfe0168f84f4481ab6e90dd7a55d4",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [
+                {
+                  "purpose": "primary",
+                  "reader": "probe",
+                  "result": "service_denied"
+                },
+                {
+                  "purpose": "primary",
+                  "reader": "legitimate",
+                  "result": "read",
+                  "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+                  "size_bytes": 123
+                },
+                {
+                  "purpose": "health",
+                  "reader": "legitimate",
+                  "result": "read",
+                  "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+                  "size_bytes": 122
+                }
+              ],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "denied_with_legitimate_reads"
+            },
+            "outcome_digest": "sha256:02381b18fa7daa01258c108842a703b5040870722f4d4a4b99cebb47ead374c6",
+            "phase": "retest",
+            "review_digest": "sha256:6fec2bd1eaac6df661156818849574dccd45c29104690629ad235e9eb9355090",
+            "run_ids": [
+              "run-20261009T201210Z-d76a9c1787cc4437",
+              "run-20261009T201210Z-52278465cd1b47ce"
+            ]
+          },
+          {
+            "operation_job_id": "job-4de36237fe2046388a95c1287e5ed3d4",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": false,
+              "facts": [],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "uncertain"
+            },
+            "outcome_digest": "sha256:e77dfbc00e1c804feab0a781d66845493003f193a5c4f98a5be8a27c1dd0410c",
+            "phase": "cleanup",
+            "review_digest": "sha256:731c5bc1671c637477aa6741e0c171c3bb7ad3bf9260c4ebf4ca70c41f4fc24f",
+            "run_ids": [
+              "run-20261009T201212Z-c86d60188f6e42c9"
+            ]
+          },
+          {
+            "operation_job_id": "job-1846671cc2d0402f9b7bb1499d3399e1",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "observed"
+            },
+            "outcome_digest": "sha256:b3321a59f088a51d839fec4951c292bc520b8ef79a9e87a397bd8a143938c883",
+            "phase": "reconcile_fixtures",
+            "review_digest": "sha256:9459677f257ca1b43c2cc4cdd2acdba0aaa50eed01c96481ecf08773da378717",
+            "run_ids": [
+              "run-20261009T201214Z-eb8b629e67c04317",
+              "run-20261009T201215Z-09640f6d818c4d12"
+            ]
+          },
+          {
+            "operation_job_id": "job-9db5bcb3eea54fc88588925a394fe69c",
+            "outcome": {
+              "audit": "not_collected",
+              "cleanup": "verified",
+              "complete": true,
+              "facts": [],
+              "independent_observations": 0,
+              "policy_observation": null,
+              "provenance": "synthetic",
+              "resource_disposition": "retained",
+              "state": "observed"
+            },
+            "outcome_digest": "sha256:00e84545fcdf37121e1abd2dae7a84cbec4dd033b18316561e3aebf3c802401a",
+            "phase": "cleanup",
+            "review_digest": "sha256:34218dcd8bcbc2eb35afcb65cec40810bc692a192466e51b50266f18163ac6e7",
+            "run_ids": [
+              "run-20261009T201217Z-b83cbb1c0a094c17",
+              "run-20261009T201218Z-cfeb4550b956445d"
+            ]
+          }
+        ],
+        "policy_retention": {
+          "operation_job_id": "job-9db5bcb3eea54fc88588925a394fe69c",
+          "policy_state": "hardened",
+          "review_digest": "sha256:34218dcd8bcbc2eb35afcb65cec40810bc692a192466e51b50266f18163ac6e7"
+        },
+        "policy_state": "hardened",
+        "problem": null,
+        "remaining": {
+          "api_calls": 26,
+          "business_attempts": 0,
+          "policy_changes": 0,
+          "rollbacks": 1,
+          "sessions": 2
+        },
+        "resource_disposition": "removed",
+        "revision": 16,
+        "saved_result_recovery_available": false,
+        "schema_version": "bluefire.s3-exercise.v2",
+        "stopped": false,
+        "workflow_job_id": "job-c4ca0bd9d77c4849831c75aee5cdd578"
+      },
+      "name": "absent_retained_policy",
+      "review": null
+    }
+  ]
+}

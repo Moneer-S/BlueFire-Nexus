@@ -14,6 +14,9 @@ ROOT = "/api/v1/s3-access"
     ("method", "path", "operation", "has_identifier"),
     [
         ("GET", "/environments", "s3_access_environments", False),
+        ("GET", "/setup", "s3_access_setup_profiles", False),
+        ("POST", "/setup/check", "check_s3_access_setup", False),
+        ("POST", "/setup/review", "review_s3_access_setup_draft", False),
         ("GET", "/exercises", "s3_access_exercises", False),
         ("GET", f"/exercises/{JOB_ID}", "s3_access_exercise", True),
         ("POST", "/exercises", "create_s3_access", False),
@@ -64,6 +67,9 @@ def test_cross_origin_s3_command_never_dispatches():
     [
         "/exercises?phase=apply",
         "/environments?scope=other",
+        "/setup?profile=other",
+        "/setup/check/again",
+        "/setup/review?apply=1",
         "/exercises/not-a-job",
         f"/exercises/{JOB_ID}/apply",
         f"/exercises/{JOB_ID}/recover/again",
@@ -82,6 +88,9 @@ def test_noncanonical_s3_routes_never_dispatch(path):
         ("GET", f"/exercises/{JOB_ID}/operations"),
         ("GET", f"/exercises/{JOB_ID}/recover"),
         ("POST", "/environments"),
+        ("POST", "/setup"),
+        ("GET", "/setup/check"),
+        ("GET", "/setup/review"),
         ("POST", f"/exercises/{JOB_ID}"),
     ],
 )

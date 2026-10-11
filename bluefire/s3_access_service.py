@@ -37,6 +37,21 @@ class S3AccessServiceMixin:
     def s3_access_environments(self) -> Mapping[str, Any]:
         return self._s3_call(self.s3_access.environments)
 
+    def s3_access_setup_profiles(self) -> Mapping[str, Any]:
+        from .s3_access_onboarding import setup_profiles
+
+        return setup_profiles(self)
+
+    def check_s3_access_setup(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        from .s3_access_onboarding import check_setup
+
+        return check_setup(self, request)
+
+    def review_s3_access_setup_draft(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        from .s3_access_onboarding import review_draft
+
+        return review_draft(self, request)
+
     def s3_access_exercises(self) -> Mapping[str, Any]:
         return self._s3_call(self.s3_access.list_exercises)
 

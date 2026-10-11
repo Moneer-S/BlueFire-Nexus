@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import parse_qsl, quote, urlsplit
 
+from . import s3_fixture_contract as fixtures
 from .s3_access_contract import S3AccessError, S3AccessScope
 from .s3_access_sdk_transport import BoundedSdkTransport
 from .s3_access_wire import (
@@ -18,7 +20,14 @@ from .s3_access_wire import (
     permit_request,
     validate_permit,
 )
+from .s3_fixture_send import prepared_resource
 from .util import canonical_json_bytes
+
+
+class S3ServiceFailure(Exception):
+    def __init__(self, public: Mapping[str, Any]):
+        super().__init__("AWS service refused the scoped request")
+        self.public = dict(public)
 
 
 class S3ClientFactory(Protocol):
@@ -117,7 +126,9 @@ class BotocoreFactory:
         return None
 
 
-def metadata(value: Mapping[str, Any], *, success: bool, put: bool = False) -> dict[str, Any]:
+def metadata(
+    value: Mapping[str, Any], *, success: bool, put: bool = False, fixture: bool = False
+) -> dict[str, Any]:
     raw = value.get("ResponseMetadata")
     if not isinstance(raw, Mapping):
         raise S3AccessError("SDK response metadata is unavailable")
@@ -139,7 +150,10 @@ def metadata(value: Mapping[str, Any], *, success: bool, put: bool = False) -> d
         error = value.get("Error")
         code = error.get("Code") if isinstance(error, Mapping) else None
         result["error_code"] = (
-            code if isinstance(code, str) and code in SAFE_ERROR_CODES else "OtherServiceError"
+            code
+            if isinstance(code, str)
+            and code in (SAFE_ERROR_CODES | (fixtures.ERROR_CODES if fixture else set()))
+            else "OtherServiceError"
         )
     return result
 
@@ -207,7 +221,10 @@ class S3SendGuard:
         plan = operation_plan(self.request)
         if self.sequence >= len(plan) or (service, operation, role) != plan[self.sequence]:
             raise S3AccessError("SDK call differs from the fixed operation sequence")
-        if operation == "GetObject":
+        if (
+            operation == "GetObject"
+            and self.request.to_dict()["schema_version"] != fixtures.REQUEST_SCHEMA
+        ):
             position = self.sequence - 3
             if parameters.get("Key") != self.scope.to_dict()["objects"][position]["key"]:
                 raise S3AccessError("SDK object order differs from the finite read plan")
@@ -247,6 +264,11 @@ class S3SendGuard:
             ):
                 raise S3AccessError("SDK request endpoint differs from its exact binding")
             body = request.body or b""
+            if (
+                self.request.to_dict()["schema_version"] == fixtures.REQUEST_SCHEMA
+                and operation == "PutObject"
+            ):
+                body = self._fixture_body(body)
             if isinstance(body, str):
                 body = body.encode("utf-8")
             if type(body) is not bytes or len(body) > 20 * 1024:
@@ -298,6 +320,11 @@ class S3SendGuard:
                     }
                 elif parameters or active["role"] not in {"controller", "probe", "legitimate"}:
                     raise S3AccessError("STS identity parameters are unsupported")
+            elif (
+                service == "s3"
+                and self.request.to_dict()["schema_version"] == fixtures.REQUEST_SCHEMA
+            ):
+                resource = prepared_resource(self.request.to_dict(), active, request, url, body)
             elif service == "s3":
                 if (
                     parameters.get("Bucket") != scope["bucket"]
@@ -383,7 +410,7 @@ class S3SendGuard:
         # Native debit precedes ACK. An expired or interrupted worker cannot
         # refund that debit or assume an acknowledged write was not attempted.
         self.sequence += 1
-        if operation == "PutBucketPolicy":
+        if operation in {"PutBucketPolicy", "PutObject", "DeleteObject"}:
             self.write_permitted = True
         self.request.assert_current(self.clock)
         self.permitted = True
@@ -391,8 +418,26 @@ class S3SendGuard:
         self.prepared_fingerprint = self._fingerprint(request)
 
     @staticmethod
+    def _fixture_body(body: Any) -> bytes:
+        if type(body) is io.BytesIO:
+            view = body.getbuffer()
+            try:
+                if len(view) > 20 * 1024 or body.tell() != 0:
+                    raise S3AccessError(
+                        "fixture prepared stream is not the exact initial bounded payload"
+                    )
+            finally:
+                view.release()
+            return body.getvalue()
+        if type(body) is not bytes:
+            raise S3AccessError("fixture prepared body type is unsupported")
+        return body
+
+    @staticmethod
     def _fingerprint(request: Any) -> str:
         body = request.body or b""
+        if type(body) is io.BytesIO:
+            body = S3SendGuard._fixture_body(body)
         if isinstance(body, str):
             body = body.encode("utf-8")
         if type(body) is not bytes:

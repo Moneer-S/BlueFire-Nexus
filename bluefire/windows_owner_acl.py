@@ -705,6 +705,49 @@ def _apply_owner_private_acl_to_handle(
                     local_free.LocalFree(pointer)
 
 
+def verify_owner_private_acl(descriptor: int, *, directory: bool) -> None:
+    """Verify token-private ownership and DACL without changing the object."""
+    verify_owner_private_acl_handle(_handle_from_descriptor(descriptor), directory=directory)
+
+
+def verify_owner_private_acl_handle(handle: int, *, directory: bool) -> None:
+    """Verify the existing DACL through an already pinned native handle."""
+    if os.name != "nt" or type(directory) is not bool or type(handle) is not int or handle < 0:
+        raise WindowsOwnerAclError("Windows owner-private ACL input is invalid")
+    access_sid, owner_sid = _current_token_sids()
+    access_pointer = ctypes.c_void_p()
+    owner_pointer = ctypes.c_void_p()
+    verified = ctypes.c_void_p()
+    try:
+        advapi32, kernel32 = _configure_apis()
+        access_pointer = _converted_sid(advapi32, access_sid)
+        owner_pointer = _converted_sid(advapi32, owner_sid)
+        observed = _select_current_owner(
+            advapi32,
+            kernel32,
+            handle=handle,
+            access_sid=access_pointer,
+            default_owner_sid=owner_pointer,
+        )
+        verified = _verify_owner_private_acl(
+            advapi32,
+            kernel32,
+            handle=handle,
+            observed_owner_sid=observed,
+            access_sid=access_pointer,
+            directory=directory,
+        )
+    except WindowsOwnerAclError:
+        raise
+    except (AttributeError, OSError, TypeError, ValueError):
+        raise WindowsOwnerAclError("Windows private DACL verification failed") from None
+    finally:
+        if "kernel32" in locals():
+            for pointer in (verified, owner_pointer, access_pointer):
+                if pointer.value:
+                    kernel32.LocalFree(pointer)
+
+
 def apply_owner_private_acl(descriptor: int, *, directory: bool) -> None:
     """Ensure one pinned object's DACL is exactly token-private without redundant writes."""
 

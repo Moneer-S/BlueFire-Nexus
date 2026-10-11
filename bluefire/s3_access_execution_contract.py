@@ -69,8 +69,21 @@ def validate_execution(request: S3WorkerRequest, value: Any) -> dict[str, Any]:
         row["result"] = validate_result(request, row["result"])
         if row["result"]["send_permits_consumed"] > row["send_debits"]:
             raise S3AccessError("worker sends exceed native durable accounting")
-    writes = request.to_dict()["operation"] in {"apply_policy", "rollback_policy"}
+    source = request.to_dict()
+    writes = source["operation"] in {"apply_policy", "rollback_policy"}
+    mutation_sequence = 3
+    if source["operation"] in {"prepare_fixture", "cleanup_fixture"}:
+        writes = (
+            source["operation"] == "prepare_fixture"
+            or source["fixture"]["expected_etag"] is not None
+        )
+        mutation_sequence = 5
     observed = row["result"] is not None and row["result"]["outcome"] == "observed"
-    if writes and row["send_debits"] >= 3 and not observed and row["dispatch"] != "unknown":
+    if (
+        writes
+        and row["send_debits"] >= mutation_sequence
+        and not observed
+        and row["dispatch"] != "unknown"
+    ):
         raise S3AccessError("an unsettled S3 write must require reconciliation")
     return row

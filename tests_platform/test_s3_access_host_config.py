@@ -174,7 +174,7 @@ def test_exact_request_selection_cannot_rebind_scope_profile_or_exclusive_writer
         selected_environment(row, S3WorkerRequest.from_mapping(source), approval, entry["profile"])
 
 
-def test_temporary_material_uses_only_exact_purpose_bound_synthetic_reference():
+def test_temporary_material_refuses_unvalidated_enrollment_before_secret_access():
     row = checked(configured())
     calls = []
 
@@ -184,6 +184,6 @@ def test_temporary_material_uses_only_exact_purpose_bound_synthetic_reference():
             return canonical_json_bytes(credential_row())
 
     request = S3WorkerRequest.from_mapping(request_row("inspect_policy"))
-    encoded = temporary_material(Enrollment(), row["environments"][0], request, lambda: NOW)
-    assert json.loads(encoded) == credential_row()
-    assert calls == [("s3-test-environment.secret", "s3-temporary:test-environment")]
+    with pytest.raises(S3AccessError, match="actual managed enrollment"):
+        temporary_material(Enrollment(), row["environments"][0], request, lambda: NOW)
+    assert calls == []

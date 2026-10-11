@@ -13,7 +13,7 @@ pub(crate) const MAX_TOTAL: u64 = 512 * 1024 * 1024;
 // binds observed source bytes, not merely version labels or an ambient install.
 const SDK_INVENTORY: &str =
     "sha256:3a0b54afdb950def6428f2e0b837d254918757f3b0b145bfea376bc7ac68536b";
-pub(crate) const WORKER_FILES: [&str; 10] = [
+pub(crate) const WORKER_FILES: [&str; 13] = [
     "s3_access_runtime.py",
     "s3_access_worker_entry.py",
     "s3_access_contract.py",
@@ -23,11 +23,14 @@ pub(crate) const WORKER_FILES: [&str; 10] = [
     "s3_access_sdk_boundary.py",
     "s3_access_sdk_transport.py",
     "s3_access_worker.py",
+    "s3_fixture_contract.py",
+    "s3_fixture_send.py",
+    "s3_fixture_sdk.py",
     "util.py",
 ];
 
 fn compiled_worker_generation() -> String {
-    let sources: [(&str, &[u8]); 10] = [
+    let sources: [(&str, &[u8]); 13] = [
         (
             "s3_access_runtime.py",
             include_bytes!("../../bluefire/s3_access_runtime.py"),
@@ -63,6 +66,18 @@ fn compiled_worker_generation() -> String {
         (
             "s3_access_worker.py",
             include_bytes!("../../bluefire/s3_access_worker.py"),
+        ),
+        (
+            "s3_fixture_contract.py",
+            include_bytes!("../../bluefire/s3_fixture_contract.py"),
+        ),
+        (
+            "s3_fixture_send.py",
+            include_bytes!("../../bluefire/s3_fixture_send.py"),
+        ),
+        (
+            "s3_fixture_sdk.py",
+            include_bytes!("../../bluefire/s3_fixture_sdk.py"),
         ),
         ("util.py", include_bytes!("../../bluefire/util.py")),
     ];
