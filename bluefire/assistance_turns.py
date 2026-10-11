@@ -11,6 +11,9 @@ from urllib.parse import urlencode
 from .ai_assistance import COMPARE, CREATE, REVISE, message_text, suggest_plan
 from .ai_wire import AIProviderCancelled, AIProviderError
 from .application_errors import APIError
+from .assistance_audit_context import KIND as AUDIT_KIND
+from .assistance_audit_context import context as audit_context
+from .assistance_audit_context import selection as audit_selection
 from .assistance_context import LIMITATIONS, AssistanceContext
 from .assistance_context import context as selected_context
 from .assistance_receiver_context import KINDS as RECEIVER_KINDS
@@ -43,6 +46,7 @@ def submitted(request: Mapping[str, Any]) -> Mapping[str, Any]:
         "saved_graph",
         "saved_scenario",
         "run_detection",
+        AUDIT_KIND,
         *RECEIVER_KINDS,
     }:
         return request
@@ -55,12 +59,16 @@ def submitted(request: Mapping[str, Any]) -> Mapping[str, Any]:
 def is_graph(request: Mapping[str, Any]) -> bool:
     return bool(
         request.get("selection", {}).get("kind")
-        in {"graph", "saved_graph", "saved_scenario", "run_detection", *RECEIVER_KINDS}
+        in {"graph", "saved_graph", "saved_scenario", "run_detection", AUDIT_KIND, *RECEIVER_KINDS}
     )
 
 
 def is_receiver(request):
     return request.get("selection", {}).get("kind") in RECEIVER_KINDS
+
+
+def is_audit(request):
+    return request.get("selection", {}).get("kind") == AUDIT_KIND
 
 
 def is_creation(request: Mapping[str, Any]) -> bool:
@@ -96,6 +104,11 @@ class ExperimentAssistance:
         request = submitted(request)
         if is_receiver(request):
             return dict(self.service.assistance_receiver.fresh(job))
+        if is_audit(request):
+            current = audit_context(self.service, request["selection"])
+            if current != job["request"]["context"]:
+                raise fail("The selected saved audit context changed.")
+            return dict(current)
         current = (
             (
                 self.service.assistance_runs.context(request["selection"])
@@ -142,19 +155,24 @@ class ExperimentAssistance:
                 "saved_graph",
                 "saved_scenario",
                 "run_detection",
+                AUDIT_KIND,
                 *RECEIVER_KINDS,
             }:
                 try:
                     (
-                        receiver_selection
-                        if chosen["kind"] in RECEIVER_KINDS
+                        audit_selection
+                        if chosen["kind"] == AUDIT_KIND
                         else (
-                            graph_selection
-                            if chosen["kind"] == "graph"
+                            receiver_selection
+                            if chosen["kind"] in RECEIVER_KINDS
                             else (
-                                create_selection
-                                if chosen["kind"] == "run_detection"
-                                else run_selection
+                                graph_selection
+                                if chosen["kind"] == "graph"
+                                else (
+                                    create_selection
+                                    if chosen["kind"] == "run_detection"
+                                    else run_selection
+                                )
                             )
                         )
                     )(chosen)
@@ -240,20 +258,24 @@ class ExperimentAssistance:
             }
             try:
                 context = (
-                    self.service.assistance_receiver.context(request["selection"])
-                    if is_receiver(request)
+                    audit_context(self.service, request["selection"])
+                    if is_audit(request)
                     else (
-                        (
-                            self.service.assistance_runs.context(request["selection"])
-                            if is_saved_run(request)
-                            else (
-                                self.service.detection_create.context(request["selection"])
-                                if is_creation(request)
-                                else self.service.graph_ai.context(request["selection"])
+                        self.service.assistance_receiver.context(request["selection"])
+                        if is_receiver(request)
+                        else (
+                            (
+                                self.service.assistance_runs.context(request["selection"])
+                                if is_saved_run(request)
+                                else (
+                                    self.service.detection_create.context(request["selection"])
+                                    if is_creation(request)
+                                    else self.service.graph_ai.context(request["selection"])
+                                )
                             )
+                            if is_graph(request)
+                            else self.context(request["run_id"], request["candidate_id"])
                         )
-                        if is_graph(request)
-                        else self.context(request["run_id"], request["candidate_id"])
                     )
                 )
                 if request["context_digest"] != context["context_digest"] or (
@@ -319,6 +341,11 @@ class ExperimentAssistance:
                 message=submitted["message"],
                 cancel=ctx.cancellation_event,
             )
+            if is_audit(submitted):
+                self._fresh(job)
+                self._provider(job)
+                if proposal["plan"]:
+                    raise fail("Saved audit explanation has no dispatch capability.")
             ctx.checkpoint(proposal)
             self._advance(ctx.job_id)
             return JobResult(progress={"planning_complete": True})
@@ -351,6 +378,10 @@ class ExperimentAssistance:
         self._fresh(parent)
         self._provider(parent)
         selected_request = submitted(parent["request"]["submitted_request"])
+        if is_audit(selected_request):
+            if parent["progress"].get("plan"):
+                raise fail("Saved audit explanation cannot dispatch an operation.")
+            return
         if is_receiver(selected_request):
             self.service.assistance_receiver.advance(parent, recovery=recovery)
             return
@@ -842,6 +873,13 @@ class ExperimentAssistance:
                             "native_path": None,
                         },
                     )
+            elif (
+                is_audit(request["submitted_request"])
+                and not progress["plan"]
+                and parent["state"] == "completed"
+            ):
+                self._fresh(parent)
+                view.update(status="completed", next_action=None)
             elif not progress["plan"]:
                 view.update(
                     status="blocked",

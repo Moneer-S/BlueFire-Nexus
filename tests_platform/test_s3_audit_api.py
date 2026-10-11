@@ -14,6 +14,7 @@ REVIEW = "job-" + "e" * 32
         ("GET", "", "s3_audit_reviews"),
         ("POST", "", "save_s3_audit_review"),
         ("GET", "/" + REVIEW, "s3_audit_review"),
+        ("GET", "/" + REVIEW + "/assistant-context", "s3_audit_assistance_context"),
     ],
 )
 @pytest.mark.parametrize("authenticated", [False, True])
@@ -41,6 +42,9 @@ def test_audit_dispatch_requires_session(method, suffix, operation, authenticate
     [
         ("GET", ROOT + "?scope=other", 400),
         ("POST", ROOT + "/" + REVIEW, 405),
+        ("POST", ROOT + "/" + REVIEW + "/assistant-context", 405),
+        ("GET", ROOT + "/" + REVIEW + "/assistant-context?selection=other", 400),
+        ("GET", ROOT + "/assistant-context", 400),
         ("GET", ROOT + "/not-a-review", 400),
         ("GET", ROOT + "/" + REVIEW + "/again", 400),
         ("GET", ROOT.replace("audit-reviews", "stop") + "/" + REVIEW, 400),
