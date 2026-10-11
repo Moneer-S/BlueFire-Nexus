@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .runner_private_files import _PinnedPrivateDirectory
+from .runner_private_files import _PinnedPrivateDirectory, _windows_extended_path
 from .runner_transport_errors import RunnerTransportError
 from .util import content_hash, parse_iso8601_datetime
 
@@ -83,7 +83,7 @@ def discover_runner_receipts(
         raise RunnerTransportError("runner receipt discovery limits are invalid")
     receipt_root = sandbox_root / ".bluefire" / "receipts"
     try:
-        receipt_root.lstat()
+        (_windows_extended_path(receipt_root) if os.name == "nt" else receipt_root).lstat()
     except FileNotFoundError:
         return ()
     except OSError as exc:
@@ -96,7 +96,9 @@ def discover_runner_receipts(
             if require_commit:
                 commit_root = sandbox_root / ".bluefire" / "receipt-commits"
                 try:
-                    commit_root.lstat()
+                    (
+                        _windows_extended_path(commit_root) if os.name == "nt" else commit_root
+                    ).lstat()
                 except FileNotFoundError:
                     return ()
                 except OSError as exc:
