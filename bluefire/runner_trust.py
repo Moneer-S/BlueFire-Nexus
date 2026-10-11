@@ -139,6 +139,7 @@ class RunnerEnrollment:
     root: Path
     metadata: Mapping[str, Any]
     secret_provider: SecretProvider
+    verify_permissions_only: bool = False
 
     def __repr__(self) -> str:
         return f"RunnerEnrollment(runner_id={self.runner_id!r}, status={self.status!r})"
@@ -203,7 +204,11 @@ class RunnerEnrollment:
 
     def _secret(self, filename: str, purpose: str) -> bytes:
         try:
-            opaque = _bounded_regular_read(self.root / filename, _MAX_MATERIAL_BYTES)
+            opaque = _bounded_regular_read(
+                self.root / filename,
+                _MAX_MATERIAL_BYTES,
+                verify_permissions_only=self.verify_permissions_only,
+            )
             return cast(bytes, self.secret_provider.unprotect(self._purpose(purpose), opaque))
         except (MemoryError, OSError, RunnerTrustError, SecretStoreError):
             raise RunnerTrustError("Enrollment authentication material is unavailable.") from None
@@ -499,6 +504,7 @@ def load_local_enrollment(
     *,
     require_active: bool = True,
     secret_provider: SecretProvider | None = None,
+    verify_permissions_only: bool = False,
 ) -> RunnerEnrollment:
     """Load and cryptographically validate an enrollment without trusting paths in JSON."""
 
@@ -507,6 +513,7 @@ def load_local_enrollment(
             root,
             require_active=require_active,
             secret_provider=secret_provider,
+            verify_permissions_only=verify_permissions_only,
         )
     except MemoryError:
         raise RunnerTrustError("Enrollment material is unavailable or unsafe.") from None
@@ -518,14 +525,19 @@ def _load_local_enrollment(
     require_active: bool,
     secret_provider: SecretProvider | None,
     allow_revocation_recovery: bool = False,
+    verify_permissions_only: bool = False,
 ) -> RunnerEnrollment:
-    destination = _validated_enrollment_root(root)
+    if type(verify_permissions_only) is not bool:
+        raise RunnerTrustError("Enrollment permission verification mode is invalid.")
+    destination = _validated_enrollment_root(root, verify_permissions_only=verify_permissions_only)
     if not allow_revocation_recovery and _path_entry_exists(
         _transition_sibling(destination, _REVOCATION_INTENT_SUFFIX)
     ):
         raise RunnerTrustError("Enrollment revocation must be recovered before use.")
     try:
-        materials = _read_enrollment_materials(destination)
+        materials = _read_enrollment_materials(
+            destination, verify_permissions_only=verify_permissions_only
+        )
         payload = materials["trust.json"]
         if not payload or len(payload) > _MAX_TRUST_BYTES:
             raise RunnerTrustError("Enrollment metadata exceeds its size limit.")
@@ -580,6 +592,7 @@ def _load_local_enrollment(
         root=destination.resolve(strict=True),
         metadata=dict(metadata),
         secret_provider=provider,
+        verify_permissions_only=verify_permissions_only,
     )
 
 
@@ -1487,10 +1500,20 @@ def _pinned_regular_update(
 class _PinnedDirectory:
     """Pin one exact directory while bounded child operations are performed."""
 
-    def __init__(self, path: Path, *, private: bool, delete: bool = False) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        private: bool,
+        delete: bool = False,
+        verify_permissions_only: bool = False,
+    ) -> None:
+        if type(verify_permissions_only) is not bool:
+            raise RunnerTrustError("Enrollment permission verification mode is invalid.")
         self.path = path
         self.private = private
         self.delete = delete
+        self.verify_permissions_only = verify_permissions_only
         self._descriptor: int | None = None
         self._parent_descriptor: int | None = None
         self._handle: int | None = None
@@ -1510,7 +1533,7 @@ class _PinnedDirectory:
                     self.path,
                     directory=True,
                     delete=self.delete,
-                    write_dac=self.private,
+                    write_dac=self.private and not self.verify_permissions_only,
                 )
                 information = _windows_file_information(self._handle)
                 attributes = int(information.dwFileAttributes)
@@ -1521,7 +1544,9 @@ class _PinnedDirectory:
                     raise RunnerTrustError("Enrollment directory is unavailable or unsafe.")
                 self._identity = _windows_information_identity(information)
                 if self.private:
-                    _owner_private_native_handle(self._handle, directory=True)
+                    _owner_private_native_handle(
+                        self._handle, directory=True, verify_only=self.verify_permissions_only
+                    )
                 if (
                     _windows_information_identity(_windows_file_information(self._handle))
                     != self.identity
@@ -1558,7 +1583,8 @@ class _PinnedDirectory:
                 getuid = getattr(os, "getuid", None)
                 if callable(getuid) and details.st_uid != getuid():
                     raise RunnerTrustError("Enrollment material is not owned by this user.")
-                _posix_fchmod(self._descriptor, 0o700)
+                if not self.verify_permissions_only:
+                    _posix_fchmod(self._descriptor, 0o700)
                 details = os.fstat(self._descriptor)
                 if stat.S_IMODE(details.st_mode) != 0o700:
                     raise RunnerTrustError("Enrollment permissions could not be restricted.")
@@ -1695,7 +1721,7 @@ class _PinnedDirectory:
                 self.path / name,
                 directory=False,
                 delete=False,
-                write_dac=True,
+                write_dac=not self.verify_permissions_only,
                 share_write=not exclusive,
             )
             try:
@@ -1706,7 +1732,9 @@ class _PinnedDirectory:
                 initial_write_time = (
                     int(windows_initial.ftLastWriteTime.dwHighDateTime) << 32
                 ) | int(windows_initial.ftLastWriteTime.dwLowDateTime)
-                _owner_private_native_handle(handle, directory=False)
+                _owner_private_native_handle(
+                    handle, directory=False, verify_only=self.verify_permissions_only
+                )
                 if _windows_information_identity(_windows_file_information(handle)) != identity:
                     raise RunnerTrustError("Enrollment material is unavailable or unsafe.")
                 import msvcrt
@@ -1773,7 +1801,11 @@ class _PinnedDirectory:
             descriptor = os.open(name, flags, dir_fd=self._descriptor)
             try:
                 posix_initial = _validate_posix_regular_descriptor(descriptor, maximum=maximum)
-                _posix_fchmod(descriptor, 0o600)
+                if self.verify_permissions_only:
+                    if stat.S_IMODE(posix_initial.st_mode) != 0o600:
+                        raise RunnerTrustError("Enrollment permissions are not private.")
+                else:
+                    _posix_fchmod(descriptor, 0o600)
                 payload = _read_descriptor_bounded(descriptor, maximum)
                 posix_final = _validate_posix_regular_descriptor(descriptor, maximum=maximum)
                 if (
@@ -1978,8 +2010,14 @@ def _write_descriptor_all(descriptor: int, payload: bytes) -> None:
         raise RunnerTrustError("Enrollment material could not be written safely.") from None
 
 
-def _bounded_regular_read(path: Path, maximum: int) -> bytes:
-    with _PinnedDirectory(path.parent, private=False) as directory:
+def _bounded_regular_read(
+    path: Path, maximum: int, *, verify_permissions_only: bool = False
+) -> bytes:
+    with _PinnedDirectory(
+        path.parent,
+        private=verify_permissions_only,
+        verify_permissions_only=verify_permissions_only,
+    ) as directory:
         return directory.read(path.name, maximum=maximum)
 
 
@@ -2038,8 +2076,12 @@ def _material_limit(name: str) -> int:
     return _MAX_TRUST_BYTES if name in {"trust.json", _TRUST_TEMP_NAME} else _MAX_MATERIAL_BYTES
 
 
-def _read_enrollment_materials(root: Path) -> dict[str, bytes]:
-    with _PinnedDirectory(root, private=True) as directory:
+def _read_enrollment_materials(
+    root: Path, *, verify_permissions_only: bool = False
+) -> dict[str, bytes]:
+    with _PinnedDirectory(
+        root, private=True, verify_permissions_only=verify_permissions_only
+    ) as directory:
         names = set(directory.names())
         if names not in (_MATERIAL_NAMES, _MATERIAL_NAMES | {_TRUST_TEMP_NAME}):
             raise RunnerTrustError("Enrollment material is unavailable or unsafe.")
@@ -2381,17 +2423,26 @@ def _owner_private_handle(descriptor: int, *, directory: bool) -> None:
         raise RunnerTrustError("Enrollment permissions could not be restricted.") from None
 
 
-def _owner_private_native_handle(handle: int, *, directory: bool) -> None:
+def _owner_private_native_handle(
+    handle: int, *, directory: bool, verify_only: bool = False
+) -> None:
     """Apply and verify a private Windows DACL on an already pinned native handle."""
 
     if os.name != "nt":
         raise RunnerTrustError("Windows enrollment permissions are unavailable.")
     try:
-        from .windows_owner_acl import WindowsOwnerAclError, apply_owner_private_acl_handle
+        from .windows_owner_acl import (
+            WindowsOwnerAclError,
+            apply_owner_private_acl_handle,
+            verify_owner_private_acl_handle,
+        )
     except ImportError:
         raise RunnerTrustError("Enrollment permissions could not be restricted.") from None
     try:
-        apply_owner_private_acl_handle(handle, directory=directory)
+        operation = (
+            verify_owner_private_acl_handle if verify_only else apply_owner_private_acl_handle
+        )
+        operation(handle, directory=directory)
     except (OSError, WindowsOwnerAclError):
         raise RunnerTrustError("Enrollment permissions could not be restricted.") from None
 
@@ -2417,7 +2468,7 @@ def _cleanup_failed_creation(destination: Path) -> None:
         return
 
 
-def _validated_enrollment_root(root: str | Path) -> Path:
+def _validated_enrollment_root(root: str | Path, *, verify_permissions_only: bool = False) -> Path:
     destination = _canonical_transition_path(root, create_parent=False)
     try:
         if _is_link_or_reparse(destination) or not destination.is_dir():
@@ -2425,7 +2476,9 @@ def _validated_enrollment_root(root: str | Path) -> Path:
         resolved = destination.resolve(strict=True)
         if resolved != destination:
             raise RunnerTrustError("Enrollment directory is unavailable or unsafe.")
-        with _PinnedDirectory(resolved, private=True) as directory:
+        with _PinnedDirectory(
+            resolved, private=True, verify_permissions_only=verify_permissions_only
+        ) as directory:
             names = set(directory.names())
             if names not in (
                 _MATERIAL_NAMES,

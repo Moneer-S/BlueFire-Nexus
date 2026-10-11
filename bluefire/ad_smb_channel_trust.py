@@ -18,6 +18,7 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from .ad_smb_channel import AdSmbHostChannel, _time
 from .ad_smb_contract import AdSmbError
+from .ad_smb_private_storage import private_root
 from .runner_trust import (
     RunnerEnrollment,
     RunnerTrustError,
@@ -26,7 +27,6 @@ from .runner_trust import (
     _read_private_key_bytes,
     _secret_provider,
     _strict_object,
-    _validated_enrollment_root,
     _verify_leaf,
     _verify_signature,
     certificate_fingerprint,
@@ -100,9 +100,9 @@ def load_channel_enrollment(
         if side not in {"server", "client"}:
             raise ValueError("side")
         channel.assert_current()
-        destination = _validated_enrollment_root(root)
+        destination = private_root(root)
         names = _PUBLIC | {side + "-key.pem", side + "-key-password.secret"}
-        with _PinnedDirectory(destination, private=True) as directory:
+        with _PinnedDirectory(destination, private=True, verify_permissions_only=True) as directory:
             if set(directory.names()) != names:
                 raise ValueError("material set")
             materials = {name: directory.read(name, maximum=65536) for name in names}
@@ -135,7 +135,9 @@ def load_channel_enrollment(
                 "allowed_profile_ids": [row["profile_id"]],
                 "channel_digest": channel.digest,
             }
-            enrollment = AdSmbChannelEnrollment(destination, metadata, provider)
+            enrollment = AdSmbChannelEnrollment(
+                destination, metadata, provider, verify_permissions_only=True
+            )
             password = provider.unprotect(
                 enrollment._purpose(side + "-key-password"),
                 materials[side + "-key-password.secret"],

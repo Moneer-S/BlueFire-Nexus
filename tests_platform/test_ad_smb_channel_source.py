@@ -19,7 +19,7 @@ def test_reviewed_inventory_includes_exact_trust_hook_without_wider_exemption():
     assert _trusted_process_boundary_inventory_is_fixed()
     assert _reviewed_python_process_boundary_sources(texts)
     assert _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES["bluefire/runner_trust.py"] == (
-        "sha256:89e3e1425380faa9566c3e482f04e9dc6e050c3de08e06f2b58cf51e99f1d44d"
+        "sha256:d8f422bdc47425a2bf655f723848dc44cbb04c1a5aba85851743e5a1321a2d4d"
     )
     texts["bluefire/runner_trust.py"] += "\n# Unreviewed source change, with no shell call.\n"
     assert not _reviewed_python_process_boundary_sources(texts)

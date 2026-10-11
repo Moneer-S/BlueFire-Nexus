@@ -19,6 +19,7 @@ from .ad_smb_channel_transport import EnrolledAdSmbClient, _channel, _current
 from .ad_smb_channel_trust import load_channel_enrollment
 from .ad_smb_contract import AdSmbError, AdSmbScope, digest, document, exact
 from .ad_smb_credentials import load_credential_binding
+from .ad_smb_private_storage import private_root
 from .ad_smb_receiver import AdSmbReceiver, _now
 from .ad_smb_receiver_results import context, native_generation, stored_result
 from .ad_smb_results import ACTION
@@ -32,7 +33,7 @@ from .runner_transport_errors import (
     RunnerTaskCancelled,
     RunnerTaskTimedOut,
 )
-from .runner_trust import RunnerEnrollment, _PinnedDirectory, _validated_enrollment_root
+from .runner_trust import RunnerEnrollment, _PinnedDirectory
 from .secret_store import SecretProvider
 from .util import canonical_json_bytes
 
@@ -170,7 +171,7 @@ class AdmittedAdSmbReceiver(AdSmbReceiver):
                 or not 1 <= output <= 4 * 1024 * 1024
             ):
                 raise AdSmbError("AD inventory supervisor exceeds its finite bounds.")
-            root = _validated_enrollment_root(Path(profile["sandbox_root"]))
+            root = private_root(Path(profile["sandbox_root"]))
             if (
                 not isinstance(runner.work_root, Path)
                 or runner.work_root.resolve(strict=True) != root
@@ -208,7 +209,10 @@ class AdmittedAdSmbReceiver(AdSmbReceiver):
             # no listener, ledger or alternate process is initialized here.
             self.runner = runner
             self._runner_binary, self._runner_binary_digest = self._bind_runner_binary()
-            with _PinnedDirectory(root, private=True), self._verified_runner_binary_guard():
+            with (
+                _PinnedDirectory(root, private=True, verify_permissions_only=True),
+                self._verified_runner_binary_guard(),
+            ):
                 inventory, _ = self._validated_inventory(enrollment)
                 if inventory.get("platform") != "windows":
                     raise AdSmbError("AD inventory is not the fixed Windows implementation.")

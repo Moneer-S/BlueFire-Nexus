@@ -18,7 +18,7 @@ _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
     "bluefire/runner_linux_containment.py": "sha256:7b0f3cf3cd36304ba3c400439586efba98f682d34aa4053a12f478ef02eaea3a",
     "bluefire/runner_lifecycle.py": "sha256:c575587c7068467705c9057690eb448778004f4d94960b2cd78e3c58ee02ba70",
     "bluefire/runner_parent_death.py": "sha256:7a0443b986e18025a748775e18a3fc6cc539713c2cfbb0cc04cce44e3eb277df",
-    "bluefire/runner_trust.py": "sha256:89e3e1425380faa9566c3e482f04e9dc6e050c3de08e06f2b58cf51e99f1d44d",
+    "bluefire/runner_trust.py": "sha256:d8f422bdc47425a2bf655f723848dc44cbb04c1a5aba85851743e5a1321a2d4d",
     "bluefire/runner_watchdog.py": "sha256:f58d35c9c9bb08a02473e183da4888404f32dd881208ced5255aff313cd63bd0",
     "bluefire/receiver_session.py": "sha256:06f5587707cbddb40aa5a310be24ec1fd89375b89a82e60d966b9c6af6451a37",
     "bluefire/receiver_session_worker.py": "sha256:015594b6309e52de966bc09258638551ae23f70f451bd88ef3903a361b2f1b09",
@@ -34,7 +34,7 @@ _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
     "bluefire/prepared_lab_file_access.py": "sha256:700d4e1a148b440d9a837488db333513260667d2ad3871ea7ad28323d7078b04",
     "bluefire/browser_launch.py": "sha256:54d7a77e43821254841f895aedd516321523c7287d9571df2fa9a52e1253c72f",
     "bluefire/runner_python_environment.py": "sha256:9928d6a53b5fd2dc9bf6036c4a2d9ec9715c97de1f9f89519e99055b21b2f25e",
-    "bluefire/ad_smb_worker_process.py": "sha256:df27b37189eb4ec6752dff1f876a32cd2078334ff8d83d9bdf72539ddba572ae",
+    "bluefire/ad_smb_worker_process.py": "sha256:13aabb6ead58e491894e1e7dccecbcf1f8f035d1c5392a2163bdb533cabd2168",
 }
 _REVIEWED_RUST_PROCESS_BOUNDARY_SOURCES = (
     "runner/src/cancellation_witness.rs",

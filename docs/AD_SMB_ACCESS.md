@@ -38,6 +38,11 @@ bundle. Each side has only its own encrypted private key, the peer's public
 certificate, the CA certificate, and locally protected message authentication
 material. It does not create enrollment or transfer keys. TLS 1.3, certificate
 identity, signed messages and the existing durable receiver ledger are reused.
+Inspection verifies existing ownership and private permissions without repairing
+them. Role certificates, controller/receiver configuration and reader credentials
+have separate finite file inventories; none is treated as an ordinary runner TLS
+enrollment. Unknown files and opposite-side private keys are refused. Mutable
+worker output directories retain their own output contract, not a TLS inventory.
 The channel digest is included in the enrollment generation so changed scope
 or address policy cannot silently recover a task from a different channel.
 The initial adapter supports authenticated health, inventory and original-task

@@ -96,8 +96,8 @@ def bundle(channel, monkeypatch):
     calls = []
 
     class Directory:
-        def __init__(self, path, *, private):
-            assert private is True
+        def __init__(self, path, *, private, verify_permissions_only):
+            assert private is True and verify_permissions_only is True
 
         def __enter__(self):
             return self
@@ -127,7 +127,7 @@ def bundle(channel, monkeypatch):
             raise SecretStoreError("synthetic-raw-secret-not-for-errors")
 
     monkeypatch.setattr(trust, "_PinnedDirectory", Directory)
-    monkeypatch.setattr(trust, "_validated_enrollment_root", lambda path: Path(path))
+    monkeypatch.setattr(trust, "private_root", lambda path: Path(path))
 
     def prepare(side):
         values.clear()

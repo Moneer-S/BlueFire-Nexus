@@ -23,6 +23,7 @@ RELATIVE = "bluefire/ad_smb_worker_process.py"
         "bluefire/ad_smb_native_member_results.py",
         "bluefire/ad_smb_worker_wire.py",
         "bluefire/ad_smb_credentials.py",
+        "bluefire/ad_smb_private_storage.py",
         "bluefire/ad_smb_native_results.py",
     ],
 )

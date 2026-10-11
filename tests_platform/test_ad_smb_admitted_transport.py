@@ -124,7 +124,7 @@ def constructor(tmp_path, monkeypatch):
         return object()
 
     monkeypatch.setattr(admitted.sys, "platform", "win32")
-    monkeypatch.setattr(admitted, "_validated_enrollment_root", lambda path: tmp_path)
+    monkeypatch.setattr(admitted, "private_root", lambda path: tmp_path)
     monkeypatch.setattr(admitted, "_PinnedDirectory", root_guard)
     monkeypatch.setattr(
         admitted, "load_channel_enrollment", lambda *a, **k: calls.append("enrollment") or object()

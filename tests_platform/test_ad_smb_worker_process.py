@@ -223,7 +223,7 @@ def launch_fakes(monkeypatch, value, *, failure=None):
     child, jobs, captured = Child(value), Jobs(cleanup=failure != "close"), {}
     monkeypatch.setattr(process.sys, "platform", "win32")
     monkeypatch.setattr(process, "WindowsJobContainment", lambda **kwargs: jobs)
-    monkeypatch.setattr(process, "_validated_enrollment_root", lambda root: root)
+    monkeypatch.setattr(process, "private_root", lambda root: root)
 
     @contextmanager
     def storage(*args, **kwargs):

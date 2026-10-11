@@ -18,14 +18,32 @@ from typing import Any
 from .ad_smb_admitted_transport import AdmittedAdSmbReceiver, _admission, _profile
 from .ad_smb_channel import AdSmbHostChannel
 from .ad_smb_contract import AdSmbError, AdSmbScope, document, exact, timestamp
+from .ad_smb_private_storage import private_root
 from .runner_bootstrap import managed_product_root
 from .runner_client import SubprocessRustRunner
-from .runner_trust import _PinnedDirectory, _validated_enrollment_root
+from .runner_trust import _PinnedDirectory
 
 
 def _configuration(root: Path) -> tuple[dict[str, Any], AdSmbScope, AdSmbHostChannel]:
-    with _PinnedDirectory(_validated_enrollment_root(root), private=True) as directory:
+    with _PinnedDirectory(
+        private_root(root), private=True, verify_permissions_only=True
+    ) as directory:
         row = document(directory.read("receiver.json", maximum=131072), limit=131072)
+        names = set(directory.names(maximum=10))
+        if names - {
+            "receiver.json",
+            "enrollment",
+            "credentials",
+            ".bluefire-runner-results",
+            "transport.sqlite3",
+            "transport.sqlite3.lock",
+            "transport.sqlite3-journal",
+            "transport.sqlite3-wal",
+            "transport.sqlite3-shm",
+        }:
+            raise AdSmbError("Installed AD receiver contains unexpected files.")
+        for name in names & {"enrollment", "credentials", ".bluefire-runner-results"}:
+            private_root(root / name)
     exact(
         row,
         {
@@ -64,10 +82,10 @@ def serve_installed(stop: threading.Event) -> None:
     if not 0 < remaining <= 86400:
         raise AdSmbError("AD installed receiver lifetime is invalid.")
     deadline = time.monotonic() + remaining
-    work = _validated_enrollment_root(Path(row["profile"]["sandbox_root"]))
+    work = private_root(Path(row["profile"]["sandbox_root"]))
     receiver = None
     try:
-        with _PinnedDirectory(work, private=True):
+        with _PinnedDirectory(work, private=True, verify_permissions_only=True):
             runner = SubprocessRustRunner(
                 row["runner_binary"],
                 work,

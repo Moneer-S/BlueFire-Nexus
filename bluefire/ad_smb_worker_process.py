@@ -19,6 +19,7 @@ from typing import IO, Any, Callable
 
 from .ad_smb_contract import AdSmbError, timestamp
 from .ad_smb_credentials import OneUseCredential
+from .ad_smb_private_storage import private_root
 from .ad_smb_worker_wire import (
     BEGIN_MAX,
     READY_MAX,
@@ -29,7 +30,7 @@ from .ad_smb_worker_wire import (
     terminal,
 )
 from .runner_client import _pinned_launch_file
-from .runner_trust import _PinnedDirectory, _validated_enrollment_root
+from .runner_trust import _PinnedDirectory
 from .runner_windows_containment import WindowsJobContainment
 
 
@@ -276,9 +277,9 @@ def run_worker(
     job: int | None = None
     assigned = False
     try:
-        root = _validated_enrollment_root(work_root)
+        root = private_root(work_root)
         with (
-            _PinnedDirectory(root, private=True),
+            _PinnedDirectory(root, private=True, verify_permissions_only=True),
             _pinned_launch_file(runner_binary, runner_digest) as (executable, inherited),
         ):
             if inherited:

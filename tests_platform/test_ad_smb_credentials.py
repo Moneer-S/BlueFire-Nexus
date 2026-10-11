@@ -52,8 +52,8 @@ def bound(monkeypatch):
     blobs["credentials.json"] = canonical_json_bytes(row)
 
     class Storage:
-        def __init__(self, _root, *, private):
-            assert private is True
+        def __init__(self, _root, *, private, verify_permissions_only):
+            assert private is True and verify_permissions_only is True
 
         def __enter__(self):
             return self
@@ -70,7 +70,7 @@ def bound(monkeypatch):
             return blobs[name]
 
     monkeypatch.setattr(credentials, "_PinnedDirectory", Storage)
-    monkeypatch.setattr(credentials, "_validated_enrollment_root", lambda path: Path(path))
+    monkeypatch.setattr(credentials, "private_root", lambda path: Path(path))
     monkeypatch.setattr(type(channel), "assert_current", lambda self, *args: None)
     binding = credentials.load_credential_binding(
         Path("synthetic"),

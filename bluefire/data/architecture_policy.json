@@ -414,6 +414,7 @@
         "bluefire.runner_result_persistence",
         "bluefire.runner_transport",
         "bluefire.ad_smb_channel_trust",
+        "bluefire.ad_smb_private_storage",
         "bluefire.ad_smb_channel_transport",
         "bluefire.ad_smb_credentials",
         "bluefire.ad_smb_worker_process",

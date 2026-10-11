@@ -136,8 +136,8 @@ def test_loader_closed_file_and_inventory(tmp_path, monkeypatch, kind):
         raw = b'{"schema_version":"a","schema_version":"b","environments":[]}'
 
     class Pinned:
-        def __init__(self, root, *, private):
-            assert root == tmp_path and private
+        def __init__(self, root, *, private, verify_permissions_only):
+            assert root == tmp_path and private and verify_permissions_only
 
         def __enter__(self):
             return self
@@ -145,12 +145,16 @@ def test_loader_closed_file_and_inventory(tmp_path, monkeypatch, kind):
         def __exit__(self, *_):
             pass
 
+        def names(self, *, maximum):
+            assert maximum == 9
+            return ["controller.json"]
+
         def read(self, name, *, maximum):
             assert name == "controller.json" and maximum == installed.CONFIG_MAX
             return raw
 
     monkeypatch.setattr(installed, "_PinnedDirectory", Pinned)
-    monkeypatch.setattr(installed, "_validated_enrollment_root", lambda x: x)
+    monkeypatch.setattr(installed, "private_root", lambda x: x)
     if kind == "valid":
         loaded = installed.load_installed(tmp_path)
         assert len(loaded) == 1 and loaded[0].public == entry.public

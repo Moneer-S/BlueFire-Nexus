@@ -60,7 +60,7 @@ def setup(tmp_path, monkeypatch):
     monkeypatch.setattr(entry, "datetime", Clock)
     monkeypatch.setattr(entry, "managed_product_root", lambda: tmp_path)
     monkeypatch.setattr(entry, "_configuration", lambda root: (row, scope, channel))
-    monkeypatch.setattr(entry, "_validated_enrollment_root", lambda root: tmp_path)
+    monkeypatch.setattr(entry, "private_root", lambda root: tmp_path)
     monkeypatch.setattr(entry, "_PinnedDirectory", lambda *a, **k: nullcontext())
     monkeypatch.setattr(
         entry, "SubprocessRustRunner", lambda *a, **k: calls.append("runner") or object()
@@ -126,8 +126,8 @@ def test_receiver_configuration_is_closed_and_role_specific(tmp_path, monkeypatc
             return NOW + timedelta(seconds=2)
 
     class Pinned:
-        def __init__(self, root, *, private):
-            assert root == tmp_path and private
+        def __init__(self, root, *, private, verify_permissions_only):
+            assert root == tmp_path and private and verify_permissions_only
 
         def __enter__(self):
             return self
@@ -135,12 +135,16 @@ def test_receiver_configuration_is_closed_and_role_specific(tmp_path, monkeypatc
         def __exit__(self, *_):
             pass
 
+        def names(self, *, maximum):
+            assert maximum == 10
+            return ["receiver.json"]
+
         def read(self, name, *, maximum):
             assert name == "receiver.json" and maximum == 131072
             return canonical_json_bytes(row)
 
     monkeypatch.setattr(entry, "datetime", Clock)
-    monkeypatch.setattr(entry, "_validated_enrollment_root", lambda root: root)
+    monkeypatch.setattr(entry, "private_root", lambda root: root)
     monkeypatch.setattr(entry, "_PinnedDirectory", Pinned)
     if mutation is None:
         parsed, actual_scope, actual_channel = entry._configuration(tmp_path)

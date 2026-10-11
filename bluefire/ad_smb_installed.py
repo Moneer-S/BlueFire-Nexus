@@ -15,9 +15,10 @@ from typing import Any, Mapping
 from .ad_smb_admitted_transport import AdmittedAdSmbClient, _profile
 from .ad_smb_channel import AdSmbHostChannel
 from .ad_smb_contract import AdSmbError, AdSmbScope, document, exact
+from .ad_smb_private_storage import private_root
 from .ad_smb_receiver_results import native_generation
 from .ad_smb_results import environment
-from .runner_trust import RunnerTrustError, _PinnedDirectory, _validated_enrollment_root
+from .runner_trust import RunnerTrustError, _PinnedDirectory
 from .util import canonical_json_bytes, content_hash
 
 CONFIG_SCHEMA = "bluefire.ad-smb-controller-config.v1"
@@ -91,9 +92,10 @@ class InstalledEnvironment:
 def load_installed(root: Path) -> tuple[InstalledEnvironment, ...]:
     """Load one finite exact file through the existing private-directory guard."""
     try:
-        path = _validated_enrollment_root(root)
-        with _PinnedDirectory(path, private=True) as directory:
+        path = private_root(root)
+        with _PinnedDirectory(path, private=True, verify_permissions_only=True) as directory:
             row = document(directory.read("controller.json", maximum=CONFIG_MAX), limit=CONFIG_MAX)
+            names = set(directory.names(maximum=9))
         exact(row, {"schema_version", "environments"}, "Installed AD controller")
         if (
             row["schema_version"] != CONFIG_SCHEMA
@@ -104,6 +106,11 @@ def load_installed(root: Path) -> tuple[InstalledEnvironment, ...]:
         entries = tuple(
             InstalledEnvironment.from_mapping(path, value) for value in row["environments"]
         )
+        environment_ids = {entry.public["environment_id"] for entry in entries}
+        if "controller.json" not in names or names - {"controller.json"} - environment_ids:
+            raise AdSmbError("Installed AD controller contains unexpected files.")
+        for name in names - {"controller.json"}:
+            private_root(path / name)
         ids: set[str] = set()
         profiles: set[str] = set()
         resources: set[tuple[str, str, str]] = set()

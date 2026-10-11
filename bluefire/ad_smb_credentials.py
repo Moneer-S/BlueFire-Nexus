@@ -18,12 +18,12 @@ from typing import Any
 
 from .ad_smb_channel import AdSmbHostChannel
 from .ad_smb_contract import AdSmbError, AdSmbScope, digest, document, exact
+from .ad_smb_private_storage import private_root
 from .ad_smb_worker_wire import BEGIN_MAX, WorkerPacket, begin_prefix, frame
 from .runner_trust import (
     RunnerTrustError,
     _PinnedDirectory,
     _secret_provider,
-    _validated_enrollment_root,
 )
 from .secret_store import SecretProvider
 from .util import canonical_json_bytes, content_hash
@@ -151,7 +151,9 @@ class OneUseCredential:
         try:
             binding = self._binding
             binding._channel.assert_current()
-            with _PinnedDirectory(binding._root, private=True) as storage:
+            with _PinnedDirectory(
+                binding._root, private=True, verify_permissions_only=True
+            ) as storage:
                 row, blobs = _read(storage, binding._scope, binding._channel, binding._provider)
                 if canonical_json_bytes(row) != binding._raw:
                     raise AdSmbError("AD credential binding changed before delivery.")
@@ -254,9 +256,9 @@ def load_credential_binding(
         digest(expected_digest)
         checked = AdSmbHostChannel.from_mapping(scope, channel.to_dict())
         checked.assert_current()
-        path = _validated_enrollment_root(root)
+        path = private_root(root)
         provider = _secret_provider(secret_provider)
-        with _PinnedDirectory(path, private=True) as storage:
+        with _PinnedDirectory(path, private=True, verify_permissions_only=True) as storage:
             row, _ = _read(storage, scope, checked, provider)
             if content_hash(row) != expected_digest:
                 raise AdSmbError("AD credential enrollment pin changed.")
