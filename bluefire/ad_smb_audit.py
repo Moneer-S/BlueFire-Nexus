@@ -98,8 +98,12 @@ def _parse(raw: bytes) -> tuple[dict[str, Any], dict[str, str]]:
         raise AdSmbError("event must be bounded UTF-8 XML bytes")
     try:
         text = raw.decode("utf-8-sig", errors="strict")
-        parser = ET.XMLParser(target=_Tree())
-        root = ET.fromstring(text, parser=parser)
+        # Native event XML needs no declarations; refuse them before parser construction.
+        if "<!" in text:
+            raise AdSmbError("event XML declarations are unsupported")
+        # Strict UTF-8, declaration refusal and the bounded target constrain both calls.
+        parser = ET.XMLParser(target=_Tree())  # nosec B314
+        root = ET.fromstring(text, parser=parser)  # nosec B314
     except (UnicodeError, ET.ParseError, RecursionError, ValueError):
         raise AdSmbError("event is not supported bounded XML") from None
     if root.tag != NS + "Event" or root.attrib:

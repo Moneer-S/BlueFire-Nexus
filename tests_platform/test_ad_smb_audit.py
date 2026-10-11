@@ -258,6 +258,46 @@ def test_untrusted_xml_is_bounded_and_dtd_free(raw):
 
 
 @pytest.mark.parametrize(
+    "raw",
+    [
+        b'<!DOCTYPE Event SYSTEM "https://example.invalid/events.dtd"><Event/>',
+        b'<!DOCTYPE Event [<!ENTITY x SYSTEM "file:///not-an-event">]><Event>&x;</Event>',
+        b'<!DOCTYPE Event [<!ENTITY a "x"><!ENTITY b "&a;&a;">]><Event>&b;</Event>',
+        b'<!DOCTYPE Event [<!ENTITY % x SYSTEM "https://example.invalid/entity">%x;]><Event/>',
+        b'<?xml version="1.0"?><!DOCTYPE Event><Event/>',
+        b"\xef\xbb\xbf<!DOCTYPE Event><Event/>",
+        b"<!-- unsupported markup --><Event/>",
+        b"<Event><![CDATA[unsupported content]]></Event>",
+        "<!DOCTYPE Event><Event/>".encode("utf-16"),
+    ],
+    ids=[
+        "external-dtd",
+        "external-entity",
+        "nested-entity",
+        "parameter-entity",
+        "xml-declaration",
+        "utf8-bom",
+        "comment",
+        "cdata",
+        "utf16",
+    ],
+)
+def test_declarations_and_other_encodings_never_reach_xml_parser(raw, monkeypatch):
+    def refused_parser(*args, **kwargs):
+        pytest.fail("Unsupported markup reached XML parser construction")
+
+    monkeypatch.setattr("bluefire.ad_smb_audit.ET.XMLParser", refused_parser)
+    with pytest.raises(AdSmbError):
+        normalize([raw])
+
+
+def test_escaped_declaration_like_event_text_remains_plain_data():
+    raw = event(fields={"SubjectUserName": "application <! unchanged"})
+    assert b"&lt;!" in raw
+    assert len(normalize([raw])["events"]) == 1
+
+
+@pytest.mark.parametrize(
     "target,value",
     [
         ("EventID", "9999"),
