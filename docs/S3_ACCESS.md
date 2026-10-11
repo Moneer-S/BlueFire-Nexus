@@ -57,6 +57,14 @@ Runtime integrity, protected-reference expiry and scope time are separate fields
 AWS access remains untested. Existing runner start, diagnostics, enrollment recovery
 and upgrade controls remain explicit and do not submit an experiment.
 
+Runner Profiles offers an `S3 access - Linux` starting configuration, including in
+an empty catalog. Saving creates an inactive durable draft through the existing
+resource lifecycle; explicit validation and activation remain separate. Managed
+S3 profiles must be dedicated Linux cloud-lab envelopes with required approval,
+no ordinary action methods, no network-target extensions and no credential or
+native-tool bindings. The reserved S3 method is not added to the ordinary action
+catalog. Activation alone does not enroll a host or grant AWS access.
+
 The configuration draft panel accepts at most 128 KiB of nonsecret configuration
 JSON. Review is structural only: it neither reads a referenced local path nor
 connects to a runner or AWS. It reuses the exact host-configuration, scope and

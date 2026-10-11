@@ -13,6 +13,10 @@ import { RunnerUpgradeReview } from "../components/RunnerUpgradeReview";
 import { RunnerEnrollmentRecovery } from "../components/RunnerEnrollmentRecovery";
 import { NativeToolSetupDialog } from "../components/NativeToolSetupDialog";
 import { NATIVE_TOOL_ACTIONS, NATIVE_TOOL_SETUP } from "../lib/native-tool-setup";
+import s3ProfileTemplate from "../lib/s3-profile-template.json";
+
+const S3_PROFILE_CHOICE = "reserved:s3-access";
+const S3_PROFILE_ACTION = "owned.aws.s3_access.v1";
 
 function behaviorKind(behavior: Behavior) {
   if (behavior.execution_state !== "action") return "research";
@@ -96,11 +100,12 @@ export function ProfileForm({ profiles, actions, initialProfile, onCreate, savin
     setDraft(structuredClone(initialProfile));
   }, [initialProfile]);
   const templateProfiles = initialProfile && !profiles.some((profile) => profile.id === initialProfile.id) ? [initialProfile, ...profiles] : profiles;
-  const templates = templateProfiles.filter((profile) => profile.platforms.length && (profile.mode === "simulate" || profile.enabled_actions.some((id) => actions.some((action) => action.id === id))));
-  const template = templates.find((profile) => profile.id === templateId);
+  const templates = templateProfiles.filter((profile) => profile.platforms.length && (profile.mode === "simulate" || profile.enabled_actions.includes(S3_PROFILE_ACTION) || profile.enabled_actions.some((id) => actions.some((action) => action.id === id))));
+  const template = templateId === S3_PROFILE_CHOICE ? s3ProfileTemplate as RunnerProfile : templates.find((profile) => profile.id === templateId);
+  const reservedS3 = template?.enabled_actions.includes(S3_PROFILE_ACTION) ?? false;
   const compatible = actions.filter((action) => template && !template.blocked_actions.includes(action.id) && draft?.platforms.every((platform) => action.platforms.includes(platform)) && action.capabilities.every((capability) => draft?.capabilities.includes(capability)) && draft?.safety_tiers.includes(action.safety_tier));
   const availableIds = new Set(compatible.map((action) => action.id));
-  const selected = (draft?.enabled_actions ?? []).filter((id) => availableIds.has(id));
+  const selected = (draft?.enabled_actions ?? []).filter((id) => reservedS3 ? id === S3_PROFILE_ACTION : availableIds.has(id));
   const missingCleanup = compatible.filter((action) => selected.includes(action.id) && action.cleanup_action_id && !selected.includes(action.cleanup_action_id));
   const retainedBindings = (draft?.native_tool_installations ?? []).filter((item) => selected.includes(item.adapter_id) && draft?.platforms.includes(item.platform));
   const removedBindingCount = (draft?.native_tool_installations ?? []).length - retainedBindings.length;
@@ -112,15 +117,15 @@ export function ProfileForm({ profiles, actions, initialProfile, onCreate, savin
     catch (error) { setError(error instanceof Error ? error.message : "The profile could not be saved. Your inputs are kept."); form.querySelector("input")?.focus(); }
   }}>
     <Field label="Configuration template" hint={initialProfile ? "Existing profile configuration is being edited; its identity and enrolled runner references are retained." : "Copies configuration only. Activation and run approval remain separate."}><select required value={templateId} disabled={Boolean(initialProfile)} onChange={(event) => {
-      const next = templates.find((profile) => profile.id === event.target.value); setTemplateId(event.target.value);
+      const next = event.target.value === S3_PROFILE_CHOICE ? s3ProfileTemplate as RunnerProfile : templates.find((profile) => profile.id === event.target.value); setTemplateId(event.target.value);
       if (!next) { setDraft(undefined); return; }
       setDraft({ ...structuredClone(next), id, platforms: [next.platforms[0]!], secrets: {}, runner_binary: typeof next.runner_binary === "object" ? { ...next.runner_binary } : { env: "BLUEFIRE_RUNNER_BINARY" }, sandbox_root: typeof next.sandbox_root === "object" ? { ...next.sandbox_root } : { env: "BLUEFIRE_SANDBOX_ROOT" } });
-    }}><option value="">Choose an existing profile</option>{templates.map((profile) => <option key={profile.id} value={profile.id}>{profile.id} · {profile.mode} · {profile.platforms.join(", ")}</option>)}</select></Field>
+    }}><option value="">Choose a configuration</option>{!initialProfile ? <option value={S3_PROFILE_CHOICE}>S3 access - Linux</option> : null}{templates.map((profile) => <option key={profile.id} value={profile.id}>{profile.id} · {profile.mode} · {profile.platforms.join(", ")}</option>)}</select></Field>
     <Field label="Profile ID" hint={initialProfile ? "Existing profile identity is retained while you configure its methods." : "Use a lowercase, versioned ID, for example local-experiment.v1."}><input aria-label="Profile ID" value={id} onChange={(event) => setId(event.target.value)} pattern={"[a-z][a-z0-9]*(?:[._\\-][a-z0-9]+)*\\.v[1-9][0-9]*"} readOnly={Boolean(initialProfile)} required/></Field>
     {draft && template ? <>
       <Field label="Platform"><select value={draft.platforms[0]} onChange={(event) => update({ platforms: [event.target.value] })}>{template.platforms.map((platform) => <option key={platform}>{platform}</option>)}</select></Field>
       <p>{draft.mode === "execute" ? "Execute" : "Simulate"} · {selected.length} compatible methods selected · {draft.approval_required ? "Run approval required" : "Template does not require approval"}</p>
-      <fieldset><legend>Methods permitted by this configuration</legend>{compatible.map((action) => <label className="check-row" key={action.id}><input type="checkbox" checked={selected.includes(action.id)} onChange={(event) => update({ enabled_actions: event.target.checked ? [...draft.enabled_actions, action.id] : draft.enabled_actions.filter((id) => id !== action.id) })}/><span>{displayTitle(action.title)}</span></label>)}{!compatible.length ? <p>No executable methods match this platform and template.</p> : null}</fieldset>
+      <fieldset><legend>Methods permitted by this configuration</legend>{reservedS3 ? <p>S3 access workflow only. Protected installation, scoped cloud access and experiment approval remain required.</p> : <>{compatible.map((action) => <label className="check-row" key={action.id}><input type="checkbox" checked={selected.includes(action.id)} onChange={(event) => update({ enabled_actions: event.target.checked ? [...draft.enabled_actions, action.id] : draft.enabled_actions.filter((id) => id !== action.id) })}/><span>{displayTitle(action.title)}</span></label>)}{!compatible.length ? <p>No executable methods match this platform and template.</p> : null}</>}</fieldset>
       <fieldset><legend>Access from template</legend>{template.scope.map((scope) => <label className="check-row" key={scope}><input type="checkbox" checked={draft.scope.includes(scope)} onChange={(event) => update({ scope: event.target.checked ? [...draft.scope, scope] : draft.scope.filter((item) => item !== scope) })}/><span>{scope === "sandbox.workspace" ? "Experiment workspace" : scope === "network.loopback" ? "Local loopback network" : scope}</span></label>)}</fieldset>
       <Field label="Runner binary environment reference" hint="Only the variable name is stored; no process starts."><input value={typeof draft.runner_binary === "object" ? draft.runner_binary.env : ""} onChange={(event) => update({ runner_binary: { env: event.target.value } })} pattern="[A-Z_][A-Z0-9_]*" required/></Field>
       <Field label="Sandbox root environment reference"><input value={typeof draft.sandbox_root === "object" ? draft.sandbox_root.env : ""} onChange={(event) => update({ sandbox_root: { env: event.target.value } })} pattern="[A-Z_][A-Z0-9_]*" required/></Field>
