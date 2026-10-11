@@ -175,6 +175,49 @@ def test_source_and_provider_rechecked_before_retaining_response(audit, change):
     assert result["turn"]["results"] == []
 
 
+@pytest.mark.parametrize("change", ["source", "provider"])
+def test_final_validation_failure_never_publishes_audit_answer(audit, monkeypatch, change):
+    service, access, body, *_ = audit
+    assistance = service.assistance
+    advance = assistance._advance
+    observed = []
+
+    def changed_at_final_check(parent_id, **kwargs):
+        observed.append(deepcopy(service.product_store.get_job(parent_id)["progress"]))
+        if change == "source":
+            with service.product_store._connection(write=True) as connection:
+                connection.execute(
+                    "UPDATE jobs SET state = 'failed' WHERE job_id = ?",
+                    (body["selection"]["review_id"],),
+                )
+        else:
+            config = service._runtime_ai_config
+            service._runtime_ai_config = replace(
+                config,
+                providers=tuple(
+                    (
+                        replace(provider, model="changed-at-final-check")
+                        if provider.id == body["provider_id"]
+                        else provider
+                    )
+                    for provider in config.providers
+                ),
+            )
+        return advance(parent_id, **kwargs)
+
+    monkeypatch.setattr(assistance, "_advance", changed_at_final_check)
+    result = finished(service, body)
+    assert result["job"]["state"] == "failed"
+    assert result["turn"]["status"] == "blocked"
+    assert result["turn"]["results"] == [] and result["turn"]["active_child"] is None
+    assert "One imported record" not in result["turn"]["message"]
+    assert all("One imported record" not in json.dumps(progress) for progress in observed)
+    assert "One imported record" not in json.dumps(result["job"]["progress"])
+    retry = service.submit_assistance_turn(body)
+    assert retry["job"]["job_id"] == result["job"]["job_id"]
+    assert retry["turn"]["status"] == "blocked" and access.calls == [PURPOSE]
+
+
 def test_audit_selection_requires_exact_ids_and_no_untrusted_fields(audit):
     service, _, body, *_ = audit
     chosen = body["selection"]
@@ -187,6 +230,23 @@ def test_audit_selection_requires_exact_ids_and_no_untrusted_fields(audit):
             context(service, {**chosen, **change})
     with pytest.raises(ProductStoreError):
         selection({**chosen, "instructions": "untrusted"})
+
+
+def test_cancellation_at_final_validation_does_not_publish_audit_answer(audit, monkeypatch):
+    service, access, body, *_ = audit
+    advance = service.assistance._advance
+
+    def cancelled_after_validation(parent_id, **kwargs):
+        advance(parent_id, **kwargs)
+        service.cancel_job(parent_id)
+
+    monkeypatch.setattr(service.assistance, "_advance", cancelled_after_validation)
+    result = finished(service, body)
+    assert result["job"]["state"] == "cancelled"
+    assert result["turn"]["status"] == "cancelled"
+    assert "One imported record" not in result["turn"]["message"]
+    assert "One imported record" not in json.dumps(result["job"]["progress"])
+    assert access.calls == [PURPOSE]
 
 
 def test_cancellation_and_retry_do_not_repeat_analysis(audit):

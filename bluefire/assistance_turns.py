@@ -342,10 +342,11 @@ class ExperimentAssistance:
                 cancel=ctx.cancellation_event,
             )
             if is_audit(submitted):
-                self._fresh(job)
-                self._provider(job)
                 if proposal["plan"]:
                     raise fail("Saved audit explanation has no dispatch capability.")
+                # Publish read-only answers only after the final binding checks.
+                self._advance(ctx.job_id)
+                return JobResult(progress={**proposal, "planning_complete": True})
             ctx.checkpoint(proposal)
             self._advance(ctx.job_id)
             return JobResult(progress={"planning_complete": True})
