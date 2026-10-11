@@ -3,6 +3,7 @@ import { ArrowRight, CheckCircle2, CircleDashed, Play, ShieldCheck } from "lucid
 import { Link } from "react-router-dom";
 import { Badge, Callout, ErrorState, LoadingState, PageHeader, Panel, PanelHeader } from "../components/Primitives";
 import { api, DEMO_MODE } from "../lib/api";
+import { ObjectiveStart } from "../components/ObjectiveStart";
 
 export function GettingStartedPage() {
   const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
@@ -24,6 +25,7 @@ export function GettingStartedPage() {
   return <div className="page getting-started-page">
     <PageHeader title="Start an experiment" actions={<Link className="button button-primary button-medium" to="/scenarios">Choose an experiment <ArrowRight aria-hidden="true" /></Link>} />
     {DEMO_MODE ? <Callout tone="warning" title="Preview workspace">This preview uses sample data. Open the installed application to save work and run an experiment.</Callout> : null}
+    <ObjectiveStart />
     <Panel>
       <PanelHeader title={hasHistory ? "Continue your work" : "From a question to a result"} detail={unavailableRuns ? "Some run records could not be read. Open run history to inspect their status." : runCount ? `${runCount} saved ${runCount === 1 ? "run is" : "runs are"} available to inspect, evaluate and compare.` : "Choose an example or build a plan, then decide where and how to run it."} />
       {unavailableRuns ? <Callout tone="warning" title="Some run history is unavailable">{unavailableRuns} {unavailableRuns === 1 ? "record could" : "records could"} not be read. This workspace is not empty.</Callout> : null}

@@ -1,0 +1,21 @@
+.objective-start {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) minmax(0, 2fr);
+  gap: 24px;
+  padding-block: 8px 24px;
+  border-bottom: 1px solid var(--line);
+}
+.objective-start-choice { display: grid; align-content: start; gap: 16px; min-width: 0; }
+.objective-start h2 { margin: 0; font-size: 1rem; letter-spacing: 0; }
+.objective-start h3 { margin: 0 0 16px; font-size: 1rem; line-height: 1.5; letter-spacing: 0; overflow-wrap: anywhere; }
+.objective-start-choice select { width: 100%; min-width: 0; }
+.objective-start-choice .button { justify-self: start; max-width: 100%; white-space: normal; text-align: start; }
+.objective-start-choice p { margin: 0; color: var(--amber); font-size: var(--font-body-sm); }
+.objective-start-scope { min-width: 0; padding-left: 24px; border-left: 1px solid var(--line); }
+.objective-start-scope .data-list > div { grid-template-columns: minmax(7rem, 1fr) minmax(0, 3fr); }
+.objective-start-scope .data-list dd { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .objective-start { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .objective-start-scope { padding-left: 0; border-left: 0; }
+  .objective-start-scope .data-list > div { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+}
