@@ -5,7 +5,7 @@ import threading
 import time
 from contextlib import contextmanager
 from datetime import timedelta
-from pathlib import Path
+from pathlib import PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
@@ -79,7 +79,7 @@ class Jobs:
         return self.cleanup
 
     def system_directory(self):
-        return Path("C:/Windows/System32")
+        return PureWindowsPath("C:/Windows/System32")
 
     def create_job(self):
         self.calls.append("create")
@@ -221,7 +221,7 @@ def test_expiry_after_private_resolution_prevents_begin_and_wipes_buffer():
 
 def launch_fakes(monkeypatch, value, *, failure=None):
     child, jobs, captured = Child(value), Jobs(cleanup=failure != "close"), {}
-    monkeypatch.setattr(process.sys, "platform", "win32")
+    monkeypatch.setattr(process, "sys", SimpleNamespace(platform="win32"))
     monkeypatch.setattr(process, "WindowsJobContainment", lambda **kwargs: jobs)
     monkeypatch.setattr(process, "private_root", lambda root: root)
 
@@ -259,9 +259,9 @@ def test_fixed_launch_assigns_before_resume_with_clean_env_and_cleanup(monkeypat
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "synthetic-must-not-inherit")
     result = process.run_worker(
         value,
-        runner_binary=Path("C:/fixed/runner.exe"),
+        runner_binary=PureWindowsPath("C:/fixed/runner.exe"),
         runner_digest=pin("5"),
-        work_root=Path("C:/fixed/private"),
+        work_root=PureWindowsPath("C:/fixed/private"),
         credential=None,
         revalidate_original=lambda: None,
         cancellation_event=threading.Event(),
@@ -280,17 +280,25 @@ def test_fixed_launch_assigns_before_resume_with_clean_env_and_cleanup(monkeypat
         assert "close" in jobs.calls
 
 
-def test_platform_refusal_precedes_any_spawn(monkeypatch):
-    monkeypatch.setattr(process.sys, "platform", "linux")
+@pytest.mark.parametrize(
+    "platform,runner",
+    [
+        ("linux", "C:/fixed/runner.exe"),
+        ("darwin", "C:/fixed/runner.exe"),
+        ("win32", "relative/runner.exe"),
+    ],
+)
+def test_platform_or_relative_path_refusal_precedes_any_spawn(monkeypatch, platform, runner):
+    monkeypatch.setattr(process, "sys", SimpleNamespace(platform=platform))
     monkeypatch.setattr(
         process.subprocess, "Popen", lambda *_args, **_kw: pytest.fail("no process")
     )
     with pytest.raises(AdSmbError):
         process.run_worker(
             packet(),
-            runner_binary=Path("C:/fixed/runner.exe"),
+            runner_binary=PureWindowsPath(runner),
             runner_digest=pin("5"),
-            work_root=Path("C:/fixed/private"),
+            work_root=PureWindowsPath("C:/fixed/private"),
             credential=None,
             revalidate_original=lambda: None,
             cancellation_event=threading.Event(),
@@ -300,7 +308,7 @@ def test_platform_refusal_precedes_any_spawn(monkeypatch):
 def test_delayed_packet_does_not_restart_its_monotonic_interval(monkeypatch):
     value = packet()
     value = wire.WorkerPacket(canonical_json_bytes(value.to_dict()), time.monotonic() - 60)
-    monkeypatch.setattr(process.sys, "platform", "win32")
+    monkeypatch.setattr(process, "sys", SimpleNamespace(platform="win32"))
     monkeypatch.setattr(process, "_utc", lambda: NOW - timedelta(seconds=10))
     monkeypatch.setattr(
         process.subprocess,
@@ -309,9 +317,9 @@ def test_delayed_packet_does_not_restart_its_monotonic_interval(monkeypatch):
     )
     result = process.run_worker(
         value,
-        runner_binary=Path("C:/fixed/runner.exe"),
+        runner_binary=PureWindowsPath("C:/fixed/runner.exe"),
         runner_digest=pin("5"),
-        work_root=Path("C:/fixed/private"),
+        work_root=PureWindowsPath("C:/fixed/private"),
         credential=None,
         revalidate_original=lambda: None,
         cancellation_event=threading.Event(),
