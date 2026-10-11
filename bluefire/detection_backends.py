@@ -51,7 +51,7 @@ _MAX_FIXTURES = 128
 _MAX_TOTAL_FIXTURE_BYTES = 1024 * 1024
 _MAX_FIELD_BYTES = 16 * 1024
 _MAX_RESULT_ROWS = 128
-_MAX_RESULT_FIELDS = 64
+_MAX_RESULT_FIELDS = 70
 _MAX_RESULT_BYTES = 256 * 1024
 _MAX_VM_STEPS = 250_000
 _PROGRESS_GRANULARITY = 100
@@ -88,7 +88,9 @@ SQLITE_LOG_FIELDS = tuple("""fixture_id timestamp EventID Channel Provider_Name 
     process.parent.command_line user.name host.name event.code event.category file.path source.ip source.port destination.ip
     destination.port network.transport registry.path registry.value observation_kind collector_id container
     record_count redacted_record_count retained_record_count empty_record_count sha256 size_bytes
-    permission_status non_owner_write_bit""".split())
+    permission_status non_owner_write_bit observed_fields.platform observed_fields.native_api
+    observed_fields.process_id observed_fields.parent_process_id observed_fields.executable_name
+    observed_fields.creation_identity""".split())
 _FIELD_INDEX = {field.casefold(): field for field in SQLITE_LOG_FIELDS}
 _QUOTED_FIELDS = ", ".join(f'"{field}"' for field in SQLITE_LOG_FIELDS)
 _CREATE_LOGS_SQL = "CREATE TABLE logs (" + ", ".join(
