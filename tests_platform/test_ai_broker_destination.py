@@ -37,6 +37,8 @@ def address(value, *, protocol=socket.IPPROTO_TCP):
         "::1",
         "ff02::1",
         "fc00::1",
+        "fec0::1",
+        "feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
         "::ffff:127.0.0.1",
     ],
 )

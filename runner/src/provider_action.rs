@@ -375,11 +375,27 @@ fn validate_artifact_specs(specs: &[ProviderArtifactSpec]) -> Result<(), String>
         if !is_field_name(&spec.name) || !is_stable_id(&spec.artifact_type) {
             return Err("provider output specification identity is invalid".to_string());
         }
+        if !provider_artifact_type_allowed(&spec.artifact_type) {
+            return Err("provider output uses a reserved artifact namespace".to_string());
+        }
         if !names.insert(spec.name.as_str()) {
             return Err("provider output specifications contain duplicate names".to_string());
         }
     }
     Ok(())
+}
+
+fn provider_artifact_type_allowed(artifact_type: &str) -> bool {
+    const RESERVED_PREFIXES: [&str; 5] = [
+        "artifact.sandbox.",
+        "artifact.endpoint.",
+        "artifact.file_access.",
+        "artifact.permission.",
+        "artifact.research.",
+    ];
+    !RESERVED_PREFIXES
+        .iter()
+        .any(|prefix| artifact_type.starts_with(prefix))
 }
 
 fn validate_parameter_specs(specs: &[ProviderParameterSpec]) -> Result<(), String> {
@@ -496,6 +512,7 @@ fn validate_provider_outputs(
     specs: &[ProviderArtifactSpec],
     outputs: &BTreeMap<String, Value>,
 ) -> Result<(), String> {
+    validate_artifact_specs(specs)?;
     let declared = specs
         .iter()
         .map(|spec| (spec.name.as_str(), spec))
@@ -718,6 +735,38 @@ fn is_semver(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn providers_cannot_declare_or_return_native_artifact_authority() {
+        for artifact_type in [
+            "artifact.sandbox.filesystem.record.v1",
+            "artifact.sandbox.bundle.v1",
+            "artifact.sandbox.archive.v2",
+            "artifact.endpoint.process-records.v1",
+            "artifact.file_access.probe.v1",
+            "artifact.permission.mode.v1",
+            "artifact.research.hypothesis.v1",
+        ] {
+            let mut spec = test_binding().outputs[0].clone();
+            spec.artifact_type = artifact_type.to_string();
+            let outputs = BTreeMap::from([(
+                spec.name.clone(),
+                json!({"type": artifact_type, "path": "unrelated.txt"}),
+            )]);
+            assert!(validate_artifact_specs(&[spec.clone()])
+                .unwrap_err()
+                .contains("reserved artifact namespace"));
+            assert!(validate_provider_outputs(&[spec], &outputs)
+                .unwrap_err()
+                .contains("reserved artifact namespace"));
+        }
+        let spec = test_binding().outputs[0].clone();
+        let outputs = BTreeMap::from([(
+            spec.name.clone(),
+            json!({"type": spec.artifact_type, "value": 7}),
+        )]);
+        validate_provider_outputs(&[spec], &outputs).unwrap();
+    }
 
     #[test]
     fn runtime_contract_is_sensitive_to_signed_parameter_fields() {

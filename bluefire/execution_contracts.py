@@ -22,6 +22,19 @@ FORBIDDEN_EXECUTION_KEYS = frozenset(
     }
 )
 
+# These namespaces carry native evidence or authority, never provider-authored data.
+RESERVED_PROVIDER_ARTIFACT_PREFIXES = (
+    "artifact.sandbox.",
+    "artifact.endpoint.",
+    "artifact.file_access.",
+    "artifact.permission.",
+    "artifact.research.",
+)
+
+
+def provider_artifact_type_allowed(value: Any) -> bool:
+    return isinstance(value, str) and not value.startswith(RESERVED_PROVIDER_ARTIFACT_PREFIXES)
+
 
 class ExecutionContractError(ValueError):
     """Raised when untrusted data attempts to carry executable authority."""
