@@ -280,6 +280,13 @@ access remain unproven. The exercise's `audit: not_collected` field and original
 execution grants are unchanged. This feature makes no AWS calls, enrolls no audit
 collector, and does not deploy detections or prove a defensive change.
 
+The cross-language audit corpus is generated from the synthetic saved-store test
+executor. Its compressed inputs contain only generated CloudTrail-shaped records
+for the example account `123456789012` and the `bluefire-owned-fixture` bucket.
+The two exact encoded samples and the negative test's explicit synthetic password
+literal are marked non-secret in the existing detector baseline. No detector
+threshold, path exclusion or production credential is changed.
+
 ## Fixed Worker
 
 `S3WorkerHandshake` requires a matching ready/containment acknowledgement before
