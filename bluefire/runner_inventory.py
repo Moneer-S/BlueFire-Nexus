@@ -256,6 +256,39 @@ def canonical_runner_inventory(inventory: Mapping[str, Any]) -> Mapping[str, Any
     return canonical
 
 
+def packaged_builtin_inventory(inventory: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Check reserved authority fields without granting ordinary dispatch."""
+
+    actions = inventory.get("actions")
+    if not isinstance(actions, list) or not 0 < len(actions) <= _MAX_ACTIONS:
+        raise RunnerInventoryAuthorityError("runner inventory action list is invalid")
+    reserved = [
+        row
+        for row in actions
+        if isinstance(row, Mapping) and row.get("action_id") == "owned.aws.s3_access.v1"
+    ]
+    if not reserved:
+        return inventory
+    if (
+        len(reserved) != 1
+        or "source_digest" in inventory
+        or any(isinstance(row, Mapping) and "contract_digest" in row for row in actions)
+    ):
+        raise RunnerInventoryAuthorityError("reserved runner descriptor is not exact")
+    row = reserved[0]
+    if (
+        row.get("schema_version") != RUNNER_ACTION_SDK_SCHEMA_VERSION
+        or row.get("action_version") != "1.0.0"
+        or row.get("readiness") != "structural"
+        or row.get("capabilities") != ["cloud_aws_s3_access"]
+        or row.get("platforms") != ["linux"]
+        or row.get("native_tool_binding") is not None
+    ):
+        raise RunnerInventoryAuthorityError("reserved runner descriptor is incompatible")
+    canonical_runner_inventory(inventory)
+    return {**inventory, "actions": [item for item in actions if item is not row]}
+
+
 def validate_builtin_action_inventory(
     inventory: Mapping[str, Any],
     *,

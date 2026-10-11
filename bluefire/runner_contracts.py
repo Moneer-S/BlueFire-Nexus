@@ -51,6 +51,7 @@ EFFECT_CAPABILITIES: Mapping[str, str] = {
     "process.discovery": "process_discovery",
     "system.discovery": "system_discovery",
     "network.loopback": "network_loopback",
+    "cloud.aws.s3.access": "cloud_aws_s3_access",
     "export.local": "export_local",
     "cleanup": "cleanup",
 }

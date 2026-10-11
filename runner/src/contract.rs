@@ -75,6 +75,7 @@ pub enum Capability {
     ProcessDiscovery,
     SystemDiscovery,
     NetworkLoopback,
+    CloudAwsS3Access,
     ExportLocal,
     SandboxRestricted,
     Cleanup,

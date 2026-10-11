@@ -11,6 +11,17 @@ _LINUX_AT_EMPTY_PATH = 0x1000
 _LINUX_STATX_MNT_ID = 0x1000
 
 
+class _PrivateFileTwoLinksError(OSError):
+    """A strict private-file read found two links; no contents were accepted."""
+
+
+def _require_single_link(details: os.stat_result) -> None:
+    if details.st_nlink == 2:
+        raise _PrivateFileTwoLinksError("private file has two links")
+    if details.st_nlink != 1:
+        raise OSError("unsafe private file link count")
+
+
 def identity_format() -> str:
     return "windows-file-id-info.v1" if sys.platform == "win32" else "posix-stat.v1"
 

@@ -19,6 +19,7 @@ from bluefire.owned_service_authority import SERVICE_ACTION_ID, OwnedServiceAdmi
 from bluefire.run_store import RunStore
 from bluefire.runner_client import SubprocessRustRunner
 from bluefire.runner_transport_errors import RunnerTaskTimedOut, RunnerTransportError
+from bluefire.s3_access_launch import S3LaunchIntent
 
 PRIVATE = "private-value-in-test"
 ACTION = "sandbox.fixture.create.v1"
@@ -70,9 +71,9 @@ def service_admission():
 
 
 @pytest.mark.parametrize("fails", [False, True])
-@pytest.mark.parametrize("with_admission", [False, True])
+@pytest.mark.parametrize("admission_kind", ["none", "service", "s3"])
 def test_observer_delegates_once_with_exact_arguments_and_original_result_or_exception(
-    tmp_path, monkeypatch, fails, with_admission
+    tmp_path, monkeypatch, fails, admission_kind
 ):
     observer = diagnostic()
     runner = observed_runner(observer)
@@ -93,9 +94,12 @@ def test_observer_delegates_once_with_exact_arguments_and_original_result_or_exc
 
     monkeypatch.setattr(SubprocessRustRunner, "execute_task", delegate)
     kwargs = dict(task_id=PRIVATE, cancel_event=cancel, durable_result_path=destination)
-    admission = service_admission() if with_admission else None
+    admission = service_admission() if admission_kind == "service" else None
+    intent = S3LaunchIntent({"fixture_only": PRIVATE}) if admission_kind == "s3" else None
     if admission is not None:
         kwargs["owned_service_admission"] = admission
+    if intent is not None:
+        kwargs["s3_access_intent"] = intent
     if fails:
         with pytest.raises(RunnerTaskTimedOut) as caught:
             runner.execute_task(manifest, profile, **kwargs)
@@ -110,6 +114,8 @@ def test_observer_delegates_once_with_exact_arguments_and_original_result_or_exc
     assert calls[0][3] == kwargs and calls[0][3]["cancel_event"] is cancel
     if admission is not None:
         assert calls[0][3]["owned_service_admission"] is admission
+    if intent is not None:
+        assert calls[0][3]["s3_access_intent"] is intent
     assert observer.last_attempt["requested_timeout_ms"] == 29500
     assert observer.last_attempt["profile_timeout_ms"] == 35000
     assert observer.last_attempt["transport_timeout_ms"] == 35000
@@ -133,6 +139,26 @@ def test_observer_preserves_base_runner_service_admission_refusal(tmp_path, with
             owned_service_admission=service_admission() if with_admission else None,
         )
     assert observer.last_unsuccessful_attempt["exception_type"] == "RunnerTransportError"
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("with_intent", [False, True])
+def test_observer_preserves_base_runner_s3_admission_refusal(tmp_path, with_intent):
+    observer = diagnostic()
+    runner = observed_runner(observer)
+    runner._s3_launch_authority = None
+    destination = tmp_path / "unused-s3-result.json"
+    with pytest.raises(RunnerTransportError, match="S3 execution requires"):
+        runner.execute_task(
+            {"action_id": "owned.aws.s3_access.v1"},
+            {},
+            task_id="s3-diagnostic-test",
+            cancel_event=threading.Event(),
+            durable_result_path=destination,
+            s3_access_intent=S3LaunchIntent({"fixture_only": PRIVATE}) if with_intent else None,
+        )
+    assert observer.last_unsuccessful_attempt["exception_type"] == "RunnerTransportError"
+    assert PRIVATE not in json.dumps(observer.last_attempt)
     assert not destination.exists()
 
 

@@ -3919,10 +3919,57 @@ pub fn find_action(action_id: &str) -> Option<&'static dyn Action> {
 }
 
 pub fn inventory() -> Vec<ActionDescriptor> {
-    REGISTRY
+    let mut rows: Vec<_> = REGISTRY
         .iter()
         .map(|action| action.descriptor().clone())
-        .collect()
+        .collect();
+    rows.push(s3_access_descriptor());
+    rows
+}
+
+// Inventory advertises this fixed boundary; ordinary registry lookup cannot run it.
+fn s3_access_descriptor() -> ActionDescriptor {
+    ActionDescriptor {
+        schema_version: ACTION_SDK_SCHEMA_VERSION,
+        action_id: "owned.aws.s3_access.v1",
+        action_version: "1.0.0",
+        behavior_ids: &["cloud.s3.access_hardening.v1"],
+        summary: "Fixed enrolled S3 access validation and reviewed policy correction",
+        platforms: &[Platform::Linux],
+        parameter_schema: || {
+            serde_json::json!({
+                "type":"object", "additionalProperties":false,
+                "required":["worker_request","workflow_approval"],
+                "properties":{"worker_request":{"type":"object"},"workflow_approval":{"type":"object"}},
+            })
+        },
+        capabilities: &[Capability::CloudAwsS3Access],
+        safety_tier: SafetyTier::Controlled,
+        target_types: &["owned_s3_bucket"],
+        observation_hints: &[ObservationHint {
+            source: "runner",
+            signal: "s3_access_result",
+        }],
+        cleanup_action_id: None,
+        declared_limits: DeclaredLimits {
+            timeout_ms: true,
+            max_stdout_bytes: true,
+            max_stderr_bytes: true,
+            max_artifact_bytes: true,
+            max_files: true,
+            max_depth: None,
+        },
+        readiness: ActionReadiness::Structural,
+        provenance: ActionProvenance {
+            source: "BlueFire fixed enrolled-host S3 adapter",
+            reference: "protected native S3 dispatch",
+            license: "MIT",
+        },
+        filesystem_effect: true,
+        network_effect: true,
+        process_effect: true,
+        cleanup_receipt: false,
+    }
 }
 
 #[cfg(test)]
@@ -4049,9 +4096,9 @@ mod tests {
 
     #[test]
     fn registry_contains_exactly_the_reviewed_action_ids() {
-        let actual = inventory()
-            .into_iter()
-            .map(|descriptor| descriptor.action_id)
+        let actual = registered_actions()
+            .iter()
+            .map(|action| action.descriptor().action_id)
             .collect::<Vec<_>>();
         let expected = [
             "sandbox.execution.native-canary.v1",
@@ -4086,6 +4133,21 @@ mod tests {
             actual.iter().collect::<BTreeSet<_>>().len(),
             registered_actions().len()
         );
+    }
+
+    #[test]
+    fn reserved_cloud_inventory_is_not_ordinary_registry_authority() {
+        let rows = inventory();
+        assert_eq!(rows.len(), registered_actions().len() + 1);
+        let reserved: Vec<_> = rows
+            .iter()
+            .filter(|row| find_action(row.action_id).is_none())
+            .collect();
+        assert_eq!(reserved.len(), 1);
+        assert_eq!(reserved[0].action_id, "owned.aws.s3_access.v1");
+        assert_eq!(reserved[0].capabilities, &[Capability::CloudAwsS3Access]);
+        assert_eq!(reserved[0].platforms, &[Platform::Linux]);
+        assert!(reserved[0].network_effect);
     }
 
     #[test]
@@ -4130,6 +4192,9 @@ mod tests {
                     value["native_tool_binding"]["adapter_id"],
                     descriptor.action_id
                 );
+            } else if descriptor.action_id == "owned.aws.s3_access.v1" {
+                assert_eq!(value["readiness"], "structural");
+                assert!(value.get("native_tool_binding").is_none());
             } else {
                 assert_eq!(value["readiness"], "ready");
                 assert!(value.get("native_tool_binding").is_none());

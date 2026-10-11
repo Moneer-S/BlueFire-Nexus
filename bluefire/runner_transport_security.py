@@ -12,7 +12,22 @@ from cryptography.x509.oid import NameOID
 
 from .runner_transport_errors import RunnerAuthenticationError
 from .runner_trust import RunnerEnrollment, certificate_fingerprint
-from .util import canonical_json_bytes
+from .util import canonical_json_bytes, content_hash
+
+
+def enrollment_binding(enrollment: RunnerEnrollment, peer_fingerprint: str) -> dict[str, str]:
+    public_identity = {
+        "runner_id": enrollment.runner_id,
+        "client_id": enrollment.client_id,
+        "ca_fingerprint": str(enrollment.metadata["ca_fingerprint"]),
+        "server_fingerprint": str(enrollment.metadata["server_fingerprint"]),
+        "client_fingerprint": str(enrollment.metadata["client_fingerprint"]),
+    }
+    return {
+        **public_identity,
+        "peer_fingerprint": peer_fingerprint,
+        "enrollment_generation": content_hash(public_identity),
+    }
 
 
 def request_authentication(enrollment: RunnerEnrollment, unsigned: Mapping[str, Any]) -> str:

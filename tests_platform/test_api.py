@@ -41,6 +41,58 @@ class StubService:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
 
+    def s3_access_environments(self):
+        self.calls.append(("s3_access_environments",))
+        return {"environments": []}
+
+    def s3_access_setup_profiles(self):
+        self.calls.append(("s3_access_setup_profiles",))
+        return {"profiles": []}
+
+    def check_s3_access_setup(self, body):
+        self.calls.append(("check_s3_access_setup", body))
+        return {"host_state": "unavailable"}
+
+    def review_s3_access_setup_draft(self, body):
+        self.calls.append(("review_s3_access_setup_draft", body))
+        return {"validation_scope": "structural_only"}
+
+    def s3_access_saved_setup_draft(self, profile_id):
+        self.calls.append(("s3_access_saved_setup_draft", profile_id))
+        return {"draft": None}
+
+    def save_s3_access_setup_draft(self, body):
+        self.calls.append(("save_s3_access_setup_draft", body))
+        return {"draft": {}}
+
+    def s3_access_exercises(self):
+        self.calls.append(("s3_access_exercises",))
+        return {"exercises": []}
+
+    def s3_access_exercise(self, identifier):
+        self.calls.append(("s3_access_exercise", identifier))
+        return {"workflow_job_id": identifier}
+
+    def create_s3_access(self, request):
+        self.calls.append(("create_s3_access", request))
+        return {"saved": True}
+
+    def review_s3_access(self, identifier, request):
+        self.calls.append(("review_s3_access", identifier, request))
+        return {"saved": True}
+
+    def submit_s3_access(self, identifier, request):
+        self.calls.append(("submit_s3_access", identifier, request))
+        return {"saved": True}
+
+    def stop_s3_access(self, identifier, request):
+        self.calls.append(("stop_s3_access", identifier, request))
+        return {"saved": True}
+
+    def recover_s3_access(self, identifier, request):
+        self.calls.append(("recover_s3_access", identifier, request))
+        return {"saved": True}
+
     def retained_observations(self, run_id):
         self.calls.append(("retained_observations", run_id))
         return {"schema_version": "bluefire.retained-run-observations.v1", "run_id": run_id}

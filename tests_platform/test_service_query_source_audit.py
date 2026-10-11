@@ -19,6 +19,7 @@ REVIEWED_FILES = (
     "atomic_chmod.rs",
     PROCESS,
     FIXTURE,
+    "s3_worker_process.rs",
 )
 
 

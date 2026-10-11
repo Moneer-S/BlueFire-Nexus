@@ -400,7 +400,7 @@ def test_invalid_channel_cleanup_preserves_refusal_and_closes_both_descriptors(m
 
 def test_native_watchdog_pin_matches_packaged_source():
     root = Path(__file__).resolve().parents[1]
-    native = (root / "runner/src/service_admission_channel.rs").read_text(encoding="utf-8")
+    native = (root / "runner/src/protected_launch_channel.rs").read_text(encoding="utf-8")
     pin = re.search(r'WATCHDOG_SOURCE_SHA256:\s*&str\s*=\s*"([0-9a-f]{64})"', native)
     assert pin is not None
     packaged = (root / "bluefire/runner_watchdog.py").read_bytes().replace(b"\r\n", b"\n")
