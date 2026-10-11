@@ -29,6 +29,7 @@ it("requires a deliberate objective choice without creating any stored authority
 it.each([
   ["data-handoff", "/compare?receiver=1", "Retained receiver redaction policy"],
   ["file-access", "/file-access", "File permission correction"],
+  ["ad-access", "/ad-smb", "Scoped share permission correction"],
   ["s3-access", "/s3-access", "Scoped bucket-policy correction"],
 ])("opens only the existing %s review and restores the choice on Back", async (goal, target, change) => {
   const user = userEvent.setup();

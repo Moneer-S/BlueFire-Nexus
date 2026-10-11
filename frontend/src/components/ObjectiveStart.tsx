@@ -19,6 +19,13 @@ const objectives = [
     change: "File permission correction",
   },
   {
+    id: "ad-access", label: "Excess domain access", to: "/ad-smb",
+    question: "Can we remove the probe identity's share access while preserving legitimate domain reads?",
+    environment: "Enrolled Windows domain, member, client and protected credential channel",
+    data: "Generated primary and health files on a disposable share",
+    change: "Scoped share permission correction",
+  },
+  {
     id: "s3-access", label: "Excess S3 access", to: "/s3-access",
     question: "Can we remove the probe role's S3 access while preserving legitimate reads?",
     environment: "Authorized AWS account, region, bucket and dedicated test roles",

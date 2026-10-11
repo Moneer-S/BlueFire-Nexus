@@ -188,7 +188,12 @@ def test_shared_enrollment_projection_preserves_existing_binding():
         "server_fingerprint": "server",
         "client_fingerprint": "client-certificate",
     }
-    enrollment = SimpleNamespace(runner_id="runner", client_id="client", metadata=public)
+    enrollment = SimpleNamespace(
+        runner_id="runner",
+        client_id="client",
+        metadata=public,
+        transport_identity_scope=lambda: {},
+    )
     assert _enrollment_binding(enrollment, "peer") == {
         **public,
         "peer_fingerprint": "peer",

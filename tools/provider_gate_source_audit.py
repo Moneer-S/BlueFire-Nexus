@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from tools import native_command_source_audit as _native_command_source_audit
+from tools.ad_smb_worker_source_audit import ad_worker_boundary
 from tools.prepared_lab_source_audit import BOUNDARIES as PREPARED_LAB_BOUNDARIES
 from tools.prepared_lab_source_audit import prepared_lab_boundary
 from tools.provider_boundary_inventory import (
@@ -1461,6 +1462,10 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
         paths["receiver_session.py"],
         _python_shell_findings(paths["receiver_session.py"], repository),
     )
+    python_boundaries["ad_smb_worker_process.py"] = ad_worker_boundary(
+        paths["ad_smb_worker_process.py"],
+        _python_shell_findings(paths["ad_smb_worker_process.py"], repository),
+    )
     for name in PREPARED_LAB_BOUNDARIES:
         python_boundaries[name] = prepared_lab_boundary(
             paths[name], _python_shell_findings(paths[name], repository)
@@ -1490,6 +1495,7 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
         and all(item["passed"] is True for item in python_boundaries.values()),
         "popen_shell_disabled": _runner_client_popen_contract(paths["runner_client.py"])
         and python_boundaries["receiver_session.py"]["passed"]
+        and python_boundaries["ad_smb_worker_process.py"]["passed"]
         and _runner_darwin_popen_contract(paths["runner_darwin_containment.py"])
         and _runner_lifecycle_popen_contract(paths["runner_lifecycle.py"]),
         "absolute_digest_bound_runner": all(

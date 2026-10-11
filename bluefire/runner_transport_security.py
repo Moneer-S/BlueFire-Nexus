@@ -4,15 +4,35 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import ssl
 from typing import Any, Mapping
 
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 
-from .runner_transport_errors import RunnerAuthenticationError
+from .runner_transport_errors import AuthenticatedRunnerTransportError, RunnerAuthenticationError
 from .runner_trust import RunnerEnrollment, certificate_fingerprint
 from .util import canonical_json_bytes, content_hash
+
+
+def loopback_host(value: str) -> str:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        raise AuthenticatedRunnerTransportError(
+            "Runner address must be literal loopback."
+        ) from None
+    if not address.is_loopback:
+        raise AuthenticatedRunnerTransportError("Runner address must be literal loopback.")
+    return address.compressed
+
+
+def port(value: int, *, allow_zero: bool) -> int:
+    minimum = 0 if allow_zero else 1
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= 65535:
+        raise AuthenticatedRunnerTransportError("Runner port is invalid.")
+    return value
 
 
 def enrollment_binding(enrollment: RunnerEnrollment, peer_fingerprint: str) -> dict[str, str]:
@@ -26,7 +46,9 @@ def enrollment_binding(enrollment: RunnerEnrollment, peer_fingerprint: str) -> d
     return {
         **public_identity,
         "peer_fingerprint": peer_fingerprint,
-        "enrollment_generation": content_hash(public_identity),
+        "enrollment_generation": content_hash(
+            {**public_identity, **enrollment.transport_identity_scope()}
+        ),
     }
 
 

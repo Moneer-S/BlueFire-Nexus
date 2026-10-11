@@ -99,6 +99,17 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/runner_transport_framing.py",
         "bluefire/product_store_proposal_reviews.py",
         "bluefire/runner_durable_result.py",
+        "bluefire/ad_smb_admitted_transport.py",
+        "bluefire/ad_smb_installed.py",
+        "bluefire/ad_smb_workspace_results.py",
+        "bluefire/ad_smb_receiver_entry.py",
+        "bluefire/ad_smb_receiver.py",
+        "bluefire/ad_smb_receiver_results.py",
+        "bluefire/ad_smb_native_member_results.py",
+        "bluefire/ad_smb_worker_wire.py",
+        "bluefire/ad_smb_credentials.py",
+        "bluefire/ad_smb_private_storage.py",
+        "bluefire/ad_smb_native_results.py",
         "bluefire/receiver.py",
         "bluefire/receiver_policy.py",
         "bluefire/receiver_session_contract.py",
@@ -279,6 +290,7 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/prepared_lab_file_access.py",
         "bluefire/browser_launch.py",
         "bluefire/runner_python_environment.py",
+        "bluefire/ad_smb_worker_process.py",
         "runner/src/cancellation_witness.rs",
         "runner/src/process.rs",
         "runner/src/atomic_gzip.rs",
@@ -430,6 +442,12 @@ def _structural_report() -> dict[str, Any]:
                         "native_process_inventory_is_fixed": True,
                     },
                     "python_boundaries": {
+                        "ad_smb_worker_process.py": {
+                            "passed": True,
+                            "shell_imports": 1,
+                            "process_calls": ["subprocess.Popen"],
+                            "unexpected_findings": [],
+                        },
                         "prepared_lab_file_access.py": {
                             "passed": True,
                             "shell_imports": 1,
@@ -642,9 +660,39 @@ def test_live_source_audit_round_trips_locked_structural_validator() -> None:
     assert checks["no_model_shell"]["process_boundary"]["passed"] is True
 
 
+@pytest.mark.parametrize("drift", ["omitted", "extra_call", "shell_import", "failed"])
+def test_structural_validator_requires_exact_ad_worker_boundary(drift: str) -> None:
+    report = _structural_report()
+    provider_gate._validate_structural(report)
+    boundaries = report["checks"]["no_model_shell"]["process_boundary"]["python_boundaries"]
+    worker = boundaries["ad_smb_worker_process.py"]
+    if drift == "omitted":
+        del boundaries["ad_smb_worker_process.py"]
+    elif drift == "extra_call":
+        worker["process_calls"].append("subprocess.run")
+    elif drift == "shell_import":
+        worker["shell_imports"] = 2
+    else:
+        worker["passed"] = False
+    with pytest.raises(ValueError, match="no-model-shell evidence is invalid"):
+        provider_gate._validate_structural(report)
+
+
 @pytest.mark.parametrize(
     "relative",
     [
+        "bluefire/ad_smb_worker_process.py",
+        "bluefire/ad_smb_admitted_transport.py",
+        "bluefire/ad_smb_installed.py",
+        "bluefire/ad_smb_workspace_results.py",
+        "bluefire/ad_smb_receiver_entry.py",
+        "bluefire/ad_smb_receiver.py",
+        "bluefire/ad_smb_receiver_results.py",
+        "bluefire/ad_smb_native_member_results.py",
+        "bluefire/ad_smb_worker_wire.py",
+        "bluefire/ad_smb_credentials.py",
+        "bluefire/ad_smb_private_storage.py",
+        "bluefire/ad_smb_native_results.py",
         "bluefire/runner_bootstrap_record.py",
         "bluefire/runner_history_documents.py",
         "bluefire/runner_history_identity.py",

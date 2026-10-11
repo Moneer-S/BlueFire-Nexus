@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import ipaddress
 import json
 import os
 import re
@@ -64,10 +63,23 @@ from .runner_transport_errors import (
     RunnerAuthenticationError,
     RunnerConnectionError,
 )
+from .runner_transport_framing import (
+    _decode_json_object,
+    _duplicates_rejected,
+    _reject_json_constant,
+)
 from .runner_transport_security import (
     client_context as _build_client_context,
 )
-from .runner_transport_security import enrollment_binding as _enrollment_binding
+from .runner_transport_security import (
+    enrollment_binding as _enrollment_binding,
+)
+from .runner_transport_security import (
+    loopback_host as _loopback_host,
+)
+from .runner_transport_security import (
+    port as _port,
+)
 from .runner_transport_security import (
     request_authentication,
 )
@@ -374,25 +386,6 @@ class _EnrollmentCache:
     def _trust_marker(self) -> tuple[int, int, int, int]:
         status = (self.root / "trust.json").stat()
         return status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns
-
-
-def _loopback_host(value: str) -> str:
-    try:
-        address = ipaddress.ip_address(value)
-    except ValueError:
-        raise AuthenticatedRunnerTransportError(
-            "Runner address must be literal loopback."
-        ) from None
-    if not address.is_loopback:
-        raise AuthenticatedRunnerTransportError("Runner address must be literal loopback.")
-    return address.compressed
-
-
-def _port(value: int, *, allow_zero: bool) -> int:
-    minimum = 0 if allow_zero else 1
-    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= 65535:
-        raise AuthenticatedRunnerTransportError("Runner port is invalid.")
-    return value
 
 
 def _token(value: Any) -> str:
@@ -860,38 +853,6 @@ def _sign_response(enrollment: RunnerEnrollment, unsigned: Mapping[str, Any]) ->
     return _authenticate_response(enrollment, unsigned)
 
 
-def _duplicates_rejected(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate JSON key")
-        result[key] = value
-    return result
-
-
-def _reject_json_constant(value: str) -> None:
-    raise ValueError(f"unsupported JSON constant: {value}")
-
-
-def _decode_json_object(payload: bytes) -> dict[str, Any]:
-    try:
-        value = json.loads(
-            payload.decode("utf-8"),
-            object_pairs_hook=_duplicates_rejected,
-            parse_constant=_reject_json_constant,
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError):
-        raise RunnerAuthenticationError("Runner message is not valid canonical JSON.") from None
-    if not isinstance(value, dict):
-        raise RunnerAuthenticationError("Runner message must be a JSON object.")
-    try:
-        if canonical_json_bytes(value) != payload:
-            raise RunnerAuthenticationError("Runner message is not canonical JSON.")
-    except (RecursionError, TypeError, ValueError):
-        raise RunnerAuthenticationError("Runner message contains unsupported JSON.") from None
-    return value
-
-
 def _decode_durable_json_object(payload: bytes) -> dict[str, Any]:
     """Decode runner-owned JSON without requiring a whitespace representation.
 
@@ -1105,10 +1066,10 @@ class AuthenticatedRunnerServer:
         ):
             raise AuthenticatedRunnerTransportError("Runner transport bounds are invalid.")
         self.enrollment_root = Path(enrollment_root).expanduser()
-        self._enrollments = _EnrollmentCache(self.enrollment_root, secret_provider=secret_provider)
+        self._enrollments = self._enrollment_cache(self.enrollment_root, secret_provider)
         enrollment = self._enrollments.active()
         self.runner = runner
-        self.host = _loopback_host(host)
+        self.host = self._checked_host(host)
         self.port = _port(port, allow_zero=True)
         self.socket_timeout_seconds = float(socket_timeout_seconds)
         # Keep socket ingress independent of a long native action, but retain
@@ -2861,6 +2822,7 @@ class AuthenticatedRunnerServer:
             ingress_deadline = time.monotonic() + self.socket_timeout_seconds
             raw_connection.settimeout(self.socket_timeout_seconds)
             with closing(raw_connection):
+                self._validate_raw_peer(raw_connection)
                 with self._server_context.wrap_socket(
                     raw_connection, server_side=True, do_handshake_on_connect=False
                 ) as connection:
@@ -2934,6 +2896,15 @@ class AuthenticatedRunnerServer:
                 self._ingress_slots.release()
             if release_lock:
                 self._release_ledger_lock()
+
+    _transport_kind = "mutual-tls-loopback"
+    _checked_host = staticmethod(_loopback_host)
+
+    def _enrollment_cache(self, root: Path, provider: SecretProvider | None) -> _EnrollmentCache:
+        return _EnrollmentCache(root, secret_provider=provider)
+
+    def _validate_raw_peer(self, connection: socket.socket) -> None:
+        """Specialized enrolled channels may further restrict their exact ingress peer."""
 
     def _active_enrollment(self) -> RunnerEnrollment:
         return self._enrollments.active()
@@ -3024,7 +2995,7 @@ class AuthenticatedRunnerServer:
                     "client_id": enrollment.client_id,
                     "server_instance_id": self.instance_id,
                     "profile_id": request["profile_id"],
-                    "transport": "mutual-tls-loopback",
+                    "transport": self._transport_kind,
                     "tls": "TLSv1.3",
                     "server_fingerprint": enrollment.metadata["server_fingerprint"],
                     "client_fingerprint": enrollment.metadata["client_fingerprint"],
@@ -3388,6 +3359,11 @@ class AuthenticatedRunnerServer:
             """)
         return cursor.rowcount == 1
 
+    def _validate_execute_reservation(
+        self, connection: sqlite3.Connection, request: Mapping[str, Any]
+    ) -> None:
+        pass
+
     def _begin_request(self, request: Mapping[str, Any], binding: Mapping[str, str]) -> None:
         # Polling rows are disposable, but Execute identities are replay guards.
         # Prune only the former, then fail closed at a hard global bound.
@@ -3454,6 +3430,12 @@ class AuthenticatedRunnerServer:
             ):
                 connection.rollback()
                 raise _RequestRefusal("ledger_capacity")
+            if request["operation"] == "execute":
+                try:
+                    self._validate_execute_reservation(connection, request)
+                except BaseException:
+                    connection.rollback()
+                    raise
             connection.execute(
                 """
                 INSERT INTO transport_tasks (
@@ -3953,6 +3935,14 @@ class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
     """RunnerTransport client with exact-task reconnect recovery semantics."""
 
     owned_service_grant_protocol = GRANT_SCHEMA
+    _transport_kind = "mutual-tls-loopback"
+    _checked_host = staticmethod(_loopback_host)
+
+    def _enrollment_cache(self, root: Path, provider: SecretProvider | None) -> _EnrollmentCache:
+        return _EnrollmentCache(root, secret_provider=provider)
+
+    def _connect_socket(self) -> socket.socket:
+        return socket.create_connection((self.host, self.port), timeout=self.socket_timeout_seconds)
 
     def __init__(
         self,
@@ -3976,9 +3966,9 @@ class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
         ):
             raise AuthenticatedRunnerTransportError("Runner transport bounds are invalid.")
         self.enrollment_root = Path(enrollment_root).expanduser()
-        self._enrollments = _EnrollmentCache(self.enrollment_root, secret_provider=secret_provider)
+        self._enrollments = self._enrollment_cache(self.enrollment_root, secret_provider)
         self.profile_id = _token(profile_id)
-        self.host = _loopback_host(host)
+        self.host = self._checked_host(host)
         self.port = _port(port, allow_zero=False)
         self.socket_timeout_seconds = float(socket_timeout_seconds)
         self.max_frame_bytes = int(max_frame_bytes)
@@ -4254,9 +4244,7 @@ class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
         context = _client_context(enrollment)
         deadline = time.monotonic() + self.socket_timeout_seconds
         try:
-            with socket.create_connection(
-                (self.host, self.port), timeout=self.socket_timeout_seconds
-            ) as raw_connection:
+            with self._connect_socket() as raw_connection:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise RunnerConnectionError("Runner connection deadline expired.")

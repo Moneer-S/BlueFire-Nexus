@@ -1,0 +1,43 @@
+import type { AdPhase } from "../src/lib/ad-smb";
+
+// Browser-only synthetic data; no production module or live provider is imported.
+const adJobId = (id: string) => `job-${id.replaceAll("-", "")}`;
+const adSteps: Record<AdPhase, string[]> = {
+  inspect: ["inspect_member"],
+  baseline: ["read_probe_primary", "read_legitimate_primary", "read_legitimate_health"],
+  harden: ["harden_share"],
+  retest: ["read_probe_primary", "read_legitimate_primary", "read_legitimate_health"],
+  rollback: ["rollback_share"],
+  audit: ["collect_audit"],
+};
+
+export const adHash = `sha256:${"a".repeat(64)}`;
+export const adOwner = `job-${"1".repeat(32)}`;
+export const adChild = `job-${"2".repeat(32)}`;
+export const adSubmission = "22222222-2222-4222-8222-222222222222";
+export const adSids = { probe: "S-1-5-21-1-2-3-1001", legitimate: "S-1-5-21-1-2-3-1002", controller: "S-1-5-21-1-2-3-1003" };
+export function rawAdEnvironment() {
+  return { environment_id: `ad-env-${"3".repeat(32)}`, provenance: "synthetic_fixture", scope: {
+    schema_version: "bluefire.ad-smb-scope.v1", scope_id: "3".repeat(32), domain: { dns: "lab.example.test" },
+    hosts: { member: { fqdn: "member.lab.example.test" }, client: { fqdn: "client.lab.example.test" } },
+    principals: Object.fromEntries(Object.entries(adSids).map(([role, sid]) => [role, { sid, credential_handle: `credential-${"f".repeat(32)}` }])),
+    share: { unc: `\\\\member.lab.example.test\\bf_${"3".repeat(32)}` },
+    files: [{ purpose: "primary", name: "records.jsonl", size_bytes: 48, sha256: adHash }, { purpose: "health", name: "health.jsonl", size_bytes: 24, sha256: adHash }],
+    created_at: new Date(Date.now() - 60_000).toISOString(), expires_at: new Date(Date.now() + 3_000_000).toISOString(), limits: { business_seconds: 1800, audit_seconds: 600 },
+  } };
+}
+export function rawAdEnvironments() { return { native_execution_available: false, environments: [{ environment: rawAdEnvironment(), available: true, readiness: { available: true, member_observation: true, client_read_admission: true, secret_channel_available: true, problem: null } }] }; }
+export function rawAdDescriptor(after = false) {
+  return { binary_b64: "PRIVATE_DESCRIPTOR_BYTES", sha256: `sha256:${(after ? "b" : "a").repeat(64)}`, owner_sid: adSids.controller, group_sid: "S-1-5-21-1-2-3-513", control: 0x8004, revision: 1, sacl: null, dacl: { revision: 2, aces: Object.entries(adSids).filter(([role]) => !after || role !== "probe").map(([role, sid]) => ({ ace_type: "access_allowed", flags: 0, trustee_sid: sid, smb_right: role === "controller" ? "Full" : "Read", raw_ace_digest: `sha256:${String(Object.keys(adSids).indexOf(role) + 1).repeat(64)}` })) } };
+}
+export function rawAdChange() { return { schema_version: "bluefire.ad-smb-acl-change.v1", before: { descriptor: rawAdDescriptor() }, after_descriptor: rawAdDescriptor(true), removed_ace: rawAdDescriptor().dacl.aces[0], before_digest: adHash, after_digest: `sha256:${"b".repeat(64)}`, native_projection_verified: false, effective_access_claim: false }; }
+export function rawAdOperation(phase: AdPhase, expectation: "matched" | "not_met" | "incomplete" = "matched") {
+  return { job_id: `job-${String(["inspect", "baseline", "harden", "retest", "rollback", "audit"].indexOf(phase) + 4).repeat(32)}`, phase, run_id: `run-ad-${phase}`, outcome: { state: "complete", read_expectation: phase === "baseline" || phase === "retest" ? expectation : null, distinct_local_contexts: phase === "baseline" || phase === "retest" ? true : null, cleanup: "verified", evidence_digest: adHash, authenticated_remote_reader: false, independent_observation: false, effective_access_claim: false }, executions: adSteps[phase].map((step, index) => ({ schema_version: "bluefire.ad-smb-execution.v1", request_digest: adHash, provenance: "synthetic_fixture", dispatch: "attempted", cleanup: "verified", observation: step.startsWith("read_") ? { reader: index === 0 ? "probe" : "legitimate", purpose: index === 2 ? "health" : "primary", state: phase === "retest" && index === 0 && expectation === "matched" ? "open_access_denied" : "bytes_matched", bytes_read: phase === "retest" && index === 0 && expectation === "matched" ? 0 : index === 2 ? 24 : 48, sha256: phase === "retest" && index === 0 && expectation === "matched" ? null : adHash, local_authentication_id: String(index + 1).repeat(16), local_cleanup: "verified", server_session_closed: null, fresh_server_logon: false, authenticated_remote_reader: false, independent_observation: false, effective_access_claim: false } : phase === "inspect" ? { snapshot: { descriptor: rawAdDescriptor() }, after_descriptor: rawAdDescriptor(true) } : phase === "audit" ? { events: 3, truncated: true, source_digest: adHash, authenticated_source: false, independent_observation: false, effective_access_claim: false } : { state: "readback_matched", snapshot: {} } })) };
+}
+export function rawAdWorkflow(options: { id?: string; phases?: AdPhase[]; allowed?: AdPhase[]; pending?: string | null; stopped?: boolean; expectation?: "matched" | "not_met" | "incomplete"; unavailable?: boolean } = {}) {
+  const phases = options.phases ?? [];
+  return { workflow: { job_id: options.id ?? adOwner, kind: "ad_smb.exercise", request: { environment: rawAdEnvironment(), submitted_request: { environment_id: rawAdEnvironment().environment_id } }, progress: { revision: phases.length * 2, stopped: options.stopped ?? false, pending_operation: options.pending ?? null, policy_state: phases.includes("harden") && !phases.includes("rollback") ? "hardened" : "baseline", operations: phases.map(phase => rawAdOperation(phase, options.expectation)), reserved: {} } }, allowed_phases: options.allowed ?? (options.pending ? [] : ["inspect"]), remaining: { business_attempts: 6, sessions: 6, share_changes: 1, rollbacks: 1 }, effective_access_claim: false, execution_integration: options.unavailable ? "unavailable" : "injected_adapter" };
+}
+export function rawAdReview(phase: AdPhase = "inspect", revision = 0) { return { schema_version: "bluefire.ad-smb-review.v1", workflow_job_id: adOwner, revision, phase, policy_state: phase === "rollback" || phase === "retest" ? "hardened" : "baseline", steps: adSteps[phase], budget: { business_attempts: phase === "baseline" || phase === "retest" ? 3 : 0, sessions: phase === "baseline" || phase === "retest" ? 3 : 0, share_changes: phase === "harden" ? 1 : 0, rollbacks: phase === "rollback" ? 1 : 0 }, change: ["harden", "retest", "rollback"].includes(phase) ? rawAdChange() : null, review_digest: adHash }; }
+export function adPendingFixture() { return { kind: "submit" as const, id: adJobId(adSubmission), workflow: adOwner, body: { submission_id: adSubmission, phase: "inspect" as const, review_digest: adHash, reviewed_by: "operator" } }; }
+export function rawAdAcknowledgement() { const pending = adPendingFixture(); return { job_id: pending.id, kind: "ad_smb.operation", request: { submitted_request: { workflow_job_id: pending.workflow, phase: pending.body.phase, review_digest: pending.body.review_digest, reviewed_by: pending.body.reviewed_by } } }; }

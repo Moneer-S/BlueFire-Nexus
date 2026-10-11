@@ -120,6 +120,23 @@ def safe_document(value: Any, *, context: str = "document") -> Any:
             return
         if not isinstance(item, dict):
             return
+        if item.get("schema_version") == "bluefire.ad-smb-scope.v1":
+            from .ad_smb_contract import AdSmbError, AdSmbScope
+
+            try:
+                AdSmbScope.from_mapping(item)
+            except AdSmbError:
+                raise ProductStoreError(
+                    "AD scope contains an invalid protected reference contract"
+                ) from None
+            # Only these three fully validated opaque handles are public references.
+            # Inspect original values, not a canonical projection that could omit data.
+            inspected = json_clone(item)
+            del inspected["schema_version"]
+            for role in ("controller", "probe", "legitimate"):
+                del inspected["principals"][role]["credential_handle"]
+            inspect(inspected, path)
+            return
         for raw_key, child in item.items():
             if not isinstance(raw_key, str):
                 raise ProductStoreError(f"{path} contains a non-string key")

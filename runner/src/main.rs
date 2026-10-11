@@ -83,6 +83,12 @@ fn real_main() -> Result<i32, String> {
         return Err(usage().to_string());
     };
     match command {
+        "ad-smb-worker" => {
+            if args.len() != 1 {
+                return Err("the fixed AD worker accepts no arguments".into());
+            }
+            bluefire_runner::ad_smb_worker::run_fixed()
+        }
         INTERNAL_DESCENDANT_VERB => {
             if args.len() != 1 {
                 return Err("the internal cancellation descendant accepts no arguments".to_string());
