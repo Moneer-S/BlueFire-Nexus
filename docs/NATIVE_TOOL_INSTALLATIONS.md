@@ -1,10 +1,35 @@
 # Native tool installation identity
 
-The native-tool setup foundation separates an approved installation identity
-from an operation's logical parameters. Records persist in existing runner
-profiles and are bound to operator approval. A dedicated setup UI, inspected
-runner inventory and external-tool execution dispatch remain unimplemented.
-No method becomes ready by parsing a record or completing this inspection.
+Native-tool setup separates a reviewed installation identity from an operation's
+logical parameters. Records persist in runner profiles and are bound to operator
+approval. The workspace supports inspection and saved bindings for the compiled
+Linux GNU chmod and GNU gzip adapters. Authenticated runner inventory, protected
+installation inspection and dispatch-time checks are implemented. Parsing a record
+alone does not establish readiness, and a successful inspection does not authorize
+execution or prove a defensive outcome.
+
+## Workspace Setup
+
+1. Connect an authenticated Linux runner through **Runners** using an active
+   Execute profile. Tool inspection does not start a replacement runner.
+2. In **Runner profiles**, use an inactive saved Execute profile with the desired
+   method enabled. **Configure methods** saves a draft with the same profile ID.
+   Deactivate an active profile before changing its tool binding.
+3. Choose **Set up GNU chmod** or **Set up GNU gzip**. Enter the protected
+   installation location and one of the exact package versions offered by the
+   dialog, then choose **Inspect installation**. Both the package assertion and
+   executable fingerprint must match the reviewed Linux amd64 build list.
+4. **Save tool binding** retains a successful inspection in the draft profile.
+   **Validate & activate** is a separate action. A run still needs its current
+   scope, readiness checks and approval.
+
+Changing the location, version, profile or selected tool invalidates the displayed
+inspection. Unknown builds remain unavailable until a reviewed product update;
+the dialog does not install packages, execute `--version`, or accept an arbitrary
+binary based only on its declared name. Supported package fingerprints live in
+the compiled reviewed-build tables, not in operator-entered run parameters.
+
+## Installation Record
 
 `bluefire.native_tool_installations.NativeToolInstallation` validates an exact
 `bluefire.native-tool-installation.v1` record containing:
@@ -32,9 +57,9 @@ they cannot interrupt a blocked kernel filesystem call.
 
 The inspector does not execute the tool, query `--version`, search PATH, install
 dependencies or modify the file. The version is a setup assertion bound to its
-approved digest, not a claim derived from untrusted version output. A successful
+reviewed digest, not a claim derived from untrusted version output. A successful
 inspection is a point-in-time identity check, not authority for a future run.
-Dispatch must recheck the sealed installation binding and the opened executable
+Dispatch rechecks the sealed installation binding and the opened executable
 before effects; legacy exact-plan approvals must not gain tool authority.
 
 Runner profiles can now carry a finite `native_tool_installations` list. Its
@@ -45,13 +70,13 @@ empty list preserves the legacy profile digest. Dispatch derives records only
 from that reviewed profile and projects them to the actual platform and final
 reviewed actions; cleanup does not inherit unrelated installations. The Rust
 runner refuses records unless their adapter identity matches an explicitly
-registered method's compiled tool binding. Existing methods declare no such
-binding, so adding setup records cannot grant them external-tool authority.
-For this first schema, adapter IDs identify compiled action IDs. No method is
-currently admitted by this new boundary. Service preflight refuses unsupported
-setup before issuing an approval, and its runner probe reports degraded readiness.
-The eventual setup inventory must inspect the actual execution environment
-before a compiled tool adapter can become ready.
+registered method's compiled tool binding. The supported bindings are
+`sandbox.permission.chmod.v1` and `sandbox.collection.atomic-gzip.v1`; unrelated
+methods cannot acquire external-tool authority by adding a record. Adapter IDs
+identify compiled action IDs. Setup verifies the compiled descriptor and inspects
+the actual execution environment, checking inventory and authenticated transport
+identity before and after inspection. Readiness remains unavailable when a
+required binding is absent, unsupported, changed or cannot be inspected.
 
 The runner also provides read-only pinning for a single file named by a committed
 creation receipt. It validates both receipt and commit identity using bounded,
@@ -63,6 +88,9 @@ A metadata-only operation may
 retain the original creation receipt for deletion during cleanup. This helper
 does not itself execute a tool, change permissions or authorize a target path.
 
-Current tests use explicit filesystem models for replacement, permissions,
-capabilities, cancellation, deadlines and read failures. They are software tests,
-not evidence of an external security method executing or a target defense firing.
+Filesystem-model tests cover replacement, permissions, capabilities, cancellation,
+deadlines and read failures. Setup and workspace regressions cover unsupported
+builds, stale responses and preservation of profile state. These tests and saved
+inspection records are not evidence that a security method executed or a target
+defense prevented access. Fresh installed runs and independently attributed
+observations remain necessary for those claims.

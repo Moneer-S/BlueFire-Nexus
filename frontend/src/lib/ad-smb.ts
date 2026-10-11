@@ -1,4 +1,4 @@
-import { request } from "./api";
+import { DEMO_MODE, request } from "./api";
 
 export const adPhases = ["inspect", "baseline", "harden", "retest", "rollback", "audit"] as const;
 export type AdPhase = typeof adPhases[number];
@@ -148,11 +148,13 @@ function checkedPending(value: unknown): AdPending {
 export function readAdPending(): AdPending | undefined { const raw = localStorage.getItem(pendingKey); if (raw === null) return; if (raw.length > 8192) throw bad(); return checkedPending(JSON.parse(raw)); }
 export function storeAdPending(value: AdPending): void { const saved = checkedPending(value), previous = readAdPending(); if (previous && JSON.stringify(previous) !== JSON.stringify(saved)) throw new Error("Confirm the original AD request before saving another."); const raw = JSON.stringify(saved); localStorage.setItem(pendingKey, raw); if (localStorage.getItem(pendingKey) !== raw) throw new Error("The original request could not be retained. Nothing was sent."); }
 export function clearAdPending(value: AdPending): void { if (JSON.stringify(readAdPending()) !== JSON.stringify(checkedPending(value))) throw new Error("The retained AD request changed in another tab."); localStorage.removeItem(pendingKey); }
-const post = (path: string, body: unknown) => request<unknown>(`/ad-smb/${path}`, { method: "POST", body: JSON.stringify(body) });
+function live<T>(callback: () => Promise<T>): Promise<T> { return DEMO_MODE ? Promise.reject(new Error("AD access requires enrolled member and client sessions. Demo mode cannot connect to a domain.")) : callback(); }
+const post = (path: string, body: unknown) => live(() => request<unknown>(`/ad-smb/${path}`, { method: "POST", body: JSON.stringify(body) }));
 export const adSmbApi = {
-  environments: () => request<unknown>("/ad-smb/environments"), list: () => request<unknown>("/ad-smb/workflows"),
-  workflow: (id: string) => request<unknown>(`/ad-smb/workflows/${encodeURIComponent(id)}`),
-  job: (id: string) => request<unknown>(`/jobs/${encodeURIComponent(id)}`),
+  environments: () => DEMO_MODE ? Promise.resolve({ environments: [], native_execution_available: false }) : request<unknown>("/ad-smb/environments"),
+  list: () => DEMO_MODE ? Promise.resolve({ workflows: [] }) : request<unknown>("/ad-smb/workflows"),
+  workflow: (id: string) => live(() => request<unknown>(`/ad-smb/workflows/${encodeURIComponent(id)}`)),
+  job: (id: string) => live(() => request<unknown>(`/jobs/${encodeURIComponent(id)}`)),
   create: (body: { submission_id: string; environment_id: string }) => post("workflows", body),
   review: (id: string, phase: AdPhase) => post(`workflows/${encodeURIComponent(id)}/review`, { phase }),
   submit: (id: string, body: AdSubmission) => post(`workflows/${encodeURIComponent(id)}/operations`, body),

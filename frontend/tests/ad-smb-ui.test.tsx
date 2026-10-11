@@ -1,12 +1,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AdSmbPage } from "../src/pages/AdSmb";
+import { ObjectiveStart } from "../src/components/ObjectiveStart";
 import { adSmbApi, readAdPending, storeAdPending } from "../src/lib/ad-smb";
 import { adChild, adOwner, adPendingFixture, adSubmission, rawAdAcknowledgement, rawAdEnvironments, rawAdReview, rawAdWorkflow } from "./ad-smb-fixture";
 
-vi.mock("../src/lib/api", () => ({ request: vi.fn(), ApiError: class extends Error {} }));
+vi.mock("../src/lib/api", () => ({ DEMO_MODE: false, request: vi.fn(), ApiError: class extends Error {} }));
 function mount(path = `/ad-smb?workflow=${adOwner}`) { const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); return { ...render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><AdSmbPage /></MemoryRouter></QueryClientProvider>), client }; }
 beforeEach(() => {
   localStorage.clear();
@@ -22,6 +23,26 @@ beforeEach(() => {
   vi.spyOn(adSmbApi, "job").mockResolvedValue(rawAdAcknowledgement());
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+it("opens AD readiness from the objective chooser without creating or authorizing work", async () => {
+  vi.mocked(adSmbApi.environments).mockResolvedValue({ environments: [], native_execution_available: false });
+  vi.mocked(adSmbApi.list).mockResolvedValue({ workflows: [] });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/getting-started"]}><Routes>
+    <Route path="/getting-started" element={<ObjectiveStart />} />
+    <Route path="/ad-smb" element={<AdSmbPage />} />
+  </Routes></MemoryRouter></QueryClientProvider>);
+  fireEvent.change(screen.getByRole("combobox", { name: "Objective" }), { target: { value: "ad-access" } });
+  expect(screen.getByText("Not checked")).toBeVisible();
+  expect(adSmbApi.environments).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("link", { name: "Review environment" }));
+  expect(await screen.findByText("Live AD execution unavailable")).toBeVisible();
+  expect(screen.getByRole("heading", { name: "AD share access" })).toBeVisible();
+  expect(adSmbApi.create).not.toHaveBeenCalled();
+  expect(adSmbApi.review).not.toHaveBeenCalled();
+  expect(adSmbApi.submit).not.toHaveBeenCalled();
+  expect(adSmbApi.stop).not.toHaveBeenCalled();
+  expect(adSmbApi.recover).not.toHaveBeenCalled();
+});
 it("shows unavailable enrollment without credential inputs or fabricated ready state", async () => {
   vi.mocked(adSmbApi.environments).mockResolvedValue({ environments: [], native_execution_available: false });
   mount("/ad-smb");
