@@ -13,6 +13,7 @@ const configuration: Record<S3ConfigurationState, { title: string; detail: strin
   incomplete: { title: "Setup recovery required", detail: "An interrupted local publication is retained. Complete its exact owner-local recovery before another check." },
   invalid: { title: "Local setup needs review", detail: "The protected configuration could not be verified consistently. No local repair was attempted." },
   profile_missing: { title: "Profile not connected to S3", detail: "The installed configuration does not bind an environment to this profile." },
+  profile_changed: { title: "Installed profile is out of date", detail: "The local configuration does not match this profile or its enrolled host. Review and update owner-local setup before execution." },
   configured: { title: "Local checks recorded", detail: "AWS identity, effective permissions and defensive outcomes have not been tested." },
 };
 const accessName = { absent: "Not imported", current: "Locally current", expired: "Expired" };

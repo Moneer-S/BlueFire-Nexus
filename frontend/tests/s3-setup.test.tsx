@@ -11,7 +11,7 @@ const hash = `sha256:${"a".repeat(64)}`;
 const selected: S3SetupProfile = { profile_id: "s3-primary", profile_digest: hash };
 const other = { ...selected, profile_id: "s3-secondary" };
 function result(state: S3ConfigurationState = "configured", profile = selected): S3SetupCheck {
-  return { schema_version: "bluefire.s3-onboarding-check.v1", ...profile, host_state: "authenticated", context_digest: hash, setup: { schema_version: "bluefire.s3-setup-status.v1", profile_id: profile.profile_id, context_digest: hash, configuration_state: state, revision_digest: ["configured", "profile_missing"].includes(state) ? hash : null, environments: state === "configured" ? [{ environment_id: "test-environment", runtime_state: "verified", access_reference_state: "current", scope_state: "current", fixture_generation: 1 }] : [] } };
+  return { schema_version: "bluefire.s3-onboarding-check.v1", ...profile, host_state: "authenticated", context_digest: hash, setup: { schema_version: "bluefire.s3-setup-status.v1", profile_id: profile.profile_id, context_digest: hash, configuration_state: state, revision_digest: ["configured", "profile_missing", "profile_changed"].includes(state) ? hash : null, environments: state === "configured" ? [{ environment_id: "test-environment", runtime_state: "verified", access_reference_state: "current", scope_state: "current", fixture_generation: 1 }] : [] } };
 }
 function Location() { return <output aria-label="Current location">{useLocation().search}</output>; }
 function mount(path = "/s3-access?setup=1") {
@@ -40,6 +40,7 @@ it.each([
   ["missing", "S3 configuration missing"], ["incomplete", "Setup recovery required"],
   ["invalid", "Local setup needs review"], ["unsupported_host", "Owned Linux host required"],
   ["method_unavailable", "S3 method unavailable"], ["profile_missing", "Profile not connected to S3"],
+  ["profile_changed", "Installed profile is out of date"],
 ] as const)("shows the precise local setup state %s", async (state, title) => {
   vi.mocked(s3SetupApi.check).mockResolvedValue(result(state));
   const { user } = mount();
@@ -110,4 +111,11 @@ it.each(["profile", "digest", "unknown", "state", "reference", "boolean_generati
 it("rejects extra or duplicated profile choices", () => {
   expect(() => checkedSetupProfiles({ schema_version: "bluefire.s3-onboarding.v1", profiles: [selected, selected], truncated: false })).toThrow();
   expect(() => checkedSetupProfiles(Object.assign({ schema_version: "bluefire.s3-onboarding.v1" as const, profiles: [selected], truncated: false }, { private_path: "/private" }))).toThrow();
+});
+
+it("accepts a revision-bound stale profile without presenting ready environments", () => {
+  const value = result("profile_changed");
+  expect(checkedSetup(value, selected)).toEqual(value);
+  value.setup!.revision_digest = null;
+  expect(() => checkedSetup(value, selected)).toThrow();
 });

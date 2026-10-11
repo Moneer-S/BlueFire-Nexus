@@ -10,29 +10,19 @@ import pytest
 
 from bluefire import s3_access_onboarding as onboarding
 from bluefire.application_errors import APIError
-from bluefire.contracts import ExecutionMode, SafetyTier
+from bluefire.contracts import ExecutionMode
 from bluefire.runner_contracts import execution_limits, seal_profile
 from bluefire.runner_lifecycle import RunnerLifecycleError
 from bluefire.s3_access_setup_status import _result
 from bluefire.util import content_hash
+from tests_platform.s3_profile_fixtures import managed_profile
 from tests_platform.test_s3_access_host_config import configured as host_configuration
 
 
 @pytest.fixture
 def configured(monkeypatch):
     calls = []
-    profile = SimpleNamespace(
-        id="s3-test",
-        mode=ExecutionMode.EXECUTE,
-        platforms=("linux",),
-        capabilities=("cloud.aws.s3.access",),
-        enabled_actions=(onboarding.ACTION,),
-        blocked_actions=(),
-        budgets=SimpleNamespace(max_seconds=60, max_bytes=5242880, max_artifacts=100),
-        safety_tiers=(SafetyTier.SAFE, SafetyTier.CONTROLLED),
-        approval_required=True,
-        to_dict=lambda: {"id": "s3-test", "private_path": "/not-public"},
-    )
+    profile = managed_profile("s3-test", seconds=60)
 
     class Client:
         identity = {"generation": "original"}
@@ -166,6 +156,90 @@ def draft_request(configured):
     profile["limits"] = execution_limits(configured.profile)
     row["environments"][0]["profile"] = seal_profile(profile)
     return {**configured.request, "configuration_json": json.dumps(row, indent=2)}
+
+
+@pytest.fixture
+def installed(configured):
+    entry = json.loads(draft_request(configured)["configuration_json"])["environments"][0]
+    native = entry["profile"]
+    configured.client.identity["runner_id"] = native["runner_id"]
+    configured.service.runner_lifecycle.client_for_profile = lambda *args, **kwargs: (
+        configured.client,
+        Path(native["sandbox_root"]),
+    )
+    status = _result(
+        configured.profile.id,
+        "configured",
+        "sha256:" + "a" * 64,
+        [
+            {
+                "environment_id": entry["environment_id"],
+                "runtime_state": "verified",
+                "access_reference_state": "current",
+                "scope_state": "current",
+                "fixture_generation": 1,
+            }
+        ],
+    )
+    configured.client.s3_access_setup_status = lambda: deepcopy(status)
+    configured.client.s3_access_environments = lambda: [
+        {"environment": {"environment_id": entry["environment_id"]}, "profile": native}
+    ]
+    return configured, native, status
+
+
+def test_configured_status_requires_matching_current_native_policy(installed):
+    configured, _, _ = installed
+    result = onboarding.check_setup(configured.service, configured.request)
+    assert result["host_state"] == "authenticated"
+    assert result["setup"]["configuration_state"] == "configured"
+
+
+@pytest.mark.parametrize("change", ["limits", "network", "runner", "sandbox", "approval"])
+def test_same_profile_id_is_not_sufficient_for_setup_readiness(installed, change):
+    configured, native, status = installed
+    if change == "limits":
+        native["limits"]["timeout_ms"] = 30000
+    elif change == "network":
+        native["target_scope"]["network"] = [{"host": "example.invalid", "port": 443}]
+    elif change == "runner":
+        native["runner_id"] = "other-runner"
+    elif change == "sandbox":
+        configured.service.runner_lifecycle.client_for_profile = lambda *a, **k: (
+            configured.client,
+            Path("/other-sandbox"),
+        )
+    else:
+        native["approval_required_at_or_above"] = None
+    native.update(seal_profile(native))
+    result = onboarding.check_setup(configured.service, configured.request)
+    assert result["host_state"] == "authenticated"
+    assert result["setup"]["configuration_state"] == "profile_changed"
+    assert result["setup"]["environments"] == []
+    assert result["setup"]["revision_digest"] == status["revision_digest"]
+    assert "sandbox_root" not in str(result)
+
+
+def test_setup_cannot_combine_different_host_configuration_revisions(installed):
+    configured, _, _ = installed
+    original = configured.client.s3_access_setup_status
+    replies = iter([original(), _result(configured.profile.id, "missing")])
+    configured.client.s3_access_setup_status = lambda: next(replies)
+    result = onboarding.check_setup(configured.service, configured.request)
+    assert result["host_state"] == "unavailable" and result["setup"] is None
+
+
+def test_draft_limits_must_match_current_profile_not_only_fit_under_it(configured):
+    request = draft_request(configured)
+    configuration = json.loads(request["configuration_json"])
+    native = configuration["environments"][0]["profile"]
+    native["limits"]["timeout_ms"] -= 1000
+    configuration["environments"][0]["profile"] = seal_profile(native)
+    request["configuration_json"] = json.dumps(configuration)
+    with pytest.raises(APIError) as caught:
+        onboarding.review_draft(configured.service, request)
+    assert caught.value.code == "s3_setup_draft_invalid"
+    assert configured.calls == []
 
 
 def test_draft_review_is_structural_and_retains_exact_source_without_host_effects(configured):

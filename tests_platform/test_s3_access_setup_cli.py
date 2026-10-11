@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+from dataclasses import replace
 from functools import partial
 from types import SimpleNamespace
 
@@ -114,8 +115,7 @@ def test_browser_structural_review_cannot_authorize_local_installation(owner, co
 
     selected = configured.profile
     selected.id = owner.profile
-    selected.to_dict = lambda: {"id": owner.profile}
-    selected.budgets.max_seconds = 120
+    selected.budgets = replace(selected.budgets, max_seconds=120)
     reviewed = review_draft(
         configured.service,
         {

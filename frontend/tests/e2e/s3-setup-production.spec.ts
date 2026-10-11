@@ -14,7 +14,7 @@ test.use({ acceptDownloads: true });
 async function fixture(page: Page) {
   const origin = `http://127.0.0.1:${process.env.BLUEFIRE_S3_BROWSER_PORT}`;
   const code = randomBytes(32).toString("hex"), session = randomBytes(32).toString("hex");
-  const state = { connected: false, started: false, configured: false, checks: 0, starts: 0, reviews: 0, unexpected: 0, pageErrors: 0, sockets: 0 };
+  const state = { connected: false, started: false, configured: false, stale: false, checks: 0, starts: 0, reviews: 0, unexpected: 0, pageErrors: 0, sockets: 0 };
   page.on("pageerror", () => { state.pageErrors += 1; });
   await page.context().routeWebSocket("**/*", socket => { state.sockets += 1; socket.close(); });
   await page.context().route("**/*", async route => {
@@ -45,7 +45,7 @@ async function fixture(page: Page) {
       const body = request.postDataJSON() as { profile_id: string; profile_digest: string };
       if (Object.keys(body).length !== 2 || body.profile_digest !== hash || !profiles.some(row => row.profile_id === body.profile_id)) { state.unexpected += 1; await route.abort(); return; }
       state.checks += 1;
-      const value: S3SetupCheck = { schema_version: "bluefire.s3-onboarding-check.v1", ...body, context_digest: hash, host_state: state.started ? "authenticated" : "unavailable", setup: state.started ? { schema_version: "bluefire.s3-setup-status.v1", profile_id: body.profile_id, context_digest: hash, configuration_state: state.configured ? "configured" : "missing", revision_digest: state.configured ? hash : null, environments: state.configured ? [{ environment_id: "synthetic-review-environment", runtime_state: "verified", access_reference_state: "expired", scope_state: "not_current", fixture_generation: 2 }] : [] } : null };
+      const value: S3SetupCheck = { schema_version: "bluefire.s3-onboarding-check.v1", ...body, context_digest: hash, host_state: state.started ? "authenticated" : "unavailable", setup: state.started ? { schema_version: "bluefire.s3-setup-status.v1", profile_id: body.profile_id, context_digest: hash, configuration_state: state.stale ? "profile_changed" : state.configured ? "configured" : "missing", revision_digest: state.configured ? hash : null, environments: state.configured && !state.stale ? [{ environment_id: "synthetic-review-environment", runtime_state: "verified", access_reference_state: "expired", scope_state: "not_current", fixture_generation: 2 }] : [] } : null };
       await json(value); return;
     }
     if (method === "POST" && url.pathname === "/api/v1/s3-access/setup/review") {
@@ -108,6 +108,13 @@ for (const width of [1366, 390]) {
     await expect(page.getByText("Not checked", { exact: true })).toBeVisible();
     await page.getByRole("heading", { name: "Local checks recorded" }).scrollIntoViewIfNeeded();
     await capture(page, `setup-expired-${width}`);
+    state.stale = true;
+    await page.getByRole("button", { name: "Check connection", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Installed profile is out of date", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Local checks recorded", exact: true })).toHaveCount(0);
+    await expect(page.getByText("Verified locally", { exact: true })).toHaveCount(0);
+    await page.getByRole("heading", { name: "Installed profile is out of date", exact: true }).scrollIntoViewIfNeeded();
+    await capture(page, `setup-stale-${width}`);
     await page.getByLabel("Non-secret configuration file", { exact: true }).setInputFiles({ name: "synthetic-configuration.json", mimeType: "application/json", buffer: Buffer.from(draftSource) });
     expect(state.reviews).toBe(0);
     await expect(page.getByRole("button", { name: "Export configuration", exact: true })).toBeDisabled();
@@ -128,7 +135,7 @@ for (const width of [1366, 390]) {
     expect(state.reviews).toBe(1);
     await page.getByRole("button", { name: "Back to workspace", exact: true }).click();
     await expect(page.getByRole("region", { name: "S3 connection setup" })).toHaveCount(0);
-    expect(state.checks).toBe(3); expect(state.unexpected).toBe(0); expect(state.pageErrors).toBe(0); expect(state.sockets).toBe(0);
+    expect(state.checks).toBe(4); expect(state.unexpected).toBe(0); expect(state.pageErrors).toBe(0); expect(state.sockets).toBe(0);
     writeFileSync(join(output, `setup-journey-${width}.json`), JSON.stringify({ proof: "synthetic API production UI only", real_service: false, cloud_calls: 0, state }, null, 2), { flag: "wx" });
   });
 }

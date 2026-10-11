@@ -619,6 +619,7 @@ def test_storage_cleanup_never_unlinks_a_racing_same_content_victim(
         expected: bytes,
         permissions_already_private: bool = False,
         expected_identity: tuple[int, int] | None = None,
+        atomic_no_replace: bool = False,
     ) -> None:
         nonlocal swapped_alias, original_temporary
         if destination.startswith("sha256-") and swapped_alias is None:
@@ -634,6 +635,7 @@ def test_storage_cleanup_never_unlinks_a_racing_same_content_victim(
             expected=expected,
             permissions_already_private=permissions_already_private,
             expected_identity=expected_identity,
+            atomic_no_replace=atomic_no_replace,
         )
 
     monkeypatch.setattr(
@@ -692,6 +694,7 @@ def test_storage_promotion_rejects_a_same_content_single_link_substitution(
         expected: bytes,
         permissions_already_private: bool = False,
         expected_identity: tuple[int, int] | None = None,
+        atomic_no_replace: bool = False,
     ) -> None:
         nonlocal swapped_source, original_temporary, original_identity
         if destination.startswith("sha256-") and swapped_source is None:
@@ -712,6 +715,7 @@ def test_storage_promotion_rejects_a_same_content_single_link_substitution(
             expected=expected,
             permissions_already_private=permissions_already_private,
             expected_identity=expected_identity,
+            atomic_no_replace=atomic_no_replace,
         )
 
     monkeypatch.setattr(

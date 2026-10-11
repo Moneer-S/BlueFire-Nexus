@@ -10,9 +10,13 @@ from bluefire.application_errors import APIError
 from bluefire.config import RunnerProfile
 from bluefire.contracts import ExecutionMode
 from bluefire.registry import RegistryError, load_builtin_registry
+from bluefire.runner_contracts import seal_profile
+from bluefire.s3_access_contract import S3AccessScope
+from bluefire.s3_access_executor import configured_executor
 from bluefire.s3_access_onboarding import setup_profiles
 from bluefire.s3_access_profile import ACTION, validate_managed_s3_profile
 from bluefire.service import BlueFireService
+from tests_platform.test_s3_access_executor import configured as configured
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -105,3 +109,35 @@ def test_ordinary_profiles_still_use_normal_registry(service):
     profile = service.config.runner_profiles[0]
     assert not validate_managed_s3_profile(profile)
     assert service._validated_runner_profile(profile.to_dict(), profile.id) == profile
+
+
+def test_managed_only_activation_edit_and_deactivation_reach_the_executor(
+    service, document, configured, monkeypatch
+):
+    native = configured.row["profile"]
+    native["profile_id"] = document["id"]
+    configured.row["profile"] = seal_profile(native)
+    monkeypatch.setattr(
+        service.runner_lifecycle,
+        "client_for_profile",
+        configured.service.runner_lifecycle.client_for_profile,
+    )
+    executor = configured_executor(service)
+    scope = S3AccessScope.from_mapping(configured.row["environment"]["scope"])
+    assert document["id"] not in {p.id for p in service.config.runner_profiles}
+    service.save_resource(
+        "runner_profile", document["id"], {"document": document, "status": "draft"}
+    )
+    assert executor.environments() == []
+    service.activate_resource("runner_profile", document["id"], {})
+    assert executor.readiness(scope)["available"] is True
+    service.deactivate_resource("runner_profile", document["id"], {})
+    assert executor.environments() == []
+    document["budgets"]["max_seconds"] = 30
+    service.save_resource(
+        "runner_profile", document["id"], {"document": document, "status": "draft"}
+    )
+    service.activate_resource("runner_profile", document["id"], {})
+    assert executor.readiness(scope)["problem"] == "profile_changed"
+    assert not executor.readiness(scope)["available"]
+    assert configured.client.calls == []
