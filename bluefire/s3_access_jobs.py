@@ -22,6 +22,7 @@ from .s3_access_wire import REQUEST_SCHEMA, S3WorkerRequest
 from .util import content_hash
 
 _SETUP_PROBLEMS = {
+    "profile_changed": "The installed S3 configuration no longer matches the active runner profile. Review local setup.",
     "runtime_unavailable": "The enrolled protected runtime is unavailable.",
     "access_reference_absent": "Temporary access has not been imported on the enrolled host.",
     "access_reference_expired": "Temporary access has expired on the enrolled host.",

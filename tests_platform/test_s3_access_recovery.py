@@ -90,6 +90,9 @@ def test_recovery_after_scope_expiry_uses_only_original_authenticated_task(confi
             return NOW + timedelta(days=30)
 
     monkeypatch.setattr(module, "datetime", Expired)
+    configured.service._runner_profiles = lambda: pytest.fail(
+        "current profiles are not recovery authority"
+    )
     configured.client.s3_access_environments = lambda: pytest.fail("fresh discovery")
     configured.client.execute_task = lambda *a, **k: pytest.fail("execution replay")
     recovered = module.configured_executor(configured.service).recover_original(

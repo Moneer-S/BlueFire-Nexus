@@ -25,6 +25,7 @@ STATES = frozenset(
         "incomplete",
         "invalid",
         "profile_missing",
+        "profile_changed",
         "configured",
     }
 )
@@ -131,7 +132,7 @@ def validate_status(value: Any, *, profile_id: str) -> dict[str, Any]:
         {key: value for key, value in row.items() if key != "context_digest"}
     ):
         raise S3AccessError("S3 setup context is invalid")
-    configured = state in {"configured", "profile_missing"}
+    configured = state in {"configured", "profile_missing", "profile_changed"}
     if configured:
         digest(row["revision_digest"])
     elif row["revision_digest"] is not None:

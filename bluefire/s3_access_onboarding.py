@@ -7,14 +7,14 @@ from typing import Any, Mapping
 from .application_errors import APIError
 from .contracts import ExecutionMode
 from .runner_client import canonical_runner_inventory, runner_transport_identity
-from .runner_contracts import execution_limits
 from .runner_lifecycle import RunnerLifecycleError
 from .runner_transport import AuthenticatedRunnerClient
 from .runner_transport_errors import RunnerTransportError
 from .s3_access_admission import ACTION
 from .s3_access_configuration import _identifier, _path, validate_configuration
 from .s3_access_contract import S3AccessError, digest, document, exact
-from .s3_access_setup_status import validate_status
+from .s3_access_profile import validate_s3_host_binding, validate_s3_profile_binding
+from .s3_access_setup_status import _result, validate_status
 from .util import content_hash
 
 SCHEMA = "bluefire.s3-onboarding.v1"
@@ -79,7 +79,7 @@ def check_setup(service: Any, request: Mapping[str, Any]) -> Mapping[str, Any]:
     identity = None
     result = None
     try:
-        client, _sandbox = service.runner_lifecycle.client_for_profile(
+        client, sandbox = service.runner_lifecycle.client_for_profile(
             profile_id, profile_budget_seconds=profile.budgets.max_seconds
         )
         if not isinstance(client, AuthenticatedRunnerClient):
@@ -89,6 +89,27 @@ def check_setup(service: Any, request: Mapping[str, Any]) -> Mapping[str, Any]:
         canonical = canonical_runner_inventory(before)
         identity = runner_transport_identity(client, before)
         inspected = validate_status(client.s3_access_setup_status(), profile_id=profile_id)
+        if inspected["configuration_state"] == "configured":
+            environments = client.s3_access_environments()
+            if {row["environment"]["environment_id"] for row in environments} != {
+                row["environment_id"] for row in inspected["environments"]
+            }:
+                raise S3AccessError("S3 configuration changed during setup inspection")
+            stale = False
+            for row in environments:
+                try:
+                    validate_s3_host_binding(
+                        row["profile"],
+                        profile,
+                        runner_id=identity["runner_id"],
+                        sandbox=sandbox,
+                    )
+                except (ValueError, TypeError, KeyError):
+                    stale = True
+            if validate_status(client.s3_access_setup_status(), profile_id=profile_id) != inspected:
+                raise S3AccessError("S3 configuration changed during setup inspection")
+            if stale:
+                inspected = _result(profile_id, "profile_changed", inspected["revision_digest"])
         after = client.inventory()
         if (
             canonical_runner_inventory(after) != canonical
@@ -121,55 +142,9 @@ def check_setup(service: Any, request: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def _draft_profile(value, selected):
     # Browser draft intake is deliberately narrower than the native profile contract.
-    exact(
-        value,
-        {
-            "schema_version",
-            "profile_id",
-            "runner_id",
-            "platform",
-            "sandbox_root",
-            "allowed_actions",
-            "control_blocked_actions",
-            "capabilities",
-            "max_safety_tier",
-            "approval_required_at_or_above",
-            "target_scope",
-            "limits",
-            "policy_digest",
-        },
-        "S3 draft profile",
-    )
+    validate_s3_profile_binding(value, selected)
     _identifier(value["runner_id"])
     _path(value["sandbox_root"])
-    target = exact(value["target_scope"], {"filesystem", "network"}, "S3 draft target")
-    filesystem = target["filesystem"]
-    if (
-        value["profile_id"] != selected.id
-        or value["allowed_actions"] != [ACTION]
-        or value["capabilities"] != ["cloud_aws_s3_access"]
-        or value["control_blocked_actions"] != []
-        or value["max_safety_tier"] != "controlled"
-        or "controlled" not in {tier.value for tier in selected.safety_tiers}
-        or value["approval_required_at_or_above"]
-        != ("safe" if selected.approval_required else None)
-        or target["network"] != []
-        or not isinstance(filesystem, list)
-        or len(filesystem) > 3
-        or any(
-            not isinstance(item, str) or item not in ("fixtures", "staged", "exports")
-            for item in filesystem
-        )
-        or len(set(filesystem)) != len(filesystem)
-    ):
-        raise S3AccessError("S3 draft requires a dedicated supported profile")
-    ceilings = execution_limits(selected)
-    limits = exact(value["limits"], set(ceilings), "S3 draft limits")
-    if any(
-        type(limits[key]) is not int or not 0 < limits[key] <= ceiling
-        for key, ceiling in ceilings.items()
-    ):
-        raise S3AccessError("S3 draft exceeds the saved profile limits")
 
 
 def review_draft(service: Any, request: Mapping[str, Any]) -> Mapping[str, Any]:
