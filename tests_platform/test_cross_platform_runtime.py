@@ -126,6 +126,62 @@ def test_receiver_assigns_job_before_resume_and_cleans_up_failed_resume(
     assert events == ["assigned", "resume", "cleanup"]
 
 
+@pytest.mark.parametrize("exception_type", [OSError, KeyboardInterrupt])
+def test_receiver_assignment_failure_closes_its_owned_job_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, exception_type
+) -> None:
+    events = []
+    process = SimpleNamespace(pid=42, returncode=None)
+
+    def terminate():
+        events.append("terminate_process")
+        process.returncode = 0
+
+    process.poll = lambda: process.returncode
+    process.terminate = terminate
+    process.wait = lambda **_kwargs: events.append("wait_process")
+    failure = exception_type("assignment refused")
+
+    def assign(job, child):
+        assert job == 123 and child is process
+        events.append("assign")
+        raise failure
+
+    monkeypatch.setattr(journey, "os", SimpleNamespace(name="nt", fspath=os.fspath))
+    monkeypatch.setattr(journey, "_child_environment", lambda *_args: {})
+    monkeypatch.setattr(journey, "_windows_create_kill_job", lambda: 123)
+    monkeypatch.setattr(journey, "_windows_assign_process", assign)
+    monkeypatch.setattr(
+        journey.WindowsJobContainment,
+        "resume_suspended",
+        lambda *_args: pytest.fail("failed assignment must not resume the receiver"),
+    )
+    monkeypatch.setattr(
+        journey, "_windows_terminate_job", lambda job: events.append("terminate_job") or True
+    )
+    monkeypatch.setattr(
+        journey, "_windows_wait_job_empty", lambda *_args, **_kwargs: events.append("drain") or True
+    )
+    monkeypatch.setattr(journey, "_windows_close_handle", lambda job: events.append(("close", job)))
+    monkeypatch.setattr(
+        journey,
+        "subprocess",
+        SimpleNamespace(DEVNULL=-3, PIPE=-1, Popen=lambda *_args, **_kwargs: process),
+    )
+    with pytest.raises(exception_type) as caught:
+        _start_receiver(tmp_path, tmp_path)
+    assert caught.value is failure
+    assert events == [
+        "assign",
+        "terminate_job",
+        "drain",
+        ("close", 123),
+        "terminate_process",
+        "wait_process",
+    ]
+    assert process.poll() is not None
+
+
 @pytest.mark.skipif(os.name != "nt", reason="the packaged receiver journey is Windows-only")
 def test_disposable_receiver_retains_the_exact_process_handle_and_job(
     tmp_path: Path,

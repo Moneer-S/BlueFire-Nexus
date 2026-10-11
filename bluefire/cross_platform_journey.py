@@ -358,11 +358,7 @@ def _start_receiver(
     try:
         process = subprocess.Popen(command, **options)  # nosec B603 - fixed command
         receiver = _ReceiverProcess(launcher=process, job_handle=job_handle)
-        try:
-            _windows_assign_process(job_handle, process)  # type: ignore[arg-type]
-        except OSError:
-            receiver.job_handle = None
-            raise
+        _windows_assign_process(job_handle, process)  # type: ignore[arg-type]
         WindowsJobContainment.resume_suspended(process)  # type: ignore[arg-type]
         _require(process.stderr is not None, "the receiver readiness stream is unavailable")
         ready_line = _read_process_line(process.stderr, 15.0)
