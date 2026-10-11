@@ -297,6 +297,38 @@ def test_escaped_declaration_like_event_text_remains_plain_data():
     assert len(normalize([raw])["events"]) == 1
 
 
+@pytest.mark.parametrize("encoding", ["utf-16le", "utf-16be", "utf-32le", "utf-32be"])
+@pytest.mark.parametrize("declaration", ["", "<!DOCTYPE Event>"])
+def test_bomless_wide_encodings_never_reach_parser(encoding, declaration, monkeypatch):
+    raw = (declaration + event().decode("utf-8")).encode(encoding)
+
+    def refused_parser(*args, **kwargs):
+        pytest.fail("BOM-less wide encoding reached XML parser construction")
+
+    monkeypatch.setattr("bluefire.ad_smb_audit.ET.XMLParser", refused_parser)
+    with pytest.raises(AdSmbError):
+        normalize([raw])
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        b'<?xml version="1.0"?>',
+        b'<?xml version="1.0" encoding="iso-8859-1"?>',
+        b'<?xml version="1.0" encoding="UTF-8"?>',
+    ],
+)
+def test_standalone_xml_declaration_never_reaches_parser(declaration, monkeypatch):
+    raw = declaration + event()
+
+    def refused_parser(*args, **kwargs):
+        pytest.fail("XML declaration reached parser construction")
+
+    monkeypatch.setattr("bluefire.ad_smb_audit.ET.XMLParser", refused_parser)
+    with pytest.raises(AdSmbError):
+        normalize([raw])
+
+
 @pytest.mark.parametrize(
     "target,value",
     [
