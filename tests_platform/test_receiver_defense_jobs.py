@@ -4,6 +4,7 @@ import copy
 import functools
 import hashlib
 import json
+import sys
 import threading
 import time
 import uuid
@@ -425,9 +426,27 @@ class _PublicationDiagnostic:
         "TypeError",
         "RuntimeError",
     }
+    frame_sites = {
+        ("job_runtime.py", "_checkpoint"): "controller_checkpoint",
+        ("job_runtime.py", "_transition"): "controller_transition",
+        ("job_runtime.py", "snapshot"): "controller_read",
+        ("job_runtime.py", "_run_job"): "worker_callback",
+        ("job_runtime.py", "_release_control"): "worker_completion",
+        ("product_store.py", "_connection"): "store_connection",
+        ("product_store.py", "get_job"): "store_read",
+        ("product_store.py", "transition_job"): "store_write",
+        ("local_lock.py", "pinned_regular_file_identity"): "store_identity",
+        ("service.py", "_review_replay_job"): "replay_review",
+        ("service.py", "_replay_catalog_lease"): "catalog_wait",
+        ("service.py", "_execute_replay_job"): "replay_driver",
+        ("service.py", "_replay_locked"): "replay_body",
+        ("test_receiver_defense_jobs.py", "execute_task"): "synthetic_dispatch",
+        ("test_receiver_defense_jobs.py", "hold_final_publication"): "publication_wait",
+    }
 
     def __init__(self):
         self._local = threading.local()
+        self._worker_threads = {}
         self._entered = set()
         self._states = {
             (phase, stage): ("not_entered", "none")
@@ -467,6 +486,8 @@ class _PublicationDiagnostic:
                 except Exception:
                     phase = "unknown"
             self._local.phase = phase if phase in self.phases else "unknown"
+            if self._local.phase in self.phases:
+                self._worker_threads[self._local.phase] = threading.get_ident()
             self.mark(self._local.phase, stage, "entered")
             try:
                 result = original(*args, **kwargs)
@@ -480,6 +501,29 @@ class _PublicationDiagnostic:
                 self._local.phase = previous
 
         monkeypatch.setattr(owner, name, traced)
+
+    def worker_stack(self, phase):
+        """One nonblocking sample, not lock-duration or deadlock evidence."""
+        try:
+            identifier = self._worker_threads.get(phase)
+            if identifier is None:
+                return {"state": "not_tracked", "sites": [], "truncated": False}
+            frame = sys._current_frames().get(identifier)
+            if frame is None:
+                return {"state": "not_live", "sites": [], "truncated": False}
+            sites = []
+            for _ in range(32):
+                if frame is None:
+                    break
+                code = frame.f_code
+                filename = code.co_filename.replace("\\", "/").rsplit("/", 1)[-1]
+                site = self.frame_sites.get((filename, code.co_name))
+                if site is not None and site not in sites:
+                    sites.append(site)
+                frame = frame.f_back
+            return {"state": "live", "sites": sites, "truncated": frame is not None}
+        except Exception:
+            return {"state": "unavailable", "sites": [], "truncated": False}
 
     def report(self, controller, job_id, phase):
         try:
@@ -510,7 +554,15 @@ class _PublicationDiagnostic:
             )
             print(
                 "Receiver publication diagnostic: "
-                + json.dumps({"phase": phase, "worker": worker, "stages": states}, sort_keys=True)
+                + json.dumps(
+                    {
+                        "phase": phase,
+                        "worker": worker,
+                        "stages": states,
+                        "worker_stack": self.worker_stack(phase),
+                    },
+                    sort_keys=True,
+                )
             )
         except Exception:
             # Reporting cannot hide an assertion or add another bounded wait.
@@ -599,6 +651,116 @@ def test_publication_wait_diagnostic_preserves_original_failure(capsys, error_ty
     report = json.loads(output.removeprefix("Receiver publication diagnostic: "))
     assert report["phase"] == "restored"
     assert report["stages"]["publication"] == ["entered", "none"]
+
+
+def test_publication_stack_sample_is_bounded_and_never_prints_frame_values(monkeypatch, capsys):
+    diagnostic = _PublicationDiagnostic()
+    private = "PRIVATE_FRAME_VALUE_MUST_NOT_APPEAR"
+    frame = None
+    for _ in range(40):
+        frame = SimpleNamespace(
+            f_code=SimpleNamespace(co_filename=private + "/job_runtime.py", co_name="_checkpoint"),
+            f_back=frame,
+            f_locals={private: private},
+        )
+    diagnostic._worker_threads["restored"] = 123456789
+    monkeypatch.setattr(sys, "_current_frames", lambda: {123456789: frame})
+    controller = SimpleNamespace(_condition=threading.Lock(), _controls={})
+    diagnostic.report(controller, private, "restored")
+    output = capsys.readouterr().out
+    assert private not in output and "123456789" not in output
+    report = json.loads(output.removeprefix("Receiver publication diagnostic: "))
+    assert report["worker_stack"] == {
+        "state": "live",
+        "sites": ["controller_checkpoint"],
+        "truncated": True,
+    }
+    monkeypatch.setattr(sys, "_current_frames", lambda: {})
+    assert diagnostic.worker_stack("restored")["state"] == "not_live"
+    assert diagnostic.worker_stack("baseline")["state"] == "not_tracked"
+
+    def unavailable():
+        raise RuntimeError(private)
+
+    monkeypatch.setattr(sys, "_current_frames", unavailable)
+    assert diagnostic.worker_stack("restored") == {
+        "state": "unavailable",
+        "sites": [],
+        "truncated": False,
+    }
+
+
+def test_publication_diagnostic_locates_store_read_under_controller_lock(monkeypatch, capsys):
+    from bluefire.job_runtime import RunJobController
+    from bluefire.product_store import ProductStore
+
+    entered, release, reported = (threading.Event() for _ in range(3))
+    store_error = RuntimeError("PRIVATE_CONTROLLED_STORE_FAILURE")
+    wait_error = TimeoutError("PRIVATE_ORIGINAL_WAIT_FAILURE")
+    store = object.__new__(ProductStore)
+
+    @contextmanager
+    def held_connection():
+        entered.set()
+        assert release.wait(10), "Controlled store read was not released."
+        raise store_error
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(store, "_connection", held_connection)
+    control = SimpleNamespace(job_id="private-job", cancel_requested=False, pause_requested=False)
+    controller = object.__new__(RunJobController)
+    controller._condition = threading.Condition(threading.RLock())
+    controller._store = store
+    controller._controls = {
+        control.job_id: SimpleNamespace(future=SimpleNamespace(_state="RUNNING"))
+    }
+    diagnostic = _PublicationDiagnostic()
+    worker_errors, reporter_errors = [], []
+    owner = SimpleNamespace(
+        callback=lambda _marker: controller._checkpoint(
+            control, progress={"phase": "running"}, replace_progress=False
+        )
+    )
+    diagnostic.wrap(monkeypatch, owner, "callback", "run", phase_arg=0)
+
+    def worker():
+        try:
+            owner.callback({"phase": "restored"})
+        except BaseException as error:
+            worker_errors.append(error)
+
+    def reporter():
+        try:
+            with diagnostic.on_failure(controller, control.job_id, "restored"):
+                raise wait_error
+        except BaseException as error:
+            reporter_errors.append(error)
+        finally:
+            reported.set()
+
+    worker_thread = threading.Thread(target=worker)
+    reporter_thread = threading.Thread(target=reporter)
+    worker_thread.start()
+    try:
+        assert entered.wait(5), "Controlled checkpoint did not reach its store read."
+        reporter_thread.start()
+        assert reported.wait(5), "Diagnostic blocked on the held controller condition."
+        assert not release.is_set() and worker_thread.is_alive()
+        output = capsys.readouterr().out
+        assert "PRIVATE_" not in output and "private-job" not in output
+        report = json.loads(output.removeprefix("Receiver publication diagnostic: "))
+        assert report["worker"] == "controller_lock_busy"
+        assert report["worker_stack"]["state"] == "live"
+        assert report["worker_stack"]["sites"] == ["store_read", "controller_checkpoint"]
+        assert not report["worker_stack"]["truncated"]
+        assert reporter_errors == [wait_error]
+    finally:
+        release.set()
+        worker_thread.join(5)
+        if reporter_thread.ident is not None:
+            reporter_thread.join(5)
+    assert not worker_thread.is_alive() and not reporter_thread.is_alive()
+    assert worker_errors == [store_error]
 
 
 def test_full_three_phase_ordinary_run_replay_retains_independent_policy_results(
