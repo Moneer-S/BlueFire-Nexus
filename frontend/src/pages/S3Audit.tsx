@@ -1,10 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { FileSearch, Plus, RefreshCw, Save } from "lucide-react";
+import { FileSearch, MessageSquareText, Plus, RefreshCw, Save } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState, sentence } from "../components/Primitives";
 import { auditDelivery, auditFiles, auditInputDigest, clearAuditPending, readAuditPending, s3AuditApi, saveAuditPending, type AuditDelivery, type AuditPending, type AuditReview } from "../lib/s3-audit";
 import { phaseName, s3JobId } from "../lib/s3-access";
+import { useAssistancePanel } from "../state/AssistanceContext";
 
 export function S3Audit({ owner }: { owner: string }) { return <AuditWorkspace key={owner} owner={owner} />; }
 
@@ -81,5 +82,7 @@ function AuditWorkspace({ owner }: { owner: string }) {
 
 function AuditDetail({ value }: { value: AuditReview }) {
   const audit = value.correlation.audit;
-  return <div className="s3-audit-detail" aria-label="Saved audit review detail"><h3>{phaseName[value.source.phase]} · {sentence(value.source.reader)}</h3><div className="s3-actions"><Link to={`/runs/${value.source.run_id}`}>Original run evidence</Link><Badge>{value.source.provenance === "synthetic" ? "Synthetic runner source" : "Runner reported source"}</Badge></div><div className="s3-audit-results">{value.correlation.reads.map(row => <article key={row.purpose}><h3>{row.purpose === "health" ? "Canary object" : "Primary object"}</h3><Badge tone={row.status === "matched" ? "info" : "warning"}>{sentence(row.status)}</Badge><DataList items={[{ label: "Runner", value: sentence(row.worker_outcome) }, { label: "Imported events", value: row.audit_event_ids.length }, { label: "Full object bytes", value: "Not proven" }]} /></article>)}</div><DataList items={[{ label: "Reported delivery", value: sentence(audit.reported_delivery_state) }, { label: "Imported records", value: audit.source_event_count }, { label: "Excluded", value: audit.counts.excluded }, { label: "Unknown", value: audit.counts.unknown }, { label: "Duplicates", value: audit.counts.duplicates }]} /><p>Operator-supplied records do not verify collection completeness or defensive effectiveness.</p><details><summary>Source bindings and minimized evidence</summary><pre>{JSON.stringify(value, null, 2)}</pre></details></div>;
+  const assistant = useAssistancePanel();
+  const explain = () => { if (!assistant) return; assistant.publish(Symbol("audit-review"), { kind: "audit", selected: { kind: "s3_audit_review", workflow_job_id: value.workflow_job_id, review_id: value.review_id, review_digest: value.review_digest }, title: `${phaseName[value.source.phase]} audit review`, manualEdits: false }); assistant.setOpen(true); };
+  return <div className="s3-audit-detail" aria-label="Saved audit review detail"><div className="s3-setup-heading"><h3>{phaseName[value.source.phase]} · {sentence(value.source.reader)}</h3>{assistant ? <Button onClick={explain}><MessageSquareText />Explain review</Button> : null}</div><div className="s3-actions"><Link to={`/runs/${value.source.run_id}`}>Original run evidence</Link><Badge>{value.source.provenance === "synthetic" ? "Synthetic runner source" : "Runner reported source"}</Badge></div><div className="s3-audit-results">{value.correlation.reads.map(row => <article key={row.purpose}><h3>{row.purpose === "health" ? "Canary object" : "Primary object"}</h3><Badge tone={row.status === "matched" ? "info" : "warning"}>{sentence(row.status)}</Badge><DataList items={[{ label: "Runner", value: sentence(row.worker_outcome) }, { label: "Imported events", value: row.audit_event_ids.length }, { label: "Full object bytes", value: "Not proven" }]} /></article>)}</div><DataList items={[{ label: "Reported delivery", value: sentence(audit.reported_delivery_state) }, { label: "Imported records", value: audit.source_event_count }, { label: "Excluded", value: audit.counts.excluded }, { label: "Unknown", value: audit.counts.unknown }, { label: "Duplicates", value: audit.counts.duplicates }]} /><p>Operator-supplied records do not verify collection completeness or defensive effectiveness.</p><details><summary>Source bindings and minimized evidence</summary><pre>{JSON.stringify(value, null, 2)}</pre></details></div>;
 }

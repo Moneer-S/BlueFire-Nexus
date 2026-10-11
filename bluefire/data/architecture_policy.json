@@ -299,6 +299,7 @@
         "bluefire.owned_receiver_registry",
         "bluefire.ai_authorized_access",
         "bluefire.assistance_context",
+        "bluefire.assistance_audit_context",
         "bluefire.assistance_receiver",
         "bluefire.assistance_receiver_context",
         "bluefire.assistance_runs",

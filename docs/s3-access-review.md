@@ -101,3 +101,22 @@ accepted at its review; it does not restore the original policy automatically.
 Synthetic and runner-reported fixture outcomes retain those provenance labels.
 They do not establish live defensive effectiveness, independent deletion proof,
 or separate-identity runtime isolation.
+
+## Saved audit explanations
+
+An imported audit review can open in the shared Assistant through **Explain
+review**. The request binds the workflow, immutable review identifier and digest.
+Only bounded outcome categories, counts and provenance reach the selected model;
+raw imported events, resource names and audit event identifiers do not.
+
+Off makes no model request. Assist and Auto each permit a single read-only
+explanation through the existing Assistant turn lifecycle. This context has no
+dispatch capabilities: it cannot run an exercise, create a grant, change policy
+or deploy a detection. Cancellation, provider authorization, saved conversations
+and exact-request recovery retain their existing behavior. Source and provider
+bindings are rechecked before the answer is retained.
+
+An explanation does not turn an operator import into independent collection or
+prove complete delivery, full object bytes, effective access or prevention.
+Saved audit reviews remain inspectable without model access. Synthetic browser
+and mocked-provider tests do not establish live model or AWS integration.
