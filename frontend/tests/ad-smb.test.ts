@@ -3,7 +3,7 @@ import { adConfirmed, adPhaseCurrent, adSmbApi, checkedAdEnvironments, checkedAd
 import { request } from "../src/lib/api";
 import { adChild, adOwner, adPendingFixture, rawAdAcknowledgement, rawAdEnvironments, rawAdReview, rawAdWorkflow } from "./ad-smb-fixture";
 
-vi.mock("../src/lib/api", () => ({ request: vi.fn() }));
+vi.mock("../src/lib/api", () => ({ DEMO_MODE: false, request: vi.fn() }));
 beforeEach(() => localStorage.clear());
 afterEach(() => vi.restoreAllMocks());
 it("minimizes saved evidence without retaining handles, descriptor bytes or protected task data", () => {

@@ -7,7 +7,7 @@ import { ObjectiveStart } from "../src/components/ObjectiveStart";
 import { adSmbApi, readAdPending, storeAdPending } from "../src/lib/ad-smb";
 import { adChild, adOwner, adPendingFixture, adSubmission, rawAdAcknowledgement, rawAdEnvironments, rawAdReview, rawAdWorkflow } from "./ad-smb-fixture";
 
-vi.mock("../src/lib/api", () => ({ request: vi.fn(), ApiError: class extends Error {} }));
+vi.mock("../src/lib/api", () => ({ DEMO_MODE: false, request: vi.fn(), ApiError: class extends Error {} }));
 function mount(path = `/ad-smb?workflow=${adOwner}`) { const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); return { ...render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><AdSmbPage /></MemoryRouter></QueryClientProvider>), client }; }
 beforeEach(() => {
   localStorage.clear();
