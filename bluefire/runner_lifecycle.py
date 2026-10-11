@@ -74,6 +74,7 @@ from .runner_transport import (
     audit_runner_ledger,
     runner_result_namespace_path,
 )
+from .runner_transport_errors import RunnerTransportError
 from .runner_trust import (
     RunnerEnrollment,
     RunnerTrustError,
@@ -86,6 +87,7 @@ from .runner_trust import (
     remove_local_enrollment,
     revoke_local_enrollment,
 )
+from .runner_windows_containment import WindowsJobContainment
 from .secret_store import SecretProvider
 from .util import canonical_json_bytes
 from .version import __version__
@@ -2126,24 +2128,49 @@ def _spawn_contained_host(command: Sequence[str]) -> _LaunchProcess:
         "stderr": subprocess.DEVNULL,
         "close_fds": True,
     }
-    if os.name == "nt":
-        options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    windows = os.name == "nt"
+    if windows:
+        # A venv redirector can create its interpreter before the Python start gate runs.
+        options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
+            subprocess, "CREATE_SUSPENDED", 0x0000_0004
+        )
     else:
         options["start_new_session"] = True
-    process = subprocess.Popen(command, shell=False, **options)  # nosec B603
-    if os.name != "nt":
-        return _LaunchProcess(process=process, containment=process.pid)
+    job = _windows_create_kill_job() if windows else None
+    process: subprocess.Popen[bytes] | None = None
+    retained = False
     try:
-        job = _windows_create_kill_job()
+        process = subprocess.Popen(command, shell=False, **options)  # nosec B603
+        if job is None:
+            return _LaunchProcess(process=process, containment=process.pid)
         _windows_assign_process(job, process)
-        return _LaunchProcess(process=process, containment=job)
-    except OSError:
         try:
-            process.kill()
-            process.wait(timeout=5.0)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+            WindowsJobContainment.resume_suspended(process)
+        except RunnerTransportError:
+            raise OSError("host thread could not be resumed") from None
+        retained = True
+        return _LaunchProcess(process=process, containment=job)
+    except BaseException:
+        if job is not None:
+            try:
+                _windows_terminate_job(job)
+            except OSError:
+                pass
+        if process is not None:
+            try:
+                process.kill()
+                process.wait(timeout=5.0)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        if job is not None:
+            try:
+                _windows_wait_job_empty(job, timeout_seconds=5.0)
+            except OSError:
+                pass
         raise
+    finally:
+        if job is not None and not retained:
+            _windows_close_handle(job)
 
 
 def _release_launch_containment(launch: _LaunchProcess) -> None:
@@ -2555,7 +2582,6 @@ def _windows_assign_process(job: int, process: subprocess.Popen[bytes]) -> None:
     if not kernel32.AssignProcessToJobObject(
         ctypes.c_void_p(job), ctypes.c_void_p(int(process_handle))
     ):
-        _windows_close_handle(job)
         raise OSError("job assignment failed")
 
 
