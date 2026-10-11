@@ -28,7 +28,17 @@ def document(url="https://provider.example/v1/response"):
 
 
 @pytest.mark.parametrize(
-    "ip", ["127.0.0.1", "10.1.2.3", "169.254.169.254", "::1", "fc00::1", "::ffff:127.0.0.1"]
+    "ip",
+    [
+        "127.0.0.1",
+        "10.1.2.3",
+        "169.254.169.254",
+        "::1",
+        "fc00::1",
+        "::ffff:127.0.0.1",
+        "fec0::1",
+        "feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    ],
 )
 @pytest.mark.parametrize("mixed", [False, True])
 def test_default_direct_request_refuses_nonpublic_dns_before_socket(monkeypatch, ip, mixed):

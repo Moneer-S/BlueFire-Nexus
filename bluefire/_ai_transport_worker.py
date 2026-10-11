@@ -63,6 +63,7 @@ def _pinned_opener(url: str, policy: str) -> urllib.request.OpenerDirector:
                 literal.is_unspecified,
                 literal.is_loopback,
                 literal.is_link_local,
+                isinstance(literal, ipaddress.IPv6Address) and literal.is_site_local,
             )
         )
         if (
