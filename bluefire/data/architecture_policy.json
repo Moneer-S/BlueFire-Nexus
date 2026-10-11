@@ -339,6 +339,7 @@
         "bluefire.owned_service_orchestration",
         "bluefire.execution_progress",
         "bluefire.s3_access_jobs",
+        "bluefire.s3_audit_reviews",
         "bluefire.s3_access_service",
         "bluefire.s3_access_onboarding",
         "bluefire.s3_access_setup_drafts",

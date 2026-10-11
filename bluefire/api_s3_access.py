@@ -15,7 +15,8 @@ def dispatch_s3_access(handler: Any, path: str, body: Mapping[str, Any] | None =
         return True
     suffix = path[len(prefix) :]
     match = re.fullmatch(
-        r"exercises/(job-[0-9a-f]{32})(?:/(review|operations|stop|recover))?", suffix
+        r"exercises/(job-[0-9a-f]{32})(?:/(review|operations|stop|recover|audit-reviews)(?:/(job-[0-9a-f]{32}))?)?",
+        suffix,
     )
     draft = re.fullmatch(r"setup/drafts/([a-z][a-z0-9]*(?:[._-][a-z0-9]+)*)", suffix)
     if (
@@ -29,6 +30,16 @@ def dispatch_s3_access(handler: Any, path: str, body: Mapping[str, Any] | None =
         )
         return True
     operation, identifier = (match.group(2) or "read", match.group(1)) if match else (suffix, "")
+    review_id = match.group(3) if match else None
+    if review_id:
+        if operation != "audit-reviews":
+            handler._error(
+                HTTPStatus.BAD_REQUEST,
+                "s3_access_invalid",
+                "Select a canonical saved audit review.",
+            )
+            return True
+        operation = "audit-review"
     if draft:
         operation, identifier = "setup/draft", draft.group(1)
     service = handler.platform_server.service
@@ -38,6 +49,8 @@ def dispatch_s3_access(handler: Any, path: str, body: Mapping[str, Any] | None =
         "environments": service.s3_access_environments,
         "exercises": service.s3_access_exercises,
         "read": lambda: service.s3_access_exercise(identifier),
+        "audit-reviews": lambda: service.s3_audit_reviews(identifier),
+        "audit-review": lambda: service.s3_audit_review(identifier, review_id),
     }
     writes = {
         "setup/check": lambda: service.check_s3_access_setup(body),
@@ -48,6 +61,7 @@ def dispatch_s3_access(handler: Any, path: str, body: Mapping[str, Any] | None =
         "operations": lambda: service.submit_s3_access(identifier, body),
         "stop": lambda: service.stop_s3_access(identifier, body),
         "recover": lambda: service.recover_s3_access(identifier, body),
+        "audit-reviews": lambda: service.save_s3_audit_review(identifier, body),
     }
     choices = reads if body is None else writes
     if operation in choices:

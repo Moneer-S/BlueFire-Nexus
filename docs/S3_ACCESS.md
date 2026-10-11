@@ -242,6 +242,32 @@ uncertain or drifted policy must be reconciled first. Cloud audit remains
 evidence. The v2 source and test additions do not enroll a host or authorize AWS
 access.
 
+## Saved Imported Audit Reviews
+
+The S3 workspace can save local correlation of supplied CloudTrail JSON or gzip
+files against a finalized baseline or retest read. Each review binds the original
+workflow, operation, sealed run, request, worker result and outcome digests.
+Historical validation does not discover, contact or start an execution host.
+Stopped exercises and unavailable runtimes do not prevent reviewing retained runs.
+
+Imports are limited to four files, 512 KiB combined compressed/input bytes and
+1 MiB expanded bytes, plus the scope's existing event and byte limits. Incomplete,
+concatenated and oversized gzip streams are refused. At most 32 immutable reviews
+can be saved per exercise. Source byte digests and minimized event projections are
+retained; raw file contents and arbitrary event text are not stored. Repeated saves
+with the same submission and input are idempotent; changed input cannot replace a
+saved review. The browser retains only a pending identity and input digest. An
+uncertain response can be recovered from saved history or retried with the exact
+original files. Starting another review removes only the local reminder.
+
+Delivery completeness is operator-reported. Matched, conflicting, missing, unknown,
+truncated, awaiting-delivery and worker-unreported outcomes remain distinct.
+Imports are `operator_import`, not authenticated collection; synthetic runner
+provenance is preserved. Independent collection, full object bytes and effective
+access remain unproven. The exercise's `audit: not_collected` field and original
+execution grants are unchanged. This feature makes no AWS calls, enrolls no audit
+collector, and does not deploy detections or prove a defensive change.
+
 ## Fixed Worker
 
 `S3WorkerHandshake` requires a matching ready/containment acknowledgement before

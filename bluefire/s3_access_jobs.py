@@ -188,7 +188,8 @@ class S3AccessJobs:
             ],
         }
 
-    def read(self, identifier: str) -> Mapping[str, Any]:
+    def retained_operations(self, identifier: str):
+        """Verify saved lineage without discovering or contacting an enrolled host."""
         owner = self._owner(identifier)
         history = []
         for row in owner["progress"]["operations"]:
@@ -222,7 +223,15 @@ class S3AccessJobs:
                     or run.get("s3_request_digest") != S3WorkerRequest.from_mapping(request).digest
                 ):
                     raise S3AccessError("An S3 run is unsealed or belongs to different saved work.")
-            history.append({key: value for key, value in row.items() if key != "executions"})
+            history.append((row, requests))
+        return owner, history
+
+    def read(self, identifier: str) -> Mapping[str, Any]:
+        owner, retained = self.retained_operations(identifier)
+        history = [
+            {key: value for key, value in row.items() if key != "executions"}
+            for row, _requests in retained
+        ]
         pending = owner["progress"].get("pending_operation")
         active = self.store.get_job(pending) if pending else None
         allowed = results.allowed_phases(owner)
