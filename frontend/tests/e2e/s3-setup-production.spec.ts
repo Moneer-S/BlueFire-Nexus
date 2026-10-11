@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
-import type { S3SetupCheck } from "../../src/lib/s3-setup";
+import type { S3SavedSetupDraft, S3SetupCheck } from "../../src/lib/s3-setup";
 import configuration from "../../../tests_platform/fixtures/s3_setup_draft_v1.json" with { type: "json" };
 
 const output = process.env.BLUEFIRE_S3_BROWSER_OUTPUT!;
@@ -14,7 +14,8 @@ test.use({ acceptDownloads: true });
 async function fixture(page: Page) {
   const origin = `http://127.0.0.1:${process.env.BLUEFIRE_S3_BROWSER_PORT}`;
   const code = randomBytes(32).toString("hex"), session = randomBytes(32).toString("hex");
-  const state = { connected: false, started: false, configured: false, stale: false, checks: 0, starts: 0, reviews: 0, unexpected: 0, pageErrors: 0, sockets: 0 };
+  const state = { connected: false, started: false, configured: false, stale: false, conflict: false, checks: 0, starts: 0, reviews: 0, saves: 0, opens: 0, unexpected: 0, pageErrors: 0, sockets: 0 };
+  let saved: S3SavedSetupDraft | null = null;
   page.on("pageerror", () => { state.pageErrors += 1; });
   await page.context().routeWebSocket("**/*", socket => { state.sockets += 1; socket.close(); });
   await page.context().route("**/*", async route => {
@@ -34,6 +35,15 @@ async function fixture(page: Page) {
     if (method === "GET" && url.pathname === "/api/v1/s3-access/environments") { await json({ schema_version: "bluefire.s3-environments.v1", environments: [], problem: "No S3 environment is enrolled." }); return; }
     if (method === "GET" && url.pathname === "/api/v1/s3-access/exercises") { await json({ schema_version: "bluefire.s3-exercise-list.v1", exercises: [], truncated: false }); return; }
     if (method === "GET" && url.pathname === "/api/v1/s3-access/setup") { await json({ schema_version: "bluefire.s3-onboarding.v1", profiles, truncated: false }); return; }
+    if (method === "GET" && url.pathname === "/api/v1/s3-access/setup/drafts/s3-test") { state.opens += 1; await json({ schema_version: "bluefire.s3-saved-setup-draft.v1", draft: saved }); return; }
+    if (method === "POST" && url.pathname === "/api/v1/s3-access/setup/drafts") {
+      const body = request.postDataJSON() as { profile_id: string; profile_digest: string; configuration_json: string; expected_digest: string | null };
+      if (Object.keys(body).length !== 4 || body.profile_id !== "s3-test" || body.profile_digest !== hash || ![draftSource, `${draftSource}\n`].includes(body.configuration_json) || body.expected_digest !== (saved?.digest ?? null)) { state.unexpected += 1; await route.abort(); return; }
+      state.saves += 1;
+      if (state.conflict) { await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: { code: "s3_setup_draft_changed", message: "The saved draft changed in another window. Current inputs are unchanged." } }) }); return; }
+      saved = { profile_id: body.profile_id, profile_digest: body.profile_digest, configuration_json: body.configuration_json, digest: `sha256:${"c".repeat(64)}`, updated_at: "2026-10-11T12:00:00Z" };
+      await json({ schema_version: "bluefire.s3-saved-setup-draft.v1", draft: saved }); return;
+    }
     const runnerStatus = (profile_id: string | null) => ({ schema_version: "bluefire.runner-lifecycle-status.v1", state: state.started ? "ready" : "stopped", runner_id: "synthetic-runner", profile_id, loopback_only: true, enrollment: "active", process: state.started ? "authenticated" : "absent", runner: null, health: state.started ? { accepting_execute: true } : null });
     if (method === "GET" && url.pathname === "/api/v1/runner" && profile) { await json(runnerStatus(profile)); return; }
     if (method === "POST" && url.pathname === "/api/v1/runner/start") {
@@ -50,9 +60,9 @@ async function fixture(page: Page) {
     }
     if (method === "POST" && url.pathname === "/api/v1/s3-access/setup/review") {
       const body = request.postDataJSON() as { profile_id: string; profile_digest: string; configuration_json: string };
-      if (Object.keys(body).length !== 3 || body.profile_id !== "s3-test" || body.profile_digest !== hash || body.configuration_json !== draftSource) { state.unexpected += 1; await route.abort(); return; }
+      if (Object.keys(body).length !== 3 || body.profile_id !== "s3-test" || body.profile_digest !== hash || ![draftSource, `${draftSource}\n`].includes(body.configuration_json)) { state.unexpected += 1; await route.abort(); return; }
       state.reviews += 1;
-      await json({ schema_version: "bluefire.s3-onboarding-draft-review.v1", profile_id: body.profile_id, profile_digest: body.profile_digest, validation_scope: "structural_only", source_sha256: `sha256:${createHash("sha256").update(draftSource).digest("hex")}`, configuration_digest: hash, environments: configuration.environments.map(row => ({ environment_id: row.environment_id, display_name: row.display_name, account_id: row.scope.account_id, region: row.scope.region, bucket: row.scope.bucket, expires_at: row.scope.expires_at, fixture_generation: 1 })) }); return;
+      await json({ schema_version: "bluefire.s3-onboarding-draft-review.v1", profile_id: body.profile_id, profile_digest: body.profile_digest, validation_scope: "structural_only", source_sha256: `sha256:${createHash("sha256").update(body.configuration_json).digest("hex")}`, configuration_digest: hash, environments: configuration.environments.map(row => ({ environment_id: row.environment_id, display_name: row.display_name, account_id: row.scope.account_id, region: row.scope.region, bucket: row.scope.bucket, expires_at: row.scope.expires_at, fixture_generation: 1 })) }); return;
     }
     state.unexpected += 1; await route.abort();
   });
@@ -129,10 +139,38 @@ for (const width of [1366, 390]) {
     const file = join(output, `configuration-export-${width}.json`);
     await artifact.saveAs(file);
     expect(readFileSync(file, "utf-8")).toBe(draftSource);
+    await page.getByRole("button", { name: "Save draft", exact: true }).click();
+    await expect(page.getByText("Draft saved.", { exact: true })).toBeVisible();
+    expect(state.saves).toBe(1); expect(state.opens).toBe(0);
+    await page.reload();
+    await page.getByRole("button", { name: "Open saved draft", exact: true }).click();
+    await expect(page.getByText("Draft saved.", { exact: true })).toBeVisible();
     await page.getByText("Configuration JSON", { exact: true }).click();
-    await page.getByRole("textbox", { name: "Non-secret configuration JSON", exact: true }).fill(`${draftSource}\n`);
+    await expect(page.getByRole("textbox", { name: "Non-secret configuration JSON", exact: true })).toHaveValue(draftSource);
     await expect(page.getByRole("button", { name: "Export configuration", exact: true })).toBeDisabled();
-    expect(state.reviews).toBe(1);
+    await expect(page.getByRole("heading", { name: "Structure checked", exact: true })).toHaveCount(0);
+    await page.getByRole("heading", { name: "Configuration draft", exact: true }).scrollIntoViewIfNeeded();
+    await capture(page, `setup-saved-${width}`);
+    await page.getByRole("textbox", { name: "Non-secret configuration JSON", exact: true }).fill(`${draftSource}\n`);
+    await page.getByRole("button", { name: "Open saved draft", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "Replace current configuration?", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+    await capture(page, `setup-replace-${width}`);
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(page.getByRole("textbox", { name: "Non-secret configuration JSON", exact: true })).toHaveValue(`${draftSource}\n`);
+    await page.getByRole("button", { name: "Open saved draft", exact: true }).click();
+    await page.getByRole("button", { name: "Open saved version", exact: true }).click();
+    await expect(page.getByRole("textbox", { name: "Non-secret configuration JSON", exact: true })).toHaveValue(draftSource);
+    expect(state.opens).toBe(3);
+    await expect(page.getByRole("button", { name: "Export configuration", exact: true })).toBeDisabled();
+    await page.getByRole("textbox", { name: "Non-secret configuration JSON", exact: true }).fill(`${draftSource}\n`);
+    await page.getByRole("button", { name: "Review configuration", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Structure checked", exact: true })).toBeVisible();
+    state.conflict = true;
+    await page.getByRole("button", { name: "Save draft", exact: true }).click();
+    await expect(page.getByText("Saved draft not confirmed", { exact: true })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Non-secret configuration JSON", exact: true })).toHaveValue(`${draftSource}\n`);
+    expect(state.reviews).toBe(2); expect(state.saves).toBe(2);
     await page.getByRole("button", { name: "Back to workspace", exact: true }).click();
     await expect(page.getByRole("region", { name: "S3 connection setup" })).toHaveCount(0);
     expect(state.checks).toBe(4); expect(state.unexpected).toBe(0); expect(state.pageErrors).toBe(0); expect(state.sockets).toBe(0);

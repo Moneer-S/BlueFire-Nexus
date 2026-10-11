@@ -11,11 +11,15 @@ export const MAX_S3_DRAFT_BYTES = 128 * 1024;
 export interface S3SetupDraftRequest extends S3SetupProfile { configuration_json: string }
 export interface S3SetupDraftEnvironment { environment_id: string; display_name: string; account_id: string; region: string; bucket: string; expires_at: string; fixture_generation: 1 | 2 }
 export interface S3SetupDraftReview extends S3SetupProfile { schema_version: "bluefire.s3-onboarding-draft-review.v1"; validation_scope: "structural_only"; source_sha256: string; configuration_digest: string; environments: S3SetupDraftEnvironment[] }
+export interface S3SavedSetupDraft extends S3SetupDraftRequest { digest: string; updated_at: string }
+export interface S3SavedSetupDraftResponse { schema_version: "bluefire.s3-saved-setup-draft.v1"; draft: S3SavedSetupDraft | null }
+export interface S3SaveSetupDraftRequest extends S3SetupDraftRequest { expected_digest: string | null }
 const hash = (value: unknown) => typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
 const identifier = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 const exact = (value: unknown, keys: string[]) => value !== null && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const invalid = () => new Error("S3 setup changed or returned an incomplete response. Check the selected connection again.");
 const profile = (value: S3SetupProfile) => exact(value, ["profile_id", "profile_digest"]) && identifier(value.profile_id) && hash(value.profile_digest);
+export const savedDraftProfileId = (value: unknown): value is string => typeof value === "string" && value.length <= 128 && /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/.test(value);
 
 export function checkedSetupProfiles(value: S3SetupProfiles): S3SetupProfiles {
   if (!exact(value, ["schema_version", "profiles", "truncated"]) || value.schema_version !== "bluefire.s3-onboarding.v1" || typeof value.truncated !== "boolean" || !Array.isArray(value.profiles) || value.profiles.length > 64 || !value.profiles.every(profile) || new Set(value.profiles.map(row => row.profile_id)).size !== value.profiles.length) throw invalid();
@@ -46,6 +50,19 @@ export function checkedDraftReview(value: S3SetupDraftReview, selected: S3SetupP
   return value;
 }
 
+export async function checkedSavedDraft(value: S3SavedSetupDraftResponse, profileId: string, saving?: S3SetupDraftRequest): Promise<S3SavedSetupDraftResponse> {
+  if (!savedDraftProfileId(profileId) || !exact(value, ["schema_version", "draft"]) || value.schema_version !== "bluefire.s3-saved-setup-draft.v1") throw invalid();
+  const row = value.draft;
+  if (row === null) { if (saving) throw invalid(); return value; }
+  if (!exact(row, ["profile_id", "profile_digest", "configuration_json", "digest", "updated_at"]) || row.profile_id !== profileId || !hash(row.profile_digest) || !hash(row.digest) || typeof row.updated_at !== "string" || row.updated_at.length > 40 || !Number.isFinite(Date.parse(row.updated_at))) throw invalid();
+  await draftSourceDigest(row.configuration_json);
+  let document: unknown;
+  try { document = JSON.parse(row.configuration_json); } catch { throw invalid(); }
+  if (!document || typeof document !== "object" || Array.isArray(document)) throw invalid();
+  if (saving && (row.profile_digest !== saving.profile_digest || row.configuration_json !== saving.configuration_json)) throw invalid();
+  return value;
+}
+
 export const s3SetupApi = {
   profiles: async () => { installed(); return checkedSetupProfiles(await request<S3SetupProfiles>("/s3-access/setup")); },
   check: async (selected: S3SetupProfile) => { installed(); if (!profile(selected)) throw invalid(); return checkedSetup(await request<S3SetupCheck>("/s3-access/setup/check", { method: "POST", body: JSON.stringify(selected) }), selected); },
@@ -55,5 +72,17 @@ export const s3SetupApi = {
     if (!profile(selected) || !exact(input, ["profile_id", "profile_digest", "configuration_json"])) throw invalid();
     const sourceDigest = await draftSourceDigest(input.configuration_json);
     return checkedDraftReview(await request<S3SetupDraftReview>("/s3-access/setup/review", { method: "POST", body: JSON.stringify(input) }), selected, sourceDigest);
+  },
+  savedDraft: async (profileId: string) => {
+    installed();
+    if (!savedDraftProfileId(profileId)) throw invalid();
+    return checkedSavedDraft(await request<S3SavedSetupDraftResponse>(`/s3-access/setup/drafts/${encodeURIComponent(profileId)}`), profileId);
+  },
+  saveDraft: async (input: S3SaveSetupDraftRequest) => {
+    installed();
+    const selected = { profile_id: input.profile_id, profile_digest: input.profile_digest };
+    if (!profile(selected) || !savedDraftProfileId(input.profile_id) || !exact(input, ["profile_id", "profile_digest", "configuration_json", "expected_digest"]) || (input.expected_digest !== null && !hash(input.expected_digest))) throw invalid();
+    await draftSourceDigest(input.configuration_json);
+    return checkedSavedDraft(await request<S3SavedSetupDraftResponse>("/s3-access/setup/drafts", { method: "POST", body: JSON.stringify(input) }), input.profile_id, input);
   },
 };

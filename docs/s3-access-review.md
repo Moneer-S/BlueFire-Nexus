@@ -20,6 +20,21 @@ after retaining its original task checkpoint. Drift at that point refuses
 dispatch without removing the checkpoint or refunding reservations. Recovery
 continues to validate the historical task, not a newly active profile.
 
+## Saved configuration drafts
+
+Connection setup can save structurally reviewed, nonsecret configuration text in
+the workspace and reopen its exact bytes after a reload. Saving is explicit and
+uses the last accepted saved revision; a change from another window is a conflict,
+not permission to overwrite it. Failed saves and late responses preserve current
+inputs. Opening a different saved version asks before replacing unsaved text, and
+canceling does not accept that fetched revision as a future overwrite base.
+
+Saved drafts remain data only. Opening one clears the current structural review
+and does not install it, reconnect a host, recover an approval or renew authority.
+A retained previous profile selection can reopen its draft even when that profile
+is unavailable; review and saving still require a current profile. The source is
+bounded to 128 KiB, and backend validation refuses credential-bearing documents.
+
 ## Reviewed stages
 
 1. Inspect the enrolled baseline policy without changing it.

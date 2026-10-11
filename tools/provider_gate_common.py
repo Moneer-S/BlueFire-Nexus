@@ -234,6 +234,7 @@ STRICT_SOURCE_AUDIT_PATHS = (
     "bluefire/s3_access_onboarding.py",
     "bluefire/s3_access_profile.py",
     "bluefire/s3_access_setup_cli.py",
+    "bluefire/s3_access_setup_drafts.py",
     "bluefire/s3_access_launch.py",
     "bluefire/s3_access_transport.py",
     "bluefire/s3_access_runtime.py",

@@ -54,6 +54,6 @@ export function S3Setup({ onClose }: { onClose: () => void }) {
       { label: "Cloud scope", value: "Existing account, bucket and scoped roles" },
       { label: "Temporary credentials", value: "Imported locally, never in this browser" },
     ]} /></section></div></div>
-    <S3SetupDraft selected={profiles.error || profiles.isFetching ? undefined : selected} />
+    <S3SetupDraft profileId={selectedId} selected={profiles.error || profiles.isFetching ? undefined : selected} />
   </section>;
 }
