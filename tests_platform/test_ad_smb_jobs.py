@@ -48,8 +48,9 @@ def wait_for_ad_job(controller, job_id):
         snapshot = controller.snapshot(job_id)
         state = snapshot.get("state")
         state = state if isinstance(state, str) and state in _SAFE_JOB_STATES else "unknown"
-        progress = snapshot.get("progress")
-        phase = progress.get("phase") if isinstance(progress, dict) else None
+        request = snapshot.get("request")
+        ad_smb = request.get("ad_smb") if isinstance(request, dict) else None
+        phase = ad_smb.get("phase") if isinstance(ad_smb, dict) else None
         phase = phase if isinstance(phase, str) and phase in _SAFE_AD_PHASES else "unknown"
         raise AssertionError(
             f"AD test job did not reach a terminal state within {JOB_WAIT_TIMEOUT}s "
