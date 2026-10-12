@@ -82,3 +82,36 @@ class S3AccessServiceMixin:
 
     def recover_s3_access(self, identifier: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
         return self._s3_call(lambda: self.s3_access.recover(identifier, request))
+
+    def s3_audit_reviews(self, identifier: str) -> Mapping[str, Any]:
+        from .s3_audit_reviews import list_reviews
+
+        return self._s3_call(lambda: list_reviews(self.s3_access, identifier))
+
+    def s3_audit_review(self, identifier: str, review_id: str) -> Mapping[str, Any]:
+        from .s3_audit_reviews import read_review
+
+        return self._s3_call(lambda: read_review(self.s3_access, identifier, review_id))
+
+    def s3_audit_assistance_context(self, identifier: str, review_id: str) -> Mapping[str, Any]:
+        from .assistance_audit_context import context
+
+        review = self.s3_audit_review(identifier, review_id)
+        return self._s3_call(
+            lambda: context(
+                self,
+                {
+                    "kind": "s3_audit_review",
+                    "workflow_job_id": identifier,
+                    "review_id": review_id,
+                    "review_digest": review["review_digest"],
+                },
+            )
+        )
+
+    def save_s3_audit_review(
+        self, identifier: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        from .s3_audit_reviews import save_review
+
+        return self._s3_call(lambda: save_review(self.s3_access, identifier, request))

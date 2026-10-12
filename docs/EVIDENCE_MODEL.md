@@ -76,7 +76,8 @@ The permission fields are retained in `observed_fields` for detection and compar
 SQLite queries can use `permission_status` and `non_owner_write_bit` (the group or
 other write bit). For example, `SELECT fixture_id FROM logs WHERE
 permission_status = 'available' AND non_owner_write_bit = 1` tests for relaxed write
-bits. The fixed 64-column query limit remains unchanged; full octal mode and separate
+bits. The fixed query schema has 70 columns, including native process snapshot fields;
+full octal mode and separate
 bits remain in evidence but are not additional SQL columns. Absent permission bits
 remain missing fields rather than false values.
 New observations carry their own hashes and collector version. Historical records

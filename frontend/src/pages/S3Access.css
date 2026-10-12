@@ -58,6 +58,15 @@
 .s3-setup-draft textarea { resize: vertical; font-family: var(--font-mono, monospace); font-size: 12px; }
 .s3-setup-draft code { overflow-wrap: anywhere; }
 .s3-setup-draft .s3-actions { margin-top: 16px; }
+.s3-audit-form { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; align-items: end; margin: 20px 0; }
+.s3-audit-form select, .s3-audit-form input { width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; }
+.s3-audit-history article { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.s3-audit-history time { color: var(--text-secondary); font-size: 12px; }
+.s3-audit-history span { overflow-wrap: anywhere; }
+.s3-audit-detail { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 16px; }
+.s3-audit-results { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin: 20px 0; }
+.s3-audit-results article { border-left: 3px solid #ccab44; padding-left: 12px; min-width: 0; }
+@media (max-width: 600px) { .s3-audit-form, .s3-audit-results { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 900px) { .s3-setup-columns { grid-template-columns: minmax(0, 1fr); gap: 18px; } }
 @media (max-width: 600px) { .s3-fixture-list article { grid-template-columns: 20px minmax(0, 1fr); } .s3-fixture-status { grid-column: 2; } }
 @media (max-width: 1100px) { .s3-workspace { grid-template-columns: minmax(0, 1fr); gap: 0; } .s3-review-side { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; } }
