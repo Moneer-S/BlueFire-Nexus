@@ -33,6 +33,7 @@ class AssistanceContext(Protocol):
     assistance_runs: AssistanceRunJobs
     assistance_receiver: Any
     receiver_defense: Any
+    s3_access: Any
     method_comparison: MethodComparisonJobs
     product_store: ProductStore
     registry: BehaviorRegistry

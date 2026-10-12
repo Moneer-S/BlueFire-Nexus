@@ -14,7 +14,7 @@ from tests_platform.test_detection_evaluations import service as service
 
 
 def test_permission_query_preserves_the_fixed_column_budget():
-    assert len(SQLITE_LOG_FIELDS) == len(set(SQLITE_LOG_FIELDS)) == 64
+    assert len(SQLITE_LOG_FIELDS) == len(set(SQLITE_LOG_FIELDS)) == 70
     assert {"permission_status", "non_owner_write_bit"} <= set(SQLITE_LOG_FIELDS)
 
 

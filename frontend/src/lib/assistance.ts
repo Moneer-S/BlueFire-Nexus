@@ -4,6 +4,7 @@ import { parseScenarioDocument } from "./scenario";
 import type { DetectionCaseRole, RunJob, Scenario } from "../types";
 import type { MethodSource } from "./method-comparison";
 import { sameJson } from "./replay-review";
+import { isAuditSelection, validAuditAssistanceSelection, type AuditAssistanceSelection } from "./audit-assistance";
 import { checkedReceiverAssistance, isReceiverSelection, validReceiverAssistanceSelection, type ReceiverAssistanceSelection, type ReceiverAssistanceProgress, type ReceiverAssistanceResult } from "./receiver-assistance";
 
 export type AssistanceCapability = "detection.create_and_evaluate" | "detection.revise_and_evaluate" | "method.compare_same_detector" | "graph.propose_and_validate" | "run.saved_graph_and_inspect" | "receiver.test_and_compare" | "receiver.inspect_and_plan_next";
@@ -12,12 +13,13 @@ export interface GraphSelection { edit_step?: GraphStepSelection; kind: "graph";
 export interface AssistanceContext {
   schema_version: "bluefire.assistance-context.v1";
   context_digest: string;
-  selected: GraphSelection | SavedRunSelection | RunDetectionSelection | ReceiverAssistanceSelection | {
+  selected: AuditAssistanceSelection | GraphSelection | SavedRunSelection | RunDetectionSelection | ReceiverAssistanceSelection | {
     run_id: string; candidate_id: string; candidate_resource_digest: string;
     title: string; definition_digest: string; target_language: string; source_binding: MethodSource;
   };
   capabilities: Array<{ id: AssistanceCapability; title: string; available: boolean; supported_autonomy: Array<"assist" | "auto">; reason: string; native_path: string }>;
   limitations: string[];
+  analysis_only?: true;
 }
 export interface DetectionAssistanceRequest {
   submission_id: string; context_digest: string; run_id: string; candidate_id: string;
@@ -31,7 +33,9 @@ export interface GraphAssistanceRequest {
 export interface SavedGraphAssistanceRequest extends Omit<GraphAssistanceRequest, "selection"> { selection: SavedRunSelection }
 export interface RunDetectionAssistanceRequest extends Omit<GraphAssistanceRequest, "selection"> { selection: RunDetectionSelection }
 export interface ReceiverAssistanceRequest extends Omit<GraphAssistanceRequest, "selection"> { selection: ReceiverAssistanceSelection }
-export type AssistanceRequest = DetectionAssistanceRequest | GraphAssistanceRequest | SavedGraphAssistanceRequest | RunDetectionAssistanceRequest | ReceiverAssistanceRequest;
+export interface AuditAssistanceRequest extends Omit<GraphAssistanceRequest, "selection"> { selection: AuditAssistanceSelection }
+export type AssistanceRequest = AuditAssistanceRequest | DetectionAssistanceRequest | GraphAssistanceRequest | SavedGraphAssistanceRequest | RunDetectionAssistanceRequest | ReceiverAssistanceRequest;
+export const isAuditRequest = (value: AssistanceRequest): value is AuditAssistanceRequest => "selection" in value && isAuditSelection(value.selection);
 export const isReceiverRequest = (value: AssistanceRequest): value is ReceiverAssistanceRequest => "selection" in value && isReceiverSelection(value.selection);
 export const isRunDetectionRequest = (value: AssistanceRequest): value is RunDetectionAssistanceRequest => "selection" in value && value.selection?.kind === "run_detection";
 export const isRunDetectionSelection = (value: AssistanceContext["selected"]): value is RunDetectionSelection => "kind" in value && value.kind === "run_detection";
@@ -45,7 +49,7 @@ export interface AssistanceEnvelope {
   turn: {
     schema_version: "bluefire.assistance-turn.v1"; status: AssistanceStatus; message: string; context_digest: string;
     can_start_new_turn: boolean;
-    selected: GraphSelection | SavedRunSelection | RunDetectionSelection | ReceiverAssistanceSelection | Pick<DetectionAssistanceRequest, "run_id" | "candidate_id" | "candidate_resource_digest">;
+    selected: AuditAssistanceSelection | GraphSelection | SavedRunSelection | RunDetectionSelection | ReceiverAssistanceSelection | Pick<DetectionAssistanceRequest, "run_id" | "candidate_id" | "candidate_resource_digest">;
     plan: Array<{ step_id: string; capability_id: AssistanceCapability; title: string; detector_ref: "selected" | "revised" | "none"; reason: string }>;
     active_child: null | { job_id: string; kind: string; state: string; step_id: string; native_path: string };
     receiver_test?: ReceiverAssistanceProgress;
@@ -80,7 +84,9 @@ function readStoredRequest(key: string): AssistanceRequest | undefined {
     if (!value || !uuid.test(value.submission_id) || !digest.test(value.context_digest) || !bounded(value.message, 1000)
       || !["off", "assist", "auto"].includes(value.autonomy)
       || (value.provider_id !== undefined && !bounded(value.provider_id))) return;
-    if (isReceiverRequest(value)) {
+    if (isAuditRequest(value)) {
+      if (!validAuditAssistanceSelection(value.selection)) return;
+    } else if (isReceiverRequest(value)) {
       if (!validReceiverAssistanceSelection(value.selection)) return;
     } else if (isRunDetectionRequest(value)) {
       if (!validRunDetectionSelection(value.selection)) return;
@@ -147,6 +153,7 @@ export function clearAssistanceReceipt(value: AssistanceRequest): boolean {
 }
 export function matchesAssistanceReceipt(value: AssistanceEnvelope, receipt: AssistanceRequest): boolean {
   try { checkedReceiverAssistance(value); } catch { return false; }
+  if (isAuditRequest(receipt) && (!validAuditAssistanceSelection(receipt.selection) || !Array.isArray(value.turn?.plan) || value.turn.plan.length || value.turn.active_child !== null || !Array.isArray(value.turn.results) || value.turn.results.length)) return false;
   return value.job?.kind === "assistance.turn" && value.job.job_id === assistanceJobId(receipt.submission_id)
     && sameJson(value.job.request?.submitted_request, receipt) && value.turn?.schema_version === "bluefire.assistance-turn.v1"
     && value.turn.context_digest === receipt.context_digest && sameJson(value.turn.selected, "selection" in receipt ? receipt.selection

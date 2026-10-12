@@ -117,6 +117,34 @@ Parsing and conversion record `source_rule_executed: false`. Before each fixture
 
 Create a `target_language="sqlite"` hypothesis and submit exactly one bounded `SELECT` from the fixed `logs` table. The query must return `fixture_id` exactly once so results remain attributable. Only declared schema fields are available; extra fixture fields are reported but never become identifiers or schema changes. Native queries use the same malicious, immutable observed-evidence, and benign lifecycle actions and the same execution caps as converted Sigma.
 
+### Native process snapshots in SQLite
+
+The existing native process collector can supply an independently observed
+snapshot of one authorized child on Windows or Linux. Its nested identity fields
+are available under their original names: `observed_fields.platform`,
+`observed_fields.native_api`, `observed_fields.process_id`,
+`observed_fields.parent_process_id`, `observed_fields.executable_name`, and
+`observed_fields.creation_identity`. Quote dotted column names in SQLite:
+
+```sql
+SELECT fixture_id FROM logs
+WHERE artifact_type = 'collector_observation'
+  AND observation_kind = 'process'
+  AND "observed_fields.executable_name" LIKE 'python%'
+```
+
+The fixed schema and result-column limit are 70 fields, including these six
+snapshot fields. Existing `SELECT *` rules still fit; the row, byte, and execution
+limits are unchanged.
+
+Use the normal source-run selection and observed-evidence evaluation. Missing
+fields stay unknown; the evaluator does not derive `Image`, `CommandLine`, or a
+process-creation event from this snapshot. A matching interpreter name is not
+proof of malicious activity. Evaluate benign cases and retain unintended matches.
+This is local SQLite evaluation of native observations, not Sysmon, auditd, a
+deployed rule, or host-wide process monitoring. A software test of this path does
+not by itself verify the installed browser journey.
+
 ## YARA workflow
 
 1. Create a `target_language="yara"` hypothesis.

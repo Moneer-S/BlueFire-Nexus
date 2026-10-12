@@ -94,3 +94,9 @@
 .assistant-graph-composer .assistant-send-row { gap: 10px; }
 .assistant-graph-composer .assistant-send-row > p { margin: 0; font-size: .74rem; }
 .assistant-graph-composer .assistant-details { margin-top: 14px; }
+
+.assistant-audit-composer .assistant-options { grid-template-columns: minmax(0, 1fr); }
+.assistant-audit-composer .assistant-context { padding-bottom: 10px; }
+.assistant-audit-composer .assistant-composer { margin-top: 12px; padding-top: 0; border-top: 0; }
+.assistant-audit-composer .assistant-composer form { margin-top: 10px; gap: 10px; }
+.assistant-audit-composer .assistant-composer textarea { min-height: 82px; }

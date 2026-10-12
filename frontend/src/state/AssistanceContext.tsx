@@ -1,4 +1,5 @@
 import { validReceiverAssistanceSelection, type ReceiverAssistanceSelection } from "../lib/receiver-assistance";
+import { validAuditAssistanceSelection, type AuditAssistanceSelection } from "../lib/audit-assistance";
 import { validSavedRunSelection, savedRunSource, type SavedRunSelection } from "../lib/run-assistance";
 import { validRunDetectionSelection, type RunDetectionSelection } from "../lib/detection-creation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type PropsWithChildren } from "react";
@@ -25,7 +26,8 @@ export interface SavedGraphWorkspaceSelection { kind: "saved_graph"; selected: S
 export interface GraphWorkspaceSelection { kind: "graph"; editStep?: GraphStepSelection; editUnavailable?: string; baseScenario: GraphSelection["base_scenario"]; title: string; manualEdits: boolean }
 export interface RunDetectionWorkspaceSelection { kind: "run_detection"; selected: RunDetectionSelection; title: string; manualEdits: false }
 export interface ReceiverWorkspaceSelection { kind: "receiver"; selected: ReceiverAssistanceSelection; title: string; manualEdits: false }
-export type WorkspaceSelection = ReceiverWorkspaceSelection | AssistanceSelection | GraphWorkspaceSelection | SavedGraphWorkspaceSelection | RunDetectionWorkspaceSelection;
+export interface AuditWorkspaceSelection { kind: "audit"; selected: AuditAssistanceSelection; title: string; manualEdits: false }
+export type WorkspaceSelection = AuditWorkspaceSelection | ReceiverWorkspaceSelection | AssistanceSelection | GraphWorkspaceSelection | SavedGraphWorkspaceSelection | RunDetectionWorkspaceSelection;
 const selectionKey = "bluefire.assistance.selection.v1";
 function readSelection(): WorkspaceSelection | undefined {
   try {
@@ -37,6 +39,7 @@ function readSelection(): WorkspaceSelection | undefined {
     if (value.kind === "saved_graph") return validSavedRunSelection(value.selected) ? value : undefined;
     if (value.kind === "run_detection") return validRunDetectionSelection(value.selected) ? value : undefined;
     if (value.kind === "receiver") return validReceiverAssistanceSelection(value.selected) ? value : undefined;
+    if (value.kind === "audit") return validAuditAssistanceSelection(value.selected) && value.manualEdits === false ? value : undefined;
     if (value.kind === "graph" && (value.editUnavailable === undefined || (typeof value.editUnavailable === "string" && value.editUnavailable.length <= 1000)) && validGraphSelection({ kind: "graph", base_scenario: value.baseScenario, ...(value.editStep ? { edit_step: value.editStep } : {}) })) return value;
   } catch { /* Context is rechecked by the service before submission. */ }
 }
