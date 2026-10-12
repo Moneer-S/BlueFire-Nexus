@@ -14,6 +14,14 @@ it("minimizes saved evidence without retaining handles, descriptor bytes or prot
   expect(value.operations[3]!.expectation).toBe("matched");
 });
 it("does not turn fixture availability into native enrollment", () => { const value = checkedAdEnvironments(rawAdEnvironments()); expect(value.nativeAvailable).toBe(false); expect(value.environments[0]!.available).toBe(true); });
+it.each(["scope_not_current", "member_channel_unavailable", "client_channel_unavailable", "role_channels_unavailable"])("keeps the finite %s readiness failure unavailable", problem => {
+  const raw = rawAdEnvironments();
+  const entry = raw.environments[0]!;
+  const value = { ...raw, environments: [{ ...entry, available: false, readiness: { ...entry.readiness, available: false, problem } }] };
+  expect(checkedAdEnvironments(value).environments[0]!.readiness.problem).toBe(problem);
+  value.environments[0]!.readiness.problem = "private diagnostic";
+  expect(() => checkedAdEnvironments(value)).toThrow();
+});
 it("accepts configured admission without inventing allowed work or native enrollment", () => {
   const raw = rawAdWorkflow({ allowed: [], stopped: true }); raw.execution_integration = "configured_admission";
   const value = checkedAdWorkflow(raw, adOwner);
