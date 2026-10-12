@@ -264,8 +264,13 @@ def test_wait_for_stage_reports_one_redacted_snapshot_on_timeout():
             return {
                 "job_id": job_id,
                 "state": "running",
-                "request": {"secret": "must-not-appear"},
-                "progress": {"phase": "baseline", "secret": "must-not-appear"},
+                "request": {
+                    "secret": "must-not-appear",  # pragma: allowlist secret
+                },
+                "progress": {
+                    "phase": "baseline",
+                    "secret": "must-not-appear",  # pragma: allowlist secret
+                },
             }
 
     controller = FakeController()
