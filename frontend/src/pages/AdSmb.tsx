@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ArrowRight, ClipboardCheck, FileSearch, History, Plus, RefreshCw, Square, Undo2, X } from "lucide-react";
 import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState, PageHeader, formatDate, sentence } from "../components/Primitives";
-import { adConfirmed, adJobId, adJobValid, adPhaseCurrent, adPhaseLabels, adSmbApi, checkedAdEnvironments, checkedAdList, checkedAdReview, checkedAdWorkflow, clearAdPending, readAdPending, storeAdPending, type AdBudget, type AdChange, type AdEnvironment, type AdOperation, type AdPending, type AdPhase, type AdReview, type AdWorkflow } from "../lib/ad-smb";
+import { adConfirmed, adJobId, adJobValid, adPhaseCurrent, adPhaseLabels, adReadinessLabels, adSmbApi, checkedAdEnvironments, checkedAdList, checkedAdReview, checkedAdWorkflow, clearAdPending, readAdPending, storeAdPending, type AdBudget, type AdChange, type AdEnvironment, type AdOperation, type AdPending, type AdPhase, type AdReview, type AdWorkflow } from "../lib/ad-smb";
 import "./AdSmb.css";
 
 export function AdSmbPage() {
@@ -90,8 +90,21 @@ export function AdSmbPage() {
       <div className="ad-smb-workspace">
         {!owner ? <section className="ad-smb-section" aria-label="AD environment readiness"><h2>Prepared environments</h2>
           {environments.isPending ? <LoadingState label="Checking AD enrollment" /> : environments.error ? <ErrorState error={environments.error} /> : <>
-            {!environments.data?.nativeAvailable ? <Callout tone="warning" title="Live AD execution unavailable">No current enrolled member, client, and protected credential channel are available.</Callout> : null}
-            {environments.data?.environments.map(entry => <div className="ad-smb-environment" key={entry.environment.id}><div className="ad-smb-section-heading"><h3>{entry.environment.domain}</h3><Badge tone={entry.environment.provenance === "synthetic_fixture" ? "warning" : "neutral"}>{entry.environment.provenance === "synthetic_fixture" ? "Synthetic fixture" : entry.available ? "Enrolled scope" : "Unavailable"}</Badge></div><EnvironmentFacts environment={entry.environment} /><DataList items={[{ label: "Member observation", value: entry.readiness.member ? "Available" : "Unavailable" }, { label: "Client admission", value: entry.readiness.client ? "Available" : "Unavailable" }, { label: "Protected channel", value: entry.readiness.channel ? "Available" : "Unavailable" }]} /><Button disabled={!entry.available || busy || Boolean(pending) || Boolean(localError) || Date.parse(entry.environment.expiresAt) <= now} onClick={() => start(entry.environment)}><Plus />Save exercise</Button></div>)}
+            {!environments.data?.nativeAvailable ? <Callout tone="warning" title="Live AD execution unavailable">No valid current member and client enrollment is available for live execution.</Callout> : null}
+            {environments.data?.environments.length === 0 ? <DataList items={[{ label: "Controller enrollment", value: "Unavailable" }, { label: "Member and client channels", value: "Not checked" }, { label: "Share access", value: "Not tested" }]} /> : null}
+            {environments.data?.environments.map(entry => {
+              const current = Date.parse(entry.environment.createdAt) <= now && now < Date.parse(entry.environment.expiresAt);
+              const ready = entry.available && current;
+              const problem = !current ? "scope_not_current" : entry.readiness.problem;
+              return <div className="ad-smb-environment" key={entry.environment.id}>
+                <div className="ad-smb-section-heading"><h3>{entry.environment.domain}</h3><Badge tone={entry.environment.provenance === "synthetic_fixture" ? "warning" : "neutral"}>{entry.environment.provenance === "synthetic_fixture" ? "Synthetic fixture" : ready ? "Configured channels" : "Unavailable"}</Badge></div>
+                <p className="ad-smb-target">{entry.environment.share}</p><EnvironmentFacts environment={entry.environment} />
+                <DataList items={[{ label: "Scope window", value: current ? "Current" : Date.parse(entry.environment.createdAt) > now ? "Not started" : "Expired" }, { label: "Member channel", value: entry.readiness.member && current ? "Configuration confirmed" : "Unavailable" }, { label: "Client channel", value: entry.readiness.client && current ? "Configuration confirmed" : "Unavailable" }, { label: "Protected channel binding", value: entry.readiness.channel && current ? "Configuration confirmed" : "Unavailable" }]} />
+                {problem ? <Callout tone="warning" title="Enrollment needs attention">{adReadinessLabels[problem]}</Callout> : null}
+                <p className="ad-smb-limits">Configuration checks only. Share access, remote reader identity, and credential usability are not established.</p>
+                <Button disabled={!ready || busy || environments.isFetching || Boolean(pending) || Boolean(localError)} onClick={() => start(entry.environment)}><Plus />Save exercise</Button>
+              </div>;
+            })}
           </>}
         </section> : !adJobValid(owner) ? <ErrorState error={new Error("Open an exact saved AD exercise from the list.")} /> : workflow.error ? <ErrorState title="Saved AD exercise unavailable" error={workflow.error} retry={() => { void workflow.refetch(); }} /> : !value ? <LoadingState label="Opening saved AD exercise" /> : <>
           <section className="ad-smb-section ad-smb-objective" aria-label="Selected AD objective"><div className="ad-smb-section-heading"><div><h2>Remove probe access, preserve legitimate reads</h2><p className="ad-smb-target">{value.environment.share}</p></div><Badge tone={value.environment.provenance === "synthetic_fixture" ? "warning" : "neutral"}>{value.environment.provenance === "synthetic_fixture" ? "Synthetic fixture" : "Runner-reported"}</Badge></div>

@@ -59,6 +59,40 @@ it("loads saved work read-only and hides opaque credentials and binary descripto
   expect(screen.getByText(/Effective access not established/)).toBeInTheDocument();
   expect(adSmbApi.review).not.toHaveBeenCalled(); expect(adSmbApi.submit).not.toHaveBeenCalled(); expect(adSmbApi.recover).not.toHaveBeenCalled();
 });
+it("refreshes from missing enrollment through partial channels without authorizing work", async () => {
+  const partial = rawAdEnvironments();
+  const entry = partial.environments[0]!;
+  const unavailable = { ...partial, environments: [{ ...entry, available: false, readiness: { ...entry.readiness, available: false, client_read_admission: false, secret_channel_available: false, problem: "client_channel_unavailable" } }] };
+  vi.mocked(adSmbApi.environments).mockResolvedValueOnce({ environments: [], native_execution_available: false }).mockResolvedValueOnce(unavailable).mockResolvedValue(rawAdEnvironments());
+  mount("/ad-smb");
+  expect(await screen.findByText("Not tested")).toBeVisible();
+  expect(screen.getByText("Not checked")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Refresh state" }));
+  expect(await screen.findByText("The client channel did not confirm its enrolled configuration.")).toBeVisible();
+  expect(screen.getAllByText("Configuration confirmed")).toHaveLength(1);
+  expect(screen.getByRole("button", { name: "Save exercise" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Refresh state" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Save exercise" })).toBeEnabled());
+  expect(screen.getAllByText("Configuration confirmed")).toHaveLength(3);
+  expect(screen.getByText(/Configuration checks only/)).toBeVisible();
+  expect(screen.queryByText("Member observation")).not.toBeInTheDocument();
+  expect(adSmbApi.create).not.toHaveBeenCalled();
+  expect(adSmbApi.review).not.toHaveBeenCalled();
+  expect(adSmbApi.submit).not.toHaveBeenCalled();
+});
+it.each(["future", "expired"])("does not offer a saved exercise for a %s scope", async state => {
+  const value = rawAdEnvironments();
+  const scope = value.environments[0]!.environment.scope;
+  if (state === "future") scope.created_at = new Date(Date.now() + 60_000).toISOString();
+  else scope.expires_at = new Date(Date.now() - 60_000).toISOString();
+  vi.mocked(adSmbApi.environments).mockResolvedValue(value);
+  mount("/ad-smb");
+  expect(await screen.findByText(state === "future" ? "Not started" : "Expired")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Save exercise" })).toBeDisabled();
+  expect(screen.getByText("The authorized scope window is not current.")).toBeVisible();
+  expect(screen.queryByText("Configuration confirmed")).not.toBeInTheDocument();
+  expect(adSmbApi.create).not.toHaveBeenCalled();
+});
 it("requires explicit review, unchecked consent and reviewer before one exact submission", async () => {
   mount(); fireEvent.click(await screen.findByRole("button", { name: "Review inspect share" }));
   const submit = await screen.findByRole("button", { name: "Submit reviewed stage" });
