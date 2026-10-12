@@ -30,7 +30,8 @@ export async function loadSavedWork(family: WorkFamily): Promise<SavedWorkList> 
   }
   if (family === "file") {
     const value = checkedFileAccessList(await fileAccessApi.list());
-    return { more: value.controls.length > 5, rows: value.controls.slice(0, 5).map(control => ({
+    const controls = [...value.controls].reverse();
+    return { more: controls.length > 5, rows: controls.slice(0, 5).map(control => ({
       id: control.control_owner_id, title: "Generated file access", href: `/file-access?control=${encodeURIComponent(control.control_owner_id)}`,
       state: control.status, detail: `Revision ${control.revision} / ${control.control_owner_id.slice(-8)}`,
       attention: ["uncertain", "recovery_required"].includes(control.status),
@@ -38,7 +39,8 @@ export async function loadSavedWork(family: WorkFamily): Promise<SavedWorkList> 
   }
   if (family === "domain") {
     const value = checkedAdList(await adSmbApi.list());
-    return { more: value.length > 5, rows: value.slice(0, 5).map(workflow => ({
+    const workflows = [...value].reverse();
+    return { more: workflows.length > 5, rows: workflows.slice(0, 5).map(workflow => ({
       id: workflow.id, title: workflow.environment.member, href: `/ad-smb?workflow=${encodeURIComponent(workflow.id)}`,
       state: workflow.pending ? "unsettled_operation" : workflow.stopped ? "new_work_stopped" : workflow.policy,
       detail: `${workflow.environment.provenance === "synthetic_fixture" ? "Synthetic fixture" : "Runner-reported"} / revision ${workflow.revision}`,

@@ -6,8 +6,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SavedDefensiveWork } from "../src/components/SavedDefensiveWork";
 import { api } from "../src/lib/api";
 import { adSmbApi } from "../src/lib/ad-smb";
-import { fileAccessApi } from "../src/lib/file-access";
+import { fileAccessApi, type FileAccessControlList } from "../src/lib/file-access";
 import type { ReceiverTestList } from "../src/lib/receiver-defense-types";
+import { loadSavedWork } from "../src/lib/saved-defensive-work";
 import { s3Api } from "../src/lib/s3-access";
 import { rawAdWorkflow } from "./ad-smb-fixture";
 
@@ -105,6 +106,36 @@ it("bounds the overview rows and exposes omitted history without claiming it is 
   expect(within(screen.getByRole("tabpanel")).getAllByRole("listitem")).toHaveLength(5);
   expect(screen.getByText("More saved records are available in this workflow.")).toBeVisible();
   expect(screen.getByRole("link", { name: "Open data handoff workspace" })).toHaveAttribute("href", "/compare?receiver=1");
+});
+
+it("shows the newest five file controls without reordering the server list", async () => {
+  const controls = Array.from({ length: 8 }, (_, index) => ({
+    control_owner_id: `job-${String(index + 1).repeat(32)}`, status: "recovery_required" as const, revision: index + 1,
+  }));
+  const value: FileAccessControlList = { schema_version: "bluefire.file-access-control-list.v1", controls };
+  const originalIds = controls.map(control => control.control_owner_id);
+  vi.mocked(fileAccessApi.list).mockResolvedValue(value);
+
+  const result = await loadSavedWork("file");
+
+  expect(result.rows.map(row => row.id)).toEqual(originalIds.slice(-5).reverse());
+  expect(result.more).toBe(true);
+  expect(value.controls).toBe(controls);
+  expect(value.controls.map(control => control.control_owner_id)).toEqual(originalIds);
+});
+
+it("shows the newest five domain workflows without reordering the server list", async () => {
+  const workflows = Array.from({ length: 8 }, (_, index) => rawAdWorkflow({ id: `job-${String(index + 1).repeat(32)}` }));
+  const value = { workflows };
+  const originalIds = workflows.map(item => item.workflow.job_id);
+  vi.mocked(adSmbApi.list).mockResolvedValue(value);
+
+  const result = await loadSavedWork("domain");
+
+  expect(result.rows.map(row => row.id)).toEqual(originalIds.slice(-5).reverse());
+  expect(result.more).toBe(true);
+  expect(value.workflows).toBe(workflows);
+  expect(value.workflows.map(item => item.workflow.job_id)).toEqual(originalIds);
 });
 
 it("refuses invalid saved identities without creating links from them", async () => {
