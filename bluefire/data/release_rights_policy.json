@@ -128,7 +128,7 @@
     ]
   },
   "frontend": {
-    "lockfile_sha256": "6003d191eaa9eb6cf29948a36065c870acfd42299d01df3e4afb51f6e78fc54e",
+    "lockfile_sha256": "fbcd94ae2c77d5b73169d380fb250c53ca86f33c6f777c973f545f32109f8bd3",
     "locked_package_count": 391,
     "direct_requirements": {
       "@radix-ui/react-dialog": "^1.1.15",
@@ -151,6 +151,7 @@
       "@types/react": "^19.1.16",
       "@types/react-dom": "^19.1.9",
       "@vitejs/plugin-react": "^5.0.3",
+      "css-tree": "3.2.1",
       "eslint": "^9.36.0",
       "eslint-plugin-react-hooks": "^5.2.0",
       "eslint-plugin-react-refresh": "^0.4.20",
