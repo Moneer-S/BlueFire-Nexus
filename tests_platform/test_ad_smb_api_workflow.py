@@ -8,7 +8,7 @@ from bluefire.ad_smb_jobs import AdSmbJobs
 from bluefire.ad_smb_service import AdSmbServiceMixin
 from bluefire.service import BlueFireService
 from tests_platform.test_ad_smb_contract import NOW
-from tests_platform.test_ad_smb_jobs import create, submit
+from tests_platform.test_ad_smb_jobs import create, submit, wait_for_ad_job
 from tests_platform.test_ad_smb_jobs import workspace as workspace
 from tests_platform.test_api import StubService, json_body, request, running_server
 from tests_platform.test_service import ROOT as PROJECT_ROOT
@@ -130,7 +130,7 @@ def test_saved_ad_stages_round_trip_through_authenticated_api(workspace):
             status, _, body = request(server, "POST", path + "/operations", body=command)
             assert status == 200
             operation = json_body(body)
-            terminal = service.job_controller.wait(operation["job_id"], timeout=10)
+            terminal = wait_for_ad_job(service.job_controller, operation["job_id"])
             assert terminal["state"] == "completed", terminal
             assert service.store.validate_bundle(terminal["result_ref"])["valid"]
             status, _, body = request(server, "GET", path)
