@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 
 def utc_now() -> str:
@@ -25,4 +26,17 @@ def canonical_json(value: Any) -> str:
     )
 
 
-__all__ = ["canonical_json", "utc_now"]
+def resource_row(row: sqlite3.Row) -> Mapping[str, Any]:
+    """Decode a stored resource without changing its persisted metadata."""
+    return {
+        "kind": row["kind"],
+        "id": row["resource_id"],
+        "status": row["status"],
+        "digest": row["digest"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "document": json.loads(row["document_json"]),
+    }
+
+
+__all__ = ["canonical_json", "resource_row", "utc_now"]

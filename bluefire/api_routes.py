@@ -705,8 +705,11 @@ class APIRoutes:
         if not self._management_query_free():
             return ("", "", "")
         suffix = path[len(prefix) :]
-        if suffix in {"status", "review", "operations", "control-list"}:
+        if suffix in {"status", "review", "operations", "control-list", "setup-import"}:
             return suffix, "", ""
+        windows_control = re.fullmatch(r"controls/(win-file-control-[0-9a-f]{32})", suffix)
+        if windows_control is not None:
+            return "control", windows_control.group(1), ""
         match = re.fullmatch(
             r"(operations|controls)/(job-[0-9a-f]{32})(?:/(reconcile)|/reconciliations/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}))?",
             suffix,

@@ -26,8 +26,11 @@ EFFECTS = {
 
 class FileAccessControl:
     def __init__(self, service, *, clock=None):
+        from .windows_file_access_execution import WindowsBaselineRuntime
+
         self.service, self.store = service, service.product_store
         self.clock = clock or (lambda: time.time_ns() // 1_000_000)
+        self.windows = WindowsBaselineRuntime(self)
 
     def _publish(self, job_id, values):
         values = safe_document(values, context="file-access progress")
@@ -40,7 +43,25 @@ class FileAccessControl:
     def _enrollment(self):
         return file_access_context.enrollment(self.service, self.clock())
 
+    def import_setup(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        from . import windows_file_access_context as windows
+
+        if not file_access_context.is_windows_host():
+            raise ProductStoreError("Protected Windows setup import requires its original host.")
+        try:
+            return windows.import_setup(self.service, request, self.clock())
+        except FileAccessContractError:
+            raise
+        except (ValueError, TypeError, KeyError):
+            raise ProductStoreError(
+                "Select the exact independently verified Windows setup."
+            ) from None
+
     def status(self) -> dict[str, Any]:
+        if file_access_context.is_windows_host():
+            from . import windows_file_access_context
+
+            return windows_file_access_context.status(self.service, self.clock())
         try:
             enrollment = self._enrollment()
             document = enrollment["document"]
@@ -75,6 +96,16 @@ class FileAccessControl:
         }
 
     def _context(self, operation, owner_id):
+        if file_access_context.is_windows_host():
+            if operation != "baseline":
+                raise ProductStoreError("Windows retained-file mutations are not available.")
+            from . import windows_file_access_context
+
+            current = windows_file_access_context.baseline_context(
+                self.service, self.clock(), owner_id
+            )
+            current["allowed_operations"] = self.control(owner_id)["allowed_operations"]
+            return current
         enrollment = self._enrollment()
         runtime = file_access_context.execution(self.service, enrollment)
         control = None
@@ -127,12 +158,20 @@ class FileAccessControl:
         elif (
             control["pending_operation"]
             or not control["usages_settled"]
-            or operation not in allowed_operations(control["document"]["status"])
+            or operation
+            not in current.get(
+                "allowed_operations", allowed_operations(control["document"]["status"])
+            )
         ):
             raise ProductStoreError(
                 "Settle all usages before reviewing this retained control operation."
             )
         effect = EFFECTS[operation]
+        if (
+            current["review_context"].get("schema_version")
+            == "bluefire.windows-file-access-baseline-context.v2"
+        ):
+            effect = "Read the generated resource once as the non-owner and once as the owner, compare byte counts and content digests, and verify native and owned-job closure. Account and resource cleanup remains required."
         if operation == "reset" and control["document"]["status"] == "recovery_required":
             effect = "Remove only the original receipt-owned seed, retained generated file, and observation artifacts still present in at most two original workspaces, after every original task and worker request is verified closed."
         body = {
@@ -209,21 +248,48 @@ class FileAccessControl:
 
         saved = self.store.file_access_operation_records(ctx.job_id)["document"]
         request = {**saved["submitted_request"], "review": saved["review"]}
-        execute(self, ctx, request)
+        if (
+            saved["review_context"].get("schema_version")
+            == "bluefire.windows-file-access-baseline-context.v2"
+        ):
+            self.windows.execute(ctx, request)
+        else:
+            execute(self, ctx, request)
         return JobResult(progress={"phase": "completed"})
 
     def controls(self) -> dict[str, Any]:
+        from .windows_file_access_context import is_control, projection
+
+        rows = self.store.list_file_access_controls()
+        for row in rows:
+            if is_control(row["document"]):
+                view = projection(self.service, row["document"], self.clock())
+                row["document"] = {
+                    **row["document"],
+                    "status": view["status"],
+                    "revision": view["revision"],
+                }
         return {
             "schema_version": "bluefire.file-access-control-list.v1",
             "controls": [
-                {key: row["document"][key] for key in ("control_owner_id", "status", "revision")}
-                for row in self.store.list_file_access_controls()
+                {
+                    **{
+                        key: row["document"][key]
+                        for key in ("control_owner_id", "status", "revision")
+                    },
+                    **({"platform": "windows"} if is_control(row["document"]) else {}),
+                }
+                for row in rows
             ],
         }
 
     def control(self, owner_id: str) -> dict[str, Any]:
         view = self.store.get_file_access_control(owner_id)
         document = view["document"]
+        from .windows_file_access_context import is_control, projection
+
+        if is_control(document):
+            return projection(self.service, document, self.clock())
         binding, baseline = document["binding"], document["baseline"]
         pending = view["pending_operation"] or not view["usages_settled"]
         resource = (
@@ -270,6 +336,11 @@ class FileAccessControl:
                 "SELECT 1 FROM file_access_revisions WHERE control_owner_id=?", (owner_id,)
             ).fetchone()
         records = self.store.file_access_operation_records(job_id)
+        if (
+            records["document"]["review_context"].get("schema_version")
+            == "bluefire.windows-file-access-baseline-context.v2"
+        ):
+            present = True
         if (
             job["state"] in ("failed", "cancelled", "interrupted")
             and records["outcome"] is None

@@ -9,8 +9,12 @@ import threading
 import time
 import weakref
 from pathlib import Path
+from typing import TYPE_CHECKING, Callable
 
 from .runner_transport_errors import RunnerTransportError
+
+if TYPE_CHECKING:
+    from .windows_file_access_child import WindowsPeerGeneration
 
 _PROCESS_POLL_SECONDS = 0.025
 _PROCESS_KILL_GRACE_SECONDS = 5.0
@@ -22,6 +26,10 @@ class WindowsJobContainment:
     def __init__(self, *, kill_on_close: bool) -> None:
         self._kill_on_close = kill_on_close
         self._jobs: dict[int, int] = {}
+        self._retained_jobs: dict[subprocess.Popen[bytes], tuple[int, int]] = {}
+        self._retained_assignment_attempts: set[subprocess.Popen[bytes]] = set()
+        self._retained_drained: set[subprocess.Popen[bytes]] = set()
+        self._retained_start_handles: dict[subprocess.Popen[bytes], list[int]] = {}
         self._jobs_lock = threading.Lock()
         self._released_processes: weakref.WeakSet[subprocess.Popen[bytes]] = weakref.WeakSet()
 
@@ -147,7 +155,12 @@ class WindowsJobContainment:
             raise RunnerTransportError("Windows process containment is unavailable") from None
 
     @staticmethod
-    def resume_suspended(process: subprocess.Popen[bytes]) -> None:
+    def resume_suspended(
+        process: subprocess.Popen[bytes],
+        *,
+        _before_resume: Callable[[], None] | None = None,
+        _retain_failed_close: Callable[[int], None] | None = None,
+    ) -> None:
         """Resume the one primary thread of a CREATE_SUSPENDED child."""
 
         if sys.platform != "win32":
@@ -201,20 +214,206 @@ class WindowsJobContainment:
                 available = bool(next_thread(snapshot, ctypes.byref(entry)))
             if len(candidates) != 1:
                 raise OSError("suspended child thread identity is ambiguous")
-            raw_thread = open_thread(0x0002, False, candidates[0])
+            access = 0x0002 | (0x0800 if _before_resume is not None else 0)
+            raw_thread = open_thread(access, False, candidates[0])
             if not raw_thread:
                 raise OSError("suspended child thread is unavailable")
             thread_handle = int(raw_thread)
+            if _before_resume is not None:
+                owner = kernel32.GetProcessIdOfThread
+                owner.argtypes = [wintypes.HANDLE]
+                owner.restype = wintypes.DWORD
+                if int(owner(thread_handle)) != process.pid:
+                    raise OSError("suspended thread owner changed")
+                _before_resume()
             previous_count = int(resume_thread(thread_handle))
             if previous_count != 1:
                 raise OSError("suspended child was not resumed exactly once")
         except (AttributeError, OSError, TypeError, ValueError):
             raise RunnerTransportError("Windows suspended process start failed") from None
         finally:
-            if thread_handle:
-                WindowsJobContainment.close_handle(thread_handle)
-            if snapshot:
-                WindowsJobContainment.close_handle(snapshot)
+            failed = []
+            for handle in (thread_handle, snapshot):
+                if not handle:
+                    continue
+                try:
+                    closed = WindowsJobContainment.close_handle(handle)
+                except OSError:
+                    if _before_resume is None:
+                        raise
+                    closed = False
+                if not closed:
+                    failed.append(handle)
+                    if _retain_failed_close is not None:
+                        _retain_failed_close(handle)
+            if failed and _before_resume is not None:
+                raise RunnerTransportError("Windows suspended process handles remain open")
+
+    @staticmethod
+    def _borrowed_process_handle(process: subprocess.Popen[bytes]) -> int:
+        import ctypes
+
+        handle = getattr(process, "_handle", None)
+        maximum = (1 << (ctypes.sizeof(ctypes.c_void_p) * 8)) - 1
+        if (
+            not isinstance(handle, int)
+            or isinstance(handle, bool)
+            or not 0 < handle < maximum - 0xFFFF
+            or getattr(handle, "closed", False)
+            or type(process.pid) is not int
+            or not 0 < process.pid <= 0xFFFFFFFF
+        ):
+            raise RunnerTransportError("Windows retained process handle is unavailable")
+        return int(handle)
+
+    def adopt_retained_job(self, job: int, process: subprocess.Popen[bytes]) -> None:
+        """Record transferred cleanup ownership without touching the native child."""
+        try:
+            import ctypes
+
+            maximum = (1 << (ctypes.sizeof(ctypes.c_void_p) * 8)) - 1
+            if (
+                sys.platform != "win32"
+                or type(job) is not int
+                or not 0 < job < maximum - 0xFFFF
+                or type(process.pid) is not int
+                or not 0 < process.pid <= 0xFFFFFFFF
+            ):
+                raise OSError("Windows owned Job is unavailable")
+            with self._jobs_lock:
+                if process in self._released_processes:
+                    raise OSError("Windows retained Job was already released")
+                previous = self._retained_jobs.get(process)
+                if previous is not None:
+                    if previous != (process.pid, job) or self._jobs.get(process.pid) != job:
+                        raise OSError("Windows retained Job ownership changed")
+                    return
+                if process.pid in self._jobs or job in self._jobs.values():
+                    raise OSError("Windows Job ownership is already recorded")
+                self._jobs[process.pid] = job
+                self._retained_jobs[process] = (process.pid, job)
+        except (AttributeError, OSError, TypeError, ValueError):
+            raise RunnerTransportError("Windows retained Job adoption failed") from None
+
+    def assign_retained(self, job: int, process: subprocess.Popen[bytes]) -> None:
+        """Assign the borrowed handle once, retaining cleanup ownership on failure."""
+        self.adopt_retained_job(job, process)
+        with self._jobs_lock:
+            if process in self._retained_assignment_attempts:
+                raise RunnerTransportError("Windows retained assignment was already attempted")
+            self._retained_assignment_attempts.add(process)
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            handle = self._borrowed_process_handle(process)
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            process_id = kernel32.GetProcessId
+            process_id.argtypes = [wintypes.HANDLE]
+            process_id.restype = wintypes.DWORD
+            wait = kernel32.WaitForSingleObject
+            wait.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            wait.restype = wintypes.DWORD
+            flags = kernel32.GetHandleInformation
+            flags.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+            flags.restype = wintypes.BOOL
+            for value in (handle, job):
+                observed = wintypes.DWORD()
+                if not flags(value, ctypes.byref(observed)) or observed.value & 1:
+                    raise OSError("Windows retained handles must not be inherited")
+            if int(process_id(handle)) != process.pid or int(wait(handle, 0)) != 258:
+                raise OSError("Windows retained child is not the expected live process")
+            assign = kernel32.AssignProcessToJobObject
+            assign.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+            assign.restype = wintypes.BOOL
+            if not assign(job, handle):
+                raise OSError("Windows retained child assignment failed")
+        except (AttributeError, OSError, TypeError, ValueError):
+            raise RunnerTransportError("Windows retained process assignment failed") from None
+
+    def drain_retained(self, process: subprocess.Popen[bytes], job: int) -> bool:
+        """Stop this owned Job's tree while retaining its handle for live threads."""
+        with self._jobs_lock:
+            if self._retained_jobs.get(process) != (process.pid, job):
+                return False
+            recorded = self._jobs.get(process.pid)
+            if recorded is None:
+                return process in self._released_processes and process in self._retained_drained
+            if recorded != job:
+                return False
+            if process in self._retained_drained:
+                return True
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            terminate = kernel32.TerminateJobObject
+            terminate.argtypes = [wintypes.HANDLE, wintypes.UINT]
+            terminate.restype = wintypes.BOOL
+            if not terminate(job, 1) or not self._wait_for_empty_job(job):
+                return False
+        except (AttributeError, OSError, TypeError, ValueError):
+            return False
+        return True
+
+    def finish_retained(self, process: subprocess.Popen[bytes], job: int) -> bool:
+        """Release the drained Job after all resource-using threads have stopped.
+
+        The caller must join those threads first. Parent exit and its Handle's
+        closure remain separately verified facts, never inferred from Job exit.
+        """
+        if not self.drain_retained(process, job):
+            return False
+        with self._jobs_lock:
+            # Only a post-join observation may be reused for handle-close retries.
+            self._retained_drained.add(process)
+        try:
+            if not self._release_job(process.pid):
+                return False
+        except OSError:
+            return False
+        self._released_processes.add(process)
+        return True
+
+    def resume_retained(
+        self, process: subprocess.Popen[bytes], job: int, generation: WindowsPeerGeneration
+    ) -> None:
+        """Resume only a rechecked retained child and retain failed handle closes."""
+        from .windows_file_access_child import require_retained_child
+
+        def current() -> None:
+            with self._jobs_lock:
+                if self._jobs.get(process.pid) != job:
+                    raise RunnerTransportError("Windows retained Job ownership differs")
+            if generation.process_id != process.pid:
+                raise RunnerTransportError("Windows retained process identity differs")
+            require_retained_child(self._borrowed_process_handle(process), job, expected=generation)
+
+        def retain(handle: int) -> None:
+            with self._jobs_lock:
+                self._retained_start_handles.setdefault(process, []).append(handle)
+
+        current()
+        self.resume_suspended(process, _before_resume=current, _retain_failed_close=retain)
+
+    def close_retained_start_handles(self, process: subprocess.Popen[bytes]) -> bool:
+        """Retry only handles retained by this child's suspended-start operation."""
+        with self._jobs_lock:
+            remaining = self._retained_start_handles.get(process, [])
+            index = 0
+            while index < len(remaining):
+                try:
+                    closed = self.close_handle(remaining[index])
+                except OSError:
+                    closed = False
+                if closed:
+                    remaining.pop(index)
+                else:
+                    index += 1
+            if not remaining:
+                self._retained_start_handles.pop(process, None)
+            return not remaining
 
     def assign(
         self,

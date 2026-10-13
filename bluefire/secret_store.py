@@ -327,30 +327,25 @@ class WindowsDPAPISecretProvider:
         input_blob, input_buffer = _blob_from_bytes(value)
         entropy_blob, entropy_buffer = _blob_from_bytes(purpose_digest)
         output_blob = _DataBlob()
-        # Keep the backing buffers alive until the native call returns.
-        _ = (input_buffer, entropy_buffer)
         try:
-            succeeded = operation(  # type: ignore[operator]
-                ctypes.byref(input_blob),
-                None,
-                ctypes.byref(entropy_blob),
-                None,
-                None,
-                _CRYPTPROTECT_UI_FORBIDDEN,
-                ctypes.byref(output_blob),
-            )
-        except (OSError, ValueError):
-            succeeded = False
-
-        if not succeeded:
-            message = (
-                "Secret protection failed."
-                if protecting
-                else "Protected secret is invalid or cannot be opened."
-            )
-            raise SecretStoreError(message) from None
-
-        try:
+            try:
+                succeeded = operation(  # type: ignore[operator]
+                    ctypes.byref(input_blob),
+                    None,
+                    ctypes.byref(entropy_blob),
+                    None,
+                    None,
+                    _CRYPTPROTECT_UI_FORBIDDEN,
+                    ctypes.byref(output_blob),
+                )
+            except (OSError, ValueError):
+                succeeded = False
+            if not succeeded:
+                raise SecretStoreError(
+                    "Secret protection failed."
+                    if protecting
+                    else "Protected secret is invalid or cannot be opened."
+                ) from None
             output_size = int(output_blob.cbData)
             if (
                 output_size < 0
@@ -364,8 +359,22 @@ class WindowsDPAPISecretProvider:
                 )
             recovered = bytes(ctypes.string_at(output_blob.pbData, output_size))
         finally:
+            # Native buffers are owned here; immutable Python inputs/results are
+            # not claimed erasable. Failed native calls may still allocate output.
+            ctypes.memset(input_buffer, 0, ctypes.sizeof(input_buffer))
+            ctypes.memset(entropy_buffer, 0, ctypes.sizeof(entropy_buffer))
             if output_blob.pbData:
-                self._local_free(ctypes.cast(output_blob.pbData, ctypes.c_void_p))
+                size = int(output_blob.cbData)
+                if 0 <= size <= _MAX_PROTECTED_PAYLOAD_BYTES:
+                    ctypes.memset(output_blob.pbData, 0, size)
+                try:
+                    failed = bool(
+                        self._local_free(ctypes.cast(output_blob.pbData, ctypes.c_void_p))
+                    )
+                except Exception:
+                    failed = True
+                if failed:
+                    raise SecretStoreError("Secret protection buffer cleanup failed.") from None
 
         if not protecting and len(recovered) > _MAX_PLAINTEXT_BYTES:
             raise SecretStoreError("Protected secret is invalid or cannot be opened.")

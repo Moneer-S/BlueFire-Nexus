@@ -41,6 +41,13 @@ def reconcile(control, job_id: str, request: Mapping[str, Any]) -> dict[str, Any
                 outcome={"state": "refused_no_effect", "evidence_digest": content_hash([])},
                 expected_outcome_digest=request["expected_outcome_digest"],
             )
+        elif (
+            saved["document"]["review_context"].get("schema_version")
+            == "bluefire.windows-file-access-baseline-context.v2"
+        ):
+            control.windows.recover(
+                job_id, expected_outcome_digest=request["expected_outcome_digest"]
+            )
         else:
             prepared = saved["preparation"]
             enrolled = control._enrollment()
