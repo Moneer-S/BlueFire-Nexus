@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from bluefire import product_store_s3_access as records
-from bluefire.job_runtime import RunJobController
+from bluefire.job_runtime import JobWaitTimeout, RunJobController
 from bluefire.product_store import ProductStore
 from bluefire.product_store_errors import ProductStoreError
 from bluefire.run_store import RunStore, RunStoreError
@@ -178,6 +178,109 @@ def test_setup_problem_remains_readable_but_prevents_new_exercise(
     assert executor.calls == []
 
 
+STAGE_WAIT_TIMEOUT = 30
+_SAFE_WAIT_STATES = frozenset(
+    {
+        "queued",
+        "planning",
+        "running",
+        "awaiting_approval",
+        "paused",
+        "cancelling",
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted",
+    }
+)
+_SAFE_STAGE_PHASES = _SAFE_WAIT_STATES | {
+    "inspect",
+    "baseline",
+    "apply",
+    "retest",
+    "reconcile",
+    "rollback",
+}
+
+
+def wait_for_stage(jobs, job_id):
+    try:
+        return jobs.controller.wait(job_id, timeout=STAGE_WAIT_TIMEOUT)
+    except JobWaitTimeout as exc:
+        snapshot = jobs.controller.snapshot(job_id)
+        progress = snapshot.get("progress")
+        raw_state = snapshot.get("state")
+        state = (
+            raw_state
+            if isinstance(raw_state, str) and raw_state in _SAFE_WAIT_STATES
+            else "unknown"
+        )
+        raw_phase = progress.get("phase") if isinstance(progress, dict) else None
+        phase = (
+            raw_phase
+            if isinstance(raw_phase, str) and raw_phase in _SAFE_STAGE_PHASES
+            else "unknown"
+        )
+        raise AssertionError(
+            f"job {job_id} did not reach a terminal state within "
+            f"{STAGE_WAIT_TIMEOUT}s (state={state!r}, phase={phase!r})"
+        ) from exc
+
+
+def test_wait_for_stage_uses_a_finite_bound_and_skips_snapshot_on_success():
+    class FakeController:
+        def __init__(self):
+            self.wait_call = None
+            self.snapshots = 0
+
+        def wait(self, job_id, *, timeout):
+            self.wait_call = (job_id, timeout)
+            return {"job_id": job_id, "state": "completed"}
+
+        def snapshot(self, job_id):
+            self.snapshots += 1
+            raise AssertionError("success must not request a snapshot")
+
+    controller = FakeController()
+    result = wait_for_stage(SimpleNamespace(controller=controller), "job-test")
+    assert result == {"job_id": "job-test", "state": "completed"}
+    assert controller.wait_call == ("job-test", 30)
+    assert controller.snapshots == 0
+
+
+def test_wait_for_stage_reports_one_redacted_snapshot_on_timeout():
+    class FakeController:
+        def __init__(self):
+            self.wait_call = None
+            self.snapshots = 0
+
+        def wait(self, job_id, *, timeout):
+            self.wait_call = (job_id, timeout)
+            raise JobWaitTimeout("job did not reach a terminal state")
+
+        def snapshot(self, job_id):
+            self.snapshots += 1
+            assert job_id == "job-test"
+            return {
+                "job_id": job_id,
+                "state": "running",
+                "request": {
+                    "secret": "must-not-appear",  # pragma: allowlist secret
+                },
+                "progress": {
+                    "phase": "baseline",
+                    "secret": "must-not-appear",  # pragma: allowlist secret
+                },
+            }
+
+    controller = FakeController()
+    with pytest.raises(AssertionError, match="state='running', phase='baseline'") as error:
+        wait_for_stage(SimpleNamespace(controller=controller), "job-test")
+    assert "must-not-appear" not in str(error.value)
+    assert controller.wait_call == ("job-test", 30)
+    assert controller.snapshots == 1
+
+
 def stage(jobs, owner_id, phase):
     review = jobs.review(owner_id, {"phase": phase})
     request = {
@@ -187,7 +290,7 @@ def stage(jobs, owner_id, phase):
         "reviewed_by": "test operator",
     }
     jobs.submit(owner_id, request)
-    job = jobs.controller.wait("job-" + uuid.UUID(request["submission_id"]).hex, timeout=5)
+    job = wait_for_stage(jobs, "job-" + uuid.UUID(request["submission_id"]).hex)
     assert job["state"] == "completed", job
     return jobs.read(owner_id), request
 
@@ -335,7 +438,7 @@ def submit_failed_stage(jobs, owner, phase):
             "reviewed_by": "test operator",
         },
     )
-    job = jobs.controller.wait("job-" + uuid.UUID(submission_id).hex, timeout=5)
+    job = wait_for_stage(jobs, "job-" + uuid.UUID(submission_id).hex)
     assert job["state"] == "failed", job
     return job
 

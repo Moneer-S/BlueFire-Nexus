@@ -15,13 +15,47 @@ from bluefire.ad_smb_contract import AdSmbError
 from bluefire.ad_smb_execution import UnavailableAdSmbExecutor
 from bluefire.ad_smb_jobs import AdSmbJobs
 from bluefire.execution_contracts import execution_task_identity
-from bluefire.job_runtime import RunJobController
+from bluefire.job_runtime import JobWaitTimeout, RunJobController
 from bluefire.product_store import ProductStore
 from bluefire.run_store import RunStore
 from bluefire.runner_contracts import seal_profile
 from bluefire.util import content_hash
 from tests_platform.test_ad_smb_acl import fixture, observe
 from tests_platform.test_ad_smb_contract import NOW, pin
+
+JOB_WAIT_TIMEOUT = 30
+_SAFE_JOB_STATES = frozenset(
+    {
+        "queued",
+        "planning",
+        "running",
+        "awaiting_approval",
+        "paused",
+        "cancelling",
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted",
+    }
+)
+_SAFE_AD_PHASES = frozenset({"inspect", "baseline", "harden", "retest", "rollback", "audit"})
+
+
+def wait_for_ad_job(controller, job_id):
+    try:
+        return controller.wait(job_id, timeout=JOB_WAIT_TIMEOUT)
+    except JobWaitTimeout:
+        snapshot = controller.snapshot(job_id)
+        state = snapshot.get("state")
+        state = state if isinstance(state, str) and state in _SAFE_JOB_STATES else "unknown"
+        request = snapshot.get("request")
+        ad_smb = request.get("ad_smb") if isinstance(request, dict) else None
+        phase = ad_smb.get("phase") if isinstance(ad_smb, dict) else None
+        phase = phase if isinstance(phase, str) and phase in _SAFE_AD_PHASES else "unknown"
+        raise AssertionError(
+            f"AD test job did not reach a terminal state within {JOB_WAIT_TIMEOUT}s "
+            f"(state={state!r}, phase={phase!r})"
+        ) from None
 
 
 class FakeExecutor:
@@ -216,7 +250,7 @@ def submit(jobs, identifier, phase, *, wait=True):
     }
     child = jobs.submit(identifier, request)
     if wait:
-        child = jobs.controller.wait(child["job_id"], timeout=10)
+        child = wait_for_ad_job(jobs.controller, child["job_id"])
     return child, request
 
 
