@@ -12,6 +12,7 @@ STAGES = {
     "graph_child",
     "replay_approval",
     "replay_terminal",
+    "receiver_terminal",
     "assist_rejection_approval",
     "assist_cancellation_approval",
 }

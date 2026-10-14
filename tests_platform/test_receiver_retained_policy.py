@@ -14,6 +14,7 @@ from bluefire.receiver_defense_jobs import ReceiverDefenseJobs
 from bluefire.receiver_defense_workflow import legitimate_semantics
 from bluefire.receiver_policy import ReceiverContentPolicy
 from bluefire.service import BlueFireService
+from tests_platform.job_wait_diagnostics import diagnose_job_wait
 from tests_platform.test_receiver_defense_jobs import ROOT, FixtureRunner, Session
 from tests_platform.test_receiver_defense_jobs import setup as setup
 from tests_platform.test_receiver_policy import public_records
@@ -69,7 +70,8 @@ def execute(service, owner_id, phase, *, current=None):
     )
     assert waiting["state"] == "awaiting_approval"
     service.approve_job(execution["job_id"], {"approved_by": "Fixture reviewer"})
-    terminal = service.job_controller.wait(execution["job_id"], timeout=20)
+    with diagnose_job_wait("receiver_terminal"):
+        terminal = service.job_controller.wait(execution["job_id"], timeout=20)
     assert terminal["state"] == "completed", terminal
     return service.receiver_defense_job(owner_id)
 

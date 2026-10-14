@@ -75,7 +75,7 @@
 }
 
 * { box-sizing: border-box; }
-html { min-width: 320px; min-height: 100%; background: var(--ink-950); scroll-behavior: smooth; }
+html { min-height: 100%; background: var(--ink-950); scroll-behavior: smooth; }
 body { min-height: 100vh; margin: 0; background: var(--ink-950); color: var(--text); }
 body, button, input, select, textarea { font: inherit; }
 button, input, select, textarea { color: inherit; }

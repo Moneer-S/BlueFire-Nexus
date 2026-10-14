@@ -6,6 +6,7 @@ import { Link } from "react-router-dom";
 import { api, DEMO_MODE } from "../lib/api";
 import { useProduct } from "../state/ProductContext";
 import { Badge, Button, ErrorState, formatDate, LoadingState, PageHeader, sentence } from "../components/Primitives";
+import { SavedDefensiveWork } from "../components/SavedDefensiveWork";
 import "./Overview.css";
 
 export function OverviewPage() {
@@ -15,8 +16,9 @@ export function OverviewPage() {
   const recent = runs.data?.runs.slice(0, 8);
   const unavailable = runs.data?.unavailable_run_count ?? 0;
   return <div className="page overview-page">
-    <PageHeader title="Overview" actions={<Link className="button button-primary button-medium" to="/scenarios">Open experiments<ArrowRight aria-hidden="true"/></Link>} />
+    <PageHeader title="Overview" actions={<><Link className="button button-secondary button-medium" to="/scenarios">Open experiments</Link><Link className="button button-primary button-medium" to="/getting-started">Start an objective<ArrowRight aria-hidden="true"/></Link></>} />
     {DEMO_MODE ? <p className="workspace-note" role="status">Demo workspace · synthetic results · Execute previews have no effects.</p> : null}
+    <SavedDefensiveWork />
     <section className="work-section" aria-labelledby="recent-work-heading">
       <header className="work-section-heading"><h2 id="recent-work-heading">Recent runs</h2><Button variant="ghost" size="small" disabled={runs.isFetching} onClick={() => runs.refetch()}><RotateCcw aria-hidden="true"/>{runs.isFetching ? "Refreshing" : "Refresh runs"}</Button></header>
       {runs.isError ? <><ErrorState title="Run history unavailable" error={runs.error} retry={() => runs.refetch()}/>{recent ? <p className="workspace-note">Showing previously loaded runs. Their current state could not be checked.</p> : null}</> : null}
