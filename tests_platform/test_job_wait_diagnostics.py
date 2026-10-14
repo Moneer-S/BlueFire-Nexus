@@ -9,6 +9,7 @@ import pytest
 from bluefire.job_runtime import JobState, JobWaitTimeout, RunJobController
 from tests_platform import job_wait_diagnostics as diagnostic
 from tests_platform import test_graph_ai_jobs as graph
+from tests_platform import test_receiver_retained_policy as receiver
 from tests_platform import test_replay_jobs as replay
 
 PRIVATE = "PRIVATE_PROVIDER_PATH_JOB_ID_ERROR_MUST_NOT_APPEAR"
@@ -319,6 +320,97 @@ def test_output_failure_cannot_replace_original_timeout(monkeypatch):
         with diagnostic.diagnose_job_wait("graph_parent"):
             raise timeout
     assert caught.value is timeout
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "diagnostic_failure", "completed"])
+def test_receiver_terminal_wait_preserves_deadlines_dispatch_and_private_real_snapshot(
+    monkeypatch, capsys, outcome
+):
+    original, reads = actual_timeout(
+        {
+            "state": "running",
+            "job_id": PRIVATE,
+            "result_ref": PRIVATE,
+            "error": {"code": PRIVATE, "exception_type": PRIVATE, "message": PRIVATE},
+            "progress": {"phase": "running", "credential": PRIVATE},
+        }
+    )
+    order = []
+    current = {"preparation": {"preparation_digest": "prepared"}}
+    envelope = {"phases": [{"phase": "legitimate", "execution_job": {"job_id": PRIVATE}}]}
+
+    def review(owner_id, payload):
+        assert owner_id == "owner"
+        assert payload["phase"] == "legitimate"
+        assert payload["preparation_digest"] == "prepared"
+        assert payload["decision"] == "accept"
+        order.append("review")
+        return envelope
+
+    def awaiting(job_id, states, *, timeout):
+        assert job_id == PRIVATE and states == {JobState.AWAITING_APPROVAL} and timeout == 10
+        order.append("awaiting")
+        return {"state": "awaiting_approval"}
+
+    def approve(job_id, payload):
+        assert job_id == PRIVATE and payload == {"approved_by": "Fixture reviewer"}
+        order.append("approve")
+
+    def terminal(job_id, *, timeout):
+        assert job_id == PRIVATE and timeout == 20
+        order.append("terminal")
+        if outcome != "completed":
+            raise original
+        return {"state": "completed"}
+
+    def read(owner_id):
+        assert owner_id == "owner"
+        order.append("read")
+        return envelope
+
+    def unexpected(*_args):
+        pytest.fail("receiver diagnostics repeated preparation or ran after success")
+
+    service = SimpleNamespace(
+        review_receiver_defense=review,
+        job_controller=SimpleNamespace(wait_for_state=awaiting, wait=terminal),
+        approve_job=approve,
+        receiver_defense_job=read,
+    )
+    monkeypatch.setattr(receiver, "prepare", unexpected)
+    monkeypatch.setattr(diagnostic.sys, "_current_frames", lambda: {})
+    if outcome == "diagnostic_failure":
+
+        def unavailable(*_args):
+            raise KeyboardInterrupt(PRIVATE)
+
+        monkeypatch.setattr(diagnostic, "_report", unavailable)
+    elif outcome == "completed":
+        monkeypatch.setattr(diagnostic, "_report", unexpected)
+    if outcome == "completed":
+        assert receiver.execute(service, "owner", "legitimate", current=current) is envelope
+    else:
+        with pytest.raises(JobWaitTimeout) as caught:
+            receiver.execute(service, "owner", "legitimate", current=current)
+        assert caught.value is original
+    assert reads == [PRIVATE]
+    assert order == ["review", "awaiting", "approve", "terminal"] + (
+        ["read"] if outcome == "completed" else []
+    )
+    captured = capsys.readouterr()
+    assert captured.err == "" and PRIVATE not in captured.out
+    if outcome != "timeout":
+        assert captured.out == ""
+        return
+    assert len(captured.out.encode()) < 8192
+    report = json.loads(captured.out.removeprefix("Job wait diagnostic: "))
+    assert report["stage"] == "receiver_terminal"
+    assert report["last_wait_job"]["available"] is True
+    assert report["last_wait_job"]["state"] == "running"
+    assert report["last_wait_job"]["phase"] == "running"
+    assert report["last_wait_job"]["has_result_ref"] is True
+    assert report["last_wait_job"]["error_code"] == "unknown"
+    assert report["last_wait_job"]["error_type"] == "unknown"
 
 
 def test_report_sink_failure_cannot_replace_original_timeout_or_cleanup(monkeypatch, capsys):

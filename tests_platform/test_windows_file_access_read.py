@@ -212,6 +212,8 @@ def test_truncated_grown_or_changed_bytes_refuse(backend, payload):
         b"not json\n",
         b"\xff\n",
         b'{"record":NaN}\n',
+        b'{"record":1e999}\n',
+        b'{"record":{"nested":[-1e999]}}\n',
         b'{"record":1,"record":2}\n',
         b'{"record":' + b"[" * 1100 + b"0" + b"]" * 1100 + b"}\n",
     ],
@@ -223,6 +225,44 @@ def test_matching_digest_does_not_accept_nonrecord_content(backend, payload):
     backend.expected, backend.payload = expectation.resource, payload
     with pytest.raises(reader.WindowsFileReadError):
         reader.fresh_windows_read(expectation)
+    assert backend.closed
+
+
+@pytest.mark.parametrize("depth,allowed", [(31, True), (32, False), (1100, False)])
+@pytest.mark.parametrize("container", ["array", "object"])
+def test_record_nesting_has_an_explicit_bound(backend, depth, allowed, container):
+    opening, closing = (b"[", b"]") if container == "array" else (b'{"value":', b"}")
+    payload = b'{"record":' + opening * depth + b"0" + closing * depth + b"}\n"
+    expectation = _with_resource(
+        size=len(payload), sha256="sha256:" + hashlib.sha256(payload).hexdigest(), record_count=1
+    )
+    backend.expected, backend.payload = expectation.resource, payload
+    if allowed:
+        observed = reader.fresh_windows_read(expectation)
+        assert observed.outcome == "allowed" and observed.record_count == 1
+    else:
+        with pytest.raises(reader.WindowsFileReadError):
+            reader.fresh_windows_read(expectation)
+    assert backend.closed
+
+
+def test_record_string_delimiters_do_not_count_as_nesting(backend):
+    payload = b'{"record":"' + b"[{" * 1100 + b']}","value":1}\n'
+    expectation = _with_resource(
+        size=len(payload), sha256="sha256:" + hashlib.sha256(payload).hexdigest(), record_count=1
+    )
+    backend.expected, backend.payload = expectation.resource, payload
+    assert reader.fresh_windows_read(expectation).record_count == 1
+    assert backend.closed
+
+
+def test_finite_exponent_record_is_accepted(backend):
+    payload = b'{"record":{"nested":[1e3,-2.5e-8]}}\n'
+    expectation = _with_resource(
+        size=len(payload), sha256="sha256:" + hashlib.sha256(payload).hexdigest(), record_count=1
+    )
+    backend.expected, backend.payload = expectation.resource, payload
+    assert reader.fresh_windows_read(expectation).record_count == 1
     assert backend.closed
 
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import time
@@ -34,6 +35,7 @@ from .windows_session_facts import (
 
 _MAX_BYTES = 1024 * 1024
 _MAX_SECONDS = 5.0
+_MAX_RECORD_DEPTH = 32
 _ANCHOR = "C:\\BlueFire\\EndpointAccess"
 
 
@@ -169,6 +171,35 @@ def _nonfinite(_value: str) -> None:
     raise WindowsFileReadError("Windows generated records contain a nonfinite value")
 
 
+def _finite_float(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise WindowsFileReadError("Windows generated records contain a nonfinite value")
+    return number
+
+
+def _record(line: str, deadline: float) -> None:
+    record = json.loads(
+        line,
+        parse_constant=_nonfinite,
+        parse_float=_finite_float,
+        object_pairs_hook=_duplicates_rejected,
+    )
+    if not isinstance(record, dict):
+        raise WindowsFileReadError("Windows read contents are not the generated records")
+    pending: list[tuple[object, int]] = [(record, 1)]
+    while pending:
+        _current(deadline)
+        value, depth = pending.pop()
+        if isinstance(value, (dict, list)):
+            if depth > _MAX_RECORD_DEPTH:
+                raise WindowsFileReadError("Windows generated record nesting exceeds its limit")
+            children = value.values() if isinstance(value, dict) else value
+            pending.extend(
+                (child, depth + 1) for child in children if isinstance(child, (dict, list))
+            )
+
+
 def _inspect(expectation: WindowsReadExpectation, reader: _Reader) -> WindowsReadObservation:
     resource = expectation.resource
     deadline = time.monotonic() + _MAX_SECONDS
@@ -219,14 +250,10 @@ def _inspect(expectation: WindowsReadExpectation, reader: _Reader) -> WindowsRea
         if len(payload) != resource.size or digest != resource.sha256:
             raise WindowsFileReadError("Windows read contents differ from enrollment")
         lines = payload.decode("utf-8").splitlines()
-        if not lines or any(
-            not isinstance(
-                json.loads(line, parse_constant=_nonfinite, object_pairs_hook=_duplicates_rejected),
-                dict,
-            )
-            for line in lines
-        ):
+        if not lines:
             raise WindowsFileReadError("Windows read contents are not the generated records")
+        for line in lines:
+            _record(line, deadline)
         records = len(lines)
         if records != resource.record_count:
             raise WindowsFileReadError("Windows record count differs from enrollment")

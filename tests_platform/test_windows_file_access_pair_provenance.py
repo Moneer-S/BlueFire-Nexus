@@ -6,7 +6,6 @@ import json
 import threading
 from contextlib import nullcontext
 from dataclasses import replace
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest

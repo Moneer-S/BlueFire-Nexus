@@ -82,3 +82,47 @@ test("Overview opens the exact experiment in the list without replacing the work
   await expect(selected).toBeFocused();
   expect(await page.evaluate(() => localStorage.getItem("bluefire.local.scenario.v1"))).toBe(before);
 });
+
+test("Overview fits narrow effective widths and keeps mobile navigation usable", async ({ page }) => {
+  for (const width of [320, 305, 390, 1280]) {
+    await page.setViewportSize({ width, height: 740 });
+    await page.goto("./");
+    await expect(page.getByRole("heading", { name: "Overview", exact: true })).toBeVisible();
+
+    const geometry = await page.evaluate(() => {
+      const clientWidth = document.documentElement.clientWidth;
+      const elements = [
+        document.querySelector(".overview-page .page-header h1"),
+        ...document.querySelectorAll(".overview-page .page-header .page-actions a"),
+        ...document.querySelectorAll('.overview-page [role="tablist"][aria-label="Defensive workflows"] [role="tab"]'),
+      ];
+      return {
+        clientWidth,
+        clientHeight: document.documentElement.clientHeight,
+        scrollWidth: document.documentElement.scrollWidth,
+        scrollHeight: document.documentElement.scrollHeight,
+        controls: elements.map((element) => {
+          const rect = element?.getBoundingClientRect();
+          return { visible: Boolean(rect && rect.width > 0 && rect.height > 0), left: rect?.left ?? null, right: rect?.right ?? null };
+        }),
+      };
+    });
+    expect(geometry.scrollWidth, `${width}px viewport document overflow`).toBeLessThanOrEqual(geometry.clientWidth);
+    expect(geometry.controls).toHaveLength(7);
+    expect(geometry.controls.every((control) => control.visible && control.left !== null && control.left >= 0 && control.right !== null && control.right <= geometry.clientWidth + 0.5), `${width}px viewport visible control bounds`).toBe(true);
+    if (width <= 320) {
+      expect(geometry.scrollHeight, `${width}px Overview should scroll vertically`).toBeGreaterThan(geometry.clientHeight);
+    }
+  }
+
+  await page.setViewportSize({ width: 320, height: 740 });
+  await page.goto("./");
+  const openNavigation = page.getByRole("button", { name: "Open navigation" });
+  await expect(openNavigation).toHaveAttribute("aria-expanded", "false");
+  await openNavigation.click();
+  await expect(page.getByRole("dialog", { name: "Workspace navigation" })).toBeVisible();
+  await page.getByRole("button", { name: "Close navigation" }).click();
+  await expect(openNavigation).toHaveAttribute("aria-expanded", "false");
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Open navigation" })).toHaveAttribute("aria-expanded", "false");
+});

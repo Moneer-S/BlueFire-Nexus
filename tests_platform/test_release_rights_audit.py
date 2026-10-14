@@ -461,6 +461,41 @@ def test_release_rights_audit_refuses_unclassified_python_wheel(
         run_release_rights_audit(ROOT)
 
 
+@pytest.mark.parametrize(
+    "stale_seal",
+    ["6003d191eaa9eb6cf29948a36065c870acfd42299d01df3e4afb51f6e78fc54e", "0" * 64],
+)
+def test_release_rights_audit_refuses_stale_frontend_lock_review(
+    monkeypatch: pytest.MonkeyPatch,
+    stale_seal: str,
+) -> None:
+    _with_policy(
+        monkeypatch,
+        lambda policy: policy["frontend"].__setitem__("lockfile_sha256", stale_seal),
+    )
+
+    with pytest.raises(RightsAuditError, match="pnpm lock changed after review"):
+        run_release_rights_audit(ROOT)
+
+
+@pytest.mark.parametrize("reviewed_version", [None, "3.2.0"])
+def test_release_rights_audit_refuses_unreviewed_css_parser_declaration(
+    monkeypatch: pytest.MonkeyPatch,
+    reviewed_version: str | None,
+) -> None:
+    def mutate(policy: dict[str, Any]) -> None:
+        development = policy["frontend"]["development_requirements"]
+        if reviewed_version is None:
+            development.pop("css-tree")
+        else:
+            development["css-tree"] = reviewed_version
+
+    _with_policy(monkeypatch, mutate)
+
+    with pytest.raises(RightsAuditError, match="frontend development dependency declarations"):
+        run_release_rights_audit(ROOT)
+
+
 def test_release_rights_audit_refuses_unclassified_frontend_runtime_package(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

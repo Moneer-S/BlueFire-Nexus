@@ -364,7 +364,8 @@ def test_css_is_responsive_accessible_and_reduced_motion_safe(assets: dict[str, 
     assert len(re.findall(r"@media\s*\(max-width:", css)) >= 3
     assert "@media(prefers-reduced-motion:reduce)" in css.replace(" ", "")
     assert ":focus-visible" in css
-    assert "min-width:320px" in css.replace(" ", "")
+    # Root width declarations are parsed across all selectors/conditional rules
+    # by frontend/tests/css-root-width.test.js, not inferred from the first rule.
     assert ".skip-link" in css
 
 

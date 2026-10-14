@@ -1,0 +1,21 @@
+.saved-work-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding-block: 12px; }
+.saved-work-tabs button { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 8px 12px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); font: inherit; font-size: .82rem; letter-spacing: 0; cursor: pointer; }
+.saved-work-tabs button[aria-selected="true"] { border-color: var(--line); background: var(--surface-soft); color: var(--text); }
+.saved-work-tabs button:focus-visible { outline: 2px solid var(--blue-soft); outline-offset: 2px; }
+.saved-work-tabs svg, .saved-work-list svg, .saved-work-open svg { width: 16px; height: 16px; flex-shrink: 0; }
+.saved-work-list { list-style: none; margin: 0; padding: 0; }
+.saved-work-list li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(9rem, auto); gap: 20px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.saved-work-list a { display: flex; align-items: center; justify-content: space-between; gap: 16px; color: var(--text); text-decoration: none; min-width: 0; }
+.saved-work-list a > span { min-width: 0; }
+.saved-work-list strong { display: block; font-size: .88rem; font-weight: 600; overflow-wrap: anywhere; }
+.saved-work-list small { display: block; margin-top: 5px; color: var(--muted); font-size: .78rem; overflow-wrap: anywhere; }
+.saved-work-state { display: grid; justify-items: start; align-content: center; gap: 5px; }
+.saved-work-state > span:first-child { color: var(--muted); font-size: .72rem; }
+.saved-work-state .badge { white-space: normal; overflow-wrap: anywhere; }
+.saved-work-open { display: inline-flex; align-items: center; gap: 8px; color: var(--blue-soft); margin-top: 16px; font-size: .82rem; text-decoration: none; }
+@media (max-width: 700px) {
+  .saved-work-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .saved-work-tabs button { justify-content: flex-start; padding-inline: 8px; }
+  .saved-work-list li { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .saved-work-state { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+}
