@@ -13,7 +13,7 @@ import secrets
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from . import windows_file_access_enrollment_native as native
 from . import windows_file_access_handles as handles
@@ -63,7 +63,7 @@ class _SecurityAttributes(ctypes.Structure):
 
 def _require_local_machine(gate: native._Gate) -> None:
     """NULL NetUserAdd on a DC is AD mutation, so refuse DC/DS roles first."""
-    api = ctypes.WinDLL("netapi32.dll", use_last_error=True, winmode=0x800)
+    api: ctypes.CDLL = cast(Any, ctypes).WinDLL("netapi32.dll", use_last_error=True, winmode=0x800)
     api.DsRoleGetPrimaryDomainInformation.argtypes = (
         ctypes.c_wchar_p,
         ctypes.c_int32,
@@ -153,7 +153,9 @@ def _elevated_owner(gate: native._Gate) -> session.WindowsPrincipalFacts:
     finally:
         if linked.value and not api.kernel.CloseHandle(linked):
             native._refuse("Windows setup linked token cleanup failed")
-    security = ctypes.WinDLL("advapi32.dll", use_last_error=True, winmode=0x800)
+    security: ctypes.CDLL = cast(Any, ctypes).WinDLL(
+        "advapi32.dll", use_last_error=True, winmode=0x800
+    )
     security.GetUserNameW.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32))
     security.GetUserNameW.restype = ctypes.c_int32
     name, length = ctypes.create_unicode_buffer(257), ctypes.c_uint32(257)
@@ -199,6 +201,15 @@ class _Credential:
 
 
 class _NativeSetup:
+    gate: native._Gate
+    owner: session.WindowsPrincipalFacts
+    issued: int
+    expires: int
+    cleanup_failed: bool
+    sam: ctypes.CDLL
+    kernel: ctypes.CDLL
+    security: ctypes.CDLL
+
     def __init__(
         self, gate: native._Gate, owner: session.WindowsPrincipalFacts, issued: int
     ) -> None:
@@ -278,7 +289,7 @@ class _NativeSetup:
         try:
             descriptor = handles.open_observation(Path(path), directory=directory)
         except handles.WindowsFileHandleError:
-            if ctypes.get_last_error() in (2, 3):
+            if cast(Any, ctypes).get_last_error() in (2, 3):
                 return
             native._refuse("Windows setup preexisting state is unresolved")
         else:

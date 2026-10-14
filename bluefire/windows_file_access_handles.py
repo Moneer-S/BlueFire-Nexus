@@ -13,6 +13,7 @@ import sys
 from ctypes import wintypes
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Callable, cast
 
 from .runner_descriptor_io import descriptor_identity
 from .windows_owner_acl import _handle_from_descriptor, _windows_extended_path
@@ -142,13 +143,16 @@ def open_observation(path: Path, *, directory: bool, data: bool = False) -> int:
         None,
     )
     if handle in (None, 0, wintypes.HANDLE(-1).value):
-        error = ctypes.get_last_error()
+        error = cast(Any, ctypes).get_last_error()
         if data and error == 5:
             raise WindowsDataOpenDenied("Windows resource data open was denied")
         raise WindowsFileHandleError("Windows resource open is unavailable")
     descriptor = None
     try:
-        descriptor = msvcrt.open_osfhandle(int(handle), os.O_RDONLY | os.O_BINARY | os.O_NOINHERIT)
+        open_osfhandle: Callable[[int, int], int] = cast(Any, msvcrt).open_osfhandle
+        descriptor = open_osfhandle(
+            int(handle), os.O_RDONLY | cast(Any, os).O_BINARY | cast(Any, os).O_NOINHERIT
+        )
         os.set_inheritable(descriptor, False)
         if os.get_inheritable(descriptor):
             raise WindowsFileHandleError("Windows resource descriptor is inheritable")

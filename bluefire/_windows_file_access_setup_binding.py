@@ -11,7 +11,7 @@ import ctypes
 import os
 import sys
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator, cast
 
 from . import _windows_file_access_native_contract as contract
 from . import windows_file_access_peer as peer
@@ -114,7 +114,9 @@ class _Api(peer._Api):
             ctypes.POINTER(ctypes.c_uint32),
         )
         k.QueryInformationJobObject.restype = ctypes.c_int32
-        compare = ctypes.WinDLL("kernelbase.dll", use_last_error=True, winmode=0x800)
+        compare: ctypes.CDLL = cast(Any, ctypes).WinDLL(
+            "kernelbase.dll", use_last_error=True, winmode=0x800
+        )
         compare.CompareObjectHandles.argtypes = (ctypes.c_void_p, ctypes.c_void_p)
         compare.CompareObjectHandles.restype = ctypes.c_int32
         self.compare = compare.CompareObjectHandles
@@ -201,7 +203,8 @@ def transfer_to_child(
     parent = api.generation(current)
     values = [api.duplicate(current, process_handle, 0x101000)]
     for descriptor in pipe_descriptors:
-        handle = msvcrt.get_osfhandle(descriptor)
+        get_osfhandle: Callable[[int], int] = cast(Any, msvcrt).get_osfhandle
+        handle = get_osfhandle(descriptor)
         contract._require(api.kernel.GetFileType(handle) == 3)
         values.append(api.duplicate(handle, process_handle, 0))
     contract._require(api.generation(current) == parent)
@@ -237,7 +240,8 @@ def require_child_handoff(value: Any) -> Iterator[None]:
         contract._require(api.generation(handles[0]) == expected)
         api.current_job()
         for stream, copied in zip((sys.stdin, sys.stdout, sys.stderr), handles[1:], strict=True):
-            actual = msvcrt.get_osfhandle(stream.fileno())
+            get_osfhandle: Callable[[int], int] = cast(Any, msvcrt).get_osfhandle
+            actual = get_osfhandle(stream.fileno())
             contract._require(
                 actual not in handles
                 and api.kernel.GetFileType(actual) == 3

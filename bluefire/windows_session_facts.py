@@ -7,7 +7,7 @@ import re
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Iterator
+from typing import Any, Iterator, cast
 
 _DWORD = ctypes.c_uint32
 _HANDLE = ctypes.c_void_p
@@ -118,6 +118,9 @@ def _decode_user_sid(buffer: ctypes.Array, length: int) -> str:
 
 
 class _WindowsApi:
+    kernel: ctypes.CDLL
+    security: ctypes.CDLL
+
     def __init__(self) -> None:
         if sys.platform != "win32":
             raise WindowsSessionFactsError("Windows process identity is unavailable")
@@ -181,7 +184,7 @@ class _WindowsApi:
         opened = self.security.OpenThreadToken(
             self.kernel.GetCurrentThread(), _TOKEN_QUERY, True, ctypes.byref(token)
         )
-        error = ctypes.get_last_error()
+        error = cast(Any, ctypes).get_last_error()
         supplied_handle = token.value not in (None, 0, _HANDLE(-1).value)
         if supplied_handle:
             self._close(token)
@@ -221,7 +224,7 @@ class _WindowsApi:
             )
             if (
                 result
-                or ctypes.get_last_error() != _ERROR_INSUFFICIENT_BUFFER
+                or cast(Any, ctypes).get_last_error() != _ERROR_INSUFFICIENT_BUFFER
                 or not 1 <= length.value <= _MAX_TOKEN_INFORMATION
             ):
                 raise WindowsSessionFactsError("Windows token information is unavailable")

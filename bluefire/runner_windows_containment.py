@@ -9,7 +9,7 @@ import threading
 import time
 import weakref
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 from .runner_transport_errors import RunnerTransportError
 
@@ -307,7 +307,7 @@ class WindowsJobContainment:
             from ctypes import wintypes
 
             handle = self._borrowed_process_handle(process)
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32: ctypes.CDLL = cast(Any, ctypes).WinDLL("kernel32", use_last_error=True)
             process_id = kernel32.GetProcessId
             process_id.argtypes = [wintypes.HANDLE]
             process_id.restype = wintypes.DWORD
@@ -347,7 +347,7 @@ class WindowsJobContainment:
             import ctypes
             from ctypes import wintypes
 
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32: ctypes.CDLL = cast(Any, ctypes).WinDLL("kernel32", use_last_error=True)
             terminate = kernel32.TerminateJobObject
             terminate.argtypes = [wintypes.HANDLE, wintypes.UINT]
             terminate.restype = wintypes.BOOL
