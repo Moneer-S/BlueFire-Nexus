@@ -263,7 +263,8 @@ class PairLaunchOwner:
                 shell=False,
                 close_fds=True,
                 bufsize=0,
-                creationflags=0x08000000 | 0x00000200 | 0x00000004,
+                # Keep this pipe-only worker detached from a console host.
+                creationflags=0x00000008 | 0x00000200 | 0x00000004,
             )
         except BaseException:
             # Without a returned exact process handle, closure cannot be proven.

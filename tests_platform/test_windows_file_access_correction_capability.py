@@ -98,7 +98,7 @@ def capability(correction, monkeypatch):
         assert argv == [c.image, "windows-file-correction-worker-capability"]
         assert kwargs["stdin"] == module.subprocess.DEVNULL
         assert kwargs["shell"] is kwargs["check"] is False and kwargs["close_fds"] is True
-        assert kwargs["creationflags"] == 0x08000000
+        assert kwargs["creationflags"] == 0x00000008
         assert 0 < kwargs["timeout"] <= 5
         assert opened and not closed
         queries.append((argv, kwargs["timeout"]))

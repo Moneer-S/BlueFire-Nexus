@@ -118,7 +118,8 @@ def _query(path: Path, version: str, deadline: float) -> dict:
             check=False,
             shell=False,
             close_fds=True,
-            creationflags=0x08000000,
+            # Console-host lifetime must not outlive this protocol-only child.
+            creationflags=0x00000008,
         )
         contract._require(time.monotonic() < deadline)
         supervision._Api().current_job()

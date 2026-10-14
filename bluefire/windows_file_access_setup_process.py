@@ -228,7 +228,8 @@ class SetupCleanupOwner:
                 shell=False,
                 close_fds=True,
                 bufsize=0,
-                creationflags=0x08000000 | 0x00000200 | 0x00000004,
+                # A hidden console still adds conhost to the single-child Job.
+                creationflags=0x00000008 | 0x00000200 | 0x00000004,
             )
         except BaseException:
             # Native creation may have succeeded before Popen returned a Handle.
