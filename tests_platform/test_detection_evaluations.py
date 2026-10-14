@@ -357,13 +357,13 @@ def test_checkpoint7_upgrade_preserves_state_and_adds_evaluations_transactionall
     path = tmp_path / "checkpoint.sqlite3"
     make_checkpoint7(path, monkeypatch)
     upgraded = ProductStore(path)
-    assert upgraded.schema_version == 10
+    assert upgraded.schema_version == store_module.SCHEMA_VERSION
     assert upgraded.get_setting("unit.preserved") == {"value": "retained"}
     assert upgraded.detection_evaluations("detection-" + "0" * 20) == []
     with sqlite3.connect(path) as connection:
         assert connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall() == [(7,), (10,)]
+        ).fetchall() == [(7,), (store_module.SCHEMA_VERSION,)]
 
 
 def test_failed_evaluation_schema_upgrade_rolls_back_table_and_version(
