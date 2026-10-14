@@ -36,6 +36,8 @@ class WindowsPeerGeneration:
 
 
 class _Api:
+    kernel: ctypes.CDLL
+
     def __init__(self) -> None:
         if sys.platform != "win32":
             raise WindowsPeerBindingError("Windows peer binding is unavailable")
