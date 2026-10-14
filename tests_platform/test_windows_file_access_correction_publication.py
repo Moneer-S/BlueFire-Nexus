@@ -18,12 +18,12 @@ from tests_platform import test_windows_file_access_correction_retest as retest_
 from tests_platform import test_windows_file_access_correction_wire as wire_fake
 from tests_platform import test_windows_file_access_process as process_driver
 from tests_platform.test_windows_file_access_baseline_publication import at_ms
-from tests_platform.test_windows_file_access_baseline_publication import saved
-from tests_platform.test_windows_file_access_correction_retest import candidate
-from tests_platform.test_windows_file_access_correction_journal import retained
-from tests_platform.test_windows_file_access_pair_provenance import paired
+from tests_platform.test_windows_file_access_baseline_publication import saved as saved
+from tests_platform.test_windows_file_access_correction_journal import retained as retained
+from tests_platform.test_windows_file_access_correction_retest import candidate as candidate
+from tests_platform.test_windows_file_access_pair_provenance import paired as paired
 from tests_platform.test_windows_file_access_setup_lifecycle import ISSUED
-from tests_platform.test_windows_file_access_setup_lifecycle import lifecycle
+from tests_platform.test_windows_file_access_setup_lifecycle import lifecycle as lifecycle
 
 
 def no_terminal(value, monkeypatch):
@@ -297,7 +297,7 @@ def test_publication_transaction_rolls_back_revision_if_outcome_insert_fails(
 
 def test_expired_historical_publication_never_prepares_or_observes_again(candidate, monkeypatch):
     value = candidate
-    execution = execute(value, monkeypatch)
+    execute(value, monkeypatch)
     expected_digest = add_unknown_outcome(value)
 
     def forbidden(*_args, **_kwargs):

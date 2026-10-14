@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import os
-import threading
 from types import SimpleNamespace
 
 import pytest
 
-from bluefire import windows_file_access_pair_launch as module
 from bluefire import windows_file_access_correction_admission as correction_admission
 from bluefire import windows_file_access_correction_credential as correction_credential
 from bluefire import windows_file_access_native_wire as wire
+from bluefire import windows_file_access_pair_launch as module
 from bluefire import windows_file_access_process as supervisor
 from bluefire.util import content_hash
 from tests_platform import test_windows_file_access_pair_launch as pair_launch
@@ -87,7 +86,7 @@ def test_pair_v2_postimage_and_original_are_refused_before_any_pin(launch_harnes
     state = launch_harness.state
     monkeypatch.setattr(module.sys, "platform", "win32")
 
-    with pytest.raises(Exception):
+    with pytest.raises(wire.NativeWireError):
         module.launch_correction_retest(
             state.checked,
             state.original,
@@ -105,7 +104,7 @@ def test_pair_v2_postimage_and_original_are_refused_before_any_pin(launch_harnes
 @pytest.mark.timeout(15)
 def test_wrong_producer_and_v1_original_are_refused_before_side_effects(correction):
     c = correction
-    with pytest.raises(Exception):
+    with pytest.raises(wire.NativeWireError):
         module.CorrectionLaunchOwner(
             c.checked,
             c.original,
@@ -116,7 +115,7 @@ def test_wrong_producer_and_v1_original_are_refused_before_side_effects(correcti
             c.cancelled,
         )
     legacy_original, legacy_packet, _ = pair_wire.prepared()
-    with pytest.raises(Exception):
+    with pytest.raises(wire.NativeWireError):
         module.CorrectionLaunchOwner(
             c.checked,
             legacy_original,
@@ -143,7 +142,7 @@ def test_valid_postimage_binds_exact_correction_producer(correction):
     assert owner._protocol is supervisor._Protocol.CORRECTION_V3
     assert owner.producer is c.producer and owner.packet is c.packet
 
-    with pytest.raises(Exception):
+    with pytest.raises(wire.NativeWireError):
         module.CorrectionLaunchOwner(
             c.checked,
             c.original,
@@ -184,7 +183,7 @@ def test_valid_postimage_rejects_original_with_different_binding(correction):
     producer._packet = alternate_packet
     producer._cancellation = c.cancelled
 
-    with pytest.raises(Exception):
+    with pytest.raises(wire.NativeWireError):
         module.CorrectionLaunchOwner(
             c.checked,
             alternate_original,
@@ -194,15 +193,15 @@ def test_valid_postimage_rejects_original_with_different_binding(correction):
             lambda *_args: None,
             c.cancelled,
         )
-    with pytest.raises(Exception):
+    with pytest.raises(wire.NativeWireError):
         module.CorrectionLaunchOwner(
-            checked,
-            state.original,
-            state.packet,
-            state.producer,
-            state.revalidate,
+            c.checked,
+            c.original,
+            alternate_packet,
+            c.producer,
+            c.revalidate,
             lambda *_args: None,
-            state.cancellation,
+            c.cancelled,
         )
 
 

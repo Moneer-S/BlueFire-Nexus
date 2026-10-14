@@ -7,13 +7,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-pytest_plugins = ("tests_platform.test_windows_file_access_pair_provenance",)
-
 from bluefire import windows_file_access_correction_admission as correction
 from bluefire import windows_file_access_native_wire as wire
 from bluefire import windows_file_access_pair_admission as pair
 from bluefire.util import content_hash
 from tests_platform.test_windows_file_access_setup_lifecycle import ISSUED
+
+pytest_plugins = ("tests_platform.test_windows_file_access_pair_provenance",)
 
 
 @pytest.fixture
