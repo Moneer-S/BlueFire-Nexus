@@ -26,11 +26,13 @@ EFFECTS = {
 
 class FileAccessControl:
     def __init__(self, service, *, clock=None):
+        from .windows_file_access_correction_execution import WindowsCorrectionRuntime
         from .windows_file_access_execution import WindowsBaselineRuntime
 
         self.service, self.store = service, service.product_store
         self.clock = clock or (lambda: time.time_ns() // 1_000_000)
         self.windows = WindowsBaselineRuntime(self)
+        self.windows_correction = WindowsCorrectionRuntime(self)
 
     def _publish(self, job_id, values):
         values = safe_document(values, context="file-access progress")
@@ -97,13 +99,16 @@ class FileAccessControl:
 
     def _context(self, operation, owner_id):
         if file_access_context.is_windows_host():
-            if operation != "baseline":
-                raise ProductStoreError("Windows retained-file mutations are not available.")
+            if operation not in ("baseline", "harden"):
+                raise ProductStoreError("This Windows retained-file operation is not available.")
             from . import windows_file_access_context
 
-            current = windows_file_access_context.baseline_context(
-                self.service, self.clock(), owner_id
+            prepare_context = (
+                windows_file_access_context.baseline_context
+                if operation == "baseline"
+                else windows_file_access_context.correction_context
             )
+            current = prepare_context(self.service, self.clock(), owner_id)
             current["allowed_operations"] = self.control(owner_id)["allowed_operations"]
             return current
         enrollment = self._enrollment()
@@ -172,6 +177,11 @@ class FileAccessControl:
             == "bluefire.windows-file-access-baseline-context.v2"
         ):
             effect = "Read the generated resource once as the non-owner and once as the owner, compare byte counts and content digests, and verify native and owned-job closure. Account and resource cleanup remains required."
+        elif (
+            current["review_context"].get("schema_version")
+            == "bluefire.windows-file-access-correction-context.v1"
+        ):
+            effect = "Change only the enrolled generated file's protected DACL to metadata-only access for the non-owner. Freshly test non-owner denial and unchanged owner access, then verify native and owned-job closure. The original setup is not renewed. Recovery never repeats the change or retest. Account and resource cleanup remains required."
         if operation == "reset" and control["document"]["status"] == "recovery_required":
             effect = "Remove only the original receipt-owned seed, retained generated file, and observation artifacts still present in at most two original workspaces, after every original task and worker request is verified closed."
         body = {
@@ -253,6 +263,11 @@ class FileAccessControl:
             == "bluefire.windows-file-access-baseline-context.v2"
         ):
             self.windows.execute(ctx, request)
+        elif (
+            saved["review_context"].get("schema_version")
+            == "bluefire.windows-file-access-correction-context.v1"
+        ):
+            self.windows_correction.execute(ctx, request)
         else:
             execute(self, ctx, request)
         return JobResult(progress={"phase": "completed"})
@@ -341,14 +356,30 @@ class FileAccessControl:
             == "bluefire.windows-file-access-baseline-context.v2"
         ):
             present = True
-        if (
-            job["state"] in ("failed", "cancelled", "interrupted")
-            and records["outcome"] is None
-            and not records["tasks"]
-        ):
-            self.store.finish_file_access_operation(
-                job_id, outcome={"state": "refused_no_effect", "evidence_digest": content_hash([])}
-            )
+        if job["state"] in ("failed", "cancelled", "interrupted") and records["outcome"] is None:
+            if (
+                records["document"]["review_context"].get("schema_version")
+                == "bluefire.windows-file-access-correction-context.v1"
+            ):
+                from .product_store_windows_correction import has_dispatch
+
+                dispatched = has_dispatch(self.store, job_id)
+                self.store.finish_file_access_operation(
+                    job_id,
+                    outcome={
+                        "state": (
+                            "unknown" if dispatched or records["tasks"] else "refused_no_effect"
+                        ),
+                        "evidence_digest": content_hash(
+                            {"tasks": records["tasks"], "control_dispatch_retained": dispatched}
+                        ),
+                    },
+                )
+            elif not records["tasks"]:
+                self.store.finish_file_access_operation(
+                    job_id,
+                    outcome={"state": "refused_no_effect", "evidence_digest": content_hash([])},
+                )
             records = self.store.file_access_operation_records(job_id)
         outcome = records["outcome"]
         progress = {

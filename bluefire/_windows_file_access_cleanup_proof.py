@@ -46,7 +46,7 @@ def validate_retained_cleanup(receipt_bytes: bytes, packet_bytes: bytes) -> dict
     contract._require(
         row["schema_version"] == SCHEMA
         and row["provenance"] == "runner_owned_cleanup"
-        and row["protocol"] in ("reader_v1", "pair_v2")
+        and row["protocol"] in ("reader_v1", "pair_v2", "correction_v3")
         and row["cleanup"] == "verified"
         and row["settled"] is False
     )
@@ -65,7 +65,11 @@ def validate_retained_cleanup(receipt_bytes: bytes, packet_bytes: bytes) -> dict
         contract._document(packet_bytes),
         "schema_version challenge task_id request_hash manifest profile remaining_ms",
     )
-    protocol = contract._PAIR if row["protocol"] == "pair_v2" else contract._V1
+    protocol = {
+        "reader_v1": contract._V1,
+        "pair_v2": contract._PAIR,
+        "correction_v3": contract._CORRECTION,
+    }[row["protocol"]]
     contract._require(
         packet["schema_version"] == protocol.schema("request")
         and packet["task_id"] == row["task_id"]

@@ -6,6 +6,7 @@ import { compositionJobId, compositionJobValid, FILE_ACCESS_PACK } from "../lib/
 import { checkedFileAccessControl, checkedFileAccessList, checkedFileAccessOperation, checkedFileAccessStatus, clearFileAccessPending, fileAccessApi, fileAccessConfirmed, fileAccessControlIdValid, fileAccessJobActive, fileAccessOperationLabels, readFileAccessPending, readFileAccessReconciliationPending, storeFileAccessPending, type FileAccessObservation, type FileAccessPending, type FileAccessReviewRequest, type FileAccessSubmission, type LinuxFileAccessControl, type WindowsFileAccessControl, type WindowsPairedFileAccessControl, type WindowsSetupFileAccessControl } from "../lib/file-access";
 import { FileAccessReview } from "../components/FileAccessReview";
 import { FileAccessReconciliation } from "../components/FileAccessReconciliation";
+import { WindowsFileAccessCorrection } from "../components/WindowsFileAccessCorrection";
 import { Badge, Button, Callout, DataList, ErrorState, LoadingState, PageHeader, sentence } from "../components/Primitives";
 import "./FileAccess.css";
 
@@ -25,7 +26,7 @@ export function FileAccessPage() {
   const operationId = params.get("operation") ?? (owner === pendingOwner ? pending?.id ?? reconciliation?.operation_job_id : "") ?? "";
   const status = useQuery({ queryKey: ["file-access-status"], queryFn: async () => checkedFileAccessStatus(await fileAccessApi.status()), retry: false });
   const list = useQuery({ queryKey: ["file-access-list"], queryFn: async () => checkedFileAccessList(await fileAccessApi.list()), retry: false });
-  const control = useQuery({ queryKey: ["file-access-control", owner], queryFn: async () => checkedFileAccessControl(await fileAccessApi.control(owner), owner), enabled: fileAccessControlIdValid(owner), retry: false, refetchInterval: state => state.state.data && (state.state.data.platform === "windows" ? state.state.data.schema_version === "bluefire.windows-file-access-control.v2" && state.state.data.task_usage_state === "unresolved" : state.state.data.usage_state !== "settled") ? 1500 : false });
+  const control = useQuery({ queryKey: ["file-access-control", owner], queryFn: async () => checkedFileAccessControl(await fileAccessApi.control(owner), owner), enabled: fileAccessControlIdValid(owner), retry: false, refetchInterval: state => state.state.data && (state.state.data.platform === "windows" ? state.state.data.task_usage_state === "unresolved" : state.state.data.usage_state !== "settled") ? 1500 : false });
   const operation = useQuery({ queryKey: ["file-access-operation", operationId, owner], queryFn: async () => checkedFileAccessOperation(await fileAccessApi.operation(operationId), operationId, owner), enabled: compositionJobValid(operationId), retry: false, refetchInterval: state => state.state.data && fileAccessJobActive(state.state.data.job) ? 1500 : false });
   useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer); }, []);
   useEffect(() => {
@@ -87,8 +88,9 @@ export function FileAccessPage() {
   const reviewAvailable = displayedReview && (displayedReview.operation === "create"
     ? canCreate
     : !control.error && !control.isFetching && (control.data?.platform === "windows"
-      ? control.data.schema_version === "bluefire.windows-file-access-control.v2" && displayedReview.operation === "baseline" && !status.error && !status.isFetching
-        && control.data.allowed_operations.includes("baseline") && currentWindowsSetup && status.data?.available === true
+      ? ((control.data.schema_version === "bluefire.windows-file-access-control.v2" && displayedReview.operation === "baseline")
+        || (control.data.schema_version === "bluefire.windows-file-access-control.v3" && displayedReview.operation === "harden")) && !status.error && !status.isFetching
+        && control.data.allowed_operations.includes(displayedReview.operation) && control.data.expires_at_ms > now && currentWindowsSetup && status.data?.available === true
         && windowsSetup?.enrollment_id === control.data.provenance.enrollment_id
         && windowsSetup?.enrollment_digest === control.data.provenance.enrollment_digest
       : control.data?.allowed_operations.includes(displayedReview.operation)
@@ -112,7 +114,7 @@ export function FileAccessPage() {
         { label: "Product owner UID", value: status.data.enrollment.owner_uid }, { label: "Non-owner probe UID", value: status.data.enrollment.probe_uid },
         { label: "Enrollment expires", value: new Date(status.data.enrollment.expires_at_ms).toLocaleString() },
       ]} /> : null}
-      {windowsSetup ? <Callout title={currentWindowsSetup ? status.data?.available ? "Paired setup is ready for review" : "Windows task access is unavailable" : "Setup needs fresh verification"}>{currentWindowsSetup ? status.data?.available ? "A saved paired control can review its baseline. Other file-access operations remain unavailable." : "Baseline reads and other file-access operations are not available." : "The last setup observation is no longer current."}</Callout> : !ready && status.data ? <Callout title="Live setup is not ready">{status.data.problem?.message ?? "No current verified enrollment is available."}</Callout> : null}
+      {windowsSetup ? <Callout title={currentWindowsSetup ? status.data?.available ? "Paired setup is ready for review" : "Windows task access is unavailable" : "Setup needs fresh verification"}>{currentWindowsSetup ? status.data?.available ? "The original protected setup is verified." : "Baseline reads and other file-access operations are not available." : "The last setup observation is no longer current."}</Callout> : !ready && status.data ? <Callout title="Live setup is not ready">{status.data.problem?.message ?? "No current verified enrollment is available."}</Callout> : null}
       {windowsSetup && currentWindowsSetup ? <Button disabled={setupImport.isPending || blocked || status.isFetching} onClick={() => setupImport.mutate({ enrollment_id: windowsSetup.enrollment_id, enrollment_digest: windowsSetup.enrollment_digest })}><FileLock2 />Save verified setup</Button> : null}
       {setupImport.error ? <ErrorState title="Setup save was not confirmed" error={setupImport.error} /> : null}
       {!owner && canCreate ? <Button disabled={!ready || blocked} onClick={() => setReview({ operation: "create", control_owner_id: null })}><FileLock2 />Review generated resource</Button> : null}
@@ -135,11 +137,12 @@ export function FileAccessPage() {
       { label: "Observed content", value: <code>{observation.sha256}</code> }, { label: "Source binding", value: <code>{observation.source_digest}</code> },
     ]} /></section> : null}
     {owner ? !fileAccessControlIdValid(owner) ? <ErrorState error={new Error("This control link is incomplete.")} /> : control.error ? <ErrorState title="Retained control unavailable" error={control.error} retry={() => { void control.refetch(); }} /> : control.data?.platform === "windows" ? <SavedWindowsSetup control={control.data} disabled={blocked || control.isFetching} baselineReviewAvailable={!status.error && !status.isFetching && currentWindowsSetup && status.data?.available === true && status.data.setup?.enrollment_id === control.data.provenance.enrollment_id && status.data.setup?.enrollment_digest === control.data.provenance.enrollment_digest} onReview={setReview} /> : control.data ? <RetainedFileAccess control={control.data as LinuxFileAccessControl} disabled={blocked || control.isFetching} ready={ready} onReview={setReview} /> : <LoadingState label="Opening retained file-access control" /> : null}
-    {displayedReview ? <FileAccessReview key={`${displayedReview.control_owner_id}:${displayedReview.operation}`} request={displayedReview} disabled={blocked || !reviewAvailable} onSubmit={send} onClose={() => setReview(undefined)} /> : null}
+    {displayedReview ? <FileAccessReview key={`${displayedReview.control_owner_id}:${displayedReview.operation}`} request={displayedReview} expectedControlDigest={control.data?.schema_version === "bluefire.windows-file-access-control.v3" ? control.data.control_digest : undefined} disabled={blocked || !reviewAvailable} onSubmit={send} onClose={() => setReview(undefined)} /> : null}
   </div>;
 }
 
 function SavedWindowsSetup({ control, disabled, baselineReviewAvailable, onReview }: { control: WindowsFileAccessControl; disabled: boolean; baselineReviewAvailable: boolean; onReview: (request: FileAccessReviewRequest) => void }) {
+  if (control.schema_version === "bluefire.windows-file-access-control.v3") return <WindowsFileAccessCorrection control={control} disabled={disabled} reviewAvailable={baselineReviewAvailable} onReview={onReview} />;
   if (control.schema_version === "bluefire.windows-file-access-control.v2") return <SavedWindowsPairControl control={control} disabled={disabled} baselineReviewAvailable={baselineReviewAvailable} onReview={onReview} />;
   const setup = control as WindowsSetupFileAccessControl;
   const expired = setup.expires_at_ms <= Date.now();

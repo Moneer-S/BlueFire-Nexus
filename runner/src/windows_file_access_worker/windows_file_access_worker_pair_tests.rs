@@ -348,3 +348,320 @@ fn pair_fixture_matches_independent_stdlib_canonical_and_begin_goldens() {
     assert_eq!(hex::encode(&frame(canonical.as_bytes())[..4]), "260e0000");
     assert_eq!(hex::encode(&begin(&value)[..124]), "4246574642454732ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffa46b6399401f059407cc138c1281626acbb15f1f451731575a58fc70101f9db10123456789abcdef0123456789abcdef07000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 }
+
+fn correction_packet() -> Value {
+    let protocol = Protocol::CorrectionPairV3;
+    let mut value = packet();
+    let request_id =
+        crate::canonical::sha256_hex(format!("{JOB}:{}", protocol.operation()).as_bytes())[..32]
+            .to_owned();
+    value["schema_version"] = json!(protocol.request());
+    value["profile"]["profile_id"] = json!("synthetic.windows-correction");
+    value["profile"]["allowed_actions"] = json!([protocol.action()]);
+    value["profile"]["capabilities"] = json!([protocol.capability()]);
+    value["manifest"]["request_id"] = json!(format!("win-read-{request_id}"));
+    value["manifest"]["step_id"] = json!(protocol.operation());
+    value["manifest"]["behavior_id"] = json!(protocol.behavior());
+    value["manifest"]["action_id"] = json!(protocol.action());
+    value["manifest"]["required_capabilities"] = json!([protocol.capability()]);
+    value["manifest"]["runner_profile_id"] = json!("synthetic.windows-correction");
+    let request = &mut value["manifest"]["params"]["windows_file_read_request"];
+    request["schema_version"] = json!(protocol.operation_schema());
+    request["request_id"] = json!(request_id);
+    request["control_revision"] = json!(2);
+    request["correction_binding_digest"] = json!(sha('1'));
+    request["host"]["runner_profile_id"] = json!("synthetic.windows-correction");
+    request["resource"]["state"] = json!("metadata_only");
+    seal(&mut value);
+    value
+}
+fn correction_begin(value: &Value) -> Vec<u8> {
+    let mut raw = begin(value);
+    raw[..8].copy_from_slice(b"BFWFBEG3");
+    raw[88..92].copy_from_slice(&2u32.to_le_bytes());
+    raw.splice(124..124, [0x11; 32]);
+    raw
+}
+fn correction_observed(packet: &wire::Packet, outcome: ReadOutcome) -> DispatchResult {
+    let mut result = observed(packet, outcome);
+    result.value["schema_version"] = json!(Protocol::CorrectionPairV3.read());
+    result.value["reader"]["outcome"] = json!(outcome);
+    result
+}
+
+#[test]
+fn correction_capability_is_distinct_bounded_and_not_an_ordinary_action() {
+    let value = correction_protocol_capability();
+    assert_eq!(value["worker_command"], "windows-file-correction-worker");
+    assert_eq!(
+        value["schema_version"],
+        "bluefire.windows-file-worker-capability.v3"
+    );
+    assert_eq!(value["scope"], "protocol_support_only");
+    assert_eq!(
+        value["action_id"],
+        "private.windows.file_read_pair_correction.v3"
+    );
+    assert_eq!(value["capability"], "windows_file_read_pair_correction");
+    assert_eq!(value["max_data_opens"], 2);
+    assert_eq!(value["max_total_read_bytes"], 2_097_152);
+    assert_eq!(value["max_execution_ms"], 5000);
+    assert!(serde_json::to_vec(&value).unwrap().len() < MAX_READY);
+    assert!(!crate::inventory()
+        .iter()
+        .any(|action| action.action_id == Protocol::CorrectionPairV3.action()));
+}
+
+#[test]
+fn correction_request_is_closed_and_never_downgrades_v1_or_v2() {
+    let value = correction_packet();
+    let clock = FakeClock::new();
+    for protocol in [Protocol::ReaderV1, Protocol::PairV2] {
+        assert!(wire::Packet::validate_for(protocol, value.clone(), &clock, clock.start).is_err());
+    }
+    let bound = wire::Packet::validate_for(
+        Protocol::CorrectionPairV3,
+        value.clone(),
+        &clock,
+        clock.start,
+    )
+    .unwrap_or_else(|_| panic!("fixture"));
+    assert_eq!(bound.binding()["correction_binding_digest"], sha('1'));
+    for change in [
+        "missing",
+        "malformed",
+        "upper",
+        "revision",
+        "state",
+        "extra",
+        "operation",
+        "action",
+        "capability",
+        "behavior",
+    ] {
+        let mut changed = value.clone();
+        let request = &mut changed["manifest"]["params"]["windows_file_read_request"];
+        match change {
+            "missing" => {
+                request
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("correction_binding_digest");
+            }
+            "malformed" => request["correction_binding_digest"] = json!("1".repeat(64)),
+            "upper" => request["correction_binding_digest"] = json!(sha('A')),
+            "revision" => request["control_revision"] = json!(1),
+            "state" => request["resource"]["state"] = json!("readable"),
+            "extra" => request["correction_authorized"] = json!(true),
+            "operation" => request["schema_version"] = json!(Protocol::PairV2.operation_schema()),
+            "action" => changed["manifest"]["action_id"] = json!(Protocol::PairV2.action()),
+            "capability" => {
+                changed["manifest"]["required_capabilities"] =
+                    json!([Protocol::PairV2.capability()])
+            }
+            "behavior" => changed["manifest"]["behavior_id"] = json!(Protocol::PairV2.behavior()),
+            _ => unreachable!(),
+        }
+        seal(&mut changed);
+        assert!(
+            wire::Packet::validate_for(Protocol::CorrectionPairV3, changed, &clock, clock.start)
+                .is_err(),
+            "{change}"
+        );
+    }
+    assert!(
+        wire::Packet::validate_for(Protocol::CorrectionPairV3, packet(), &clock, clock.start)
+            .is_err()
+    );
+}
+
+#[test]
+fn correction_begin_digest_magic_length_and_consumption_bind_before_dispatch() {
+    let value = correction_packet();
+    let clock = FakeClock::new();
+    let bound = wire::Packet::validate_for(
+        Protocol::CorrectionPairV3,
+        value.clone(),
+        &clock,
+        clock.start,
+    )
+    .unwrap_or_else(|_| panic!("fixture"));
+    for change in [
+        "digest",
+        "v2_magic",
+        "v1_magic",
+        "missing_digest",
+        "short",
+        "extra",
+    ] {
+        let mut raw = correction_begin(&value);
+        match change {
+            "digest" => raw[124] ^= 1,
+            "v2_magic" => raw[..8].copy_from_slice(b"BFWFBEG2"),
+            "v1_magic" => raw[..8].copy_from_slice(b"BFWFBEG1"),
+            "missing_digest" => {
+                raw.drain(124..156);
+            }
+            "short" => {
+                raw.truncate(155);
+            }
+            "extra" => raw.push(0),
+            _ => unreachable!(),
+        }
+        let mut reader = framing::BeginReader::default();
+        let _ = framing::take_erasures();
+        assert!(
+            matches!(
+                reader.consume(&mut Cursor::new(frame(&raw)), &bound),
+                Err(Code::BeginInvalid)
+            ),
+            "{change}"
+        );
+        assert!(matches!(
+            reader.consume(&mut Cursor::new(frame(&correction_begin(&value))), &bound),
+            Err(Code::BeginConsumed)
+        ));
+        assert!(framing::take_erasures()
+            .iter()
+            .all(|(_, _, zeroed)| *zeroed));
+        let calls = Cell::new(0);
+        let result = run_checked_for(
+            Protocol::CorrectionPairV3,
+            &mut input(&value, &raw),
+            &mut Vec::new(),
+            &clock,
+            |packet, _, _| {
+                calls.set(calls.get() + 1);
+                Ok(correction_observed(packet, ReadOutcome::Allowed))
+            },
+        );
+        assert_eq!(result, Ok(4));
+        assert_eq!(calls.get(), 0);
+    }
+    let mut reader = framing::BeginReader::default();
+    let units = reader
+        .consume(&mut Cursor::new(frame(&correction_begin(&value))), &bound)
+        .unwrap_or_else(|_| panic!("fixture"));
+    assert_eq!(units.0, [65, 66]);
+    drop(units);
+}
+
+#[test]
+fn correction_ready_result_and_late_partial_bind_the_same_opaque_claim() {
+    let value = correction_packet();
+    for late in [false, true] {
+        let clock = FakeClock::new();
+        let mut output = Vec::new();
+        assert_eq!(
+            run_checked_for(
+                Protocol::CorrectionPairV3,
+                &mut input(&value, &correction_begin(&value)),
+                &mut output,
+                &clock,
+                |packet, _, _| {
+                    if late {
+                        clock.elapsed.set(Duration::from_secs(5));
+                    }
+                    Ok(correction_observed(packet, ReadOutcome::DataAccessDenied))
+                }
+            ),
+            Ok(if late { 4 } else { 0 })
+        );
+        let rows = frames(output);
+        assert_eq!(
+            rows[0]["schema_version"],
+            "bluefire.windows-file-worker-ready.v3"
+        );
+        assert_eq!(rows[0]["correction_binding_digest"], sha('1'));
+        assert_eq!(rows[0]["readiness_scope"], "protocol_only");
+        assert_eq!(
+            rows[1]["schema_version"],
+            "bluefire.windows-file-worker-result.v3"
+        );
+        assert_eq!(rows[1]["correction_binding_digest"], sha('1'));
+        assert_eq!(rows[1]["operation"], "read_generated_pair_correction");
+        assert_eq!(rows[1]["result"]["reader"]["outcome"], "data_access_denied");
+        assert_eq!(rows[1]["observed_at"].is_null(), late);
+        if late {
+            assert_eq!(rows[1]["result"]["outcome"], "unknown");
+        }
+    }
+}
+
+#[test]
+fn correction_fixture_matches_python_stdlib_canonical_and_begin_goldens() {
+    let value = correction_packet();
+    assert_eq!(
+        value["manifest"]["params"]["windows_file_read_request"]["request_id"],
+        "4f5df61ef6fafc566b35369cf50ef092"
+    );
+    assert_eq!(
+        value["profile"]["policy_digest"],
+        "sha256:72aecfbdf7e8df622b04b07beb601014b3c9da2fec669427ecebd96a6ad40326"
+    );
+    assert_eq!(
+        value["manifest"]["request_hash"],
+        "sha256:d8f39eafe5f3d9e176e87b9872a29bfd95cc21b40010776aa9d866db3506d674"
+    );
+    assert_eq!(
+        value["request_hash"],
+        "sha256:69fc121218f93b9d8bddb6e72ca69ee6c357bbd1609de8d5a48273b7715972ae"
+    );
+    assert_eq!(
+        wire::hash(&value),
+        "sha256:856f3cba47b3b3e4d6d6df62323055b3496ce448dc53469971ff9db92338bfbc"
+    );
+    assert_eq!(crate::canonical::canonical_json(&value).len(), 3813);
+    assert_eq!(hex::encode(&correction_begin(&value)[..156]), "4246574642454733ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff856f3cba47b3b3e4d6d6df62323055b3496ce448dc53469971ff9db92338bfbc0123456789abcdef0123456789abcdef02000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1111111111111111111111111111111111111111111111111111111111111111");
+}
+
+#[test]
+fn correction_stdout_bound_and_pre_begin_cancellation_never_expand_authority() {
+    for maximum in [1024, 1400, 8192] {
+        let mut value = correction_packet();
+        value["profile"]["limits"]["max_stdout_bytes"] = json!(maximum);
+        value["manifest"]["limits"]["max_stdout_bytes"] = json!(maximum);
+        seal(&mut value);
+        let mut output = Vec::new();
+        let result = run_checked_for(
+            Protocol::CorrectionPairV3,
+            &mut input(&value, &correction_begin(&value)),
+            &mut output,
+            &FakeClock::new(),
+            |packet, _, _| {
+                let mut proof = correction_observed(packet, ReadOutcome::DataAccessDenied);
+                proof.value["padding"] = json!("x".repeat(16000));
+                Ok(proof)
+            },
+        );
+        assert!(result == Ok(4) || result == Err(Code::ResultBoundExceeded));
+        assert!(output.len() <= maximum);
+        let rows = frames(output);
+        if rows.len() == 2 {
+            assert_eq!(rows[1]["result"]["code"], "result_bound_exceeded");
+        }
+    }
+    for cancel in [false, true] {
+        let value = correction_packet();
+        let clock = FakeClock::new();
+        if cancel {
+            clock.cancelled.set(true);
+        } else {
+            *clock.wall.borrow_mut() =
+                DateTime::parse_from_rfc3339("2026-10-12T11:59:59Z").unwrap();
+        }
+        let calls = Cell::new(0);
+        let result = run_checked_for(
+            Protocol::CorrectionPairV3,
+            &mut input(&value, &correction_begin(&value)),
+            &mut Vec::new(),
+            &clock,
+            |packet, _, _| {
+                calls.set(calls.get() + 1);
+                Ok(correction_observed(packet, ReadOutcome::Allowed))
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(calls.get(), 0);
+    }
+}

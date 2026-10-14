@@ -28,7 +28,9 @@ from .windows_owner_acl import _handle_from_descriptor
 
 
 @contextmanager
-def _resource_metadata(row: dict[str, Any], gate: native._Gate) -> Iterator[None]:
+def _resource_metadata(
+    row: dict[str, Any], gate: native._Gate, *, descriptor_sha256: str | None = None
+) -> Iterator[str | None]:
     resource = row["resource"]
     policy = WindowsFileAccessPolicy(resource["owner_sid"], resource["reader_sid"])
     root = "C:\\BlueFire\\EndpointAccess\\" + row["generation"]
@@ -36,8 +38,10 @@ def _resource_metadata(row: dict[str, Any], gate: native._Gate) -> Iterator[None
     identities = [*resource["ancestors"], resource["file_identity"]]
     held: list[int] = []
     facts = []
+    selected_descriptor: str | None = None
 
     def check(descriptor: int, index: int):
+        nonlocal selected_descriptor
         gate.check()
         value = handles.inspect_observation(descriptor, directory=index < 4)
         volume, file_id = native.file_identity_wire(*value.identity)
@@ -47,11 +51,15 @@ def _resource_metadata(row: dict[str, Any], gate: native._Gate) -> Iterator[None
             and (index < 4 or value.size == resource["size_bytes"])
         )
         if index:
-            verify_resource_dacl(
+            digest = verify_resource_dacl(
                 _handle_from_descriptor(descriptor),
                 policy,
                 state="directory" if index < 4 else resource["state"],
             )
+            if index == 4 and descriptor_sha256 is not None:
+                contract._require(digest == descriptor_sha256)
+            if index == 4:
+                selected_descriptor = digest
         gate.check()
         return value
 
@@ -61,7 +69,7 @@ def _resource_metadata(row: dict[str, Any], gate: native._Gate) -> Iterator[None
             descriptor = handles.open_observation(Path(path), directory=index < 4, data=False)
             held.append(descriptor)
             facts.append(check(descriptor, index))
-        yield
+        yield selected_descriptor
         for index, path in enumerate(paths):
             contract._require(check(held[index], index) == facts[index])
             gate.check()
@@ -145,12 +153,49 @@ def observe_status(*, now_ms: int) -> tuple[bytes, bytes]:
     return _observe_for(now_ms=now_ms, protocol=None)
 
 
+def observe_correction(
+    *,
+    now_ms: int,
+    original_raw: bytes,
+    original_receipt: bytes,
+    target_resource: dict[str, Any],
+    descriptor_sha256: str,
+    deadline: float,
+    cancelled: Callable[[], bool],
+) -> tuple[bytes, bytes]:
+    """Observe an explicit correction postimage without renewing the v2 setup."""
+    return _observe_for(
+        now_ms=now_ms,
+        protocol=admission._PAIR_SETUP,
+        deadline=deadline,
+        cancelled=cancelled,
+        correction=(original_raw, original_receipt, target_resource, descriptor_sha256),
+    )
+
+
+def observe_correction_preimage(
+    *, now_ms: int, deadline: float, cancelled: Callable[[], bool]
+) -> tuple[bytes, bytes, str]:
+    descriptor: list[str] = []
+    raw, receipt = _observe_for(
+        now_ms=now_ms,
+        protocol=admission._PAIR_SETUP,
+        deadline=deadline,
+        cancelled=cancelled,
+        descriptor_out=descriptor,
+    )
+    contract._require(len(descriptor) == 1)
+    return raw, receipt, descriptor[0]
+
+
 def _observe_for(
     *,
     now_ms: int,
     protocol: admission._SetupProtocol | None,
     deadline: float | None = None,
     cancelled: Callable[[], bool] | None = None,
+    correction: tuple[bytes, bytes, dict[str, Any], str] | None = None,
+    descriptor_out: list[str] | None = None,
 ) -> tuple[bytes, bytes]:
     started = time.time_ns() // 1_000_000
     contract._require(sys.platform == "win32" and now_ms <= started < now_ms + 5000)
@@ -182,6 +227,13 @@ def _observe_for(
     contract._require(pair.record.principal == owner)
     row = admission._document_for(pair.record.raw_bytes, protocol)
     contract._require(row["issued_at_ms"] <= started < row["expires_at_ms"])
+    if correction is not None:
+        contract._require(
+            protocol is admission._PAIR_SETUP
+            and pair.record.raw_bytes == correction[0]
+            and correction[2] == {**row["resource"], "state": "metadata_only"}
+        )
+        contract._digest(correction[3])
     backend = write._NativeSetup(
         gate, owner, now_ms if protocol is admission._PAIR_SETUP else started
     )
@@ -192,6 +244,8 @@ def _observe_for(
             else setup._load_receipt_for(backend, protocol)
         )
         receipt = contract._document(raw_receipt, 16384)
+        if correction is not None:
+            contract._require(raw_receipt == correction[1])
         contract._require(content_hash(receipt) == row["setup_receipt_digest"])
         for name in (
             "generation",
@@ -233,7 +287,14 @@ def _observe_for(
         )
         expires = receipt["account_receipt"]["account_expires_seconds"]
         backend.verify_account(row["generation"], row["resource"]["reader_sid"], expires)
-        with _resource_metadata(row, gate):
+        resource_check = (
+            _resource_metadata(row, gate)
+            if correction is None
+            else _resource_metadata(
+                {**row, "resource": correction[2]}, gate, descriptor_sha256=correction[3]
+            )
+        )
+        with resource_check as descriptor_digest:
             lifecycle, client = _image_and_channel(backend, receipt, gate, protocol)
             backend.verify_all()
             contract._require(
@@ -259,4 +320,7 @@ def _observe_for(
             (now_ms if protocol is admission._PAIR_SETUP else started) + 5000, row["expires_at_ms"]
         )
     )
+    if descriptor_out is not None:
+        descriptor_digest = contract._digest(descriptor_digest)
+        descriptor_out.append(descriptor_digest)
     return canonical_json_bytes(row), canonical_json_bytes(receipt)

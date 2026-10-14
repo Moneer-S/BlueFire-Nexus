@@ -9,9 +9,11 @@ from __future__ import annotations
 import json
 from typing import Any, cast
 
+from . import product_store_file_access_admission as admission
 from .capability_resources import digest, exact
 from .product_store_capability_grants import control_usages_settled as _usage_settled
 from .product_store_errors import ProductStoreError
+from .product_store_file_access_admission import allowed_operations as allowed_operations
 from .product_store_file_access_native_evidence import NativeEvidenceStoreMixin
 from .product_store_serialization import canonical_json, utc_now
 from .product_store_windows_file_access import WindowsSetupStoreMixin
@@ -24,6 +26,7 @@ _TABLES = {
     "file_access_setup_imports": "control_owner_id TEXT PRIMARY KEY, enrollment_id TEXT NOT NULL UNIQUE REFERENCES file_access_enrollments(enrollment_id), generation TEXT NOT NULL UNIQUE, document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "file_access_operations": "job_id TEXT PRIMARY KEY REFERENCES jobs(job_id), control_owner_id TEXT NOT NULL, enrollment_id TEXT NOT NULL, operation TEXT NOT NULL, document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "file_access_preparations": "job_id TEXT PRIMARY KEY REFERENCES file_access_operations(job_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
+    "file_access_windows_control_evidence": "job_id TEXT NOT NULL REFERENCES file_access_operations(job_id), stage TEXT NOT NULL, document_json TEXT NOT NULL, document_digest TEXT NOT NULL, PRIMARY KEY(job_id,stage)",
     "file_access_reconciliations": "submission_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES file_access_operations(job_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "file_access_reconciliation_results": "submission_id TEXT PRIMARY KEY REFERENCES file_access_reconciliations(submission_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "file_access_task_claims": "task_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES file_access_operations(job_id), step_id TEXT NOT NULL, request_hash TEXT NOT NULL, document_json TEXT NOT NULL, document_digest TEXT NOT NULL, UNIQUE(job_id,step_id)",
@@ -115,18 +118,6 @@ def guard_control(store, connection, grant):
         or _pending(connection, environment["control_owner_id"])
     ):
         raise ProductStoreError("The exact hardened retained file control is unavailable.")
-
-
-def allowed_operations(status):
-    return {
-        "created": ["baseline", "reset"],
-        "baseline_verified": ["harden", "reset"],
-        "hardened": ["rollback", "reset"],
-        "rolled_back": ["harden", "baseline", "reset"],
-        "reset": [],
-        "uncertain": [],
-        "recovery_required": ["reset"],
-    }.get(status, [])
 
 
 class FileAccessStoreMixin(NativeEvidenceStoreMixin, WindowsSetupStoreMixin):
@@ -267,13 +258,8 @@ class FileAccessStoreMixin(NativeEvidenceStoreMixin, WindowsSetupStoreMixin):
                     )
             else:
                 control = _control_at(connection, owner_id)
-                from . import product_store_windows_file_access as windows
-
-                windows_control = windows.is_windows_control(control["document"])
-                permitted = (
-                    windows.permitted_operations(connection, control["document"], review_context)
-                    if windows_control
-                    else allowed_operations(control["document"]["status"])
+                permitted = admission.permitted_operations(
+                    store, connection, control["document"], review_context, now_ms=now_ms
                 )
                 if (
                     control["document_digest"] != review["control_digest"]
@@ -363,22 +349,9 @@ class FileAccessStoreMixin(NativeEvidenceStoreMixin, WindowsSetupStoreMixin):
                 if operation["operation"] == "create"
                 else _control_at(connection, operation["control_owner_id"])["document"]
             )
-            from . import product_store_windows_file_access as windows
-
-            if windows.is_preparation(document):
-                if operation["operation"] != "baseline" or prior is None:
-                    raise ProductStoreError(
-                        "Windows preparation requires an original baseline operation."
-                    )
-                windows.validate_preparation(document, original, prior, now_ms=now_ms)
-            else:
-                from .file_access_preparation import validate_preparation
-
-                if prior is not None and windows.is_windows_control(prior):
-                    raise ProductStoreError(
-                        "Windows provenance cannot authorize a Linux preparation."
-                    )
-                validate_preparation(document, original, enrollment, prior)
+            admission.validate_preparation(
+                store, connection, operation, original, document, enrollment, prior, now_ms=now_ms
+            )
             connection.execute(
                 "INSERT INTO file_access_preparations VALUES(?,?,?)",
                 (job_id, canonical_json(document), content_hash(document)),
@@ -684,14 +657,23 @@ class FileAccessStoreMixin(NativeEvidenceStoreMixin, WindowsSetupStoreMixin):
             if document["review_context"].get("schema_version") in (
                 "bluefire.windows-file-access-baseline-context.v1",
                 "bluefire.windows-file-access-baseline-context.v2",
+                "bluefire.windows-file-access-correction-context.v1",
             ) and (
                 control is not None
                 or verified_observation is not None
                 or outcome["state"] in ("complete", "settled_partial")
             ):
                 raise ProductStoreError(
-                    "Windows baseline publication requires its separate complete proof boundary."
+                    "Windows publication requires its separate complete proof boundary."
                 )
+            if (
+                outcome["state"] == "refused_no_effect"
+                and connection.execute(
+                    "SELECT 1 FROM file_access_windows_control_evidence WHERE job_id=? LIMIT 1",
+                    (job_id,),
+                ).fetchone()
+            ):
+                raise ProductStoreError("A dispatched Windows correction remains an obligation.")
             record = {
                 **outcome,
                 "control_digest": content_hash(control) if control is not None else None,

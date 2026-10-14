@@ -64,14 +64,23 @@ _FAILURES = (
 class _Protocol(Enum):
     READER_V1 = "reader_v1"
     PAIR_V2 = "pair_v2"
+    CORRECTION_V3 = "correction_v3"
 
     @property
     def schema(self) -> str:
-        return (
-            _SCHEMA
-            if self is _Protocol.READER_V1
-            else "bluefire.windows-file-pair-task-evidence.v2"
-        )
+        return {
+            _Protocol.READER_V1: _SCHEMA,
+            _Protocol.PAIR_V2: "bluefire.windows-file-pair-task-evidence.v2",
+            _Protocol.CORRECTION_V3: "bluefire.windows-file-correction-task-evidence.v3",
+        }[self]
+
+    @property
+    def wire_protocol(self) -> wire._Protocol:
+        return {
+            _Protocol.READER_V1: wire._V1,
+            _Protocol.PAIR_V2: wire._PAIR,
+            _Protocol.CORRECTION_V3: wire._CORRECTION,
+        }[self]
 
 
 class NativeEvidenceStoreMixin:
@@ -351,6 +360,11 @@ class PairNativeTaskEvidence(NativeTaskEvidence):
             _require(type(self.projection) is wire.PairNativeProjection)
 
 
+@dataclass(frozen=True, slots=True)
+class CorrectionNativeTaskEvidence(PairNativeTaskEvidence):
+    """Distinct correction history; never a reusable baseline or DACL proof."""
+
+
 def _snapshot(value: NativeTaskEvidence) -> None:
     _digest(value.transport_request_hash)
     _digest(value.claim_digest)
@@ -437,11 +451,12 @@ def _context(
     _require(row["step_id"] == claim["step_id"])
     _require(row["request_hash"] == claim["request_hash"])
     _require(claim["transport_request_hash"] == transport_hash)
-    pair = _protocol is _Protocol.PAIR_V2
-    _require(claim["manifest"]["action_id"] == (wire.PAIR_ACTION if pair else wire.ACTION))
-    validator = (
-        wire.validate_pair_original_reservation if pair else wire.validate_original_reservation
-    )
+    _require(claim["manifest"]["action_id"] == _protocol.wire_protocol.action)
+    validator = {
+        _Protocol.READER_V1: wire.validate_original_reservation,
+        _Protocol.PAIR_V2: wire.validate_pair_original_reservation,
+        _Protocol.CORRECTION_V3: wire.validate_correction_original_reservation,
+    }[_protocol]
     original = validator(
         {
             "manifest": claim["manifest"],
@@ -455,7 +470,7 @@ def _context(
     _require(claim["request_hash"] == claim["manifest"]["request_hash"])
     _require(claim["step_id"] == claim["manifest"]["step_id"])
     _require(claim["job_id"] == operation["operation_job_id"] == claim["manifest"]["run_id"])
-    _require(claim["step_id"] == ("read_generated_pair" if pair else "read_generated"))
+    _require(claim["step_id"] == _protocol.wire_protocol.operation)
     return _Context(
         task_id,
         transport_hash,
@@ -467,18 +482,20 @@ def _context(
 
 
 def _packet(context: _Context, data: bytes) -> wire.RetainedPacket:
-    validator = (
-        wire.validate_pair_retained_packet
-        if context.protocol is _Protocol.PAIR_V2
-        else wire.validate_retained_packet
-    )
+    validator = {
+        _Protocol.READER_V1: wire.validate_retained_packet,
+        _Protocol.PAIR_V2: wire.validate_pair_retained_packet,
+        _Protocol.CORRECTION_V3: wire.validate_correction_retained_packet,
+    }[context.protocol]
     return validator(context.original, data)
 
 
 def _ready(context: _Context, packet: wire.RetainedPacket, data: bytes) -> None:
-    validator = (
-        wire.validate_pair_ready if context.protocol is _Protocol.PAIR_V2 else wire.validate_ready
-    )
+    validator = {
+        _Protocol.READER_V1: wire.validate_ready,
+        _Protocol.PAIR_V2: wire.validate_pair_ready,
+        _Protocol.CORRECTION_V3: wire.validate_correction_ready,
+    }[context.protocol]
     validator(packet, data)
 
 
@@ -490,16 +507,16 @@ def _terminal(
     clock: datetime,
     code: int,
 ) -> wire.NativeProjection:
-    validator = (
-        wire.validate_pair_terminal
-        if context.protocol is _Protocol.PAIR_V2
-        else wire.validate_terminal
-    )
+    validator = {
+        _Protocol.READER_V1: wire.validate_terminal,
+        _Protocol.PAIR_V2: wire.validate_pair_terminal,
+        _Protocol.CORRECTION_V3: wire.validate_correction_terminal,
+    }[context.protocol]
     return validator(context.original, packet, ready, data, clock=clock, returncode=code)
 
 
 def _limits(context: _Context) -> dict[str, Any]:
-    protocol = wire._PAIR if context.protocol is _Protocol.PAIR_V2 else wire._V1
+    protocol = context.protocol.wire_protocol
     return cast(dict[str, Any], wire._reservation(context.original, protocol)["manifest"]["limits"])
 
 
@@ -606,11 +623,14 @@ def _load(
         returncode,
     )
     snapshot: NativeTaskEvidence
-    if context.protocol is _Protocol.PAIR_V2:
+    if context.protocol in (_Protocol.PAIR_V2, _Protocol.CORRECTION_V3):
         _require(projection is None or type(projection) is wire.PairNativeProjection)
-        snapshot = PairNativeTaskEvidence(
-            *arguments, cast(wire.PairNativeProjection | None, projection)
+        kind = (
+            CorrectionNativeTaskEvidence
+            if context.protocol is _Protocol.CORRECTION_V3
+            else PairNativeTaskEvidence
         )
+        snapshot = kind(*arguments, cast(wire.PairNativeProjection | None, projection))
     else:
         snapshot = NativeTaskEvidence(*arguments, projection)
     return snapshot, documents
@@ -742,7 +762,10 @@ class NativeCleanupEvidence:
     independent_observation: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
-        _require(type(self.native_evidence) in (NativeTaskEvidence, PairNativeTaskEvidence))
+        _require(
+            type(self.native_evidence)
+            in (NativeTaskEvidence, PairNativeTaskEvidence, CorrectionNativeTaskEvidence)
+        )
         _require((self.receipt_bytes is None) == (self.private_packet_bytes is None))
         if self.receipt_bytes is None:
             return
@@ -751,7 +774,11 @@ class NativeCleanupEvidence:
             self.receipt_bytes, cast(bytes, self.private_packet_bytes)
         )
         trail = self.native_evidence
-        protocol = "pair_v2" if type(trail) is PairNativeTaskEvidence else "reader_v1"
+        protocol = {
+            NativeTaskEvidence: "reader_v1",
+            PairNativeTaskEvidence: "pair_v2",
+            CorrectionNativeTaskEvidence: "correction_v3",
+        }[type(trail)]
         _require(proof["protocol"] == protocol and proof["task_id"] == trail.task_id)
         _require(proof["transport_request_hash"] == trail.transport_request_hash)
         if trail.packet_bytes is not None:

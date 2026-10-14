@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any, NoReturn
 
@@ -60,6 +61,7 @@ def is_control(document: Any) -> bool:
         admission.IMPORT_SCHEMA,
         pair.IMPORT_SCHEMA,
         "bluefire.windows-file-access-control-record.v2",
+        "bluefire.windows-file-access-control-record.v3",
     )
 
 
@@ -71,6 +73,13 @@ def projection(service: Any, document: Any, now_ms: int) -> dict[str, Any]:
     owner = document["control_owner_id"]
     if document["schema_version"] == admission.IMPORT_SCHEMA:
         return dict(service.product_store.windows_file_access_setup_projection(owner))
+    if document["schema_version"] in (
+        "bluefire.windows-file-access-control-record.v2",
+        "bluefire.windows-file-access-control-record.v3",
+    ):
+        from .windows_file_access_correction_projection import projection as correction_projection
+
+        return correction_projection(service.product_store, owner, clock=_clock())
     result = dict(
         service.product_store.windows_file_access_pair_control_projection(owner, clock=_clock())
     )
@@ -119,6 +128,55 @@ def baseline_context(service: Any, now_ms: int, owner_id: str) -> dict[str, Any]
         "review_context": context,
         "expires_at_ms": record["expires_at_ms"],
         "allowed_operations": ["baseline"],
+    }
+
+
+def correction_context(
+    service: Any, now_ms: int, owner_id: str, *, _original_job_id: str | None = None
+) -> dict[str, Any]:
+    """Fresh readable preimage plus the exact retained successful paired baseline."""
+    from . import product_store_windows_correction as journal
+    from . import windows_file_access_correction_admission as correction
+    from . import windows_file_access_correction_observation as observation
+
+    checked = read_windows_file_setup_status(now_ms=now_ms)
+    if type(checked) is not VerifiedWindowsPairSetup:
+        raise WindowsEnrollmentUnavailable("windows_native_admission_unavailable")
+    record, _ = pair.checked_provenance(checked)
+    control = service.product_store.get_file_access_control(owner_id)
+    selected = {"enrollment_id": record["enrollment_id"], "enrollment_digest": content_hash(record)}
+    imported = service.product_store.get_windows_file_access_pair_import(selected)
+    if (
+        imported is None
+        or imported["control_owner_id"] != owner_id
+        or imported != pair.import_document(checked, now_ms=imported["imported_at_ms"])
+    ):
+        raise ProductStoreError("The original protected paired setup changed.")
+    descriptor = observation.observe_correction_preimage(
+        checked,
+        now_ms=now_ms,
+        deadline=time.monotonic() + min(5000, record["expires_at_ms"] - now_ms) / 1000,
+        cancelled=lambda: False,
+    )
+    context = correction.correction_context(imported, control["document"], descriptor)
+    with service.product_store._connection() as connection:
+        journal.validate_review(
+            service.product_store,
+            connection,
+            control["document"],
+            context,
+            now_ms=now_ms,
+            original_job_id=_original_job_id,
+        )
+    return {
+        "_checked": checked,
+        "_imported": imported,
+        "control": control,
+        "enrollment": {"document": record, "document_digest": content_hash(record)},
+        "context_digest": content_hash(context),
+        "review_context": context,
+        "expires_at_ms": record["expires_at_ms"],
+        "allowed_operations": ["harden"],
     }
 
 

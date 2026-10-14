@@ -31,7 +31,7 @@ class ClosingBoundary:
     close_all = close
 
 
-def bare_service(*, failures=None, windows=None):
+def bare_service(*, failures=None, windows=None, correction=None):
     failures = failures or {}
     events = []
     instance = service.BlueFireService.__new__(service.BlueFireService)
@@ -47,7 +47,9 @@ def bare_service(*, failures=None, windows=None):
         owners=ClosingBoundary(events, "composition", failures.get("composition"))
     )
     instance._file_access = SimpleNamespace(
-        windows=windows or ClosingBoundary(events, "windows", failures.get("windows"))
+        windows=windows or ClosingBoundary(events, "windows", failures.get("windows")),
+        windows_correction=correction
+        or ClosingBoundary(events, "correction", failures.get("correction")),
     )
     return instance, events
 
@@ -121,6 +123,10 @@ def test_real_service_initialization_keeps_one_file_access_controller(monkeypatc
     assert instance.file_access is instance.file_access is controls[0]
     assert instance.file_access.windows.control is controls[0]
     assert instance.file_access.windows.store is store
+    assert instance.file_access.windows_correction.control is controls[0]
+    assert instance.file_access.windows_correction.store is store
+    assert instance.file_access.windows_correction._control_owners == {}
+    assert instance.file_access.windows_correction._retest_owners == {}
     owner = object()
     instance.file_access.windows._retain("synthetic-job", owner)
     assert instance.file_access.windows._owners == {"synthetic-job": owner}
@@ -131,7 +137,15 @@ def test_real_service_initialization_keeps_one_file_access_controller(monkeypatc
 def test_shutdown_closes_windows_after_job_controller_and_other_registries():
     instance, events = bare_service()
     instance.close()
-    assert events == ["provider", "transport", "jobs", "receiver", "composition", "windows"]
+    assert events == [
+        "provider",
+        "transport",
+        "jobs",
+        "receiver",
+        "composition",
+        "windows",
+        "correction",
+    ]
 
 
 @pytest.mark.parametrize("boundary", ["provider", "transport", "jobs"])
@@ -141,26 +155,51 @@ def test_earlier_shutdown_exception_still_closes_all_owner_registries(boundary):
     with pytest.raises(RuntimeError) as caught:
         instance.close()
     assert caught.value is failure
-    assert events == ["provider", "transport", "jobs", "receiver", "composition", "windows"]
+    assert events == [
+        "provider",
+        "transport",
+        "jobs",
+        "receiver",
+        "composition",
+        "windows",
+        "correction",
+    ]
 
 
-@pytest.mark.parametrize("boundary", ["receiver", "composition", "windows"])
+@pytest.mark.parametrize("boundary", ["receiver", "composition", "windows", "correction"])
 @pytest.mark.parametrize("failure", [False, RuntimeError("synthetic registry failure")])
 def test_failed_registry_is_visible_without_skipping_later_registries(boundary, failure):
     instance, events = bare_service(failures={boundary: failure})
     with pytest.raises(ProductStoreError, match="lack verified cleanup"):
         instance.close()
-    assert events == ["provider", "transport", "jobs", "receiver", "composition", "windows"]
+    assert events == [
+        "provider",
+        "transport",
+        "jobs",
+        "receiver",
+        "composition",
+        "windows",
+        "correction",
+    ]
 
 
 @pytest.mark.parametrize("boundary", ["provider", "transport", "jobs"])
-def test_windows_cleanup_failure_remains_visible_after_earlier_shutdown_failure(boundary):
+@pytest.mark.parametrize("runtime", ["windows", "correction"])
+def test_windows_cleanup_failure_remains_visible_after_earlier_shutdown_failure(boundary, runtime):
     instance, events = bare_service(
-        failures={boundary: RuntimeError("synthetic earlier failure"), "windows": False}
+        failures={boundary: RuntimeError("synthetic earlier failure"), runtime: False}
     )
     with pytest.raises(ProductStoreError, match="lack verified cleanup"):
         instance.close()
-    assert events == ["provider", "transport", "jobs", "receiver", "composition", "windows"]
+    assert events == [
+        "provider",
+        "transport",
+        "jobs",
+        "receiver",
+        "composition",
+        "windows",
+        "correction",
+    ]
 
 
 class RetainedOwner:

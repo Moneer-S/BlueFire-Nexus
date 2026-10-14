@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any
 
 from ._windows_file_access_native_contract import (
+    _CORRECTION,
     _PAIR,
     _V1,
     ACTION,
@@ -78,9 +79,19 @@ __all__ = (
     "validate_pair_ready",
     "pair_begin_prefix",
     "validate_pair_terminal",
+    "CORRECTION_ACTION",
+    "CORRECTION_CAPABILITY",
+    "validate_correction_original_reservation",
+    "validate_correction_retained_packet",
+    "prepare_correction_packet",
+    "correction_public_frame",
+    "validate_correction_ready",
+    "correction_begin_prefix",
+    "validate_correction_terminal",
 )
 
 PAIR_ACTION, PAIR_CAPABILITY = _PAIR.action, _PAIR.capability
+CORRECTION_ACTION, CORRECTION_CAPABILITY = _CORRECTION.action, _CORRECTION.capability
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,15 +278,15 @@ def _binding(packet: RetainedPacket) -> dict[str, Any]:
     _require(type(packet) is RetainedPacket)
     row = _document(packet._raw)
     request = row["manifest"]["params"]["windows_file_read_request"]
+    keys: tuple[str, ...] = ("generation", "control_revision", "credential_binding_digest")
+    if packet._original._protocol is _CORRECTION:
+        keys += ("correction_binding_digest",)
     return {
         "challenge": row["challenge"],
         "packet_digest": content_hash(row),
         "task_id": row["task_id"],
         "request_hash": row["request_hash"],
-        **{
-            key: request[key]
-            for key in ("generation", "control_revision", "credential_binding_digest")
-        },
+        **{key: request[key] for key in keys},
     }
 
 
@@ -309,7 +320,7 @@ def begin_prefix(packet: PreparedPacket, *, clock: datetime, monotonic_now: floa
 
 def _begin_prefix(packet: PreparedPacket, *, clock: datetime, monotonic_now: float) -> bytearray:
     binding = _binding(_prepared(packet, clock, monotonic_now))
-    return (
+    prefix = (
         bytearray(packet._original._protocol.magic)
         + bytearray.fromhex(binding["challenge"])
         + bytearray.fromhex(binding["packet_digest"][7:])
@@ -317,6 +328,9 @@ def _begin_prefix(packet: PreparedPacket, *, clock: datetime, monotonic_now: flo
         + bytearray(struct.pack("<I", binding["control_revision"]))
         + bytearray.fromhex(binding["credential_binding_digest"][7:])
     )
+    if packet._original._protocol is _CORRECTION:
+        prefix += bytearray.fromhex(binding["correction_binding_digest"][7:])
+    return prefix
 
 
 def _proof(row: Any, request: dict[str, Any], returncode: int) -> tuple[str, bool, str]:
@@ -372,7 +386,8 @@ def _terminal(
     row = _document(terminal_bytes, TERMINAL_MAX)
     _exact(
         row,
-        "schema_version challenge packet_digest task_id request_hash generation control_revision credential_binding_digest operation observed_at result",
+        "schema_version challenge packet_digest task_id request_hash generation control_revision credential_binding_digest operation observed_at result"
+        + (" correction_binding_digest" if protocol is _CORRECTION else ""),
     )
     _require(
         _same({key: row[key] for key in _binding(packet)}, _binding(packet))
@@ -402,11 +417,13 @@ def _terminal(
         )
         outcome, complete, cleanup = "unknown", False, "unknown"
     else:
-        _require(observed is not None or (protocol is _PAIR and result.get("outcome") == "unknown"))
+        _require(
+            observed is not None or (protocol is not _V1 and result.get("outcome") == "unknown")
+        )
         request = context["manifest"]["params"]["windows_file_read_request"]
-        if protocol is _PAIR:
+        if protocol is not _V1:
             outcome, complete, cleanup, reader_outcome, owner_outcome = pair_proof(
-                result, request, returncode
+                result, request, returncode, protocol=protocol
             )
         else:
             outcome, complete, cleanup = _proof(result, request, returncode)
@@ -482,6 +499,89 @@ def validate_pair_terminal(
     returncode: int,
 ) -> PairNativeProjection:
     _reservation(original, _PAIR)
+    return PairNativeProjection(
+        *_terminal(
+            original,
+            retained_packet,
+            ready_bytes,
+            terminal_bytes,
+            clock=clock,
+            returncode=returncode,
+        )
+    )
+
+
+def validate_correction_original_reservation(
+    original_context: Any, *, expected_binding: Any
+) -> OriginalReservation:
+    """Bind an upstream-authorized correction claim, not authenticate its source.
+
+    The opaque correction digest must come from durable correction admission;
+    its presence proves consistency only, never correction causation or authority.
+    """
+    context, expected = _original(original_context, expected_binding, protocol=_CORRECTION)
+    return OriginalReservation(
+        canonical_json_bytes(context), canonical_json_bytes(expected), _protocol=_CORRECTION
+    )
+
+
+def validate_correction_retained_packet(
+    original: OriginalReservation, public_bytes: bytes
+) -> RetainedPacket:
+    _reservation(original, _CORRECTION)
+    return _validate_retained_packet(original, public_bytes)
+
+
+def prepare_correction_packet(
+    original: OriginalReservation,
+    *,
+    challenge: str,
+    clock: datetime,
+    monotonic_now: float,
+    original_monotonic_deadline: float,
+) -> PreparedPacket:
+    _reservation(original, _CORRECTION)
+    return _prepare_packet(
+        original,
+        challenge=challenge,
+        clock=clock,
+        monotonic_now=monotonic_now,
+        original_monotonic_deadline=original_monotonic_deadline,
+    )
+
+
+def correction_public_frame(
+    packet: PreparedPacket, *, clock: datetime, monotonic_now: float
+) -> bytes:
+    _require(type(packet) is PreparedPacket)
+    _reservation(packet._original, _CORRECTION)
+    return _public_frame(packet, clock=clock, monotonic_now=monotonic_now)
+
+
+def validate_correction_ready(packet: RetainedPacket, ready_bytes: bytes) -> None:
+    _require(type(packet) is RetainedPacket)
+    _reservation(packet._original, _CORRECTION)
+    _validate_ready(packet, ready_bytes)
+
+
+def correction_begin_prefix(
+    packet: PreparedPacket, *, clock: datetime, monotonic_now: float
+) -> bytearray:
+    _require(type(packet) is PreparedPacket)
+    _reservation(packet._original, _CORRECTION)
+    return _begin_prefix(packet, clock=clock, monotonic_now=monotonic_now)
+
+
+def validate_correction_terminal(
+    original: OriginalReservation,
+    retained_packet: RetainedPacket,
+    ready_bytes: bytes,
+    terminal_bytes: bytes,
+    *,
+    clock: datetime,
+    returncode: int,
+) -> PairNativeProjection:
+    _reservation(original, _CORRECTION)
     return PairNativeProjection(
         *_terminal(
             original,

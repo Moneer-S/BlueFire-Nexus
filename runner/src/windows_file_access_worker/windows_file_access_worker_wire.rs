@@ -124,9 +124,11 @@ impl Packet {
         let row = &request["resource"];
         let ancestors = row["ancestors"].as_array().ok_or(Code::RequestInvalid)?;
         ensure(ancestors.len() == 4)?;
-        let state = match text(&row["state"])? {
-            "readable" => ResourceState::Readable,
-            "metadata_only" if self.protocol == Protocol::ReaderV1 => ResourceState::MetadataOnly,
+        let state = match (self.protocol, text(&row["state"])?) {
+            (Protocol::ReaderV1 | Protocol::PairV2, "readable") => ResourceState::Readable,
+            (Protocol::ReaderV1 | Protocol::CorrectionPairV3, "metadata_only") => {
+                ResourceState::MetadataOnly
+            }
             _ => return Err(Code::RequestInvalid),
         };
         ResourceExpectation::new(
@@ -148,10 +150,14 @@ impl Packet {
     }
     pub(super) fn binding(&self) -> Value {
         let request = self.request();
-        json!({"challenge":self.value["challenge"],"packet_digest":self.digest,
+        let mut binding = json!({"challenge":self.value["challenge"],"packet_digest":self.digest,
             "task_id":self.value["task_id"],"request_hash":self.value["request_hash"],
             "generation":request["generation"],"control_revision":request["control_revision"],
-            "credential_binding_digest":request["credential_binding_digest"]})
+            "credential_binding_digest":request["credential_binding_digest"]});
+        if self.protocol == Protocol::CorrectionPairV3 {
+            binding["correction_binding_digest"] = request["correction_binding_digest"].clone();
+        }
+        binding
     }
 }
 fn documents(packet: &Value, protocol: Protocol) -> Result<()> {
@@ -225,26 +231,38 @@ fn documents(packet: &Value, protocol: Protocol) -> Result<()> {
     )?;
     exact(&manifest["params"], &["windows_file_read_request"])?;
     let request = &manifest["params"]["windows_file_read_request"];
-    exact(
-        request,
-        &[
-            "schema_version",
-            "request_id",
-            "operation_job_id",
-            "generation",
-            "control_revision",
-            "credential_binding_digest",
-            "host",
-            "resource",
-        ],
-    )?;
+    let mut request_fields = vec![
+        "schema_version",
+        "request_id",
+        "operation_job_id",
+        "generation",
+        "control_revision",
+        "credential_binding_digest",
+        "host",
+        "resource",
+    ];
+    if protocol == Protocol::CorrectionPairV3 {
+        request_fields.push("correction_binding_digest");
+    }
+    exact(request, &request_fields)?;
     ensure(
         request["schema_version"] == protocol.operation_schema()
             && lower_hex(text(&request["request_id"])?, 32)
             && lower_hex(text(&request["generation"])?, 32),
     )?;
-    number(&request["control_revision"], 1, i32::MAX as u64)?;
+    number(
+        &request["control_revision"],
+        if protocol == Protocol::CorrectionPairV3 {
+            2
+        } else {
+            1
+        },
+        i32::MAX as u64,
+    )?;
     digest(&request["credential_binding_digest"])?;
+    if protocol == Protocol::CorrectionPairV3 {
+        digest(&request["correction_binding_digest"])?;
+    }
     exact(
         &request["host"],
         &[

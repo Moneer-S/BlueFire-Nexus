@@ -10,6 +10,7 @@ from datetime import timedelta
 import pytest
 
 from bluefire import product_store_file_access_native_evidence as native
+from bluefire import product_store_windows_correction_retest as correction
 from bluefire import windows_file_access_native_wire as wire
 from bluefire.product_store import ProductStore
 from bluefire.product_store_errors import ProductStoreError
@@ -62,6 +63,33 @@ def test_ordinary_ready_persistence_permanently_blocks_new_allowance(saved):
     with pytest.raises(ProductStoreError):
         consume(saved)
     assert ledger.put(saved, "ready") == ledger.query(saved)
+
+
+def test_baseline_ready_never_takes_correction_liveness_or_creates_its_allowance(
+    saved, monkeypatch
+):
+    def forbidden(*args, **kwargs):
+        pytest.fail("Baseline Ready must never take correction liveness")
+
+    monkeypatch.setattr(correction, "live_context", forbidden)
+    arguments = dict(
+        transport_request_hash=saved["context"]["transport_request_hash"],
+        expected_binding=saved["expected"],
+        prepared_packet=saved["prepared"],
+        clock=NOW,
+        monotonic_now=100.0,
+    )
+    with pytest.raises(ProductStoreError):
+        correction.consume_ready(
+            saved["store"], saved["context"]["task_id"], ready_bytes=saved["ready"], **arguments
+        )
+    with pytest.raises(ProductStoreError):
+        correction.revalidate_original(saved["store"], saved["context"]["task_id"], **arguments)
+    assert ledger.query(saved).ready_bytes is None
+    allowance = consume(saved)
+    allowance(NOW, 100.0)
+    with pytest.raises(ProductStoreError):
+        consume(saved)
 
 
 @pytest.mark.parametrize(

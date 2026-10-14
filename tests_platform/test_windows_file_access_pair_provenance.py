@@ -364,7 +364,7 @@ def test_pair_supervisor_requires_selected_terminal_and_complete_cleanup(fake, c
 
 @pytest.mark.parametrize("old_capability", [False, True])
 def test_pair_setup_queries_actual_pinned_image_fixed_capability(
-    lifecycle, monkeypatch, old_capability
+    lifecycle, monkeypatch, tmp_path, old_capability
 ):
     from bluefire import runner_bootstrap
     from bluefire.runner_lifecycle import ManagedRunnerLifecycle
@@ -374,7 +374,7 @@ def test_pair_setup_queries_actual_pinned_image_fixed_capability(
     digest = "sha256:" + hashlib.sha256(payload).hexdigest()
     source = pair_source()
     source["transport"]["runner_binary_digest"] = digest
-    image = Path(r"C:\synthetic\bluefire-runner.exe")
+    image = tmp_path / "synthetic" / "bluefire-runner.exe"
     backend.files[str(image)], backend.held = payload, [777]
     chunks = [payload, b""]
     monkeypatch.setattr(setup.os, "read", lambda descriptor, size: chunks.pop(0))

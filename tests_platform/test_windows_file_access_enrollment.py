@@ -287,7 +287,7 @@ def test_full_width_resource_and_image_ids_remain_hex_strings():
 
 
 @pytest.fixture
-def observed_setup(monkeypatch):
+def observed_setup(monkeypatch, tmp_path):
     """Actual joining code over fake setup/files/account/channel boundaries only."""
     from bluefire import _windows_file_access_enrollment_observe as observe
     from tests_platform.test_windows_file_access_setup_lifecycle import (
@@ -336,9 +336,9 @@ def observed_setup(monkeypatch):
     monkeypatch.setattr(observe.write, "_NativeSetup", lambda *args: backend)
     monkeypatch.setattr(observe.write, "_require_local_machine", lambda gate: gate.check())
     monkeypatch.setattr(observe, "_resource_metadata", lambda row, gate: nullcontext())
-    fixed_root = Path(r"C:\Users\actual\AppData\Local\BlueFire Nexus")
+    fixed_root = tmp_path / "BlueFire" / "SyntheticManaged"
     monkeypatch.setattr(observe, "_managed_root", lambda: fixed_root)
-    image_path = r"C:\Program Files\BlueFire\bluefire-runner.exe"
+    image_path = str(fixed_root / "bluefire-runner.exe")
     backend.files[image_path] = image
     backend.identities[image_path] = source["native_image"]["identity"]
     backend.held = []
