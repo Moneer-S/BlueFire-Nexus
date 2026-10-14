@@ -127,28 +127,40 @@ class InstalledAdSmbExecutor:
             raise AdSmbError("AD configured channel admission changed.")
 
     def readiness(self, scope: AdSmbScope) -> dict[str, Any]:
+        unavailable = UnavailableAdSmbExecutor().readiness(scope)
         try:
             scope.assert_current(now)
+        except AdSmbError:
+            return {**unavailable, "problem": "scope_not_current"}
+        try:
             entry = self._scope(scope)
-            for role in ("member", "client"):
-                self._identity(entry, role, entry.client(role))
-            return {
-                "available": True,
-                "member_observation": True,
-                "client_read_admission": True,
-                "secret_channel_available": True,
-                "problem": None,
-                "binding_digest": entry.digest,
-            }
         except (AdSmbError, RunnerTransportError, RunnerTrustError, OSError):
-            return {
-                "available": False,
-                "member_observation": False,
-                "client_read_admission": False,
-                "secret_channel_available": False,
-                "problem": "enrollment_unavailable",
-                "binding_digest": None,
-            }
+            return {**unavailable, "problem": "enrollment_unavailable"}
+        roles = {}
+        for role in ("member", "client"):
+            try:
+                self._identity(entry, role, entry.client(role))
+                roles[role] = True
+            except (AdSmbError, RunnerTransportError, RunnerTrustError, OSError):
+                roles[role] = False
+        available = all(roles.values())
+        problem = None
+        if not available:
+            problem = (
+                "member_channel_unavailable"
+                if roles["client"]
+                else (
+                    "client_channel_unavailable" if roles["member"] else "role_channels_unavailable"
+                )
+            )
+        return {
+            "available": available,
+            "member_observation": roles["member"],
+            "client_read_admission": roles["client"],
+            "secret_channel_available": roles["client"],
+            "problem": problem,
+            "binding_digest": entry.digest if available else None,
+        }
 
     def execute(
         self,

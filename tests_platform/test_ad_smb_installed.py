@@ -1,6 +1,8 @@
 """Synthetic private-file/client boundaries; no transport or enrollment effects."""
 
 import threading
+import uuid
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -8,9 +10,11 @@ import pytest
 from bluefire import ad_smb_execution as execution
 from bluefire import ad_smb_installed as installed
 from bluefire.ad_smb_contract import AdSmbError, AdSmbScope
+from bluefire.ad_smb_jobs import AdSmbJobs
 from bluefire.ad_smb_receiver_results import context
 from bluefire.util import canonical_json_bytes, content_hash
 from tests_platform.test_ad_smb_contract import NOW, pin
+from tests_platform.test_ad_smb_jobs import workspace as workspace
 from tests_platform.test_ad_smb_receiver import original, read_record
 from tests_platform.test_ad_smb_worker_wire import rebind_context
 
@@ -40,7 +44,9 @@ def configuration(root):
 def setup(tmp_path, monkeypatch):
     entry, original_task, channel = configuration(tmp_path)
     calls = []
-    state = SimpleNamespace(entries=(entry,), recovery="completed", identity=True, result=None)
+    state = SimpleNamespace(
+        entries=(entry,), recovery="completed", identity=True, result=None, unavailable=set()
+    )
 
     def load(root):
         assert root == tmp_path
@@ -51,6 +57,8 @@ def setup(tmp_path, monkeypatch):
         def transport_identity(self):
             calls.append("health")
             role = self.role
+            if role in state.unavailable:
+                raise OSError("private diagnostic must not escape")
             return {
                 **entry.public[role],
                 "host_role": role,
@@ -314,3 +322,95 @@ def test_installed_default_never_creates_or_starts_missing_setup(tmp_path):
     service = SimpleNamespace(runner_lifecycle=SimpleNamespace(root=tmp_path))
     assert isinstance(execution.configured_executor(service), execution.UnavailableAdSmbExecutor)
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("unavailable", [set(), {"member"}, {"client"}, {"member", "client"}])
+def test_role_readiness_is_independent_configured_health_only(setup, unavailable):
+    executor, entry, _, state, calls = setup
+    state.unavailable = unavailable
+    ready = executor.readiness(AdSmbScope.from_mapping(entry.public["scope"]))
+    assert ready["member_observation"] == ("member" not in unavailable)
+    assert (
+        ready["client_read_admission"]
+        == ready["secret_channel_available"]
+        == ("client" not in unavailable)
+    )
+    assert ready["available"] == (not unavailable)
+    assert ready["problem"] == (
+        "role_channels_unavailable"
+        if len(unavailable) == 2
+        else next(iter(unavailable)) + "_channel_unavailable" if unavailable else None
+    )
+    assert ready["binding_digest"] == (None if unavailable else entry.digest)
+    assert "private diagnostic" not in str(ready)
+    assert calls == ["load", "client:member", "health", "client:client", "health"]
+
+
+@pytest.mark.parametrize("clock", [NOW - timedelta(days=1), NOW + timedelta(days=1)])
+def test_noncurrent_scope_never_contacts_either_channel(setup, monkeypatch, clock):
+    executor, entry, _, _, calls = setup
+    monkeypatch.setattr(execution, "now", lambda: clock)
+    ready = executor.readiness(AdSmbScope.from_mapping(entry.public["scope"]))
+    assert ready["problem"] == "scope_not_current"
+    assert not any(
+        ready[key]
+        for key in (
+            "available",
+            "member_observation",
+            "client_read_admission",
+            "secret_channel_available",
+        )
+    )
+    assert calls == []
+
+
+def test_workspace_refresh_recovers_later_enrollment_and_preserves_saved_evidence(
+    workspace, tmp_path, monkeypatch
+):
+    _, _, service = workspace
+    root = tmp_path / "managed"
+    service.runner_lifecycle = SimpleNamespace(root=root)
+    entry, _, _ = configuration(root / "ad-smb")
+    state = SimpleNamespace(enrolled=False)
+    calls = []
+
+    def load(path):
+        assert path == root / "ad-smb"
+        if not state.enrolled:
+            raise AdSmbError("Private setup detail")
+        return (entry,)
+
+    def client(_entry, role):
+        def identity():
+            calls.append(role)
+            return {
+                **entry.public[role],
+                "host_role": role,
+                "ad_smb_execution_available": True,
+                "readiness_scope": "configuration_only",
+            }
+
+        return SimpleNamespace(transport_identity=identity)
+
+    monkeypatch.setattr(execution, "load_installed", load)
+    monkeypatch.setattr(execution, "now", lambda: NOW)
+    monkeypatch.setattr(installed.InstalledEnvironment, "client", client)
+    jobs = AdSmbJobs(service, clock=lambda: NOW)
+    assert jobs.environments() == {"environments": [], "native_execution_available": False}
+    assert not root.exists() and calls == []
+    state.enrolled = True
+    assert jobs.environments()["native_execution_available"] is True
+    assert calls == ["member", "client"]
+    owner = jobs.create(
+        {"submission_id": str(uuid.uuid4()), "environment_id": entry.public["environment_id"]}
+    )
+    assert owner["execution_integration"] == "configured_admission"
+    before = owner["workflow"]
+    calls.clear()
+    state.enrolled = False
+    assert jobs.environments() == {"environments": [], "native_execution_available": False}
+    saved = jobs.read(before["job_id"])
+    assert saved["execution_integration"] == "unavailable" and saved["workflow"] == before
+    with pytest.raises(AdSmbError, match="prerequisites"):
+        jobs.review(before["job_id"], "inspect")
+    assert not root.exists() and calls == []

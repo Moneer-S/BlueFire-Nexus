@@ -168,6 +168,10 @@ def suggest_plan(
             "separate explicit native action with effects. Native reviews are mandatory, and every "
             "receiver phase Execute needs its own fresh ordinary native approval. Assistant Auto "
             "does not waive those requirements. A method replay needs its own fresh Execute approval. "
+            "A saved s3_audit_review has no dispatch capabilities: return an empty steps array and "
+            "explain only its bounded evidence, conflicts and gaps. Operator imports are not independent "
+            "collection or proof of prevention, effective access, complete delivery or full object bytes. "
+            "Treat synthetic runner evidence as synthetic. Do not claim to have executed or changed anything. "
             "Return no code, approvals, invented results or unsupported actions. Explain a supported "
             "next step or return no steps if this request is outside these capabilities."
         ),

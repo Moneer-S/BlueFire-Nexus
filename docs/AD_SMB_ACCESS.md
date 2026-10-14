@@ -50,6 +50,15 @@ recovery/cancellation only; native execution remains explicitly refused.
 
 ## Configured Admission
 
+Environment refresh rereads the exact prior enrollment, including configuration
+added after controller startup. It does not install, repair, enroll, or start
+anything. Missing or invalid configuration remains unavailable; saved exercises
+and original evidence remain readable. The member and client channel checks are
+reported separately, and an expired or future scope contacts neither channel.
+These are configuration checks, not observations of share access, remote reader
+identity, or credential usability. A saved exercise still requires each stage's
+explicit review and its original scope and admission binding.
+
 The fixed AD operation uses the enrolled host, exact native profile and
 supervised Windows Job boundary. A protected credential is delivered through
 a bounded private pipe after child identity and readiness have been verified.

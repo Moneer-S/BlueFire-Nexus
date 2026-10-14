@@ -11,6 +11,8 @@ type FixtureWorkflow = ReturnType<typeof rawAdWorkflow>;
 
 async function fixture(page: Page, initial: FixtureWorkflow | null, loseAcknowledgement = false) {
   let value = initial;
+  let environmentOverride: unknown;
+  let environmentChecks = 0;
   let connected = false;
   let acknowledgement: unknown;
   let acknowledgementId = "";
@@ -38,7 +40,7 @@ async function fixture(page: Page, initial: FixtureWorkflow | null, loseAcknowle
     if (!connected || request.headers()["x-bluefire-session"] !== session) { await refuse(); return; }
     if (method === "GET" && url.pathname === "/api/v1/catalog") { await json({ behaviors: [], actions: [], runner_profiles: [], runners: [], ai: { providers: [] } }); return; }
     if (method === "GET" && url.pathname === "/api/v1/scenarios") { await json({ scenarios: [] }); return; }
-    if (method === "GET" && url.pathname === "/api/v1/ad-smb/environments") { await json(value ? rawAdEnvironments() : { environments: [], native_execution_available: false }); return; }
+    if (method === "GET" && url.pathname === "/api/v1/ad-smb/environments") { environmentChecks += 1; await json(environmentOverride ?? (value ? rawAdEnvironments() : { environments: [], native_execution_available: false })); return; }
     if (method === "GET" && url.pathname === "/api/v1/ad-smb/workflows") { await json({ workflows: value ? [value] : [] }); return; }
     const root = `/api/v1/ad-smb/workflows/${adOwner}`;
     if (method === "GET" && url.pathname === root && value) { await json(value); return; }
@@ -83,7 +85,7 @@ async function fixture(page: Page, initial: FixtureWorkflow | null, loseAcknowle
   await page.getByRole("button", { name: "Connect", exact: true }).click();
   await expect(page.getByRole("heading", { name: "AD share access", exact: true })).toBeVisible();
   await expect(page.getByLabel("One-time connection code", { exact: false })).toHaveCount(0);
-  return { counts, set: (next: FixtureWorkflow) => { value = next; } };
+  return { counts, set: (next: FixtureWorkflow) => { value = next; }, setEnvironments: (next: unknown) => { environmentOverride = next; }, environmentChecks: () => environmentChecks };
 }
 
 async function geometry(page: Page, targetSelector?: string) {
@@ -187,6 +189,38 @@ test("synthetic production bundle: unavailable AD enrollment remains explicit at
   await expect(page.getByText("Live AD execution unavailable", { exact: true })).toBeVisible();
   expect(state.counts).toEqual({ review: 0, stage: 0, stop: 0, recover: 0, saved: 0, unexpected: 0, pageErrors: 0, websocket: 0 });
   report("unavailable", { captures, counts: state.counts });
+});
+
+for (const width of [1366, 390, 320]) test(`synthetic AD enrollment refresh and partial-channel recovery at ${width}`, async ({ page }) => {
+  const viewport = { width, height: 900 };
+  await page.setViewportSize(viewport);
+  const state = await fixture(page, null);
+  await expect(page.getByText("Not tested", { exact: true })).toBeVisible();
+  const ready = rawAdEnvironments();
+  const entry = ready.environments[0]!;
+  state.setEnvironments({ ...ready, environments: [{ ...entry, available: false, readiness: { ...entry.readiness, available: false, client_read_admission: false, secret_channel_available: false, problem: "client_channel_unavailable" } }] });
+  await page.getByRole("button", { name: "Refresh state", exact: true }).click();
+  await expect(page.getByText("The client channel did not confirm its enrolled configuration.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Configuration confirmed", { exact: true })).toHaveCount(1);
+  const save = page.getByRole("button", { name: "Save exercise", exact: true });
+  await expect(save).toBeDisabled();
+  await save.scrollIntoViewIfNeeded();
+  const partial = await capture(page, "partial-channel", viewport, ".ad-smb-environment button");
+  assertVerticalCapture(partial, true);
+  state.setEnvironments(ready);
+  await page.getByRole("button", { name: "Refresh state", exact: true }).click();
+  await expect(save).toBeEnabled();
+  await expect(page.getByText("Configuration confirmed", { exact: true })).toHaveCount(3);
+  await expect(page.getByText("Enrollment needs attention", { exact: true })).toHaveCount(0);
+  await page.reload();
+  await expect(save).toBeEnabled();
+  await expect(page.getByText(/Configuration checks only/)).toBeVisible();
+  await save.scrollIntoViewIfNeeded();
+  const recovered = await capture(page, "refreshed-enrollment", viewport, ".ad-smb-environment button");
+  assertVerticalCapture(recovered, true);
+  expect(state.environmentChecks()).toBe(4);
+  expect(state.counts).toEqual({ review: 0, stage: 0, stop: 0, recover: 0, saved: 0, unexpected: 0, pageErrors: 0, websocket: 0 });
+  report(`readiness-refresh-${width}`, { partial, recovered, counts: state.counts, environmentChecks: state.environmentChecks() });
 });
 
 test("synthetic production bundle: settled counterexample, exact restore review and pending reload", async ({ page }) => {

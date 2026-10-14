@@ -15,7 +15,7 @@ def dispatch_s3_access(handler: Any, path: str, body: Mapping[str, Any] | None =
         return True
     suffix = path[len(prefix) :]
     match = re.fullmatch(
-        r"exercises/(job-[0-9a-f]{32})(?:/(review|operations|stop|recover|audit-reviews)(?:/(job-[0-9a-f]{32}))?)?",
+        r"exercises/(job-[0-9a-f]{32})(?:/(review|operations|stop|recover|audit-reviews)(?:/(job-[0-9a-f]{32})(/assistant-context)?)?)?",
         suffix,
     )
     draft = re.fullmatch(r"setup/drafts/([a-z][a-z0-9]*(?:[._-][a-z0-9]+)*)", suffix)
@@ -39,7 +39,7 @@ def dispatch_s3_access(handler: Any, path: str, body: Mapping[str, Any] | None =
                 "Select a canonical saved audit review.",
             )
             return True
-        operation = "audit-review"
+        operation = "audit-assistance" if match and match.group(4) else "audit-review"
     if draft:
         operation, identifier = "setup/draft", draft.group(1)
     service = handler.platform_server.service
@@ -51,6 +51,7 @@ def dispatch_s3_access(handler: Any, path: str, body: Mapping[str, Any] | None =
         "read": lambda: service.s3_access_exercise(identifier),
         "audit-reviews": lambda: service.s3_audit_reviews(identifier),
         "audit-review": lambda: service.s3_audit_review(identifier, review_id),
+        "audit-assistance": lambda: service.s3_audit_assistance_context(identifier, review_id),
     }
     writes = {
         "setup/check": lambda: service.check_s3_access_setup(body),

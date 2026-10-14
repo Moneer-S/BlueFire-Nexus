@@ -123,6 +123,10 @@ def readiness(value: Any) -> dict[str, Any]:
         "native_admission_unavailable",
         "enrollment_unavailable",
         "changed",
+        "scope_not_current",
+        "member_channel_unavailable",
+        "client_channel_unavailable",
+        "role_channels_unavailable",
     }:
         raise AdSmbError("AD unavailability reason is invalid.")
     elif row["binding_digest"] is not None:
