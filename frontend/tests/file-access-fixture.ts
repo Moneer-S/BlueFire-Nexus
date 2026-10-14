@@ -1,12 +1,12 @@
 import { FILE_ACCESS_PACK, type CompositionObjective, type CompositionReview } from "../src/lib/composition";
-import type { FileAccessControl, FileAccessObservation, FileAccessOperationEnvelope, FileAccessReview, FileAccessStatus, FileAccessSubmission } from "../src/lib/file-access";
+import type { LinuxFileAccessControl, FileAccessObservation, FileAccessOperationEnvelope, FileAccessReview, LinuxFileAccessStatus, FileAccessSubmission } from "../src/lib/file-access";
 import { attemptFixture, controlId, objectiveFixture, proposalId, reviewFixture, testDigest } from "./composition-fixture";
 
 // Authored presentation fixtures, not enrollment or effective-access proof.
-export function fileAccessStatusFixture(): FileAccessStatus {
+export function fileAccessStatusFixture(): LinuxFileAccessStatus {
   return { schema_version: "bluefire.file-access-status.v1", available: true, problem: null, enrollment: { enrollment_id: "file-access-test-generation", enrollment_digest: testDigest, expires_at_ms: Date.now() + 600000, owner_uid: 1000, probe_uid: 1002 }, allowed_operations: ["create"] };
 }
-export function fileAccessControlFixture(): FileAccessControl {
+export function fileAccessControlFixture(): LinuxFileAccessControl {
   return { schema_version: "bluefire.file-access-control.v1", control_owner_id: controlId, control_digest: testDigest, revision: 3, status: "hardened", resource: { resource_id: "resource-test", resource_generation: "generation-test", sha256: testDigest, size: 512, record_count: 8, mode: "0600" }, baseline: { baseline_digest: testDigest, non_owner: "allowed", owner: "allowed", record_count: 8, sha256: testDigest }, usage_state: "settled", allowed_operations: ["rollback", "reset"], operations: [] };
 }
 export function fileAccessReviewFixture(): FileAccessReview {

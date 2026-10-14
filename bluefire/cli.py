@@ -155,6 +155,21 @@ def _parser() -> argparse.ArgumentParser:
     runner_start.add_argument("--profile")
     runner_stop = runner_commands.add_parser("stop", help="Request authenticated runner shutdown")
     runner_stop.add_argument("--profile")
+    windows_file_setup = runner_commands.add_parser(
+        "windows-file-setup", help="Create the reviewed disposable local Windows reader"
+    )
+    windows_file_setup.add_argument("--profile", required=True)
+    windows_file_setup.add_argument(
+        "--confirm-create-local-reader", action="store_true", required=True
+    )
+    windows_pair_setup = runner_commands.add_parser(
+        "windows-file-baseline-setup",
+        help="Create the reviewed disposable paired Windows baseline setup",
+    )
+    windows_pair_setup.add_argument("--profile", required=True)
+    windows_pair_setup.add_argument(
+        "--confirm-create-local-reader", action="store_true", required=True
+    )
     runner_commands.add_parser("revoke", help="Revoke stopped runner trust")
     runner_remove = runner_commands.add_parser(
         "remove", help="Remove revoked trust and reconciled runner state"
@@ -535,6 +550,27 @@ def _execute(
     ai_provider_access: AIProviderAccess | None = None,
     config: BlueFireConfig | None = None,
 ) -> Mapping[str, Any] | Sequence[Any] | None:
+    if args.command == "runner" and args.runner_command in (
+        "windows-file-setup",
+        "windows-file-baseline-setup",
+    ):
+        from .windows_file_access_setup_process import (
+            setup_windows_file_access_local,
+            setup_windows_file_baseline_local,
+        )
+
+        if args.confirm_create_local_reader is not True:
+            raise ValueError("Windows local setup requires explicit operator confirmation.")
+        if any(
+            value is not None for value in (args.config, args.runs_dir, config, ai_provider_access)
+        ):
+            raise ValueError("Windows local setup uses only the fixed managed product state.")
+        setup = (
+            setup_windows_file_access_local
+            if args.runner_command == "windows-file-setup"
+            else setup_windows_file_baseline_local
+        )
+        return setup(args.profile)
     if args.command == "s3":
         from .s3_access_setup_cli import execute as execute_s3_setup
 
@@ -1002,6 +1038,11 @@ def main(
         return 130
     if result is not None:
         _json(result)
+    if args.command == "runner" and args.runner_command in (
+        "windows-file-setup",
+        "windows-file-baseline-setup",
+    ):
+        return 0 if isinstance(result, Mapping) and result.get("publication") == "complete" else 4
     return 0
 
 

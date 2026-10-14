@@ -109,6 +109,10 @@ class StubService:
         self.calls.append(("file_access_status",))
         return {"saved": True}
 
+    def import_file_access_setup(self, request):
+        self.calls.append(("import_file_access_setup", request))
+        return {"saved": True}
+
     def ad_smb_environments(self):
         self.calls.append(("ad_smb_environments",))
         return {"environments": [], "native_execution_available": False}

@@ -16,6 +16,12 @@ from .assistance_audit_context import context as audit_context
 from .assistance_audit_context import selection as audit_selection
 from .assistance_context import LIMITATIONS, AssistanceContext
 from .assistance_context import context as selected_context
+from .assistance_context import is_audit as is_audit
+from .assistance_context import is_creation as is_creation
+from .assistance_context import is_graph as is_graph
+from .assistance_context import is_receiver as is_receiver
+from .assistance_context import is_saved_run as is_saved_run
+from .assistance_context import submitted as submitted
 from .assistance_receiver_context import KINDS as RECEIVER_KINDS
 from .assistance_receiver_context import selection as receiver_selection
 from .assistance_results import TERMINAL, active, child_job, child_path, result
@@ -36,47 +42,6 @@ from .util import content_hash
 
 def fail(message: str) -> APIError:
     return APIError(HTTPStatus.CONFLICT, "assistance_turn_refused", message)
-
-
-def submitted(request: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Normalize additive selection syntax without changing the durable wire request."""
-    chosen = request.get("selection")
-    if chosen is None or chosen.get("kind") in {
-        "graph",
-        "saved_graph",
-        "saved_scenario",
-        "run_detection",
-        AUDIT_KIND,
-        *RECEIVER_KINDS,
-    }:
-        return request
-    return {
-        **{key: value for key, value in request.items() if key != "selection"},
-        **{key: value for key, value in chosen.items() if key != "kind"},
-    }
-
-
-def is_graph(request: Mapping[str, Any]) -> bool:
-    return bool(
-        request.get("selection", {}).get("kind")
-        in {"graph", "saved_graph", "saved_scenario", "run_detection", AUDIT_KIND, *RECEIVER_KINDS}
-    )
-
-
-def is_receiver(request):
-    return request.get("selection", {}).get("kind") in RECEIVER_KINDS
-
-
-def is_audit(request):
-    return request.get("selection", {}).get("kind") == AUDIT_KIND
-
-
-def is_creation(request: Mapping[str, Any]) -> bool:
-    return bool(request.get("selection", {}).get("kind") == "run_detection")
-
-
-def is_saved_run(request: Mapping[str, Any]) -> bool:
-    return bool(request.get("selection", {}).get("kind") in {"saved_graph", "saved_scenario"})
 
 
 class ExperimentAssistance:

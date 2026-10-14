@@ -7,6 +7,8 @@ from urllib.parse import urlencode
 
 from .ai_assistance import COMPARE, REVISE
 from .ai_provider_access import AIProviderAccess
+from .assistance_audit_context import KIND as AUDIT_KIND
+from .assistance_receiver_context import KINDS as RECEIVER_KINDS
 from .assistance_runs import AssistanceRunJobs
 from .collection_methods import COLLECTION_METHODS
 from .config import AIConfig
@@ -49,6 +51,47 @@ LIMITATIONS = [
     "Selected observations are development input, not independent held-out validation or deployed prevention evidence.",
     "A committed rule revision advances automatically when this process remains available; reopening can recover an interrupted handoff without repeating completed work.",
 ]
+
+
+def submitted(request: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Normalize additive selection syntax without changing the durable wire request."""
+    chosen = request.get("selection")
+    if chosen is None or chosen.get("kind") in {
+        "graph",
+        "saved_graph",
+        "saved_scenario",
+        "run_detection",
+        AUDIT_KIND,
+        *RECEIVER_KINDS,
+    }:
+        return request
+    return {
+        **{key: value for key, value in request.items() if key != "selection"},
+        **{key: value for key, value in chosen.items() if key != "kind"},
+    }
+
+
+def is_graph(request: Mapping[str, Any]) -> bool:
+    return bool(
+        request.get("selection", {}).get("kind")
+        in {"graph", "saved_graph", "saved_scenario", "run_detection", AUDIT_KIND, *RECEIVER_KINDS}
+    )
+
+
+def is_receiver(request):
+    return request.get("selection", {}).get("kind") in RECEIVER_KINDS
+
+
+def is_audit(request):
+    return request.get("selection", {}).get("kind") == AUDIT_KIND
+
+
+def is_creation(request: Mapping[str, Any]) -> bool:
+    return bool(request.get("selection", {}).get("kind") == "run_detection")
+
+
+def is_saved_run(request: Mapping[str, Any]) -> bool:
+    return bool(request.get("selection", {}).get("kind") in {"saved_graph", "saved_scenario"})
 
 
 def detection_path(run_id: str, candidate_id: str, job_id: str | None = None) -> str:
