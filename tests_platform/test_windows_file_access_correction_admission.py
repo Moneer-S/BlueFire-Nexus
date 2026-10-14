@@ -28,9 +28,9 @@ def correction_case(paired):
         "size_bytes": record["resource"]["size_bytes"],
         "sha256": record["resource"]["sha256"],
         "resource_generation": record["generation"],
-        "observed_at": datetime.fromtimestamp(
-            (ISSUED + 500) / 1000, timezone.utc
-        ).isoformat(timespec="microseconds").replace("+00:00", "Z"),
+        "observed_at": datetime.fromtimestamp((ISSUED + 500) / 1000, timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z"),
         "native_cleanup": "verified",
         "owned_job_cleanup": "verified",
         "independent_observation": False,
@@ -112,8 +112,13 @@ def test_correction_context_requires_complete_prior_allowed_reads_and_cleanup(co
         **case["imported"]["enrollment"]["resource"],
         "state": "metadata_only",
     }
-    assert case["context"]["target_resource"]["owner_sid"] == case["control"]["resource"]["owner_sid"]
-    assert case["context"]["target_resource"]["file_identity"] == case["control"]["resource"]["file_identity"]
+    assert (
+        case["context"]["target_resource"]["owner_sid"] == case["control"]["resource"]["owner_sid"]
+    )
+    assert (
+        case["context"]["target_resource"]["file_identity"]
+        == case["control"]["resource"]["file_identity"]
+    )
 
     mutations = (
         ("non_owner", "denied"),
@@ -173,9 +178,10 @@ def test_correction_binding_is_exact_and_bound_to_original_setup(correction_case
 def test_harden_preparation_binds_exact_submission_control_and_context(correction_case):
     case = correction_case
     original, value = prepared(case)
-    assert correction.validate_retained_preparation(
-        value, original, case["imported"], case["control"]
-    ) == value
+    assert (
+        correction.validate_retained_preparation(value, original, case["imported"], case["control"])
+        == value
+    )
     assert value["binding"]["prior_control_digest"] == content_hash(case["control"])
     assert value["binding"]["baseline_digest"] == case["control"]["baseline"]["baseline_digest"]
     assert value["binding"]["target_resource"] == case["context"]["target_resource"]
@@ -187,10 +193,14 @@ def test_harden_preparation_binds_exact_submission_control_and_context(correctio
     wrong_control = deepcopy(case["control"])
     wrong_control["revision"] = 3
     with pytest.raises(wire.NativeWireError):
-        correction.build_preparation(value["job_id"], original, case["imported"], wrong_control, issued_at_ms=ISSUED + 2)
+        correction.build_preparation(
+            value["job_id"], original, case["imported"], wrong_control, issued_at_ms=ISSUED + 2
+        )
     for changed in mutations:
         with pytest.raises((wire.NativeWireError, ValueError)):
-            correction.build_preparation(value["job_id"], changed, case["imported"], case["control"], issued_at_ms=ISSUED + 2)
+            correction.build_preparation(
+                value["job_id"], changed, case["imported"], case["control"], issued_at_ms=ISSUED + 2
+            )
 
     for field, replacement in (
         ("context_digest", content_hash({"wrong": "context"})),
@@ -200,7 +210,9 @@ def test_harden_preparation_binds_exact_submission_control_and_context(correctio
         changed = deepcopy(original)
         changed["review"][field] = replacement
         with pytest.raises(wire.NativeWireError):
-            correction.build_preparation(value["job_id"], changed, case["imported"], case["control"], issued_at_ms=ISSUED + 2)
+            correction.build_preparation(
+                value["job_id"], changed, case["imported"], case["control"], issued_at_ms=ISSUED + 2
+            )
 
 
 @pytest.mark.timeout(10)
@@ -221,31 +233,47 @@ def test_preparation_deadline_is_capped_by_review_and_original_ten_second_budget
 def test_retest_is_capped_at_five_seconds_and_cannot_renew_original_authority(correction_case):
     _, value = prepared(correction_case, review_expires_at_ms=ISSUED + 8000)
     five_second_original, _ = correction.build_retest_original(
-        value["binding"], correction_case["checked"], issued_at_ms=ISSUED + 2000, reviewed_by="synthetic-operator"
+        value["binding"],
+        correction_case["checked"],
+        issued_at_ms=ISSUED + 2000,
+        reviewed_by="synthetic-operator",
     )
     assert five_second_original["manifest"]["expires_at"] == datetime.fromtimestamp(
         (ISSUED + 7000) / 1000, timezone.utc
     ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     original, expected = correction.build_retest_original(
-        value["binding"], correction_case["checked"], issued_at_ms=ISSUED + 7000, reviewed_by="synthetic-operator"
+        value["binding"],
+        correction_case["checked"],
+        issued_at_ms=ISSUED + 7000,
+        reviewed_by="synthetic-operator",
     )
     assert original["manifest"]["expires_at"] == datetime.fromtimestamp(
         (ISSUED + 8000) / 1000, timezone.utc
     ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     assert expected["correction_binding_digest"] == content_hash(value["binding"])
-    retest_expiry_ms = int(datetime.fromisoformat(original["manifest"]["expires_at"].replace("Z", "+00:00")).timestamp() * 1000)
+    retest_expiry_ms = int(
+        datetime.fromisoformat(
+            original["manifest"]["expires_at"].replace("Z", "+00:00")
+        ).timestamp()
+        * 1000
+    )
     assert retest_expiry_ms <= value["binding"]["expires_at_ms"]
     assert original["manifest"]["requested_at"] == datetime.fromtimestamp(
         (ISSUED + 7000) / 1000, timezone.utc
     ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     with pytest.raises(wire.NativeWireError):
         correction.build_retest_original(
-            value["binding"], correction_case["checked"], issued_at_ms=value["binding"]["expires_at_ms"], reviewed_by="synthetic-operator"
+            value["binding"],
+            correction_case["checked"],
+            issued_at_ms=value["binding"]["expires_at_ms"],
+            reviewed_by="synthetic-operator",
         )
 
 
 @pytest.mark.timeout(10)
-def test_correction_profile_keeps_original_profile_immutable_except_scoped_authority(correction_case):
+def test_correction_profile_keeps_original_profile_immutable_except_scoped_authority(
+    correction_case,
+):
     record, receipt = pair.checked_provenance(correction_case["checked"])
     original_profile = receipt["private_profile"]
     profile = correction.correction_profile(correction_case["checked"])

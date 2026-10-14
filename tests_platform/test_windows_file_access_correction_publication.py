@@ -36,8 +36,13 @@ def no_terminal(value, monkeypatch):
 
 
 def execute(
-    value, monkeypatch, *, reader="data_access_denied", owner_failure=False,
-    unknown_terminal=False, cleanup_unknown=False,
+    value,
+    monkeypatch,
+    *,
+    reader="data_access_denied",
+    owner_failure=False,
+    unknown_terminal=False,
+    cleanup_unknown=False,
 ):
     retest_fake.close_control(value)
     retest_fake.register(value)
@@ -74,19 +79,27 @@ def execute(
         returncode = 4
         terminal["observed_at"] = None
         terminal["result"].update(
-            outcome="unknown", issue="deadline", failed_stage="complete",
+            outcome="unknown",
+            issue="deadline",
+            failed_stage="complete",
             resource_pair_rechecked=False,
         )
     if owner_failure:
         returncode = 4
         result = terminal["result"]
         result.update(
-            outcome="unknown", issue="native_failure", failed_stage="owner_read",
+            outcome="unknown",
+            issue="native_failure",
+            failed_stage="owner_read",
             resource_pair_rechecked=False,
         )
         result["owner"].update(
-            outcome="unknown", issue="native_failure", failed_stage="owner_read",
-            bytes_read=0, observed_sha256=None, resource_rechecked=False,
+            outcome="unknown",
+            issue="native_failure",
+            failed_stage="owner_read",
+            bytes_read=0,
+            observed_sha256=None,
+            resource_rechecked=False,
         )
     process = process_driver.Process(
         canonical_json_bytes(ready), canonical_json_bytes(terminal), code=returncode
@@ -139,7 +152,11 @@ def execute(
             _protocol=native._Protocol.CORRECTION_V3,
         )
     return SimpleNamespace(
-        args=args, result=result, process=process, containment=containment, buffers=buffers,
+        args=args,
+        result=result,
+        process=process,
+        containment=containment,
+        buffers=buffers,
         observed_time=observed_time,
     )
 
@@ -157,7 +174,8 @@ def revision_rows(value):
         ).fetchone()[0]
         outcome = connection.execute(
             "SELECT document_json,document_digest FROM file_access_outcomes WHERE job_id=? "
-            "ORDER BY sequence DESC LIMIT 1", (value.job,)
+            "ORDER BY sequence DESC LIMIT 1",
+            (value.job,),
         ).fetchone()
     return revisions, outcome
 
@@ -172,7 +190,9 @@ def test_publication_requires_denied_reader_allowed_owner_and_both_closures(cand
     assert all(not any(buffer) for buffer in execution.buffers)
     expected_digest = add_unknown_outcome(value)
     revision = publication.publish(
-        value.store, value.job, clock=execution.observed_time,
+        value.store,
+        value.job,
+        clock=execution.observed_time,
         expected_outcome_digest=expected_digest,
     )
     assert revision["schema_version"] == publication.CONTROL_SCHEMA
@@ -182,10 +202,15 @@ def test_publication_requires_denied_reader_allowed_owner_and_both_closures(cand
     assert revision["retest"]["owner"] == "allowed"
     assert revision["retest"]["native_cleanup"] == "verified"
     assert revision["retest"]["owned_job_cleanup"] == "verified"
-    assert publication.publish(
-        value.store, value.job, clock=execution.observed_time,
-        expected_outcome_digest=expected_digest,
-    ) == revision
+    assert (
+        publication.publish(
+            value.store,
+            value.job,
+            clock=execution.observed_time,
+            expected_outcome_digest=expected_digest,
+        )
+        == revision
+    )
     assert revision_rows(value)[0] == 1
 
 
@@ -237,13 +262,20 @@ def test_publish_uses_exact_unknown_outcome_cas(candidate, monkeypatch):
             expected_outcome_digest="sha256:" + "0" * 64,
         )
     assert revision_rows(value)[0] == 0
-    assert publication.publish(
-        value.store, value.job, clock=execution.observed_time,
-        expected_outcome_digest=expected_digest,
-    )["status"] == "hardened"
+    assert (
+        publication.publish(
+            value.store,
+            value.job,
+            clock=execution.observed_time,
+            expected_outcome_digest=expected_digest,
+        )["status"]
+        == "hardened"
+    )
 
 
-def test_publication_transaction_rolls_back_revision_if_outcome_insert_fails(candidate, monkeypatch):
+def test_publication_transaction_rolls_back_revision_if_outcome_insert_fails(
+    candidate, monkeypatch
+):
     value = candidate
     execution = execute(value, monkeypatch)
     expected_digest = add_unknown_outcome(value)
@@ -254,19 +286,20 @@ def test_publication_transaction_rolls_back_revision_if_outcome_insert_fails(can
         )
     with pytest.raises(ProductStoreError):
         publication.publish(
-            value.store, value.job, clock=execution.observed_time,
+            value.store,
+            value.job,
+            clock=execution.observed_time,
             expected_outcome_digest=expected_digest,
         )
     count, outcome = revision_rows(value)
     assert count == 0 and outcome[1] == expected_digest
 
 
-def test_expired_historical_publication_never_prepares_or_observes_again(
-    candidate, monkeypatch
-):
+def test_expired_historical_publication_never_prepares_or_observes_again(candidate, monkeypatch):
     value = candidate
     execution = execute(value, monkeypatch)
     expected_digest = add_unknown_outcome(value)
+
     def forbidden(*_args, **_kwargs):
         raise AssertionError("historical publication must not prepare or observe")
 
@@ -291,9 +324,12 @@ def test_expired_historical_publication_never_prepares_or_observes_again(
     )
     assert revision["status"] == "hardened"
     assert revision["retest"]["owned_job_cleanup"] == "verified"
-    assert publication.publish(
-        value.store,
-        value.job,
-        clock=historical,
-        expected_outcome_digest=expected_digest,
-    ) == revision
+    assert (
+        publication.publish(
+            value.store,
+            value.job,
+            clock=historical,
+            expected_outcome_digest=expected_digest,
+        )
+        == revision
+    )

@@ -83,9 +83,7 @@ def test_correction_work_routes_only_to_v3_supervisor(launch_harness, monkeypatc
 
 
 @pytest.mark.timeout(15)
-def test_pair_v2_postimage_and_original_are_refused_before_any_pin(
-    launch_harness, monkeypatch
-):
+def test_pair_v2_postimage_and_original_are_refused_before_any_pin(launch_harness, monkeypatch):
     state = launch_harness.state
     monkeypatch.setattr(module.sys, "platform", "win32")
 
@@ -105,9 +103,7 @@ def test_pair_v2_postimage_and_original_are_refused_before_any_pin(
 
 
 @pytest.mark.timeout(15)
-def test_wrong_producer_and_v1_original_are_refused_before_side_effects(
-    correction
-):
+def test_wrong_producer_and_v1_original_are_refused_before_side_effects(correction):
     c = correction
     with pytest.raises(Exception):
         module.CorrectionLaunchOwner(
@@ -216,7 +212,9 @@ def test_pre_begin_process_creation_failure_stops_producer_and_releases_pin(
 ):
     owner = initialized_correction_owner(launch_harness)
     state = launch_harness.state
-    monkeypatch.setattr(module.subprocess, "Popen", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(
+        module.subprocess, "Popen", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError())
+    )
 
     owner._work()
 
@@ -226,4 +224,3 @@ def test_pre_begin_process_creation_failure_stops_producer_and_releases_pin(
     assert "pin_enter" in launch_harness.events
     assert "pin_close" in launch_harness.events
     assert not launch_harness.popen_calls
-

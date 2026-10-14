@@ -205,7 +205,8 @@ class CleanupOwner:
     def _limits(self) -> dict[str, int]:
         if self.protocol is _Protocol.CORRECTION_V3:
             return cast(
-                dict[str, int], wire._reservation(self.original, wire._CORRECTION)["manifest"]["limits"]
+                dict[str, int],
+                wire._reservation(self.original, wire._CORRECTION)["manifest"]["limits"],
             )
         if self.protocol is _Protocol.PAIR_V2:
             return cast(

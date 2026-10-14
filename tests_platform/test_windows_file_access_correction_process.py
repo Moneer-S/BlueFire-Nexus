@@ -31,7 +31,13 @@ def setup(monkeypatch, tmp_path):
 
 
 def run(
-    setup, *, reader="data_access_denied", fail_stage=None, containment=None, entry=None, producer=None
+    setup,
+    *,
+    reader="data_access_denied",
+    fail_stage=None,
+    containment=None,
+    entry=None,
+    producer=None,
 ):
     store, original, packet, retained, context, expected = setup
     ready, terminal = correction.envelopes(retained, reader)
@@ -43,8 +49,17 @@ def run(
         stages.append(stage)
         if stage == fail_stage:
             raise ProductStoreError("Synthetic persistence refusal")
-        evidence.record(store, context["task_id"], context["transport_request_hash"], expected,
-                        stage, raw, code, clock, _protocol=evidence._Protocol.CORRECTION_V3)
+        evidence.record(
+            store,
+            context["task_id"],
+            context["transport_request_hash"],
+            expected,
+            stage,
+            raw,
+            code,
+            clock,
+            _protocol=evidence._Protocol.CORRECTION_V3,
+        )
 
     def begin(prefix):
         if producer is None:
@@ -57,17 +72,29 @@ def run(
         return value
 
     result = (entry or supervisor.supervise_correction_suspended)(
-        process, owned_job=5001, containment=containment, prepared_packet=packet,
-        original_reservation=original, revalidate_original=lambda: None,
-        begin_producer=begin, cancellation_event=threading.Event(), evidence_sink=sink,
+        process,
+        owned_job=5001,
+        containment=containment,
+        prepared_packet=packet,
+        original_reservation=original,
+        revalidate_original=lambda: None,
+        begin_producer=begin,
+        cancellation_event=threading.Event(),
+        evidence_sink=sink,
     )
     return result, process, containment, stages, buffers
 
 
 def query(setup, *, clock=correction.v1.NOW, protocol=evidence._Protocol.CORRECTION_V3):
     store, _, _, _, context, expected = setup
-    return evidence.query(store, context["task_id"], context["transport_request_hash"],
-                          expected, clock, _protocol=protocol)
+    return evidence.query(
+        store,
+        context["task_id"],
+        context["transport_request_hash"],
+        expected,
+        clock,
+        _protocol=protocol,
+    )
 
 
 @pytest.mark.parametrize("reader", ["data_access_denied", "allowed"])
@@ -86,8 +113,13 @@ def test_correction_result_and_closure_are_distinct_from_effect_and_settlement(s
     assert not trail.projection.independent_observation
     store, _, _, _, context, expected = setup
     joined = evidence.record_cleanup(
-        store, context["task_id"], context["transport_request_hash"], expected,
-        result.cleanup_receipt, correction.v1.NOW, _protocol=evidence._Protocol.CORRECTION_V3,
+        store,
+        context["task_id"],
+        context["transport_request_hash"],
+        expected,
+        result.cleanup_receipt,
+        correction.v1.NOW,
+        _protocol=evidence._Protocol.CORRECTION_V3,
     )
     assert joined.owned_job_cleanup == "verified" and not joined.settled
     assert result.cleanup_receipt.document()["protocol"] == "correction_v3"
@@ -149,7 +181,9 @@ def test_malformed_v3_begin_is_rejected_before_private_write_and_wiped(setup, fa
 
     result, process, _, stages, buffers = run(setup, producer=malformed)
     assert result.issue == "begin_refused" and result.dispatch == "not_started"
-    assert result.projection is None and result.cleanup == "verified" and result.cleanup_owner is None
+    assert (
+        result.projection is None and result.cleanup == "verified" and result.cleanup_owner is None
+    )
     assert len(buffers) == 1 and len(process.stdin.writes) == 1
     assert stages == ["packet", "ready"]
     if isinstance(buffers[0], bytearray):
@@ -181,7 +215,9 @@ def test_correction_evidence_cannot_be_read_as_legacy_protocol(setup, protocol):
         query(setup, protocol=protocol)
 
 
-@pytest.mark.parametrize("entry", [supervisor.supervise_suspended, supervisor.supervise_pair_suspended])
+@pytest.mark.parametrize(
+    "entry", [supervisor.supervise_suspended, supervisor.supervise_pair_suspended]
+)
 def test_legacy_supervisor_refuses_correction_before_assignment_and_drains(setup, entry):
     result, process, containment, stages, buffers = run(setup, entry=entry)
     assert result.dispatch == "not_started" and result.projection is None
