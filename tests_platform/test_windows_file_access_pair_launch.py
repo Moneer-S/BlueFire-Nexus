@@ -273,7 +273,7 @@ def test_pinned_pair_image_launch_uses_fixed_command_and_closes_everything(harne
         "TMP": os.fspath(_ROOT),
     }
     assert kwargs["shell"] is False and kwargs["close_fds"] is True and kwargs["bufsize"] == 0
-    assert kwargs["creationflags"] == 0x08000000 | 0x00000200 | 0x00000004
+    assert kwargs["creationflags"] == 0x00000008 | 0x00000200 | 0x00000004
     assert [entry[0] for entry in harness.image_paths] == [
         PureWindowsPath("C:/"),
         _ROOT,

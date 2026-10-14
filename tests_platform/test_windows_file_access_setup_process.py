@@ -437,7 +437,8 @@ def test_real_launch_recipe_is_fixed_pinned_and_suspended(clocks, monkeypatch, t
 
     def popen(argv, **kwargs):
         assert argv == [str(runtime), "-I", "-B", "-X", "utf8", str(script)]
-        assert kwargs["creationflags"] & 4 and kwargs["close_fds"] and not kwargs["shell"]
+        assert kwargs["creationflags"] == 0x00000008 | 0x00000200 | 0x00000004
+        assert kwargs["close_fds"] and not kwargs["shell"]
         assert set(kwargs["env"]) == {"SYSTEMROOT", "WINDIR", "TEMP", "TMP"}
         assert kwargs["cwd"] == tmp_path
         assert (kwargs["stdin"], kwargs["stdout"], kwargs["stderr"]) == (10, 13, 15)
