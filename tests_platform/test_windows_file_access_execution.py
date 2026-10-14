@@ -75,6 +75,8 @@ def connected(pair_observed, tmp_path, monkeypatch):
     saved = [(module, name, getattr(module, name)) for module, name in saved]
     actual_os = {name: getattr(os, name) for name in ("read", "pipe", "fdopen", "close")}
     harness = launch_fake.harness.__wrapped__(monkeypatch)
+    # This integration's fake image uses the host temporary filesystem's paths.
+    monkeypatch.setattr(launch, "Path", Path)
     routed_os = {name: getattr(os, name) for name in actual_os}
     for name, function in actual_os.items():
         monkeypatch.setattr(os, name, function)
