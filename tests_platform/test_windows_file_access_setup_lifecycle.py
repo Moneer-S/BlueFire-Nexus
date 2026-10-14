@@ -537,7 +537,10 @@ def test_actual_linked_token_boundary_requires_same_primary_limited_local_owner(
     monkeypatch.setattr(write, "_require_local_machine", lambda gate: None)
     monkeypatch.setattr(write.session, "_observe", observe)
     monkeypatch.setattr(
-        write.ctypes, "WinDLL", lambda *args, **kwargs: SimpleNamespace(GetUserNameW=name)
+        write.ctypes,
+        "WinDLL",
+        lambda *args, **kwargs: SimpleNamespace(GetUserNameW=name),
+        raising=False,
     )
     monkeypatch.setattr(write.native, "_sam_api", lambda: object())
     monkeypatch.setattr(
@@ -595,7 +598,7 @@ def test_machine_role_refuses_dc_and_directory_service_before_account_calls(
         freed.append(pointer.value)
 
     api = SimpleNamespace(DsRoleGetPrimaryDomainInformation=observe, DsRoleFreeMemory=free)
-    monkeypatch.setattr(write.ctypes, "WinDLL", lambda *args, **kwargs: api)
+    monkeypatch.setattr(write.ctypes, "WinDLL", lambda *args, **kwargs: api, raising=False)
     if allowed:
         write._require_local_machine(FakeGate())
     else:
@@ -771,7 +774,7 @@ def test_private_child_original_clocks_are_not_renewed_or_inferred(monkeypatch, 
     [None, "old_binary", "override", "channel_drift", "unsupported", "stderr", "image_drift"],
 )
 def test_concrete_source_checks_real_boundary_interfaces_before_setup_effects(
-    lifecycle, monkeypatch, fault
+    lifecycle, monkeypatch, tmp_path, fault
 ):
     import hashlib
 
@@ -783,7 +786,7 @@ def test_concrete_source_checks_real_boundary_interfaces_before_setup_effects(
     digest = "sha256:" + hashlib.sha256(payload).hexdigest()
     source = source_facts()
     source["transport"]["runner_binary_digest"] = digest
-    image = Path(r"C:\synthetic\bluefire-runner.exe")
+    image = tmp_path / "synthetic" / "bluefire-runner.exe"
     backend.files[str(image)] = payload
     backend.held = [777]
     observations = []

@@ -385,12 +385,14 @@ fn effective(
     }
     Ok(())
 }
+type ResourceInspection = ([usize; 5], Vec<FileFacts>, [Vec<u8>; 2]);
+
 fn inspect(
     read: &PreparedRead,
     backend: &mut impl Backend,
     clock: &impl Clock,
     token: &TokenFacts,
-) -> Result<([usize; 5], Vec<FileFacts>, [Vec<u8>; 2]), Failure> {
+) -> Result<ResourceInspection, Failure> {
     let resource = &read.resource;
     let paths = resource.paths();
     let mut held = [0; 5];
@@ -602,7 +604,8 @@ mod descriptor {
         }
         let owner_at = u32_at(bytes, 4)? as usize;
         let acl_at = u32_at(bytes, 16)? as usize;
-        if owner_at < 20 || acl_at < 20 || owner_at % 4 != 0 || acl_at % 4 != 0 {
+        if owner_at < 20 || acl_at < 20 || !owner_at.is_multiple_of(4) || !acl_at.is_multiple_of(4)
+        {
             return Err(invalid());
         }
         let (observed_owner, owner_length) = sid(bytes.get(owner_at..).ok_or_else(invalid)?)?;

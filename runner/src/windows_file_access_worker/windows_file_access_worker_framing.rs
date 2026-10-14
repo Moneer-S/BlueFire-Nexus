@@ -128,8 +128,10 @@ fn parse(raw: &[u8], packet: &wire::Packet) -> Result<SecretUnits> {
     }
     let units = SecretUnits(
         raw[PREFIX + 2..]
-            .chunks_exact(2)
-            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| u16::from_le_bytes(*b))
             .collect(),
     );
     if units.0.contains(&0) || std::char::decode_utf16(units.0.iter().copied()).any(|v| v.is_err())

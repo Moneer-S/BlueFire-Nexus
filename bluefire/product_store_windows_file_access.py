@@ -166,15 +166,21 @@ def document(row: Any) -> dict:
 
 
 def at(connection: Any, *, owner_id: str | None = None, enrollment_id: str | None = None):
-    column, value = (
-        ("control_owner_id", owner_id) if owner_id is not None else ("enrollment_id", enrollment_id)
-    )
-    return connection.execute(
-        "SELECT control_owner_id,enrollment_id,generation,document_digest,"
-        "CASE WHEN length(CAST(document_json AS BLOB))<=65536 THEN document_json END AS document_json "
-        f"FROM file_access_setup_imports WHERE {column}=?",
-        (value,),
-    ).fetchone()
+    if owner_id is not None:
+        query = (
+            "SELECT control_owner_id,enrollment_id,generation,document_digest,"
+            "CASE WHEN length(CAST(document_json AS BLOB))<=65536 THEN document_json END AS document_json "
+            "FROM file_access_setup_imports WHERE control_owner_id=?"
+        )
+        value: str | None = owner_id
+    else:
+        query = (
+            "SELECT control_owner_id,enrollment_id,generation,document_digest,"
+            "CASE WHEN length(CAST(document_json AS BLOB))<=65536 THEN document_json END AS document_json "
+            "FROM file_access_setup_imports WHERE enrollment_id=?"
+        )
+        value = enrollment_id
+    return connection.execute(query, (value,)).fetchone()
 
 
 def lookup(store: Any, selection: Any, *, _pair: bool = False) -> dict | None:
@@ -418,13 +424,27 @@ def _live(store: Any, connection: Any, context: native._Context) -> None:
     )
 
 
+_BOUNDED_QUERIES = {
+    ("file_access_operations", "job_id"): (
+        "SELECT document_digest, CASE WHEN length(CAST(document_json AS BLOB)) BETWEEN 1 AND ? "
+        "THEN document_json ELSE NULL END AS document_json FROM file_access_operations WHERE job_id=?"
+    ),
+    ("file_access_preparations", "job_id"): (
+        "SELECT document_digest, CASE WHEN length(CAST(document_json AS BLOB)) BETWEEN 1 AND ? "
+        "THEN document_json ELSE NULL END AS document_json FROM file_access_preparations WHERE job_id=?"
+    ),
+    ("file_access_revisions", "job_id"): (
+        "SELECT document_digest, CASE WHEN length(CAST(document_json AS BLOB)) BETWEEN 1 AND ? "
+        "THEN document_json ELSE NULL END AS document_json FROM file_access_revisions WHERE job_id=?"
+    ),
+}
+
+
 def _bounded(connection: Any, table: str, column: str, value: str, maximum: int):
-    # Names are fixed internal literals, never caller paths or SQL fragments.
-    row = connection.execute(
-        f"SELECT document_digest, CASE WHEN length(CAST(document_json AS BLOB)) BETWEEN 1 AND ? "
-        f"THEN document_json ELSE NULL END AS document_json FROM {table} WHERE {column}=?",
-        (maximum, value),
-    ).fetchone()
+    wire._require(type(table) is str and type(column) is str)
+    query = _BOUNDED_QUERIES.get((table, column))
+    wire._require(query is not None)
+    row = connection.execute(query, (maximum, value)).fetchone()
     return native._row_document(row, maximum), row["document_digest"]
 
 

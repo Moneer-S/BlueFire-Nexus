@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import threading
-from pathlib import Path
+from pathlib import PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
@@ -18,7 +18,7 @@ from tests_platform import test_windows_file_access_pair_wire as pair
 from tests_platform import test_windows_file_access_process as process_fakes
 from tests_platform.test_windows_file_access_pair_process import partial as partial_pair
 
-_ROOT = Path("C:/managed-bluefire")
+_ROOT = PureWindowsPath("C:/managed-bluefire")
 _IMAGE_PATH = _ROOT / "bluefire-runner.exe"
 _IMAGE = b"synthetic held runner image"
 _IMAGE_SHA = "sha256:" + hashlib.sha256(_IMAGE).hexdigest()
@@ -31,7 +31,7 @@ class LaunchContainment(process_fakes.Containment):
         self.events = events
 
     def system_directory(self):
-        return Path("C:/Windows/System32")
+        return PureWindowsPath("C:/Windows/System32")
 
     def create_job(self):
         self.events.append("job_create")
@@ -54,6 +54,8 @@ class TracedPipe(process_fakes.Pipe):
 
 @pytest.fixture
 def harness(monkeypatch):
+    monkeypatch.setattr(module, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(module, "Path", PureWindowsPath)
     process_fakes.setup.__wrapped__(monkeypatch)
     state = credential_fakes.boundary.__wrapped__(monkeypatch)
     source = provenance.pair_source()
@@ -272,7 +274,11 @@ def test_pinned_pair_image_launch_uses_fixed_command_and_closes_everything(harne
     }
     assert kwargs["shell"] is False and kwargs["close_fds"] is True and kwargs["bufsize"] == 0
     assert kwargs["creationflags"] == 0x08000000 | 0x00000200 | 0x00000004
-    assert [entry[0] for entry in harness.image_paths] == [Path("C:/"), _ROOT, _IMAGE_PATH]
+    assert [entry[0] for entry in harness.image_paths] == [
+        PureWindowsPath("C:/"),
+        _ROOT,
+        _IMAGE_PATH,
+    ]
     assert [(directory, data) for _, directory, data in harness.image_paths] == [
         (True, False),
         (True, False),
