@@ -287,7 +287,7 @@ jobs:
             printf '\nCargo:\n'; cargo -vV
             printf '\nPython:\n'; python -VV
           } > "$evidence/toolchain.txt"
-          rustc -vV | grep -qx 'host: aarch64-apple-darwin'
+          rustc -vV | grep -x 'host: aarch64-apple-darwin' >/dev/null
           xcrun --sdk macosx clang -std=c11 -Wall -Wextra -Werror \
             tools/check_macos_file_access_abi.c \
             -o "$evidence/check-macos-file-access-abi"
