@@ -83,6 +83,7 @@ impl Clock for FakeClock {
     }
 }
 struct Fake {
+    state: ResourceState,
     expired: Rc<Cell<bool>>,
     cancelled: Rc<Cell<bool>>,
     late: &'static str,
@@ -119,6 +120,7 @@ impl Fake {
         };
         (
             Self {
+                state: ResourceState::Readable,
                 expired,
                 cancelled,
                 late: "",
@@ -162,6 +164,15 @@ impl Fake {
         let secret = SecretCredential::from_private_delivery(GENERATION, &[65, 66, 67])
             .unwrap_or_else(|_| panic!("fixture"));
         read.read_pair_with(secret, self, clock)
+    }
+    fn run_correction(&mut self, clock: &FakeClock) -> PairReadProof {
+        let mut expectation = resource();
+        expectation.state = self.state;
+        let read = PreparedRead::new(GENERATION, expectation, clock.base + Duration::from_secs(5))
+            .unwrap_or_else(|_| panic!("fixture"));
+        let secret = SecretCredential::from_private_delivery(GENERATION, &[65, 66, 67])
+            .unwrap_or_else(|_| panic!("fixture"));
+        read.read_pair_correction_with(secret, self, clock)
     }
 }
 impl Backend for Fake {
@@ -268,7 +279,7 @@ impl Backend for Fake {
         let mut raw = descriptor_bytes(if self.handles[handle].0 == 3 {
             DIRECTORY_MASK
         } else {
-            ResourceState::Readable.mask()
+            self.state.mask()
         });
         if self.owner && self.descriptor_drift {
             raw[2] = 0;
@@ -485,4 +496,115 @@ fn pair_rejects_hardened_resource_before_either_data_open() {
     let proof = read.read_pair_with(credential, &mut backend, &clock);
     assert_eq!(proof.outcome, ReadOutcome::Unknown);
     assert_eq!(backend.data_opens, [0, 0]);
+}
+
+#[test]
+fn correction_metadata_only_denial_needs_fresh_owner_bytes_and_both_cleanups() {
+    let (mut backend, clock) = Fake::new();
+    backend.state = ResourceState::MetadataOnly;
+    backend.reader_denial = Some(("data_open", 5));
+    let proof = backend.run_correction(&clock);
+    assert_eq!(
+        proof.schema_version,
+        "bluefire.windows-fixed-read-pair-correction.v3"
+    );
+    assert_eq!(proof.outcome, ReadOutcome::DataAccessDenied);
+    assert_eq!(proof.reader.outcome, ReadOutcome::DataAccessDenied);
+    assert_eq!(proof.reader.bytes_read, 0);
+    assert_eq!(proof.reader.observed_sha256, None);
+    assert_eq!(proof.owner.outcome, ReadOutcome::Allowed);
+    assert_eq!(proof.owner.bytes_read, DATA.len());
+    assert_eq!(
+        proof.owner.observed_sha256,
+        Some(format!("sha256:{}", hex::encode(Sha256::digest(DATA))))
+    );
+    assert_eq!(backend.data_opens, [1, 1]);
+    assert!(proof.reader.cleanup.complete() && proof.cleanup.complete());
+    assert!(proof.resource_pair_rechecked && !proof.independent_observation);
+}
+
+#[test]
+fn correction_refuses_readable_resource_without_native_effects() {
+    let (mut backend, clock) = Fake::new();
+    let proof = backend.run_correction(&clock);
+    assert_eq!(proof.outcome, ReadOutcome::Unknown);
+    assert_eq!(proof.issue, Some("pair_resource_or_credential_invalid"));
+    assert_eq!(backend.opens, [0, 0]);
+    assert_eq!(backend.data_opens, [0, 0]);
+    assert_eq!(backend.owner_entries, 0);
+}
+
+#[test]
+fn correction_denial_never_hides_owner_drift_or_unknown_cleanup() {
+    for failure in [
+        "denied",
+        "token",
+        "identity",
+        "metadata",
+        "descriptor",
+        "hash",
+        "eof",
+        "reader_cleanup",
+        "owner_cleanup",
+    ] {
+        let (mut backend, clock) = Fake::new();
+        backend.state = ResourceState::MetadataOnly;
+        backend.reader_denial = Some(("data_open", 5));
+        backend.owner_denied = failure == "denied";
+        backend.owner_drift = failure == "token";
+        backend.identity_drift = failure == "identity";
+        backend.metadata_drift = failure == "metadata";
+        backend.descriptor_drift = failure == "descriptor";
+        backend.wrong_hash = failure == "hash";
+        backend.extra_byte = failure == "eof";
+        backend.fail_cleanup = match failure {
+            "reader_cleanup" => 1,
+            "owner_cleanup" => 2,
+            _ => 0,
+        };
+        let proof = backend.run_correction(&clock);
+        assert_eq!(proof.outcome, ReadOutcome::Unknown, "{failure}");
+        if failure == "reader_cleanup" {
+            assert_eq!(backend.owner_entries, 0);
+            assert_eq!(backend.data_opens, [1, 0]);
+        } else {
+            assert_eq!(
+                proof.reader.outcome,
+                ReadOutcome::DataAccessDenied,
+                "{failure}"
+            );
+        }
+    }
+}
+
+#[test]
+fn correction_original_deadline_and_cancellation_guard_each_owner_callback() {
+    for cancel in [false, true] {
+        for stage in [
+            "reader_caller",
+            "logon",
+            "reader_cleanup",
+            "owner_enter",
+            "owner_before_data",
+            "owner_read",
+            "owner_cleanup",
+        ] {
+            let (mut backend, clock) = Fake::new();
+            backend.state = ResourceState::MetadataOnly;
+            backend.reader_denial = Some(("data_open", 5));
+            backend.late = stage;
+            backend.cancel_instead = cancel;
+            let proof = backend.run_correction(&clock);
+            assert_eq!(proof.outcome, ReadOutcome::Unknown, "{stage}");
+            if matches!(stage, "reader_caller" | "logon") {
+                assert_eq!(backend.opens, [0, 0]);
+            }
+            if matches!(
+                stage,
+                "reader_cleanup" | "owner_enter" | "owner_before_data"
+            ) {
+                assert_eq!(backend.data_opens[1], 0);
+            }
+        }
+    }
 }

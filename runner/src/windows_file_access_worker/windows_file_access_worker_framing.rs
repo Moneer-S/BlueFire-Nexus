@@ -1,4 +1,4 @@
-use super::{wire, Code, Result, MAX_BEGIN};
+use super::{wire, Code, Protocol, Result, MAX_BEGIN};
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::sync::atomic::{compiler_fence, Ordering};
@@ -108,7 +108,9 @@ impl BeginReader {
     }
 }
 fn parse(raw: &[u8], packet: &wire::Packet) -> Result<SecretUnits> {
-    if raw.len() < PREFIX + 2 || &raw[..8] != packet.protocol.begin_magic() {
+    let correction = packet.protocol == Protocol::CorrectionPairV3;
+    let prefix = PREFIX + if correction { 32 } else { 0 };
+    if raw.len() < prefix + 2 || &raw[..8] != packet.protocol.begin_magic() {
         return Err(Code::BeginInvalid);
     }
     let request = packet.request();
@@ -119,15 +121,19 @@ fn parse(raw: &[u8], packet: &wire::Packet) -> Result<SecretUnits> {
         && u64::from(revision) == wire::number(&request["control_revision"], 1, i32::MAX as u64)?
         && format!("sha256:{}", hex::encode(&raw[92..124]))
             == wire::text(&request["credential_binding_digest"])?;
-    if !matches {
+    if !matches
+        || (correction
+            && format!("sha256:{}", hex::encode(&raw[PREFIX..prefix]))
+                != wire::text(&request["correction_binding_digest"])?)
+    {
         return Err(Code::BeginInvalid);
     }
-    let count = u16::from_le_bytes([raw[PREFIX], raw[PREFIX + 1]]) as usize;
-    if !(1..=256).contains(&count) || raw.len() != PREFIX + 2 + count * 2 {
+    let count = u16::from_le_bytes([raw[prefix], raw[prefix + 1]]) as usize;
+    if !(1..=256).contains(&count) || raw.len() != prefix + 2 + count * 2 {
         return Err(Code::BeginInvalid);
     }
     let units = SecretUnits(
-        raw[PREFIX + 2..]
+        raw[prefix + 2..]
             .as_chunks::<2>()
             .0
             .iter()

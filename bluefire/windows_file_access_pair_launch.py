@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from . import windows_file_access_correction_observation as correction_observation
 from . import windows_file_access_handles as handles
 from . import windows_file_access_native_wire as wire
 from . import windows_file_access_pair_admission as admission
@@ -27,6 +28,8 @@ from .runner_bootstrap import load_runner_manifest
 from .runner_lifecycle import ManagedRunnerLifecycle
 from .runner_trust import _PinnedDirectory
 from .runner_windows_containment import WindowsJobContainment
+from .util import content_hash
+from .windows_file_access_correction_credential import CorrectionBeginProducer
 from .windows_file_access_enrollment_native import file_identity_wire
 from .windows_file_access_pair_credential import PairBeginProducer
 from .windows_file_access_setup_child import _managed_root
@@ -52,6 +55,8 @@ class PairLaunchOutcome:
 class PairLaunchOwner:
     """One launch and exact retained cleanup state; retry never launches again."""
 
+    _protocol = supervisor._Protocol.PAIR_V2
+
     def __init__(
         self,
         checked: admission.VerifiedWindowsPairSetup,
@@ -74,6 +79,17 @@ class PairLaunchOwner:
             and producer._packet == packet
             and producer._cancellation is cancellation
         )
+        self._initialize(original, packet, producer, revalidate, evidence_sink, cancellation)
+
+    def _initialize(
+        self,
+        original: wire.OriginalReservation,
+        packet: wire.PreparedPacket,
+        producer: PairBeginProducer | CorrectionBeginProducer,
+        revalidate: Callable[[], None],
+        evidence_sink: supervisor.PublicEvidenceSink,
+        cancellation: threading.Event,
+    ) -> None:
         self.original, self.packet, self.producer = original, packet, producer
         self.revalidate, self.evidence_sink, self.cancellation = (
             revalidate,
@@ -232,7 +248,13 @@ class PairLaunchOwner:
         self.creation_started = True
         try:
             self.process = subprocess.Popen(  # nosec B603 - fixed held packaged image and command
-                [executable, "windows-file-baseline-worker"],
+                [
+                    executable,
+                    {
+                        supervisor._Protocol.PAIR_V2: "windows-file-baseline-worker",
+                        supervisor._Protocol.CORRECTION_V3: "windows-file-correction-worker",
+                    }[self._protocol],
+                ],
                 cwd=root,
                 env={"SYSTEMROOT": system, "WINDIR": system, "TEMP": str(root), "TMP": str(root)},
                 stdin=child_ends[0],
@@ -270,7 +292,7 @@ class PairLaunchOwner:
                     self.producer,
                     self.stopped,
                     self.evidence_sink,
-                    _protocol=supervisor._Protocol.PAIR_V2,
+                    _protocol=self._protocol,
                     release_launch_resources=self._release_resources,
                 )
                 self._retain_cleanup_owner(retained)
@@ -363,7 +385,11 @@ class PairLaunchOwner:
                     self.producer.request_stop()
                 # Even a late/failed launch transfers the exact child for cleanup.
                 # The set cancellation prevents assignment/resume/Begin work.
-                self.result = supervisor.supervise_pair_suspended(
+                entry = {
+                    supervisor._Protocol.PAIR_V2: supervisor.supervise_pair_suspended,
+                    supervisor._Protocol.CORRECTION_V3: supervisor.supervise_correction_suspended,
+                }[self._protocol]
+                self.result = entry(
                     self.process,
                     owned_job=self.job,
                     containment=self.containment,
@@ -417,6 +443,42 @@ class PairLaunchOwner:
         )
 
 
+class CorrectionLaunchOwner(PairLaunchOwner):
+    """Same retained resources, admitted only by the separate postimage type."""
+
+    _protocol = supervisor._Protocol.CORRECTION_V3
+
+    def __init__(
+        self,
+        checked: correction_observation.VerifiedWindowsCorrectionPostimage,
+        original: wire.OriginalReservation,
+        packet: wire.PreparedPacket,
+        producer: CorrectionBeginProducer,
+        revalidate: Callable[[], None],
+        evidence_sink: supervisor.PublicEvidenceSink,
+        cancellation: threading.Event,
+    ) -> None:
+        self.record, self.receipt, binding = correction_observation.checked_provenance(checked)
+        context = wire._reservation(original, wire._CORRECTION)
+        wire._require(
+            type(packet) is wire.PreparedPacket
+            and packet._original == original
+            and type(producer) is CorrectionBeginProducer
+            and producer._checked == checked
+            and producer._original == original
+            and producer._packet == packet
+            and producer._cancellation is cancellation
+            and context["manifest"]["params"]["windows_file_read_request"][
+                "correction_binding_digest"
+            ]
+            == content_hash(binding)
+        )
+        self._initialize(original, packet, producer, revalidate, evidence_sink, cancellation)
+
+    def __repr__(self) -> str:
+        return "<WindowsCorrectionLaunchOwner retained>"
+
+
 def launch_pair_baseline(
     checked: admission.VerifiedWindowsPairSetup,
     original: wire.OriginalReservation,
@@ -433,6 +495,31 @@ def launch_pair_baseline(
     owner = PairLaunchOwner(
         checked, original, packet, producer, revalidate_original, evidence_sink, cancellation_event
     )
+    return _launch_owner(owner, retain_launch_owner)
+
+
+def launch_correction_retest(
+    checked: correction_observation.VerifiedWindowsCorrectionPostimage,
+    original: wire.OriginalReservation,
+    packet: wire.PreparedPacket,
+    producer: CorrectionBeginProducer,
+    *,
+    revalidate_original: Callable[[], None],
+    evidence_sink: supervisor.PublicEvidenceSink,
+    cancellation_event: threading.Event,
+    retain_launch_owner: Callable[[PairLaunchOwner], None] | None = None,
+) -> PairLaunchOutcome:
+    """Launch one freshly admitted retest; never dispatch or repeat its DACL change."""
+    wire._require(sys.platform == "win32")
+    owner = CorrectionLaunchOwner(
+        checked, original, packet, producer, revalidate_original, evidence_sink, cancellation_event
+    )
+    return _launch_owner(owner, retain_launch_owner)
+
+
+def _launch_owner(
+    owner: PairLaunchOwner, retain_launch_owner: Callable[[PairLaunchOwner], None] | None
+) -> PairLaunchOutcome:
     if retain_launch_owner is not None:
         retain_launch_owner(owner)
     owner.worker = threading.Thread(target=owner._work, daemon=True, name="windows-pair-launch")

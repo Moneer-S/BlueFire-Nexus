@@ -52,7 +52,7 @@ class _Protocol:
 
     @property
     def magic(self) -> bytes:
-        return b"BFWFBEG1" if self is _V1 else b"BFWFBEG2"
+        return f"BFWFBEG{self.version}".encode("ascii")
 
 
 _V1 = _Protocol(
@@ -66,10 +66,18 @@ _PAIR = _Protocol(
     "identity.windows.file_read_pair.v2",
     "bluefire.windows-fixed-read-pair.v2",
 )
+_CORRECTION = _Protocol(
+    3,
+    "private.windows.file_read_pair_correction.v3",
+    "windows_file_read_pair_correction",
+    "read_generated_pair_correction",
+    "identity.windows.file_read_pair_correction.v3",
+    "bluefire.windows-fixed-read-pair-correction.v3",
+)
 
 
 def _protocol(value: _Protocol) -> _Protocol:
-    _require(value is _V1 or value is _PAIR)
+    _require(value is _V1 or value is _PAIR or value is _CORRECTION)
     return value
 
 
@@ -227,7 +235,8 @@ def _original(
     protocol = _protocol(protocol)
     context, expected = _document(context), _document(expected)
     _exact(context, "manifest profile task_id transport_request_hash")
-    _exact(expected, EXPECTED)
+    expected_keys = EXPECTED + (" correction_binding_digest" if protocol is _CORRECTION else "")
+    _exact(expected, expected_keys)
     manifest, profile = context["manifest"], context["profile"]
     _exact(
         profile,
@@ -239,19 +248,24 @@ def _original(
     )
     _exact(manifest["params"], "windows_file_read_request")
     request = _exact(
-        manifest["params"]["windows_file_read_request"], "schema_version request_id " + EXPECTED
+        manifest["params"]["windows_file_read_request"],
+        "schema_version request_id " + expected_keys,
     )
     _require(request["schema_version"] == protocol.schema("operation"))
-    _require(_same({key: request[key] for key in EXPECTED.split()}, expected))
+    _require(_same({key: request[key] for key in expected_keys.split()}, expected))
     generation = _hex(request["generation"], 32)
-    _int(request["control_revision"], 1, 2**31 - 1)
+    _int(request["control_revision"], 2 if protocol is _CORRECTION else 1, 2**31 - 1)
     _digest(request["credential_binding_digest"])
+    if protocol is _CORRECTION:
+        _digest(request["correction_binding_digest"])
     host = _exact(
         request["host"], "runner_profile_id profile_digest native_generation host_id channel_digest"
     )
     _resource(request["resource"])
     if protocol is _PAIR:
         _require(request["resource"]["state"] == "readable")
+    elif protocol is _CORRECTION:
+        _require(request["resource"]["state"] == "metadata_only")
     _identifier(profile["profile_id"])
     _require(
         host["runner_profile_id"] == profile["profile_id"]

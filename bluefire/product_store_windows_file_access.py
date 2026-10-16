@@ -11,11 +11,13 @@ from datetime import datetime
 from typing import Any, Callable, cast
 
 from . import product_store_file_access_native_evidence as native
+from . import product_store_file_access_ready as ready_store
 from . import windows_file_access_admission as admission
 from . import windows_file_access_native_wire as wire
 from . import windows_file_access_pair_admission as pair_admission
 from .file_access_contract import FileAccessContractError
 from .product_store_errors import ProductStoreError
+from .product_store_file_access_ready import _pair_wire as _pair_wire
 from .product_store_serialization import canonical_json
 from .util import canonical_json_bytes, content_hash
 
@@ -110,6 +112,7 @@ def is_windows_control(value: Any) -> bool:
         admission.IMPORT_SCHEMA,
         pair_admission.IMPORT_SCHEMA,
         CONTROL_RECORD_SCHEMA,
+        "bluefire.windows-file-access-control-record.v3",
     )
 
 
@@ -120,8 +123,13 @@ def is_preparation(value: Any) -> bool:
     )
 
 
-def permitted_operations(connection: Any, control: dict, review_context: dict) -> list[str]:
-    if control.get("schema_version") == CONTROL_RECORD_SCHEMA:
+def permitted_operations(
+    store: Any, connection: Any, control: dict, review_context: dict, *, now_ms: int
+) -> list[str]:
+    if control.get("schema_version") in (
+        CONTROL_RECORD_SCHEMA,
+        "bluefire.windows-file-access-control-record.v3",
+    ):
         return []
     module = _contract(control.get("schema_version"))
     if review_context != module.baseline_context(control):
@@ -332,6 +340,8 @@ def consume_pair_ready(
     ready: bytes,
     clock: datetime,
     monotonic_now: float,
+    *,
+    _protocol: native._Protocol = native._Protocol.PAIR_V2,
 ) -> Callable[[datetime, float], None]:
     """Persist a conservative once lock before any credential resolution.
 
@@ -341,41 +351,30 @@ def consume_pair_ready(
     it checks the captured original and cannot mint another allowance.
     """
     try:
+        wire._require(_protocol is native._Protocol.PAIR_V2)
+        frame, retained, validate_ready = _pair_wire(_protocol)
         context = native._context(
-            store, task_id, transport_hash, expected_binding, _protocol=native._Protocol.PAIR_V2
+            store, task_id, transport_hash, expected_binding, _protocol=_protocol
         )
         wire._require(
             type(prepared) is wire.PreparedPacket and prepared._original == context.original
         )
-        wire.pair_public_frame(prepared, clock=clock, monotonic_now=monotonic_now)
-        wire.validate_pair_ready(
-            wire.validate_pair_retained_packet(context.original, prepared._raw), ready
-        )
+        frame(prepared, clock=clock, monotonic_now=monotonic_now)
+        validate_ready(retained(context.original, prepared._raw), ready)
         with store._connection(write=True) as connection:
             native._recheck(connection, context)
-            _live(store, connection, context)
-            trail, documents = native._load(connection, context, clock)
-            wire._require(trail.packet_bytes == prepared._raw and "ready" not in documents)
-            wire._require(native._cleanup_load(connection, context, clock, trail)[1] is None)
-            native._record_at(connection, context, "ready", ready, None, clock)
+            _live(store, connection, context, clock=clock)
+            ready_store._record_ready_at(connection, context, prepared, ready, clock)
     except _FAILURES:
         raise ProductStoreError(_ERROR) from None
 
     def validate(current_clock: datetime, current_monotonic: float) -> None:
         try:
-            wire.pair_public_frame(prepared, clock=current_clock, monotonic_now=current_monotonic)
+            frame(prepared, clock=current_clock, monotonic_now=current_monotonic)
             with store._connection() as connection:
                 native._recheck(connection, context)
-                _live(store, connection, context)
-                trail = native._load(connection, context, current_clock)[0]
-                wire._require(
-                    trail.packet_bytes == prepared._raw
-                    and trail.ready_bytes == ready
-                    and trail.terminal_bytes is None
-                )
-                wire._require(
-                    native._cleanup_load(connection, context, current_clock, trail)[1] is None
-                )
+                _live(store, connection, context, clock=current_clock)
+                ready_store._allowance_at(connection, context, prepared, ready, current_clock)
         except _FAILURES:
             raise ProductStoreError(_ERROR) from None
 
@@ -390,29 +389,30 @@ def revalidate_pair_original(
     prepared: wire.PreparedPacket,
     clock: datetime,
     monotonic_now: float,
+    *,
+    _protocol: native._Protocol = native._Protocol.PAIR_V2,
 ) -> None:
     """Check current original admission without creating or renewing an allowance."""
     try:
+        wire._require(_protocol is native._Protocol.PAIR_V2)
+        frame, _, _ = _pair_wire(_protocol)
         context = native._context(
-            store, task_id, transport_hash, expected_binding, _protocol=native._Protocol.PAIR_V2
+            store, task_id, transport_hash, expected_binding, _protocol=_protocol
         )
         wire._require(
             type(prepared) is wire.PreparedPacket and prepared._original == context.original
         )
-        wire.pair_public_frame(prepared, clock=clock, monotonic_now=monotonic_now)
+        frame(prepared, clock=clock, monotonic_now=monotonic_now)
         with store._connection() as connection:
             native._recheck(connection, context)
-            _live(store, connection, context)
-            trail = native._load(connection, context, clock)[0]
-            wire._require(
-                trail.packet_bytes in (None, prepared._raw) and trail.terminal_bytes is None
-            )
-            wire._require(native._cleanup_load(connection, context, clock, trail)[1] is None)
+            _live(store, connection, context, clock=clock)
+            ready_store._unfinished_at(connection, context, prepared, clock)
     except _FAILURES:
         raise ProductStoreError(_ERROR) from None
 
 
-def _live(store: Any, connection: Any, context: native._Context) -> None:
+def _live(store: Any, connection: Any, context: native._Context, *, clock: datetime) -> None:
+    wire._require(context.protocol is native._Protocol.PAIR_V2)
     job_id = wire._document(context.original._raw, wire.PUBLIC_MAX)["manifest"]["run_id"]
     job = store._job_from_row(
         connection.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()

@@ -35,7 +35,17 @@ def reconcile(control, job_id: str, request: Mapping[str, Any]) -> dict[str, Any
     problem = None
     try:
         saved = control.store.file_access_operation_records(job_id)
-        if not saved["tasks"]:
+        correction = (
+            saved["document"]["review_context"].get("schema_version")
+            == "bluefire.windows-file-access-correction-context.v1"
+        )
+        from .product_store_windows_correction import has_dispatch
+
+        if correction and (has_dispatch(control.store, job_id) or saved["tasks"]):
+            control.windows_correction.recover(
+                job_id, expected_outcome_digest=request["expected_outcome_digest"]
+            )
+        elif not saved["tasks"]:
             control.store.finish_file_access_operation(
                 job_id,
                 outcome={"state": "refused_no_effect", "evidence_digest": content_hash([])},

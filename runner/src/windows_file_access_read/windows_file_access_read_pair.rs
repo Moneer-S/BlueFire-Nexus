@@ -2,6 +2,26 @@
 use super::*;
 use std::collections::BTreeMap;
 
+#[derive(Clone, Copy)]
+enum PairMode {
+    Baseline,
+    Correction,
+}
+impl PairMode {
+    fn state(self) -> ResourceState {
+        match self {
+            Self::Baseline => ResourceState::Readable,
+            Self::Correction => ResourceState::MetadataOnly,
+        }
+    }
+    fn schema(self) -> &'static str {
+        match self {
+            Self::Baseline => "bluefire.windows-fixed-read-pair.v2",
+            Self::Correction => "bluefire.windows-fixed-read-pair-correction.v3",
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct OwnerReadProof {
     pub schema_version: &'static str,
@@ -36,7 +56,7 @@ struct Snapshot {
     descriptors: Vec<Vec<u8>>,
 }
 
-// V2 checks BOTH sides of every native callback. A late token observation must
+// Paired modes check BOTH sides of every native callback. A late token observation must
 // not permit the following file open/read even when the v1 helper is reused.
 struct Guarded<'a, B, C> {
     backend: &'a mut B,
@@ -117,24 +137,64 @@ impl PreparedRead {
         credential: SecretCredential,
         cancelled: &dyn Fn() -> bool,
     ) -> PairReadProof {
+        self.read_pair_for(credential, cancelled, PairMode::Baseline)
+    }
+
+    /// The digest-bound upstream admission remains an external premise. This
+    /// entry only observes the metadata-only recipe with the original deadline.
+    pub fn read_pair_correction(
+        self,
+        credential: SecretCredential,
+        cancelled: &dyn Fn() -> bool,
+    ) -> PairReadProof {
+        self.read_pair_for(credential, cancelled, PairMode::Correction)
+    }
+
+    fn read_pair_for(
+        self,
+        credential: SecretCredential,
+        cancelled: &dyn Fn() -> bool,
+        mode: PairMode,
+    ) -> PairReadProof {
         let clock = SystemClock { cancelled };
         #[cfg(target_os = "windows")]
         {
             let mut backend = windows::WindowsBackend::for_pair(self.deadline, cancelled);
-            return self.read_pair_with(credential, &mut backend, &clock);
+            return self.read_pair_with_mode(credential, &mut backend, &clock, mode);
         }
         #[cfg(not(target_os = "windows"))]
-        self.read_pair_with(credential, &mut Unsupported, &clock)
+        self.read_pair_with_mode(credential, &mut Unsupported, &clock, mode)
     }
 
+    #[cfg(test)]
     pub(super) fn read_pair_with(
         self,
         credential: SecretCredential,
         backend: &mut impl Backend,
         clock: &impl Clock,
     ) -> PairReadProof {
+        self.read_pair_with_mode(credential, backend, clock, PairMode::Baseline)
+    }
+
+    #[cfg(test)]
+    pub(super) fn read_pair_correction_with(
+        self,
+        credential: SecretCredential,
+        backend: &mut impl Backend,
+        clock: &impl Clock,
+    ) -> PairReadProof {
+        self.read_pair_with_mode(credential, backend, clock, PairMode::Correction)
+    }
+
+    fn read_pair_with_mode(
+        self,
+        credential: SecretCredential,
+        backend: &mut impl Backend,
+        clock: &impl Clock,
+        mode: PairMode,
+    ) -> PairReadProof {
         let mut proof = PairReadProof {
-            schema_version: "bluefire.windows-fixed-read-pair.v2",
+            schema_version: mode.schema(),
             request_id: self.request_id.clone(),
             outcome: ReadOutcome::Unknown,
             issue: None,
@@ -179,7 +239,7 @@ impl PreparedRead {
         let reader = (|| {
             guarded.check()?;
             if credential.generation != self.resource.generation
-                || self.resource.state != ResourceState::Readable
+                || self.resource.state != mode.state()
             {
                 return Err(Failure::new(
                     "credential",

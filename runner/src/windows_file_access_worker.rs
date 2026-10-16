@@ -50,72 +50,84 @@ type Result<T> = std::result::Result<T, Code>;
 enum Protocol {
     ReaderV1,
     PairV2,
+    CorrectionPairV3,
 }
 impl Protocol {
     fn request(self) -> &'static str {
         match self {
             Self::ReaderV1 => REQUEST_SCHEMA,
             Self::PairV2 => "bluefire.windows-file-worker-request.v2",
+            Self::CorrectionPairV3 => "bluefire.windows-file-worker-request.v3",
         }
     }
     fn ready(self) -> &'static str {
         match self {
             Self::ReaderV1 => READY_SCHEMA,
             Self::PairV2 => "bluefire.windows-file-worker-ready.v2",
+            Self::CorrectionPairV3 => "bluefire.windows-file-worker-ready.v3",
         }
     }
     fn result(self) -> &'static str {
         match self {
             Self::ReaderV1 => RESULT_SCHEMA,
             Self::PairV2 => "bluefire.windows-file-worker-result.v2",
+            Self::CorrectionPairV3 => "bluefire.windows-file-worker-result.v3",
         }
     }
     fn error(self) -> &'static str {
         match self {
             Self::ReaderV1 => ERROR_SCHEMA,
             Self::PairV2 => "bluefire.windows-file-worker-error.v2",
+            Self::CorrectionPairV3 => "bluefire.windows-file-worker-error.v3",
         }
     }
     fn read(self) -> &'static str {
         match self {
             Self::ReaderV1 => READ_SCHEMA,
             Self::PairV2 => "bluefire.windows-fixed-read-pair.v2",
+            Self::CorrectionPairV3 => "bluefire.windows-fixed-read-pair-correction.v3",
         }
     }
     fn action(self) -> &'static str {
         match self {
             Self::ReaderV1 => PRIVATE_ACTION,
             Self::PairV2 => "private.windows.file_read_pair.v2",
+            Self::CorrectionPairV3 => "private.windows.file_read_pair_correction.v3",
         }
     }
     fn capability(self) -> &'static str {
         match self {
             Self::ReaderV1 => PRIVATE_CAPABILITY,
             Self::PairV2 => "windows_file_read_pair",
+            Self::CorrectionPairV3 => "windows_file_read_pair_correction",
         }
     }
     fn operation(self) -> &'static str {
         match self {
             Self::ReaderV1 => "read_generated",
             Self::PairV2 => "read_generated_pair",
+            Self::CorrectionPairV3 => "read_generated_pair_correction",
         }
     }
     fn operation_schema(self) -> &'static str {
         match self {
             Self::ReaderV1 => "bluefire.windows-file-worker-operation.v1",
             Self::PairV2 => "bluefire.windows-file-worker-operation.v2",
+            Self::CorrectionPairV3 => "bluefire.windows-file-worker-operation.v3",
         }
     }
     fn behavior(self) -> &'static str {
         match self {
             Self::ReaderV1 => "identity.windows.file_read.v1",
             Self::PairV2 => "identity.windows.file_read_pair.v2",
+            Self::CorrectionPairV3 => "identity.windows.file_read_pair_correction.v3",
         }
     }
     fn begin_magic(self) -> &'static [u8; 8] {
         match self {
             Self::ReaderV1 => b"BFWFBEG1",
             Self::PairV2 => b"BFWFBEG2",
+            Self::CorrectionPairV3 => b"BFWFBEG3",
         }
     }
 }
@@ -158,6 +170,29 @@ pub fn pair_protocol_capability() -> Value {
     })
 }
 
+/// V3 binds an opaque upstream correction claim, not correction authority or
+/// causation. It observes the fixed metadata-only postimage with the same bounds.
+pub fn correction_protocol_capability() -> Value {
+    json!({
+        "schema_version": "bluefire.windows-file-worker-capability.v3",
+        "runner_id": "bluefire-rust-runner.v1",
+        "runner_version": env!("CARGO_PKG_VERSION"),
+        "platform": crate::Platform::current(),
+        "architecture": std::env::consts::ARCH,
+        "supported": cfg!(all(target_os = "windows", target_arch = "x86_64")),
+        "worker_command": "windows-file-correction-worker",
+        "worker_schema": Protocol::CorrectionPairV3.request(),
+        "read_schema": Protocol::CorrectionPairV3.read(),
+        "scope": "protocol_support_only",
+        "action_id": Protocol::CorrectionPairV3.action(),
+        "capability": Protocol::CorrectionPairV3.capability(),
+        "max_data_opens": 2,
+        "max_bytes_per_read": 1_048_576,
+        "max_total_read_bytes": 2_097_152,
+        "max_execution_ms": 5000,
+    })
+}
+
 /// Credentials arrive only through the existing bounded two-stage stdin
 /// protocol. The parent owns cancellation, blocked I/O and whole-Job drainage.
 pub fn run_fixed() -> std::result::Result<i32, String> {
@@ -166,6 +201,10 @@ pub fn run_fixed() -> std::result::Result<i32, String> {
 
 pub fn run_fixed_pair() -> std::result::Result<i32, String> {
     run_fixed_for(Protocol::PairV2)
+}
+
+pub fn run_fixed_correction() -> std::result::Result<i32, String> {
+    run_fixed_for(Protocol::CorrectionPairV3)
 }
 
 fn run_fixed_for(protocol: Protocol) -> std::result::Result<i32, String> {
@@ -256,14 +295,23 @@ fn run_private_for(
             .map_err(|_| Code::BeginInvalid)?;
             drop(credential);
             packet.current(clock)?;
-            let (value, outcome) = if protocol == Protocol::PairV2 {
-                let proof = prepared.read_pair(secret, &|| packet.current(clock).is_err());
-                let outcome = proof.outcome;
-                (serde_json::to_value(proof), outcome)
-            } else {
-                let proof = prepared.read(secret, &|| packet.current(clock).is_err());
-                let outcome = proof.outcome;
-                (serde_json::to_value(proof), outcome)
+            let (value, outcome) = match protocol {
+                Protocol::PairV2 => {
+                    let proof = prepared.read_pair(secret, &|| packet.current(clock).is_err());
+                    let outcome = proof.outcome;
+                    (serde_json::to_value(proof), outcome)
+                }
+                Protocol::CorrectionPairV3 => {
+                    let proof =
+                        prepared.read_pair_correction(secret, &|| packet.current(clock).is_err());
+                    let outcome = proof.outcome;
+                    (serde_json::to_value(proof), outcome)
+                }
+                Protocol::ReaderV1 => {
+                    let proof = prepared.read(secret, &|| packet.current(clock).is_err());
+                    let outcome = proof.outcome;
+                    (serde_json::to_value(proof), outcome)
+                }
             };
             let value = value.map_err(|_| Code::NativeFailed)?;
             Ok(DispatchResult { value, outcome })
@@ -323,7 +371,7 @@ fn run_checked_for(
         {
             return Err(Code::NativeFailed);
         }
-        let observed_at = if protocol == Protocol::PairV2 {
+        let observed_at = if protocol != Protocol::ReaderV1 {
             match packet.completion(clock) {
                 Ok(timestamp) => Some(timestamp),
                 Err(code) => {

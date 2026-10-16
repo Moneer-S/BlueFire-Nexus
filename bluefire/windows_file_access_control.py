@@ -188,7 +188,10 @@ def _held_resource(
 
 
 def transition_windows_file_access(
-    request: WindowsControlRequest, *, admit: Callable[[], None]
+    request: WindowsControlRequest,
+    *,
+    admit: Callable[[], None],
+    before_apply: Callable[[], None] | None = None,
 ) -> WindowsControlObservation:
     """Apply one already-authorized original change, without rollback or retry.
 
@@ -196,11 +199,17 @@ def transition_windows_file_access(
     and journal the upcoming effect. A returned result verifies a DACL and fresh
     owner read, NOT separate-reader denial. Failure after dispatch requires fresh
     reconciliation; another call is never an automatic recovery operation.
+    An optional original-operation guard runs after post-admission metadata,
+    immediately before the setter; it cannot replace or repeat admission.
     """
     controller = _Controller()
     changed = False
     try:
-        if type(request) is not WindowsControlRequest or not callable(admit):
+        if (
+            type(request) is not WindowsControlRequest
+            or not callable(admit)
+            or (before_apply is not None and not callable(before_apply))
+        ):
             raise WindowsControlError(change_may_have_occurred=False)
         request.validate()
         resource = request.resource
@@ -226,6 +235,8 @@ def transition_windows_file_access(
             or controller.dacl(held[4], resource.policy, resource.state) != previous
         ):
             raise OSError("Resource permissions changed before dispatch")
+        if before_apply is not None:
+            before_apply()
         _current(deadline)
         changed = True
         controller.apply(held[4], resource.policy, request.target)

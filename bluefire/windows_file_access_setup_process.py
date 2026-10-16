@@ -92,6 +92,10 @@ def _terminal_for(
 class SetupCleanupOwner:
     """Retain exact process, Job, pins and pipes; retries only attempt closure."""
 
+    INPUT_MAX = entry.INPUT_MAX
+    OUTPUT_MAX = entry.OUTPUT_MAX
+    REFUSAL_ISSUE = "setup_refused"
+
     def __init__(
         self, profile: str, cancellation: threading.Event, *, _protocol=admission._READER_SETUP
     ) -> None:
@@ -110,6 +114,10 @@ class SetupCleanupOwner:
                 "supervision": None,
             }
         )
+        self._initialize_resources(cancellation)
+
+    def _initialize_resources(self, cancellation: threading.Event) -> None:
+        self.cancellation = cancellation
         self.containment = WindowsJobContainment(kill_on_close=True)
         self.pins = contextlib.ExitStack()
         self.process: subprocess.Popen[bytes] | None = None
@@ -117,6 +125,7 @@ class SetupCleanupOwner:
         self.handle: Any = None
         self.pid: int | None = None
         self.adopted = self.resumed = self.verified = False
+        self.creation_started = self.creation_unknown = False
         self.parent_exited = self.job_closed = self.start_closed = self.handle_closed = False
         self.handle_ambiguous = False
         self.pins_closed = self.pins_ambiguous = False
@@ -163,11 +172,21 @@ class SetupCleanupOwner:
         )
         return int(self.handle)
 
+    def _entry_spec(self) -> tuple[Path, tuple[str, ...]]:
+        script = Path(__file__).resolve(strict=True).with_name("windows_file_access_setup_child.py")
+        return script, (("--pair-baseline-v2",) if self.protocol is admission._PAIR_SETUP else ())
+
+    def _before_resume(self) -> None:
+        pass
+
+    def _parse_terminal(self, raw: bytes, returncode: int) -> dict[str, Any]:
+        return _terminal_for(raw, returncode, self.protocol)
+
     def _launch(self) -> None:
         root = entry._managed_root().resolve(strict=True)
         self.pins.enter_context(_PinnedDirectory(root, private=True, verify_permissions_only=True))
         runtime = Path(getattr(sys, "_base_executable", sys.executable)).resolve(strict=True)
-        script = Path(__file__).resolve(strict=True).with_name("windows_file_access_setup_child.py")
+        script, arguments = self._entry_spec()
         for path in (runtime, script):
             details = path.lstat()
             contract._require(
@@ -197,20 +216,25 @@ class SetupCleanupOwner:
             self.pipe_fds.remove(owned)
             ends.append(passed)
         self.current()
-        self.process = subprocess.Popen(  # nosec B603 - fixed pinned packaged entry, no shell
-            [executable, "-I", "-B", "-X", "utf8", helper]
-            + (["--pair-baseline-v2"] if self.protocol is admission._PAIR_SETUP else []),
-            cwd=root,
-            env={"SYSTEMROOT": system, "WINDIR": system, "TEMP": str(root), "TMP": str(root)},
-            stdin=ends[0],
-            stdout=ends[1],
-            stderr=ends[2],
-            shell=False,
-            close_fds=True,
-            bufsize=0,
-            # A hidden console still adds conhost to the single-child Job.
-            creationflags=0x00000008 | 0x00000200 | 0x00000004,
-        )
+        self.creation_started = True
+        try:
+            self.process = subprocess.Popen(  # nosec B603 - fixed pinned packaged entry, no shell
+                [executable, "-I", "-B", "-X", "utf8", helper] + list(arguments),
+                cwd=root,
+                env={"SYSTEMROOT": system, "WINDIR": system, "TEMP": str(root), "TMP": str(root)},
+                stdin=ends[0],
+                stdout=ends[1],
+                stderr=ends[2],
+                shell=False,
+                close_fds=True,
+                bufsize=0,
+                # A hidden console still adds conhost to the single-child Job.
+                creationflags=0x00000008 | 0x00000200 | 0x00000004,
+            )
+        except BaseException:
+            # Native creation may have succeeded before Popen returned a Handle.
+            self.creation_unknown = True
+            raise
         self.handle, self.pid = getattr(self.process, "_handle", None), self.process.pid
         for name, stream in self.parent_pipes.items():
             setattr(self.process, name, stream)
@@ -222,10 +246,12 @@ class SetupCleanupOwner:
         generation = child.capture_retained_child(self._handle(), self.job, expected_pid=self.pid)
         self.current()
         supervision = binding.transfer_to_child(self._handle(), (ends[0], ends[1], ends[2]))
-        row = contract._document(self.request, entry.INPUT_MAX)
+        row = contract._document(self.request, self.INPUT_MAX)
         row["supervision"] = supervision
         self.request = canonical_json_bytes(row)
         contract._require(self._close_fds())
+        self.current()
+        self._before_resume()
         self.current()
         # A failed resume may have taken effect. From here partial effects are unknown.
         self.resumed = True
@@ -274,16 +300,16 @@ class SetupCleanupOwner:
             self.current()
             contract._require(self._close_pipe("stdin"))
             size = struct.unpack("<I", self._read(process.stdout, 4))[0]
-            contract._require(0 < size <= entry.OUTPUT_MAX)
+            contract._require(0 < size <= self.OUTPUT_MAX)
             raw = self._read(process.stdout, size)
             contract._require(process.stdout.read(1) == b"")
             while not self.errors_done.is_set() or process.poll() is None:
                 self.current()
                 self.stopped.wait(0.01)
             self.current()
-            self.terminal = _terminal_for(raw, process.returncode, self.protocol)
+            self.terminal = self._parse_terminal(raw, process.returncode)
         except BaseException:
-            self.issue = self.issue or "setup_refused"
+            self.issue = self.issue or self.REFUSAL_ISSUE
         finally:
             self.done.set()
 
@@ -380,7 +406,7 @@ class SetupCleanupOwner:
                     self.pins_ambiguous = True
                     return
                 self.pins_closed = True
-            self.verified = True
+            self.verified = not self.creation_unknown
         except Exception:
             return
 
@@ -441,7 +467,7 @@ def _run_setup_process_for(
         (
             "completed"
             if terminal is not None and not unknown
-            else ("unknown" if owner.resumed else "not_started")
+            else ("unknown" if owner.resumed or owner.creation_unknown else "not_started")
         ),
         "verified" if clean else "unknown",
         ("child_outcome_unknown" if unknown else owner.issue) if clean else "cleanup_unknown",

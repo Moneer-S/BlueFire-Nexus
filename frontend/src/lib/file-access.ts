@@ -31,7 +31,7 @@ export type FileAccessStatus = LinuxFileAccessStatus | WindowsSetupFileAccessSta
 export type FileAccessControlState = "created" | "baseline_verified" | "hardened" | "rolled_back" | "reset" | "uncertain" | "recovery_required";
 interface FileAccessControlSummaryBase { control_owner_id: string; revision: number }
 export interface LinuxFileAccessControlSummary extends FileAccessControlSummaryBase { platform?: never; status: FileAccessControlState }
-export interface WindowsFileAccessControlSummary extends FileAccessControlSummaryBase { platform: "windows"; status: "setup_verified" | "uncertain" | "baseline_verified"; revision: 1 | 2 }
+export interface WindowsFileAccessControlSummary extends FileAccessControlSummaryBase { platform: "windows"; status: "setup_verified" | "uncertain" | "baseline_verified" | "hardened"; revision: 1 | 2 | 3 }
 export type FileAccessControlSummary = LinuxFileAccessControlSummary | WindowsFileAccessControlSummary;
 export interface LinuxFileAccessControl extends LinuxFileAccessControlSummary {
   schema_version: "bluefire.file-access-control.v1"; control_digest: string;
@@ -60,7 +60,25 @@ export interface WindowsPairedFileAccessControl extends WindowsFileAccessControl
   baseline: WindowsReadableBaseline | null; operations: CompositionJob[]; allowed_operations: FileAccessOperation[];
   task_usage_state: "none" | "unresolved" | "settled";
 }
-export type WindowsFileAccessControl = WindowsSetupFileAccessControl | WindowsPairedFileAccessControl;
+export interface WindowsCorrectionRecord {
+  binding_digest: string; before_descriptor_sha256: string; after_descriptor_sha256: string;
+  owned_control_cleanup: "verified";
+}
+export interface WindowsCorrectionRetest {
+  schema_version: "bluefire.windows-file-correction-observation.v3";
+  non_owner: "data_access_denied"; owner: "allowed"; size_bytes: number; sha256: string;
+  observed_at: string; native_cleanup: "verified"; owned_job_cleanup: "verified";
+  independent_observation: false; evidence_digest: string;
+}
+export interface WindowsCorrectionFileAccessControl extends Omit<WindowsFileAccessControlBase, "resource"> {
+  schema_version: "bluefire.windows-file-access-control.v3"; revision: 2 | 3;
+  status: "baseline_verified" | "hardened" | "uncertain";
+  resource: Omit<WindowsFileAccessControlBase["resource"], "protection"> & { protection: "reader_readable" | "metadata_only" | "unknown" };
+  baseline: WindowsReadableBaseline; operations: CompositionJob[];
+  allowed_operations: FileAccessOperation[]; task_usage_state: "unresolved" | "settled";
+  correction: WindowsCorrectionRecord | null; retest: WindowsCorrectionRetest | null;
+}
+export type WindowsFileAccessControl = WindowsSetupFileAccessControl | WindowsPairedFileAccessControl | WindowsCorrectionFileAccessControl;
 export type FileAccessControl = LinuxFileAccessControl | WindowsFileAccessControl;
 export interface FileAccessControlList { schema_version: "bluefire.file-access-control-list.v1"; controls: FileAccessControlSummary[] }
 export interface FileAccessOperationEnvelope {
@@ -96,12 +114,19 @@ function windowsPairJobValid(job: CompositionJob, owner: string): boolean {
     && fileAccessSubmissionValid(submitted as FileAccessSubmission) && compositionJobId(submitted!.submission_id) === job.job_id
     && submitted!.review.operation === "baseline" && submitted!.review.control_owner_id === owner;
 }
+function windowsCorrectionJobValid(job: CompositionJob, owner: string): boolean {
+  const submitted = job?.progress?.submitted_request as FileAccessSubmission | undefined;
+  return compositionJobValid(job?.job_id) && job.kind === "file_access.operation" && typeof job.state === "string"
+    && fileAccessSubmissionValid(submitted as FileAccessSubmission) && compositionJobId(submitted!.submission_id) === job.job_id
+    && (submitted!.review.operation === "baseline" || submitted!.review.operation === "harden")
+    && submitted!.review.control_owner_id === owner;
+}
 export const fileAccessJobActive = (job: CompositionJob) => !["completed", "failed", "cancelled", "interrupted"].includes(job.state);
 export function fileAccessReviewRequestValid(value: FileAccessReviewRequest): boolean {
   return Boolean(value && Object.keys(value).sort().join(",") === "control_owner_id,operation"
     && Object.hasOwn(fileAccessOperationLabels, value.operation)
     && (value.operation === "create" ? value.control_owner_id === null
-      : value.operation === "baseline" && windowsControlId(value.control_owner_id)
+      : (value.operation === "baseline" || value.operation === "harden") && windowsControlId(value.control_owner_id)
         ? true : compositionJobValid(value.control_owner_id)));
 }
 export function checkedFileAccessReview(value: FileAccessReview, submitted: FileAccessReviewRequest): FileAccessReview {
@@ -141,6 +166,63 @@ export function checkedFileAccessControl(value: FileAccessControl, owner?: strin
   if (!record(value)) throw bad();
   if (value.platform === "windows") {
     const windows = value as WindowsFileAccessControl;
+    if (windows.schema_version === "bluefire.windows-file-access-control.v3") {
+      const correction = windows as WindowsCorrectionFileAccessControl;
+      if (!exactKeys(correction, ["schema_version", "platform", "control_owner_id", "control_digest", "revision", "status", "expires_at_ms", "provenance", "resource", "baseline", "operations", "allowed_operations", "task_usage_state", "account_object_cleanup", "correction", "retest"])
+        || !windowsControlId(correction.control_owner_id) || (owner !== undefined && correction.control_owner_id !== owner)
+        || !digest(correction.control_digest) || !Number.isSafeInteger(correction.expires_at_ms) || correction.expires_at_ms <= 0
+        || !exactKeys(correction.provenance, ["kind", "enrollment_id", "enrollment_digest", "setup_receipt_digest"])
+        || correction.provenance.kind !== "protected_setup" || typeof correction.provenance.enrollment_id !== "string" || !correction.provenance.enrollment_id
+        || !digest(correction.provenance.enrollment_digest) || !digest(correction.provenance.setup_receipt_digest)
+        || (expectedSetup !== undefined && (correction.provenance.enrollment_id !== expectedSetup.enrollment_id || correction.provenance.enrollment_digest !== expectedSetup.enrollment_digest))
+        || !exactKeys(correction.resource, ["resource_id", "resource_generation", "expected_sha256", "size_bytes", "protection"])
+        || typeof correction.resource.resource_id !== "string" || !correction.resource.resource_id
+        || typeof correction.resource.resource_generation !== "string" || !/^[0-9a-f]{32}$/.test(correction.resource.resource_generation)
+        || !digest(correction.resource.expected_sha256) || !Number.isSafeInteger(correction.resource.size_bytes) || correction.resource.size_bytes < 1
+        || !["reader_readable", "metadata_only", "unknown"].includes(correction.resource.protection)
+        || correction.account_object_cleanup !== "required" || ![2, 3].includes(correction.revision)
+        || !["baseline_verified", "hardened", "uncertain"].includes(correction.status)
+        || !["unresolved", "settled"].includes(correction.task_usage_state)
+        || !operationsValid(correction.allowed_operations, ["harden"])
+        || !Array.isArray(correction.operations) || new Set(correction.operations.map(job => job?.job_id)).size !== correction.operations.length
+        || correction.operations.some(job => !windowsCorrectionJobValid(job, correction.control_owner_id))) throw bad();
+      const baseline = correction.baseline;
+      if (!exactKeys(baseline, ["schema_version", "non_owner", "owner", "size_bytes", "sha256", "resource_generation", "observed_at", "native_cleanup", "owned_job_cleanup", "independent_observation", "baseline_digest"])
+        || baseline.schema_version !== "bluefire.windows-file-readable-baseline.v2" || baseline.non_owner !== "allowed" || baseline.owner !== "allowed"
+        || !natural(baseline.size_bytes) || baseline.size_bytes < 1 || !digest(baseline.sha256)
+        || baseline.size_bytes !== correction.resource.size_bytes || baseline.sha256 !== correction.resource.expected_sha256
+        || baseline.resource_generation !== correction.resource.resource_generation || typeof baseline.observed_at !== "string"
+        || !Number.isFinite(Date.parse(baseline.observed_at)) || baseline.native_cleanup !== "verified"
+        || baseline.owned_job_cleanup !== "verified" || baseline.independent_observation !== false || !digest(baseline.baseline_digest)) throw bad();
+      const hasBaseline = correction.operations.some(job => (job.progress.submitted_request as FileAccessSubmission).review.operation === "baseline");
+      const hasHarden = correction.operations.some(job => (job.progress.submitted_request as FileAccessSubmission).review.operation === "harden");
+      if (!hasBaseline || (correction.revision === 2 && (correction.correction !== null || correction.retest !== null
+          || (correction.task_usage_state === "settled" && (correction.status !== "baseline_verified"
+            || correction.resource.protection !== "reader_readable"
+            || (correction.allowed_operations.length && correction.allowed_operations[0] !== "harden")))
+          || (correction.task_usage_state === "unresolved" && (correction.status !== "uncertain"
+            || correction.resource.protection !== "unknown" || correction.allowed_operations.length !== 0))))
+        || (correction.revision === 3 && (!hasHarden || correction.correction === null || correction.retest === null
+          || correction.allowed_operations.length !== 0
+          || (correction.task_usage_state === "settled" && (correction.status !== "hardened" || correction.resource.protection !== "metadata_only"))
+          || (correction.task_usage_state === "unresolved" && (correction.status !== "uncertain" || correction.resource.protection !== "unknown"))))) throw bad();
+      if (correction.revision === 3) {
+        const change = correction.correction!;
+        const retest = correction.retest!;
+        if (!exactKeys(change, ["binding_digest", "before_descriptor_sha256", "after_descriptor_sha256", "owned_control_cleanup"])
+          || !digest(change.binding_digest) || !digest(change.before_descriptor_sha256) || !digest(change.after_descriptor_sha256)
+          || change.before_descriptor_sha256 === change.after_descriptor_sha256
+          || change.owned_control_cleanup !== "verified"
+          || !exactKeys(retest, ["schema_version", "non_owner", "owner", "size_bytes", "sha256", "observed_at", "native_cleanup", "owned_job_cleanup", "independent_observation", "evidence_digest"])
+          || retest.schema_version !== "bluefire.windows-file-correction-observation.v3" || retest.non_owner !== "data_access_denied"
+          || retest.owner !== "allowed" || retest.size_bytes !== baseline.size_bytes || retest.sha256 !== baseline.sha256
+          || typeof retest.observed_at !== "string" || !Number.isFinite(Date.parse(retest.observed_at))
+          || Date.parse(retest.observed_at) < Date.parse(baseline.observed_at)
+          || retest.native_cleanup !== "verified" || retest.owned_job_cleanup !== "verified"
+          || retest.independent_observation !== false || !digest(retest.evidence_digest)) throw bad();
+      }
+      return correction;
+    }
     if (!exactKeys(windows, ["schema_version", "platform", "control_owner_id", "control_digest", "revision", "status", "expires_at_ms", "provenance", "resource", "baseline", "operations", "allowed_operations", "task_usage_state", "account_object_cleanup"])
       || !["bluefire.windows-file-access-control.v1", "bluefire.windows-file-access-control.v2"].includes(windows.schema_version) || !windowsControlId(windows.control_owner_id)
       || (owner !== undefined && windows.control_owner_id !== owner) || !digest(windows.control_digest)
@@ -214,8 +296,12 @@ export function checkedFileAccessList(value: FileAccessControlList): FileAccessC
     || value.controls.some(item => {
       if (!record(item)) return true;
       if (item.platform === "windows") return !exactKeys(item, ["control_owner_id", "status", "revision", "platform"])
-        || !windowsControlId(item.control_owner_id) || !["setup_verified", "uncertain", "baseline_verified"].includes(String(item.status))
-        || ![1, 2].includes(Number(item.revision)) || (item.status === "baseline_verified" ? item.revision !== 2 : item.revision !== 1);
+        || !windowsControlId(item.control_owner_id)
+        || !(
+          (item.revision === 1 && ["setup_verified", "uncertain"].includes(String(item.status)))
+          || (item.revision === 2 && ["baseline_verified", "uncertain"].includes(String(item.status)))
+          || (item.revision === 3 && ["hardened", "uncertain"].includes(String(item.status)))
+        );
       return !exactKeys(item, ["control_owner_id", "status", "revision"]) || !compositionJobValid(String(item.control_owner_id))
         || !controlStates.includes(String(item.status)) || !natural(item.revision) || Number(item.revision) < 1;
     })) throw bad();
@@ -242,11 +328,16 @@ export function checkedFileAccessOperation(value: FileAccessOperationEnvelope, i
       || !digest(observed.sha256) || !digest(observed.source_digest) || !Number.isSafeInteger(observed.observed_at_ms) || observed.observed_at_ms <= 0) throw bad();
   }
   if (value.control !== null) {
-    if (record(value.control) && value.control.platform === "windows" && value.control.schema_version !== "bluefire.windows-file-access-control.v2") throw bad();
+    if (record(value.control) && value.control.platform === "windows"
+      && !["bluefire.windows-file-access-control.v2", "bluefire.windows-file-access-control.v3"].includes(String(value.control.schema_version))) throw bad();
     checkedFileAccessControl(value.control, submittedOwner ?? id);
   }
-  if (windowsControlId(submittedOwner) && (submitted.review.operation !== "baseline"
-    || !record(value.control) || value.control.platform !== "windows" || value.control.schema_version !== "bluefire.windows-file-access-control.v2")) throw bad();
+  if (windowsControlId(submittedOwner) && (
+    !["baseline", "harden"].includes(submitted.review.operation)
+    || !record(value.control) || value.control.platform !== "windows"
+    || (submitted.review.operation === "harden" && value.control.schema_version !== "bluefire.windows-file-access-control.v3")
+    || (submitted.review.operation === "baseline" && !["bluefire.windows-file-access-control.v2", "bluefire.windows-file-access-control.v3"].includes(String(value.control.schema_version)))
+  )) throw bad();
   if (value.reconciliation_receipt !== null) checkedFileAccessReconciliationReceipt(value.reconciliation_receipt);
   return value;
 }

@@ -380,10 +380,12 @@ def test_full_fake_vertical_path_publishes_two_actual_phases_and_closure(connect
     )
     assert saved["outcome"]["state"] == "complete"
     public = state.service.file_access_operation(job_id)["control"]
-    assert public["schema_version"] == "bluefire.windows-file-access-control.v2"
+    assert public["schema_version"] == "bluefire.windows-file-access-control.v3"
     assert public["status"] == "baseline_verified" and public["revision"] == 2
     assert public["baseline"]["non_owner"] == public["baseline"]["owner"] == "allowed"
-    assert not public["baseline"]["independent_observation"] and public["allowed_operations"] == []
+    assert not public["baseline"]["independent_observation"] and public["allowed_operations"] == [
+        "harden"
+    ]
     assert len(state.provider_calls) == len(state.harness.popen_calls) == 1
     assert state.buffers and all(not any(value) for value in state.buffers)
     assert all(stream.closed for stream in state.harness.streams)
@@ -460,7 +462,7 @@ def test_unknown_original_recovers_after_expiry_without_observation_or_relaunch(
     recovered = state.service.reconcile_file_access_operation(job_id, request)
     assert recovered["reconciliation"]["state"] == "complete"
     assert recovered["control"]["status"] == "baseline_verified"
-    assert recovered["control"]["schema_version"] == "bluefire.windows-file-access-control.v2"
+    assert recovered["control"]["schema_version"] == "bluefire.windows-file-access-control.v3"
     assert (
         recovered["control"]["revision"] == 2 and recovered["control"]["allowed_operations"] == []
     )

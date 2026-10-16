@@ -49,6 +49,7 @@ _POLL_SECONDS = 0.01
 class _Protocol(Enum):
     READER_V1 = "reader_v1"
     PAIR_V2 = "pair_v2"
+    CORRECTION_V3 = "correction_v3"
 
 
 def _utc() -> datetime:
@@ -193,6 +194,8 @@ class CleanupOwner:
     def _retained(self) -> wire.RetainedPacket:
         if self.packet._original != self.original:
             raise _Stopped()
+        if self.protocol is _Protocol.CORRECTION_V3:
+            return wire.validate_correction_retained_packet(self.original, self.packet._raw)
         if self.protocol is _Protocol.PAIR_V2:
             return wire.validate_pair_retained_packet(self.original, self.packet._raw)
         if self.protocol is _Protocol.READER_V1:
@@ -200,6 +203,11 @@ class CleanupOwner:
         raise _Stopped()
 
     def _limits(self) -> dict[str, int]:
+        if self.protocol is _Protocol.CORRECTION_V3:
+            return cast(
+                dict[str, int],
+                wire._reservation(self.original, wire._CORRECTION)["manifest"]["limits"],
+            )
         if self.protocol is _Protocol.PAIR_V2:
             return cast(
                 dict[str, int], wire._reservation(self.original, wire._PAIR)["manifest"]["limits"]
@@ -209,6 +217,10 @@ class CleanupOwner:
         raise _Stopped()
 
     def _public_frame(self) -> bytes:
+        if self.protocol is _Protocol.CORRECTION_V3:
+            return wire.correction_public_frame(
+                self.packet, clock=self._clock(), monotonic_now=_monotonic()
+            )
         if self.protocol is _Protocol.PAIR_V2:
             return wire.pair_public_frame(
                 self.packet, clock=self._clock(), monotonic_now=_monotonic()
@@ -216,12 +228,18 @@ class CleanupOwner:
         return wire.public_frame(self.packet, clock=self._clock(), monotonic_now=_monotonic())
 
     def _ready(self, retained: wire.RetainedPacket, ready: bytes) -> None:
-        if self.protocol is _Protocol.PAIR_V2:
+        if self.protocol is _Protocol.CORRECTION_V3:
+            wire.validate_correction_ready(retained, ready)
+        elif self.protocol is _Protocol.PAIR_V2:
             wire.validate_pair_ready(retained, ready)
         else:
             wire.validate_ready(retained, ready)
 
     def _begin_prefix(self) -> bytearray:
+        if self.protocol is _Protocol.CORRECTION_V3:
+            return wire.correction_begin_prefix(
+                self.packet, clock=self._clock(), monotonic_now=_monotonic()
+            )
         if self.protocol is _Protocol.PAIR_V2:
             return wire.pair_begin_prefix(
                 self.packet, clock=self._clock(), monotonic_now=_monotonic()
@@ -231,11 +249,11 @@ class CleanupOwner:
     def _terminal(
         self, retained: wire.RetainedPacket, ready: bytes, terminal: bytes
     ) -> wire.NativeProjection:
-        validator = (
-            wire.validate_pair_terminal
-            if self.protocol is _Protocol.PAIR_V2
-            else wire.validate_terminal
-        )
+        validator = {
+            _Protocol.READER_V1: wire.validate_terminal,
+            _Protocol.PAIR_V2: wire.validate_pair_terminal,
+            _Protocol.CORRECTION_V3: wire.validate_correction_terminal,
+        }[self.protocol]
         return validator(
             self.original,
             retained,
@@ -348,18 +366,19 @@ class CleanupOwner:
             self.consumed = True
             private = self.producer(prefix)
             self.current()
-            if type(private) is not bytearray or len(private) < 132:
+            expected_prefix = self._begin_prefix()
+            prefix_end = 4 + len(expected_prefix)
+            if type(private) is not bytearray or len(private) < prefix_end + 4:
                 raise _Stopped()
             length = struct.unpack_from("<I", private)[0]
-            expected_prefix = self._begin_prefix()
             if (
-                not 128 <= length <= wire.BEGIN_MAX
+                not len(expected_prefix) + 4 <= length <= wire.BEGIN_MAX
                 or len(private) != length + 4
-                or private[4:128] != expected_prefix
+                or private[4:prefix_end] != expected_prefix
             ):
                 raise _Stopped()
-            units = struct.unpack_from("<H", private, 128)[0]
-            if not 1 <= units <= 256 or length != 126 + 2 * units:
+            units = struct.unpack_from("<H", private, prefix_end)[0]
+            if not 1 <= units <= 256 or length != len(expected_prefix) + 2 + 2 * units:
                 raise _Stopped()
             _wipe(expected_prefix)
             self._identity()
@@ -667,6 +686,37 @@ def supervise_pair_suspended(
         cancellation_event=cancellation_event,
         evidence_sink=evidence_sink,
         protocol=_Protocol.PAIR_V2,
+        release_launch_resources=release_launch_resources,
+        retain_cleanup_owner=retain_cleanup_owner,
+    )
+
+
+def supervise_correction_suspended(
+    process: subprocess.Popen[bytes],
+    *,
+    owned_job: int,
+    containment: WindowsJobContainment,
+    prepared_packet: wire.PreparedPacket,
+    original_reservation: wire.OriginalReservation,
+    revalidate_original: Callable[[], None],
+    begin_producer: Callable[[bytearray], bytearray],
+    cancellation_event: threading.Event,
+    evidence_sink: PublicEvidenceSink,
+    release_launch_resources: Callable[[], bool] | None = None,
+    retain_cleanup_owner: Callable[[CleanupOwner], None] | None = None,
+) -> ProcessOutcome:
+    """Own one already-admitted correction retest, never its prior DACL effect."""
+    return _supervise_suspended(
+        process,
+        owned_job=owned_job,
+        containment=containment,
+        prepared_packet=prepared_packet,
+        original_reservation=original_reservation,
+        revalidate_original=revalidate_original,
+        begin_producer=begin_producer,
+        cancellation_event=cancellation_event,
+        evidence_sink=evidence_sink,
+        protocol=_Protocol.CORRECTION_V3,
         release_launch_resources=release_launch_resources,
         retain_cleanup_owner=retain_cleanup_owner,
     )

@@ -3756,6 +3756,7 @@ class BlueFireService(
                         self.receiver_defense.owners,
                         self.composition.owners,
                         self.file_access.windows,
+                        self.file_access.windows_correction,
                     ):
                         try:
                             closed = owners.close_all() and closed

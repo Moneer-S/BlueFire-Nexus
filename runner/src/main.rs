@@ -82,6 +82,18 @@ fn dispatch(args: &[String]) -> Result<i32, String> {
         return Err(usage().to_string());
     };
     match command {
+        "windows-file-correction-worker" => {
+            require_no_windows_worker_arguments(&args[1..])?;
+            bluefire_runner::windows_file_access_worker::run_fixed_correction()
+        }
+        "windows-file-correction-worker-capability" => {
+            require_no_windows_worker_arguments(&args[1..])?;
+            println!(
+                "{}",
+                bluefire_runner::windows_file_access_worker::correction_protocol_capability()
+            );
+            Ok(0)
+        }
         "windows-file-baseline-worker" => {
             require_no_windows_worker_arguments(&args[1..])?;
             bluefire_runner::windows_file_access_worker::run_fixed_pair()
@@ -249,6 +261,8 @@ mod tests {
             "windows-file-worker-capability",
             "windows-file-baseline-worker",
             "windows-file-baseline-worker-capability",
+            "windows-file-correction-worker",
+            "windows-file-correction-worker-capability",
         ] {
             for argument in [
                 "--json",
@@ -275,6 +289,10 @@ mod tests {
             dispatch(&["windows-file-baseline-worker-capability".into()]),
             Ok(0)
         );
+        assert_eq!(
+            dispatch(&["windows-file-correction-worker-capability".into()]),
+            Ok(0)
+        );
     }
 
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
@@ -286,6 +304,10 @@ mod tests {
         );
         assert_eq!(
             dispatch(&["windows-file-baseline-worker".into()]),
+            Err("the fixed Windows file worker requires Windows x86_64".into())
+        );
+        assert_eq!(
+            dispatch(&["windows-file-correction-worker".into()]),
             Err("the fixed Windows file worker requires Windows x86_64".into())
         );
     }

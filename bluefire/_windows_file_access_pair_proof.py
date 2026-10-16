@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from ._windows_file_access_native_contract import (
+    _CORRECTION,
     _PAIR,
     ISSUES,
     PROOF_SCHEMA,
@@ -16,6 +17,7 @@ from ._windows_file_access_native_contract import (
     _digest,
     _exact,
     _int,
+    _Protocol,
     _require,
 )
 
@@ -152,13 +154,14 @@ def _owner_phase(row: Any, request: dict[str, Any]) -> str:
 
 
 def pair_proof(
-    row: Any, request: dict[str, Any], returncode: int
+    row: Any, request: dict[str, Any], returncode: int, *, protocol: _Protocol = _PAIR
 ) -> tuple[str, bool, str, str, str]:
+    _require(protocol is _PAIR or protocol is _CORRECTION)
     row = _exact(
         row,
         "schema_version request_id outcome issue failed_stage reader owner resource_pair_rechecked independent_observation cleanup",
     )
-    _require(row["schema_version"] == _PAIR.proof and row["request_id"] == request["request_id"])
+    _require(row["schema_version"] == protocol.proof and row["request_id"] == request["request_id"])
     _require(
         type(row["resource_pair_rechecked"]) is bool and row["independent_observation"] is False
     )
