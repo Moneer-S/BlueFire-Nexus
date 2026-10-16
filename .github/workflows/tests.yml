@@ -177,7 +177,7 @@ jobs:
         run: python -m mypy bluefire
 
   package:
-    name: Native wheel - ${{ matrix.platform }} x86_64
+    name: Native wheel - ${{ matrix.platform }} ${{ matrix.architecture }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     defaults:
@@ -204,6 +204,12 @@ jobs:
             architecture: x86_64
             runner-path: runner/target/release/bluefire-runner
             wheel-platform-tag: macosx_11_0_x86_64
+            venv-python: bin/python
+          - os: macos-26
+            platform: macos
+            architecture: aarch64
+            runner-path: runner/target/release/bluefire-runner
+            wheel-platform-tag: macosx_11_0_arm64
             venv-python: bin/python
     steps:
       - name: Checkout
@@ -262,6 +268,31 @@ jobs:
       - name: Verify pinned Rust toolchain
         run: rustup show
 
+      - name: Verify macOS 26 arm64 SDK ABI
+        if: matrix.platform == 'macos' && matrix.architecture == 'aarch64'
+        shell: bash
+        run: |
+          evidence="$RUNNER_TEMP/macos-arm64-build-evidence"
+          mkdir -m 700 "$evidence"
+          test "$(uname -m)" = arm64
+          case "$(sw_vers -productVersion)" in 26.*) ;; *) exit 1 ;; esac
+          {
+            printf 'uname -a: '; uname -a
+            printf '\nsw_vers:\n'; sw_vers
+            printf '\nXcode:\n'; xcodebuild -version
+            printf '\nmacOS SDK version: '; xcrun --sdk macosx --show-sdk-version
+            printf '\nmacOS SDK path: '; xcrun --sdk macosx --show-sdk-path
+            printf '\nClang:\n'; clang --version
+            printf '\nRust:\n'; rustc -vV
+            printf '\nCargo:\n'; cargo -vV
+            printf '\nPython:\n'; python -VV
+          } > "$evidence/toolchain.txt"
+          rustc -vV | grep -qx 'host: aarch64-apple-darwin'
+          xcrun --sdk macosx clang -std=c11 -Wall -Wextra -Werror \
+            tools/check_macos_file_access_abi.c \
+            -o "$evidence/check-macos-file-access-abi"
+          "$evidence/check-macos-file-access-abi" > "$evidence/native-abi.json"
+
       - name: Install static Linux runner target
         if: matrix.platform == 'linux'
         run: rustup target add x86_64-unknown-linux-musl
@@ -304,20 +335,49 @@ jobs:
           python -c "import glob, os, subprocess; wheels = glob.glob(os.path.abspath('dist/*.whl')); assert len(wheels) == 1, wheels; executable = os.path.join(r'${{ runner.temp }}', 'bluefire-wheel-smoke', r'${{ matrix.venv-python }}'); subprocess.run([executable, '-m', 'pip', 'install', '--disable-pip-version-check', wheels[0]], check=True)"
           python -c "import os, shutil; shutil.copyfile('tools/verify_packaged_runner.py', os.path.join(r'${{ runner.temp }}', 'verify_packaged_runner.py'))"
 
+      - name: Prepare installed macOS capability verifier
+        if: matrix.platform == 'macos' && matrix.architecture == 'aarch64'
+        run: >-
+          python -c "import os, shutil; shutil.copyfile('tools/verify_macos_file_access_protocol.py', os.path.join(r'${{ runner.temp }}', 'verify_macos_file_access_protocol.py'))"
+
       - name: Bootstrap and Execute from installed wheel outside checkout
+        if: matrix.platform != 'macos' || matrix.architecture != 'aarch64'
         working-directory: ${{ runner.temp }}
         run: >-
           python -c "import os, subprocess; executable = os.path.join(r'${{ runner.temp }}', 'bluefire-wheel-smoke', r'${{ matrix.venv-python }}'); subprocess.run([executable, '-I', os.path.join(r'${{ runner.temp }}', 'verify_packaged_runner.py'), 'smoke', '--work-root', os.path.join(r'${{ runner.temp }}', 'bluefire-wheel-smoke-state'), '--forbid-root', os.environ['GITHUB_WORKSPACE'], '--report', os.path.join(r'${{ runner.temp }}', 'installed-wheel-smoke.json')], check=True)"
 
+      - name: Verify installed macOS file-access protocol capability
+        if: matrix.platform == 'macos' && matrix.architecture == 'aarch64'
+        working-directory: ${{ runner.temp }}
+        run: >-
+          "${{ runner.temp }}/bluefire-wheel-smoke/${{ matrix.venv-python }}"
+          -I verify_macos_file_access_protocol.py
+          --forbid-root "${{ github.workspace }}"
+          --report "${{ runner.temp }}/macos-file-access-capability.json"
+
       - name: Upload wheel and verification reports
+        if: matrix.platform != 'macos' || matrix.architecture != 'aarch64'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: bluefire-native-wheel-${{ matrix.platform }}-x86_64
+          name: bluefire-native-wheel-${{ matrix.platform }}-${{ matrix.architecture }}
           path: |
             wheel-source/dist/*.whl
             wheel-source/dist/package-inspection.json
             ${{ runner.temp }}/installed-wheel-smoke.json
           if-no-files-found: error
+
+      - name: Upload macOS 26 arm64 SDK and protocol evidence
+        if: always() && matrix.platform == 'macos' && matrix.architecture == 'aarch64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bluefire-macos-26-arm64-abi-protocol
+          path: |
+            wheel-source/dist/*.whl
+            wheel-source/dist/package-inspection.json
+            ${{ runner.temp }}/macos-arm64-build-evidence/toolchain.txt
+            ${{ runner.temp }}/macos-arm64-build-evidence/native-abi.json
+            ${{ runner.temp }}/macos-file-access-capability.json
+          if-no-files-found: warn
 
   rust:
     name: Rust runner · ${{ matrix.os }}
