@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -292,3 +293,165 @@ def test_disposable_workspace_proof_refuses_escaped_or_dirty_sandbox(tmp_path):
             remaining_files=[],
             signed_alias={},
         )
+
+
+@pytest.fixture
+def installed_smoke_boundary(monkeypatch, tmp_path):
+    """Synthetic OS/process boundary; real verifier and capability parser only."""
+    import bluefire
+    from bluefire import runner_bootstrap, runner_client
+    from bluefire import windows_file_access_enrollment_setup as setup
+    from tests_platform.test_windows_file_access_setup_lifecycle import synthetic_query_capability
+
+    package = tmp_path / "installed" / "bluefire"
+    package.mkdir(parents=True)
+    init = package / "__init__.py"
+    init.write_text("# synthetic installed package\n", encoding="ascii")
+    binary = package / "bluefire-runner.exe"
+    binary.write_bytes(b"synthetic image, never executed")
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    args = SimpleNamespace(work_root=tmp_path / "work", forbid_root=checkout, report=None)
+    state = {"platform": "windows", "architecture": "x86_64", "fault": None}
+    query_calls, execute_calls, reports = [], [], []
+    monkeypatch.setattr(bluefire, "__file__", str(init))
+    monkeypatch.delenv("BLUEFIRE_RUNNER_BINARY", raising=False)
+    monkeypatch.delenv("BLUEFIRE_SANDBOX_ROOT", raising=False)
+    monkeypatch.setattr(runner_bootstrap, "current_platform", lambda: state["platform"])
+
+    def bootstrap(**kwargs):
+        assert kwargs["environ"] == {}
+        return SimpleNamespace(
+            binary_path=binary,
+            manifest=SimpleNamespace(
+                platform=state["platform"],
+                architecture=state["architecture"],
+                runner_version="0.1.0",
+            ),
+            public_status=lambda: {"state": "ready", "source": "packaged"},
+        )
+
+    class FakeRunner:
+        def __init__(self, actual_binary, *_a, **_k):
+            assert actual_binary == binary
+
+        def inventory(self):
+            return {
+                "runner_id": "bluefire-rust-runner.v1",
+                "runner_version": "0.1.0",
+                "platform": state["platform"],
+                "actions": [],
+            }
+
+        def execute(self, manifest, _profile):
+            execute_calls.append(manifest["action_id"])
+            fixture = args.work_root / "sandbox" / "fixtures" / "smoke.jsonl"
+            if len(execute_calls) == 1:
+                fixture.parent.mkdir()
+                raw = (
+                    json.dumps(
+                        {
+                            "record_id": "synthetic-001",
+                            "synthetic": True,
+                            "template": "telemetry-seed",
+                            "value": "telemetry-value-001",
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode()
+                    + b"\n"
+                )
+                fixture.write_bytes(raw)
+                return {
+                    "status": "success",
+                    "receipt_ids": ["synthetic-receipt"],
+                    "output": {
+                        "artifact": "fixtures/smoke.jsonl",
+                        "sha256": hashlib.sha256(raw).hexdigest(),
+                        "size": len(raw),
+                        "template": "telemetry-seed",
+                        "record_count": 1,
+                        "format": "jsonl",
+                    },
+                }
+            fixture.unlink()
+            cleanup = {
+                "requested_receipts": 1,
+                "verified_receipts": 1,
+                "verification_performed": True,
+                "errors": [],
+                "retained_paths": [],
+            }
+            return {"status": "success", "cleanup": cleanup, "output": cleanup}
+
+    def query(command, **kwargs):
+        query_calls.append(command)
+        assert command == [str(binary), "windows-file-baseline-worker-capability"]
+        assert kwargs["stdin"] == setup.subprocess.DEVNULL and kwargs["shell"] is False
+        assert kwargs["timeout"] == 5.0
+        row = synthetic_query_capability(setup.enrollment._PAIR_SETUP)
+        fault = state["fault"]
+        if fault == "old":
+            row = synthetic_query_capability(setup.enrollment._READER_SETUP)
+        if fault == "unsupported":
+            row["supported"] = False
+        raw = json.dumps(row).encode()
+        kwargs["stdout"].write(b"private malformed" if fault == "malformed" else raw)
+        if fault == "stderr":
+            kwargs["stderr"].write(b"private capability stderr")
+        return SimpleNamespace(returncode=4 if fault == "exit" else 0)
+
+    monkeypatch.setattr(runner_bootstrap, "bootstrap_runner", bootstrap)
+    monkeypatch.setattr(runner_client, "SubprocessRustRunner", FakeRunner)
+    monkeypatch.setattr(setup.subprocess, "run", query)
+    monkeypatch.setattr(setup.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(
+        verifier, "_smoke_signed_package_alias", lambda *_a: {"remaining_file_count": 0}
+    )
+    monkeypatch.setattr(verifier, "_write_report", lambda _path, report: reports.append(report))
+    return args, state, query_calls, execute_calls, reports, binary
+
+
+@pytest.mark.parametrize(
+    "platform,architecture",
+    [("windows", "x86_64"), ("linux", "x86_64"), ("macos", "x86_64"), ("windows", "aarch64")],
+)
+def test_installed_smoke_queries_only_windows_x86_pair_support_and_preserves_old_flow(
+    installed_smoke_boundary, platform, architecture
+):
+    args, state, calls, executions, reports, binary = installed_smoke_boundary
+    state.update(platform=platform, architecture=architecture)
+    assert verifier.smoke_installed_runner(args) == 0
+    assert executions == ["sandbox.fixture.create.v1", "sandbox.cleanup.v1"]
+    assert len(reports) == 1 and reports[0]["verified"] is True
+    if platform == "windows" and architecture == "x86_64":
+        assert calls == [[str(binary), "windows-file-baseline-worker-capability"]]
+        capability = reports[0]["windows_pair_worker"]
+        assert capability["scope"] == "protocol_support_only" and len(capability) == 16
+        assert "readiness" not in capability and "enrollment" not in capability
+    else:
+        assert calls == [] and "windows_pair_worker" not in reports[0]
+
+
+@pytest.mark.parametrize("fault", ["old", "unsupported", "exit", "stderr", "malformed"])
+def test_installed_pair_capability_failure_precedes_fixture_and_has_sanitized_diagnostic(
+    installed_smoke_boundary, fault, capsys
+):
+    args, state, calls, executions, reports, _binary = installed_smoke_boundary
+    state["fault"] = fault
+    assert (
+        verifier._cli(
+            ["smoke", "--work-root", str(args.work_root), "--forbid-root", str(args.forbid_root)]
+        )
+        == 2
+    )
+    assert len(calls) == 1 and executions == [] and reports == []
+    captured = capsys.readouterr()
+    assert (
+        not captured.out
+        and "private" not in captured.err
+        and str(args.work_root) not in captured.err
+    )
+    diagnostic = json.loads(captured.err.splitlines()[1])
+    assert diagnostic["phase"] == "protocol_support"
+    assert diagnostic["reason"] == "windows_pair_capability_invalid"

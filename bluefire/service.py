@@ -328,6 +328,9 @@ class BlueFireService(
 
         self.product_store.interrupt_active_capability_grants(now_ms=now_ms())
         self.composition = CompositionJobs(self)
+        from .file_access_control import FileAccessControl
+
+        self._file_access = FileAccessControl(self)
         self.assistance = ExperimentAssistance(self)
         self.assistance_receiver = ReceiverAssistance(self)
         self.detection_ai.on_application = self.assistance.application_committed
@@ -2664,12 +2667,13 @@ class BlueFireService(
 
     @property
     def file_access(self) -> FileAccessControl:
-        from .file_access_control import FileAccessControl
-
-        return FileAccessControl(self)
+        return self._file_access
 
     def file_access_status(self) -> Mapping[str, Any]:
         return self.file_access.status()
+
+    def import_file_access_setup(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self.file_access.import_setup(request)
 
     def file_access_review(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         return self.file_access.review(request)
@@ -3747,11 +3751,20 @@ class BlueFireService(
                 try:
                     self.job_controller.shutdown()
                 finally:
-                    receiver_closed = self.receiver_defense.owners.close_all()
-                    composition_closed = self.composition.owners.close_all()
-                    if not receiver_closed or not composition_closed:
+                    closed = True
+                    for owners in (
+                        self.receiver_defense.owners,
+                        self.composition.owners,
+                        self.file_access.windows,
+                        self.file_access.windows_correction,
+                    ):
+                        try:
+                            closed = owners.close_all() and closed
+                        except Exception:
+                            closed = False
+                    if not closed:
                         raise ProductStoreError(
-                            "One or more owned receivers lack verified cleanup after shutdown."
+                            "One or more owned processes lack verified cleanup after shutdown."
                         )
 
     def _recover_interrupted_cleanup(

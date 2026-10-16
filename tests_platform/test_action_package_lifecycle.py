@@ -21,6 +21,7 @@ from bluefire.action_packages import (
     verify_action_package,
 )
 from bluefire.product_store import (
+    SCHEMA_VERSION,
     ActionPackageConflictError,
     ActionPackageIntegrityError,
     ProductStore,
@@ -279,7 +280,7 @@ def test_v5_plugin_metadata_is_preserved_and_active_status_is_demoted(
 
     store = ProductStore(path)
 
-    assert store.schema_version == 10
+    assert store.schema_version == SCHEMA_VERSION
     assert store.list_action_packages() == []
     assert store.get_resource("plugin", str(document["id"]))["status"] == "legacy_metadata"
     assert store.list_legacy_action_package_metadata() == [
@@ -1012,7 +1013,9 @@ def test_expected_digest_shape_and_schema_constraints_are_enforced(tmp_path: Pat
         store.install_action_package(malformed, installed_by="test-operator")
 
     with sqlite3.connect(store.path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone() == (10,)
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone() == (
+            SCHEMA_VERSION,
+        )
         tables = {
             str(row[0])
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")

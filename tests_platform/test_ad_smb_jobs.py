@@ -15,7 +15,7 @@ from bluefire.ad_smb_contract import AdSmbError
 from bluefire.ad_smb_execution import UnavailableAdSmbExecutor
 from bluefire.ad_smb_jobs import AdSmbJobs
 from bluefire.execution_contracts import execution_task_identity
-from bluefire.job_runtime import JobWaitTimeout, RunJobController
+from bluefire.job_runtime import TERMINAL_JOB_STATES, JobWaitTimeout, RunJobController
 from bluefire.product_store import ProductStore
 from bluefire.run_store import RunStore
 from bluefire.runner_contracts import seal_profile
@@ -39,6 +39,7 @@ _SAFE_JOB_STATES = frozenset(
     }
 )
 _SAFE_AD_PHASES = frozenset({"inspect", "baseline", "harden", "retest", "rollback", "audit"})
+_TERMINAL_JOB_STATE_NAMES = frozenset(state.value for state in TERMINAL_JOB_STATES)
 
 
 def wait_for_ad_job(controller, job_id):
@@ -47,6 +48,8 @@ def wait_for_ad_job(controller, job_id):
     except JobWaitTimeout:
         snapshot = controller.snapshot(job_id)
         state = snapshot.get("state")
+        if isinstance(state, str) and state in _TERMINAL_JOB_STATE_NAMES:
+            return snapshot
         state = state if isinstance(state, str) and state in _SAFE_JOB_STATES else "unknown"
         request = snapshot.get("request")
         ad_smb = request.get("ad_smb") if isinstance(request, dict) else None

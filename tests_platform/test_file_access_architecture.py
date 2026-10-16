@@ -25,6 +25,46 @@ def test_neutral_error_and_transport_identity_exports_preserve_type_identity():
         runner_client.reject_forbidden_execution_keys({"command": "not authorized"})
 
 
+def test_windows_pure_contract_exports_preserve_type_and_function_identity():
+    from bluefire import _windows_file_access_native_contract as wire
+    from bluefire import _windows_file_access_setup_binding as binding
+    from bluefire import product_store_capability_grants as grants
+    from bluefire import product_store_file_access as store
+    from bluefire import windows_file_access_admission as admission
+    from bluefire import windows_file_access_enrollment as enrollment
+    from bluefire import windows_file_access_enrollment_native as native
+    from bluefire import windows_file_access_enrollment_setup as setup
+    from bluefire import windows_file_access_setup_child as child
+
+    for name in (
+        "WindowsEnrollmentCandidate",
+        "VerifiedWindowsSetup",
+        "WindowsEnrollmentUnavailable",
+        "_document",
+        "_purpose",
+        "parse_windows_enrollment_candidate",
+    ):
+        assert getattr(enrollment, name) is getattr(admission, name)
+    for name in (
+        "_anchor_document",
+        "_match_anchor_record",
+        "_private_profile",
+        "_source_document",
+    ):
+        assert getattr(setup, name) is getattr(admission, name)
+    assert native.WindowsEnrollmentNativeError is admission.WindowsEnrollmentNativeError
+    assert native.file_identity_wire is admission.file_identity_wire
+    assert setup.file_identity_wire is admission.file_identity_wire
+    assert setup._ANCHOR_FIELDS is admission._ANCHOR_FIELDS
+    assert child.contract is wire and child.binding is binding
+    assert admission.ProductStoreError is ProductStoreError
+    assert store._usage_settled is grants.control_usages_settled
+    with pytest.raises(admission.WindowsEnrollmentNativeError, match="file identity is invalid"):
+        native.file_identity_wire(True, 1)
+    with pytest.raises(native.WindowsEnrollmentNativeError, match="observation failed"):
+        native._refuse()
+
+
 @pytest.fixture
 def configured_preparation(operation, monkeypatch):
     chmod = record()

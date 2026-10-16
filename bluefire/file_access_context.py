@@ -1,5 +1,6 @@
 """Fresh server-owned endpoint context, separate from public model projections."""
 
+import sys
 from typing import Any
 
 from .capability_packs import FILE_ACCESS_METHODS
@@ -17,7 +18,15 @@ CONTROL_METHODS = (
 )
 
 
+def is_windows_host():
+    return sys.platform == "win32"
+
+
 def enrollment(service, now_ms):
+    if is_windows_host():
+        from . import windows_file_access_context
+
+        return windows_file_access_context.enrollment(service, now_ms)
     current = read_file_access_enrollment(now_ms=now_ms)
     service.product_store.save_file_access_enrollment(
         current["document"], expected_document_digest=current["document_digest"]
@@ -29,6 +38,10 @@ def enrollment(service, now_ms):
 
 
 def execution(service, enrolled):
+    if is_windows_host():
+        from . import windows_file_access_context
+
+        return windows_file_access_context.execution(service, enrolled)
     document = enrolled["document"]
     profile = service._profile(document["runner_profile_id"], ExecutionMode.EXECUTE)
     if profile is None:
@@ -83,6 +96,10 @@ def execution(service, enrolled):
 
 
 def binding(enrolled, *, revision, now_ms):
+    if is_windows_host():
+        from . import windows_file_access_context
+
+        return windows_file_access_context.binding(enrolled, revision=revision, now_ms=now_ms)
     observation = inspect_file_access_resource(
         expected_enrollment_digest=enrolled["document_digest"], now_ms=now_ms
     )
@@ -108,6 +125,10 @@ def binding(enrolled, *, revision, now_ms):
 
 
 def composition(service, owner_id: str, now_ms: int) -> dict[str, Any]:
+    if is_windows_host():
+        from . import windows_file_access_context
+
+        return windows_file_access_context.execution(service, None)
     stored = service.product_store.get_file_access_control(owner_id)
     control = stored["document"]
     enrolled = enrollment(service, now_ms)

@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 import zipfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -29,6 +30,7 @@ _FAILURE_STAGES = {
     "runner_init": ("runner_init", "runner_initialization_failed"),
     "inventory": ("inventory", "inventory_failed"),
     "inventory_identity": ("inventory", "runner_identity_invalid"),
+    "windows_pair_capability": ("protocol_support", "windows_pair_capability_invalid"),
     "fixture_setup": ("fixture_setup", "fixture_setup_failed"),
     "fixture_execute": ("fixture_execute", "fixture_execution_failed"),
     "fixture_receipts": ("fixture_validation", "fixture_receipts_invalid"),
@@ -362,10 +364,27 @@ def smoke_installed_runner(args: argparse.Namespace) -> int:
     if inventory.get("runner_id") != "bluefire-rust-runner.v1":
         raise RuntimeError("installed runner returned an unexpected identity")
 
+    platform = current_platform()
+    windows_pair_worker = None
+    if (
+        platform == "windows"
+        and bootstrapped.manifest.platform == "windows"
+        and bootstrapped.manifest.architecture == "x86_64"
+    ):
+        from bluefire.windows_file_access_admission import _PAIR_SETUP
+        from bluefire.windows_file_access_enrollment_setup import _query_capability_for
+
+        _stage("windows_pair_capability")
+        windows_pair_worker = _query_capability_for(
+            bootstrapped.binary_path,
+            bootstrapped.manifest.runner_version,
+            time.monotonic() + 5.0,
+            _PAIR_SETUP,
+        )
+
     _stage("fixture_setup")
     sandbox = work_root / "sandbox"
     sandbox.mkdir()
-    platform = current_platform()
     limits = {
         "timeout_ms": 10_000,
         "max_stdout_bytes": 64 * 1024,
@@ -539,6 +558,11 @@ def smoke_installed_runner(args: argparse.Namespace) -> int:
             "execute": {"status": created.get("status"), "receipt_count": len(receipts)},
             "cleanup": {"status": cleaned.get("status"), "remaining_file_count": 0},
             "signed_alias": signed_alias,
+            **(
+                {"windows_pair_worker": windows_pair_worker}
+                if windows_pair_worker is not None
+                else {}
+            ),
             "disposable_workspace": _disposable_workspace_proof(
                 work_root=work_root,
                 checkout=checkout,

@@ -22,6 +22,15 @@ from tests_platform.test_method_comparison_jobs import source_run
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize(
+    "name", ["submitted", "is_graph", "is_receiver", "is_audit", "is_creation", "is_saved_run"]
+)
+def test_selection_helpers_keep_the_existing_turn_module_exports(name):
+    from bluefire import assistance_context, assistance_turns
+
+    assert getattr(assistance_turns, name) is getattr(assistance_context, name)
+
+
 class Access:
     def __init__(self):
         self.calls = []

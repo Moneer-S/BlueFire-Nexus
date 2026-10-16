@@ -1040,6 +1040,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if file_access is not None:
             operations = {
                 "review": lambda: self.platform_server.service.file_access_review(body),
+                "setup-import": lambda: self.platform_server.service.import_file_access_setup(body),
                 "operations": lambda: self.platform_server.service.submit_file_access_operation(
                     body
                 ),

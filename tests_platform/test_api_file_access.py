@@ -6,13 +6,15 @@ from tests_platform.test_api import JOB_ID, json_body, request, running_server
 
 SUBMISSION_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 PREFIX = "/api/v1/file-access/"
+WINDOWS_CONTROL = "win-file-control-" + "b" * 32
 READS = (
     "status",
     f"operations/{JOB_ID}",
     f"controls/{JOB_ID}",
     f"operations/{JOB_ID}/reconciliations/{SUBMISSION_ID}",
+    f"controls/{WINDOWS_CONTROL}",
 )
-WRITES = ("review", "operations", "control-list", f"operations/{JOB_ID}/reconcile")
+WRITES = ("review", "operations", "control-list", f"operations/{JOB_ID}/reconcile", "setup-import")
 
 
 def test_file_access_routes_forward_exact_bodies_and_saved_identifiers():
@@ -22,10 +24,12 @@ def test_file_access_routes_forward_exact_bodies_and_saved_identifiers():
         ("GET", READS[1], ("file_access_operation", JOB_ID)),
         ("GET", READS[2], ("file_access_control", JOB_ID)),
         ("GET", READS[3], ("file_access_reconciliation", JOB_ID, SUBMISSION_ID)),
+        ("GET", READS[4], ("file_access_control", WINDOWS_CONTROL)),
         ("POST", WRITES[0], ("file_access_review", body)),
         ("POST", WRITES[1], ("submit_file_access_operation", body)),
         ("POST", WRITES[2], ("list_file_access_controls", body)),
         ("POST", WRITES[3], ("reconcile_file_access_operation", JOB_ID, body)),
+        ("POST", WRITES[4], ("import_file_access_setup", body)),
     )
     with running_server() as (server, service):
         for method, suffix, expected in routes:
@@ -90,6 +94,9 @@ def test_file_access_reads_keep_session_query_and_verb_guards(suffix):
         f"operations/{JOB_ID}/reconciliations/{SUBMISSION_ID.upper()}",
         f"controls/{JOB_ID}/reconcile",
         f"controls/{JOB_ID}/reconciliations/{SUBMISSION_ID}",
+        f"operations/{WINDOWS_CONTROL}",
+        f"controls/{WINDOWS_CONTROL}/reconcile",
+        f"controls/{WINDOWS_CONTROL.upper()}",
         "controls",
         "enrollments",
         "approve",

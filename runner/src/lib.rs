@@ -85,3 +85,5 @@ pub use safety::RECEIPT_PROTOCOL_VERSION;
 pub mod file_access;
 pub mod file_access_contract;
 pub mod macos_file_access;
+pub mod windows_file_access_read;
+pub mod windows_file_access_worker;

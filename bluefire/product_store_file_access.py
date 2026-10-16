@@ -9,21 +9,30 @@ from __future__ import annotations
 import json
 from typing import Any, cast
 
+from . import product_store_file_access_admission as admission
 from .capability_resources import digest, exact
+from .product_store_capability_grants import control_usages_settled as _usage_settled
 from .product_store_errors import ProductStoreError
+from .product_store_file_access_admission import allowed_operations as allowed_operations
+from .product_store_file_access_native_evidence import NativeEvidenceStoreMixin
 from .product_store_serialization import canonical_json, utc_now
+from .product_store_windows_file_access import WindowsSetupStoreMixin
 from .util import content_hash
 
 OPERATIONS = ("create", "baseline", "harden", "rollback", "reset")
 KIND = "file_access.operation"
 _TABLES = {
     "file_access_enrollments": "enrollment_id TEXT PRIMARY KEY, document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
+    "file_access_setup_imports": "control_owner_id TEXT PRIMARY KEY, enrollment_id TEXT NOT NULL UNIQUE REFERENCES file_access_enrollments(enrollment_id), generation TEXT NOT NULL UNIQUE, document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "file_access_operations": "job_id TEXT PRIMARY KEY REFERENCES jobs(job_id), control_owner_id TEXT NOT NULL, enrollment_id TEXT NOT NULL, operation TEXT NOT NULL, document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "file_access_preparations": "job_id TEXT PRIMARY KEY REFERENCES file_access_operations(job_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
+    "file_access_windows_control_evidence": "job_id TEXT NOT NULL REFERENCES file_access_operations(job_id), stage TEXT NOT NULL, document_json TEXT NOT NULL, document_digest TEXT NOT NULL, PRIMARY KEY(job_id,stage)",
     "file_access_reconciliations": "submission_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES file_access_operations(job_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "file_access_reconciliation_results": "submission_id TEXT PRIMARY KEY REFERENCES file_access_reconciliations(submission_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "file_access_task_claims": "task_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES file_access_operations(job_id), step_id TEXT NOT NULL, request_hash TEXT NOT NULL, document_json TEXT NOT NULL, document_digest TEXT NOT NULL, UNIQUE(job_id,step_id)",
     "file_access_task_terminals": "task_id TEXT PRIMARY KEY REFERENCES file_access_task_claims(task_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
+    "file_access_task_evidence": "task_id TEXT NOT NULL REFERENCES file_access_task_claims(task_id), stage TEXT NOT NULL, document_json TEXT NOT NULL, document_digest TEXT NOT NULL, PRIMARY KEY(task_id,stage)",
+    "file_access_owned_process_closures": "task_id TEXT PRIMARY KEY REFERENCES file_access_task_claims(task_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "file_access_worker_closures": "task_id TEXT PRIMARY KEY REFERENCES file_access_task_terminals(task_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "file_access_outcomes": "sequence INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL REFERENCES file_access_operations(job_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "file_access_revisions": "control_owner_id TEXT NOT NULL, revision INTEGER NOT NULL, job_id TEXT NOT NULL UNIQUE REFERENCES file_access_operations(job_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL, PRIMARY KEY(control_owner_id,revision)",
@@ -61,6 +70,12 @@ def _control_at(connection, owner_id):
         "SELECT * FROM file_access_revisions WHERE control_owner_id=? ORDER BY revision DESC LIMIT 1",
         (owner_id,),
     ).fetchone()
+    if row is None:
+        from . import product_store_windows_file_access as windows
+
+        imported = windows.at(connection, owner_id=owner_id)
+        document = windows.document(imported)
+        return {"document": document, "document_digest": imported["document_digest"]}
     document = _document(row)
     if document["control_owner_id"] != owner_id or document["revision"] != row["revision"]:
         raise ProductStoreError("The retained file control lineage changed.")
@@ -87,12 +102,6 @@ def _outcome_at(connection, job_id):
     ).fetchone()
 
 
-def _usage_settled(store, connection, owner_id):
-    from .product_store_capability_grants import control_usages_settled
-
-    return control_usages_settled(store, connection, owner_id)
-
-
 def guard_control(store, connection, grant):
     environment = grant["environment"]
     view = _control_at(connection, environment["control_owner_id"])
@@ -111,19 +120,7 @@ def guard_control(store, connection, grant):
         raise ProductStoreError("The exact hardened retained file control is unavailable.")
 
 
-def allowed_operations(status):
-    return {
-        "created": ["baseline", "reset"],
-        "baseline_verified": ["harden", "reset"],
-        "hardened": ["rollback", "reset"],
-        "rolled_back": ["harden", "baseline", "reset"],
-        "reset": [],
-        "uncertain": [],
-        "recovery_required": ["reset"],
-    }.get(status, [])
-
-
-class FileAccessStoreMixin:
+class FileAccessStoreMixin(NativeEvidenceStoreMixin, WindowsSetupStoreMixin):
     def save_file_access_enrollment(self, document, *, expected_document_digest):
         """Caller obtained the expected digest from the independently verified setup anchor."""
         if content_hash(document) != digest(expected_document_digest, "setup enrollment digest"):
@@ -168,6 +165,14 @@ class FileAccessStoreMixin:
                 "SELECT * FROM file_access_revisions WHERE control_owner_id=? AND revision=?",
                 (owner_id, revision),
             ).fetchone()
+            if row is None and type(revision) is int and revision == 1:
+                from . import product_store_windows_file_access as windows
+
+                imported = windows.at(connection, owner_id=owner_id)
+                return {
+                    "document": windows.document(imported),
+                    "document_digest": imported["document_digest"],
+                }
             return {"document": _document(row), "document_digest": row["document_digest"]}
 
     def list_file_access_controls(self):
@@ -179,6 +184,13 @@ class FileAccessStoreMixin:
                     "SELECT DISTINCT control_owner_id FROM file_access_revisions ORDER BY rowid"
                 )
             ]
+            ids.extend(
+                row[0]
+                for row in connection.execute(
+                    "SELECT control_owner_id FROM file_access_setup_imports ORDER BY rowid"
+                )
+                if row[0] not in ids
+            )
             return [_control_at(connection, owner_id) for owner_id in ids]
 
     def create_file_access_operation(
@@ -228,6 +240,11 @@ class FileAccessStoreMixin:
             ):
                 raise ProductStoreError("The file-access operation review expired.")
             if operation == "create":
+                if enrollment.get("schema_version") in (
+                    "bluefire.windows-file-access-enrollment.v1",
+                    "bluefire.windows-file-access-enrollment.v2",
+                ):
+                    raise ProductStoreError("Windows protected setup is not a create operation.")
                 if (
                     review["control_owner_id"] is not None
                     or review["control_digest"] is not None
@@ -241,10 +258,13 @@ class FileAccessStoreMixin:
                     )
             else:
                 control = _control_at(connection, owner_id)
+                permitted = admission.permitted_operations(
+                    store, connection, control["document"], review_context, now_ms=now_ms
+                )
                 if (
                     control["document_digest"] != review["control_digest"]
                     or control["document"]["enrollment_id"] != enrollment_id
-                    or operation not in allowed_operations(control["document"]["status"])
+                    or operation not in permitted
                     or _pending(connection, owner_id)
                     or not _usage_settled(store, connection, owner_id)
                 ):
@@ -293,7 +313,7 @@ class FileAccessStoreMixin:
                 True,
             )
 
-    def prepare_file_access_operation(self, job_id, document):
+    def prepare_file_access_operation(self, job_id, document, *, now_ms=None):
         store = cast(Any, self)
         with store._connection(write=True) as connection:
             operation = connection.execute(
@@ -329,9 +349,9 @@ class FileAccessStoreMixin:
                 if operation["operation"] == "create"
                 else _control_at(connection, operation["control_owner_id"])["document"]
             )
-            from .file_access_preparation import validate_preparation
-
-            validate_preparation(document, original, enrollment, prior)
+            admission.validate_preparation(
+                store, connection, operation, original, document, enrollment, prior, now_ms=now_ms
+            )
             connection.execute(
                 "INSERT INTO file_access_preparations VALUES(?,?,?)",
                 (job_id, canonical_json(document), content_hash(document)),
@@ -383,6 +403,26 @@ class FileAccessStoreMixin:
                     "SELECT * FROM file_access_preparations WHERE job_id=?", (job_id,)
                 ).fetchone()
             )
+            from . import product_store_windows_file_access as windows
+
+            if windows.is_preparation(preparation):
+                windows.register_task(
+                    connection,
+                    operation=operation,
+                    original=document,
+                    prepared=preparation,
+                    control_document=_control_at(connection, operation["control_owner_id"])[
+                        "document"
+                    ],
+                    usage_settled=_usage_settled(store, connection, operation["control_owner_id"]),
+                    task_id=task_id,
+                    step_id=step_id,
+                    manifest=manifest,
+                    profile=runner_profile,
+                    now_ms=now_ms,
+                    validate_context=validate_context,
+                )
+                return
             expected = next(
                 (row for row in preparation["recipe"] if row["step_id"] == step_id), None
             )
@@ -444,6 +484,78 @@ class FileAccessStoreMixin:
                     content_hash(record),
                 ),
             )
+
+    def file_access_task_record(self, task_id, transport_request_hash, *, include_terminal=True):
+        """Return one exact retained claim without revalidating its historical admission."""
+        store = cast(Any, self)
+        if type(include_terminal) is not bool:
+            raise ProductStoreError("The retained file-access terminal selection is invalid.")
+        if not isinstance(task_id, str) or not task_id:
+            raise ProductStoreError("The retained file-access task identity is invalid.")
+        if not isinstance(transport_request_hash, str):
+            raise ProductStoreError("The retained file-access transport identity is invalid.")
+        try:
+            digest(transport_request_hash, "file-access transport request hash")
+        except ValueError as exc:
+            raise ProductStoreError(
+                "The retained file-access transport identity is invalid."
+            ) from exc
+
+        with store._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM file_access_task_claims WHERE task_id=?", (task_id,)
+            ).fetchone()
+            document = _document(row)
+            manifest = document.get("manifest")
+            runner_profile = document.get("runner_profile")
+            if not isinstance(manifest, dict) or not isinstance(runner_profile, dict):
+                raise ProductStoreError("The retained file-access task binding is invalid.")
+            try:
+                digest(row["request_hash"], "file-access task request hash")
+                from .execution_contracts import execution_task_identity
+
+                expected_task_id, expected_transport_hash = execution_task_identity(
+                    manifest, runner_profile
+                )
+            except (TypeError, ValueError, RecursionError) as exc:
+                raise ProductStoreError(
+                    "The retained file-access task binding is invalid."
+                ) from exc
+            if (
+                document.get("task_id") != row["task_id"]
+                or row["task_id"] != task_id
+                or document.get("job_id") != row["job_id"]
+                or document.get("step_id") != row["step_id"]
+                or document.get("request_hash") != row["request_hash"]
+                or not isinstance(manifest.get("run_id"), str)
+                or not manifest["run_id"]
+                or manifest.get("step_id") != row["step_id"]
+                or manifest.get("request_hash") != row["request_hash"]
+                or expected_task_id != row["task_id"]
+                or document.get("transport_request_hash") != expected_transport_hash
+                or transport_request_hash != expected_transport_hash
+            ):
+                raise ProductStoreError("The retained file-access task binding changed.")
+
+            terminal_row = None
+            if include_terminal:
+                terminal_row = connection.execute(
+                    "SELECT * FROM file_access_task_terminals WHERE task_id=?", (task_id,)
+                ).fetchone()
+            terminal = None
+            if terminal_row is not None:
+                terminal = _document(terminal_row)
+                if (
+                    terminal_row["task_id"] != row["task_id"]
+                    or terminal.get("task_id") != row["task_id"]
+                    or terminal.get("request_hash") != row["request_hash"]
+                ):
+                    raise ProductStoreError("The retained file-access terminal binding changed.")
+            return {
+                "task": document,
+                "document_digest": row["document_digest"],
+                "terminal": terminal,
+            }
 
     def record_file_access_task_terminal(
         self, task_id, *, request_hash, result, receipt_snapshot=None
@@ -542,6 +654,26 @@ class FileAccessStoreMixin:
                 "SELECT * FROM file_access_operations WHERE job_id=?", (job_id,)
             ).fetchone()
             document = _document(operation)
+            if document["review_context"].get("schema_version") in (
+                "bluefire.windows-file-access-baseline-context.v1",
+                "bluefire.windows-file-access-baseline-context.v2",
+                "bluefire.windows-file-access-correction-context.v1",
+            ) and (
+                control is not None
+                or verified_observation is not None
+                or outcome["state"] in ("complete", "settled_partial")
+            ):
+                raise ProductStoreError(
+                    "Windows publication requires its separate complete proof boundary."
+                )
+            if (
+                outcome["state"] == "refused_no_effect"
+                and connection.execute(
+                    "SELECT 1 FROM file_access_windows_control_evidence WHERE job_id=? LIMIT 1",
+                    (job_id,),
+                ).fetchone()
+            ):
+                raise ProductStoreError("A dispatched Windows correction remains an obligation.")
             record = {
                 **outcome,
                 "control_digest": content_hash(control) if control is not None else None,

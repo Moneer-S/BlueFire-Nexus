@@ -3,6 +3,7 @@
 import copy
 import functools
 import hashlib
+import inspect
 import json
 import sys
 import threading
@@ -443,8 +444,45 @@ class _PublicationDiagnostic:
         ("test_receiver_defense_jobs.py", "execute_task"): "synthetic_dispatch",
         ("test_receiver_defense_jobs.py", "hold_final_publication"): "publication_wait",
     }
+    connection_sites = {
+        "with self._lock:": "store_lock",
+        "pinned_regular_file_identity(": "identity_check",
+        "connection = sqlite3.connect(self.path, timeout=5.0)": "sqlite_connect",
+        "connection.row_factory = sqlite3.Row": "row_factory",
+        'connection.execute("PRAGMA foreign_keys = ON")': "foreign_keys",
+        'connection.execute("PRAGMA busy_timeout = 5000")': "busy_timeout",
+        'connection.execute("BEGIN IMMEDIATE")': "sqlite_begin",
+        "yield connection": "connection_body",
+        "connection.rollback()": "sqlite_rollback",
+        "connection.commit()": "sqlite_commit",
+        "connection.close()": "sqlite_close",
+    }
+
+    def connection_positions(self):
+        from bluefire.product_store import ProductStore
+
+        try:
+            original = ProductStore._connection.__wrapped__
+            source, first_line = inspect.getsourcelines(original)
+            return original.__code__, {
+                first_line + index: self.connection_sites[line.strip()]
+                for index, line in enumerate(source)
+                if line.strip() in self.connection_sites
+            }
+        except Exception:
+            return None, {}
+
+    def connection_subsite(self, frame):
+        try:
+            if frame.f_code is not self._connection_code:
+                return "unknown"
+            return self._connection_positions.get(frame.f_lineno, "unknown")
+        except Exception:
+            return "unknown"
 
     def __init__(self):
+        # Resolve source positions before the workflow, never during failure reporting.
+        self._connection_code, self._connection_positions = self.connection_positions()
         self._local = threading.local()
         self._worker_threads = {}
         self._entered = set()
@@ -512,6 +550,7 @@ class _PublicationDiagnostic:
             if frame is None:
                 return {"state": "not_live", "sites": [], "truncated": False}
             sites = []
+            store_subsite = None
             for _ in range(32):
                 if frame is None:
                     break
@@ -520,8 +559,13 @@ class _PublicationDiagnostic:
                 site = self.frame_sites.get((filename, code.co_name))
                 if site is not None and site not in sites:
                     sites.append(site)
+                if site == "store_connection" and store_subsite is None:
+                    store_subsite = self.connection_subsite(frame)
                 frame = frame.f_back
-            return {"state": "live", "sites": sites, "truncated": frame is not None}
+            result = {"state": "live", "sites": sites, "truncated": frame is not None}
+            if store_subsite is not None:
+                result["store_subsite"] = store_subsite
+            return result
         except Exception:
             return {"state": "unavailable", "sites": [], "truncated": False}
 
@@ -688,6 +732,151 @@ def test_publication_stack_sample_is_bounded_and_never_prints_frame_values(monke
         "sites": [],
         "truncated": False,
     }
+
+
+@pytest.mark.parametrize(
+    "statement,expected",
+    [
+        ("with self._lock:", "store_lock"),
+        ("pinned_regular_file_identity(", "identity_check"),
+        ("connection = sqlite3.connect(self.path, timeout=5.0)", "sqlite_connect"),
+        ("connection.row_factory = sqlite3.Row", "row_factory"),
+        ('connection.execute("PRAGMA foreign_keys = ON")', "foreign_keys"),
+        ('connection.execute("PRAGMA busy_timeout = 5000")', "busy_timeout"),
+        ('connection.execute("BEGIN IMMEDIATE")', "sqlite_begin"),
+        ("yield connection", "connection_body"),
+        ("connection.rollback()", "sqlite_rollback"),
+        ("connection.commit()", "sqlite_commit"),
+        ("connection.close()", "sqlite_close"),
+    ],
+)
+def test_publication_connection_subsite_uses_only_exact_code_and_whitelisted_statement(
+    monkeypatch, capsys, statement, expected
+):
+    from bluefire.product_store import ProductStore
+
+    private = "PRIVATE_CONNECTION_FRAME_VALUE"
+    original = ProductStore._connection.__wrapped__
+    source, first_line = inspect.getsourcelines(original)
+    matching = [index for index, line in enumerate(source) if line.strip() == statement]
+    assert matching, "The diagnostic statement no longer matches the real connection."
+    diagnostic = _PublicationDiagnostic()
+    diagnostic._worker_threads["restored"] = 123456789
+    controller = SimpleNamespace(_condition=threading.Lock(), _controls={})
+    for index in matching:
+        frame = SimpleNamespace(
+            f_code=original.__code__,
+            f_lineno=first_line + index,
+            f_back=None,
+            f_locals={private: private},
+        )
+        monkeypatch.setattr(sys, "_current_frames", lambda frame=frame: {123456789: frame})
+        diagnostic.report(controller, private, "restored")
+        output = capsys.readouterr().out
+        assert private not in output and "123456789" not in output
+        assert original.__code__.co_filename not in output and statement not in output
+        report = json.loads(output.removeprefix("Receiver publication diagnostic: "))
+        assert report["worker_stack"] == {
+            "state": "live",
+            "sites": ["store_connection"],
+            "truncated": False,
+            "store_subsite": expected,
+        }
+
+
+def test_publication_connection_subsite_refuses_unknown_code_line_and_source(monkeypatch):
+    from bluefire.product_store import ProductStore
+
+    diagnostic = _PublicationDiagnostic()
+    original = ProductStore._connection.__wrapped__
+    source, first_line = inspect.getsourcelines(original)
+    frame = SimpleNamespace(f_code=original.__code__, f_lineno=first_line - 1)
+    assert diagnostic.connection_subsite(frame) == "unknown"
+    frame.f_lineno = first_line + len(source)
+    assert diagnostic.connection_subsite(frame) == "unknown"
+    frame.f_lineno = first_line
+    assert diagnostic.connection_subsite(frame) == "unknown"
+    frame.f_code = SimpleNamespace(co_filename=original.__code__.co_filename, co_name="_connection")
+    assert diagnostic.connection_subsite(frame) == "unknown"
+    frame.f_code = original.__code__
+
+    def unavailable(_original):
+        raise OSError("PRIVATE_SOURCE_FAILURE")
+
+    monkeypatch.setattr(inspect, "getsourcelines", unavailable)
+    frame.f_lineno = next(
+        first_line + index
+        for index, line in enumerate(source)
+        if line.strip() == "connection.commit()"
+    )
+    assert diagnostic.connection_subsite(frame) == "sqlite_commit"
+    assert _PublicationDiagnostic().connection_subsite(frame) == "unknown"
+
+
+def test_publication_connection_subsite_tracks_real_generator_with_fake_database(monkeypatch):
+    from bluefire import product_store
+
+    diagnostic = _PublicationDiagnostic()
+    diagnostic._worker_threads["restored"] = threading.get_ident()
+    observed = []
+
+    def sample():
+        stack = diagnostic.worker_stack("restored")
+        assert stack["state"] == "live" and "store_connection" in stack["sites"]
+        observed.append(stack["store_subsite"])
+
+    class Lock:
+        def __enter__(self):
+            sample()
+
+        def __exit__(self, *_args):
+            return False
+
+    class Connection:
+        def execute(self, statement):
+            assert statement in {
+                "PRAGMA foreign_keys = ON",
+                "PRAGMA busy_timeout = 5000",
+                "BEGIN IMMEDIATE",
+            }
+            sample()
+
+        def commit(self):
+            sample()
+
+        def close(self):
+            sample()
+
+    connection = Connection()
+    store = object.__new__(product_store.ProductStore)
+    store._lock = Lock()
+    store.path = "PRIVATE_NO_DATABASE_OPENED"
+    store._database_identity = object()
+
+    def identity(path, *, expected):
+        assert path == store.path and expected is store._database_identity
+        sample()
+
+    def connect(path, *, timeout):
+        assert path == store.path and timeout == 5.0
+        sample()
+        return connection
+
+    monkeypatch.setattr(product_store, "pinned_regular_file_identity", identity)
+    monkeypatch.setattr(product_store.sqlite3, "connect", connect)
+    with store._connection(write=True) as current:
+        assert current is connection
+    assert observed == [
+        "store_lock",
+        "identity_check",
+        "sqlite_connect",
+        "identity_check",
+        "foreign_keys",
+        "busy_timeout",
+        "sqlite_begin",
+        "sqlite_commit",
+        "sqlite_close",
+    ]
 
 
 def test_publication_diagnostic_locates_store_read_under_controller_lock(monkeypatch, capsys):

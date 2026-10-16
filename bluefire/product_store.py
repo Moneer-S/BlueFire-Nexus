@@ -61,6 +61,7 @@ from .product_store_errors import (
     ResourceConflictError,
 )
 from .product_store_serialization import canonical_json as _canonical_json
+from .product_store_serialization import resource_row as _resource_row_document
 from .product_store_serialization import utc_now
 from .util import canonical_json_bytes, content_hash, json_clone
 
@@ -68,7 +69,7 @@ if TYPE_CHECKING:
     from .action_packages import VerifiedActionPackage, VerifiedActionPackageActivation
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ACTION_PACKAGE_VERSION = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
@@ -1473,15 +1474,7 @@ class ProductStore(
 
     @staticmethod
     def _resource_row(row: sqlite3.Row) -> Mapping[str, Any]:
-        return {
-            "kind": row["kind"],
-            "id": row["resource_id"],
-            "status": row["status"],
-            "digest": row["digest"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-            "document": json.loads(row["document_json"]),
-        }
+        return _resource_row_document(row)
 
     @staticmethod
     def _trusted_action_package_publisher_select_sql() -> str:

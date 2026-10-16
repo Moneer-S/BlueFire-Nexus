@@ -4,7 +4,7 @@ import traceback
 
 import pytest
 
-from bluefire.job_runtime import JobWaitTimeout
+from bluefire.job_runtime import TERMINAL_JOB_STATES, JobWaitTimeout
 from tests_platform.test_ad_smb_jobs import JOB_WAIT_TIMEOUT, create, submit, wait_for_ad_job
 from tests_platform.test_ad_smb_jobs import workspace as workspace
 
@@ -36,6 +36,49 @@ def test_wait_for_ad_job_uses_finite_bound_and_skips_snapshot_on_success():
     assert wait_for_ad_job(controller, "job-test") is result
     assert controller.wait_calls == [("job-test", JOB_WAIT_TIMEOUT)]
     assert controller.snapshot_calls == []
+
+
+@pytest.mark.parametrize("state", sorted(state.value for state in TERMINAL_JOB_STATES))
+def test_wait_for_ad_job_returns_exact_terminal_snapshot_after_timeout(state):
+    snapshot = {"job_id": "job-test", "state": state}
+    controller = FakeController(error=JobWaitTimeout("private timeout detail"), snapshot=snapshot)
+
+    assert wait_for_ad_job(controller, "job-test") is snapshot
+    assert controller.wait_calls == [("job-test", JOB_WAIT_TIMEOUT)]
+    assert controller.snapshot_calls == ["job-test"]
+
+
+@pytest.mark.parametrize(
+    "state", ["queued", "planning", "running", "awaiting_approval", "paused", "cancelling"]
+)
+def test_wait_for_ad_job_does_not_promote_waiting_snapshot_after_timeout(state):
+    controller = FakeController(
+        error=JobWaitTimeout("private timeout detail"),
+        snapshot={"state": state, "request": {"ad_smb": {"phase": "retest"}}},
+    )
+
+    with pytest.raises(
+        AssertionError,
+        match=rf"within {JOB_WAIT_TIMEOUT}s \(state='{state}', phase='retest'\)",
+    ):
+        wait_for_ad_job(controller, "job-test")
+
+    assert controller.wait_calls == [("job-test", JOB_WAIT_TIMEOUT)]
+    assert controller.snapshot_calls == ["job-test"]
+
+
+@pytest.mark.parametrize("state", [None, [], {}, 7])
+def test_wait_for_ad_job_does_not_promote_malformed_state_after_timeout(state):
+    controller = FakeController(
+        error=JobWaitTimeout("private timeout detail"),
+        snapshot={"state": state, "request": {"ad_smb": {"phase": "retest"}}},
+    )
+
+    with pytest.raises(AssertionError, match="state='unknown', phase='retest'"):
+        wait_for_ad_job(controller, "job-test")
+
+    assert controller.wait_calls == [("job-test", JOB_WAIT_TIMEOUT)]
+    assert controller.snapshot_calls == ["job-test"]
 
 
 def test_wait_for_ad_job_reports_one_allowlisted_snapshot_on_timeout():
@@ -145,13 +188,10 @@ def test_wait_for_ad_job_uses_real_controller_snapshot_ad_request(workspace, mon
 
     monkeypatch.setattr(controller, "wait", timeout)
     monkeypatch.setattr(controller, "snapshot", recorded_snapshot)
-    with pytest.raises(AssertionError, match="state='completed', phase='inspect'") as caught:
-        wait_for_ad_job(controller, child["job_id"])
+    assert wait_for_ad_job(controller, child["job_id"]) == snapshot
 
     assert wait_calls == [(child["job_id"], JOB_WAIT_TIMEOUT)]
     assert snapshot_calls == [child["job_id"]]
-    assert child["job_id"] not in str(caught.value)
-    assert snapshot["request"]["ad_smb"]["workflow_job_id"] not in str(caught.value)
 
 
 def test_wait_for_ad_job_does_not_swallow_unrelated_controller_errors():

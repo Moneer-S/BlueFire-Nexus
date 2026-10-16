@@ -77,8 +77,7 @@ fn execute_command(args: &[String]) -> Result<i32, String> {
     Ok(code)
 }
 
-fn real_main() -> Result<i32, String> {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
+fn dispatch(args: &[String]) -> Result<i32, String> {
     let Some(command) = args.first().map(String::as_str) else {
         return Err(usage().to_string());
     };
@@ -91,7 +90,45 @@ fn real_main() -> Result<i32, String> {
             Ok(0)
         }
         "macos-file-access-reader" => bluefire_runner::macos_file_access::run_reader(&args[1..]),
-        "macos-file-access-owner-control" => bluefire_runner::macos_file_access::run_owner_control(&args[1..]),
+        "macos-file-access-owner-control" => {
+            bluefire_runner::macos_file_access::run_owner_control(&args[1..])
+        }
+        "windows-file-correction-worker" => {
+            require_no_windows_worker_arguments(&args[1..])?;
+            bluefire_runner::windows_file_access_worker::run_fixed_correction()
+        }
+        "windows-file-correction-worker-capability" => {
+            require_no_windows_worker_arguments(&args[1..])?;
+            println!(
+                "{}",
+                bluefire_runner::windows_file_access_worker::correction_protocol_capability()
+            );
+            Ok(0)
+        }
+        "windows-file-baseline-worker" => {
+            require_no_windows_worker_arguments(&args[1..])?;
+            bluefire_runner::windows_file_access_worker::run_fixed_pair()
+        }
+        "windows-file-baseline-worker-capability" => {
+            require_no_windows_worker_arguments(&args[1..])?;
+            println!(
+                "{}",
+                bluefire_runner::windows_file_access_worker::pair_protocol_capability()
+            );
+            Ok(0)
+        }
+        "windows-file-worker" => {
+            require_no_windows_worker_arguments(&args[1..])?;
+            bluefire_runner::windows_file_access_worker::run_fixed()
+        }
+        "windows-file-worker-capability" => {
+            require_no_windows_worker_arguments(&args[1..])?;
+            println!(
+                "{}",
+                bluefire_runner::windows_file_access_worker::protocol_capability()
+            );
+            Ok(0)
+        }
         "ad-smb-worker" => {
             if args.len() != 1 {
                 return Err("the fixed AD worker accepts no arguments".into());
@@ -132,6 +169,18 @@ fn real_main() -> Result<i32, String> {
         "owned-service-payload" => bluefire_runner::service_payload::run_fixed_wait(&args[1..]),
         _ => Err(usage().to_string()),
     }
+}
+
+fn require_no_windows_worker_arguments(args: &[String]) -> Result<(), String> {
+    if args.is_empty() {
+        Ok(())
+    } else {
+        Err("the fixed Windows file worker commands accept no arguments".into())
+    }
+}
+
+fn real_main() -> Result<i32, String> {
+    dispatch(&std::env::args().skip(1).collect::<Vec<_>>())
 }
 
 fn inspect_candidate_command(args: &[String]) -> Result<i32, String> {
@@ -209,5 +258,68 @@ fn main() {
             eprintln!("{message}");
             std::process::exit(2);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_windows_commands_reject_every_argument_before_dispatch() {
+        for command in [
+            "windows-file-worker",
+            "windows-file-worker-capability",
+            "windows-file-baseline-worker",
+            "windows-file-baseline-worker-capability",
+            "windows-file-correction-worker",
+            "windows-file-correction-worker-capability",
+        ] {
+            for argument in [
+                "--json",
+                "--manifest",
+                "--profile",
+                "--password",
+                "--path",
+                "--command",
+                "",
+                "synthetic-private-value",
+            ] {
+                assert_eq!(
+                    dispatch(&[command.into(), argument.into()]),
+                    Err("the fixed Windows file worker commands accept no arguments".into())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn private_windows_capability_is_a_no_input_query() {
+        assert_eq!(dispatch(&["windows-file-worker-capability".into()]), Ok(0));
+        assert_eq!(
+            dispatch(&["windows-file-baseline-worker-capability".into()]),
+            Ok(0)
+        );
+        assert_eq!(
+            dispatch(&["windows-file-correction-worker-capability".into()]),
+            Ok(0)
+        );
+    }
+
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    #[test]
+    fn unsupported_windows_worker_refuses_without_reading_stdin() {
+        assert_eq!(
+            dispatch(&["windows-file-worker".into()]),
+            Err("the fixed Windows file worker requires Windows x86_64".into())
+        );
+        assert_eq!(
+            dispatch(&["windows-file-baseline-worker".into()]),
+            Err("the fixed Windows file worker requires Windows x86_64".into())
+        );
+        assert_eq!(
+            dispatch(&["windows-file-correction-worker".into()]),
+            Err("the fixed Windows file worker requires Windows x86_64".into())
+        );
     }
 }
