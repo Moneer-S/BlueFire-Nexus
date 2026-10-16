@@ -784,3 +784,72 @@ items:
     detection_hints: [Only authenticated fresh reads establish effective access.]
     limitations: [One pre-enrolled Linux principal and generated file only; no general host or cross-platform claim.]
     provenance: *authored
+
+  - schema_version: bluefire.behavior.v1
+    id: macos.file_access.probe.v1
+    title: Read as original macOS non-owner
+    purpose: Freshly read the retained generated file through its original protected workspace.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [macos]
+    techniques: []
+    capabilities: [filesystem.read]
+    inputs: []
+    outputs:
+      - name: probe
+        type: artifact.macos_file_access.probe.v1
+      - name: workspace
+        type: artifact.macos_file_access.attempt.v1
+    parameters: []
+    simulation_id: null
+    action_ids: [macos.file_access.probe.v1]
+    telemetry: [macos.file_access.read.observed]
+    detection_hints: [Original producer evidence is not independent detection telemetry.]
+    limitations: [Original protected macOS workspace only; metadata-only attempt artifacts; enrollment workers remain retained.]
+    provenance: *authored
+
+  - schema_version: bluefire.behavior.v1
+    id: macos.file_access.verify_owner.v1
+    title: Verify original macOS owner read
+    purpose: Check the same retained resource after the exact probe in this attempt.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [macos]
+    techniques: []
+    capabilities: [filesystem.read]
+    inputs:
+      - name: probe
+        type: artifact.macos_file_access.probe.v1
+    outputs:
+      - name: verification
+        type: artifact.macos_file_access.verification.v1
+    parameters: []
+    simulation_id: null
+    action_ids: [macos.file_access.verify_owner.v1]
+    telemetry: [macos.file_access.read.observed]
+    detection_hints: [Original producer evidence is not independent detection telemetry.]
+    limitations: [Exact same-attempt probe required; metadata-only attempt artifacts; no general host access.]
+    provenance: *authored
+
+  - schema_version: bluefire.behavior.v1
+    id: macos.file_access.close_attempt.v1
+    title: Close macOS access attempt
+    purpose: Close exact request obligations while preserving hardening and enrollment workers.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [macos]
+    techniques: []
+    capabilities: [cleanup]
+    inputs:
+      - name: workspace
+        type: artifact.macos_file_access.attempt.v1
+    outputs:
+      - name: closure
+        type: artifact.macos_file_access.attempt_closure.v1
+    parameters: []
+    simulation_id: null
+    action_ids: [macos.file_access.close_attempt.v1]
+    telemetry: [macos.file_access.attempt.closed]
+    detection_hints: []
+    limitations: [Attempt request closure only; no rollback or whole-enrollment cleanup; workers and hardened resource remain retained.]
+    provenance: *authored

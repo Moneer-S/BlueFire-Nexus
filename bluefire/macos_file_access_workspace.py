@@ -21,12 +21,13 @@ import time
 from _thread import LockType
 from _thread import RLock as RLockType
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, NoReturn, cast
+from typing import Any, Callable, NoReturn, Protocol, cast
 
-from . import macos_file_access_workspace_bootstrap as bootstrap
+from . import macos_file_access_workspace_validation as validation
 from . import runner_lifecycle as host
 from .config import AutonomyLevel, BlueFireConfig, EnvironmentType
 from .macos_file_access_contract import MacOSFileAccessContractError, validate_binding
+from .macos_file_access_creator import MacOSFileAccessCreator
 from .macos_file_access_peer import (
     MacOSChildConsistency,
     _query_bsd,
@@ -37,10 +38,6 @@ from .macos_file_access_peer import (
 from .runner_client import _pinned_launch_file
 from .secret_store import _validate_darwin_descriptor_security
 from .util import canonical_json_bytes, content_hash
-
-if TYPE_CHECKING:
-    from .macos_file_access_bridge import OriginalMacOSWorkspaceBridge
-    from .macos_file_access_creator import MacOSFileAccessCreator
 
 WORKSPACE_PARENT = Path("/private/var/db/bluefire-file-access-workspaces")
 HANDSHAKE_NS = 5_000_000_000
@@ -162,7 +159,7 @@ def _file(
     if hold_parents:
         _parents(path.parent, stack, directories)
     else:
-        bootstrap._parents(path.parent)
+        validation._parents(path.parent)
     descriptor = os.open(path, os.O_RDONLY | _os_flag("O_NOFOLLOW") | _os_flag("O_CLOEXEC"))
     stack.callback(os.close, descriptor)
     before = os.fstat(descriptor)
@@ -266,10 +263,19 @@ def _receive(stream: socket.socket, guard) -> dict[str, Any]:
     return _decode(exact(length))
 
 
-def _start_bridge(owner: MacOSWorkspaceOwner) -> None:
-    from .macos_file_access_bridge import OriginalMacOSWorkspaceBridge
+class _WorkspaceBridgeLifecycle(Protocol):
+    def start(self) -> None: ...
 
-    owner._bridge = OriginalMacOSWorkspaceBridge.attach(owner)
+    def close(self) -> None: ...
+
+    def join(self) -> None: ...
+
+
+def _start_bridge(
+    owner: MacOSWorkspaceOwner,
+    factory: Callable[[MacOSWorkspaceOwner], _WorkspaceBridgeLifecycle],
+) -> None:
+    owner._bridge = factory(owner)
     owner._bridge.start()
 
 
@@ -300,7 +306,7 @@ class MacOSWorkspaceOwner:
     _ui_ready: dict[str, Any]
     _creator_pid: int
     _channel_lock: RLockType
-    _bridge: OriginalMacOSWorkspaceBridge | None
+    _bridge: _WorkspaceBridgeLifecycle | None
 
     def __new__(cls, *_args, **_kwargs) -> MacOSWorkspaceOwner:
         raise TypeError("The original privileged workspace preparation is required.")
@@ -321,8 +327,6 @@ class MacOSWorkspaceOwner:
         retained: list[MacOSWorkspaceOwner],
         port: int = 0,
     ) -> MacOSWorkspaceOwner:
-        from .macos_file_access_creator import MacOSFileAccessCreator
-
         _root()
         _require(
             type(creator) is MacOSFileAccessCreator
@@ -354,6 +358,8 @@ class MacOSWorkspaceOwner:
                 "bluefire/__init__.py",
                 "bluefire/macos_file_access_workspace.py",
                 "bluefire/macos_file_access_workspace_bootstrap.py",
+                "bluefire/macos_file_access_workspace_validation.py",
+                "bluefire/macos_file_access_endpoint.py",
                 "bluefire/service.py",
                 "bluefire/api.py",
             }
@@ -398,11 +404,11 @@ class MacOSWorkspaceOwner:
             pycache = WORKSPACE_PARENT / "runtime-cache" / binding["generation"]
             _parents(pycache, value._pins, value._directories)
             _require(not os.listdir(pycache))
-            bootstrap._import_inventory(runtime_import_roots, runtime_sha256)
+            validation._import_inventory(runtime_import_roots, runtime_sha256)
             installation = {
                 str(package_root / name): digest for name, digest in source_sha256.items()
             }
-            bootstrap._import_inventory([str(package_root)], installation)
+            validation._import_inventory([str(package_root)], installation)
             for name in runtime_import_roots:
                 root = Path(name)
                 _parents(
@@ -611,22 +617,28 @@ class MacOSWorkspaceOwner:
             )
             _validate_darwin_descriptor_security(row["fd"])
 
-    def start(self) -> None:
+    def start(
+        self,
+        *,
+        bridge_factory: Callable[[MacOSWorkspaceOwner], _WorkspaceBridgeLifecycle] | None = None,
+    ) -> None:
         if not self._lock.acquire(blocking=False):
             _require(False)
         try:
             _root()
             _require(not self._started and self._state == "prepared")
+            if bridge_factory is None or not callable(bridge_factory):
+                _missing()
             self._started = True
             self._guard()
             self._check_directories()
             # All descendants are root-owned, positively no-ACL protected and
             # non-writable to the workspace. Root/admin mutation is outside this
             # model; no thousands-of-FDs or adversarial snapshot-stability claim.
-            bootstrap._import_inventory(
+            validation._import_inventory(
                 self._recipe["runtime_import_roots"], self._recipe["runtime_sha256"]
             )
-            bootstrap._import_inventory(
+            validation._import_inventory(
                 [self._recipe["package_root"]],
                 {
                     str(Path(self._recipe["package_root"]) / name): digest
@@ -765,6 +777,7 @@ class MacOSWorkspaceOwner:
                 and type(ready["browser_bootstrap_capability"]) is str
                 and len(ready["browser_bootstrap_capability"]) == 64
                 and all(
+                    # pragma: allowlist nextline secret - public Base64url alphabet
                     c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
                     for c in ready["browser_bootstrap_capability"]
                 )
@@ -773,7 +786,7 @@ class MacOSWorkspaceOwner:
             self._ui_ready = dict(ready)
             self._state = "active"
             self.assert_current()
-            _start_bridge(self)
+            _start_bridge(self, bridge_factory)
         except BaseException:
             self._state = "unknown"
             try:

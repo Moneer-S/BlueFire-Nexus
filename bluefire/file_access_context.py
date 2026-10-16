@@ -28,7 +28,7 @@ def is_macos_host():
 
 def enrollment(service, now_ms):
     if is_macos_host():
-        from . import product_store_macos_file_access as macos
+        from . import macos_file_access_control as macos
 
         return macos.enrollment(service, now_ms)
     if is_windows_host():
@@ -138,7 +138,9 @@ def binding(enrolled, *, revision, now_ms):
 
 def composition(service, owner_id: str, now_ms: int) -> dict[str, Any]:
     if is_macos_host():
-        raise ProductStoreError("Darwin composition admission is not yet available.")
+        from . import macos_file_access_context
+
+        return macos_file_access_context.composition(service, owner_id, now_ms)
     if is_windows_host():
         from . import windows_file_access_context
 

@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { FileAccessPage } from "../src/pages/FileAccess";
+import { MACOS_FILE_ACCESS_PACK } from "../src/lib/composition";
 import { fileAccessApi, readFileAccessPending, readFileAccessReconciliationPending, storeFileAccessPending, storeFileAccessReconciliationPending, type FileAccessOperationEnvelope, type FileAccessSubmission } from "../src/lib/file-access";
 import { macOSControlFixture, macOSDigest, macOSOperationFixture, macOSOwner, macOSReviewFixture, macOSStatusFixture } from "./macos-file-access-fixture";
 import { fileAccessControlFixture, fileAccessOperationFixture, fileAccessReviewFixture, fileAccessStatusFixture, fileAccessSubmissionFixture } from "./file-access-fixture";
@@ -26,6 +27,44 @@ beforeEach(() => {
   vi.spyOn(fileAccessApi, "reconcile").mockRejectedValue(new Error("Reconciliation unavailable"));
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
+it("opens the distinct Mac composition workspace only from a settled hardened control", async () => {
+  vi.mocked(fileAccessApi.control).mockResolvedValue(macOSControlFixture("hardened"));
+  mount();
+  expect(await screen.findByRole("link", { name: "Open composition workspace" })).toHaveAttribute("href", `/composition?${new URLSearchParams({ control: macOSOwner, pack: MACOS_FILE_ACCESS_PACK })}`);
+  expect(fileAccessApi.submit).not.toHaveBeenCalled();
+});
+
+it("removes Mac composition entry during a status refresh and keeps its control history", async () => {
+  vi.mocked(fileAccessApi.control).mockResolvedValue(macOSControlFixture("hardened"));
+  let resolveStatus!: (value: ReturnType<typeof macOSStatusFixture>) => void;
+  const nextStatus = new Promise<ReturnType<typeof macOSStatusFixture>>(resolve => { resolveStatus = resolve; });
+  mount();
+  await screen.findByRole("link", { name: "Open composition workspace" });
+  vi.mocked(fileAccessApi.status).mockReturnValue(nextStatus);
+  fireEvent.click(screen.getByRole("button", { name: "Refresh state" }));
+  await waitFor(() => expect(screen.queryByRole("link", { name: "Open composition workspace" })).not.toBeInTheDocument());
+  expect(screen.getByRole("heading", { name: "Recorded baseline" })).toBeInTheDocument();
+  resolveStatus(macOSStatusFixture(false));
+  await screen.findByText("Live setup is not ready");
+  expect(screen.queryByRole("link", { name: "Open composition workspace" })).not.toBeInTheDocument();
+  expect(screen.getByRole("link", { name: /Operation 1: Verify baseline access/ })).toBeInTheDocument();
+  expect(fileAccessApi.submit).not.toHaveBeenCalled();
+});
+
+it.each(["baseline", "pending", "uncertain"] as const)("does not offer Mac composition for a %s control", async state => {
+  const control = macOSControlFixture(state === "baseline" ? "baseline_verified" : state === "uncertain" ? "uncertain" : "hardened");
+  if (state === "pending") control.usage_state = "pending";
+  vi.mocked(fileAccessApi.control).mockResolvedValue(control);
+  mount();
+  if (state === "pending") {
+    // A pending Mac response must be uncertain, never a retained hardened state.
+    await screen.findByText("Retained control unavailable");
+  } else {
+    await screen.findByRole("region", { name: "Saved macOS workspace control" });
+  }
+  expect(screen.queryByRole("link", { name: /composition/i })).not.toBeInTheDocument();
+});
 
 it("imports only the original setup selection supplied by tagged macOS status", async () => {
   const status = macOSStatusFixture();
@@ -64,7 +103,8 @@ it.each([
   fireEvent.click(within(review).getByRole("button", { name: operation === "baseline" ? "Verify baseline access" : operation === "harden" ? "Apply owner-only access" : "Restore baseline access" }));
   await waitFor(() => expect(fileAccessApi.submit).toHaveBeenCalledOnce());
   expect(vi.mocked(fileAccessApi.submit).mock.calls[0]![0]).toMatchObject({ review: { operation, control_owner_id: macOSOwner }, review_digest: reviewed.review_digest, reviewed_by: "operator" });
-  expect(screen.queryByRole("link", { name: /composition/i })).not.toBeInTheDocument();
+  if (after === "hardened") expect(await screen.findByRole("link", { name: "Open composition workspace" })).toHaveAttribute("href", `/composition?${new URLSearchParams({ control: macOSOwner, pack: MACOS_FILE_ACCESS_PACK })}`);
+  else expect(screen.queryByRole("link", { name: /composition/i })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /reset|generated resource/i })).not.toBeInTheDocument();
 });
 

@@ -1,5 +1,5 @@
 import { DEMO_MODE, request } from "./api";
-import { compositionJobId, compositionJobValid, type CompositionJob } from "./composition";
+import { compositionJobId, compositionJobValid, FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, type CompositionJob } from "./composition";
 import { sameJson } from "./replay-review";
 
 export type FileAccessOperation = "create" | "baseline" | "harden" | "rollback" | "reset";
@@ -53,6 +53,12 @@ export interface MacOSFileAccessControl extends MacOSFileAccessControlSummary {
   resource: NonNullable<LinuxFileAccessControl["resource"]>;
   baseline: LinuxFileAccessControl["baseline"];
   usage_state: "settled" | "pending"; allowed_operations: ("baseline" | "harden" | "rollback")[]; operations: CompositionJob[];
+}
+export function fileAccessCompositionPack(control: FileAccessControl): typeof FILE_ACCESS_PACK | typeof MACOS_FILE_ACCESS_PACK | undefined {
+  if (control.platform === "windows" || control.status !== "hardened" || control.usage_state !== "settled"
+    || !control.baseline || control.resource?.mode !== "0600") return;
+  if (control.platform === "macos" && !control.allowed_operations.includes("rollback")) return;
+  return control.platform === "macos" ? MACOS_FILE_ACCESS_PACK : FILE_ACCESS_PACK;
 }
 interface WindowsFileAccessControlBase {
   platform: "windows"; control_owner_id: string; control_digest: string; expires_at_ms: number;

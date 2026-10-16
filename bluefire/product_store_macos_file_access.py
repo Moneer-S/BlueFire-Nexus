@@ -1,4 +1,4 @@
-"""Darwin validators and adapters on the original owner-workspace journal.
+"""Darwin validators and persistence on the original owner-workspace journal.
 
 The protected workspace sends committed provenance on its original channel.
 Historical documents never reconstruct that endpoint or authorize replay.
@@ -19,13 +19,19 @@ from .macos_file_access_contract import (
     validate_observation,
     validate_request,
 )
-from .macos_file_access_creator import ReviewedMacOSTaskIntent
-from .product_store_errors import ProductStoreError
+from .macos_file_access_intent import ReviewedMacOSTaskIntent
+from .product_store_errors import ProductStoreError as ProductStoreError
+from .product_store_file_access_records import imported_at as imported_at
+from .product_store_macos_setup import CONTROL_SCHEMA as CONTROL_SCHEMA
+from .product_store_macos_setup import SETUP_SCHEMA as SETUP_SCHEMA
+from .product_store_macos_setup import enrollment_document as enrollment_document
+from .product_store_macos_setup import imported_control as imported_control
+from .product_store_macos_setup import is_control as is_control
+from .product_store_macos_setup import require as require
+from .product_store_macos_setup import setup_document as setup_document
 from .product_store_serialization import canonical_json
 from .util import canonical_json_bytes, content_hash
 
-SETUP_SCHEMA = "bluefire.macos-file-access-setup.v1"
-CONTROL_SCHEMA = "bluefire.macos-file-access-control.v1"
 CONTEXT_SCHEMA = "bluefire.macos-file-access-control-context.v1"
 PREPARATION_SCHEMA = "bluefire.macos-file-access-preparation.v1"
 PLANS = {
@@ -35,23 +41,14 @@ PLANS = {
 }
 
 
-def require(value: bool) -> None:
-    if not value:
-        raise ProductStoreError("The original committed Darwin operation is unavailable.")
-
-
 def _require_original_monotonic_deadline(prepared: dict) -> None:
-    from .macos_file_access_peer import darwin_clock_ns
+    from .macos_file_access_clock import darwin_clock_ns
 
     observed = darwin_clock_ns()
     require(
         type(observed) is int
         and prepared["issued_monotonic_ns"] <= observed < prepared["deadline_ns"]
     )
-
-
-def is_control(value: Any) -> bool:
-    return isinstance(value, dict) and value.get("schema_version") == CONTROL_SCHEMA
 
 
 def permitted(control: dict) -> list[str]:
@@ -61,163 +58,6 @@ def permitted(control: dict) -> list[str]:
         "hardened": ["rollback"],
         "rolled_back": ["baseline", "harden"],
     }.get(control["status"], [])
-
-
-def endpoint(service):
-    from .macos_file_access_workspace_bootstrap import OriginalWorkspaceEndpoint
-
-    current = getattr(service, "_macos_workspace_endpoint", None)
-    require(type(current) is OriginalWorkspaceEndpoint)
-    current.assert_current()
-    return current
-
-
-def setup_document(value: Any) -> dict:
-    exact(value, {"schema_version", "binding"}, "Darwin setup")
-    require(value["schema_version"] == SETUP_SCHEMA)
-    binding = validate_binding(value["binding"])
-    require(binding["control_revision"] == 1 and binding["mode"] == "0640")
-    return {"schema_version": SETUP_SCHEMA, "binding": binding}
-
-
-def enrollment_document(setup: dict) -> dict:
-    binding = setup["binding"]
-    return {
-        "schema_version": "bluefire.macos-file-access-enrollment.v1",
-        "enrollment_id": binding["enrollment_id"],
-        "expires_at_ms": binding["expires_at_ms"],
-        "setup": setup,
-    }
-
-
-def imported_control(setup: dict) -> dict:
-    binding = setup["binding"]
-    return {
-        "schema_version": CONTROL_SCHEMA,
-        "control_owner_id": "file-control-" + content_hash(setup)[7:],
-        "enrollment_id": binding["enrollment_id"],
-        "generation": binding["generation"],
-        "revision": 1,
-        "status": "created",
-        "binding": binding,
-        "binding_digest": content_hash(binding),
-        "setup_digest": content_hash(setup),
-        "baseline": None,
-    }
-
-
-def imported_at(connection, owner_id):
-    from .product_store_file_access import _document
-
-    row = connection.execute(
-        "SELECT * FROM file_access_setup_imports WHERE control_owner_id=?", (owner_id,)
-    ).fetchone()
-    if row is None:
-        return None
-    value = _document(row)
-    if not is_control(value):
-        return None
-    require(
-        value["control_owner_id"] == row["control_owner_id"]
-        and value["enrollment_id"] == row["enrollment_id"]
-        and value["generation"] == row["generation"]
-        and value["revision"] == 1
-    )
-    enrolled = _document(
-        connection.execute(
-            "SELECT * FROM file_access_enrollments WHERE enrollment_id=?", (row["enrollment_id"],)
-        ).fetchone()
-    )
-    require(value == imported_control(setup_document(enrolled["setup"])))
-    return {"document": value, "document_digest": row["document_digest"]}
-
-
-def import_setup(service, request, now_ms):
-    exact(request, {"enrollment_id", "enrollment_digest"}, "Darwin setup selection")
-    setup = setup_document(endpoint(service).current_setup())
-    enrolled = enrollment_document(setup)
-    require(
-        request
-        == {"enrollment_id": enrolled["enrollment_id"], "enrollment_digest": content_hash(enrolled)}
-    )
-    return service.product_store.import_macos_file_access_setup(setup, now_ms=now_ms)
-
-
-def enrollment(service, now_ms):
-    setup = setup_document(endpoint(service).current_setup())
-    expected = enrollment_document(setup)
-    require(now_ms < expected["expires_at_ms"])
-    saved = service.product_store.get_file_access_enrollment(expected["enrollment_id"])
-    require(saved == {"document": expected, "document_digest": content_hash(expected)})
-    return saved
-
-
-def status(service, now_ms) -> dict[str, Any]:
-    try:
-        setup = setup_document(endpoint(service).current_setup())
-        enrolled = enrollment_document(setup)
-        require(now_ms < enrolled["expires_at_ms"])
-    except (OSError, ValueError, ProductStoreError):
-        return {
-            "schema_version": "bluefire.file-access-status.v1",
-            "platform": "macos",
-            "available": False,
-            "problem": {
-                "code": "file_access_enrollment_unavailable",
-                "message": "The original protected macOS workspace is required.",
-            },
-            "enrollment": None,
-            "allowed_operations": [],
-        }
-    return {
-        "schema_version": "bluefire.file-access-status.v1",
-        "platform": "macos",
-        "available": True,
-        "problem": None,
-        "enrollment": {
-            "enrollment_id": enrolled["enrollment_id"],
-            "enrollment_digest": content_hash(enrolled),
-            "expires_at_ms": enrolled["expires_at_ms"],
-            "owner_uid": setup["binding"]["owner"]["effective_uid"],
-            "probe_uid": setup["binding"]["reader"]["effective_uid"],
-        },
-        "allowed_operations": [],
-    }
-
-
-def context(service, operation, owner_id, now_ms):
-    require(operation in PLANS)
-    enrolled = enrollment(service, now_ms)
-    control = service.product_store.get_file_access_control(owner_id)
-    require(is_control(control["document"]) and operation in permitted(control["document"]))
-    creator = endpoint(service).review_context(operation)
-    exact(
-        creator,
-        {"schema_version", "operation", "state", "binding", "probe_digest", "context_digest"},
-        "Darwin creator context",
-    )
-    require(
-        creator["schema_version"] == "bluefire.macos-file-access-creator-context.v1"
-        and creator["operation"] == operation
-        and creator["binding"] == control["document"]["binding"]
-        and creator["context_digest"]
-        == content_hash({k: v for k, v in creator.items() if k != "context_digest"})
-    )
-    reviewed = {
-        "schema_version": CONTEXT_SCHEMA,
-        "operation": operation,
-        "enrollment_digest": enrolled["document_digest"],
-        "control_digest": control["document_digest"],
-        "creator_context": creator,
-    }
-    return {
-        "enrollment": enrolled,
-        "control": control,
-        "review_context": reviewed,
-        "context_digest": content_hash(reviewed),
-        "expires_at_ms": enrolled["document"]["expires_at_ms"],
-        "allowed_operations": permitted(control["document"]),
-    }
 
 
 def validate_review(control, reviewed, now_ms):
@@ -381,7 +221,7 @@ def register_task(
 
 
 def original_task(connection, task_id):
-    from .product_store_file_access import _document
+    from .product_store_file_access_records import _document
 
     claim = _document(
         connection.execute(
@@ -404,7 +244,7 @@ def original_task(connection, task_id):
 
 
 def validate_terminal_at(connection, claim, result):
-    from .product_store_file_access import _document
+    from .product_store_file_access_records import _document
 
     claim, prepared = original_task(connection, claim["task_id"])
     dispatch = connection.execute(
@@ -433,7 +273,7 @@ def validate_terminal_at(connection, claim, result):
 
 
 def record_closure_at(connection, task_id, request_hash, proof):
-    from .product_store_file_access import _document
+    from .product_store_file_access_records import _document
 
     claim, prepared = original_task(connection, task_id)
     terminal = _document(
@@ -487,7 +327,7 @@ def finish_at(
     verified_observation,
     now_ms,
 ):
-    from .product_store_file_access import _control_at, _document, _outcome_at
+    from .product_store_file_access_records import _control_at, _document, _outcome_at
 
     require(
         outcome["state"] in ("complete", "unknown", "refused_no_effect")
@@ -722,7 +562,7 @@ def next_control(prior, prepared, receipt):
 class MacOSFileAccessStoreMixin:
     def import_macos_file_access_setup(self, setup, *, now_ms):
         """Called only with the original protected endpoint's initial setup."""
-        from .product_store_file_access import _document
+        from .product_store_file_access_records import _document
 
         store = cast(Any, self)
         setup = setup_document(setup)
@@ -760,7 +600,8 @@ class MacOSFileAccessStoreMixin:
             return control
 
     def begin_macos_file_access_dispatch(self, task_id, transport_request_hash, *, now_ms):
-        from .product_store_file_access import _control_at, _document, _outcome_at, _usage_settled
+        from .product_store_capability_grants import control_usages_settled as _usage_settled
+        from .product_store_file_access_records import _control_at, _document, _outcome_at
 
         store = cast(Any, self)
         digest(transport_request_hash, "Darwin transport identity")
@@ -824,44 +665,6 @@ class MacOSFileAccessStoreMixin:
             return frame
 
 
-def projection(service, view, now_ms) -> dict[str, Any]:
-    control = view["document"]
-    pending = view["pending_operation"] or not view["usages_settled"]
-    live = False
-    try:
-        live = endpoint(service).review_context("baseline")["binding"] == control["binding"]
-    except (OSError, ValueError, ProductStoreError):
-        pass
-    binding = control["binding"]
-    return {
-        "schema_version": "bluefire.file-access-control.v1",
-        "platform": "macos",
-        "control_owner_id": control["control_owner_id"],
-        "control_digest": view["document_digest"],
-        "revision": control["revision"],
-        "status": "uncertain" if pending else control["status"],
-        "resource": {
-            "resource_id": binding["generation"],
-            "resource_generation": binding["generation"],
-            "sha256": binding["resource"]["sha256"],
-            "size": binding["resource"]["size_bytes"],
-            "record_count": binding["resource"]["record_count"],
-            "mode": binding["mode"],
-        },
-        "baseline": control["baseline"],
-        "usage_state": "pending" if pending else "settled",
-        "allowed_operations": (
-            permitted(control) if live and not pending and now_ms < binding["expires_at_ms"] else []
-        ),
-        "operations": [
-            job
-            for job in service.product_store.list_jobs()
-            if job["kind"] == "file_access.operation"
-            and job["request"].get("control_owner_id") == control["control_owner_id"]
-        ],
-    }
-
-
 def has_dispatch(store, job_id):
     with store._connection() as connection:
         return (
@@ -901,115 +704,3 @@ def build_preparation(job_id, run_id, operation, reviewed, now_ms, now_ns):
         "issued_monotonic_ns": now_ns,
         "deadline_ns": min(now_ns + 5_000_000_000, creator["binding"]["original_deadline_ns"]),
     }
-
-
-def execute(control, ctx, request):
-    from .macos_file_access_bridge import MacOSWorkspaceTaskTransport
-    from .macos_file_access_peer import darwin_clock_ns
-
-    store = control.store
-    task_id = None
-    prepared = None
-    try:
-        ctx.checkpoint()
-        op, owner_id = request["review"]["operation"], request["review"]["control_owner_id"]
-        current = context(control.service, op, owner_id, control.clock())
-        require(current["context_digest"] == request["review"]["context_digest"])
-        reviewed = store.file_access_operation_records(ctx.job_id)["document"]
-        prepared = build_preparation(
-            ctx.job_id,
-            control.service.store._new_run_id(),
-            op,
-            reviewed,
-            control.clock(),
-            darwin_clock_ns(),
-        )
-        store.prepare_file_access_operation(ctx.job_id, prepared, now_ms=control.clock())
-        manifest, profile = prepared["manifest"], prepared["runner_profile"]
-        task_id, _ = execution_task_identity(manifest, profile)
-
-        def validate_context():
-            endpoint(control.service).assert_current()
-            require(not ctx.cancellation_event.is_set())
-
-        ctx.checkpoint()
-        store.register_file_access_task(
-            ctx.job_id,
-            task_id=task_id,
-            step_id=op,
-            manifest=manifest,
-            runner_profile=profile,
-            now_ms=control.clock(),
-            validate_context=validate_context,
-        )
-        # Task registration has committed before the transport can commit its
-        # attempted-dispatch marker and write on the original inherited channel.
-        transport = MacOSWorkspaceTaskTransport(endpoint(control.service), store)
-        result = transport.execute_task(
-            manifest, profile, task_id=task_id, cancel_event=ctx.cancellation_event
-        )
-        store.record_file_access_task_terminal(
-            task_id, request_hash=manifest["request_hash"], result=result
-        )
-        claim = store.file_access_task_record(
-            task_id, execution_task_identity(manifest, profile)[1]
-        )["task"]
-        receipt = validate_receipt(claim, prepared, result)
-        require(receipt["state"] == "complete")
-        store.record_file_access_worker_closure(
-            task_id,
-            request_hash=manifest["request_hash"],
-            proof={
-                "state": "verified_closed",
-                "binding_digest": receipt["binding_digest"],
-                "evidence_digest": content_hash(receipt),
-            },
-        )
-        ctx.checkpoint()
-        endpoint(control.service).assert_current()
-        _require_original_monotonic_deadline(prepared)
-        store.finish_file_access_operation(
-            ctx.job_id,
-            outcome={"state": "complete", "evidence_digest": content_hash(receipt)},
-            control=next_control(current["control"]["document"], prepared, receipt),
-            now_ms=control.clock(),
-        )
-        control._publish(ctx.job_id, {"phase": "completed"})
-    except BaseException:
-        records = store.file_access_operation_records(ctx.job_id)
-        if records["outcome"] is None:
-            dispatched = has_dispatch(store, ctx.job_id)
-            if not dispatched:
-                for row in records["tasks"]:
-                    claim = row["task"]
-                    not_sent = {
-                        "schema_version": "bluefire.task-not-sent.v1",
-                        "task_id": claim["task_id"],
-                        "request_hash": claim["request_hash"],
-                    }
-                    store.record_file_access_task_terminal(
-                        claim["task_id"], request_hash=claim["request_hash"], result=not_sent
-                    )
-                    store.record_file_access_worker_closure(
-                        claim["task_id"],
-                        request_hash=claim["request_hash"],
-                        proof={
-                            "state": "not_sent",
-                            "binding_digest": content_hash(
-                                claim["runner_profile"]["macos_file_access_binding"]
-                            ),
-                            "evidence_digest": content_hash(not_sent),
-                        },
-                    )
-            store.finish_file_access_operation(
-                ctx.job_id,
-                outcome={
-                    "state": "unknown" if dispatched else "refused_no_effect",
-                    "evidence_digest": content_hash(records["tasks"]),
-                },
-            )
-        control._publish(
-            ctx.job_id,
-            {"phase": "uncertain" if has_dispatch(store, ctx.job_id) else "not_dispatched"},
-        )
-        raise

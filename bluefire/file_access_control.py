@@ -49,7 +49,7 @@ class FileAccessControl:
         from . import windows_file_access_context as windows
 
         if file_access_context.is_macos_host():
-            from . import product_store_macos_file_access as macos
+            from . import macos_file_access_control as macos
 
             saved = macos.import_setup(self.service, request, self.clock())
             return self.control(saved["control_owner_id"])
@@ -66,7 +66,7 @@ class FileAccessControl:
 
     def status(self) -> dict[str, Any]:
         if file_access_context.is_macos_host():
-            from . import product_store_macos_file_access as macos
+            from . import macos_file_access_control as macos
 
             return macos.status(self.service, self.clock())
         if file_access_context.is_windows_host():
@@ -108,7 +108,7 @@ class FileAccessControl:
 
     def _context(self, operation, owner_id):
         if file_access_context.is_macos_host():
-            from . import product_store_macos_file_access as macos
+            from . import macos_file_access_control as macos
 
             return macos.context(self.service, operation, owner_id, self.clock())
         if file_access_context.is_windows_host():
@@ -277,7 +277,7 @@ class FileAccessControl:
             saved["review_context"].get("schema_version")
             == "bluefire.macos-file-access-control-context.v1"
         ):
-            from . import product_store_macos_file_access as macos
+            from . import macos_file_access_control as macos
 
             macos.execute(self, ctx, request)
         elif (
@@ -295,13 +295,14 @@ class FileAccessControl:
         return JobResult(progress={"phase": "completed"})
 
     def controls(self) -> dict[str, Any]:
+        from . import macos_file_access_control as macos_control
         from . import product_store_macos_file_access as macos
         from .windows_file_access_context import is_control, projection
 
         rows = self.store.list_file_access_controls()
         for row in rows:
             if macos.is_control(row["document"]):
-                view = macos.projection(
+                view = macos_control.projection(
                     self.service,
                     self.store.get_file_access_control(row["document"]["control_owner_id"]),
                     self.clock(),
@@ -332,11 +333,12 @@ class FileAccessControl:
     def control(self, owner_id: str) -> dict[str, Any]:
         view = self.store.get_file_access_control(owner_id)
         document = view["document"]
+        from . import macos_file_access_control as macos_control
         from . import product_store_macos_file_access as macos
         from .windows_file_access_context import is_control, projection
 
         if macos.is_control(document):
-            return macos.projection(self.service, view, self.clock())
+            return macos_control.projection(self.service, view, self.clock())
         if is_control(document):
             return projection(self.service, document, self.clock())
         binding, baseline = document["binding"], document["baseline"]

@@ -1169,10 +1169,22 @@ def test_schema8_upgrade_preserves_history_and_is_transactional(tmp_path, monkey
     with monkeypatch.context() as prior:
         prior.setattr(store_module, "SCHEMA_VERSION", 8)
         prior.setattr(schema_api, "initialize_schema", lambda _connection: None)
+        prior.setattr(
+            ProductStore,
+            "_initialize_macos_workspace_schema",
+            staticmethod(lambda _connection: None),
+        )
         store = ProductStore(path)
         store.set_setting("unit.preserved", {"value": "preserved"})
         original_job = store.create_job("unit.job", {"purpose": "preserved"})
         assert store.schema_version == 8
+    with sqlite3.connect(path) as connection:
+        assert (
+            connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'capability_%'"
+            ).fetchall()
+            == []
+        )
     initialize = schema_api.initialize_schema
 
     def interrupted(connection):

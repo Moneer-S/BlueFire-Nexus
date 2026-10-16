@@ -8,20 +8,17 @@ receipt, PID, or digest alone cannot enter any of the private effect methods.
 from __future__ import annotations
 
 import os
-import re
 import secrets
 import socket
 import subprocess
 import threading
 import time
 from _thread import LockType
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, cast
+from typing import Any, Callable, Protocol, cast
 
 from . import runner_client as runner
 from .macos_file_access_contract import (
     MAX_MESSAGE,
-    MAX_OPERATION_NS,
     MAX_REQUESTS,
     REQUEST_SCHEMA,
     MacOSFileAccessContractError,
@@ -29,20 +26,14 @@ from .macos_file_access_contract import (
     validate_observation,
     validate_request,
 )
+from .macos_file_access_intent import ReviewedMacOSTaskIntent as ReviewedMacOSTaskIntent
 from .macos_file_access_namespace import SealedMacOSNamespace
 from .macos_file_access_peer import MacOSChildConsistency, darwin_clock_ns, observe_owned_child
 from .macos_file_access_worker import MacOSFileAccessWorker
 from .util import canonical_json_bytes, content_hash
 
-if TYPE_CHECKING:
-    from .macos_file_access_workspace import MacOSWorkspaceOwner
-
-_OPERATIONS = ("baseline", "harden", "probe", "verify_owner", "rollback")
+_OPERATIONS = ("baseline", "harden", "probe", "verify_owner", "rollback", "close_attempt")
 _IDS = ("real_uid", "effective_uid", "saved_uid", "real_gid", "effective_gid", "saved_gid")
-_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_FIELDS = set(
-    "schema_version operation task_id transport_request_hash context_digest binding_digest control_revision issued_at_ms expires_at_ms issued_monotonic_ns deadline_ns".split()
-)
 
 
 def _require(value: bool) -> None:
@@ -57,48 +48,20 @@ def _socket_constant(name: str) -> int:
     return cast(int, value)
 
 
-def _intent(value: Any) -> dict[str, Any]:
-    _require(type(value) is dict and set(value) == _FIELDS)
-    _require(
-        value["schema_version"] == "bluefire.macos-file-access-reviewed-task.v1"
-        and type(value["operation"]) is str
-        and value["operation"] in _OPERATIONS
-    )
-    for field in ("transport_request_hash", "context_digest", "binding_digest"):
-        _require(type(value[field]) is str and _DIGEST.fullmatch(value[field]) is not None)
-    _require(
-        type(value["task_id"]) is str
-        and value["task_id"] == "execute-" + value["transport_request_hash"][7:]
-    )
-    for field in (
-        "control_revision",
-        "issued_at_ms",
-        "expires_at_ms",
-        "issued_monotonic_ns",
-        "deadline_ns",
-    ):
-        _require(type(value[field]) is int and 0 < value[field] < 2**64)
-    _require(
-        value["control_revision"] < 2**31
-        and value["expires_at_ms"] < 2**63
-        and 0 < value["expires_at_ms"] - value["issued_at_ms"] <= 5000
-        and 0 < value["deadline_ns"] - value["issued_monotonic_ns"] <= MAX_OPERATION_NS
-    )
-    return dict(value)
+class _WorkspaceCustody(Protocol):
+    @property
+    def _creator(self) -> MacOSFileAccessCreator: ...
 
+    @property
+    def _process(self) -> subprocess.Popen[bytes] | None: ...
 
-@dataclass(frozen=True)
-class ReviewedMacOSTaskIntent:
-    """Inactive canonical data, not an approval or producer reservation."""
+    @property
+    def _consistency(self) -> MacOSChildConsistency | None: ...
 
-    _document: dict[str, Any]
+    @property
+    def _stream(self) -> socket.socket | None: ...
 
-    @classmethod
-    def from_document(cls, value: Any) -> ReviewedMacOSTaskIntent:
-        return cls(_intent(value))
-
-    def document(self) -> dict[str, Any]:
-        return _intent(self._document)
+    def assert_current(self) -> None: ...
 
 
 class OriginalMacOSControllerLease:
@@ -123,7 +86,7 @@ class OriginalMacOSControllerLease:
     _workspace_consistency: MacOSChildConsistency
     _closed: bool
     _poisoned: bool
-    _workspace_owner: MacOSWorkspaceOwner
+    _workspace_owner: _WorkspaceCustody
     _check_current: Callable[[], None]
 
     def __new__(cls, *_args, **_kwargs):
@@ -465,6 +428,8 @@ class MacOSFileAccessCreator:
                 and reservation._budget_reserved
                 and self._used_budget <= MAX_REQUESTS
             )
+            if operation in ("probe", "verify_owner"):
+                _require(reservation._attempt_id is not None)
             if operation == "verify_owner":
                 _require(
                     self._last_probe is not None

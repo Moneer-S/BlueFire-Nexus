@@ -9,7 +9,7 @@ from typing import Any, Mapping, cast
 from . import product_store_capability_cleanup as cleanup
 from . import product_store_capability_dependencies as dependencies
 from . import product_store_capability_grants as capability_grant_store
-from .capability_packs import FILE_ACCESS_PACK, grant_pack, review_pack
+from .capability_packs import FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, grant_pack, review_pack
 from .product_store_contracts import safe_document
 from .product_store_errors import ProductStoreError
 from .product_store_serialization import canonical_json, utc_now
@@ -252,6 +252,13 @@ class CapabilityStoreMixin:
     def _validate_capability_cleanup_settlement(connection, attempt_id, lease, native):
         cleanup.validate_settlement(connection, attempt_id, lease, native)
 
+    def _validate_macos_capability_settlement(
+        self, connection: sqlite3.Connection, attempt_id: str, receipt: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        from .product_store_macos_settlement import validate
+
+        return validate(self, connection, attempt_id, receipt)
+
     def save_capability_grant(self, document: Mapping[str, Any], **context: Any) -> dict[str, Any]:
         return capability_grant_store.save_grant(self, document, **context)
 
@@ -260,6 +267,11 @@ class CapabilityStoreMixin:
     ) -> None:
         if grant_pack(grant) == FILE_ACCESS_PACK:
             from .product_store_file_access import guard_control
+
+            guard_control(self, connection, grant)
+            return
+        if grant_pack(grant) == MACOS_FILE_ACCESS_PACK:
+            from .product_store_macos_composition import guard_control
 
             guard_control(self, connection, grant)
             return
@@ -294,6 +306,11 @@ class CapabilityStoreMixin:
                 "terminals": dependencies._file_terminals(connection, attempt_id, binding),
             }
 
+    def bind_macos_capability_file_access(self, attempt_id: str) -> dict[str, Any]:
+        from .product_store_capability_dependencies import bind_macos_file_access
+
+        return bind_macos_file_access(self, attempt_id)
+
     def get_capability_grant(self, grant_id: str, *, now_ms: int) -> dict[str, Any]:
         return capability_grant_store.get_grant(self, grant_id, now_ms=now_ms)
 
@@ -317,7 +334,7 @@ class CapabilityStoreMixin:
     def get_capability_task_payload(
         self, task_id: str, transport_request_hash: str
     ) -> dict[str, Any]:
-        from .product_store_capability_transport import read_payload
+        from .product_store_capability_payloads import read_payload
 
         return read_payload(self, task_id, transport_request_hash, purpose="business")
 
@@ -346,7 +363,7 @@ class CapabilityStoreMixin:
     def get_capability_cleanup_task_payload(
         self, task_id: str, transport_request_hash: str
     ) -> dict[str, Any]:
-        from .product_store_capability_transport import read_payload
+        from .product_store_capability_payloads import read_payload
 
         return read_payload(self, task_id, transport_request_hash, purpose="cleanup")
 
@@ -374,3 +391,49 @@ class CapabilityStoreMixin:
 
     def interrupt_active_capability_grants(self, *, now_ms: int) -> None:
         capability_grant_store.interrupt_active(self, now_ms=now_ms)
+
+    def reserve_macos_capability_attempt(self, attempt_id: str, **context: Any) -> dict[str, Any]:
+        from .product_store_macos_composition import reserve_macos_capability_attempt
+
+        return reserve_macos_capability_attempt(self, attempt_id, **context)
+
+    def begin_macos_capability_dispatch(
+        self, task_id: str, transport_request_hash: str, **context: Any
+    ) -> dict[str, Any]:
+        from .product_store_macos_composition import begin_macos_capability_dispatch
+
+        return begin_macos_capability_dispatch(self, task_id, transport_request_hash, **context)
+
+    def claim_macos_capability_cleanup(self, attempt_id: str, **context: Any) -> dict[str, Any]:
+        from .product_store_macos_composition import claim_macos_capability_cleanup
+
+        return claim_macos_capability_cleanup(self, attempt_id, **context)
+
+    def register_macos_capability_cleanup_task(
+        self, attempt_id: str, **context: Any
+    ) -> dict[str, Any]:
+        from .product_store_macos_composition import register_macos_capability_cleanup_task
+
+        return register_macos_capability_cleanup_task(self, attempt_id, **context)
+
+    def get_macos_capability_cleanup_task_payload(
+        self, task_id: str, transport_request_hash: str
+    ) -> dict[str, Any]:
+        from .product_store_capability_payloads import read_payload
+
+        return read_payload(self, task_id, transport_request_hash, purpose="macos_cleanup")
+
+    def record_macos_capability_terminal(self, task_id: str, **context: Any) -> dict[str, Any]:
+        from .product_store_macos_composition import record_macos_capability_terminal
+
+        return record_macos_capability_terminal(self, task_id, **context)
+
+    def close_macos_capability_attempt(self, attempt_id: str, **context: Any) -> dict[str, Any]:
+        from .product_store_macos_composition import close_macos_capability_attempt
+
+        return close_macos_capability_attempt(self, attempt_id, **context)
+
+    def get_macos_capability_closure(self, attempt_id: str) -> dict[str, Any]:
+        from .product_store_macos_composition import get_macos_capability_closure
+
+        return get_macos_capability_closure(self, attempt_id)

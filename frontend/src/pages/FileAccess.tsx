@@ -2,8 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { FileLock2, RefreshCw } from "lucide-react";
-import { compositionJobId, compositionJobValid, FILE_ACCESS_PACK } from "../lib/composition";
-import { checkedFileAccessControl, checkedFileAccessList, checkedFileAccessOperation, checkedFileAccessStatus, clearFileAccessPending, fileAccessApi, fileAccessConfirmed, fileAccessControlIdValid, fileAccessJobActive, fileAccessOperationLabels, macOSFileAccessControlIdValid, readFileAccessPending, readFileAccessReconciliationPending, storeFileAccessPending, type FileAccessObservation, type FileAccessPending, type FileAccessReviewRequest, type FileAccessSubmission, type LinuxFileAccessControl, type MacOSFileAccessControl, type WindowsFileAccessControl, type WindowsPairedFileAccessControl, type WindowsSetupFileAccessControl } from "../lib/file-access";
+import { compositionJobId, compositionJobValid, FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK } from "../lib/composition";
+import { checkedFileAccessControl, checkedFileAccessList, checkedFileAccessOperation, checkedFileAccessStatus, clearFileAccessPending, fileAccessApi, fileAccessCompositionPack, fileAccessConfirmed, fileAccessControlIdValid, fileAccessJobActive, fileAccessOperationLabels, macOSFileAccessControlIdValid, readFileAccessPending, readFileAccessReconciliationPending, storeFileAccessPending, type FileAccessObservation, type FileAccessPending, type FileAccessReviewRequest, type FileAccessSubmission, type LinuxFileAccessControl, type MacOSFileAccessControl, type WindowsFileAccessControl, type WindowsPairedFileAccessControl, type WindowsSetupFileAccessControl } from "../lib/file-access";
 import { FileAccessReview } from "../components/FileAccessReview";
 import { FileAccessReconciliation } from "../components/FileAccessReconciliation";
 import { WindowsFileAccessCorrection } from "../components/WindowsFileAccessCorrection";
@@ -162,6 +162,7 @@ export function FileAccessPage() {
 function SavedMacOSControl({ control, disabled, onReview }: { control: MacOSFileAccessControl; disabled: boolean; onReview: (request: FileAccessReviewRequest) => void }) {
   const unsettled = control.usage_state !== "settled" || control.status === "uncertain";
   const running = control.operations.some(fileAccessJobActive);
+  const canCompose = !disabled && !running && fileAccessCompositionPack(control) === MACOS_FILE_ACCESS_PACK;
   return <section className="file-access-section" aria-label="Saved macOS workspace control">
     <div className="file-access-heading"><h2>Saved macOS workspace control</h2><Badge tone={unsettled ? "warning" : "neutral"}>{sentence(control.status)}</Badge></div>
     <DataList items={[
@@ -180,6 +181,7 @@ function SavedMacOSControl({ control, disabled, onReview }: { control: MacOSFile
     {unsettled ? <Callout title="Workspace custody is unresolved">This control is read-only. The original operation cannot be replayed or reconciled here.</Callout>
       : !control.allowed_operations.length ? <Callout title="Original workspace unavailable">Saved evidence remains available. New operations require the original live protected workspace.</Callout> : null}
     {!unsettled ? <div className="file-access-actions">{control.allowed_operations.map(operation => <Button key={operation} disabled={disabled || running} onClick={() => onReview({ operation, control_owner_id: control.control_owner_id })}><FileLock2 />Review {fileAccessOperationLabels[operation].toLowerCase()}</Button>)}</div> : null}
+    {canCompose ? <Link className="button button-secondary button-medium" to={`/composition?${new URLSearchParams({ control: control.control_owner_id, pack: MACOS_FILE_ACCESS_PACK })}`}>Open composition workspace</Link> : null}
     {control.operations.length ? <details><summary>Saved macOS control operations</summary><ol className="file-access-history">{control.operations.map((job, index) => { const submitted = job.progress.submitted_request as FileAccessSubmission; return <li key={job.job_id}><div><Link to={`/file-access?${new URLSearchParams({ control: control.control_owner_id, operation: job.job_id })}`}>Operation {index + 1}: {fileAccessOperationLabels[submitted.review.operation]}</Link><span>{sentence(job.state)}</span></div><details><summary>Operation reference</summary><code>{job.job_id}</code></details></li>; })}</ol></details> : null}
   </section>;
 }

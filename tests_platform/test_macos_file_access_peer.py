@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from bluefire import macos_file_access_clock as clock
 from bluefire import macos_file_access_peer as peer
 from bluefire import runner_client
 from bluefire.macos_file_access_contract import MacOSFileAccessContractError
@@ -121,17 +122,17 @@ def test_nonowned_or_ambiguous_input_refused(child, monkeypatch, change):
 
 
 def test_runtime_gate_is_platform_and_layout_specific(monkeypatch):
-    monkeypatch.setattr(peer.sys, "platform", "darwin")
+    monkeypatch.setattr(clock.sys, "platform", "darwin")
     monkeypatch.setattr(
-        peer.os, "uname", lambda: SimpleNamespace(machine="arm64", release="25.1.0"), raising=False
+        clock.os, "uname", lambda: SimpleNamespace(machine="arm64", release="25.1.0"), raising=False
     )
     assert peer._supported_runtime()
     monkeypatch.setattr(
-        peer.os, "uname", lambda: SimpleNamespace(machine="x86_64", release="25.1.0")
+        clock.os, "uname", lambda: SimpleNamespace(machine="x86_64", release="25.1.0")
     )
     assert not peer._supported_runtime()
     monkeypatch.setattr(
-        peer.os, "uname", lambda: SimpleNamespace(machine="arm64", release="24.1.0")
+        clock.os, "uname", lambda: SimpleNamespace(machine="arm64", release="24.1.0")
     )
     assert not peer._supported_runtime()
 
@@ -145,7 +146,7 @@ class _Call:
 
 
 def test_clock_uses_explicit_shared_integer_conversion(monkeypatch):
-    monkeypatch.setattr(peer, "_supported_runtime", lambda: True)
+    monkeypatch.setattr(clock, "_supported_runtime", lambda: True)
 
     def timebase(pointer):
         pointer._obj.numer, pointer._obj.denom = 125, 3
@@ -154,9 +155,10 @@ def test_clock_uses_explicit_shared_integer_conversion(monkeypatch):
     library = SimpleNamespace(
         mach_absolute_time=_Call(lambda: 10), mach_timebase_info=_Call(timebase)
     )
-    monkeypatch.setattr(peer.ctypes, "CDLL", lambda *a, **k: library)
-    assert peer.darwin_clock_ns() == 416
+    monkeypatch.setattr(clock.ctypes, "CDLL", lambda *a, **k: library)
+    assert clock.darwin_clock_ns() == 416
     assert peer.MONOTONIC_CLOCK == "darwin-mach-absolute-ns"
+    assert peer.darwin_clock_ns is clock.darwin_clock_ns
 
 
 @pytest.mark.parametrize("returned", [0, 135, 137, -1])
@@ -204,7 +206,7 @@ def test_public_process_query_reads_declared_fields(monkeypatch):
     [(0, 1, 1, 0), (1, 0, 1, 0), (1, 1, 0, 0), (1, 1, 1, 1), (2**32 - 1, 1, 2**64 - 1, 0)],
 )
 def test_invalid_or_overflowing_clock_is_refused(monkeypatch, numer, denom, ticks, status):
-    monkeypatch.setattr(peer, "_supported_runtime", lambda: True)
+    monkeypatch.setattr(clock, "_supported_runtime", lambda: True)
 
     def timebase(pointer):
         pointer._obj.numer, pointer._obj.denom = numer, denom
@@ -213,6 +215,6 @@ def test_invalid_or_overflowing_clock_is_refused(monkeypatch, numer, denom, tick
     library = SimpleNamespace(
         mach_absolute_time=_Call(lambda: ticks), mach_timebase_info=_Call(timebase)
     )
-    monkeypatch.setattr(peer.ctypes, "CDLL", lambda *a, **k: library)
+    monkeypatch.setattr(clock.ctypes, "CDLL", lambda *a, **k: library)
     with pytest.raises(MacOSFileAccessContractError):
-        peer.darwin_clock_ns()
+        clock.darwin_clock_ns()

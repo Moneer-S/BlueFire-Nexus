@@ -9,7 +9,8 @@ import pytest
 
 from bluefire import file_access_context
 from bluefire import macos_file_access_bridge as bridge
-from bluefire import macos_file_access_peer as peer
+from bluefire import macos_file_access_clock as clock
+from bluefire import macos_file_access_control as macos_control
 from bluefire import product_store_macos_file_access as macos
 from bluefire.execution_contracts import execution_task_identity
 from bluefire.file_access_control import FileAccessControl
@@ -60,9 +61,9 @@ def workspace(tmp_path, monkeypatch):
             return {**body, "context_digest": content_hash(body)}
 
     selected = Endpoint()
-    monkeypatch.setattr(macos, "endpoint", lambda _service: selected)
+    monkeypatch.setattr(macos_control, "endpoint", lambda _service: selected)
     monkeypatch.setattr(file_access_context, "is_macos_host", lambda: True)
-    monkeypatch.setattr(peer, "darwin_clock_ns", lambda: state["monotonic"])
+    monkeypatch.setattr(clock, "darwin_clock_ns", lambda: state["monotonic"])
 
     def run_id():
         state["run"] += 1

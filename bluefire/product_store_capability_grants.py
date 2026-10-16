@@ -611,6 +611,13 @@ def register_task(
             connection, "SELECT * FROM capability_preparation_starts WHERE attempt_id=?", attempt_id
         )
         dependency = store._capability_dependency_at(connection, attempt_id, lease)
+        if (
+            "macos_file_access" in compiled
+            and step_id == compiled["macos_file_access"]["cleanup_step_id"]
+        ):
+            raise ProductStoreError(
+                "macOS closure requires its distinct cleanup registration authority."
+            )
         if claim["lease_digest"] != lease["lease_digest"] or step_id not in {
             step["id"] for step in compiled["scenario"]["steps"]
         }:
@@ -744,6 +751,11 @@ def record_task_terminal(store, task_id, *, request_hash, terminal_digest):
 
 def _settlement(store, connection, attempt_id, receipt):
     _, lease, _ = _attempt_at(connection, attempt_id)
+    from .capability_packs import MACOS_FILE_ACCESS_PACK, grant_pack
+
+    _, grant, _ = _grant_at(connection, lease["grant_id"])
+    if grant_pack(grant) == MACOS_FILE_ACCESS_PACK:
+        return store._validate_macos_capability_settlement(connection, attempt_id, receipt)
     store._validate_capability_dependency(connection, attempt_id, lease, receipt)
     native = receipt["native"]
     tasks = connection.execute(

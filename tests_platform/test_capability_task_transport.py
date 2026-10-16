@@ -154,7 +154,7 @@ def _register_business(context, **overrides):
 
 def test_business_payload_is_exact_and_survives_store_reload(capability_task):
     context = capability_task
-    assert context["store"].schema_version == 12
+    assert context["store"].schema_version == 13
     registered = _register_business(context)
     assert registered["transport_request_hash"] == context["transport_hash"]
 
@@ -310,7 +310,7 @@ def test_v11_upgrade_preserves_rows_without_synthesizing_payloads(capability_tas
         connection.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(11,'prior')")
 
     upgraded = ProductStore(path)
-    assert upgraded.schema_version == 12
+    assert upgraded.schema_version == 13
     with upgraded._connection() as connection:
         assert (
             dict(connection.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone())

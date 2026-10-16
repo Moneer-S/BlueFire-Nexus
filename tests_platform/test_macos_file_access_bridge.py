@@ -18,6 +18,30 @@ from tests_platform import test_macos_file_access_creator as creator_cases
 creator_fake = creator_cases.fake
 
 
+def test_workspace_composition_entry_supplies_only_the_exact_original_attach_factory(monkeypatch):
+    owner = object.__new__(workspace.MacOSWorkspaceOwner)
+    factories = []
+    monkeypatch.setattr(owner, "start", lambda *, bridge_factory: factories.append(bridge_factory))
+    bridge.start_workspace(owner)
+    assert len(factories) == 1
+    assert factories[0].__self__ is bridge.OriginalMacOSWorkspaceBridge
+    assert factories[0].__func__ is bridge.OriginalMacOSWorkspaceBridge.attach.__func__
+
+
+@pytest.mark.parametrize("entry", ["start", "attach"])
+@pytest.mark.parametrize("kind", ["document", "subclass"])
+def test_original_workspace_entry_and_attach_still_reject_recreated_owner(entry, kind):
+    class Recreated(workspace.MacOSWorkspaceOwner):
+        pass
+
+    owner = {} if kind == "document" else object.__new__(Recreated)
+    operation = (
+        bridge.start_workspace if entry == "start" else bridge.OriginalMacOSWorkspaceBridge.attach
+    )
+    with pytest.raises(MacOSFileAccessContractError):
+        operation(owner)
+
+
 @pytest.fixture
 def original(creator_fake, monkeypatch):
     create, _lease, _reserve, state = creator_fake

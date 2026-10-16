@@ -12,6 +12,21 @@ from .util import content_hash, json_clone
 
 _DIGEST_PREFIX = "sha256:"
 _CLEANUP_ACTION_ID = "sandbox.cleanup.v1"
+_MACOS_CLEANUP_ACTION_ID = "macos.file_access.close_attempt.v1"
+_MACOS_CLEANUP_SCHEMA = "bluefire.macos-file-access-artifact-closure-claim.v1"
+_MACOS_CLEANUP_FIELDS = {
+    "schema_version",
+    "attempt_id",
+    "lease_digest",
+    "compiled_digest",
+    "run_id",
+    "cleanup_step_id",
+    "issued_at_ms",
+    "expires_at_ms",
+    "issued_monotonic_ns",
+    "deadline_ns",
+    "scope",
+}
 
 
 def _require_digest(value: Any, name: str) -> str:
@@ -62,8 +77,10 @@ def payload_document(
     cleanup_claim: Mapping[str, Any] | None = None,
     cleanup_claim_digest: str | None = None,
     cleanup_obligation_digest: str | None = None,
+    macos_cleanup_claim: Mapping[str, Any] | None = None,
+    macos_cleanup_claim_digest: str | None = None,
 ) -> dict[str, Any]:
-    if purpose not in {"business", "cleanup"}:
+    if purpose not in {"business", "cleanup", "macos_cleanup"}:
         raise ProductStoreError("The task payload purpose is invalid.")
     if not isinstance(manifest, Mapping) or not isinstance(runner_profile, Mapping):
         raise ProductStoreError("The exact runner manifest and profile are required.")
@@ -130,12 +147,65 @@ def payload_document(
     ):
         raise ProductStoreError("The cleanup manifest differs from its compiled cleanup step.")
 
-    embedded_claim_key = "grant_attempt" if purpose == "business" else "grant_cleanup"
-    embedded_claim = manifest_copy.get(embedded_claim_key)
-    other_claim_key = "grant_cleanup" if purpose == "business" else "grant_attempt"
-    if other_claim_key in manifest_copy:
-        raise ProductStoreError("The task manifest mixes business and cleanup claim authority.")
-    claim_document = dict(attempt_claim)
+    if purpose == "macos_cleanup":
+        if (
+            step_id != manifest_copy.get("step_id")
+            or manifest_copy.get("action_id") != _MACOS_CLEANUP_ACTION_ID
+            or manifest_copy.get("behavior_id") != _MACOS_CLEANUP_ACTION_ID
+            or manifest_copy.get("platform") != "macos"
+            or profile_copy.get("platform") != "macos"
+            or manifest_copy.get("params") != {}
+            or manifest_copy.get("approval") is not None
+            or "grant_attempt" in manifest_copy
+            or "grant_cleanup" in manifest_copy
+            or macos_cleanup_claim is None
+            or macos_cleanup_claim_digest is None
+        ):
+            raise ProductStoreError(
+                "The Mac closure manifest mixes authority or changes its fixed task."
+            )
+        claim = dict(macos_cleanup_claim)
+        macos_cleanup_claim_digest = _require_digest(
+            macos_cleanup_claim_digest, "Mac attempt-closure claim digest"
+        )
+        if (
+            set(claim) != _MACOS_CLEANUP_FIELDS
+            or claim.get("schema_version") != _MACOS_CLEANUP_SCHEMA
+            or claim.get("attempt_id") != attempt_id
+            or claim.get("lease_digest") != lease.get("lease_digest")
+            or claim.get("compiled_digest") != lease.get("compiled_digest")
+            or claim.get("run_id") != lease.get("run_id")
+            or claim.get("cleanup_step_id") != step_id
+            or claim.get("scope") != "attempt_artifact_closure_only"
+            or type(claim.get("issued_at_ms")) is not int
+            or type(claim.get("expires_at_ms")) is not int
+            or type(claim.get("issued_monotonic_ns")) is not int
+            or type(claim.get("deadline_ns")) is not int
+            or not claim["issued_at_ms"] < claim["expires_at_ms"]
+            or not claim["issued_monotonic_ns"] < claim["deadline_ns"]
+            or content_hash(claim) != macos_cleanup_claim_digest
+            or manifest_copy.get("macos_file_access_cleanup") != claim
+        ):
+            raise ProductStoreError("The Mac attempt-closure claim differs from its payload.")
+    elif macos_cleanup_claim is not None or macos_cleanup_claim_digest is not None:
+        raise ProductStoreError("Only a Mac closure task can carry its artifact-closure claim.")
+
+    if purpose == "macos_cleanup":
+        if any(
+            value is not None
+            for value in (cleanup_claim, cleanup_claim_digest, cleanup_obligation_digest)
+        ):
+            raise ProductStoreError("A Mac closure task cannot carry generic cleanup authority.")
+        embedded_claim = manifest_copy.get("macos_file_access_cleanup")
+        claim_document = dict(macos_cleanup_claim or {})
+        expected_embedded_claim = claim_document
+    else:
+        embedded_claim_key = "grant_attempt" if purpose == "business" else "grant_cleanup"
+        embedded_claim = manifest_copy.get(embedded_claim_key)
+        other_claim_key = "grant_cleanup" if purpose == "business" else "grant_attempt"
+        if other_claim_key in manifest_copy or "macos_file_access_cleanup" in manifest_copy:
+            raise ProductStoreError("The task manifest mixes business and cleanup claim authority.")
+        claim_document = dict(attempt_claim)
     if purpose == "cleanup":
         if (
             cleanup_claim is None
@@ -155,12 +225,13 @@ def payload_document(
         raise ProductStoreError("A business task cannot carry cleanup claim provenance.")
     from .runner_contracts import _canonical_grant_attempt, _canonical_grant_cleanup
 
-    canonical_claim = (
-        _canonical_grant_attempt(claim_document, wire=False)
-        if purpose == "business"
-        else _canonical_grant_cleanup(claim_document, wire=False)
-    )
-    expected_embedded_claim = {**canonical_claim, "request_hash": request_hash}
+    if purpose != "macos_cleanup":
+        canonical_claim = (
+            _canonical_grant_attempt(claim_document, wire=False)
+            if purpose == "business"
+            else _canonical_grant_cleanup(claim_document, wire=False)
+        )
+        expected_embedded_claim = {**canonical_claim, "request_hash": request_hash}
     if embedded_claim != expected_embedded_claim:
         raise ProductStoreError("The manifest does not carry the exact retained capability claim.")
 
@@ -189,6 +260,8 @@ def payload_document(
             cleanup_claim_digest=cleanup_claim_digest,
             cleanup_obligation_digest=cleanup_obligation_digest,
         )
+    if purpose == "macos_cleanup":
+        document["macos_cleanup_claim_digest"] = macos_cleanup_claim_digest
     return document
 
 
@@ -199,7 +272,7 @@ def insert_payload(
     task_id: str,
     document: Mapping[str, Any],
 ) -> None:
-    if purpose == "business":
+    if purpose in {"business", "macos_cleanup"}:
         table = "capability_task_payloads"
     elif purpose == "cleanup":
         table = "capability_cleanup_task_payloads"
@@ -209,85 +282,3 @@ def insert_payload(
         f"INSERT INTO {table}(task_id,payload_json,payload_digest) VALUES(?,?,?)",
         (task_id, canonical_json(dict(document)), content_hash(dict(document))),
     )
-
-
-def read_payload(
-    store,
-    task_id: str,
-    transport_request_hash: str,
-    *,
-    purpose: str,
-) -> dict[str, Any]:
-    from . import product_store_capability_cleanup as cleanup
-    from . import product_store_capability_grants as records
-
-    transport_request_hash = _require_digest(transport_request_hash, "transport request hash")
-    if purpose == "business":
-        table = "capability_task_payloads"
-        claim_table = "capability_task_claims"
-    elif purpose == "cleanup":
-        table = "capability_cleanup_task_payloads"
-        claim_table = "capability_cleanup_task_claims"
-    else:
-        raise ProductStoreError("The task payload purpose is invalid.")
-
-    with store._connection() as connection:
-        payload_row = records._one(connection, f"SELECT * FROM {table} WHERE task_id=?", task_id)
-        payload = records._document(
-            payload_row, field="payload_json", digest_field="payload_digest"
-        )
-        task = records._one(connection, f"SELECT * FROM {claim_table} WHERE task_id=?", task_id)
-        row, lease, compiled = records._attempt_at(connection, task["attempt_id"])
-        attempt_claim_row, attempt_claim = records._claim_at(connection, task["attempt_id"], lease)
-        workspace = cleanup.workspace_at(connection, task["attempt_id"], lease)
-        dependency = store._capability_dependency_at(connection, task["attempt_id"], lease)
-
-        if purpose == "business":
-            cleanup_claim = None
-            cleanup_claim_digest = None
-            cleanup_obligation_digest = None
-            step_id = task["step_id"]
-            request_hash = task["request_hash"]
-        else:
-            cleanup_claim_row, cleanup_claim = cleanup.claim_at(
-                connection, task["attempt_id"], lease
-            )
-            obligation_row, _ = cleanup.obligation_at(connection, task["attempt_id"], lease)
-            cleanup_claim_digest = cleanup_claim_row["document_digest"]
-            cleanup_obligation_digest = obligation_row["document_digest"]
-            step_id = cleanup_step_id(compiled)
-            request_hash = task["request_hash"]
-
-        manifest, runner_profile = payload.get("manifest"), payload.get("runner_profile")
-        if not isinstance(manifest, Mapping) or not isinstance(runner_profile, Mapping):
-            raise ProductStoreError("The retained runner task payload is incomplete.")
-        expected = payload_document(
-            purpose=purpose,
-            task_id=task_id,
-            attempt_id=task["attempt_id"],
-            lease=lease,
-            step_id=step_id,
-            request_hash=request_hash,
-            manifest=manifest,
-            runner_profile=runner_profile,
-            attempt_claim=attempt_claim,
-            attempt_claim_digest=attempt_claim_row["document_digest"],
-            workspace=workspace,
-            dependency=dependency,
-            cleanup_claim=cleanup_claim,
-            cleanup_claim_digest=cleanup_claim_digest,
-            cleanup_obligation_digest=cleanup_obligation_digest,
-        )
-        if (
-            row["attempt_id"] != payload["attempt_id"]
-            or payload != expected
-            or payload["transport_request_hash"] != transport_request_hash
-            or task["request_hash"] != payload["request_hash"]
-            or task["attempt_id"] != payload["attempt_id"]
-            or purpose == "business"
-            and task["step_id"] != payload["step_id"]
-            or purpose == "cleanup"
-            and task["claim_digest"] != payload["cleanup_claim_digest"]
-        ):
-            raise ProductStoreError("The retained task payload binding changed.")
-        return {"payload": payload, "document_digest": content_hash(payload)}

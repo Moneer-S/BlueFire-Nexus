@@ -12,7 +12,8 @@ import "./Composition.css";
 import { clearCompositionControl, compositionControlConfirmed, readCompositionControls, readCompositionProposals, rememberCompositionProposal, storeCompositionControl, type CompositionControl } from "../lib/composition";
 import { clearCompositionCancellation, compositionCanRevise, compositionCancellationConfirmed, compositionEstablished, readCompositionCancellations, storeCompositionCancellation } from "../lib/composition";
 import type { CompositionObjectiveState, CompositionReviewRequest } from "../lib/composition";
-import { compositionPack, compositionRequestPack, FILE_ACCESS_PACK, RECEIVER_PACK } from "../lib/composition";
+import { compositionControlValid, compositionPack, compositionRequestPack, FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, RECEIVER_PACK } from "../lib/composition";
+import { checkedFileAccessControl, checkedFileAccessStatus, fileAccessApi, fileAccessCompositionPack, fileAccessJobActive, macOSFileAccessControlIdValid } from "../lib/file-access";
 
 export function CompositionPage() {
   const [params, setParams] = useSearchParams();
@@ -25,29 +26,50 @@ export function CompositionPage() {
   const [localError, setLocalError] = useState<unknown>(restored.error);
   const [reviewSeed, setReviewSeed] = useState<CompositionReviewRequest>();
   const [expandedObjective, setExpandedObjective] = useState("");
+  const [now, setNow] = useState(Date.now());
   const locked = useRef(false);
   const stoppedOwners = useRef(new Set<string>());
   const id = params.get("objective") ?? pending?.owner ?? "";
   const stopped = Boolean(pendingControls[id]) || stoppedOwners.current.has(id);
   const control = params.get("control") ?? pending?.control ?? "";
   const requestedPack = params.get("pack");
-  const invalidPack = requestedPack !== null && requestedPack !== FILE_ACCESS_PACK && requestedPack !== RECEIVER_PACK;
+  const invalidPack = requestedPack !== null && requestedPack !== FILE_ACCESS_PACK && requestedPack !== MACOS_FILE_ACCESS_PACK && requestedPack !== RECEIVER_PACK;
   const proposalId = cancellations[id] ?? params.get("proposal") ?? (pending?.kind === "proposal" && pending.owner === id ? pending.id : "");
   const navigate = (owner: string, proposal = "") => setParams(next => { const value = new URLSearchParams(next); value.set("control", control); if (owner) value.set("objective", owner); else value.delete("objective"); if (proposal) value.set("proposal", proposal); else value.delete("proposal"); return value; });
-  const list = useQuery({ queryKey: ["composition-list", control], queryFn: async () => checkedCompositionList(await compositionApi.list(control)), enabled: compositionJobValid(control), retry: false });
-  const write = useMutation({ mutationFn: async (operation: CompositionPending) => {
+  const list = useQuery({ queryKey: ["composition-list", control], queryFn: async () => checkedCompositionList(await compositionApi.list(control)), enabled: compositionControlValid(control), retry: false });
+  const write = useMutation({ mutationFn: async (operation: CompositionPending): Promise<CompositionProposal | CompositionObjectiveState> => {
+    if (!currentMutationReady() || (macOSContext && (operation.kind === "proposal" || (operation.kind === "attempt" && Boolean(objective.data?.attempts.length))))) throw new Error("Current original workspace authority is required; saved requests are read-only.");
     storeCompositionPending(operation);
     await client.cancelQueries({ queryKey: ["composition-objective", operation.owner], exact: true });
     const value = await compositionApi.submit(operation);
-    return operation.kind === "proposal" ? checkedCompositionProposal(value as CompositionProposal, operation.id, operation.owner) : checkedCompositionObjective(value as CompositionObjectiveState, operation.owner, operation.control);
+    return operation.kind === "proposal" ? checkedCompositionProposal(value as CompositionProposal, operation.id, operation.owner) : checkedCompositionObjective(value as CompositionObjectiveState, operation.owner, operation.control, macOSFileAccessControlIdValid(operation.control) ? MACOS_FILE_ACCESS_PACK : undefined);
   }, onSuccess: (value, operation) => {
     if ("owner" in value && !stoppedOwners.current.has(operation.owner)) client.setQueryData(["composition-objective", operation.owner], value);
     else if ("owner" in value) void client.invalidateQueries({ queryKey: ["composition-objective", operation.owner] });
     else client.setQueryData(["composition-proposal", operation.id], value);
     void client.invalidateQueries({ queryKey: ["composition-list", operation.control] });
   }, onSettled: () => { locked.current = false; } });
-  const objective = useQuery({ queryKey: ["composition-objective", id], queryFn: async () => checkedCompositionObjective(await compositionApi.objective(id), id, control || undefined, requestedPack === FILE_ACCESS_PACK ? FILE_ACCESS_PACK : requestedPack === RECEIVER_PACK ? RECEIVER_PACK : undefined), enabled: compositionJobValid(id) && !write.isPending && !invalidPack, retry: false, refetchInterval: state => state.state.data?.grant && !["revoked", "expired"].includes(state.state.data.grant.status) ? 1500 : false });
-  const proposal = useQuery({ queryKey: ["composition-proposal", proposalId], queryFn: async () => checkedCompositionProposal(await compositionApi.proposal(proposalId), proposalId, id), enabled: compositionJobValid(proposalId) && compositionJobValid(id) && !write.isPending, retry: false, refetchInterval: state => state.state.data && ["pending", "requesting"].includes(state.state.data.provider_outcome) ? 1200 : false });
+  const objective = useQuery({ queryKey: ["composition-objective", id], queryFn: async () => checkedCompositionObjective(await compositionApi.objective(id), id, control || undefined, requestedPack === FILE_ACCESS_PACK || requestedPack === MACOS_FILE_ACCESS_PACK || requestedPack === RECEIVER_PACK ? requestedPack : undefined), enabled: compositionJobValid(id) && !write.isPending && !invalidPack, retry: false, refetchInterval: state => state.state.data?.grant && !["revoked", "expired"].includes(state.state.data.grant.status) ? 1500 : false });
+  const macOSContext = requestedPack === MACOS_FILE_ACCESS_PACK || macOSFileAccessControlIdValid(control) || objective.data?.grant?.document.pack === MACOS_FILE_ACCESS_PACK;
+  const workspaceStatus = useQuery({ queryKey: ["file-access-status"], queryFn: async () => checkedFileAccessStatus(await fileAccessApi.status()), enabled: macOSContext, retry: false });
+  const workspaceControl = useQuery({ queryKey: ["file-access-control", control], queryFn: async () => checkedFileAccessControl(await fileAccessApi.control(control), control), enabled: macOSContext && macOSFileAccessControlIdValid(control), retry: false });
+  const mutationReady = !macOSContext || ((requestedPack === null || requestedPack === MACOS_FILE_ACCESS_PACK) && !workspaceStatus.isPending && !workspaceStatus.isFetching && !workspaceStatus.error
+    && workspaceStatus.data?.platform === "macos" && workspaceStatus.data.available && Boolean(workspaceStatus.data.enrollment && workspaceStatus.data.enrollment.expires_at_ms > now)
+    && !workspaceControl.isPending && !workspaceControl.isFetching && !workspaceControl.error && workspaceControl.data?.platform === "macos"
+    && fileAccessCompositionPack(workspaceControl.data) === MACOS_FILE_ACCESS_PACK
+    && !workspaceControl.data.operations.some(fileAccessJobActive)
+    && (!objective.data?.grant || objective.data.grant.document.environment.control_digest === workspaceControl.data.control_digest));
+  const currentMutationReady = () => {
+    const observed = Date.now();
+    return mutationReady && (!macOSContext || ((workspaceStatus.data?.enrollment?.expires_at_ms ?? 0) > observed
+      && (!objective.data?.grant || objective.data.grant.document.expires_at_ms > observed)));
+  };
+  useEffect(() => {
+    if (!macOSContext) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [macOSContext]);
+  const proposal = useQuery({ queryKey: ["composition-proposal", proposalId], queryFn: async () => checkedCompositionProposal(await compositionApi.proposal(proposalId), proposalId, id), enabled: !macOSContext && compositionJobValid(proposalId) && compositionJobValid(id) && !write.isPending, retry: false, refetchInterval: state => state.state.data && ["pending", "requesting"].includes(state.state.data.provider_outcome) ? 1200 : false });
   useEffect(() => {
     const savedControl = control || objective.data?.grant?.document.environment.control_owner_id || String(compositionRecord(compositionRecord(objective.data?.owner.progress.submitted_request).review).control_owner_id ?? "");
     if (!id || !savedControl || (params.get("objective") && params.get("control"))) return;
@@ -72,18 +94,20 @@ export function CompositionPage() {
     catch (error) { setLocalError(error); }
   }, [id, cancellations, proposal.data]);
   const send = (operation: CompositionPending) => {
-    if (pending || locked.current || localError || (stoppedOwners.current.has(operation.owner) && operation.kind !== "grant")) return;
+    if (!currentMutationReady() || (macOSContext && (operation.kind === "proposal" || (operation.kind === "attempt" && Boolean(objective.data?.attempts.length)))) || pending || locked.current || localError || (stoppedOwners.current.has(operation.owner) && operation.kind !== "grant")) return;
     locked.current = true; setPending(operation); setLocalError(undefined); navigate(operation.owner, operation.kind === "proposal" ? operation.id : ""); write.mutate(operation);
   };
-  const safety = useMutation({ mutationFn: async ({ owner, control: retainedControl, operation }: { owner: string; control: string; operation: CompositionControl }) => {
+  const safety = useMutation({ mutationFn: async ({ owner, control: retainedControl, operation }: { owner: string; control: string; operation: CompositionControl }): Promise<CompositionObjectiveState> => {
+    if ((operation === "continue" && !currentMutationReady()) || (macOSContext && !envelope)) throw new Error("Current original workspace authority is unavailable for this control request.");
     storeCompositionControl(owner, operation); setPendingControls(readCompositionControls());
     if (operation !== "continue") stoppedOwners.current.add(owner);
     await client.cancelQueries({ queryKey: ["composition-context", owner] });
     await client.cancelQueries({ queryKey: ["composition-objective", owner], exact: true });
-    return checkedCompositionObjective(await compositionApi.control(owner, operation), owner, retainedControl || undefined);
+    return checkedCompositionObjective(await compositionApi.control(owner, operation), owner, retainedControl || undefined, macOSFileAccessControlIdValid(retainedControl) ? MACOS_FILE_ACCESS_PACK : undefined);
   }, onSuccess: (value, target) => { client.setQueryData(["composition-objective", target.owner], value); if (target.operation === "continue") stoppedOwners.current.delete(target.owner); void client.invalidateQueries({ queryKey: ["composition-list", target.control] }); void client.invalidateQueries({ queryKey: ["composition-context", target.owner], refetchType: "none" }); void client.invalidateQueries({ queryKey: ["composition-proposal"] }); } });
-  const controlObjective = (operation: CompositionControl) => safety.mutate({ owner: id, control, operation });
+  const controlObjective = (operation: CompositionControl) => { if ((operation !== "continue" || currentMutationReady()) && (!macOSContext || envelope)) safety.mutate({ owner: id, control, operation }); };
   const cancel = useMutation({ mutationFn: async ({ owner, job }: { owner: string; job: string }) => {
+    if (!mutationReady || macOSContext) throw new Error("The fixed macOS graph has no provider request to cancel.");
     storeCompositionCancellation(owner, job); setCancellations(readCompositionCancellations());
     await client.cancelQueries({ queryKey: ["composition-proposal", job], exact: true });
     return checkedCompositionProposal(await compositionApi.cancel(job), job, owner);
@@ -93,41 +117,42 @@ export function CompositionPage() {
   const savedRefusal = objective.data?.grant === null ? objective.data : undefined;
   const refusedReview = compositionRecord(compositionRecord(savedRefusal?.owner.progress.submitted_request).review);
   const refusal = savedRefusal && !invalidPack && (!control || refusedReview.control_owner_id === control) && (!requestedPack || compositionRequestPack(refusedReview) === requestedPack) ? savedRefusal : undefined;
-  const pack = envelope ? compositionPack(envelope.grant.document) : requestedPack === FILE_ACCESS_PACK || compositionRecord(pending?.body.review).pack === FILE_ACCESS_PACK || compositionRecord(compositionRecord(refusal?.owner.progress.submitted_request).review).pack === FILE_ACCESS_PACK ? FILE_ACCESS_PACK : RECEIVER_PACK;
-  const fileAccess = pack === FILE_ACCESS_PACK;
-  const packQuery: Record<string, string> = fileAccess ? { pack: FILE_ACCESS_PACK } : {};
+  const pack = envelope ? compositionPack(envelope.grant.document) : requestedPack === RECEIVER_PACK ? RECEIVER_PACK : requestedPack === FILE_ACCESS_PACK ? FILE_ACCESS_PACK : macOSContext ? MACOS_FILE_ACCESS_PACK : compositionRecord(pending?.body.review).pack === FILE_ACCESS_PACK || compositionRecord(compositionRecord(refusal?.owner.progress.submitted_request).review).pack === FILE_ACCESS_PACK ? FILE_ACCESS_PACK : RECEIVER_PACK;
+  const fileAccess = pack === FILE_ACCESS_PACK || pack === MACOS_FILE_ACCESS_PACK;
+  const packQuery: Record<string, string> = fileAccess ? { pack } : {};
   return <div className={`page composition-page${expandedObjective === id && id ? " composition-objective-expanded" : ""}`}>
-    <Link to={fileAccess ? `/file-access${compositionJobValid(control) ? `?control=${encodeURIComponent(control)}` : ""}` : compositionJobValid(control) ? `/compare?receiver_job=${encodeURIComponent(control)}` : "/compare"}>{fileAccess ? "Retained file-access control" : "Retained receiver control"}</Link>
-    <PageHeader title={envelope?.grant.document.objective.question ?? "Composition workspace"} actions={compositionJobValid(id) && !refusal ? <div className="composition-actions">{envelope ? <IconButton label={expandedObjective === id ? "Collapse objective question" : "Show full objective question"} aria-expanded={expandedObjective === id} onClick={() => setExpandedObjective(expandedObjective === id ? "" : id)}>{expandedObjective === id ? <ChevronUp /> : <ChevronDown />}</IconButton> : null}<Button variant="danger" disabled={safety.isPending} onClick={() => controlObjective("stop")}><Pause />Stop</Button><Button variant="danger" disabled={safety.isPending} onClick={() => controlObjective("revoke")}><Ban />Revoke</Button></div> : undefined} />
+    <Link to={fileAccess ? `/file-access${compositionControlValid(control, pack) ? `?control=${encodeURIComponent(control)}` : ""}` : compositionJobValid(control) ? `/compare?receiver_job=${encodeURIComponent(control)}` : "/compare"}>{fileAccess ? "Retained file-access control" : "Retained receiver control"}</Link>
+    <PageHeader title={envelope?.grant.document.objective.question ?? "Composition workspace"} actions={compositionJobValid(id) && !refusal ? <div className="composition-actions">{envelope ? <IconButton label={expandedObjective === id ? "Collapse objective question" : "Show full objective question"} aria-expanded={expandedObjective === id} onClick={() => setExpandedObjective(expandedObjective === id ? "" : id)}>{expandedObjective === id ? <ChevronUp /> : <ChevronDown />}</IconButton> : null}<Button variant="danger" disabled={safety.isPending || (macOSContext && !envelope)} onClick={() => controlObjective("stop")}><Pause />Stop</Button><Button variant="danger" disabled={safety.isPending || (macOSContext && !envelope)} onClick={() => controlObjective("revoke")}><Ban />Revoke</Button></div> : undefined} />
     {localError ? <ErrorState title="Saved request needs attention" error={localError} /> : null}
-    {invalidPack ? <ErrorState error={new Error("This capability pack is not supported.")} /> : !compositionJobValid(control) ? <Callout title="Select the original retained control"><Link to="/compare">Receiver control</Link> or <Link to="/file-access">effective file access</Link></Callout> : <>
-      <section className="composition-section" aria-label="Saved objectives"><div className="composition-heading"><h2>Saved objectives</h2><Button size="small" disabled={list.isFetching} onClick={() => { void list.refetch(); }}><RefreshCw />Refresh</Button></div>
+    {macOSContext && !mutationReady ? <Callout title="Original macOS workspace is read-only">Saved objectives and evidence remain available. New operations require the current original hardened control and settled custody.</Callout> : null}
+    {invalidPack ? <ErrorState error={new Error("This capability pack is not supported.")} /> : !compositionControlValid(control, pack) ? <Callout title="Select the original retained control"><Link to="/compare">Receiver control</Link> or <Link to="/file-access">effective file access</Link></Callout> : <>
+      <section className="composition-section" aria-label="Saved objectives"><div className="composition-heading"><h2>Saved objectives</h2><Button size="small" disabled={list.isFetching || (macOSContext && workspaceStatus.isFetching)} onClick={() => { void list.refetch(); if (macOSContext) { void workspaceStatus.refetch(); void workspaceControl.refetch(); } }}><RefreshCw />Refresh</Button></div>
         {list.error ? <ErrorState error={list.error} /> : list.isPending ? <LoadingState label="Opening saved objectives" /> : <div className="composition-objective-list">{list.data?.objectives.map(item => <Link aria-label={`Open objective: ${item.title}, ${sentence(item.status)}`} aria-current={item.owner_id === id ? "page" : undefined} key={item.owner_id} to={`/composition?${new URLSearchParams({ control, objective: item.owner_id, ...packQuery, ...(recentProposals[item.owner_id] ? { proposal: recentProposals[item.owner_id]! } : {}) })}`}><strong>{item.title}</strong><span>{sentence(item.status)}</span></Link>)}{!list.data?.objectives.length ? <p>No saved objectives for this control.</p> : null}</div>}
-        {id ? <Button disabled={Boolean(pending) || write.isPending} onClick={() => { setReviewSeed(undefined); navigate(""); }}>New objective</Button> : null}
+        {id ? <Button disabled={!mutationReady || Boolean(pending) || write.isPending} onClick={() => { setReviewSeed(undefined); navigate(""); }}>New objective</Button> : null}
       </section>
       {pending ? <Callout title={write.isPending ? "Saving exact request" : "Request confirmation pending"}>
         <p>{pending.kind === "attempt" ? "An attempt may already be running. Reconcile its saved identity before starting any other work." : "The exact submission is retained across reloads. No automatic effect retry is performed."}</p>
         <code>{pending.id}</code>
-        {pending.owner !== id ? <Link to={`/composition?${new URLSearchParams({ control: pending.control, objective: pending.owner, ...(pending.kind === "proposal" ? { proposal: pending.id } : {}) })}`}>Open the pending objective</Link> : <div className="composition-actions"><Button disabled={write.isPending} onClick={() => { void objective.refetch(); if (pending.kind === "proposal") void proposal.refetch(); }}>Check saved status</Button><Button disabled={write.isPending || stopped || safety.isPending} onClick={() => { if (!locked.current) { locked.current = true; write.mutate(pending); } }}>Retry exact submission</Button>{envelope && ["paused", "revoked", "expired"].includes(envelope.grant.status) ? <Button disabled={write.isPending} onClick={() => { try { clearCompositionPending(pending); setPending(undefined); } catch (error) { setLocalError(error); } }}>Close request after confirmed stop</Button> : null}</div>}
+        {pending.owner !== id ? <Link to={`/composition?${new URLSearchParams({ control: pending.control, objective: pending.owner, ...packQuery, ...(pending.kind === "proposal" ? { proposal: pending.id } : {}) })}`}>Open the pending objective</Link> : <div className="composition-actions"><Button disabled={write.isPending} onClick={() => { void objective.refetch(); if (pending.kind === "proposal" && !macOSContext) void proposal.refetch(); }}>Check saved status</Button>{!macOSContext ? <Button disabled={!mutationReady || write.isPending || stopped || safety.isPending} onClick={() => { if (mutationReady && !locked.current) { locked.current = true; write.mutate(pending); } }}>Retry exact submission</Button> : null}{envelope && ["paused", "revoked", "expired"].includes(envelope.grant.status) ? <Button disabled={write.isPending} onClick={() => { try { clearCompositionPending(pending); setPending(undefined); } catch (error) { setLocalError(error); } }}>Close request after confirmed stop</Button> : null}</div>}
       </Callout> : null}
       {write.error ? <ErrorState title="Submission not confirmed" error={write.error} /> : null}
       {safety.error ? <ErrorState title="Control request not confirmed" error={safety.error} /> : null}
-      {pendingControls[id] ? <Callout title={`${sentence(pendingControls[id]!)} confirmation pending`}><p>New work remains disabled until this exact control request is reconciled.</p><div className="composition-actions"><Button disabled={safety.isPending} onClick={() => controlObjective(pendingControls[id]!)}>Retry exact control request</Button><Button onClick={() => { void objective.refetch(); }}>Check control state</Button></div></Callout> : null}
-      {!id ? <CompositionSetup key={`${control}:${pack}`} control={control} pack={pack} disabled={Boolean(pending) || Boolean(localError)} onSubmit={send} initialRequest={reviewSeed} /> : <>
+      {pendingControls[id] ? <Callout title={`${sentence(pendingControls[id]!)} confirmation pending`}><p>New work remains disabled until this exact control request is reconciled.</p><div className="composition-actions"><Button disabled={safety.isPending || (pendingControls[id] === "continue" && !mutationReady) || (macOSContext && !envelope)} onClick={() => controlObjective(pendingControls[id]!)}>Retry exact control request</Button><Button onClick={() => { void objective.refetch(); }}>Check control state</Button></div></Callout> : null}
+      {!id ? <CompositionSetup key={`${control}:${pack}`} control={control} pack={pack} disabled={!mutationReady || Boolean(pending) || Boolean(localError)} onSubmit={send} initialRequest={reviewSeed} /> : <>
         {!compositionJobValid(id) ? <ErrorState error={new Error("This objective link is incomplete.")} /> : objective.error ? <ErrorState title="Current objective unavailable" error={objective.error} retry={() => { void objective.refetch(); }} /> : !envelope && !refusal ? <LoadingState label="Opening objective" /> : null}
-        {refusal ? <Callout title="Delegation refused"><p>{String(compositionRecord(compositionRecord(refusal.owner.progress.admission).problem).message)}</p><p>No capability grant or execution authority was issued.</p><Button disabled={Boolean(pending) || Boolean(localError)} onClick={() => { setReviewSeed(compositionRecord(refusal.owner.progress.submitted_request).review as CompositionReviewRequest); navigate(""); }}><RefreshCw />Review again</Button></Callout> : null}
+        {refusal ? <Callout title="Delegation refused"><p>{String(compositionRecord(compositionRecord(refusal.owner.progress.admission).problem).message)}</p><p>No capability grant or execution authority was issued.</p><Button disabled={!mutationReady || Boolean(pending) || Boolean(localError)} onClick={() => { setReviewSeed(compositionRecord(refusal.owner.progress.submitted_request).review as CompositionReviewRequest); navigate(""); }}><RefreshCw />Review again</Button></Callout> : null}
         {envelope ? <>
           <section className="composition-section" aria-label="Grant status"><div className="composition-heading"><h2>Capability grant</h2><Badge tone={envelope.grant.status === "active" ? "info" : "warning"}>{sentence(envelope.grant.status)}</Badge></div><DataList items={[{ label: "Expires", value: new Date(envelope.grant.document.expires_at_ms).toLocaleString() }, { label: "Reviewed by", value: envelope.grant.document.approved_by }, { label: "Cleanup state", value: typeof envelope.grant.cleanup_state === "string" ? sentence(envelope.grant.cleanup_state) : JSON.stringify(envelope.grant.cleanup_state) }]} />
             <h3>Cumulative reservations</h3><dl className="composition-limits">{Object.entries(envelope.grant.usage).map(([key, value]) => <div key={key}><dt>{key === "retained_metadata_bytes" ? "Metadata estimate charged" : sentence(key)}</dt><dd>{value.toLocaleString()} / {envelope.grant.document.limits[`max_${key}`]?.toLocaleString() ?? "not reported"}</dd></div>)}</dl>
             <details><summary>Reviewed capabilities and cumulative limits</summary><CompositionCapabilities review={envelope.grant.document} /></details>
-            {envelope.grant.status === "paused" ? <><p>Continue preserves spent budgets and the original expiry. It does not replay an interrupted attempt.</p><Button disabled={safety.isPending || Boolean(pending) || Boolean(pendingControls[id]) || Boolean(objective.error)} onClick={() => controlObjective("continue")}><Play />Continue objective</Button></> : null}
+            {envelope.grant.status === "paused" ? <><p>Continue preserves spent budgets and the original expiry. It does not replay an interrupted attempt.</p><Button disabled={!mutationReady || safety.isPending || Boolean(pending) || Boolean(pendingControls[id]) || Boolean(objective.error)} onClick={() => controlObjective("continue")}><Play />Continue objective</Button></> : null}
           </section>
           <CompositionAttempts objective={envelope} />
-          <CompositionPlanning key={id} objective={envelope} proposal={proposal.data} proposalId={proposalId} pending={Boolean(pending)} disabled={Boolean(objective.error) || Boolean(proposal.error) || proposal.isFetching || cancel.isPending || Boolean(cancellations[id]) || stopped || safety.isPending || write.isPending || Boolean(localError)} onSubmit={send} onProposal={(next) => navigate(id, next)} />
+          <CompositionPlanning key={id} objective={envelope} proposal={proposal.data} proposalId={proposalId} pending={Boolean(pending)} disabled={!mutationReady || Boolean(objective.error) || Boolean(proposal.error) || proposal.isFetching || cancel.isPending || Boolean(cancellations[id]) || stopped || safety.isPending || write.isPending || Boolean(localError)} onSubmit={send} onProposal={(next) => navigate(id, next)} />
         </> : null}
         {proposal.error ? <ErrorState title="Proposal status unavailable" error={proposal.error} retry={() => { void proposal.refetch(); }} /> : null}
         {cancellations[id] ? <Callout title="Proposal cancellation pending">New dispatch remains disabled until the saved proposal is confirmed stopped.</Callout> : null}
-        {compositionJobValid(proposalId) ? <Button disabled={cancel.isPending} onClick={() => cancel.mutate({ owner: id, job: proposalId })}><X />{cancellations[id] ? "Retry exact proposal cancellation" : "Cancel proposal"}</Button> : null}
+        {!macOSContext && compositionJobValid(proposalId) ? <Button disabled={!mutationReady || cancel.isPending} onClick={() => cancel.mutate({ owner: id, job: proposalId })}><X />{cancellations[id] ? "Retry exact proposal cancellation" : "Cancel proposal"}</Button> : null}
         {cancel.error ? <ErrorState title="Proposal stop not confirmed" error={cancel.error} /> : null}
       </>}
     </>}
@@ -135,6 +160,8 @@ export function CompositionPage() {
 }
 
 function CompositionPlanning({ objective, proposal, proposalId, pending, disabled, onSubmit, onProposal }: { objective: CompositionObjective; proposal?: CompositionProposal; proposalId: string; pending: boolean; disabled: boolean; onSubmit: (value: CompositionPending) => void; onProposal: (id: string) => void }) {
+  const pack = compositionPack(objective.grant.document);
+  const macOS = pack === MACOS_FILE_ACCESS_PACK;
   const [prior, setPrior] = useState("");
   const [provider, setProvider] = useState("");
   const [useInitial, setUseInitial] = useState(false);
@@ -149,29 +176,28 @@ function CompositionPlanning({ objective, proposal, proposalId, pending, disable
   const owner = objective.owner.job_id;
   const established = compositionEstablished(objective);
   const proposing = Boolean(proposal && ["pending", "requesting"].includes(proposal.provider_outcome));
-  const active = !established && objective.grant.status === "active" && grant.expires_at_ms > now && !disabled && !pending && !proposing;
+  const active = !established && (!macOS || !objective.attempts.length) && objective.grant.status === "active" && grant.expires_at_ms > now && !disabled && !pending && !proposing;
   const priorValid = !objective.attempts.length ? prior === "" : objective.attempts.some(item => item.request.composition_attempt.attempt_id === prior && compositionCanRevise(item, objective));
-  const pack = compositionPack(grant);
   const context = useQuery({ queryKey: ["composition-context", owner, prior, objective.attempts.map(item => `${item.job_id}:${item.state}:${item.progress.settlement}`).join("|")], queryFn: async () => checkedCompositionContext(await compositionApi.context(owner, prior || null), grant.grant_id, pack), enabled: active && priorValid, retry: false });
-  const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog, retry: false });
+  const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog, enabled: !macOS, retry: false });
   const providers = (catalog.data?.ai.providers ?? []).filter(item => item.kind !== "deterministic");
   const current = context.data;
   const viewSnapshot = current?.snapshot ?? grant.snapshot;
-  const candidate = useInitial ? current?.initial_proposal : proposal?.proposal?.candidate;
-  const scenario = useInitial ? current?.initial_scenario : proposal?.proposal?.scenario;
+  const candidate = useInitial ? current?.initial_proposal : macOS ? undefined : proposal?.proposal?.candidate;
+  const scenario = useInitial ? current?.initial_scenario : macOS ? undefined : proposal?.proposal?.scenario;
   const matches = Boolean(current && (useInitial ? !objective.attempts.length && candidate : proposal?.candidate_ready && proposal.proposal?.context_digest === current.context_digest && proposal.proposal.prior_attempt_id === (prior || null)));
   const ready = active && priorValid && !context.isFetching && !context.error && matches && candidate && scenario;
-  const newRequest = (kind: "proposal" | "attempt", body: Record<string, unknown>) => { const submission_id = crypto.randomUUID(); onSubmit({ kind, owner, control: grant.environment.control_owner_id, id: compositionJobId(submission_id), body: { submission_id, ...body } }); };
-  if (pack === FILE_ACCESS_PACK && objective.attempts.length) return <section className="composition-section" aria-label="Graph planning"><h2>{established ? "Objective established" : "Control review"}</h2><p>{established ? "A settled verified attempt meets every reviewed access and cleanup condition." : "The fixed file-access pack has no different permitted read path. The current attempt and its cleanup remain recorded."}</p><Link to={`/file-access?control=${encodeURIComponent(grant.environment.control_owner_id)}`}>Review retained file-access control</Link></section>;
+  const newRequest = (kind: "proposal" | "attempt", body: Record<string, unknown>) => { if (!active || (macOS && (kind !== "attempt" || objective.attempts.length || !useInitial))) return; const submission_id = crypto.randomUUID(); onSubmit({ kind, owner, control: grant.environment.control_owner_id, id: compositionJobId(submission_id), body: { submission_id, ...body } }); };
+  if ((pack === FILE_ACCESS_PACK || macOS) && objective.attempts.length) return <section className="composition-section" aria-label="Graph planning"><h2>{established ? "Objective established" : "Control review"}</h2><p>{macOS ? established ? "A settled verified attempt meets the reviewed access and request-closure conditions. The original workers and resource remain retained." : "The fixed macOS graph has no alternate read path. The original attempt and its closure state remain recorded; no further attempt is available." : established ? "A settled verified attempt meets every reviewed access and cleanup condition." : "The fixed file-access pack has no different permitted read path. The current attempt and its cleanup remain recorded."}</p><Link to={`/file-access?control=${encodeURIComponent(grant.environment.control_owner_id)}`}>Review retained file-access control</Link></section>;
   return <section className="composition-section" aria-label="Graph planning"><h2>{objective.attempts.length ? "Evidence-driven revision" : "Initial graph"}</h2>
     {objective.attempts.length ? <Field label="Verified prior attempt"><select value={prior} disabled={pending} onChange={event => { setPrior(event.target.value); setUseInitial(false); onProposal(""); }}><option value="">Select settled refusal evidence</option>{objective.attempts.map((item, index) => <option key={item.job_id} value={item.request.composition_attempt.attempt_id} disabled={!compositionCanRevise(item, objective)}>Attempt {index + 1}: {String(compositionRecord(compositionRecord(item.progress.verified_result).objective).established === true ? "established" : item.state)}{item.progress.settlement !== "settled" ? " / cleanup pending" : ""}</option>)}</select></Field> : null}
     {established ? <Callout title="Objective established">A settled verified attempt meets every reviewed success condition. No new graph or attempt is available for this objective.</Callout> : !active ? <Callout title="New dispatch unavailable">{grant.expires_at_ms <= now ? "The original grant has expired." : proposing ? "The selected provider request is still active. Its saved result or confirmed cancellation remains pending." : "A current active grant, reconciled submissions and verified cleanup are required."}</Callout> : null}
     {active && priorValid ? context.isFetching ? <LoadingState label="Verifying current facts and capabilities" /> : context.error ? <ErrorState error={context.error} retry={() => { void context.refetch(); }} /> : null : null}
-    <div className="composition-provider"><Field label="Configured model provider"><select value={provider} disabled={!active} onChange={event => setProvider(event.target.value)}><option value="">Select a provider</option>{providers.map(item => <option value={item.provider_id} key={item.provider_id}>{item.model} / {item.provider_id}</option>)}</select></Field><Link to="/settings#model-connection">Provider and model usage authorization</Link></div>
-    {catalog.error ? <ErrorState error={catalog.error} /> : null}
-    <div className="composition-actions"><Button disabled={!active || !priorValid || !current || context.isFetching || Boolean(context.error) || !providers.some(item => item.provider_id === provider)} onClick={() => { setUseInitial(false); newRequest("proposal", { provider_id: provider, context_digest: current!.context_digest, prior_attempt_id: prior || null }); }}><Sparkles />{objective.attempts.length ? "Request evidence-based revision" : "Request AI graph"}</Button>{!objective.attempts.length && current?.initial_proposal ? <Button disabled={!active} aria-pressed={useInitial} onClick={() => { setUseInitial(true); onProposal(""); }}>Review established graph</Button> : null}</div>
-    <p>Only the selected provider is used, with no fallback. Model usage and data authorization are separate from execution authority.</p>
-    {proposalId && proposal ? <Callout title={`Proposal: ${sentence(proposal.provider_outcome)}`}>{String(proposal.job.progress.operation_error ?? (proposal.candidate_ready ? "The candidate passed current compiler checks." : "No currently admissible candidate is available."))}</Callout> : null}
+    {!macOS ? <div className="composition-provider"><Field label="Configured model provider"><select value={provider} disabled={!active} onChange={event => setProvider(event.target.value)}><option value="">Select a provider</option>{providers.map(item => <option value={item.provider_id} key={item.provider_id}>{item.model} / {item.provider_id}</option>)}</select></Field><Link to="/settings#model-connection">Provider and model usage authorization</Link></div> : null}
+    {!macOS && catalog.error ? <ErrorState error={catalog.error} /> : null}
+    <div className="composition-actions">{!macOS ? <Button disabled={!active || !priorValid || !current || context.isFetching || Boolean(context.error) || !providers.some(item => item.provider_id === provider)} onClick={() => { setUseInitial(false); newRequest("proposal", { provider_id: provider, context_digest: current!.context_digest, prior_attempt_id: prior || null }); }}><Sparkles />{objective.attempts.length ? "Request evidence-based revision" : "Request AI graph"}</Button> : null}{!objective.attempts.length && current?.initial_proposal ? <Button disabled={!active} aria-pressed={useInitial} onClick={() => { setUseInitial(true); onProposal(""); }}>Review established graph</Button> : null}</div>
+    {!macOS ? <p>Only the selected provider is used, with no fallback. Model usage and data authorization are separate from execution authority.</p> : null}
+    {!macOS && proposalId && proposal ? <Callout title={`Proposal: ${sentence(proposal.provider_outcome)}`}>{String(proposal.job.progress.operation_error ?? (proposal.candidate_ready ? "The candidate passed current compiler checks." : "No currently admissible candidate is available."))}</Callout> : null}
     {candidate && scenario ? <>
       <h3>{candidate.title}</h3><p>{candidate.rationale}</p>
       <div className="composition-table" role="region" aria-label="Proposed graph steps" tabIndex={0}><table><thead><tr><th>Step</th><th>Method</th><th>Parameters</th></tr></thead><tbody>{candidate.steps.map(step => <tr key={step.id}><th scope="row">{step.id}</th><td>{viewSnapshot.methods.find(item => item.behavior_id === step.behavior_id)?.behavior.title ?? step.behavior_id}</td><td>{Object.entries(step.parameters).map(([key, value]) => <div key={key}>{key}: {JSON.stringify(value)}</div>)}</td></tr>)}</tbody></table></div>

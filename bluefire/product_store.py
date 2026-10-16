@@ -69,7 +69,7 @@ if TYPE_CHECKING:
     from .action_packages import VerifiedActionPackage, VerifiedActionPackageActivation
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ACTION_PACKAGE_VERSION = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
@@ -257,7 +257,8 @@ class ApprovalRequest:
 
 
 class ProductStore(
-    capability_store_api.CapabilityStoreMixin, file_access_store.FileAccessStoreMixin
+    capability_store_api.CapabilityStoreMixin,
+    file_access_store.FileAccessStoreMixin,
 ):
     """Thread-safe SQLite storage for local-first product state.
 
@@ -276,6 +277,7 @@ class ProductStore(
         except LocalLockError as exc:
             raise ProductStoreError("product database must be a single-link regular file") from exc
         self._lock = threading.RLock()
+        self._initialize_macos_workspace_state()
         try:
             with self.action_package_catalog_lease():
                 self._migrate()
@@ -835,6 +837,7 @@ class ProductStore(
             ai_authorization_store.initialize_schema(connection)
             capability_store_api.initialize_schema(connection)
             file_access_store.initialize_schema(connection)
+            self._initialize_macos_workspace_schema(connection)
             if current is None or int(current) < 6:
                 self._migrate_legacy_plugin_metadata(connection)
             if current is None or int(current) < SCHEMA_VERSION:

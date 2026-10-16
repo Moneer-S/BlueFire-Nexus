@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from bluefire import macos_file_access_endpoint as original_endpoint
 from bluefire import macos_file_access_workspace as workspace
 from bluefire import macos_file_access_workspace_bootstrap as bootstrap
 from bluefire.macos_file_access_contract import MacOSFileAccessContractError
@@ -208,7 +209,8 @@ def fake(monkeypatch):
         return state["release"]
 
     monkeypatch.setattr(workspace, "_root", lambda: None)
-    monkeypatch.setattr(workspace, "_start_bridge", lambda _owner: None)
+    start_bridge = workspace._start_bridge
+    monkeypatch.setattr(workspace, "_start_bridge", lambda _owner, _factory: None)
     monkeypatch.setattr(workspace, "os", SimpleNamespace(getpid=lambda: 100))
     monkeypatch.setattr(
         workspace,
@@ -250,18 +252,25 @@ def fake(monkeypatch):
     monkeypatch.setattr(workspace, "_receive", receive)
     monkeypatch.setattr(workspace, "_send", send)
     monkeypatch.setattr(
-        bootstrap,
+        workspace.validation,
         "_import_inventory",
         lambda roots, hashes: state["import_checks"].append((roots, hashes)),
     )
-    return SimpleNamespace(owner=value, state=state, parent=parent, child=child)
+    return SimpleNamespace(
+        owner=value,
+        state=state,
+        parent=parent,
+        child=child,
+        bridge_factory=lambda _owner: None,
+        start_bridge=start_bridge,
+    )
 
 
 def test_documents_cannot_construct_original_workspace():
     with pytest.raises(TypeError):
         workspace.MacOSWorkspaceOwner(binding())
     with pytest.raises(TypeError):
-        bootstrap.OriginalWorkspaceEndpoint(binding())
+        original_endpoint.OriginalWorkspaceEndpoint(binding())
 
 
 def test_fixed_original_host_launch_and_closed_handshake(fake, monkeypatch):
@@ -274,7 +283,7 @@ def test_fixed_original_host_launch_and_closed_handshake(fake, monkeypatch):
     monkeypatch.setattr(bootstrap, "socket", SimpleNamespace(AF_UNIX=Family.LOCAL))
     assert workspace._socket_constant("AF_UNIX") is Family.LOCAL
     assert bootstrap._socket_constant("AF_UNIX") is Family.LOCAL
-    fake.owner.start()
+    fake.owner.start(bridge_factory=fake.bridge_factory)
     selected = fake.owner._binding["owner"]
     assert fake.owner._state == "active"
     assert fake.owner._owned.launcher is fake.owner._process
@@ -339,7 +348,7 @@ def test_fixed_original_host_launch_and_closed_handshake(fake, monkeypatch):
 def test_uncertain_or_late_launch_closes_go_and_retains_original(fake, mode):
     fake.state["mode"] = mode
     with pytest.raises((MacOSFileAccessContractError, OSError)):
-        fake.owner.start()
+        fake.owner.start(bridge_factory=fake.bridge_factory)
     assert fake.owner._state == "unknown"
     assert fake.owner._process is fake.state["launch_objects"][0]
     assert fake.parent.close_calls == fake.child.close_calls == 1
@@ -352,7 +361,7 @@ def test_uncertain_or_late_launch_closes_go_and_retains_original(fake, mode):
 def test_ambiguous_constructor_never_uses_inferred_pid_cleanup(fake):
     fake.state["mode"] = "constructor_error"
     with pytest.raises(OSError):
-        fake.owner.start()
+        fake.owner.start(bridge_factory=fake.bridge_factory)
     result = fake.owner.close()
     assert result["creation_unknown"] and not result["host_closed"]
     assert result["process_creation_hard_bound"] is False
@@ -375,7 +384,7 @@ def test_endpoint_close_uncertainty_is_sticky_and_not_retried(fake, child):
 def test_child_endpoint_close_failure_still_retains_and_releases_host(fake):
     fake.child.fail_close = True
     with pytest.raises(OSError):
-        fake.owner.start()
+        fake.owner.start(bridge_factory=fake.bridge_factory)
     assert fake.state["sent"] == []
     result = fake.owner.close()
     assert result["host_closed"] and result["descriptor_cleanup_unknown"]
@@ -383,9 +392,9 @@ def test_child_endpoint_close_failure_still_retains_and_releases_host(fake):
 
 
 def test_workspace_launch_is_once_only(fake):
-    fake.owner.start()
+    fake.owner.start(bridge_factory=fake.bridge_factory)
     with pytest.raises(MacOSFileAccessContractError):
-        fake.owner.start()
+        fake.owner.start(bridge_factory=fake.bridge_factory)
     assert len(fake.state["launch_objects"]) == 1
 
 
@@ -400,7 +409,7 @@ def test_original_lifetime_refuses_equality_and_rollback(fake, field, value):
 
 
 def test_cleanup_refusal_cannot_publish_whole_setup_closure(fake):
-    fake.owner.start()
+    fake.owner.start(bridge_factory=fake.bridge_factory)
     fake.state["release"] = False
     result = fake.owner.close()
     assert not result["host_closed"]
@@ -472,13 +481,14 @@ def test_wire_short_wait_preserves_partial_frame_without_renewing_guard():
 @pytest.fixture
 def endpoint(monkeypatch):
     state = dict(wall=1000, monotonic=1000, parent=100, uid=0, child=123)
-    value = object.__new__(bootstrap.OriginalWorkspaceEndpoint)
+    value = object.__new__(original_endpoint.OriginalWorkspaceEndpoint)
     value._closed = value._poisoned = value.local_cleanup_unknown = False
     value._clock = (0, 0)
     value._child_pid = 123
     value._fork_guard = threading.Lock()
     value._io_lock = threading.RLock()
     value._sequence = 0
+    value._parent_guard = bootstrap._parent_current
     value._stream = Stream(10)
     value._recipe = dict(
         binding=binding(),
@@ -493,12 +503,14 @@ def endpoint(monkeypatch):
 
     value._api = SimpleNamespace(darwin_clock_ns=lambda: state["monotonic"])
     monkeypatch.setattr(
-        bootstrap, "time", SimpleNamespace(time_ns=lambda: state["wall"] * 1_000_000)
+        original_endpoint, "time", SimpleNamespace(time_ns=lambda: state["wall"] * 1_000_000)
     )
+    process = SimpleNamespace(getppid=lambda: state["parent"], getpid=lambda: state["child"])
+    monkeypatch.setattr(original_endpoint, "os", process)
     monkeypatch.setattr(
         bootstrap,
         "os",
-        SimpleNamespace(getppid=lambda: state["parent"], getpid=lambda: state["child"]),
+        process,
     )
     monkeypatch.setattr(bootstrap, "_parent_image", lambda *_args: None)
     monkeypatch.setattr(bootstrap, "_short_parent", parent)
@@ -724,7 +736,7 @@ def test_parent_preparation_lock_precedes_retention_and_resource_pins(fake, monk
 
     monkeypatch.setattr(workspace, "_parents", protection)
     monkeypatch.setattr(workspace, "_directory", protection)
-    monkeypatch.setattr(bootstrap, "_import_inventory", protection)
+    monkeypatch.setattr(workspace.validation, "_import_inventory", protection)
 
     def file_pin(path, digest, *_args, **_options):
         if mode == "pin_failure":
@@ -738,6 +750,8 @@ def test_parent_preparation_lock_precedes_retention_and_resource_pins(fake, monk
             "bluefire/__init__.py",
             "bluefire/macos_file_access_workspace.py",
             "bluefire/macos_file_access_workspace_bootstrap.py",
+            "bluefire/macos_file_access_workspace_validation.py",
+            "bluefire/macos_file_access_endpoint.py",
             "bluefire/service.py",
             "bluefire/api.py",
         )
@@ -772,7 +786,22 @@ def test_parent_preparation_lock_precedes_retention_and_resource_pins(fake, monk
     "mode", ["normal", "late_ui", "wrong_address", "endpoint_close_error", "server_close_error"]
 )
 def test_normal_entry_typed_postbind_ui_and_nested_local_settlement(monkeypatch, mode):
-    state = dict(guards=0, frames=[], joined=0, service_closed=0, endpoint_closed=0)
+    state = dict(
+        guards=0,
+        guard_kinds=[],
+        mkdirs=[],
+        frames=[],
+        joined=0,
+        service_closed=0,
+        endpoint_closed=0,
+    )
+
+    class WorkspacePath(type(Path())):
+        def mkdir(self, mode=0o777, parents=False, exist_ok=False):
+            assert self == Path("/fixed/workspace/sandbox")
+            assert (mode, parents, exist_ok) == (0o700, False, False)
+            assert state["guard_kinds"] == [True, False]
+            state["mkdirs"].append(self)
 
     class Event:
         def __init__(self):
@@ -801,6 +830,7 @@ def test_normal_entry_typed_postbind_ui_and_nested_local_settlement(monkeypatch,
     class Service:
         def __init__(self, *, config, runs_dir):
             assert config == "validated" and runs_dir == Path("/fixed/workspace/runs")
+            assert state["mkdirs"] == [Path("/fixed/workspace/sandbox")]
 
         def close(self):
             state["service_closed"] += 1
@@ -817,10 +847,12 @@ def test_normal_entry_typed_postbind_ui_and_nested_local_settlement(monkeypatch,
         _poisoned = False
 
         def assert_current(self, handshake=False):
-            assert handshake
-            state["guards"] += 1
-            if mode == "late_ui" and state["guards"] >= 2:
-                raise RuntimeError("fake original startup expiry")
+            assert handshake is (len(state["guard_kinds"]) != 1)
+            state["guard_kinds"].append(handshake)
+            if handshake:
+                state["guards"] += 1
+                if mode == "late_ui" and state["guards"] >= 2:
+                    raise RuntimeError("fake original startup expiry")
             return 1.0
 
         def close(self):
@@ -850,6 +882,7 @@ def test_normal_entry_typed_postbind_ui_and_nested_local_settlement(monkeypatch,
         SimpleNamespace(generate_browser_bootstrap_capability=lambda: "A" * 64, serve=serve),
     )
     monkeypatch.setitem(sys.modules, "bluefire.service", SimpleNamespace(BlueFireService=Service))
+    monkeypatch.setattr(bootstrap, "Path", WorkspacePath)
     monkeypatch.setattr(bootstrap, "threading", SimpleNamespace(Event=Event, Thread=Thread))
     if mode == "normal":
         bootstrap._normal_entry(value)
@@ -857,6 +890,8 @@ def test_normal_entry_typed_postbind_ui_and_nested_local_settlement(monkeypatch,
         with pytest.raises((RuntimeError, OSError)):
             bootstrap._normal_entry(value)
     assert state["service_closed"] >= 1 and state["endpoint_closed"] == 1
+    assert state["guard_kinds"][:2] == [True, False]
+    assert state["mkdirs"] == [Path("/fixed/workspace/sandbox")]
     if mode in ("late_ui", "wrong_address"):
         assert state["frames"] == [] and state["joined"] == 0
     else:
@@ -885,8 +920,22 @@ def test_normal_entry_monitor_poison_shutdown_and_settlement(
         DONTWAIT = 4
 
     state = dict(
-        waited=0, selected=0, received=0, shutdown=0, joined=0, service_closed=0, frames=[]
+        waited=0,
+        selected=0,
+        received=0,
+        shutdown=0,
+        joined=0,
+        service_closed=0,
+        mkdirs=[],
+        frames=[],
     )
+
+    class WorkspacePath(type(Path())):
+        def mkdir(self, mode=0o777, parents=False, exist_ok=False):
+            assert self == Path("/fixed/workspace/sandbox")
+            assert (mode, parents, exist_ok) == (0o700, False, False)
+            state["mkdirs"].append(self)
+
     events = []
     value = endpoint.value
     value._recipe.update(
@@ -932,6 +981,7 @@ def test_normal_entry_monitor_poison_shutdown_and_settlement(
     class Service:
         def __init__(self, *, config, runs_dir):
             assert config == "validated" and runs_dir == Path("/fixed/workspace/runs")
+            assert state["mkdirs"] == [Path("/fixed/workspace/sandbox")]
 
         def close(self):
             state["service_closed"] += 1
@@ -969,10 +1019,13 @@ def test_normal_entry_monitor_poison_shutdown_and_settlement(
         SimpleNamespace(generate_browser_bootstrap_capability=lambda: "A" * 64, serve=serve),
     )
     monkeypatch.setitem(sys.modules, "bluefire.service", SimpleNamespace(BlueFireService=Service))
+    monkeypatch.setattr(bootstrap, "Path", WorkspacePath)
     monkeypatch.setattr(bootstrap, "threading", SimpleNamespace(Event=Event, Thread=Thread))
-    monkeypatch.setattr(bootstrap, "select", SimpleNamespace(select=select))
+    monkeypatch.setattr(original_endpoint, "select", SimpleNamespace(select=select))
     monkeypatch.setattr(
-        bootstrap, "socket", SimpleNamespace(MSG_PEEK=Flags.PEEK, MSG_DONTWAIT=Flags.DONTWAIT)
+        original_endpoint,
+        "socket",
+        SimpleNamespace(MSG_PEEK=Flags.PEEK, MSG_DONTWAIT=Flags.DONTWAIT),
     )
     if close_error:
         with pytest.raises(OSError, match="fake uncertain descriptor close"):
@@ -980,6 +1033,7 @@ def test_normal_entry_monitor_poison_shutdown_and_settlement(
     else:
         bootstrap._normal_entry(value)
     assert value._poisoned and value._closed and value.local_cleanup_unknown is close_error
+    assert state["mkdirs"] == [Path("/fixed/workspace/sandbox")]
     assert (
         value._stream.close_calls
         == state["shutdown"]
@@ -1084,7 +1138,7 @@ def test_sequential_descendant_pin_closes_immediately_not_in_retained_stack(monk
     )
     monkeypatch.setattr(workspace, "os", view)
     monkeypatch.setattr(workspace, "_validate_darwin_descriptor_security", state["checked"].append)
-    monkeypatch.setattr(bootstrap, "_parents", lambda _path: None)
+    monkeypatch.setattr(workspace.validation, "_parents", lambda _path: None)
     retained = ExitStack()
     result = workspace._file(
         InstalledPath("/fixed/site/module.py"),
@@ -1113,9 +1167,9 @@ def test_prelaunch_inventory_failure_cannot_create_or_send_go(fake, monkeypatch)
     def changed(*_args):
         raise RuntimeError("fake installation changed before launch")
 
-    monkeypatch.setattr(bootstrap, "_import_inventory", changed)
+    monkeypatch.setattr(workspace.validation, "_import_inventory", changed)
     with pytest.raises(RuntimeError):
-        fake.owner.start()
+        fake.owner.start(bridge_factory=fake.bridge_factory)
     assert fake.state["launch_objects"] == fake.state["sent"] == []
     assert fake.owner._state == "unknown"
 
@@ -1140,12 +1194,12 @@ def test_root_original_generation_not_reconstituted_from_recipe(fake, monkeypatc
             ),
         )
     with pytest.raises(MacOSFileAccessContractError):
-        fake.owner.start()
+        fake.owner.start(bridge_factory=fake.bridge_factory)
     assert fake.state["launch_objects"] == fake.state["sent"] == []
 
 
 def test_parent_current_uncertainty_is_sticky_not_reconnectable(fake, monkeypatch):
-    fake.owner.start()
+    fake.owner.start(bridge_factory=fake.bridge_factory)
     original = workspace.observe_owned_child
 
     def failed(*_args, **_options):
@@ -1283,7 +1337,7 @@ def test_original_child_frame_five_second_bound_survives_short_socket_waits(
 
 
 def test_copied_parent_owner_closes_only_its_endpoint_copies(fake, monkeypatch):
-    fake.owner.start()
+    fake.owner.start(bridge_factory=fake.bridge_factory)
     fake.owner._before_fork()
     fake.owner._after_fork_child()
     assert fake.owner._state == "unknown" and fake.owner._creation_unknown
@@ -1337,3 +1391,71 @@ def test_import_inventory_walk_error_cannot_be_silently_skipped(monkeypatch):
     monkeypatch.setattr(bootstrap, "os", SimpleNamespace(walk=walk))
     with pytest.raises(PermissionError):
         bootstrap._import_inventory(["/fixed/site"], {"/fixed/site/module.py": "1" * 64})
+
+
+@pytest.mark.parametrize("mode", ["omitted", "none", "non_callable"])
+def test_missing_bridge_factory_refuses_before_any_host_launch(fake, mode):
+    options = {} if mode == "omitted" else {"bridge_factory": None if mode == "none" else False}
+    with pytest.raises(MacOSFileAccessContractError):
+        fake.owner.start(**options)
+    assert fake.state["launch_objects"] == fake.state["sent"] == []
+    assert fake.owner._state == "unknown" and fake.owner._bridge is None
+    with pytest.raises(MacOSFileAccessContractError):
+        fake.owner.start(bridge_factory=fake.bridge_factory)
+    assert fake.state["launch_objects"] == fake.state["sent"] == []
+
+
+def test_bridge_factory_failure_keeps_existing_unknown_startup_cleanup(fake, monkeypatch):
+    events = []
+
+    class Bridge:
+        def start(self):
+            events.append("start")
+            raise RuntimeError("fake original bridge start failed")
+
+        def close(self):
+            events.append("close")
+
+        def join(self):
+            events.append("join")
+
+    retained = Bridge()
+
+    def factory(owner):
+        assert owner is fake.owner and owner._state == "active"
+        assert owner._ui_ready["port"] == 49152
+        assert owner._lock.locked()
+        events.append("attach")
+        return retained
+
+    monkeypatch.setattr(workspace, "_start_bridge", fake.start_bridge)
+    with pytest.raises(RuntimeError, match="fake original bridge start failed"):
+        fake.owner.start(bridge_factory=factory)
+    assert events == ["attach", "start"]
+    assert fake.owner._bridge is retained and fake.owner._state == "unknown"
+    assert fake.parent.close_calls == fake.child.close_calls == 1
+    with pytest.raises(MacOSFileAccessContractError):
+        fake.owner.start(bridge_factory=factory)
+    assert events == ["attach", "start"]
+
+
+def test_injected_bridge_starts_only_after_original_ui_ready_while_owner_is_locked(
+    fake, monkeypatch
+):
+    events = []
+    retained = SimpleNamespace(
+        start=lambda: events.append("start"),
+        close=lambda: events.append("close"),
+        join=lambda: events.append("join"),
+    )
+
+    def factory(owner):
+        assert owner is fake.owner and owner._state == "active"
+        assert owner._ui_ready["port"] == 49152 and owner._lock.locked()
+        events.append("attach")
+        return retained
+
+    monkeypatch.setattr(workspace, "_start_bridge", fake.start_bridge)
+    fake.owner.start(bridge_factory=factory)
+    assert fake.owner._bridge is retained and fake.owner._state == "active"
+    assert events == ["attach", "start"]
