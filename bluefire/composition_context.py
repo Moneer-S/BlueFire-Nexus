@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .capability_grant import build_snapshot, validate_objective
-from .capability_packs import FILE_ACCESS_PACK, RECEIVER_PACK
+from .capability_packs import FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, RECEIVER_PACK
 from .capability_resources import METHODS, MIB, validate_limits
 from .contracts import ExecutionMode
 from .product_store_errors import ProductStoreError
@@ -30,6 +30,10 @@ DEFAULT_LIMITS = {
 
 def resolve(service, owner_id: str, *, pack: str = RECEIVER_PACK) -> dict[str, Any]:
     """Read live authority through existing catalog, receiver and runner boundaries."""
+    if pack == MACOS_FILE_ACCESS_PACK:
+        from . import macos_file_access_context
+
+        return macos_file_access_context.composition(service, owner_id, service.file_access.clock())
     if pack == FILE_ACCESS_PACK:
         context: dict[str, Any] = service.file_access.composition_context(owner_id)
         return context
@@ -127,7 +131,7 @@ def resolve(service, owner_id: str, *, pack: str = RECEIVER_PACK) -> dict[str, A
 
 def review(service, owner_id, *, question, limits=None, pack=RECEIVER_PACK):
     current = resolve(service, owner_id, pack=pack)
-    file_access = pack == FILE_ACCESS_PACK
+    file_access = pack in {FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK}
     objective = validate_objective(
         {
             "question": question,
@@ -160,25 +164,47 @@ def review(service, owner_id, *, question, limits=None, pack=RECEIVER_PACK):
             environment,
             pack=pack,
         ),
-        "baseline_source": current["baseline"]["source_binding"],
+        "baseline_source": (
+            {
+                "kind": "original_creator_control",
+                "control_owner_id": owner_id,
+                "control_digest": environment["control_digest"],
+                "baseline_digest": environment["baseline_digest"],
+            }
+            if pack == MACOS_FILE_ACCESS_PACK
+            else current["baseline"]["source_binding"]
+        ),
         "limitations": (
             [
-                "Delegates only the enrolled non-owner fresh read, owner verification and attempt-artifact cleanup.",
-                "The exact generated resource remains under its separately reviewed retained control.",
-                "No retained creation, hardening, rollback, reset, arbitrary identity, path or network operation is delegated.",
-                "The fixed pack has one useful permitted graph; a changed control requires a new review.",
+                "Delegates only the original non-owner read, owner verification and attempt-request closure.",
+                "Read evidence is original-producer metadata, not independent telemetry.",
+                "The empty attempt workspace is verified separately; no native filesystem cleanup receipts are created.",
+                "The original resource, workers and namespace remain retained. Attempt closure is not whole-enrollment cleanup.",
+                "No creation, hardening, rollback, reset, arbitrary identity, path or network operation is delegated.",
+                "The fixed pack has one permitted graph; changed control requires a new review. Unknown requests cannot be replayed.",
                 "Retained metadata bytes are an admission estimate, not an enforced total-storage quota.",
                 "Runtime AI requests require a separate provider/data/usage authorization.",
             ]
-            if file_access
-            else [
-                "Delegates fresh graphs within these installed capabilities, not an exact human-approved itinerary.",
-                "Each attempt regenerates public synthetic records and retains the reviewed receiver policy.",
-                "Generated material and network allowances are conservative complete-attempt reservations.",
-                "Workspace byte and file allowances count generated data artifacts, not native receipt or control metadata.",
-                "Retained metadata bytes are an admission estimate, not an enforced total-storage quota.",
-                "Runtime AI requests require a separate provider/data/usage authorization.",
-            ]
+            if pack == MACOS_FILE_ACCESS_PACK
+            else (
+                [
+                    "Delegates only the enrolled non-owner fresh read, owner verification and attempt-artifact cleanup.",
+                    "The exact generated resource remains under its separately reviewed retained control.",
+                    "No retained creation, hardening, rollback, reset, arbitrary identity, path or network operation is delegated.",
+                    "The fixed pack has one useful permitted graph; a changed control requires a new review.",
+                    "Retained metadata bytes are an admission estimate, not an enforced total-storage quota.",
+                    "Runtime AI requests require a separate provider/data/usage authorization.",
+                ]
+                if file_access
+                else [
+                    "Delegates fresh graphs within these installed capabilities, not an exact human-approved itinerary.",
+                    "Each attempt regenerates public synthetic records and retains the reviewed receiver policy.",
+                    "Generated material and network allowances are conservative complete-attempt reservations.",
+                    "Workspace byte and file allowances count generated data artifacts, not native receipt or control metadata.",
+                    "Retained metadata bytes are an admission estimate, not an enforced total-storage quota.",
+                    "Runtime AI requests require a separate provider/data/usage authorization.",
+                ]
+            )
         ),
     }
     return {**body, "review_digest": content_hash(body)}

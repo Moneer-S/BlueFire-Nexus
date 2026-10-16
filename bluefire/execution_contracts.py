@@ -27,6 +27,7 @@ RESERVED_PROVIDER_ARTIFACT_PREFIXES = (
     "artifact.sandbox.",
     "artifact.endpoint.",
     "artifact.file_access.",
+    "artifact.macos_file_access.",
     "artifact.permission.",
     "artifact.research.",
 )

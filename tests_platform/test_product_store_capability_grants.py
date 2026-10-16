@@ -1111,25 +1111,43 @@ def test_missing_or_corrupt_relations_block_reuse_but_stop_remains_available(sav
 
 
 @pytest.mark.parametrize("table", list(schema_api._TABLES))
-def test_authority_history_tables_are_append_only(saved, table):
+@pytest.mark.parametrize("operation", ["update", "delete"])
+def test_authority_history_tables_are_append_only(saved, table, operation):
     store = saved[0]
     lease = reserve(saved)
     start(saved, lease)
     register(saved, lease)
     cleanup_complete(saved, lease)
     store.settle_capability_attempt(lease["attempt_id"], closed(lease, ["task-one"]))
-    if table in {"capability_file_access_bindings", "capability_file_access_terminals"}:
-        # The receiver fixture has no endpoint rows; exercise the row triggers explicitly.
-        identity = lease["attempt_id"] if table.endswith("bindings") else "task-one"
+    schema_only_identities = {
+        "capability_file_access_bindings": lease["attempt_id"],
+        "capability_file_access_terminals": "task-one",
+        "capability_task_payloads": "task-one",
+        "capability_cleanup_task_payloads": "cleanup-one",
+    }
+    if table in schema_only_identities:
+        # These tables are empty in the receiver fixture; seed rows for their triggers.
+        identity = schema_only_identities[table]
         document = {"schema_only_fixture": identity}
         with store._connection(write=True) as connection:
             connection.execute(
                 f"INSERT INTO {table} VALUES(?,?,?)",
                 (identity, canonical_json(document), content_hash(document)),
             )
+    with store._connection() as connection:
+        before = connection.execute(f"SELECT * FROM {table}").fetchall()
+        first_column = connection.execute(f"PRAGMA table_info({table})").fetchone()[1]
+    assert before
+    statement = (
+        f"UPDATE {table} SET {first_column} = {first_column}"
+        if operation == "update"
+        else f"DELETE FROM {table}"
+    )
     with pytest.raises(sqlite3.IntegrityError, match="append-only"):
         with store._connection(write=True) as connection:
-            connection.execute(f"DELETE FROM {table}")
+            connection.execute(statement)
+    with store._connection() as connection:
+        assert connection.execute(f"SELECT * FROM {table}").fetchall() == before
 
 
 def test_changed_compiled_reservation_and_baseline_count_refused(saved):
@@ -1169,10 +1187,22 @@ def test_schema8_upgrade_preserves_history_and_is_transactional(tmp_path, monkey
     with monkeypatch.context() as prior:
         prior.setattr(store_module, "SCHEMA_VERSION", 8)
         prior.setattr(schema_api, "initialize_schema", lambda _connection: None)
+        prior.setattr(
+            ProductStore,
+            "_initialize_macos_workspace_schema",
+            staticmethod(lambda _connection: None),
+        )
         store = ProductStore(path)
         store.set_setting("unit.preserved", {"value": "preserved"})
         original_job = store.create_job("unit.job", {"purpose": "preserved"})
         assert store.schema_version == 8
+    with sqlite3.connect(path) as connection:
+        assert (
+            connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'capability_%'"
+            ).fetchall()
+            == []
+        )
     initialize = schema_api.initialize_schema
 
     def interrupted(connection):
@@ -1195,7 +1225,7 @@ def test_schema8_upgrade_preserves_history_and_is_transactional(tmp_path, monkey
             )
     else:
         upgraded = ProductStore(path)
-        assert upgraded.schema_version == 11
+        assert upgraded.schema_version == store_module.SCHEMA_VERSION
         assert upgraded.get_setting("unit.preserved") == {"value": "preserved"}
         assert upgraded.get_job(original_job["job_id"]) == original_job
 
@@ -1246,7 +1276,7 @@ def test_schema9_endpoint_upgrade_preserves_history_and_is_transactional(
             )
     else:
         upgraded = ProductStore(path)
-        assert upgraded.schema_version == 11
+        assert upgraded.schema_version == store_module.SCHEMA_VERSION
         assert upgraded.get_setting("unit.preserved") == {"value": "preserved"}
         assert upgraded.get_job(original_job["job_id"]) == original_job
         with upgraded._connection() as connection:

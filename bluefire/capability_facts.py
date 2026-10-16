@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from . import capability_file_access
+from . import capability_file_access, capability_macos_file_access
 from .capability_grant import authority_id, digest, identifier
-from .capability_packs import FILE_ACCESS_PACK, grant_pack
+from .capability_packs import FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, grant_pack
 from .capability_resources import CapabilityContractError, exact, integer
 from .util import content_hash, json_clone
 
@@ -50,6 +50,14 @@ def validate_facts(
     require_prior_result: bool,
 ) -> dict[str, Any]:
     """Expected digest belongs to the store/controller, never to model output."""
+    if grant_pack(grant) == MACOS_FILE_ACCESS_PACK:
+        return capability_macos_file_access.validate_facts(
+            value,
+            expected_digest=expected_digest,
+            grant=grant,
+            now_ms=now_ms,
+            require_prior_result=require_prior_result,
+        )
     if grant_pack(grant) == FILE_ACCESS_PACK:
         return capability_file_access.validate_facts(
             value,

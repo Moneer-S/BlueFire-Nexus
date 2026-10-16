@@ -128,10 +128,18 @@ class GrantPolicyState:
     def validate(
         self, *, request_hash, action_id, runner_profile_id, target_scope_digest, now=None
     ):
-        if self.authority_kind not in {"capability_grant_attempt", "capability_grant_cleanup"}:
+        if self.authority_kind not in {
+            "capability_grant_attempt",
+            "capability_grant_cleanup",
+            "macos_file_access_cleanup",
+        }:
             raise PolicyError("delegated authority kind is unsupported")
         if self.authority_kind == "capability_grant_cleanup" and action_id != "sandbox.cleanup.v1":
             raise PolicyError("retained cleanup authority cannot perform business work")
+        if (self.authority_kind == "macos_file_access_cleanup") != (
+            action_id == "macos.file_access.close_attempt.v1"
+        ):
+            raise PolicyError("original Darwin closure requires its distinct cleanup authority")
         if (
             self.request_hash,
             self.action_id,

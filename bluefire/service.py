@@ -253,6 +253,7 @@ class BlueFireService(
         self._built_in_registry = registry or load_builtin_registry()
         self.registry = self._built_in_registry
         self.config = config or self._load_default_config(config_path)
+        self._macos_workspace_endpoint: Any | None = None
         self.store = RunStore(runs_dir or Path.cwd() / ".bluefire-runs")
         self.recovered_runs = self.store.recover_interrupted_runs()
         self.runner_lifecycle = runner_lifecycle or ManagedRunnerLifecycle(managed_product_root())

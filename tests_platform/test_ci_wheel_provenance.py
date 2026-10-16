@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import runpy
 import shlex
 import shutil
@@ -37,16 +38,85 @@ def _package_job():
     assert matrix["os"] == ["ubuntu-latest", "macos-latest"]
     assert matrix["python-version"] == ["3.10", "3.12"]
     windows = matrix["include"]
-    assert len(windows) == 4
+    assert len(windows) == 6
     assert all(set(entry) == {"os", "python-version", "partition"} for entry in windows)
     assert {(entry["os"], entry["python-version"], entry["partition"]) for entry in windows} == {
         ("windows-latest", version, partition)
         for version in ("3.10", "3.12")
-        for partition in ("a-d", "remainder")
+        for partition in ("a-d", "e-q", "remainder")
     }
     assert python_job["timeout-minutes"] == 120
     assert workflow["jobs"]["rust"]["name"] == "Rust runner \u00b7 ${{ matrix.os }}"
     return workflow["jobs"]["package"]
+
+
+def _windows_partition_files(names, partition):
+    ranges = {"a-d": ("a", "d"), "e-q": ("e", "q")}
+    if partition not in {*ranges, "remainder"}:
+        raise ValueError(f"unknown Windows test partition: {partition}")
+
+    def belongs(name):
+        match = re.fullmatch(r"test_(.).*\.py", name)
+        first = match.group(1) if match is not None else ""
+        in_middle = "a" <= first <= "q"
+        if partition == "remainder":
+            return not in_middle
+        start, end = ranges[partition]
+        return start <= first <= end
+
+    return {name for name in names if belongs(name)}
+
+
+def test_windows_test_partitions_cover_flat_discovered_suite():
+    workflow = yaml.safe_load(
+        (REPOSITORY / ".github/workflows/tests.yml").read_text(encoding="utf-8")
+    )
+    python_job = workflow["jobs"]["python"]
+    step = next(item for item in python_job["steps"] if item["name"] == "Test Windows partition")
+    command = step["run"]
+    assert command.count("Get-ChildItem -LiteralPath tests_platform -File") == 2
+    assert command.count("Where-Object { $_.Name -cmatch '^test_[a-d].*\\.py$' }") == 1
+    assert command.count("Where-Object { $_.Name -cmatch '^test_[e-q].*\\.py$' }") == 1
+    assert "--ignore-glob=tests_platform/test_[a-q]*.py" in command
+    assert all(f"'{partition}' {{" in command for partition in ("a-d", "e-q", "remainder"))
+    assert 'default { throw "Unknown Windows test partition:' in command
+
+    test_root = REPOSITORY / "tests_platform"
+    flat_paths = {path for path in test_root.glob("test_*.py") if path.is_file()}
+    nested_paths = {
+        path for path in test_root.rglob("test_*.py") if path.is_file() and path.parent != test_root
+    }
+    assert flat_paths
+    assert not nested_paths
+    names = {path.name for path in flat_paths}
+    # Windows pytest normalizes ignore globs, unlike the explicit case-sensitive groups.
+    assert all(name == name.lower() for name in names)
+
+    partitions = {
+        partition: _windows_partition_files(names, partition)
+        for partition in ("a-d", "e-q", "remainder")
+    }
+    assert all(partitions.values())
+    assert partitions["a-d"].isdisjoint(partitions["e-q"])
+    assert partitions["a-d"].isdisjoint(partitions["remainder"])
+    assert partitions["e-q"].isdisjoint(partitions["remainder"])
+    assert set.union(*partitions.values()) == names
+
+    boundaries = {
+        "test_d_boundary.py": "a-d",
+        "test_e_boundary.py": "e-q",
+        "test_q_boundary.py": "e-q",
+        "test_r_boundary.py": "remainder",
+        "test_1_nonletter.py": "remainder",
+    }
+    for name, expected in boundaries.items():
+        assert _windows_partition_files({name}, expected) == {name}
+        assert all(
+            _windows_partition_files({name}, other) == set()
+            for other in set(partitions) - {expected}
+        )
+    with pytest.raises(ValueError, match="unknown Windows test partition"):
+        _windows_partition_files(names, "a-c")
 
 
 def test_native_wheel_build_and_verification_use_the_exact_archive():

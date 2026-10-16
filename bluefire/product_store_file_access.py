@@ -6,7 +6,6 @@ remain obligations: reopening the store never infers that a read or mutation end
 
 from __future__ import annotations
 
-import json
 from typing import Any, cast
 
 from . import product_store_file_access_admission as admission
@@ -15,6 +14,14 @@ from .product_store_capability_grants import control_usages_settled as _usage_se
 from .product_store_errors import ProductStoreError
 from .product_store_file_access_admission import allowed_operations as allowed_operations
 from .product_store_file_access_native_evidence import NativeEvidenceStoreMixin
+from .product_store_file_access_records import _control_at as _control_at
+from .product_store_file_access_records import _document as _document
+from .product_store_file_access_records import _outcome_at as _outcome_at
+from .product_store_file_access_records import _pending as _pending
+from .product_store_file_access_records import guard_control as guard_control
+from .product_store_file_access_records import imported_at
+from .product_store_macos_file_access import MacOSFileAccessStoreMixin
+from .product_store_macos_workspace import MacOSWorkspaceStoreMixin
 from .product_store_serialization import canonical_json, utc_now
 from .product_store_windows_file_access import WindowsSetupStoreMixin
 from .util import content_hash
@@ -51,76 +58,12 @@ def initialize_schema(connection):
             )
 
 
-def _document(row):
-    if row is None:
-        raise ProductStoreError("The retained file-access record is unavailable.")
-    try:
-        value = json.loads(row["document_json"])
-        if not isinstance(value, dict) or content_hash(value) != row["document_digest"]:
-            raise ValueError("digest")
-        return value
-    except (ValueError, TypeError, KeyError) as exc:
-        raise ProductStoreError(
-            "The retained file-access record failed integrity verification."
-        ) from exc
-
-
-def _control_at(connection, owner_id):
-    row = connection.execute(
-        "SELECT * FROM file_access_revisions WHERE control_owner_id=? ORDER BY revision DESC LIMIT 1",
-        (owner_id,),
-    ).fetchone()
-    if row is None:
-        from . import product_store_windows_file_access as windows
-
-        imported = windows.at(connection, owner_id=owner_id)
-        document = windows.document(imported)
-        return {"document": document, "document_digest": imported["document_digest"]}
-    document = _document(row)
-    if document["control_owner_id"] != owner_id or document["revision"] != row["revision"]:
-        raise ProductStoreError("The retained file control lineage changed.")
-    return {"document": document, "document_digest": row["document_digest"]}
-
-
-def _pending(connection, owner_id):
-    rows = connection.execute(
-        "SELECT o.job_id,r.document_json,r.document_digest FROM file_access_operations o "
-        "LEFT JOIN file_access_outcomes r ON r.sequence=(SELECT MAX(sequence) FROM file_access_outcomes WHERE job_id=o.job_id) WHERE o.control_owner_id=?",
-        (owner_id,),
-    ).fetchall()
-    return any(
-        row["document_json"] is None
-        or _document(row)["state"] not in ("complete", "settled_partial", "refused_no_effect")
-        for row in rows
-    )
-
-
-def _outcome_at(connection, job_id):
-    return connection.execute(
-        "SELECT * FROM file_access_outcomes WHERE job_id=? ORDER BY sequence DESC LIMIT 1",
-        (job_id,),
-    ).fetchone()
-
-
-def guard_control(store, connection, grant):
-    environment = grant["environment"]
-    view = _control_at(connection, environment["control_owner_id"])
-    control = view["document"]
-    if (
-        view["document_digest"] != environment["control_digest"]
-        or control["status"] != "hardened"
-        or control["revision"] != environment["control_revision"]
-        or content_hash(control["binding"]["resource"]) != environment["resource_digest"]
-        or control["binding"]["resource_generation"] != environment["resource_generation"]
-        or control["binding"]["resource_id"] != environment["resource_id"]
-        or control["binding"]["enrollment_digest"] != environment["probe_enrollment_digest"]
-        or control["baseline"]["baseline_digest"] != environment["baseline_digest"]
-        or _pending(connection, environment["control_owner_id"])
-    ):
-        raise ProductStoreError("The exact hardened retained file control is unavailable.")
-
-
-class FileAccessStoreMixin(NativeEvidenceStoreMixin, WindowsSetupStoreMixin):
+class FileAccessStoreMixin(
+    MacOSWorkspaceStoreMixin,
+    NativeEvidenceStoreMixin,
+    WindowsSetupStoreMixin,
+    MacOSFileAccessStoreMixin,
+):
     def save_file_access_enrollment(self, document, *, expected_document_digest):
         """Caller obtained the expected digest from the independently verified setup anchor."""
         if content_hash(document) != digest(expected_document_digest, "setup enrollment digest"):
@@ -168,6 +111,9 @@ class FileAccessStoreMixin(NativeEvidenceStoreMixin, WindowsSetupStoreMixin):
             if row is None and type(revision) is int and revision == 1:
                 from . import product_store_windows_file_access as windows
 
+                darwin = imported_at(connection, owner_id)
+                if darwin is not None:
+                    return darwin
                 imported = windows.at(connection, owner_id=owner_id)
                 return {
                     "document": windows.document(imported),
@@ -243,8 +189,9 @@ class FileAccessStoreMixin(NativeEvidenceStoreMixin, WindowsSetupStoreMixin):
                 if enrollment.get("schema_version") in (
                     "bluefire.windows-file-access-enrollment.v1",
                     "bluefire.windows-file-access-enrollment.v2",
+                    "bluefire.macos-file-access-enrollment.v1",
                 ):
-                    raise ProductStoreError("Windows protected setup is not a create operation.")
+                    raise ProductStoreError("Protected platform setup is not a create operation.")
                 if (
                     review["control_owner_id"] is not None
                     or review["control_digest"] is not None
@@ -403,8 +350,36 @@ class FileAccessStoreMixin(NativeEvidenceStoreMixin, WindowsSetupStoreMixin):
                     "SELECT * FROM file_access_preparations WHERE job_id=?", (job_id,)
                 ).fetchone()
             )
+            from . import product_store_macos_file_access as macos
             from . import product_store_windows_file_access as windows
 
+            if preparation.get("schema_version") == macos.PREPARATION_SCHEMA:
+                prior = _control_at(connection, operation["control_owner_id"])
+                if prior["document_digest"] != document["review"][
+                    "control_digest"
+                ] or not _usage_settled(store, connection, operation["control_owner_id"]):
+                    raise ProductStoreError("The original Darwin control preimage changed.")
+                enrolled = _document(
+                    connection.execute(
+                        "SELECT * FROM file_access_enrollments WHERE enrollment_id=?",
+                        (operation["enrollment_id"],),
+                    ).fetchone()
+                )
+                macos.register_task(
+                    connection,
+                    operation,
+                    document,
+                    preparation,
+                    prior["document"],
+                    enrolled,
+                    task_id,
+                    step_id,
+                    manifest,
+                    runner_profile,
+                    now_ms,
+                    validate_context,
+                )
+                return
             if windows.is_preparation(preparation):
                 windows.register_task(
                     connection,
@@ -565,9 +540,16 @@ class FileAccessStoreMixin(NativeEvidenceStoreMixin, WindowsSetupStoreMixin):
             task = connection.execute(
                 "SELECT * FROM file_access_task_claims WHERE task_id=?", (task_id,)
             ).fetchone()
-            _document(task)
+            claimed = _document(task)
             if task["request_hash"] != request_hash:
                 raise ProductStoreError("File-access terminal belongs to another registered task.")
+            if (
+                claimed["runner_profile"].get("schema_version")
+                == "bluefire.macos-file-access-task-profile.v1"
+            ):
+                from .product_store_macos_file_access import validate_terminal_at
+
+                validate_terminal_at(connection, claimed, result)
             document = {
                 "task_id": task_id,
                 "request_hash": request_hash,
@@ -603,6 +585,14 @@ class FileAccessStoreMixin(NativeEvidenceStoreMixin, WindowsSetupStoreMixin):
                     "SELECT * FROM file_access_task_terminals WHERE task_id=?", (task_id,)
                 ).fetchone()
             )
+            if (
+                task["runner_profile"].get("schema_version")
+                == "bluefire.macos-file-access-task-profile.v1"
+            ):
+                from .product_store_macos_file_access import record_closure_at
+
+                record_closure_at(connection, task_id, request_hash, proof)
+                return
             if (
                 task["request_hash"] != request_hash
                 or task["manifest"]["action_id"] != FILE_ACCESS_METHODS[0]
@@ -654,6 +644,23 @@ class FileAccessStoreMixin(NativeEvidenceStoreMixin, WindowsSetupStoreMixin):
                 "SELECT * FROM file_access_operations WHERE job_id=?", (job_id,)
             ).fetchone()
             document = _document(operation)
+            if (
+                document["review_context"].get("schema_version")
+                == "bluefire.macos-file-access-control-context.v1"
+            ):
+                from .product_store_macos_file_access import finish_at
+
+                finish_at(
+                    connection,
+                    operation,
+                    document,
+                    outcome,
+                    control,
+                    expected_outcome_digest,
+                    verified_observation,
+                    now_ms,
+                )
+                return
             if document["review_context"].get("schema_version") in (
                 "bluefire.windows-file-access-baseline-context.v1",
                 "bluefire.windows-file-access-baseline-context.v2",

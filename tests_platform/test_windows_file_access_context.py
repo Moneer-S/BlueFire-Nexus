@@ -29,6 +29,7 @@ def windows(monkeypatch):
 
     monkeypatch.setattr(observation, "observe", unavailable)
     monkeypatch.setattr(observation, "observe_status", unavailable)
+    monkeypatch.setattr(context, "is_macos_host", lambda: False)
     monkeypatch.setattr(context, "is_windows_host", lambda: True)
     monkeypatch.setattr(context, "read_file_access_enrollment", forbidden)
     monkeypatch.setattr(context, "inspect_file_access_resource", forbidden)
@@ -119,6 +120,7 @@ def test_verified_protected_setup_status_does_not_enable_any_operation(windows, 
 
 
 def test_linux_v1_enrollment_and_status_flow_remain_exact(monkeypatch):
+    monkeypatch.setattr(context, "is_macos_host", lambda: False)
     monkeypatch.setattr(context, "is_windows_host", lambda: False)
     calls = []
     current = {
@@ -166,6 +168,7 @@ def test_linux_v1_enrollment_and_status_flow_remain_exact(monkeypatch):
 
 
 def test_linux_context_still_uses_original_recipe_and_profile_flow(monkeypatch):
+    monkeypatch.setattr(context, "is_macos_host", lambda: False)
     monkeypatch.setattr(context, "is_windows_host", lambda: False)
     enrolled = {
         "document": {"schema_version": "bluefire.file-access-enrollment.v1"},

@@ -386,10 +386,11 @@ fn validate_artifact_specs(specs: &[ProviderArtifactSpec]) -> Result<(), String>
 }
 
 fn provider_artifact_type_allowed(artifact_type: &str) -> bool {
-    const RESERVED_PREFIXES: [&str; 5] = [
+    const RESERVED_PREFIXES: [&str; 6] = [
         "artifact.sandbox.",
         "artifact.endpoint.",
         "artifact.file_access.",
+        "artifact.macos_file_access.",
         "artifact.permission.",
         "artifact.research.",
     ];
@@ -744,6 +745,10 @@ mod tests {
             "artifact.sandbox.archive.v2",
             "artifact.endpoint.process-records.v1",
             "artifact.file_access.probe.v1",
+            "artifact.macos_file_access.probe.v1",
+            "artifact.macos_file_access.verification.v1",
+            "artifact.macos_file_access.attempt.v1",
+            "artifact.macos_file_access.attempt_closure.v1",
             "artifact.permission.mode.v1",
             "artifact.research.hypothesis.v1",
         ] {
