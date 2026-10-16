@@ -136,6 +136,7 @@ def connected(pair_observed, tmp_path, monkeypatch):
     monkeypatch.setattr(supervisor, "_monotonic", lambda: 10.0)
     monkeypatch.setattr(control.windows, "_clock", lambda: state.aware)
     monkeypatch.setattr(windows_context, "_clock", lambda: state.aware)
+    monkeypatch.setattr(file_access_context, "is_macos_host", lambda: False)
     monkeypatch.setattr(file_access_context, "is_windows_host", lambda: True)
 
     wipe = credential._wipe
