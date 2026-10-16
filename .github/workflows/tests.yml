@@ -76,10 +76,16 @@ jobs:
             partition: a-d
           - os: windows-latest
             python-version: "3.10"
+            partition: e-q
+          - os: windows-latest
+            python-version: "3.10"
             partition: remainder
           - os: windows-latest
             python-version: "3.12"
             partition: a-d
+          - os: windows-latest
+            python-version: "3.12"
+            partition: e-q
           - os: windows-latest
             python-version: "3.12"
             partition: remainder
@@ -160,8 +166,16 @@ jobs:
               if ($testFiles.Count -eq 0) { throw 'Empty a-d test partition' }
               python -m pytest -vv --durations=50 @testFiles
             }
+            'e-q' {
+              $testFiles = @(Get-ChildItem -LiteralPath tests_platform -File |
+                Where-Object { $_.Name -cmatch '^test_[e-q].*\.py$' } |
+                Sort-Object Name |
+                ForEach-Object { "tests_platform/$($_.Name)" })
+              if ($testFiles.Count -eq 0) { throw 'Empty e-q test partition' }
+              python -m pytest -vv --durations=50 @testFiles
+            }
             'remainder' {
-              python -m pytest -vv --durations=50 '--ignore-glob=tests_platform/test_[a-d]*.py'
+              python -m pytest -vv --durations=50 '--ignore-glob=tests_platform/test_[a-q]*.py'
             }
             default { throw "Unknown Windows test partition: $env:BLUEFIRE_TEST_PARTITION" }
           }
