@@ -278,7 +278,8 @@ def insert_payload(
         table = "capability_cleanup_task_payloads"
     else:
         raise ProductStoreError("The task payload purpose is invalid.")
+    # Only the fixed purpose-selected table name is interpolated; all values stay bound.
     connection.execute(
-        f"INSERT INTO {table}(task_id,payload_json,payload_digest) VALUES(?,?,?)",
+        f"INSERT INTO {table}(task_id,payload_json,payload_digest) VALUES(?,?,?)",  # nosec B608
         (task_id, canonical_json(dict(document)), content_hash(dict(document))),
     )

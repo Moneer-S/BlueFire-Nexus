@@ -30,11 +30,16 @@ def read_payload(
         raise ProductStoreError("The task payload purpose is invalid.")
 
     with store._connection() as connection:
-        payload_row = records._one(connection, f"SELECT * FROM {table} WHERE task_id=?", task_id)
+        # Identifiers come only from the finite purpose branches above; values stay bound.
+        payload_row = records._one(
+            connection, f"SELECT * FROM {table} WHERE task_id=?", task_id  # nosec B608
+        )
         payload = records._document(
             payload_row, field="payload_json", digest_field="payload_digest"
         )
-        task = records._one(connection, f"SELECT * FROM {claim_table} WHERE task_id=?", task_id)
+        task = records._one(
+            connection, f"SELECT * FROM {claim_table} WHERE task_id=?", task_id  # nosec B608
+        )
         row, lease, compiled = records._attempt_at(connection, task["attempt_id"])
         attempt_claim_row, attempt_claim = records._claim_at(connection, task["attempt_id"], lease)
         workspace = cleanup.workspace_at(connection, task["attempt_id"], lease)

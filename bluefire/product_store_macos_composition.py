@@ -87,8 +87,9 @@ def _result_document(value: Any) -> dict[str, Any]:
 def _append(connection, table: str, attempt_id: str, event_type: str, event_key: str, document):
     encoded = canonical_json(dict(document))
     binding = content_hash(dict(document))
+    # Internal callers supply only the literal Mac events table; all values stay bound.
     connection.execute(
-        f"INSERT INTO {table}(attempt_id,event_type,event_key,document_json,document_digest) "
+        f"INSERT INTO {table}(attempt_id,event_type,event_key,document_json,document_digest) "  # nosec B608
         "VALUES(?,?,?,?,?)",
         (attempt_id, event_type, event_key, encoded, binding),
     )

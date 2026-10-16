@@ -261,7 +261,8 @@ class SealedMacOSNamespace:
         os.close(write_fd)
         self._descriptors.remove(write_fd)
         _fchown(self._directory_fd, 0, self._group)
-        _fchmod(self._directory_fd, 0o550)
+        # Bound-group traversal of this root-owned directory; no write or world access.
+        _fchmod(self._directory_fd, 0o550)  # nosec B103
         self._directory_identity = _identity(os.fstat(self._directory_fd))
         self._leaf_identity = _identity(os.fstat(self._leaf_fd))
         self._resource = {

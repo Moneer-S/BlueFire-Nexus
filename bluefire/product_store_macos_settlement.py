@@ -239,8 +239,11 @@ def _expected(store, connection, attempt_id) -> dict[str, Any]:
     if grant_pack(grant) != MACOS_FILE_ACCESS_PACK:
         raise ProductStoreError("The macOS closure belongs to another capability pack.")
     _claim_at(connection, attempt_id, lease)
+    # Table identifiers are the fixed tuple below; the attempt remains a bound value.
     if any(
-        connection.execute(f"SELECT 1 FROM {table} WHERE attempt_id=?", (attempt_id,)).fetchone()
+        connection.execute(
+            f"SELECT 1 FROM {table} WHERE attempt_id=?", (attempt_id,)  # nosec B608
+        ).fetchone()
         for table in (
             "capability_cleanup_obligations",
             "capability_cleanup_claims",
