@@ -1195,7 +1195,7 @@ def test_schema8_upgrade_preserves_history_and_is_transactional(tmp_path, monkey
             )
     else:
         upgraded = ProductStore(path)
-        assert upgraded.schema_version == 11
+        assert upgraded.schema_version == store_module.SCHEMA_VERSION
         assert upgraded.get_setting("unit.preserved") == {"value": "preserved"}
         assert upgraded.get_job(original_job["job_id"]) == original_job
 
@@ -1246,7 +1246,7 @@ def test_schema9_endpoint_upgrade_preserves_history_and_is_transactional(
             )
     else:
         upgraded = ProductStore(path)
-        assert upgraded.schema_version == 11
+        assert upgraded.schema_version == store_module.SCHEMA_VERSION
         assert upgraded.get_setting("unit.preserved") == {"value": "preserved"}
         assert upgraded.get_job(original_job["job_id"]) == original_job
         with upgraded._connection() as connection:

@@ -15,6 +15,7 @@ from .product_store_capability_grants import control_usages_settled as _usage_se
 from .product_store_errors import ProductStoreError
 from .product_store_file_access_admission import allowed_operations as allowed_operations
 from .product_store_file_access_native_evidence import NativeEvidenceStoreMixin
+from .product_store_macos_file_access import MacOSFileAccessStoreMixin
 from .product_store_serialization import canonical_json, utc_now
 from .product_store_windows_file_access import WindowsSetupStoreMixin
 from .util import content_hash
@@ -71,8 +72,12 @@ def _control_at(connection, owner_id):
         (owner_id,),
     ).fetchone()
     if row is None:
+        from . import product_store_macos_file_access as macos
         from . import product_store_windows_file_access as windows
 
+        darwin = macos.imported_at(connection, owner_id)
+        if darwin is not None:
+            return darwin
         imported = windows.at(connection, owner_id=owner_id)
         document = windows.document(imported)
         return {"document": document, "document_digest": imported["document_digest"]}
@@ -120,7 +125,9 @@ def guard_control(store, connection, grant):
         raise ProductStoreError("The exact hardened retained file control is unavailable.")
 
 
-class FileAccessStoreMixin(NativeEvidenceStoreMixin, WindowsSetupStoreMixin):
+class FileAccessStoreMixin(
+    NativeEvidenceStoreMixin, WindowsSetupStoreMixin, MacOSFileAccessStoreMixin
+):
     def save_file_access_enrollment(self, document, *, expected_document_digest):
         """Caller obtained the expected digest from the independently verified setup anchor."""
         if content_hash(document) != digest(expected_document_digest, "setup enrollment digest"):
@@ -166,8 +173,12 @@ class FileAccessStoreMixin(NativeEvidenceStoreMixin, WindowsSetupStoreMixin):
                 (owner_id, revision),
             ).fetchone()
             if row is None and type(revision) is int and revision == 1:
+                from . import product_store_macos_file_access as macos
                 from . import product_store_windows_file_access as windows
 
+                darwin = macos.imported_at(connection, owner_id)
+                if darwin is not None:
+                    return darwin
                 imported = windows.at(connection, owner_id=owner_id)
                 return {
                     "document": windows.document(imported),
@@ -243,8 +254,9 @@ class FileAccessStoreMixin(NativeEvidenceStoreMixin, WindowsSetupStoreMixin):
                 if enrollment.get("schema_version") in (
                     "bluefire.windows-file-access-enrollment.v1",
                     "bluefire.windows-file-access-enrollment.v2",
+                    "bluefire.macos-file-access-enrollment.v1",
                 ):
-                    raise ProductStoreError("Windows protected setup is not a create operation.")
+                    raise ProductStoreError("Protected platform setup is not a create operation.")
                 if (
                     review["control_owner_id"] is not None
                     or review["control_digest"] is not None
@@ -403,8 +415,36 @@ class FileAccessStoreMixin(NativeEvidenceStoreMixin, WindowsSetupStoreMixin):
                     "SELECT * FROM file_access_preparations WHERE job_id=?", (job_id,)
                 ).fetchone()
             )
+            from . import product_store_macos_file_access as macos
             from . import product_store_windows_file_access as windows
 
+            if preparation.get("schema_version") == macos.PREPARATION_SCHEMA:
+                prior = _control_at(connection, operation["control_owner_id"])
+                if prior["document_digest"] != document["review"][
+                    "control_digest"
+                ] or not _usage_settled(store, connection, operation["control_owner_id"]):
+                    raise ProductStoreError("The original Darwin control preimage changed.")
+                enrolled = _document(
+                    connection.execute(
+                        "SELECT * FROM file_access_enrollments WHERE enrollment_id=?",
+                        (operation["enrollment_id"],),
+                    ).fetchone()
+                )
+                macos.register_task(
+                    connection,
+                    operation,
+                    document,
+                    preparation,
+                    prior["document"],
+                    enrolled,
+                    task_id,
+                    step_id,
+                    manifest,
+                    runner_profile,
+                    now_ms,
+                    validate_context,
+                )
+                return
             if windows.is_preparation(preparation):
                 windows.register_task(
                     connection,
@@ -565,9 +605,16 @@ class FileAccessStoreMixin(NativeEvidenceStoreMixin, WindowsSetupStoreMixin):
             task = connection.execute(
                 "SELECT * FROM file_access_task_claims WHERE task_id=?", (task_id,)
             ).fetchone()
-            _document(task)
+            claimed = _document(task)
             if task["request_hash"] != request_hash:
                 raise ProductStoreError("File-access terminal belongs to another registered task.")
+            if (
+                claimed["runner_profile"].get("schema_version")
+                == "bluefire.macos-file-access-task-profile.v1"
+            ):
+                from .product_store_macos_file_access import validate_terminal_at
+
+                validate_terminal_at(connection, claimed, result)
             document = {
                 "task_id": task_id,
                 "request_hash": request_hash,
@@ -603,6 +650,14 @@ class FileAccessStoreMixin(NativeEvidenceStoreMixin, WindowsSetupStoreMixin):
                     "SELECT * FROM file_access_task_terminals WHERE task_id=?", (task_id,)
                 ).fetchone()
             )
+            if (
+                task["runner_profile"].get("schema_version")
+                == "bluefire.macos-file-access-task-profile.v1"
+            ):
+                from .product_store_macos_file_access import record_closure_at
+
+                record_closure_at(connection, task_id, request_hash, proof)
+                return
             if (
                 task["request_hash"] != request_hash
                 or task["manifest"]["action_id"] != FILE_ACCESS_METHODS[0]
@@ -654,6 +709,23 @@ class FileAccessStoreMixin(NativeEvidenceStoreMixin, WindowsSetupStoreMixin):
                 "SELECT * FROM file_access_operations WHERE job_id=?", (job_id,)
             ).fetchone()
             document = _document(operation)
+            if (
+                document["review_context"].get("schema_version")
+                == "bluefire.macos-file-access-control-context.v1"
+            ):
+                from .product_store_macos_file_access import finish_at
+
+                finish_at(
+                    connection,
+                    operation,
+                    document,
+                    outcome,
+                    control,
+                    expected_outcome_digest,
+                    verified_observation,
+                    now_ms,
+                )
+                return
             if document["review_context"].get("schema_version") in (
                 "bluefire.windows-file-access-baseline-context.v1",
                 "bluefire.windows-file-access-baseline-context.v2",

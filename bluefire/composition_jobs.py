@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from datetime import datetime
+from typing import Any
 
 from . import (
     capability_file_access,
@@ -28,7 +29,7 @@ from .product_store_errors import ProductStoreError
 from .receiver_defense_jobs import fields
 from .receiver_session_contract import validate_terminal
 from .runner_contracts import _verified_grant_attempt, _verified_grant_cleanup
-from .util import content_hash
+from .util import content_hash, json_clone
 
 OWNER_KIND = "composition.objective"
 ATTEMPT_KIND = "composition.attempt"
@@ -360,6 +361,7 @@ class CompositionJobs:
         cleanup_result = None
         cleanup_claim = None
         workspace = None
+        sealed_profile: dict[str, Any] | None = None
 
         def check():
             observed = self.clock()
@@ -396,7 +398,9 @@ class CompositionJobs:
                     return
 
         def bind_profile(profile):
+            nonlocal sealed_profile
             fresh = check()
+            sealed_profile = dict(json_clone(profile))
             self.store.bind_capability_workspace(
                 attempt_id,
                 runner_policy_digest=profile["policy_digest"],
@@ -468,6 +472,10 @@ class CompositionJobs:
             )
 
         def before_task(step, inputs, manifest, task_id):
+            if sealed_profile is None:
+                raise ProductStoreError(
+                    "The sealed runner profile is unavailable for task binding."
+                )
             if "grant_cleanup" in manifest:
                 if cleanup_claim is None:
                     raise ProductStoreError("The cleanup claim is unavailable.")
@@ -477,6 +485,9 @@ class CompositionJobs:
                     request_hash=manifest["request_hash"],
                     expected_document_digest=cleanup_claim["document_digest"],
                     now_ms=self.clock(),
+                    step_id=step.step_id,
+                    manifest=manifest,
+                    runner_profile=sealed_profile,
                 )
                 registered.add(task_id)
                 return
@@ -499,6 +510,8 @@ class CompositionJobs:
                 request_hash=manifest["request_hash"],
                 now_ms=self.clock(),
                 current_environment=fresh["current_environment"],
+                manifest=manifest,
+                runner_profile=sealed_profile,
             )
             registered.add(task_id)
             try:

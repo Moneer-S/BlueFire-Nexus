@@ -215,6 +215,14 @@ def fake(monkeypatch):
             103, 101, (100, 1), (501, 501, 501, 501, 501, 501)
         )
         result._closed = result._poisoned = False
+        result._workspace_owner = SimpleNamespace(
+            _creator=value,
+            _process=process,
+            _consistency=result._workspace_consistency,
+            _stream=result._channel,
+            assert_current=lambda: None,
+        )
+        result._check_current = lambda: None
         value._lease = result
         return result
 
@@ -240,6 +248,19 @@ def fake(monkeypatch):
         result = object.__new__(creator.OriginalMacOSTaskReservation)
         result._creator, result._lease, result._intent = value, value._lease, original
         result._used = False
+        cost = {"baseline": 2, "harden": 1, "probe": 1, "verify_owner": 1, "rollback": 3}[operation]
+        result._budget_reserved = value._used_budget + cost <= creator.MAX_REQUESTS
+        if result._budget_reserved:
+            value._used_budget += cost
+        result._attempt_id = (
+            "fake-original-attempt" if operation in ("probe", "verify_owner") else None
+        )
+        result._probe_task_id = (
+            None if value._last_probe is None else value._last_probe.document()["task_id"]
+        )
+        result._probe_receipt_digest = (
+            None if value._last_probe is None else content_hash(value._last_probe.document())
+        )
         return result
 
     return create, lease, reserve, state
@@ -449,6 +470,24 @@ def test_owner_verification_requires_original_completed_probe_dependency(fake):
     value._harden(reserve(value, "harden"))
     before = len(state["calls"])
     original = reserve(value, "verify_owner")
+    with pytest.raises(MacOSFileAccessContractError):
+        value._verify_owner(original)
+    assert len(state["calls"]) == before and not original._used
+
+
+@pytest.mark.parametrize("field", ["_attempt_id", "_probe_task_id", "_probe_receipt_digest"])
+def test_owner_verification_requires_exact_same_attempt_probe_receipt(fake, field):
+    create, lease, reserve, state = fake
+    value = create()
+    lease(value)
+    value._baseline(reserve(value, "baseline"))
+    value._harden(reserve(value, "harden"))
+    value._probe(reserve(value, "probe"))
+    original = reserve(value, "verify_owner")
+    setattr(
+        original, field, "other-attempt" if field == "_attempt_id" else content_hash("other-probe")
+    )
+    before = len(state["calls"])
     with pytest.raises(MacOSFileAccessContractError):
         value._verify_owner(original)
     assert len(state["calls"]) == before and not original._used

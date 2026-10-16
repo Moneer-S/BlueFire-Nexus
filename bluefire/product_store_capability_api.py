@@ -27,12 +27,14 @@ _TABLES = {
     "capability_preparation_starts": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), started_at_ms INTEGER NOT NULL",
     "capability_receiver_bindings": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "capability_task_claims": "task_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES capability_attempts(attempt_id), step_id TEXT NOT NULL, request_hash TEXT NOT NULL, claimed_at_ms INTEGER NOT NULL, UNIQUE(attempt_id,step_id)",
+    "capability_task_payloads": "task_id TEXT PRIMARY KEY REFERENCES capability_task_claims(task_id), payload_json TEXT NOT NULL, payload_digest TEXT NOT NULL",
     "capability_task_terminals": "task_id TEXT PRIMARY KEY REFERENCES capability_task_claims(task_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "capability_attempt_settlements": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "capability_workspace_bindings": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL, bound_at_ms INTEGER NOT NULL",
     "capability_cleanup_obligations": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "capability_cleanup_claims": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL, claimed_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL",
     "capability_cleanup_task_claims": "task_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL UNIQUE REFERENCES capability_attempts(attempt_id), request_hash TEXT NOT NULL, claim_digest TEXT NOT NULL, claimed_at_ms INTEGER NOT NULL",
+    "capability_cleanup_task_payloads": "task_id TEXT PRIMARY KEY REFERENCES capability_cleanup_task_claims(task_id), payload_json TEXT NOT NULL, payload_digest TEXT NOT NULL",
     "capability_cleanup_terminals": "task_id TEXT PRIMARY KEY REFERENCES capability_cleanup_task_claims(task_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
 }
 
@@ -312,6 +314,13 @@ class CapabilityStoreMixin:
     def register_capability_task(self, attempt_id: str, **context: Any) -> dict[str, Any]:
         return capability_grant_store.register_task(self, attempt_id, **context)
 
+    def get_capability_task_payload(
+        self, task_id: str, transport_request_hash: str
+    ) -> dict[str, Any]:
+        from .product_store_capability_transport import read_payload
+
+        return read_payload(self, task_id, transport_request_hash, purpose="business")
+
     def bind_capability_workspace(self, attempt_id: str, **context: Any) -> dict[str, Any]:
         from .product_store_capability_cleanup import bind_workspace
 
@@ -333,6 +342,13 @@ class CapabilityStoreMixin:
         from .product_store_capability_cleanup import register_cleanup_task
 
         return register_cleanup_task(self, attempt_id, **context)
+
+    def get_capability_cleanup_task_payload(
+        self, task_id: str, transport_request_hash: str
+    ) -> dict[str, Any]:
+        from .product_store_capability_transport import read_payload
+
+        return read_payload(self, task_id, transport_request_hash, purpose="cleanup")
 
     def record_capability_cleanup_terminal(self, task_id: str, **context: Any) -> None:
         from .product_store_capability_cleanup import record_cleanup_terminal

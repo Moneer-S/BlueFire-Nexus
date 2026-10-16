@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 from _thread import LockType
+from _thread import RLock as RLockType
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, NoReturn, Protocol, cast
@@ -399,11 +400,17 @@ class OriginalWorkspaceEndpoint:
     _clock: tuple[int, int]
     _child_pid: int
     _fork_guard: LockType
+    _io_lock: RLockType
+    _sequence: int
 
     def __new__(cls, *_args, **_kwargs) -> OriginalWorkspaceEndpoint:
         raise TypeError("The original inherited workspace bootstrap is required.")
 
     def assert_current(self, handshake: bool = False) -> float:
+        with self._io_lock:
+            return self._assert_current_locked(handshake)
+
+    def _assert_current_locked(self, handshake: bool = False) -> float:
         _refuse(not self._closed and not self._poisoned)
         try:
             _refuse(os.getpid() == self._child_pid)
@@ -437,21 +444,74 @@ class OriginalWorkspaceEndpoint:
             raise
 
     def _before_fork(self) -> None:
+        self._io_lock.acquire()
         self._fork_guard.acquire()
 
     def _after_fork_parent(self) -> None:
         self._fork_guard.release()
+        self._io_lock.release()
 
     def _after_fork_child(self) -> None:
         self._fork_guard = threading.Lock()
+        self._io_lock = threading.RLock()
         try:
             self.close()
         except BaseException:
             self.local_cleanup_unknown = True
 
     def close(self) -> None:
-        with self._fork_guard:
-            self._close_locked()
+        with self._io_lock:
+            with self._fork_guard:
+                self._close_locked()
+
+    def current_setup(self) -> dict[str, Any]:
+        self.assert_current()
+        from bluefire.util import json_clone
+
+        return {
+            "schema_version": "bluefire.macos-file-access-setup.v1",
+            "binding": json_clone(self._recipe["binding"]),
+        }
+
+    def review_context(self, operation: str) -> dict[str, Any]:
+        from bluefire.macos_file_access_bridge import exchange
+
+        return exchange(self, "review_context", {"operation": operation})
+
+    def dispatch_committed(
+        self, frame: dict[str, Any], *, cancel_event: threading.Event
+    ) -> dict[str, Any]:
+        from bluefire.macos_file_access_bridge import _committed, exchange
+
+        frame = _committed(frame)
+        receipt = exchange(self, "dispatch_committed", frame, cancel_event)
+        intent = frame["intent"]
+        try:
+            _refuse(
+                receipt.get("schema_version") == "bluefire.macos-file-access-task-receipt.v1"
+                and receipt.get("task_id") == intent["task_id"]
+                and receipt.get("transport_request_hash") == intent["transport_request_hash"]
+                and receipt.get("binding_digest") == intent["binding_digest"]
+                and receipt.get("context_digest") == intent["context_digest"]
+                and receipt.get("operation") == intent["operation"]
+                and receipt.get("state") in ("complete", "unknown")
+                and receipt.get("whole_enrollment_cleanup") is False
+            )
+        except BaseException:
+            self._poisoned = True
+            self.close()
+            raise
+        return receipt
+
+    def check_idle(self) -> None:
+        # Monitor peeking shares framing/timeout/clock/close synchronization with
+        # the sole task reader; it never consumes a response or races a reused FD.
+        with self._io_lock:
+            self.assert_current()
+            readable, _, _ = select.select([self._stream], [], [], 0)
+            if readable:
+                raw = self._stream.recv(1, socket.MSG_PEEK | _socket_constant("MSG_DONTWAIT"))
+                _refuse(bool(raw))
 
     def _close_locked(self) -> None:
         self._poisoned = True
@@ -500,6 +560,10 @@ def _handshake(descriptor: int, recipe):
     _refuse(sys.pycache_prefix == str(pycache) and not os.listdir(pycache))
     # The only application import root is the independently protected installation.
     sys.path.insert(0, str(package))
+    if __name__ == "__main__":
+        canonical_name = "bluefire.macos_file_access_workspace_bootstrap"
+        _refuse(canonical_name not in sys.modules)
+        sys.modules[canonical_name] = sys.modules[__name__]
     from bluefire import macos_file_access_workspace as api
     from bluefire.macos_file_access_contract import validate_binding
     from bluefire.macos_file_access_peer import _query_bsd, _supported_runtime
@@ -572,6 +636,8 @@ def _handshake(descriptor: int, recipe):
     value._clock = (0, 0)
     value._child_pid = os.getpid()
     value._fork_guard = threading.Lock()
+    value._io_lock = threading.RLock()
+    value._sequence = 0
     try:
         _os_function("register_at_fork")(
             before=value._before_fork,
@@ -674,13 +740,7 @@ def _normal_entry(endpoint: OriginalWorkspaceEndpoint) -> None:
         def watch():
             try:
                 while not stop.wait(0.025):
-                    endpoint.assert_current()
-                    readable, _, _ = select.select([endpoint._stream], [], [], 0)
-                    if readable:
-                        raw = endpoint._stream.recv(
-                            1, socket.MSG_PEEK | _socket_constant("MSG_DONTWAIT")
-                        )
-                        _refuse(bool(raw))
+                    endpoint.check_idle()
             except BaseException:
                 endpoint._poisoned = True
                 server.shutdown()

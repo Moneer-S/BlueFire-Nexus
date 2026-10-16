@@ -177,18 +177,19 @@ def _assert_new_schema(store, job_id):
             )
 
 
-def test_fresh_version11_installs_fk_and_append_only_evidence(tmp_path):
+def test_fresh_schema_installs_fk_and_append_only_correction_evidence(tmp_path):
     store = ProductStore(tmp_path / "fresh.sqlite3")
-    assert module.SCHEMA_VERSION == store.schema_version == 11
+    assert store.schema_version == module.SCHEMA_VERSION
     job = _seed(store)
     _assert_new_schema(store, job["job_id"])
     reopened = ProductStore(store.path)
-    assert reopened.schema_version == 11 and reopened.get_job(job["job_id"]) == job
+    assert reopened.schema_version == module.SCHEMA_VERSION
+    assert reopened.get_job(job["job_id"]) == job
     with reopened._connection() as connection:
         assert [
             row[0]
             for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ] == [11]
+        ] == [module.SCHEMA_VERSION]
         assert (
             connection.execute(
                 "SELECT COUNT(*) FROM file_access_windows_control_evidence"
@@ -200,7 +201,8 @@ def test_fresh_version11_installs_fk_and_append_only_evidence(tmp_path):
 def test_version10_upgrade_preserves_all_existing_jobs_history_and_evidence(version10):
     path, job, before = version10
     upgraded = ProductStore(path)
-    assert upgraded.schema_version == 11 and upgraded.get_job(job["job_id"]) == job
+    assert upgraded.schema_version == module.SCHEMA_VERSION
+    assert upgraded.get_job(job["job_id"]) == job
     assert _snapshot(path) == before
     _assert_new_schema(upgraded, job["job_id"])
     assert _snapshot(path) == before
@@ -209,12 +211,12 @@ def test_version10_upgrade_preserves_all_existing_jobs_history_and_evidence(vers
         assert [
             row[0]
             for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ] == [10, 11]
+        ] == [10, module.SCHEMA_VERSION]
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 @pytest.mark.parametrize("failure", [sqlite3.OperationalError, MemoryError])
-def test_interrupted_version11_table_and_marker_rollback_atomically(
+def test_interrupted_correction_table_and_marker_rollback_atomically(
     version10, monkeypatch, failure
 ):
     path, job, before = version10
@@ -244,7 +246,8 @@ def test_interrupted_version11_table_and_marker_rollback_atomically(
             == []
         )
     resumed = ProductStore(path)
-    assert resumed.schema_version == 11 and resumed.get_job(job["job_id"]) == job
+    assert resumed.schema_version == module.SCHEMA_VERSION
+    assert resumed.get_job(job["job_id"]) == job
     assert _snapshot(path) == before
     _assert_new_schema(resumed, job["job_id"])
 
@@ -254,7 +257,7 @@ def test_future_version_refused_before_any_schema_or_data_mutation(version10):
     with sqlite3.connect(path) as connection:
         connection.execute(
             "INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)",
-            (12, "2026-10-13T00:00:00Z"),
+            (module.SCHEMA_VERSION + 1, "2026-10-13T00:00:00Z"),
         )
     schema_before = _schema(path)
     digest_before = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -263,7 +266,9 @@ def test_future_version_refused_before_any_schema_or_data_mutation(version10):
     assert hashlib.sha256(path.read_bytes()).hexdigest() == digest_before
     assert _schema(path) == schema_before and _snapshot(path) == before
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone() == (12,)
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone() == (
+            module.SCHEMA_VERSION + 1,
+        )
         assert (
             connection.execute(
                 "SELECT name FROM sqlite_master WHERE tbl_name=?", (_TABLE,)

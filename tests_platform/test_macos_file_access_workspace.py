@@ -100,6 +100,8 @@ def fake(monkeypatch):
     value._clock = (0, 0)
     value._lock = threading.Lock()
     value._fork_guard = threading.Lock()
+    value._channel_lock = threading.RLock()
+    value._bridge = None
     value._creator_pid = 100
     value._recipe = dict(
         binding=value._binding,
@@ -206,6 +208,7 @@ def fake(monkeypatch):
         return state["release"]
 
     monkeypatch.setattr(workspace, "_root", lambda: None)
+    monkeypatch.setattr(workspace, "_start_bridge", lambda _owner: None)
     monkeypatch.setattr(workspace, "os", SimpleNamespace(getpid=lambda: 100))
     monkeypatch.setattr(
         workspace,
@@ -447,6 +450,25 @@ def test_wire_refuses_eof_ancillary_flags_and_bound(fault):
         workspace._receive(stream, lambda: 1.0)
 
 
+def test_wire_short_wait_preserves_partial_frame_without_renewing_guard():
+    stream = Stream(10)
+    document = {"schema_version": "fixed"}
+    raw = canonical_json_bytes(document)
+    stream.raw.extend(len(raw).to_bytes(4, "little") + raw)
+    receive = stream.recvmsg
+    calls = []
+
+    def intermittent(size, ancillary):
+        calls.append(True)
+        if len(calls) == 2:
+            raise TimeoutError("fake bounded socket wait")
+        return receive(size, ancillary)
+
+    stream.recvmsg = intermittent
+    assert workspace._receive(stream, lambda: 0.025) == document
+    assert len(calls) > 2
+
+
 @pytest.fixture
 def endpoint(monkeypatch):
     state = dict(wall=1000, monotonic=1000, parent=100, uid=0, child=123)
@@ -455,6 +477,8 @@ def endpoint(monkeypatch):
     value._clock = (0, 0)
     value._child_pid = 123
     value._fork_guard = threading.Lock()
+    value._io_lock = threading.RLock()
+    value._sequence = 0
     value._stream = Stream(10)
     value._recipe = dict(
         binding=binding(),
@@ -1147,6 +1171,115 @@ def test_child_clock_api_uncertainty_poisoned_before_any_retry(endpoint):
     with pytest.raises(RuntimeError):
         endpoint.value.assert_current()
     assert endpoint.value._poisoned
+
+
+def test_original_setup_is_detached_inactive_history(endpoint):
+    first = endpoint.value.current_setup()
+    first["binding"]["control_revision"] = 99
+    assert endpoint.value.current_setup()["binding"]["control_revision"] == 1
+    assert first["schema_version"] == "bluefire.macos-file-access-setup.v1"
+
+
+@pytest.mark.parametrize("failure", ["wrong_response", "cancelled_wait", "lost_channel"])
+def test_original_child_exchange_serializes_sequence_and_poisoned_loss(
+    endpoint, monkeypatch, failure
+):
+    from bluefire import macos_file_access_bridge as bridge
+
+    value = endpoint.value
+    monkeypatch.setattr(
+        bridge, "time", SimpleNamespace(time_ns=lambda: endpoint.state["wall"] * 1_000_000)
+    )
+    cancelled = threading.Event()
+    sent = []
+
+    def send(stream, document, guard):
+        assert stream is value._stream and value._io_lock._is_owned()
+        guard()
+        sent.append(document)
+
+    def receive(stream, guard):
+        assert stream is value._stream and value._io_lock._is_owned()
+        if failure == "cancelled_wait":
+            cancelled.set()
+            guard()
+        if failure == "lost_channel":
+            raise OSError("fake original channel loss")
+        response = {
+            "schema_version": "bluefire.macos-workspace-response.v1",
+            "sequence": 2,
+            "operation": "review_context",
+            "request_digest": content_hash(sent[0]),
+            "payload": {},
+        }
+        return response
+
+    value._api._send = send
+    value._api._receive = receive
+    with pytest.raises((MacOSFileAccessContractError, OSError)):
+        bridge.exchange(value, "review_context", {"operation": "baseline"}, cancelled)
+    assert len(sent) == value._sequence == 1
+    assert value._poisoned and value._closed and value._stream.close_calls == 1
+    with pytest.raises(RuntimeError):
+        value.assert_current()
+
+
+@pytest.mark.parametrize("failure", ["slow_chunks", "truncated", "cancelled"])
+def test_original_child_frame_five_second_bound_survives_short_socket_waits(
+    endpoint, monkeypatch, failure
+):
+    from bluefire import macos_file_access_bridge as bridge
+
+    value = endpoint.value
+    cancelled = threading.Event()
+    state = dict(reads=0, sent=[])
+    monotonic_start = endpoint.state["monotonic"]
+    monkeypatch.setattr(
+        bridge, "time", SimpleNamespace(time_ns=lambda: endpoint.state["wall"] * 1_000_000)
+    )
+
+    def send(stream, request, guard):
+        guard()
+        state["sent"].append(request)
+        response = {
+            "schema_version": "bluefire.macos-workspace-response.v1",
+            "sequence": 1,
+            "operation": "review_context",
+            "request_digest": content_hash(request),
+            "payload": {"review": "inactive"},
+        }
+        raw = canonical_json_bytes(response)
+        stream.raw.extend(len(raw).to_bytes(4, "little") + raw)
+        if failure == "truncated":
+            stream.raw[:] = stream.raw[:2]
+
+    receive = value._stream.recvmsg
+
+    def delayed(size, ancillary):
+        state["reads"] += 1
+        endpoint.state["monotonic"] += 25_000_000
+        if failure == "cancelled" and state["reads"] == 3:
+            cancelled.set()
+        if state["reads"] <= 4 or (failure == "truncated" and not value._stream.raw):
+            raise TimeoutError("fake short poll; original deadline stays fixed")
+        return receive(size, ancillary)
+
+    value._stream.recvmsg = delayed
+    value._api._send = send
+    value._api._receive = workspace._receive
+    if failure == "slow_chunks":
+        assert bridge.exchange(value, "review_context", {"operation": "baseline"}, cancelled) == {
+            "review": "inactive"
+        }
+        assert endpoint.state["monotonic"] - monotonic_start > 25_000_000
+        assert not value._poisoned and value._stream.close_calls == 0
+    else:
+        with pytest.raises(MacOSFileAccessContractError):
+            bridge.exchange(value, "review_context", {"operation": "baseline"}, cancelled)
+        assert value._poisoned and value._closed and value._stream.close_calls == 1
+        if failure == "truncated":
+            assert endpoint.state["monotonic"] == monotonic_start + 5_000_000_000
+    assert len(state["sent"]) == 1 and value._sequence == 1
 
 
 def test_copied_parent_owner_closes_only_its_endpoint_copies(fake, monkeypatch):

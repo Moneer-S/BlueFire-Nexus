@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 from _thread import LockType
+from _thread import RLock as RLockType
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
@@ -38,6 +39,7 @@ from .secret_store import _validate_darwin_descriptor_security
 from .util import canonical_json_bytes, content_hash
 
 if TYPE_CHECKING:
+    from .macos_file_access_bridge import OriginalMacOSWorkspaceBridge
     from .macos_file_access_creator import MacOSFileAccessCreator
 
 WORKSPACE_PARENT = Path("/private/var/db/bluefire-file-access-workspaces")
@@ -248,7 +250,12 @@ def _receive(stream: socket.socket, guard) -> dict[str, Any]:
             stream.settimeout(guard())
             receive = getattr(stream, "recvmsg", None)
             _require(callable(receive))
-            raw, ancillary, flags, _address = receive(size - len(value), 0)
+            try:
+                raw, ancillary, flags, _address = receive(size - len(value), 0)
+            except TimeoutError:
+                # Preserve partial framing while the original finite guard
+                # checks cancellation/lifetime between short socket waits.
+                continue
             _require(bool(raw) and len(raw) <= size - len(value) and not ancillary and not flags)
             value.extend(raw)
         guard()
@@ -257,6 +264,13 @@ def _receive(stream: socket.socket, guard) -> dict[str, Any]:
     length = int.from_bytes(exact(4), "little")
     _require(0 < length <= FRAME_MAX)
     return _decode(exact(length))
+
+
+def _start_bridge(owner: MacOSWorkspaceOwner) -> None:
+    from .macos_file_access_bridge import OriginalMacOSWorkspaceBridge
+
+    owner._bridge = OriginalMacOSWorkspaceBridge.attach(owner)
+    owner._bridge.start()
 
 
 class MacOSWorkspaceOwner:
@@ -285,6 +299,8 @@ class MacOSWorkspaceOwner:
     _fork_guard: LockType
     _ui_ready: dict[str, Any]
     _creator_pid: int
+    _channel_lock: RLockType
+    _bridge: OriginalMacOSWorkspaceBridge | None
 
     def __new__(cls, *_args, **_kwargs) -> MacOSWorkspaceOwner:
         raise TypeError("The original privileged workspace preparation is required.")
@@ -358,6 +374,8 @@ class MacOSWorkspaceOwner:
         value._creator_pid = os.getpid()
         value._lock = threading.Lock()
         value._fork_guard = threading.Lock()
+        value._channel_lock = threading.RLock()
+        value._bridge = None
         value._lock.acquire()
         retained.append(value)
         try:
@@ -495,8 +513,9 @@ class MacOSWorkspaceOwner:
         return float(min((limit - monotonic) / 1e9, (self._binding["expires_at_ms"] - wall) / 1000))
 
     def _close_endpoint(self, child: bool = False) -> None:
-        with self._fork_guard:
-            self._close_endpoint_locked(child)
+        with self._channel_lock:
+            with self._fork_guard:
+                self._close_endpoint_locked(child)
 
     def _close_endpoint_locked(self, child: bool) -> None:
         name = "_child_stream" if child else "_stream"
@@ -513,10 +532,12 @@ class MacOSWorkspaceOwner:
                 raise
 
     def _before_fork(self) -> None:
+        self._channel_lock.acquire()
         self._fork_guard.acquire()
 
     def _after_fork_parent(self) -> None:
         self._fork_guard.release()
+        self._channel_lock.release()
 
     def _after_fork_child(self) -> None:
         # CLOEXEC handles exec, not fork. Close only this process's copies;
@@ -525,6 +546,9 @@ class MacOSWorkspaceOwner:
         self._creation_unknown = True
         self._lock = threading.Lock()
         self._fork_guard = threading.Lock()
+        self._channel_lock = threading.RLock()
+        if self._bridge is not None:
+            self._bridge.close()
         for child in (False, True):
             try:
                 self._close_endpoint(child)
@@ -532,6 +556,10 @@ class MacOSWorkspaceOwner:
                 self._cleanup_unknown = True
 
     def assert_current(self) -> None:
+        with self._channel_lock:
+            self._assert_current_locked()
+
+    def _assert_current_locked(self) -> None:
         try:
             self._assert_current()
         except BaseException:
@@ -745,6 +773,7 @@ class MacOSWorkspaceOwner:
             self._ui_ready = dict(ready)
             self._state = "active"
             self.assert_current()
+            _start_bridge(self)
         except BaseException:
             self._state = "unknown"
             try:
@@ -768,11 +797,18 @@ class MacOSWorkspaceOwner:
         try:
             _require(self._state != "preparing")
             self._state = "retired"
+            if self._bridge is not None:
+                self._bridge.close()
             for child in (False, True):
                 try:
                     self._close_endpoint(child)
                 except BaseException:
                     pass
+            if self._bridge is not None:
+                try:
+                    self._bridge.join()
+                except BaseException:
+                    self._cleanup_unknown = True
             released = self._process is None
             if self._launch is not None and not self._creation_unknown:
                 released = host._terminate_contained_launch(self._launch)

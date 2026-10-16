@@ -22,7 +22,15 @@ def is_windows_host():
     return sys.platform == "win32"
 
 
+def is_macos_host():
+    return sys.platform == "darwin"
+
+
 def enrollment(service, now_ms):
+    if is_macos_host():
+        from . import product_store_macos_file_access as macos
+
+        return macos.enrollment(service, now_ms)
     if is_windows_host():
         from . import windows_file_access_context
 
@@ -38,6 +46,8 @@ def enrollment(service, now_ms):
 
 
 def execution(service, enrolled):
+    if is_macos_host():
+        raise ProductStoreError("Darwin control uses its original committed workspace transport.")
     if is_windows_host():
         from . import windows_file_access_context
 
@@ -96,6 +106,8 @@ def execution(service, enrolled):
 
 
 def binding(enrolled, *, revision, now_ms):
+    if is_macos_host():
+        raise ProductStoreError("Darwin binding requires the original protected workspace context.")
     if is_windows_host():
         from . import windows_file_access_context
 
@@ -125,6 +137,8 @@ def binding(enrolled, *, revision, now_ms):
 
 
 def composition(service, owner_id: str, now_ms: int) -> dict[str, Any]:
+    if is_macos_host():
+        raise ProductStoreError("Darwin composition admission is not yet available.")
     if is_windows_host():
         from . import windows_file_access_context
 

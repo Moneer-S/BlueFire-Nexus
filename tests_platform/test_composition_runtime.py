@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from bluefire import composition_context
+from bluefire.adaptive_dispatch import reviewed_operation
 from bluefire.capability_composition import compile_initial_graph
 from bluefire.capability_facts import seal_facts
 from bluefire.capability_packs import RECEIVER_PACK
@@ -19,13 +20,19 @@ from bluefire.composition_authority import GrantExecution, native_envelope
 from bluefire.composition_jobs import CompositionJobs
 from bluefire.config import load_config
 from bluefire.contracts import ExecutionMode, ScenarioDefinition
+from bluefire.execution_contracts import execution_task_identity
 from bluefire.job_runtime import JobCancelled
 from bluefire.orchestrator import Orchestrator
 from bluefire.planner import DeterministicPlanner
 from bluefire.policy import ApprovalState, GrantPolicyState, PolicyEngine
 from bluefire.product_store_errors import ProductStoreError
 from bluefire.run_store import RunStore, RunStoreError
-from bluefire.runner_contracts import _verified_grant_attempt, build_runner_profile
+from bluefire.runner_adapter import RunnerActionAdapter
+from bluefire.runner_contracts import (
+    _verified_grant_attempt,
+    build_execution_manifest,
+    build_runner_profile,
+)
 from bluefire.runner_inventory import (
     BUILTIN_RUNNER_ACTION_VERSIONS,
     RUNNER_ACTION_SDK_SCHEMA_VERSION,
@@ -458,6 +465,17 @@ def test_model_cancellation_failure_does_not_skip_native_cancellation(controller
 def exercise_attempt(controller, saved, monkeypatch, *, mode):
     jobs, state, compiled, current, clock = controller
     args = reservation_args(saved)
+    plan = DeterministicPlanner(state["registry"]).compile(
+        ScenarioDefinition.from_mapping(compiled["scenario"]),
+        mode=ExecutionMode.EXECUTE,
+        profile=current["profile"],
+        autonomy="off",
+        ai_enabled=False,
+        action_implementations=compiled["action_implementations"],
+    )
+    envelope = native_envelope(plan, compiled)
+    args["plan_digest"] = content_hash(plan.to_dict())
+    args["native_envelope_digest"] = content_hash(envelope)
     lease = jobs.store.reserve_capability_attempt(state["grant"]["grant_id"], compiled, **args)
     claim = jobs.store.claim_capability_attempt(
         args["attempt_id"],
@@ -480,27 +498,47 @@ def exercise_attempt(controller, saved, monkeypatch, *, mode):
             return True
 
     jobs.owners = Owners()
-    step = SimpleNamespace(
-        step_id=compiled["scenario"]["steps"][0]["id"], action_id="sandbox.fixture.create.v1"
-    )
-    native_profile = {
-        "policy_digest": content_hash("sealed-profile"),
-        "sandbox_root": str(current["sandbox"] / args["attempt_id"]),
-    }
-    request_hash = content_hash("business-request")
-    task_id = "task-boundary-1"
-    manifest = {"action_id": step.action_id, "request_hash": request_hash}
+    step = next(row for row in plan.steps if row.step_id == compiled["scenario"]["steps"][0]["id"])
+    cleanup_step = next(row for row in plan.steps if row.action_id == "sandbox.cleanup.v1")
     seen = {}
 
     class Run:
         def run(self, *_, **kwargs):
             execution = seen["execution"]
+            native_profile = build_runner_profile(
+                current["profile"],
+                sandbox_root=current["sandbox"] / args["attempt_id"],
+                reviewed_execution=envelope,
+            )
+            seen["profile"] = native_profile
             execution.bind_profile(native_profile)
+            adapted = RunnerActionAdapter().adapt(step, bound_inputs={}, receipt_ids=[])
+            manifest = build_execution_manifest(
+                run_id=lease["run_id"],
+                step_id=step.step_id,
+                behavior_id=step.behavior_id,
+                action=state["registry"].get_action(step.action_id),
+                runner_profile=native_profile,
+                params=adapted.params,
+                filesystem_scope=adapted.filesystem_scope,
+                network_destinations=adapted.network_destinations,
+                approval_record=None,
+                grant_attempt=execution.authority,
+                reviewed_operation=reviewed_operation(step, native_profile),
+                now=datetime.fromtimestamp(clock[0] / 1000, timezone.utc),
+            )
+            task_id, transport_hash = execution_task_identity(manifest, native_profile)
+            request_hash = manifest["request_hash"]
             execution.before_task(step, {}, manifest, task_id)
             assert (
                 jobs.store.get_capability_attempt(args["attempt_id"])["tasks"][0]["task_id"]
                 == task_id
             )
+            payload = jobs.store.get_capability_task_payload(task_id, transport_hash)["payload"]
+            assert payload["manifest"] == manifest and payload["runner_profile"] == native_profile
+            assert payload["step_id"] == step.step_id
+            seen["business_payload"] = payload
+            seen["mode_reached"] = mode
             if mode == "unknown":
                 raise RuntimeError("unverified transport")
             if mode in {"not_sent", "blocked"}:
@@ -536,21 +574,40 @@ def exercise_attempt(controller, saved, monkeypatch, *, mode):
             discovered = {"c" * 64: {"request_hash": request_hash, "workspace_id": "d" * 64}}
             if mode == "omitted_receipt":
                 discovered["e" * 64] = {"request_hash": request_hash, "workspace_id": "d" * 64}
+            seen["cleanup_attempted"] = True
             cleanup = execution.cleanup_authority(
                 native_profile,
                 {"receipt_ids": ["c" * 64]},
                 discovered,
             )
-            cleanup_manifest = {
-                "grant_cleanup": cleanup.to_dict(),
-                "request_hash": content_hash("cleanup-request"),
-            }
-            cleanup_step = SimpleNamespace(step_id="clean", action_id="sandbox.cleanup.v1")
-            execution.before_task(cleanup_step, {}, cleanup_manifest, "task-cleanup")
+            cleanup_manifest = build_execution_manifest(
+                run_id=lease["run_id"],
+                step_id=cleanup_step.step_id,
+                behavior_id=cleanup_step.behavior_id,
+                action=state["registry"].get_action(cleanup_step.action_id),
+                runner_profile=native_profile,
+                params={"receipt_ids": ["c" * 64]},
+                filesystem_scope=(),
+                approval_record=None,
+                grant_cleanup=cleanup,
+                reviewed_operation=reviewed_operation(cleanup_step, native_profile),
+                now=datetime.fromtimestamp(clock[0] / 1000, timezone.utc),
+            )
+            cleanup_task_id, cleanup_transport_hash = execution_task_identity(
+                cleanup_manifest, native_profile
+            )
+            execution.before_task(cleanup_step, {}, cleanup_manifest, cleanup_task_id)
+            cleanup_payload = jobs.store.get_capability_cleanup_task_payload(
+                cleanup_task_id, cleanup_transport_hash
+            )["payload"]
+            assert cleanup_payload["manifest"] == cleanup_manifest
+            assert cleanup_payload["runner_profile"] == native_profile
+            assert cleanup_payload["step_id"] == cleanup_step.step_id
+            seen["cleanup_payload"] = cleanup_payload
             execution.after_task(
                 cleanup_step,
                 cleanup_manifest,
-                "task-cleanup",
+                cleanup_task_id,
                 {"status": "success", "cleanup": {"verification_performed": True}},
             )
             seen["cleanup"] = cleanup
@@ -572,10 +629,15 @@ def exercise_attempt(controller, saved, monkeypatch, *, mode):
             state["grant"],
             current,
             ScenarioDefinition.from_mapping(compiled["scenario"]),
-            {},
+            envelope,
             lease,
             claim,
         )
+    assert seen.get("mode_reached") == mode and seen.get("business_payload") is not None
+    if mode in {"revoked", "expired"}:
+        assert seen.get("cleanup_payload") is not None and seen.get("cleanup") is not None
+    elif mode in {"cleanup_expired", "omitted_receipt"}:
+        assert seen.get("cleanup_attempted") is True and "cleanup_payload" not in seen
     return (
         jobs.store.get_capability_attempt(args["attempt_id"]),
         jobs.store.get_job(args["job_id"])["progress"],
@@ -600,7 +662,7 @@ def test_separate_receipt_cleanup_can_finish_after_business_authority_ends(
 ):
     attempt, progress, seen = exercise_attempt(controller, saved, monkeypatch, mode=mode)
     assert attempt["state"] == "settled"
-    assert seen["cleanup"].to_dict()["runner_policy_digest"] == content_hash("sealed-profile")
+    assert seen["cleanup"].to_dict()["runner_policy_digest"] == seen["profile"]["policy_digest"]
     assert progress["native_cleanup"]["report"]["verification_performed"] is True
 
 

@@ -16,7 +16,7 @@ import threading
 import time
 from _thread import LockType
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 from . import runner_client as runner
 from .macos_file_access_contract import (
@@ -33,6 +33,9 @@ from .macos_file_access_namespace import SealedMacOSNamespace
 from .macos_file_access_peer import MacOSChildConsistency, darwin_clock_ns, observe_owned_child
 from .macos_file_access_worker import MacOSFileAccessWorker
 from .util import canonical_json_bytes, content_hash
+
+if TYPE_CHECKING:
+    from .macos_file_access_workspace import MacOSWorkspaceOwner
 
 _OPERATIONS = ("baseline", "harden", "probe", "verify_owner", "rollback")
 _IDS = ("real_uid", "effective_uid", "saved_uid", "real_gid", "effective_gid", "saved_gid")
@@ -109,6 +112,8 @@ class OriginalMacOSControllerLease:
         "_workspace_consistency",
         "_closed",
         "_poisoned",
+        "_workspace_owner",
+        "_check_current",
     )
 
     _creator: MacOSFileAccessCreator
@@ -118,20 +123,35 @@ class OriginalMacOSControllerLease:
     _workspace_consistency: MacOSChildConsistency
     _closed: bool
     _poisoned: bool
+    _workspace_owner: MacOSWorkspaceOwner
+    _check_current: Callable[[], None]
 
     def __new__(cls, *_args, **_kwargs):
         raise TypeError("The original authenticated controller bootstrap is required.")
 
 
 class OriginalMacOSTaskReservation:
-    """No minter until the concrete live lease and journal bridge exists."""
+    """Minted only while the original bridge consumes a committed child frame."""
 
-    __slots__ = ("_creator", "_lease", "_intent", "_used")
+    __slots__ = (
+        "_creator",
+        "_lease",
+        "_intent",
+        "_used",
+        "_budget_reserved",
+        "_attempt_id",
+        "_probe_task_id",
+        "_probe_receipt_digest",
+    )
 
     _creator: MacOSFileAccessCreator
     _lease: OriginalMacOSControllerLease
     _intent: ReviewedMacOSTaskIntent
     _used: bool
+    _budget_reserved: bool
+    _attempt_id: str | None
+    _probe_task_id: str | None
+    _probe_receipt_digest: str | None
 
     def __new__(cls, *_args, **_kwargs):
         raise TypeError("An original committed controller task reservation is required.")
@@ -172,6 +192,7 @@ class MacOSFileAccessCreator:
     _used_budget: int
     _sequences: dict[str, int]
     _tasks: dict[str, OwnedMacOSTaskReceipt | None]
+    _task_attempts: dict[str, str | None]
     _last_probe: OwnedMacOSTaskReceipt | None
     _last_clock: tuple[int, int]
     _last_binding: dict[str, Any] | None
@@ -209,6 +230,7 @@ class MacOSFileAccessCreator:
         value._used_budget = 0
         value._sequences = {role: 0 for role in ("reader", "owner", "control")}
         value._tasks = {}
+        value._task_attempts = {}
         value._last_probe = None
         value._last_clock = (0, 0)
         value._last_binding = None
@@ -308,13 +330,18 @@ class MacOSFileAccessCreator:
             and type(lease._workspace_consistency) is MacOSChildConsistency
         )
         lease._channel.getpeername()
+        # This is the ordinary HOST workspace, whose original private session
+        # may have fixed descendants. Primitive workers retain no-fork custody.
+        workspace = lease._workspace_owner
+        workspace.assert_current()
+        _require(
+            workspace._creator is self
+            and workspace._process is lease._workspace_process
+            and workspace._consistency == lease._workspace_consistency
+            and workspace._stream is lease._channel
+        )
+        lease._check_current()
         process = lease._workspace_process
-        with runner._DARWIN_INDETERMINATE_LOCK:  # noqa: SLF001
-            _require(
-                runner._DARWIN_ACTIVE_PROCESSES.get(process) is self._runtime  # noqa: SLF001
-                and not self._runtime._darwin_process_is_indeterminate(process)  # noqa: SLF001
-                and self._runtime._refresh_darwin_no_fork_proof(process)
-            )  # noqa: SLF001
         binding = self._last_binding
         if binding is None:
             raise MacOSFileAccessContractError(
@@ -435,13 +462,21 @@ class MacOSFileAccessCreator:
                 and intent["binding_digest"] == content_hash(current)
                 and intent["context_digest"] == content_hash(self._context(operation, current))
                 and intent["task_id"] not in self._tasks
-                and self._used_budget + len(plan) <= MAX_REQUESTS
+                and reservation._budget_reserved
+                and self._used_budget <= MAX_REQUESTS
             )
             if operation == "verify_owner":
                 _require(
                     self._last_probe is not None
                     and self._last_probe._creator is self
                     and self._last_probe.document()["control_revision_after"] == self._revision
+                    and reservation._attempt_id is not None
+                    and reservation._probe_task_id == self._last_probe.document()["task_id"]
+                    and reservation._probe_receipt_digest
+                    == content_hash(self._last_probe.document())
+                    and self._task_attempts.get(self._last_probe.document()["task_id"])
+                    == reservation._attempt_id
+                    and self._tasks.get(self._last_probe.document()["task_id"]) is self._last_probe
                 )
             with self._namespace.operation():
                 _require(self._binding() == current)
@@ -449,7 +484,7 @@ class MacOSFileAccessCreator:
                 # Reserve every primitive before any first byte; there is no partial pair admission.
                 reservation._used = True
                 self._tasks[intent["task_id"]] = None
-                self._used_budget += len(plan)
+                self._task_attempts[intent["task_id"]] = reservation._attempt_id
                 consumed = True
                 for role, primitive in plan:
                     self._guard(intent)

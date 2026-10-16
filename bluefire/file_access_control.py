@@ -48,6 +48,11 @@ class FileAccessControl:
     def import_setup(self, request: Mapping[str, Any]) -> dict[str, Any]:
         from . import windows_file_access_context as windows
 
+        if file_access_context.is_macos_host():
+            from . import product_store_macos_file_access as macos
+
+            saved = macos.import_setup(self.service, request, self.clock())
+            return self.control(saved["control_owner_id"])
         if not file_access_context.is_windows_host():
             raise ProductStoreError("Protected Windows setup import requires its original host.")
         try:
@@ -60,6 +65,10 @@ class FileAccessControl:
             ) from None
 
     def status(self) -> dict[str, Any]:
+        if file_access_context.is_macos_host():
+            from . import product_store_macos_file_access as macos
+
+            return macos.status(self.service, self.clock())
         if file_access_context.is_windows_host():
             from . import windows_file_access_context
 
@@ -98,6 +107,10 @@ class FileAccessControl:
         }
 
     def _context(self, operation, owner_id):
+        if file_access_context.is_macos_host():
+            from . import product_store_macos_file_access as macos
+
+            return macos.context(self.service, operation, owner_id, self.clock())
         if file_access_context.is_windows_host():
             if operation not in ("baseline", "harden"):
                 raise ProductStoreError("This Windows retained-file operation is not available.")
@@ -241,10 +254,12 @@ class FileAccessControl:
             saved = self.store.get_job_submission(
                 KIND, submission_id=request["submission_id"], intent_digest=content_hash(request)
             )
+            saved_error = saved.get("error") if saved is not None else None
             if (
                 saved is not None
                 and saved["state"] == "failed"
-                and saved.get("error", {}).get("code") == "job_scheduling_failed"
+                and isinstance(saved_error, dict)
+                and saved_error.get("code") == "job_scheduling_failed"
             ):
                 self.store.finish_file_access_operation(
                     job_id,
@@ -260,6 +275,13 @@ class FileAccessControl:
         request = {**saved["submitted_request"], "review": saved["review"]}
         if (
             saved["review_context"].get("schema_version")
+            == "bluefire.macos-file-access-control-context.v1"
+        ):
+            from . import product_store_macos_file_access as macos
+
+            macos.execute(self, ctx, request)
+        elif (
+            saved["review_context"].get("schema_version")
             == "bluefire.windows-file-access-baseline-context.v2"
         ):
             self.windows.execute(ctx, request)
@@ -273,11 +295,19 @@ class FileAccessControl:
         return JobResult(progress={"phase": "completed"})
 
     def controls(self) -> dict[str, Any]:
+        from . import product_store_macos_file_access as macos
         from .windows_file_access_context import is_control, projection
 
         rows = self.store.list_file_access_controls()
         for row in rows:
-            if is_control(row["document"]):
+            if macos.is_control(row["document"]):
+                view = macos.projection(
+                    self.service,
+                    self.store.get_file_access_control(row["document"]["control_owner_id"]),
+                    self.clock(),
+                )
+                row["document"] = {**row["document"], "status": view["status"]}
+            elif is_control(row["document"]):
                 view = projection(self.service, row["document"], self.clock())
                 row["document"] = {
                     **row["document"],
@@ -293,6 +323,7 @@ class FileAccessControl:
                         for key in ("control_owner_id", "status", "revision")
                     },
                     **({"platform": "windows"} if is_control(row["document"]) else {}),
+                    **({"platform": "macos"} if macos.is_control(row["document"]) else {}),
                 }
                 for row in rows
             ],
@@ -301,8 +332,11 @@ class FileAccessControl:
     def control(self, owner_id: str) -> dict[str, Any]:
         view = self.store.get_file_access_control(owner_id)
         document = view["document"]
+        from . import product_store_macos_file_access as macos
         from .windows_file_access_context import is_control, projection
 
+        if macos.is_control(document):
+            return macos.projection(self.service, view, self.clock())
         if is_control(document):
             return projection(self.service, document, self.clock())
         binding, baseline = document["binding"], document["baseline"]
@@ -351,6 +385,31 @@ class FileAccessControl:
                 "SELECT 1 FROM file_access_revisions WHERE control_owner_id=?", (owner_id,)
             ).fetchone()
         records = self.store.file_access_operation_records(job_id)
+        darwin_operation = (
+            records["document"]["review_context"].get("schema_version")
+            == "bluefire.macos-file-access-control-context.v1"
+        )
+        if darwin_operation:
+            from . import product_store_macos_file_access as macos
+
+            present = True
+            if (
+                job["state"] in ("failed", "cancelled", "interrupted")
+                and records["outcome"] is None
+            ):
+                # Historical polling never re-enters the original channel.
+                self.store.finish_file_access_operation(
+                    job_id,
+                    outcome={
+                        "state": (
+                            "unknown"
+                            if records["tasks"] or macos.has_dispatch(self.store, job_id)
+                            else "refused_no_effect"
+                        ),
+                        "evidence_digest": content_hash(records["tasks"]),
+                    },
+                )
+                records = self.store.file_access_operation_records(job_id)
         if (
             records["document"]["review_context"].get("schema_version")
             == "bluefire.windows-file-access-baseline-context.v2"
@@ -403,7 +462,7 @@ class FileAccessControl:
                 else {
                     "outcome_digest": records["outcome_digest"],
                     "state": outcome["state"],
-                    "available": outcome["state"] == "unknown",
+                    "available": outcome["state"] == "unknown" and not darwin_operation,
                 }
             ),
             "reconciliation_receipt": self.store.latest_file_access_reconciliation(job_id),
@@ -415,6 +474,14 @@ class FileAccessControl:
     def reconcile(self, job_id: str, request: Mapping[str, Any]) -> dict[str, Any]:
         from .file_access_reconciliation import reconcile
 
+        original = self.store.file_access_operation_records(job_id)["document"]
+        if (
+            original["review_context"].get("schema_version")
+            == "bluefire.macos-file-access-control-context.v1"
+        ):
+            raise ProductStoreError(
+                "Darwin custody loss remains read-only; recovery never replays effects."
+            )
         return reconcile(self, job_id, request)
 
     def reconciliation(self, job_id: str, submission_id: str) -> dict[str, Any]:

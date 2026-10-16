@@ -25,6 +25,13 @@ def allowed_operations(status: str) -> list[str]:
 def permitted_operations(
     store: Any, connection: Any, control: dict, review_context: dict, *, now_ms: int
 ) -> list[str]:
+    from . import product_store_macos_file_access as macos
+
+    if macos.is_control(control):
+        macos.validate_review(control, review_context, now_ms)
+        return macos.permitted(control)
+    if review_context.get("schema_version") == macos.CONTEXT_SCHEMA:
+        raise ProductStoreError("Darwin provenance requires its original Darwin control.")
     if not windows.is_windows_control(control):
         return allowed_operations(control["status"])
     if control.get("schema_version") == "bluefire.windows-file-access-control-record.v3":
@@ -46,7 +53,13 @@ def validate_preparation(
     *,
     now_ms: int,
 ) -> None:
-    if document.get("schema_version") == correction.PREPARATION_SCHEMA:
+    from . import product_store_macos_file_access as macos
+
+    if document.get("schema_version") == macos.PREPARATION_SCHEMA:
+        macos.validate_preparation(operation, original, document, enrollment, prior, now_ms)
+    elif prior is not None and macos.is_control(prior):
+        raise ProductStoreError("Darwin provenance cannot authorize another platform preparation.")
+    elif document.get("schema_version") == correction.PREPARATION_SCHEMA:
         if operation["operation"] != "harden" or prior is None:
             raise ProductStoreError("Correction preparation requires its original review.")
         journal.validate_preparation_at(
