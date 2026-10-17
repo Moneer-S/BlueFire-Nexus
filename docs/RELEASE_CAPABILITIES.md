@@ -37,6 +37,9 @@ available; it does not grant authorization.
   reconciliation reads authenticated receipts without replaying the original
   effects. Partial settlement permits only the server-authorized reset; it does
   not manufacture a completed resource or fresh access result.
+- S3 includes bounded CloudTrail audit baseline/retest contracts and immutable
+  review projections. Production collection dispatch remains
+  `DISPATCH_RELEASED = false`; no live AWS audit proof is established.
 - Software and GNU native checks are not installed cross-identity proof. A mode
   change alone proves neither blocked non-owner access nor preserved owner access.
   The complete fresh-read journey, Windows/macOS effective-access paths, AD and

@@ -11,6 +11,8 @@ use crate::reservation_storage::{JournalKind, Lease, Storage};
 use crate::s3_access_send::S3SendPreview;
 use crate::s3_admission::VerifiedS3Admission;
 
+#[path = "s3_reservation_audit.rs"]
+mod audit;
 #[path = "s3_reservation_fixture.rs"]
 mod fixture;
 #[path = "s3_reservation_state.rs"]
@@ -53,6 +55,11 @@ pub(crate) struct S3ReservationStore {
 
 impl S3ReservationStore {
     pub(crate) fn open(admission: &VerifiedS3Admission) -> Result<Self> {
+        // Parsing the staged collector contract must not enable storage or execution.
+        admission
+            .binding()
+            .assert_dispatch_supported()
+            .map_err(|_| Error::Conflict)?;
         let storage = Storage::open(
             admission.ledger_root(),
             admission.enrollment_digest(),
@@ -73,6 +80,10 @@ impl S3ReservationStore {
         admission: &'a VerifiedS3Admission,
         now: DateTime<FixedOffset>,
     ) -> Result<S3Reservation<'a>> {
+        admission
+            .binding()
+            .assert_dispatch_supported()
+            .map_err(|_| Error::Conflict)?;
         if now >= admission.expires_at() || admission.binding().assert_current(now).is_err() {
             return Err(Error::Expired);
         }
@@ -104,14 +115,39 @@ impl S3ReservationStore {
         };
         let mut lease = self.storage.lease()?;
         let mut ledger = Ledger::load(&lease.read()?, &self.enrollment)?;
-        ledger.check_reserve(&operation)?;
-        let reservation_digest = append(
-            &mut lease,
-            &mut ledger,
+        let record = if let Some(workflow) = admission.audit_workflow() {
+            let reservation = audit::AuditedReservation {
+                operation,
+                scope: binding.scope().clone(),
+                audit_workflow: workflow.document().map_err(|_| Error::Conflict)?,
+                profile_digest: admission.profile_digest().into(),
+                task: audit::TaskIdentity {
+                    run_id: admission.manifest().run_id.clone(),
+                    manifest_digest: admission.manifest_digest().into(),
+                    deadline: serde_json::from_str::<Value>(binding.canonical_json())
+                        .map_err(|_| Error::Conflict)?["deadline"]
+                        .as_str()
+                        .ok_or(Error::Conflict)?
+                        .into(),
+                },
+                collection: binding
+                    .audit()
+                    .map(|collection| collection.context())
+                    .transpose()
+                    .map_err(|_| Error::Conflict)?,
+            };
+            reservation.checked(binding.scope(), admission.profile_digest())?;
+            ledger.check_audited(&reservation)?;
+            Record::AuditedReservation {
+                reservation: Box::new(reservation),
+            }
+        } else {
+            ledger.check_reserve(&operation)?;
             Record::Reservation {
                 operation: Box::new(operation),
-            },
-        )?;
+            }
+        };
+        let reservation_digest = append(&mut lease, &mut ledger, record)?;
         Ok(S3Reservation {
             lease,
             ledger,
@@ -148,6 +184,44 @@ impl S3Reservation<'_> {
         self.ledger.requests[self.admission.binding().digest()].write_debited
     }
 
+    pub(crate) fn discovery(&self) -> Option<&crate::s3_access_binding::audit::Discovery> {
+        self.ledger.requests[self.binding().digest()]
+            .discovery
+            .as_ref()
+    }
+
+    /// Selection is reusable only after this reservation's journal append has synced.
+    pub(crate) fn commit_discovery(
+        &mut self,
+        frame: &[u8],
+        now: DateTime<FixedOffset>,
+    ) -> Result<Value> {
+        if !self.current(now) {
+            return Err(Error::Expired);
+        }
+        let checked = self.ledger.audit_reservation(self.binding().digest())?;
+        let context = checked.raw().collection.as_ref().ok_or(Error::Conflict)?;
+        let discovery = crate::s3_access_binding::audit::Discovery::from_context(
+            &checked.raw().scope,
+            checked.workflow(),
+            context,
+            self.binding().digest(),
+            self.digest(),
+            self.send_debits(),
+            frame,
+        )
+        .map_err(|_| Error::Conflict)?;
+        append(
+            &mut self.lease,
+            &mut self.ledger,
+            Record::AuditDiscovery {
+                reservation_digest: self.reservation_digest.clone(),
+                discovery: discovery.document().clone(),
+            },
+        )?;
+        Ok(discovery.acknowledgement())
+    }
+
     /// The permit is returned only after the immutable debit and directory/file
     /// synchronization succeed. A failed/lost pipe write never refunds it.
     pub(crate) fn debit(&mut self, frame: &[u8], now: DateTime<FixedOffset>) -> Result<Value> {
@@ -156,9 +230,17 @@ impl S3Reservation<'_> {
         {
             return Err(Error::Expired);
         }
-        let preview =
-            S3SendPreview::from_frame(self.admission.binding(), frame, self.send_debits() + 1)
-                .map_err(|_| Error::Conflict)?;
+        let preview = if self.binding().audit().is_some() {
+            S3SendPreview::from_audit_frame(
+                self.binding(),
+                frame,
+                self.send_debits() + 1,
+                self.discovery(),
+            )
+        } else {
+            S3SendPreview::from_frame(self.binding(), frame, self.send_debits() + 1)
+        }
+        .map_err(|_| Error::Conflict)?;
         append(
             &mut self.lease,
             &mut self.ledger,
@@ -209,6 +291,16 @@ impl S3Reservation<'_> {
     }
 }
 
+fn encode_entry(entry: Entry) -> Result<(String, Vec<u8>)> {
+    let value = serde_json::to_value(entry).map_err(|_| Error::Corrupt)?;
+    let mut bytes = canonical_json(&value).into_bytes();
+    bytes.push(b'\n');
+    if bytes.len() > 16 * 1024 {
+        return Err(Error::Budget);
+    }
+    Ok((canonical_hash(&value), bytes))
+}
+
 fn append(lease: &mut Lease<'_>, ledger: &mut Ledger, record: Record) -> Result<String> {
     if ledger.entries >= 4096 {
         return Err(Error::Budget);
@@ -219,10 +311,7 @@ fn append(lease: &mut Lease<'_>, ledger: &mut Ledger, record: Record) -> Result<
         previous_hash: ledger.previous_hash.clone(),
         record: record.clone(),
     };
-    let value = serde_json::to_value(entry).map_err(|_| Error::Corrupt)?;
-    let hash = canonical_hash(&value);
-    let mut bytes = canonical_json(&value).into_bytes();
-    bytes.push(b'\n');
+    let (hash, bytes) = encode_entry(entry)?;
     // Validate against a replay before writing. The real in-memory transition
     // happens only after fsync; failure leaves retained history uncertain.
     let mut candidate = ledger.clone();
@@ -239,3 +328,7 @@ fn append(lease: &mut Lease<'_>, ledger: &mut Ledger, record: Record) -> Result<
 #[cfg(test)]
 #[path = "s3_reservation_tests.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "s3_reservation_size_tests.rs"]
+mod size_tests;

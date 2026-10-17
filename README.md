@@ -114,7 +114,7 @@ The framework includes native methods and reviewed external-tool adaptations, in
 
 V3 is a development build, not a stable release. The included examples focus on local endpoint and file-collection tests using generated lab data. Execution support varies by method and platform. Remote runners, broad Active Directory coverage, and production EDR/SIEM collection integrations are not shipped.
 
-Guided setup, reusable objectives, defensive changes, and endpoint, AD, and cloud workflows are active work. See the [program phases](docs/AI_FIRST_PROGRAM.md), [capability reference](docs/RELEASE_CAPABILITIES.md), [Windows paired readable-baseline guide](docs/WINDOWS_FILE_ACCESS_BASELINE.md), and [roadmap](https://github.com/Moneer-S/BlueFire-Nexus/issues/202).
+Guided setup, reusable objectives, defensive changes, and endpoint, AD, and cloud workflows are active work. S3 audit collection is implemented behind `DISPATCH_RELEASED = false`; no live cloud proof is established. See the [program phases](docs/AI_FIRST_PROGRAM.md), [capability reference](docs/RELEASE_CAPABILITIES.md), [Windows paired readable-baseline guide](docs/WINDOWS_FILE_ACCESS_BASELINE.md), and [roadmap](https://github.com/Moneer-S/BlueFire-Nexus/issues/202).
 
 ## License
 

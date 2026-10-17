@@ -248,14 +248,9 @@ def normalize_audit(
     }
 
 
-def correlate_reads(
-    request: S3WorkerRequest,
-    worker_result: Any,
-    raw_logs: Sequence[bytes],
-    *,
-    delivery_state: str = "unknown",
-) -> dict[str, Any]:
-    """Correlate exact IDs and authorized time, never infer missing access or bytes."""
+def _validated_read(
+    request: S3WorkerRequest, worker_result: Any
+) -> tuple[S3WorkerRequest, dict[str, Any], dict[str, Any]]:
     request = S3WorkerRequest.from_mapping(request.to_dict())
     source = request.to_dict()
     if source["operation"] not in {"probe_read", "legitimate_read"}:
@@ -266,8 +261,16 @@ def correlate_reads(
         read_ids and any("error_code" in call for call in result["calls"][:3])
     ):
         raise S3AccessError("worker read identity or unique request mapping is invalid")
-    scope = S3AccessScope.from_mapping(source["scope"])
-    audit = normalize_audit(scope, raw_logs, delivery_state=delivery_state)
+    return request, source, result
+
+
+def _correlate_projection(
+    source: dict[str, Any],
+    request_digest: str,
+    result: dict[str, Any],
+    audit: dict[str, Any],
+    delivery_state: str,
+) -> dict[str, Any]:
     reader = "probe" if source["operation"] == "probe_read" else "legitimate"
     session = "bf-" + source["request_id"][:32] + "-" + reader
     expected_arn = f"arn:aws:sts::{source['scope']['account_id']}:assumed-role/"
@@ -335,11 +338,76 @@ def correlate_reads(
         )
     return {
         "schema_version": "bluefire.s3-audit-correlation.v1",
-        "request_digest": request.digest,
+        "request_digest": request_digest,
         "worker_result_digest": content_hash(result),
         "audit": audit,
         "reads": rows,
         "authorized_request_window": {"from": start.isoformat(), "through": end.isoformat()},
+        "independent_collection_proven": False,
+        "effective_access_claim": False,
+    }
+
+
+def correlate_reads(
+    request: S3WorkerRequest,
+    worker_result: Any,
+    raw_logs: Sequence[bytes],
+    *,
+    delivery_state: str = "unknown",
+) -> dict[str, Any]:
+    """Correlate exact IDs and authorized time, never infer missing access or bytes."""
+    _request, source, result = _validated_read(request, worker_result)
+    scope = S3AccessScope.from_mapping(source["scope"])
+    audit = normalize_audit(scope, raw_logs, delivery_state=delivery_state)
+    return _correlate_projection(source, _request.digest, result, audit, delivery_state)
+
+
+def correlate_read_pair(
+    probe_request: S3WorkerRequest,
+    probe_result: Any,
+    legitimate_request: S3WorkerRequest,
+    legitimate_result: Any,
+    raw_logs: Sequence[bytes],
+    *,
+    delivery_state: str = "unknown",
+) -> dict[str, Any]:
+    """Correlate one original probe and legitimate read against one audit projection."""
+    if not isinstance(probe_request, S3WorkerRequest) or not isinstance(
+        legitimate_request, S3WorkerRequest
+    ):
+        raise S3AccessError("audit pair is missing an original read request")
+    probe, probe_source, probe_worker = _validated_read(probe_request, probe_result)
+    legitimate, legitimate_source, legitimate_worker = _validated_read(
+        legitimate_request, legitimate_result
+    )
+    if (
+        probe_source["operation"] != "probe_read"
+        or legitimate_source["operation"] != "legitimate_read"
+        or probe_source["request_id"] == legitimate_source["request_id"]
+        or probe.digest == legitimate.digest
+        or probe_source["scope"] != legitimate_source["scope"]
+    ):
+        raise S3AccessError(
+            "audit pair must contain distinct same-scope probe then legitimate reads"
+        )
+    scope = S3AccessScope.from_mapping(probe_source["scope"])
+    audit = normalize_audit(scope, raw_logs, delivery_state=delivery_state)
+    probe_correlation = _correlate_projection(
+        probe_source, probe.digest, probe_worker, audit, delivery_state
+    )
+    legitimate_correlation = _correlate_projection(
+        legitimate_source, legitimate.digest, legitimate_worker, audit, delivery_state
+    )
+    probe_correlation.pop("audit")
+    legitimate_correlation.pop("audit")
+    return {
+        "schema_version": "bluefire.s3-audit-pair.v1",
+        "scope_digest": audit["scope_digest"],
+        "audit": audit,
+        "correlations": {
+            "probe": probe_correlation,
+            "legitimate": legitimate_correlation,
+        },
         "independent_collection_proven": False,
         "effective_access_claim": False,
     }

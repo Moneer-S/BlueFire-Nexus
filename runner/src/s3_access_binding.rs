@@ -8,6 +8,9 @@ use crate::s3_access_policy::{encoded, PolicyChange};
 use crate::s3_access_scope::{digest, lower_hex, require, utc_time, Checked, Scope};
 use crate::s3_fixture_binding::{self as fixtures, FixtureEnrollment, FixtureOperation};
 
+#[path = "s3_audit_wire.rs"]
+pub(crate) mod audit;
+
 pub const MAX_DOCUMENT_BYTES: usize = 80 * 1024;
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -29,6 +32,10 @@ struct Request {
     fixture_authority_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fixture: Option<FixtureOperation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audit_authority_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audit: Option<audit::Collection>,
 }
 
 /// A finite operation description, not a send permit or execution capability.
@@ -82,11 +89,30 @@ impl S3WorkerBinding {
         // Option<T> alone permits absent keys; the wire requires explicit nulls.
         require(value == supplied)?;
         let is_fixture = request.schema_version == fixtures::REQUEST_SCHEMA;
-        require(is_fixture || request.schema_version == "bluefire.s3-worker-request.v1")?;
+        let is_audit = request.schema_version == audit::REQUEST_SCHEMA;
+        require(
+            is_fixture || is_audit || request.schema_version == "bluefire.s3-worker-request.v1",
+        )?;
         require(
             is_fixture == request.fixture.is_some()
                 && is_fixture == request.fixture_authority_digest.is_some(),
         )?;
+        require(
+            is_audit == request.audit.is_some()
+                && is_audit == request.audit_authority_digest.is_some(),
+        )?;
+        if is_audit {
+            require(
+                bytes.len() < MAX_DOCUMENT_BYTES
+                    && canonical_json(&value).as_bytes() == bytes
+                    && request.operation == "collect_audit"
+                    && request.max_sends == 9
+                    && request
+                        .audit_authority_digest
+                        .as_deref()
+                        .is_some_and(digest),
+            )?;
+        }
         require(lower_hex(&request.launch_id, 64) && lower_hex(&request.request_id, 64))?;
         require(digest(&request.worker_generation) && digest(&request.runtime_digest))?;
         request.scope.validate()?;
@@ -96,6 +122,7 @@ impl S3WorkerBinding {
             (false, "inspect_policy" | "reconcile_policy") => 2,
             (false, "apply_policy" | "rollback_policy" | "probe_read") => 4,
             (false, "legitimate_read") => 5,
+            (false, "collect_audit") if is_audit => 9,
             (true, "prepare_fixture") => 6,
             (true, "reconcile_fixture") => 5,
             (true, "cleanup_fixture") => 7,
@@ -137,11 +164,19 @@ impl S3WorkerBinding {
             )?;
             fixture.validate(&request.operation, &request.scope)?;
         }
-        Ok(Self {
+        let binding = Self {
             canonical: canonical_json(&value),
             digest: canonical_hash(&value),
             request,
-        })
+        };
+        if let Some(collection) = binding.audit() {
+            collection.validate(&binding)?;
+            require(
+                binding.request.audit_authority_digest.as_deref()
+                    == Some(collection.source_digest().as_str()),
+            )?;
+        }
+        Ok(binding)
     }
 
     pub fn canonical_json(&self) -> &str {
@@ -165,6 +200,9 @@ impl S3WorkerBinding {
     pub(crate) fn scope_digest(&self) -> &str {
         &self.request.scope_digest
     }
+    pub(crate) fn scope(&self) -> &Scope {
+        &self.request.scope
+    }
     pub(crate) fn runtime_digest(&self) -> &str {
         &self.request.runtime_digest
     }
@@ -176,6 +214,16 @@ impl S3WorkerBinding {
     }
     pub(crate) fn fixture(&self) -> Option<&FixtureOperation> {
         self.request.fixture.as_ref()
+    }
+    pub(crate) fn audit(&self) -> Option<&audit::Collection> {
+        self.request.audit.as_ref()
+    }
+    pub(crate) fn assert_dispatch_supported(&self) -> Checked<()> {
+        if self.audit().is_some() {
+            Err("S3 audit collector dispatch is not connected")
+        } else {
+            Ok(())
+        }
     }
     pub(crate) fn fixture_authority_digest(&self) -> Option<&str> {
         self.request.fixture_authority_digest.as_deref()
@@ -232,10 +280,19 @@ impl S3WorkerBinding {
         require(
             remaining > Duration::zero()
                 && remaining <= Duration::seconds(scope.limits.request_seconds as i64),
-        )
+        )?;
+        if let Some(collection) = self.audit() {
+            collection.assert_current(self, now)?;
+        }
+        Ok(())
     }
 
     pub fn operation_plan(&self) -> Vec<S3PlannedCall> {
+        if let Some(collection) = self.audit() {
+            return collection
+                .operation_plan(self.scope(), 0)
+                .expect("validated audit plan");
+        }
         let selected = self.request.operation.as_str();
         if let Some(fixture) = self.fixture() {
             return fixture
@@ -279,6 +336,9 @@ impl S3WorkerBinding {
 
     /// Exact safe resource projection for a one-based planned call, never permission.
     pub fn planned_resource(&self, sequence: usize) -> Checked<serde_json::Value> {
+        if let Some(collection) = self.audit() {
+            return collection.planned_resource(self, sequence, None);
+        }
         let plan = self.operation_plan();
         require(sequence > 0 && sequence <= plan.len())?;
         let call = &plan[sequence - 1];
@@ -367,7 +427,8 @@ impl S3WorkerBinding {
             "operation": call.operation,
             "role": call.role,
             "method": method,
-            "host": format!("{}.{}.amazonaws.com", call.service, self.request.scope.region),
+            "host": if let Some(collection) = self.audit() { collection.host(self.scope(), call.service)? }
+                else { format!("{}.{}.amazonaws.com", call.service, self.request.scope.region) },
             "resource": resource,
             "payload_digest": payload_digest,
         }))

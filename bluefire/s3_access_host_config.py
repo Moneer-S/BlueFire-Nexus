@@ -13,8 +13,9 @@ import os
 import sys
 from typing import Any, Mapping, cast
 
+from . import s3_audit_collection_contract as audit
 from . import s3_fixture_contract as fixtures
-from .s3_access_configuration import BOUND_SCHEMA, _identifier
+from .s3_access_configuration import AUDIT_SCHEMA, BOUND_SCHEMA, _identifier
 from .s3_access_configuration import SCHEMA as SCHEMA
 from .s3_access_configuration import validate_configuration as validate_configuration
 from .s3_access_contract import S3AccessError, S3AccessScope
@@ -67,6 +68,7 @@ def public_environments(configuration: Mapping[str, Any] | None) -> list[dict[st
                         if "fixture_lifecycle" in entry
                         else {}
                     ),
+                    **({"audit_source": entry["audit_source"]} if "audit_source" in entry else {}),
                 }
                 for entry in configuration["environments"]
             ]
@@ -92,7 +94,7 @@ def selected_environment(
     if source["schema_version"] == fixtures.REQUEST_SCHEMA:
         if (
             configuration["schema_version"]
-            not in ("bluefire.s3-host-environments.v2", BOUND_SCHEMA)
+            not in ("bluefire.s3-host-environments.v2", BOUND_SCHEMA, AUDIT_SCHEMA)
             or "fixture_lifecycle" not in entry
             or source["fixture_authority_digest"]
             != fixtures.authority_digest(
@@ -111,6 +113,33 @@ def selected_environment(
         )
     ):
         raise S3AccessError("S3 request differs from its exact enrolled authority")
+    audited = configuration["schema_version"] == AUDIT_SCHEMA
+    if audited != (approval.get("schema_version") == audit.APPROVAL_SCHEMA):
+        raise S3AccessError("Audit approval requires its exact new enrolled configuration")
+    if source["operation"] == "collect_audit" and not audited:
+        raise S3AccessError("Audit collection requires its exact new enrolled configuration")
+    if audited:
+        scope = S3AccessScope.from_mapping(source["scope"])
+        descriptor = audit.source(scope, entry.get("audit_source"))
+        if (
+            descriptor["managed_profile_digest"] != entry.get("managed_profile_digest")
+            or descriptor["protected_runtime_digest"] != entry["runtime_digest"]
+            or descriptor["worker_generation"] != entry["worker_generation"]
+        ):
+            raise S3AccessError("Audit source differs from its enrolled profile or runtime")
+        commitment = audit.build_workflow(
+            scope,
+            descriptor,
+            workflow_job_id=approval["workflow_job_id"],
+            environment_id=entry["environment_id"],
+        )
+        if approval.get("audit_workflow_digest") != content_hash(commitment):
+            raise S3AccessError("Audit approval differs from its exact enrolled commitment")
+        if source["operation"] == "collect_audit" and (
+            source["audit"]["source"] != descriptor
+            or source["audit"]["workflow_job_id"] != commitment["workflow_job_id"]
+        ):
+            raise S3AccessError("Audit collection differs from its exact enrolled commitment")
     return dict(entry)
 
 

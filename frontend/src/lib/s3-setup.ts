@@ -1,4 +1,5 @@
 import { DEMO_MODE, request } from "./api";
+import { checkedAuditSourceDescriptor, type AuditSourceDescriptor } from "./s3-audit-collection";
 
 export interface S3SetupProfile { profile_id: string; profile_digest: string }
 export interface S3SetupProfiles { schema_version: "bluefire.s3-onboarding.v1"; profiles: S3SetupProfile[]; truncated: boolean }
@@ -10,13 +11,22 @@ export interface S3SetupCheck { schema_version: "bluefire.s3-onboarding-check.v1
 export const MAX_S3_DRAFT_BYTES = 128 * 1024;
 export interface S3SetupDraftRequest extends S3SetupProfile { configuration_json: string }
 export interface S3SetupDraftEnvironment { environment_id: string; display_name: string; account_id: string; region: string; bucket: string; expires_at: string; fixture_generation: 1 | 2 }
-export interface S3SetupDraftReview extends S3SetupProfile { schema_version: "bluefire.s3-onboarding-draft-review.v1"; validation_scope: "structural_only"; source_sha256: string; configuration_digest: string; environments: S3SetupDraftEnvironment[] }
+export interface S3SetupDraftAuditEnvironment extends S3SetupDraftEnvironment { audit_source: AuditSourceDescriptor; audit_collection: { state: "unavailable"; reason: "collection_not_enabled" } }
+interface S3SetupDraftReviewFields extends S3SetupProfile { validation_scope: "structural_only"; source_sha256: string; configuration_digest: string }
+export interface S3SetupDraftReviewV1 extends S3SetupDraftReviewFields { schema_version: "bluefire.s3-onboarding-draft-review.v1"; environments: S3SetupDraftEnvironment[] }
+export interface S3SetupDraftReviewV2 extends S3SetupDraftReviewFields { schema_version: "bluefire.s3-onboarding-draft-review.v2"; environments: S3SetupDraftAuditEnvironment[] }
+export type S3SetupDraftReview = S3SetupDraftReviewV1 | S3SetupDraftReviewV2;
 export interface S3SavedSetupDraft extends S3SetupDraftRequest { digest: string; updated_at: string }
 export interface S3SavedSetupDraftResponse { schema_version: "bluefire.s3-saved-setup-draft.v1"; draft: S3SavedSetupDraft | null }
 export interface S3SaveSetupDraftRequest extends S3SetupDraftRequest { expected_digest: string | null }
 const hash = (value: unknown) => typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
 const identifier = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 const exact = (value: unknown, keys: string[]) => value !== null && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+function unavailableAuditCollection(value: unknown): value is { state: "unavailable"; reason: "collection_not_enabled" } {
+  if (!exact(value, ["state", "reason"])) return false;
+  const row = value as Record<string, unknown>;
+  return row.state === "unavailable" && row.reason === "collection_not_enabled";
+}
 const invalid = () => new Error("S3 setup changed or returned an incomplete response. Check the selected connection again.");
 const profile = (value: S3SetupProfile) => exact(value, ["profile_id", "profile_digest"]) && identifier(value.profile_id) && hash(value.profile_digest);
 export const savedDraftProfileId = (value: unknown): value is string => typeof value === "string" && value.length <= 128 && /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/.test(value);
@@ -45,8 +55,22 @@ export async function draftSourceDigest(source: string): Promise<string> {
 }
 
 export function checkedDraftReview(value: S3SetupDraftReview, selected: S3SetupProfile, sourceDigest: string): S3SetupDraftReview {
-  if (!profile(selected) || !exact(value, ["schema_version", "profile_id", "profile_digest", "validation_scope", "source_sha256", "configuration_digest", "environments"]) || value.schema_version !== "bluefire.s3-onboarding-draft-review.v1" || value.validation_scope !== "structural_only" || value.profile_id !== selected.profile_id || value.profile_digest !== selected.profile_digest || !hash(sourceDigest) || value.source_sha256 !== sourceDigest || !hash(value.configuration_digest) || !Array.isArray(value.environments) || !value.environments.length || value.environments.length > 8) throw invalid();
-  if (value.environments.some(row => !exact(row, ["environment_id", "display_name", "account_id", "region", "bucket", "expires_at", "fixture_generation"]) || !identifier(row.environment_id) || typeof row.display_name !== "string" || !row.display_name || row.display_name.length > 100 || typeof row.account_id !== "string" || !/^[0-9]{12}$/.test(row.account_id) || typeof row.region !== "string" || !/^[a-z]{2}-[a-z]+-[1-9][0-9]?$/.test(row.region) || typeof row.bucket !== "string" || !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(row.bucket) || typeof row.expires_at !== "string" || row.expires_at.length > 40 || !Number.isFinite(Date.parse(row.expires_at)) || ![1, 2].includes(row.fixture_generation)) || new Set(value.environments.map(row => row.environment_id)).size !== value.environments.length) throw invalid();
+  const v1 = value.schema_version === "bluefire.s3-onboarding-draft-review.v1";
+  const v2 = value.schema_version === "bluefire.s3-onboarding-draft-review.v2";
+  if (!profile(selected) || (!v1 && !v2) || !exact(value, ["schema_version", "profile_id", "profile_digest", "validation_scope", "source_sha256", "configuration_digest", "environments"]) || value.validation_scope !== "structural_only" || value.profile_id !== selected.profile_id || value.profile_digest !== selected.profile_digest || !hash(sourceDigest) || value.source_sha256 !== sourceDigest || !hash(value.configuration_digest) || !Array.isArray(value.environments) || !value.environments.length || value.environments.length > 8) throw invalid();
+  const baseKeys = ["environment_id", "display_name", "account_id", "region", "bucket", "expires_at", "fixture_generation"];
+  const invalidEnvironment = value.environments.some(row => {
+    if (!exact(row, v2 ? [...baseKeys, "audit_source", "audit_collection"] : baseKeys) || !identifier(row.environment_id) || typeof row.display_name !== "string" || !row.display_name || row.display_name.length > 100 || typeof row.account_id !== "string" || !/^[0-9]{12}$/.test(row.account_id) || typeof row.region !== "string" || !/^[a-z]{2}-[a-z]+-[1-9][0-9]?$/.test(row.region) || typeof row.bucket !== "string" || !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(row.bucket) || typeof row.expires_at !== "string" || row.expires_at.length > 40 || !Number.isFinite(Date.parse(row.expires_at)) || ![1, 2].includes(row.fixture_generation)) return true;
+    if (!v2) return false;
+    try {
+      const source = checkedAuditSourceDescriptor("audit_source" in row ? row.audit_source : undefined);
+      const availability = "audit_collection" in row ? row.audit_collection : undefined;
+      return source.source_account_id !== row.account_id || source.event_region !== row.region || Date.parse(source.expires_at) > Date.parse(row.expires_at) || !unavailableAuditCollection(availability);
+    } catch {
+      return true;
+    }
+  });
+  if (invalidEnvironment || new Set(value.environments.map(row => row.environment_id)).size !== value.environments.length) throw invalid();
   return value;
 }
 

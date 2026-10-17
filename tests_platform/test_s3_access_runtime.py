@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 import stat
 from dataclasses import FrozenInstanceError
 from pathlib import Path, PurePosixPath
@@ -62,9 +63,70 @@ def test_closed_manifest_and_derived_worker_generation():
         parse(row)
 
 
+def test_native_compiled_worker_inventory_matches_python_generated_manifest():
+    repository = Path(__file__).resolve().parents[1]
+    native = repository / "runner" / "src" / "s3_runtime_manifest.rs"
+    source = native.read_text(encoding="utf-8")
+    declared = re.search(
+        r"pub\(crate\) const WORKER_FILES: \[&str; (\d+)\] = \[(.*?)\];",
+        source,
+        re.DOTALL,
+    )
+    assert declared is not None
+    names = re.findall(r'"([^\"]+)"', declared.group(2))
+    assert len(names) == len(set(names)) == int(declared.group(1))
+    assert set(names) == runtime.WORKER_FILES
+    pinned = re.search(
+        r"const WORKER_SOURCES: \[\(&str, &\[u8\]\); (\d+)\] = \[(.*?)\];",
+        source,
+        re.DOTALL,
+    )
+    assert pinned is not None
+    pairs = re.findall(
+        r'\(\s*"([^\"]+)"\s*,\s*include_bytes!\("([^\"]+)"\),?\s*\)',
+        pinned.group(2),
+    )
+    assert len(pairs) == len(set(name for name, _ in pairs)) == int(pinned.group(1))
+    assert {name for name, _ in pairs} == runtime.WORKER_FILES
+    worker = {}
+    for name, path in pairs:
+        assert path == "../../bluefire/" + name
+        raw = (native.parent / path).read_bytes().replace(b"\r\n", b"\n")
+        assert raw
+        worker[name] = details(raw)
+    row = manifest()
+    row["files"].update({"worker/" + name: value for name, value in worker.items()})
+    row["worker_generation"] = runtime._digest(worker)
+    assert parse(row) == row
+
+
 def test_matching_version_labels_do_not_admit_different_sdk_bytes():
     row = manifest()
     row["files"]["sdk/botocore/cacert.pem"] = details(b"changed")
+    with pytest.raises(runtime.S3RuntimeError):
+        parse(row)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "s3_access_audit.py",
+        "s3_audit_collection_contract.py",
+        "s3_audit_wire.py",
+        "s3_audit_send.py",
+        "s3_audit_sdk.py",
+    ],
+)
+def test_audit_worker_modules_require_explicit_complete_generation(name):
+    assert name in runtime.WORKER_FILES
+    row = manifest()
+    del row["files"]["worker/" + name]
+    remaining = {
+        key.removeprefix("worker/"): value
+        for key, value in row["files"].items()
+        if key.startswith("worker/")
+    }
+    row["worker_generation"] = runtime._digest(remaining)
     with pytest.raises(runtime.S3RuntimeError):
         parse(row)
 

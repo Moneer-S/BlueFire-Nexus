@@ -5,17 +5,25 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import corpus from "../../tests_platform/fixtures/s3_audit_reviews_v1.json";
-import { auditFiles, auditInputDigest, checkedAuditHistory, checkedAuditReview, readAuditPending, s3AuditApi, saveAuditPending, type AuditHistory, type AuditInput, type AuditReview } from "../src/lib/s3-audit";
+import { auditFiles, auditInputDigest, checkedCollectedAuditReview, checkedAuditHistory, checkedAuditReview, readAuditPending, s3AuditApi, saveAuditPending, type AuditHistory, type AuditInput, type AuditReview } from "../src/lib/s3-audit";
 import { S3Audit } from "../src/pages/S3Audit";
+import { collectedReview, collectedSummary } from "./s3-audit-collected-fixture";
 
 const history = corpus.history as AuditHistory;
 const sample = corpus.cases[0]!;
 const review = sample.review as AuditReview;
 const input = sample.input as AuditInput;
 const owner = history.workflow_job_id;
+const collectedOwner = collectedReview.workflow_job_id;
 const marker = { owner, submission_id: input.submission_id, run_id: input.run_id, delivery_state: input.delivery_state, input_digest: review.input_digest };
 const fixtureFile = () => { const bytes = Uint8Array.from(atob(input.logs[0]!.data), c => c.charCodeAt(0)); return Object.assign(new File([bytes], "audit.json.gz"), { arrayBuffer: async () => bytes.buffer }); };
 function view(selectedOwner = owner) { const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 }, mutations: { retry: false } } }); return render(<QueryClientProvider client={client}><MemoryRouter><S3Audit owner={selectedOwner} /></MemoryRouter></QueryClientProvider>); }
+function collectedHistory(): AuditHistory {
+  if (history.schema_version !== "bluefire.s3-audit-reviews.v1") throw new Error("The import-history fixture must remain v1.");
+  const base = structuredClone(history);
+  const result: AuditHistory = { workflow_job_id: base.workflow_job_id, reads: base.reads, reviews: base.reviews, maximum_reviews: base.maximum_reviews, maximum_input_bytes: base.maximum_input_bytes, maximum_expanded_bytes: base.maximum_expanded_bytes, schema_version: "bluefire.s3-audit-reviews.v2", collections: [structuredClone(collectedSummary)], maximum_collections: 2 };
+  return result;
+}
 beforeEach(() => { localStorage.clear(); vi.stubGlobal("crypto", webcrypto); vi.spyOn(s3AuditApi, "list").mockResolvedValue(structuredClone(history)); vi.spyOn(s3AuditApi, "read").mockResolvedValue(structuredClone(review)); vi.spyOn(s3AuditApi, "save").mockResolvedValue(structuredClone(review)); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
@@ -40,6 +48,112 @@ it("rejects duplicated history and a review from another source", () => {
   const bad = structuredClone(history); bad.reviews.push(bad.reviews[0]!); expect(() => checkedAuditHistory(bad, owner)).toThrow();
   const changed = structuredClone(history); changed.reviews[0]!.source.outcome_digest = "sha256:" + "f".repeat(64); expect(() => checkedAuditHistory(changed, owner)).toThrow();
 });
+it("accepts v2 history without changing its separate operator-import history", () => {
+  const v2 = collectedHistory();
+  expect(checkedAuditHistory(v2, owner)).toEqual(v2);
+  expect(v2.reviews).toEqual(history.reviews);
+  expect(v2.reads).toEqual(history.reads);
+});
+it.each(["operation", "phase", "pair-run", "receipt-reservation", "correlation", "correlation-window", "observation-schema", "extra-key"])("rejects a spliced collected detail: %s", change => {
+  const bad = structuredClone(collectedReview);
+  expect(checkedCollectedAuditReview(bad, collectedOwner, bad.review_id)).toEqual(bad);
+  if (change === "operation") bad.operation_job_id = "job-" + "f".repeat(32);
+  if (change === "phase") bad.phase = "retest";
+  if (change === "pair-run") bad.original_pair.reads[1].run_id = bad.original_pair.reads[0].run_id;
+  if (change === "receipt-reservation") bad.receipt.reservation_digest = "sha256:" + "0".repeat(64);
+  if (change === "correlation") bad.receipt.result.data.correlations.probe.request_digest = "sha256:" + "f".repeat(64);
+  if (change === "correlation-window") bad.receipt.result.data.correlations.probe.authorized_request_window.from = "2026-10-11T20:44:20Z";
+  if (change === "observation-schema") Object.assign(bad.receipt.result.data, { schema_version: "bluefire.s3-audit-observation.v1" });
+  if (change === "extra-key") Object.assign(bad.receipt.result.data, { unexpected: true });
+  expect(bad).not.toEqual(collectedReview);
+  expect(() => checkedCollectedAuditReview(bad, collectedOwner, collectedReview.review_id)).toThrow();
+});
+it("accepts a validated failed original read and an unreported object call", () => {
+  const partial = structuredClone(collectedReview);
+  const probe = partial.original_pair.reads[0];
+  probe.result.outcome = "failed";
+  probe.result.problem = "scoped_operation_failed";
+  probe.result.data = null;
+  probe.result.send_permits_consumed = 3;
+  probe.result.calls.splice(3);
+  Object.assign(partial.receipt.result.data.correlations.probe.reads[0]!, {
+    status: "worker_unreported",
+    worker_outcome: "unreported",
+    worker_request_id: null,
+  });
+  expect(checkedCollectedAuditReview(partial, collectedOwner, partial.review_id)).toEqual(partial);
+});
+it("accepts a failed setup prefix without any object call", () => {
+  const failed = structuredClone(collectedReview);
+  const probe = failed.original_pair.reads[0];
+  probe.result.outcome = "failed"; probe.result.problem = "scoped_operation_failed";
+  probe.result.data = null; probe.result.send_permits_consumed = 2; probe.result.calls.splice(2);
+  probe.result.calls[1] = { ...probe.result.calls[1]!, error_code: "AccessDenied", http_status: 403 };
+  Object.assign(failed.receipt.result.data.correlations.probe.reads[0]!, {
+    status: "worker_unreported", worker_outcome: "unreported", worker_request_id: null,
+  });
+  expect(checkedCollectedAuditReview(failed, collectedOwner, failed.review_id)).toEqual(failed);
+});
+it.each(["status", "request-id", "event-id", "outcome"] as const)("rejects a %s claim for an unreported original call", field => {
+  const partial = structuredClone(collectedReview);
+  const probe = partial.original_pair.reads[0];
+  probe.result.outcome = "failed"; probe.result.problem = "scoped_operation_failed";
+  probe.result.data = null; probe.result.send_permits_consumed = 3; probe.result.calls.splice(3);
+  const row = partial.receipt.result.data.correlations.probe.reads[0]!;
+  Object.assign(row, { status: "worker_unreported", worker_outcome: "unreported", worker_request_id: null });
+  expect(checkedCollectedAuditReview(partial, collectedOwner, partial.review_id)).toEqual(partial);
+  if (field === "status") row.status = "missing";
+  if (field === "request-id") row.worker_request_id = "probe-request-3";
+  if (field === "event-id") row.audit_event_ids = ["12345678-1234-1234-1234-123456789abc"];
+  if (field === "outcome") row.audit_outcomes = ["service_success"];
+  expect(() => checkedCollectedAuditReview(partial, collectedOwner, partial.review_id)).toThrow();
+});
+it("accepts a failed original read with a validated service error call", () => {
+  const failed = structuredClone(collectedReview);
+  const legitimate = failed.original_pair.reads[1];
+  legitimate.result.outcome = "failed";
+  legitimate.result.problem = "scoped_operation_failed";
+  legitimate.result.data = null;
+  legitimate.result.calls[4] = { ...legitimate.result.calls[4]!, error_code: "InternalError", http_status: 500 };
+  Object.assign(failed.receipt.result.data.correlations.legitimate.reads[1]!, { worker_outcome: "other_service_error" });
+  expect(checkedCollectedAuditReview(failed, collectedOwner, failed.review_id)).toEqual(failed);
+});
+it.each(["SignatureDoesNotMatch", "RequestExpired", "AuthorizationHeaderMalformed"] as const)("matches backend credential-error classification for %s", errorCode => {
+  const failed = structuredClone(collectedReview);
+  const legitimate = failed.original_pair.reads[1];
+  legitimate.result.outcome = "failed"; legitimate.result.problem = "scoped_operation_failed";
+  legitimate.result.data = null;
+  legitimate.result.calls[4] = { ...legitimate.result.calls[4]!, error_code: errorCode, http_status: 403 };
+  Object.assign(failed.receipt.result.data.correlations.legitimate.reads[1]!, { worker_outcome: "credential_error" });
+  expect(checkedCollectedAuditReview(failed, collectedOwner, failed.review_id)).toEqual(failed);
+});
+it("rejects collection calls that were not successful HTTP 200 responses", () => {
+  const bad = structuredClone(collectedReview);
+  bad.receipt.result.calls[3]!.http_status = 500;
+  expect(() => checkedCollectedAuditReview(bad, collectedOwner, bad.review_id)).toThrow();
+});
+it.each(["worker_unreported", "matched", "conflict", "missing", "truncated"] as const)("rejects an existing call with unsupported evidence status %s", status => {
+  const bad = structuredClone(collectedReview);
+  expect(checkedCollectedAuditReview(bad, collectedOwner, bad.review_id)).toEqual(bad);
+  bad.receipt.result.data.correlations.probe.reads[0]!.status = status;
+  expect(() => checkedCollectedAuditReview(bad, collectedOwner, bad.review_id)).toThrow();
+});
+it.each(["from", "through"] as const)("binds the correlation %s to its original request rather than only UTC syntax", field => {
+  const bad = structuredClone(collectedReview);
+  expect(checkedCollectedAuditReview(bad, collectedOwner, bad.review_id)).toEqual(bad);
+  bad.receipt.result.data.correlations.probe.authorized_request_window[field] = "2026-10-11T20:44:51+00:00";
+  expect(() => checkedCollectedAuditReview(bad, collectedOwner, bad.review_id)).toThrow();
+});
+it("preserves microseconds when joining the original request window", () => {
+  const value = structuredClone(collectedReview);
+  value.original_pair.reads[0].request.deadline = "2026-10-11T20:44:50.123456Z";
+  Object.assign(value.receipt.result.data.correlations.probe.authorized_request_window, {
+    from: "2026-10-11T20:44:20.123456+00:00", through: "2026-10-11T20:44:50.123456+00:00",
+  });
+  expect(checkedCollectedAuditReview(value, collectedOwner, value.review_id)).toEqual(value);
+  value.receipt.result.data.correlations.probe.authorized_request_window.from = "2026-10-11T20:44:20.123457+00:00";
+  expect(() => checkedCollectedAuditReview(value, collectedOwner, value.review_id)).toThrow();
+});
 it("bounds uploaded files before reading their bytes", async () => {
   const file = fixtureFile(); expect(await auditFiles([file])).toEqual(input.logs);
   await expect(auditFiles([])).rejects.toThrow(); await expect(auditFiles(Array(5).fill(file))).rejects.toThrow();
@@ -48,10 +162,25 @@ it("bounds uploaded files before reading their bytes", async () => {
 });
 it("opens immutable evidence without submitting or claiming independent collection", async () => {
   view(); await userEvent.click(await screen.findByRole("button", { name: "Baseline reads · Probe" }));
-  expect(await screen.findByRole("region", { name: "Imported cloud audit" })).toBeInTheDocument();
+  expect(await screen.findByRole("region", { name: "Cloud audit" })).toBeInTheDocument();
   await waitFor(() => expect(screen.getByLabelText("Saved audit review detail")).toBeInTheDocument());
   expect(screen.getByText("Collection not independently verified")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Original run evidence" })).toHaveAttribute("href", `/runs/${review.source.run_id}`);
+  expect(s3AuditApi.save).not.toHaveBeenCalled();
+});
+it("opens collected history with both original links and bounded retrieval claims", async () => {
+  const v2 = collectedHistory();
+  v2.workflow_job_id = collectedOwner;
+  vi.mocked(s3AuditApi.list).mockResolvedValue(v2);
+  vi.mocked(s3AuditApi.read).mockResolvedValue(structuredClone(collectedReview));
+  view(collectedOwner);
+  await userEvent.click(await screen.findByRole("button", { name: "Baseline reads · Collected audit" }));
+  await waitFor(() => expect(screen.getByLabelText("Saved audit review detail")).toBeInTheDocument());
+  expect(screen.getAllByText("Authenticated source retrieval").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Integrity unverified").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Delivery incomplete").length).toBeGreaterThan(0);
+  expect(screen.getByRole("link", { name: "Probe original run evidence" })).toHaveAttribute("href", `/runs/${collectedReview.original_pair.reads[0].run_id}`);
+  expect(screen.getByRole("link", { name: "Legitimate original run evidence" })).toHaveAttribute("href", `/runs/${collectedReview.original_pair.reads[1].run_id}`);
   expect(s3AuditApi.save).not.toHaveBeenCalled();
 });
 it("restores an uncertain save after reload without retaining file bytes", async () => {

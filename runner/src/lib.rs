@@ -40,6 +40,7 @@ mod s3_access_policy;
 mod s3_access_scope;
 pub mod s3_access_send;
 pub mod s3_admission;
+mod s3_audit_binding;
 mod s3_fixture_binding;
 #[cfg(target_os = "linux")]
 mod s3_reservation;
@@ -51,7 +52,6 @@ mod s3_runtime_manifest;
 mod s3_worker_process;
 #[cfg(target_os = "linux")]
 mod s3_worker_protocol;
-#[cfg(target_os = "linux")]
 mod s3_worker_result;
 #[cfg(target_os = "linux")]
 mod s3_worker_secret;
