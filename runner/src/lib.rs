@@ -52,7 +52,6 @@ mod s3_runtime_manifest;
 mod s3_worker_process;
 #[cfg(target_os = "linux")]
 mod s3_worker_protocol;
-#[cfg(target_os = "linux")]
 mod s3_worker_result;
 #[cfg(target_os = "linux")]
 mod s3_worker_secret;

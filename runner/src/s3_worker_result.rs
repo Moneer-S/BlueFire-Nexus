@@ -1,11 +1,20 @@
 //! Closed safe projection of a fixed worker result, never independent AWS audit.
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::canonical::canonical_json;
 use crate::s3_access_binding::S3WorkerBinding;
 use crate::s3_access_scope::{require, Checked};
-use crate::s3_reservation::PolicyPosition;
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PolicyPosition {
+    Before,
+    After,
+    Drift,
+    Unknown,
+}
 
 const ERROR_CODES: &[&str] = &[
     "AccessDenied",
@@ -41,6 +50,7 @@ fn fields(row: &Value, names: &str) -> Checked<()> {
 
 pub(crate) struct WorkerResult {
     document: Value,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub observed: bool,
     pub all_objects_read: bool,
     pub policy_position: PolicyPosition,

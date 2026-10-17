@@ -184,7 +184,7 @@ fn shared_collector_vectors_bind_requests_discovery_resources_and_results_withou
         let count = case["actual_sends"].as_u64().unwrap();
         assert!(validate_result(&binding, &result, count, Some(&discovery)).unwrap());
         assert!(validate_result(&binding, &result, count, None).is_err());
-        assert!(canonical_json(&json!({"kind":"result","result":result})).len() + 1 <= MAX_LINE);
+        assert!(canonical_json(&json!({"kind":"result","result":result})).len() < MAX_LINE);
         assert_eq!(
             discovery.journal_record().unwrap()["kind"],
             "audit_discovery"
@@ -406,4 +406,24 @@ fn current_collection_interval_cannot_start_early_or_extend_narrow_source_deadli
             accepted
         );
     }
+}
+
+#[test]
+fn policy_position_serialization_preserves_retained_ledger_labels() {
+    use crate::s3_worker_result::PolicyPosition;
+
+    for (position, label) in [
+        (PolicyPosition::Before, "before"),
+        (PolicyPosition::After, "after"),
+        (PolicyPosition::Drift, "drift"),
+        (PolicyPosition::Unknown, "unknown"),
+    ] {
+        let encoded = json!(label);
+        assert_eq!(serde_json::to_value(position).unwrap(), encoded);
+        assert_eq!(
+            serde_json::from_value::<PolicyPosition>(encoded).unwrap(),
+            position
+        );
+    }
+    assert!(serde_json::from_value::<PolicyPosition>(json!("verified")).is_err());
 }

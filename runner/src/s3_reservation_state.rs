@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::canonical::{canonical_hash, canonical_json};
 use crate::s3_fixture_binding::FixtureOperation;
+pub(crate) use crate::s3_worker_result::PolicyPosition;
 
 use super::{Error, Result};
 
@@ -43,15 +44,6 @@ pub(super) struct Reserved {
 pub(super) struct FixturePosition {
     pub state: String,
     pub etag: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum PolicyPosition {
-    Before,
-    After,
-    Drift,
-    Unknown,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
