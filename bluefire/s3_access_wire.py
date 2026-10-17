@@ -82,6 +82,10 @@ class S3WorkerRequest:
     @classmethod
     def from_mapping(cls, value: Any) -> S3WorkerRequest:
         row = document(value, limit=MAX_FRAME_BYTES)
+        if row.get("schema_version") == "bluefire.s3-worker-request.v3":
+            from . import s3_audit_wire as audit_wire
+
+            return cls(canonical_json_bytes(audit_wire.request(row)))
         fixture_request = row.get("schema_version") == fixtures.REQUEST_SCHEMA
         exact(
             row,
@@ -167,6 +171,12 @@ class S3WorkerRequest:
         remaining = (timestamp(checked["deadline"]) - now).total_seconds()
         if not 0 < remaining <= checked["scope"]["limits"]["request_seconds"]:
             raise S3AccessError("worker request deadline is unavailable")
+        if checked["schema_version"] == "bluefire.s3-worker-request.v3":
+            from . import s3_audit_collection_contract as audit
+
+            seconds = audit.budget(scope, checked["audit"]["source"])["per_batch"]["seconds"]
+            if now < timestamp(checked["audit"]["issued_at"]) or remaining > seconds:
+                raise S3AccessError("audit request is outside its original collection interval")
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -231,6 +241,7 @@ class S3WorkerHandshake:
             "nonce": _hex(nonce),
         }
         self._state = "ready"
+        self.reservation_digest: str | None = None
 
     def ready(self) -> dict[str, Any]:
         return dict(self._ready)
@@ -251,18 +262,27 @@ class S3WorkerHandshake:
         self._state = "closed"
         self.request.assert_current(clock)
         frame = decode_frame(payload, maximum=MAX_SECRET_FRAME_BYTES)
-        exact(frame, {"kind", "request_digest", "nonce", "credentials"}, "private credential frame")
+        audit_request = self.request.to_dict()["schema_version"] == "bluefire.s3-worker-request.v3"
+        exact(
+            frame,
+            {"kind", "request_digest", "nonce", "credentials"}
+            | ({"reservation_digest"} if audit_request else set()),
+            "private credential frame",
+        )
         if (
             frame["kind"] != "credentials"
             or frame["request_digest"] != self.request.digest
             or frame["nonce"] != self._ready["nonce"]
         ):
             raise S3AccessError("private credential frame belongs to another worker request")
-        return S3Credentials.from_mapping(
+        reservation = digest(frame["reservation_digest"]) if audit_request else None
+        credentials = S3Credentials.from_mapping(
             frame["credentials"],
             clock=clock,
             deadline=timestamp(self.request.to_dict()["deadline"]),
         )
+        self.reservation_digest = reservation
+        return credentials
 
 
 def permit_request(
@@ -294,6 +314,10 @@ def validate_permit(value: Any, requested: Mapping[str, Any]) -> None:
 
 def operation_plan(request: S3WorkerRequest) -> list[tuple[str, str, str]]:
     row = request.to_dict()
+    if row["schema_version"] == "bluefire.s3-worker-request.v3":
+        from . import s3_audit_wire as audit_wire
+
+        return audit_wire.operation_plan(row)
     if row["schema_version"] == fixtures.REQUEST_SCHEMA:
         return fixtures.operation_plan(row)
     selected = row["operation"]
@@ -316,6 +340,10 @@ def validate_result(request: S3WorkerRequest, value: Any) -> dict[str, Any]:
     """Validate worker-reported data, never elevate it to independent evidence."""
     request = S3WorkerRequest.from_mapping(request.to_dict())
     source = request.to_dict()
+    if source["schema_version"] == "bluefire.s3-worker-request.v3":
+        from . import s3_audit_wire as audit_wire
+
+        return audit_wire.validate_result(source, value)
     row = document(value, limit=16 * 1024)
     exact(
         row,

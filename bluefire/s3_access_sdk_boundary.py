@@ -7,6 +7,8 @@ import io
 from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import parse_qsl, quote, urlsplit
 
+from . import s3_audit_send as audit_send
+from . import s3_audit_wire as audit_wire
 from . import s3_fixture_contract as fixtures
 from .s3_access_contract import S3AccessError, S3AccessScope
 from .s3_access_sdk_transport import BoundedSdkTransport
@@ -72,13 +74,18 @@ class BotocoreFactory:
         self._assert_runtime()
         if service not in {"sts", "s3"}:
             raise S3AccessError("SDK service is unsupported")
+        region, host = scope.to_dict()["region"], scope.service_hosts[service]
+        if guard._audit is not None:
+            if scope.digest != guard.scope.digest:
+                raise S3AccessError("audit SDK scope differs from its original request")
+            region, host = audit_send.target(guard.request.to_dict(), service)
         session = self._session_factory()
         session.set_config_variable("config_file", "/dev/null")
         session.set_config_variable("credentials_file", "/dev/null")
         session.set_config_variable("profile", None)
         config = self._config_factory(
             signature_version="s3v4" if service == "s3" else "v4",
-            region_name=scope.to_dict()["region"],
+            region_name=region,
             connect_timeout=timeout,
             read_timeout=timeout,
             proxies={},
@@ -97,8 +104,8 @@ class BotocoreFactory:
         )
         client = session.create_client(
             service,
-            region_name=scope.to_dict()["region"],
-            endpoint_url="https://" + scope.service_hosts[service],
+            region_name=region,
+            endpoint_url="https://" + host,
             use_ssl=True,
             verify=self._ca_bundle,
             config=config,
@@ -108,11 +115,20 @@ class BotocoreFactory:
             # This private SDK interface must be checked against the selected,
             # attested release before the future native loader can admit it.
             endpoint = client._endpoint
-            endpoint.http_session = BoundedSdkTransport(
-                endpoint.http_session,
-                guard.claim_transport_send,
-                lambda: guard.request.assert_current(guard.clock),
-            )
+            if guard._audit is not None:
+                endpoint.http_session = BoundedSdkTransport(
+                    endpoint.http_session,
+                    guard.claim_transport_send,
+                    lambda: guard.request.assert_current(guard.clock),
+                    response_policy=guard.response_policy,
+                    response_observer=guard.capture_response,
+                )
+            else:
+                endpoint.http_session = BoundedSdkTransport(
+                    endpoint.http_session,
+                    guard.claim_transport_send,
+                    lambda: guard.request.assert_current(guard.clock),
+                )
             client.meta.events.register("before-send.*.*", guard.hook)
         except Exception:
             client.close()
@@ -213,27 +229,36 @@ class S3SendGuard:
         self.prepared_request: Any = None
         self.prepared_fingerprint = ""
         self.write_permitted = False
+        self._audit = (
+            audit_send.AuditSendState(self.request.to_dict())
+            if self.request.to_dict()["schema_version"] == audit_wire.REQUEST_SCHEMA
+            else None
+        )
 
     def begin(self, service: str, operation: str, role: str, parameters: Mapping[str, Any]) -> None:
         if self.active is not None:
             raise S3AccessError("concurrent SDK sends are unsupported")
         self.request.assert_current(self.clock)
-        plan = operation_plan(self.request)
-        if self.sequence >= len(plan) or (service, operation, role) != plan[self.sequence]:
-            raise S3AccessError("SDK call differs from the fixed operation sequence")
-        if (
+        active = {
+            "service": service,
+            "operation": operation,
+            "role": role,
+            "parameters": dict(parameters),
+        }
+        if self._audit is not None:
+            self._audit.begin(self.sequence + 1, active)
+        else:
+            plan = operation_plan(self.request)
+            if self.sequence >= len(plan) or (service, operation, role) != plan[self.sequence]:
+                raise S3AccessError("SDK call differs from the fixed operation sequence")
+        if self._audit is None and (
             operation == "GetObject"
             and self.request.to_dict()["schema_version"] != fixtures.REQUEST_SCHEMA
         ):
             position = self.sequence - 3
             if parameters.get("Key") != self.scope.to_dict()["objects"][position]["key"]:
                 raise S3AccessError("SDK object order differs from the finite read plan")
-        self.active = {
-            "service": service,
-            "operation": operation,
-            "role": role,
-            "parameters": dict(parameters),
-        }
+        self.active = active
         self.used = False
         self.permitted = False
         self.transport_sent = False
@@ -246,6 +271,21 @@ class S3SendGuard:
         if active is None or self.used:
             raise S3AccessError("unplanned retry, redirect or SDK request is refused")
         self.used = True
+        if self._audit is not None:
+            try:
+                send = audit_send.prepared_send(
+                    self.request.to_dict(),
+                    active,
+                    request,
+                    sequence=self.sequence + 1,
+                    committed_discovery=self._audit.discovery,
+                )
+            except (ValueError, UnicodeError, AttributeError, KeyError) as exc:
+                if isinstance(exc, S3AccessError):
+                    raise
+                raise S3AccessError("audit SDK prepared request is invalid") from None
+            self._permit_prepared(request, send)
+            return
         scope = self.scope.to_dict()
         service, operation, parameters = (
             active["service"],
@@ -405,17 +445,61 @@ class S3SendGuard:
             "resource": resource,
             "payload_digest": "sha256:" + hashlib.sha256(body).hexdigest(),
         }
+        self._permit_prepared(request, send)
+
+    def _permit_prepared(self, request: Any, send: Mapping[str, Any]) -> None:
         requested = permit_request(self.request, self.sequence + 1, send)
         validate_permit(self.permit(requested), requested)
         # Native debit precedes ACK. An expired or interrupted worker cannot
         # refund that debit or assume an acknowledged write was not attempted.
         self.sequence += 1
-        if operation in {"PutBucketPolicy", "PutObject", "DeleteObject"}:
+        if send["operation"] in {"PutBucketPolicy", "PutObject", "DeleteObject"}:
             self.write_permitted = True
         self.request.assert_current(self.clock)
         self.permitted = True
         self.prepared_request = request
         self.prepared_fingerprint = self._fingerprint(request)
+
+    def response_policy(self) -> tuple[int, Callable[[int], None]]:
+        if self._audit is None or self.active is None or not self.permitted or self.transport_sent:
+            raise S3AccessError("audit response policy has no original unused send")
+        return self._audit.response_policy()
+
+    def capture_response(self, body: Any) -> None:
+        if self._audit is None or self.active is None or not self.transport_sent:
+            raise S3AccessError("audit response has no original dispatched send")
+        self._audit.capture_response(body)
+
+    def response_receipt(self) -> dict[str, Any]:
+        self.request.assert_current(self.clock)
+        if self._audit is None or not self.transport_sent:
+            raise S3AccessError("audit response receipt is unavailable")
+        return self._audit.response_receipt()
+
+    @property
+    def sdk_body_bytes(self) -> int:
+        return self._audit.sdk_body_bytes if self._audit is not None else 0
+
+    @property
+    def compressed_bytes(self) -> int:
+        return self._audit.compressed_bytes if self._audit is not None else 0
+
+    def accept_discovery(
+        self,
+        frame: Mapping[str, Any],
+        ack: Mapping[str, Any],
+        *,
+        reservation_digest: str,
+    ) -> dict[str, Any]:
+        self.request.assert_current(self.clock)
+        if self._audit is None or self.active is not None:
+            raise S3AccessError("audit discovery has no closed original list sends")
+        return self._audit.accept_discovery(
+            frame,
+            ack,
+            reservation_digest=reservation_digest,
+            sequence=self.sequence,
+        )
 
     @staticmethod
     def _fixture_body(body: Any) -> bytes:

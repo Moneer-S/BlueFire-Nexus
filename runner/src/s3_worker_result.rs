@@ -25,6 +25,10 @@ const ERROR_CODES: &[&str] = &[
     "OtherServiceError",
 ];
 
+pub(crate) fn valid_error(code: &str) -> bool {
+    ERROR_CODES.contains(&code)
+}
+
 fn fields(row: &Value, names: &str) -> Checked<()> {
     let object = row.as_object().ok_or("invalid S3 worker result")?;
     require(
@@ -52,12 +56,31 @@ impl WorkerResult {
         bytes: &[u8],
         debits: u64,
     ) -> Checked<Self> {
+        Self::from_frame_with_discovery(binding, bytes, debits, None)
+    }
+
+    pub(crate) fn from_frame_with_discovery(
+        binding: &S3WorkerBinding,
+        bytes: &[u8],
+        debits: u64,
+        discovery: Option<&crate::s3_access_binding::audit::Discovery>,
+    ) -> Checked<Self> {
         require(bytes.len() <= 16 * 1024 && bytes.last() == Some(&b'\n'))?;
         let frame: Value = serde_json::from_slice(bytes).map_err(|_| "invalid S3 worker result")?;
         require(canonical_json(&frame).as_bytes() == &bytes[..bytes.len() - 1])?;
         fields(&frame, "kind result")?;
         require(frame["kind"] == "result")?;
         let row = &frame["result"];
+        if binding.audit().is_some() {
+            let observed =
+                crate::s3_access_binding::audit::validate_result(binding, row, debits, discovery)?;
+            return Ok(Self {
+                document: row.clone(),
+                observed,
+                all_objects_read: false,
+                policy_position: PolicyPosition::Unknown,
+            });
+        }
         fields(row, "schema_version request_digest outcome data problem send_permits_consumed calls runtime_isolation_proven")?;
         let schema = if binding.fixture().is_some() {
             crate::s3_fixture_binding::RESULT_SCHEMA

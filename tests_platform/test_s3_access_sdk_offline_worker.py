@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -11,6 +12,28 @@ from html import escape
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from urllib.parse import parse_qs, quote, unquote, urlsplit
+
+AUDIT_OFFLINE_FILES = (
+    "bluefire/s3_access_runtime.py",
+    "bluefire/s3_access_contract.py",
+    "bluefire/s3_access_policy.py",
+    "bluefire/s3_access_wire.py",
+    "bluefire/s3_access_audit.py",
+    "bluefire/s3_access_sdk.py",
+    "bluefire/s3_access_sdk_boundary.py",
+    "bluefire/s3_access_sdk_transport.py",
+    "bluefire/s3_audit_sdk.py",
+    "bluefire/s3_audit_send.py",
+    "bluefire/s3_audit_wire.py",
+    "bluefire/s3_audit_collection_contract.py",
+    "bluefire/s3_fixture_contract.py",
+    "bluefire/s3_fixture_sdk.py",
+    "bluefire/s3_fixture_send.py",
+    "bluefire/util.py",
+    "tests_platform/test_s3_access_sdk_offline_worker.py",
+    "tests_platform/s3_audit_offline_responses.py",
+    "tests_platform/test_s3_audit_sdk_integration.py",
+)
 
 
 def run_offline() -> dict:
@@ -61,6 +84,20 @@ def run_offline() -> dict:
     sys.addaudithook(audit)
     payload = json.loads(sys.stdin.buffer.read(128 * 1024))
     repository = Path(payload["repository"])
+    audit_request = payload["request"]["schema_version"] == "bluefire.s3-worker-request.v3"
+
+    def verify_audit_sources():
+        if not audit_request:
+            return
+        assert set(payload["source_pins"]) == set(AUDIT_OFFLINE_FILES)
+        for name, expected in payload["source_pins"].items():
+            path = repository / name
+            assert path.is_file() and not path.is_symlink()
+            with path.open("rb") as stream:
+                raw = stream.read(1024 * 1024 + 1)
+            assert len(raw) <= 1024 * 1024 and hashlib.sha256(raw).hexdigest() == expected
+
+    verify_audit_sources()
     fixed_factory = None
     if payload["scenario"] == "fixed_session":
         # This case exercises the actual fixed Session configuration, not
@@ -177,6 +214,20 @@ def run_offline() -> dict:
             ).encode()
         )
 
+    audit_probe = None
+    if audit_request:
+        assert fixed_factory is not None
+        helpers = ModuleType("tests_platform")
+        helpers.__path__ = [str(repository / "tests_platform")]
+        sys.modules["tests_platform"] = helpers
+        from bluefire import s3_audit_collection_contract as audit_contract
+        from bluefire import s3_audit_wire as audit_wire
+        from tests_platform.s3_audit_offline_responses import AuditOfflineResponses
+
+        audit_probe = AuditOfflineResponses(
+            row, payload, audit_contract.list_parameters(scope, row["audit"]), response
+        )
+
     def fixture_response(method, target, arguments):
         parsed = urlsplit(target)
         query = parse_qs(parsed.query, keep_blank_values=True)
@@ -261,6 +312,8 @@ def run_offline() -> dict:
             assert arguments["retries"].total is False
             method, target = arguments["method"], arguments["url"]
             http_calls.append({"method": method, "target": target, "host": self.host})
+            if audit_probe is not None:
+                return audit_probe.urlopen(self.host, arguments, len(http_calls))
             if self.host == scope.service_hosts["sts"]:
                 body = arguments["body"]
                 fields = parse_qs(
@@ -340,15 +393,69 @@ def run_offline() -> dict:
     permits = []
 
     def permit(send):
+        if audit_probe is not None:
+            audit_wire.validate_send(
+                row, send, sequence=len(permits) + 1, committed_discovery=audit_probe.durable
+            )
         permits.append(send)
         return {
             "kind": "permit",
             **{key: send[key] for key in ("request_digest", "sequence", "send_digest")},
         }
 
-    result = S3SdkAdapter(
-        request, secret, factory=factory, permit=permit, clock=lambda: now
-    ).execute()
+    audit_options = {}
+    if audit_probe is not None:
+
+        def discovery(frame):
+            durable = audit_wire.discovery(
+                row, frame, reservation_digest=audit_probe.reservation_digest
+            )
+            return audit_probe.discovery_ack(frame, durable)
+
+        audit_options = {
+            "discovery": discovery,
+            "audit_reservation_digest": audit_probe.reservation_digest,
+        }
+    adapter = S3SdkAdapter(
+        request, secret, factory=factory, permit=permit, clock=lambda: now, **audit_options
+    )
+    result = adapter.execute()
+    audit_checks = None
+    if audit_probe is not None:
+        bodies = [
+            body for client in adapter.clients for body in client._endpoint.http_session.bodies
+        ]
+        assert len(bodies) == len(http_calls)
+        assert all(body.closed and body.complete for body in bodies)
+        receipts = adapter.guard._audit._receipts
+        assert all(
+            receipt["body_sha256"] == audit_probe.response_hashes[number]
+            for number, receipt in receipts.items()
+        )
+        assert [audit_probe.response_hashes[index] for index in range(1, len(bodies) + 1)] == [
+            "sha256:" + body.body_sha256 for body in bodies
+        ]
+        loaded = {
+            Path(module.__file__).resolve().relative_to(repository.resolve()).as_posix()
+            for name, module in sys.modules.items()
+            if name.startswith(("bluefire.", "tests_platform."))
+            and getattr(module, "__file__", None)
+        }
+        assert loaded <= set(AUDIT_OFFLINE_FILES)
+        verify_audit_sources()
+        audit_checks = {
+            "sts_bodies_verified": audit_probe.sts_bodies_verified,
+            "signing": audit_probe.signing,
+            "conditional_gets": audit_probe.gets,
+            "discovery_acknowledged": audit_probe.acknowledged,
+            "list_body_sha256": audit_probe.list_body_hash,
+            "compressed_sha256": "sha256:" + hashlib.sha256(audit_probe.packed).hexdigest(),
+            "expanded_sha256": "sha256:" + hashlib.sha256(audit_probe.raw).hexdigest(),
+            "all_bodies_closed": True,
+            "all_bodies_eof": True,
+            "wire_body_receipts_match": True,
+            "source_before_after_unchanged": True,
+        }
     return {
         "result": result,
         "counters": counters,
@@ -359,6 +466,7 @@ def run_offline() -> dict:
         "transport_mode": "official-sdk-with-inert-connection",
         "production_runtime_admitted": False,
         "session_configuration": "fixed-runtime" if fixed_factory else "injected-test-session",
+        **({"audit_checks": audit_checks} if audit_probe is not None else {}),
     }
 
 

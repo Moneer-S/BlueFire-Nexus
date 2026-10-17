@@ -60,6 +60,13 @@ pub(super) enum Record {
     Reservation {
         operation: Box<Reserved>,
     },
+    AuditedReservation {
+        reservation: Box<super::audit::AuditedReservation>,
+    },
+    AuditDiscovery {
+        reservation_digest: String,
+        discovery: serde_json::Value,
+    },
     Debit {
         reservation_digest: String,
         sequence: u64,
@@ -93,7 +100,9 @@ pub(super) struct Retained {
     pub debits: u64,
     pub write_debited: bool,
     pub completion: Option<(bool, PolicyPosition, bool)>,
+    pub(super) completion_result_digest: Option<String>,
     pub fixture_position: Option<FixturePosition>,
+    pub discovery: Option<crate::s3_access_binding::audit::Discovery>,
 }
 
 #[derive(Clone)]
@@ -103,6 +112,7 @@ pub(super) struct Ledger {
     pub entries: usize,
     pub previous_hash: String,
     pub bytes: usize,
+    audit: super::audit::AuditState,
 }
 
 fn require(value: bool) -> Result<()> {
@@ -123,6 +133,7 @@ impl Ledger {
             previous_hash: canonical_hash(
                 &serde_json::json!({"schema_version":SCHEMA,"enrollment_digest":enrollment}),
             ),
+            audit: super::audit::AuditState::default(),
         };
         for line in bytes.split_inclusive(|byte| *byte == b'\n') {
             require(
@@ -145,6 +156,69 @@ impl Ledger {
     }
 
     pub fn check_reserve(&self, next: &Reserved) -> Result<()> {
+        if next.operation == "collect_audit" {
+            return Err(Error::Conflict);
+        }
+        self.check_ordinary(next)?;
+        let history: Vec<_> = self.order.iter().map(|key| &self.requests[key]).collect();
+        self.audit.check_legacy(&history, next)
+    }
+
+    pub fn check_audited(&self, next: &super::audit::AuditedReservation) -> Result<()> {
+        if next.collection.is_some() != (next.operation.operation == "collect_audit") {
+            return Err(Error::Conflict);
+        }
+        let checked = next.checked_historical()?;
+        self.check_ordinary(checked.operation())?;
+        let history: Vec<_> = self.order.iter().map(|key| &self.requests[key]).collect();
+        self.audit.check_reserve(
+            &history,
+            &checked,
+            self.required_calls(checked.operation())?,
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn audit_reservation(
+        &self,
+        request: &str,
+    ) -> Result<&super::audit::CheckedAuditedReservation> {
+        self.audit.reservation(request)
+    }
+
+    pub(super) fn required_calls(&self, next: &Reserved) -> Result<u64> {
+        if next.operation == "collect_audit" {
+            return Ok(0);
+        }
+        let history: Vec<_> = self
+            .order
+            .iter()
+            .map(|key| &self.requests[key])
+            .filter(|old| old.reserved.resource_key == next.resource_key)
+            .collect();
+        let rollback_reserved = history.iter().any(|old| old.reserved.phase == "rollback");
+        let retest_reserved = history.iter().any(|old| old.reserved.phase == "retest");
+        Ok(if next.fixture.is_some() {
+            super::fixture::required_calls(&history, next)?
+        } else {
+            (match next.phase.as_str() {
+                "apply" => 21,
+                "rollback" => 6,
+                "reconcile" if !rollback_reserved => 8 + if retest_reserved { 0 } else { 9 },
+                "retest" if !rollback_reserved => {
+                    next.max_sends + 6 + if next.operation == "probe_read" { 5 } else { 0 }
+                }
+                "baseline" if next.operation == "probe_read" => 9,
+                _ => next.max_sends,
+            }) + if next.fixture_authority_digest.is_some() {
+                48
+            } else {
+                0
+            }
+        })
+    }
+
+    fn check_ordinary(&self, next: &Reserved) -> Result<()> {
         if self.requests.contains_key(&next.request_digest)
             || self.requests.values().any(|old| {
                 old.reserved.request_id == next.request_id
@@ -198,30 +272,16 @@ impl Ledger {
             "prepare_fixture" => 6,
             "reconcile_fixture" => 5,
             "cleanup_fixture" => 7,
+            "collect_audit" => 9,
             _ => return Err(Error::Conflict),
         };
         if next.max_sends != fixed_sends {
             return Err(Error::Conflict);
         }
-        let rollback_reserved = history.iter().any(|old| old.reserved.phase == "rollback");
-        let retest_reserved = history.iter().any(|old| old.reserved.phase == "retest");
-        let required_calls = if next.fixture.is_some() {
-            super::fixture::required_calls(&history, next)?
+        let required_calls = if next.operation == "collect_audit" {
+            9
         } else {
-            (match next.phase.as_str() {
-                "apply" => 21,
-                "rollback" => 6,
-                "reconcile" if !rollback_reserved => 8 + if retest_reserved { 0 } else { 9 },
-                "retest" if !rollback_reserved => {
-                    next.max_sends + 6 + if next.operation == "probe_read" { 5 } else { 0 }
-                }
-                "baseline" if next.operation == "probe_read" => 9,
-                _ => next.max_sends,
-            }) + if next.fixture_authority_digest.is_some() {
-                48
-            } else {
-                0
-            }
+            self.required_calls(next)?
         };
         if calls + required_calls > next.api_limit {
             return Err(Error::Budget);
@@ -259,6 +319,17 @@ impl Ledger {
             || attempts + required_attempts > next.business_attempt_limit
         {
             return Err(Error::Budget);
+        }
+        // Audit retrieval does not consume fixture or policy position. Its
+        // original pair, source and unchanged authority are checked separately.
+        if next.operation == "collect_audit" {
+            return if next.fixture.is_none()
+                && matches!(next.phase.as_str(), "audit_baseline" | "audit_retest")
+            {
+                Ok(())
+            } else {
+                Err(Error::Conflict)
+            };
         }
         if next.fixture_authority_digest.is_some() {
             super::fixture::check(&history, next)?;
@@ -358,9 +429,65 @@ impl Ledger {
                         debits: 0,
                         write_debited: false,
                         completion: None,
+                        completion_result_digest: None,
                         fixture_position: None,
+                        discovery: None,
                     },
                 );
+            }
+            Record::AuditedReservation { reservation } => {
+                self.check_audited(&reservation)?;
+                let checked = reservation.checked_historical()?;
+                let history: Vec<_> = self.order.iter().map(|key| &self.requests[key]).collect();
+                let floor = self.required_calls(&reservation.operation)?;
+                self.audit.apply_reservation(&history, checked, floor)?;
+                let operation = reservation.operation;
+                self.order.push(operation.request_digest.clone());
+                self.requests.insert(
+                    operation.request_digest.clone(),
+                    Retained {
+                        digest: hash,
+                        reserved: operation,
+                        debits: 0,
+                        write_debited: false,
+                        completion: None,
+                        completion_result_digest: None,
+                        fixture_position: None,
+                        discovery: None,
+                    },
+                );
+            }
+            Record::AuditDiscovery {
+                reservation_digest,
+                discovery,
+            } => {
+                let (request, retained) = self
+                    .requests
+                    .iter()
+                    .find(|(_, old)| old.digest == reservation_digest)
+                    .ok_or(Error::Corrupt)?;
+                require(
+                    retained.reserved.operation == "collect_audit"
+                        && retained.completion.is_none()
+                        && retained.discovery.is_none(),
+                )?;
+                let checked = self.audit.reservation(request)?;
+                let raw = checked.raw();
+                let context = raw.collection.as_ref().ok_or(Error::Corrupt)?;
+                let checked_discovery = crate::s3_access_binding::audit::Discovery::from_durable(
+                    &raw.scope,
+                    checked.workflow(),
+                    context,
+                    request,
+                    &reservation_digest,
+                    &discovery,
+                )
+                .map_err(|_| Error::Corrupt)?;
+                require(discovery["next_send_sequence"].as_u64() == Some(retained.debits + 1))?;
+                self.requests
+                    .get_mut(&request.clone())
+                    .ok_or(Error::Corrupt)?
+                    .discovery = Some(checked_discovery);
             }
             Record::Debit {
                 reservation_digest,
@@ -393,6 +520,23 @@ impl Ledger {
                                                 .as_ref()
                                                 .is_some_and(|f| f.expected_etag.is_some()))))),
                 )?;
+                if retained.reserved.operation == "collect_audit" {
+                    let checked = self.audit.reservation(&retained.reserved.request_digest)?;
+                    let context = checked.raw().collection.as_ref().ok_or(Error::Corrupt)?;
+                    let first_get = 4 + context
+                        .list_parameters(&checked.raw().scope, checked.workflow())
+                        .map_err(|_| Error::Corrupt)?
+                        .len() as u64;
+                    if sequence >= first_get {
+                        let discovery = retained.discovery.as_ref().ok_or(Error::Corrupt)?;
+                        let count = discovery.document()["selected"]
+                            .as_array()
+                            .ok_or(Error::Corrupt)?
+                            .len() as u64;
+                        require(sequence < first_get + count)?;
+                    }
+                    require(!is_write)?;
+                }
                 retained.debits = sequence;
                 retained.write_debited |= is_write;
             }
@@ -411,6 +555,23 @@ impl Ledger {
                     .find(|old| old.digest == reservation_digest)
                     .ok_or(Error::Corrupt)?;
                 require(retained.completion.is_none() && (!observed || retained.debits > 0))?;
+                if retained.reserved.operation == "collect_audit" {
+                    require(
+                        policy_position == PolicyPosition::Unknown && fixture_position.is_none(),
+                    )?;
+                    if observed {
+                        require(result_digest != canonical_hash(&serde_json::Value::Null))?;
+                        let discovery = retained.discovery.as_ref().ok_or(Error::Corrupt)?;
+                        let first = discovery.document()["next_send_sequence"]
+                            .as_u64()
+                            .ok_or(Error::Corrupt)?;
+                        let count = discovery.document()["selected"]
+                            .as_array()
+                            .ok_or(Error::Corrupt)?
+                            .len() as u64;
+                        require(retained.debits == first - 1 + count)?;
+                    }
+                }
                 require(
                     fixture_position.is_some() == (observed && retained.reserved.fixture.is_some()),
                 )?;
@@ -447,6 +608,7 @@ impl Ledger {
                     })?;
                 }
                 retained.completion = Some((observed, policy_position, cleanup_verified));
+                retained.completion_result_digest = Some(result_digest);
                 retained.fixture_position = fixture_position;
             }
         }

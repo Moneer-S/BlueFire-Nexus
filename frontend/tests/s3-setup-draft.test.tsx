@@ -5,14 +5,61 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import configuration from "../../tests_platform/fixtures/s3_setup_draft_v3.json";
 import * as downloads from "../src/lib/download";
-import { checkedDraftReview, checkedSavedDraft, draftSourceDigest, MAX_S3_DRAFT_BYTES, s3SetupApi, savedDraftProfileId, type S3SavedSetupDraftResponse, type S3SetupDraftRequest, type S3SetupDraftReview, type S3SetupProfile } from "../src/lib/s3-setup";
+import { checkedDraftReview, checkedSavedDraft, draftSourceDigest, MAX_S3_DRAFT_BYTES, s3SetupApi, savedDraftProfileId, type S3SavedSetupDraftResponse, type S3SetupDraftRequest, type S3SetupDraftReview, type S3SetupDraftReviewV2, type S3SetupProfile } from "../src/lib/s3-setup";
 import { S3SetupDraft } from "../src/pages/S3SetupDraft";
 
 const hash = `sha256:${"a".repeat(64)}`;
 const selected: S3SetupProfile = { profile_id: "s3-test", profile_digest: hash };
 const source = `${JSON.stringify(configuration, null, 2)}\n`;
+const auditConfiguration = {
+  ...configuration,
+  schema_version: "bluefire.s3-host-environments.v4",
+  environments: configuration.environments.map(row => ({
+    ...row,
+    audit_source: {
+      schema_version: "bluefire.s3-audit-source.v1" as const,
+      audit_source_id: "synthetic-trail-delivery",
+      experiment_scope_digest: hash,
+      trail_arn: `arn:aws:cloudtrail:${row.scope.region}:${row.scope.account_id}:trail/synthetic`,
+      source_account_id: row.scope.account_id,
+      event_region: row.scope.region,
+      audit_bucket: "bluefire-audit-fixture",
+      audit_bucket_owner_account_id: row.scope.account_id,
+      audit_bucket_region: "us-west-2",
+      exact_delivery_root_prefix: `AWSLogs/${row.scope.account_id}/CloudTrail/${row.scope.region}/`,
+      collector_role_arn: `arn:aws:iam::${row.scope.account_id}:role/bluefire-audit-reader`,
+      managed_profile_digest: row.managed_profile_digest,
+      protected_runtime_digest: row.runtime_digest,
+      worker_generation: row.worker_generation,
+      expires_at: row.scope.expires_at,
+      audit_limits: { api_calls: 9, sessions: 1, files: 4, sdk_body_bytes: 393216, compressed_bytes: 262144, expanded_bytes: 1048576, events: 500, seconds: 30 },
+    },
+  })),
+};
+const auditSource = `${JSON.stringify(auditConfiguration, null, 2)}\n`;
 async function result(input: S3SetupDraftRequest): Promise<S3SetupDraftReview> {
   return { schema_version: "bluefire.s3-onboarding-draft-review.v1", profile_id: input.profile_id, profile_digest: input.profile_digest, validation_scope: "structural_only", source_sha256: await draftSourceDigest(input.configuration_json), configuration_digest: hash, environments: configuration.environments.map(row => ({ environment_id: row.environment_id, display_name: row.display_name, account_id: row.scope.account_id, region: row.scope.region, bucket: row.scope.bucket, expires_at: row.scope.expires_at, fixture_generation: 1 })) };
+}
+async function auditResult(input: S3SetupDraftRequest): Promise<S3SetupDraftReviewV2> {
+  return {
+    schema_version: "bluefire.s3-onboarding-draft-review.v2",
+    profile_id: input.profile_id,
+    profile_digest: input.profile_digest,
+    validation_scope: "structural_only",
+    source_sha256: await draftSourceDigest(input.configuration_json),
+    configuration_digest: hash,
+    environments: auditConfiguration.environments.map(row => ({
+      environment_id: row.environment_id,
+      display_name: row.display_name,
+      account_id: row.scope.account_id,
+      region: row.scope.region,
+      bucket: row.scope.bucket,
+      expires_at: row.scope.expires_at,
+      fixture_generation: 1,
+      audit_source: row.audit_source,
+      audit_collection: { state: "unavailable", reason: "collection_not_enabled" },
+    })),
+  };
 }
 function saved(text = source, profile: S3SetupProfile = selected, digest = hash): S3SavedSetupDraftResponse {
   return { schema_version: "bluefire.s3-saved-setup-draft.v1", draft: { profile_id: profile.profile_id, profile_digest: profile.profile_digest, configuration_json: text, digest, updated_at: "2026-10-11T12:00:00Z" } };
@@ -47,6 +94,30 @@ it("reviews only on explicit action and exports the exact reviewed source", asyn
   const retained = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsText(blob); });
   expect(retained).toBe(source);
   expect(name).toBe("bluefire-s3-configuration.json");
+});
+
+it("shows v4 source structure without implying collection or AWS readiness", async () => {
+  vi.mocked(s3SetupApi.reviewDraft).mockImplementation(auditResult);
+  const { user } = mount();
+  edit(auditSource);
+  await user.click(screen.getByRole("button", { name: "Review configuration" }));
+  await screen.findByText("Structure checked");
+  await user.click(screen.getByText("Audit source structure"));
+  expect(screen.getByText("synthetic-trail-delivery")).toBeVisible();
+  expect(screen.getByText(/Collection unavailable: collection_not_enabled/)).toBeVisible();
+  expect(screen.getByText(/This descriptor has not been checked against AWS/)).toBeVisible();
+  expect(screen.getByText("Not installed or authorized")).toBeVisible();
+});
+
+it("rejects mismatched v4 descriptor identity and extra availability claims", async () => {
+  const valid = await auditResult({ ...selected, configuration_json: auditSource });
+  expect(checkedDraftReview(valid, selected, valid.source_sha256)).toEqual(valid);
+  const wrongAccount = structuredClone(valid);
+  wrongAccount.environments[0]!.audit_source.source_account_id = "999999999999";
+  expect(() => checkedDraftReview(wrongAccount, selected, valid.source_sha256)).toThrow();
+  const claimed = structuredClone(valid);
+  Object.assign(claimed.environments[0]!.audit_collection, { ready: true });
+  expect(() => checkedDraftReview(claimed, selected, valid.source_sha256)).toThrow();
 });
 
 it("keeps the draft after profile failure and refuses export for a changed profile", async () => {
@@ -119,7 +190,10 @@ it.each(["profile", "source", "unknown", "scope", "generation", "duplicate"])("r
   else if (mutation === "unknown") Object.assign(value, { credentials: "not accepted" });
   else if (mutation === "scope") Object.assign(value, { validation_scope: "authorized" });
   else if (mutation === "generation") Object.assign(value.environments[0]!, { fixture_generation: true });
-  else value.environments.push(value.environments[0]!);
+  else {
+    if (value.schema_version !== "bluefire.s3-onboarding-draft-review.v1") throw new Error("The legacy draft fixture must remain v1.");
+    value.environments.push(value.environments[0]!);
+  }
   expect(() => checkedDraftReview(value, selected, digest)).toThrow();
 });
 
