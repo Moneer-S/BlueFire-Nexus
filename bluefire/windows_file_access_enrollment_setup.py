@@ -63,6 +63,31 @@ _ACCOUNT_PATH = _RECORD_ROOT + r"\account-receipt.json"
 _CREDENTIAL_PATH = _RECORD_ROOT + r"\reader.dpapi"
 _PROFILE_PATH = _RECORD_ROOT + r"\private-profile.json"
 _CONTENT = b'{"record_id":"endpoint-001","state":"ready"}\n'
+_CAPABILITY_FAILURES = frozenset(
+    {
+        "invalid_request",
+        "invalid_deadline",
+        "deadline_expired",
+        "timeout",
+        "launch_failure",
+        "capture_failure",
+        "nonzero_exit",
+        "stderr_nonempty",
+        "output_oversize",
+        "output_malformed",
+        "contract_mismatch",
+    }
+)
+
+
+class WindowsPairCapabilityError(contract.NativeWireError):
+    """Bounded capability-query failure with no path or process details."""
+
+    def __init__(self, category: str):
+        if category not in _CAPABILITY_FAILURES:
+            category = "invalid_request"
+        self.diagnostic_category = category
+        super().__init__("The packaged Windows pair capability query is unavailable.")
 
 
 def publish_windows_file_access_setup() -> NoReturn:
@@ -105,26 +130,59 @@ def _query_capability_for(
     Temporary streams bound decoding, not subprocess disk writes. The supplied
     original monotonic deadline is never renewed by this read-only query.
     """
-    enrollment._setup_protocol(protocol)
-    contract._require(type(original_deadline) is float and math.isfinite(original_deadline))
+    try:
+        enrollment._setup_protocol(protocol)
+    except Exception:
+        raise WindowsPairCapabilityError("invalid_request") from None
+    if type(original_deadline) is not float or not math.isfinite(original_deadline):
+        raise WindowsPairCapabilityError("invalid_deadline")
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
         remaining = original_deadline - time.monotonic()
-        contract._require(0 < remaining <= 5)
-        result = subprocess.run(
-            [os.fspath(image_path), protocol.command + "-capability"],
-            stdin=subprocess.DEVNULL,
-            stdout=output,
-            stderr=errors,
-            timeout=remaining,
-            check=False,
-            shell=False,
-            creationflags=0x08000000,
-        )
-        contract._require(time.monotonic() < original_deadline)
-        output.seek(0)
-        errors.seek(0)
-        contract._require(result.returncode == 0 and errors.read(1) == b"")
-        return enrollment._capability_for(output.read(1025), version, protocol)
+        if remaining <= 0:
+            raise WindowsPairCapabilityError("deadline_expired")
+        if remaining > 5:
+            raise WindowsPairCapabilityError("invalid_deadline")
+        try:
+            result = subprocess.run(
+                [os.fspath(image_path), protocol.command + "-capability"],
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=errors,
+                timeout=remaining,
+                check=False,
+                shell=False,
+                creationflags=0x08000000,
+            )
+        except subprocess.TimeoutExpired as exc:
+            setattr(exc, "diagnostic_category", "timeout")
+            raise
+        except OSError as exc:
+            setattr(exc, "diagnostic_category", "launch_failure")
+            raise
+        if time.monotonic() >= original_deadline:
+            raise WindowsPairCapabilityError("deadline_expired")
+        try:
+            output.seek(0)
+            errors.seek(0)
+            if result.returncode != 0:
+                raise WindowsPairCapabilityError("nonzero_exit")
+            if errors.read(1) != b"":
+                raise WindowsPairCapabilityError("stderr_nonempty")
+            raw = output.read(1025)
+        except WindowsPairCapabilityError:
+            raise
+        except OSError:
+            raise WindowsPairCapabilityError("capture_failure") from None
+        if len(raw) > 1024:
+            raise WindowsPairCapabilityError("output_oversize")
+        try:
+            contract._document(raw, 1024)
+        except contract.NativeWireError:
+            raise WindowsPairCapabilityError("output_malformed") from None
+        try:
+            return enrollment._capability_for(raw, version, protocol)
+        except (contract.NativeWireError, TypeError, ValueError, KeyError, RecursionError):
+            raise WindowsPairCapabilityError("contract_mismatch") from None
 
 
 def _source_for(
