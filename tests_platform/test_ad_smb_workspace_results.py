@@ -313,6 +313,27 @@ def test_audit_projection_preserves_ambiguous_logon_correlation():
     assert "logon_record_id" not in share_event
 
 
+def test_audit_projection_keeps_batch_when_scoped_logon_has_no_client_address():
+    value, channel = original("audit")
+    _, raw = audit_fixture()
+    raw["raw_events"] = [
+        audit_event(4624, when="2026-10-09T00:00:00.4000000Z", fields={"IpAddress": "-"}).decode(
+            "utf-8"
+        ),
+        audit_event(when="2026-10-09T00:00:00.5000000Z").decode("utf-8"),
+    ]
+    raw["utf8_bytes"] = sum(len(event.encode("utf-8")) for event in raw["raw_events"])
+
+    result = project(value, channel, timed_record(value, channel, raw))
+
+    normalized = result["observation"]["normalized_observation"]
+    logon, share = normalized["events"]
+    assert logon["binding"] == "outside_scope"
+    assert share["binding"] == "matched"
+    assert share["server_logon"] == "ambiguous"
+    assert "logon_record_id" not in share
+
+
 def test_audit_metadata_uses_its_own_finite_envelope_not_artifact_payload_limit():
     from bluefire.ad_smb_results import MAX_AUDIT_EXECUTION_BYTES, validate_execution
 

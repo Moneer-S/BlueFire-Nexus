@@ -236,6 +236,23 @@ def test_exact_windows_case_and_ipv4_mapped_representation():
     assert normalize([raw])["events"][0]["binding"] == "matched"
 
 
+@pytest.mark.parametrize("event_id", [4624, 5145])
+def test_unavailable_client_address_is_outside_scope(event_id):
+    row = normalize([event(event_id, fields={"IpAddress": "-"})])["events"][0]
+    assert row["binding"] == "outside_scope"
+    assert row["logon_id"] == "0x1234"
+    assert not {"principal_role", "principal_sid", "client_ip"} & set(row)
+
+
+def test_unavailable_logon_address_does_not_discard_mixed_batch_or_confirm_join():
+    rows = normalize([event(4624, fields={"IpAddress": "-"}), event()])["events"]
+    logon, share = rows
+    assert logon["binding"] == "outside_scope"
+    assert share["binding"] == "matched"
+    assert share["server_logon"] == "ambiguous"
+    assert "logon_record_id" not in share
+
+
 def test_preserves_non_data_access_without_claiming_read():
     row = normalize([event(fields={"AccessMask": "0x80"})])["events"][0]
     assert row["requests_file_data"] is False and row["share_check"] == "granted"

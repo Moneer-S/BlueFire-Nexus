@@ -32,6 +32,12 @@ it("accepts only bounded normalized event projection and retains legacy count se
   expect(audit.normalized!.events[2]).not.toHaveProperty("principalSid");
   expect(JSON.stringify(workflow)).not.toMatch(/<Event|EventData|TargetUserName|probe-user|raw_xml/);
 });
+it.each(["2024-01-01T00:00:00Z", "2026-10-18T15:03:00Z", "2036-12-31T23:59:59Z"])("keeps synthetic audit events within their scope window at %s", now => {
+  vi.spyOn(Date, "now").mockReturnValue(Date.parse(now));
+  const audit = checkedAdWorkflow(auditWorkflowWithNormalized(), adOwner).operations[0]!.executions[0]!.audit!.normalized!;
+  expect(audit.events).toHaveLength(3);
+  expect(audit.events.every(event => event.observedAt >= audit.windowStart && event.observedAt <= audit.windowEnd)).toBe(true);
+});
 it("accepts canonical zero logon IDs only for unmatched audit rows", () => {
   const raw = auditWorkflowWithNormalized();
   const normalized = (raw.workflow.progress.operations[0]!.executions[0]!.observation as unknown as Record<string, any>).normalized_observation;
@@ -86,6 +92,7 @@ it("binds the exact UTC scope start while preserving Windows 100ns event and cor
   const scope = raw.workflow.request.environment.scope;
   scope.created_at = "2026-10-18T16:59:00.123456+02:00";
   const observation = raw.workflow.progress.operations[0]!.executions[0]!.observation as unknown as Record<string, any>;
+  observation.normalized_observation = rawAdNormalizedObservation();
   const normalized = observation.normalized_observation;
   normalized.window_start = "2026-10-18T14:59:00.1234560Z";
   const [logon, share] = normalized.events;

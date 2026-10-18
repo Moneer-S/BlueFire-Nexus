@@ -229,11 +229,12 @@ def _bind(
         (name for name, entry in scope["principals"].items() if entry["sid"] == principal), None
     )
     logon_id = _uint(data[logon_key], 64, hexadecimal=True)
-    if (
-        role not in ("probe", "legitimate")
-        or _ip(data["IpAddress"]) != scope["hosts"]["client"]["ipv4"]
-        or not logon_id
-    ):
+    if role not in ("probe", "legitimate"):
+        return
+    # Windows uses this exact placeholder when no remote client address exists.
+    if data["IpAddress"] == "-":
+        return
+    if _ip(data["IpAddress"]) != scope["hosts"]["client"]["ipv4"] or not logon_id:
         return
     if event_id == 4624:
         package = data["AuthenticationPackageName"]

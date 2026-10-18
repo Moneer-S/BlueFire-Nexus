@@ -16,16 +16,17 @@ export function rawAdEnvironment() {
   } };
 }
 export function rawAdNormalizedObservation(eventCount = 3, windowStart = "2026-10-18T14:59:00.0000000Z") {
+  const timestamp = (offset: number) => auditWindowStartForFixture(new Date(Date.parse(windowStart) + offset).toISOString());
   const base = [
     { event_id: 4624, version: 2, record_id: "10", computer: "member.lab.example.test", observed_at: "2026-10-18T15:00:00.0000000Z", audit_outcome: "success", raw_sha256: adHash, binding: "matched", logon_id: "0xabc", principal_role: "legitimate", principal_sid: adSids.legitimate, client_ip: "10.44.0.3", logon_type: 3, authentication_package: "Kerberos", kerberos_network_logon: true },
     { event_id: 5145, version: 0, record_id: "11", computer: "member.lab.example.test", observed_at: "2026-10-18T15:00:01.0000000Z", audit_outcome: "failure", raw_sha256: adHash, binding: "matched", logon_id: "0xabc", principal_role: "probe", principal_sid: adSids.probe, client_ip: "10.44.0.3", file_purpose: "primary", relative_target: "records.jsonl", access_mask: "0x1", requests_file_data: true, share_check: "denied", server_logon: "ambiguous" },
     { event_id: 5145, version: 0, record_id: "12", computer: "member.lab.example.test", observed_at: "2026-10-18T15:00:02.0000000Z", audit_outcome: "success", raw_sha256: adHash, binding: "incomplete", logon_id: "0xdef" },
   ];
-  const events = Array.from({ length: eventCount }, (_, index) => ({ ...base[index % base.length]!, record_id: String(index + 10) }));
+  const events = Array.from({ length: eventCount }, (_, index) => ({ ...base[index % base.length]!, record_id: String(index + 10), observed_at: timestamp(60_000 + (index % base.length) * 1000) }));
   return {
     schema_version: "bluefire.ad-smb-audit-observation.v2", scope_digest: adHash, source_host_id: adHash,
     source_receipt_digest: adHash, capture_batch_digest: adHash,
-    window_start: windowStart, window_end: "2026-10-18T15:01:00.0000000Z",
+    window_start: windowStart, window_end: timestamp(120_000),
     reported_completeness: "complete", capture_state: "query_exhausted",
     input_events: eventCount, input_bytes: eventCount * 128, duplicate_events: 0, events,
     source_authenticity_verified: false, log_continuity_verified: false, independent_observation: false,
