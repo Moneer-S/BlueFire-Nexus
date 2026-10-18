@@ -103,7 +103,7 @@ def _validate_event(
     ):
         raise AdSmbError("Normalized AD audit event identity is invalid.")
     observed = _event_time(row["observed_at"])
-    if not start <= observed <= end:
+    if row["binding"] != "outside_scope" and not start <= observed <= end:
         raise AdSmbError("Normalized AD event time is outside the captured window.")
     digest(row["raw_sha256"])
     if "logon_id" in row:

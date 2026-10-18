@@ -125,7 +125,7 @@ function normalizedAudit(value: unknown): AdNormalizedAudit {
   const completeness = ({ query_exhausted: "complete", event_limit: "truncated", byte_limit: "truncated", event_rejected: "incomplete", deadline: "incomplete", cancelled: "incomplete", read_failed: "incomplete", cleanup_unknown: "unknown" } as const)[captureState];
   const inputEvents = integer(row.input_events, 1000), inputBytes = integer(row.input_bytes, 4 * 1024 * 1024), windowStart = utcStamp(row.window_start), windowEnd = utcStamp(row.window_end), events = list(row.events, 1000).map(auditEvent);
   const limitations = list(row.limitations, auditLimitations.length);
-  if (row.reported_completeness !== completeness || integer(row.duplicate_events, 1000) !== inputEvents - events.length || events.length > inputEvents || inputBytes < inputEvents || windowStart >= windowEnd || events.some(event => event.observedAt < windowStart || event.observedAt > windowEnd) || JSON.stringify(limitations) !== JSON.stringify(auditLimitations)) throw bad();
+  if (row.reported_completeness !== completeness || integer(row.duplicate_events, 1000) !== inputEvents - events.length || events.length > inputEvents || inputBytes < inputEvents || windowStart >= windowEnd || events.some(event => event.binding !== "outside_scope" && (event.observedAt < windowStart || event.observedAt > windowEnd)) || JSON.stringify(limitations) !== JSON.stringify(auditLimitations)) throw bad();
   const recordIds = events.map(event => event.recordId);
   if (new Set(recordIds).size !== recordIds.length) throw bad();
   validateAuditCorrelation(events);
@@ -161,7 +161,7 @@ function auditEvent(value: unknown): AdAuditEvent {
   if ((eventId === 4624 && ![0, 1, 2].includes(version)) || (eventId === 5145 && version !== 0)) throw bad();
   const recordId = uint64Decimal(row.record_id), outcome = oneOf(row.audit_outcome, ["success", "failure", "unknown"] as const);
   const event: AdAuditEvent = { eventId, version, recordId, computer: text(row.computer, 253), observedAt: auditEventUtc(row.observed_at), outcome, rawDigest: digest(row.raw_sha256), binding };
-  if ("logon_id" in row) { const id = text(row.logon_id, 18); if (!/^0x[0-9a-f]{1,16}$/.test(id) || BigInt(id) === 0n) throw bad(); event.logonId = id; }
+  if ("logon_id" in row) { const id = text(row.logon_id, 18); if (!/^0x[0-9a-f]{1,16}$/.test(id) || (BigInt(id) === 0n && (id !== "0x0" || matched))) throw bad(); event.logonId = id; }
   if (matched) {
     event.principalRole = oneOf(row.principal_role, ["probe", "legitimate"] as const); event.principalSid = sid(row.principal_sid); event.clientIp = ipv4(row.client_ip);
     if (!event.logonId) throw bad();

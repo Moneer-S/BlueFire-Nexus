@@ -32,6 +32,43 @@ it("accepts only bounded normalized event projection and retains legacy count se
   expect(audit.normalized!.events[2]).not.toHaveProperty("principalSid");
   expect(JSON.stringify(workflow)).not.toMatch(/<Event|EventData|TargetUserName|probe-user|raw_xml/);
 });
+it("accepts canonical zero logon IDs only for unmatched audit rows", () => {
+  const raw = auditWorkflowWithNormalized();
+  const normalized = (raw.workflow.progress.operations[0]!.executions[0]!.observation as unknown as Record<string, any>).normalized_observation;
+  const unmatched = normalized.events[2];
+  unmatched.logon_id = "0x0";
+  expect(checkedAdWorkflow(raw, adOwner).operations[0]!.executions[0]!.audit!.normalized!.events[2]!.logonId).toBe("0x0");
+
+  const outside = auditWorkflowWithNormalized();
+  const outsideNormalized = (outside.workflow.progress.operations[0]!.executions[0]!.observation as unknown as Record<string, any>).normalized_observation;
+  outsideNormalized.events[2].binding = "outside_scope";
+  outsideNormalized.events[2].logon_id = "0x0";
+  expect(checkedAdWorkflow(outside, adOwner).operations[0]!.executions[0]!.audit!.normalized!.events[2]!.logonId).toBe("0x0");
+
+  unmatched.logon_id = "0x00";
+  expect(() => checkedAdWorkflow(raw, adOwner)).toThrow();
+  unmatched.logon_id = "0x0";
+  normalized.events[0].logon_id = "0x0";
+  expect(() => checkedAdWorkflow(raw, adOwner)).toThrow();
+});
+it("allows out-of-window timestamps only for explicitly outside-scope audit rows", () => {
+  const makeOutsideTime = (timestamp: string) => new Date(Date.parse(timestamp) - 1000).toISOString().replace(/\.(\d{3})Z$/, (_match, milliseconds: string) => `.${milliseconds}0000Z`);
+  const raw = auditWorkflowWithNormalized();
+  const normalized = (raw.workflow.progress.operations[0]!.executions[0]!.observation as unknown as Record<string, any>).normalized_observation;
+  normalized.events[2].binding = "outside_scope";
+  normalized.events[2].observed_at = makeOutsideTime(normalized.window_start);
+  expect(checkedAdWorkflow(raw, adOwner).operations[0]!.executions[0]!.audit!.normalized!.events[2]!.binding).toBe("outside_scope");
+
+  const incomplete = auditWorkflowWithNormalized();
+  const incompleteNormalized = (incomplete.workflow.progress.operations[0]!.executions[0]!.observation as unknown as Record<string, any>).normalized_observation;
+  incompleteNormalized.events[2].observed_at = makeOutsideTime(incompleteNormalized.window_start);
+  expect(() => checkedAdWorkflow(incomplete, adOwner)).toThrow();
+
+  const matched = auditWorkflowWithNormalized();
+  const matchedNormalized = (matched.workflow.progress.operations[0]!.executions[0]!.observation as unknown as Record<string, any>).normalized_observation;
+  matchedNormalized.events[0].observed_at = makeOutsideTime(matchedNormalized.window_start);
+  expect(() => checkedAdWorkflow(matched, adOwner)).toThrow();
+});
 it("keeps capture truncation explicit and accounts for omitted duplicate records", () => {
   const raw = auditWorkflowWithNormalized();
   const observation = raw.workflow.progress.operations[0]!.executions[0]!.observation as unknown as Record<string, any>;

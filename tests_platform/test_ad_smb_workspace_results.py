@@ -259,7 +259,8 @@ def test_legacy_audit_summary_remains_valid_without_replay_payload():
     from bluefire.ad_smb_results import validate_execution
 
     value, _ = original("audit")
-    request = value["manifest"]["params"]["ad_smb_request"]
+    request = deepcopy(value["manifest"]["params"]["ad_smb_request"])
+    request["scope"]["limits"]["returned_payload_bytes"] = 1
     summary = {
         "source_digest": "sha256:" + "a" * 64,
         "events": 2,
@@ -310,6 +311,84 @@ def test_audit_projection_preserves_ambiguous_logon_correlation():
     share_event = result["observation"]["normalized_observation"]["events"][-1]
     assert share_event["server_logon"] == "ambiguous"
     assert "logon_record_id" not in share_event
+
+
+def test_audit_metadata_uses_its_own_finite_envelope_not_artifact_payload_limit():
+    from bluefire.ad_smb_results import MAX_AUDIT_EXECUTION_BYTES, validate_execution
+
+    workflow, channel = original("audit")
+    _, raw = audit_fixture()
+    raw["raw_events"] = [audit_event(when="2026-10-09T00:00:00.5000000Z").decode("utf-8")]
+    raw["utf8_bytes"] = len(raw["raw_events"][0].encode("utf-8"))
+    execution = project(workflow, channel, timed_record(workflow, channel, raw))
+    request = deepcopy(workflow["manifest"]["params"]["ad_smb_request"])
+    request["scope"]["limits"]["returned_payload_bytes"] = 1
+    scope = AdSmbScope.from_mapping(request["scope"])
+    request["scope_digest"] = scope.digest
+    execution["request_digest"] = content_hash(request)
+    execution["observation"]["normalized_observation"]["scope_digest"] = scope.digest
+
+    checked = validate_execution(request, execution)
+    assert checked["observation"]["normalized_observation"]["events"]
+    assert MAX_AUDIT_EXECUTION_BYTES == 5 * 1024 * 1024
+
+    oversized = deepcopy(execution)
+    oversized["padding"] = "x" * MAX_AUDIT_EXECUTION_BYTES
+    with pytest.raises(AdSmbError, match="^document is not supported bounded JSON$"):
+        validate_execution(request, oversized)
+
+
+@pytest.mark.parametrize("event_id", [4624, 5145])
+@pytest.mark.parametrize(
+    "when",
+    ["2026-10-08T23:59:59.9999999Z", "2026-10-09T00:00:01.0000001Z"],
+    ids=["before", "after"],
+)
+def test_audit_projection_retains_out_of_window_events_only_as_outside_scope(event_id, when):
+    workflow, channel = original("audit")
+    _, raw = audit_fixture()
+    raw["raw_events"] = [audit_event(event_id, when=when).decode("utf-8")]
+    raw["utf8_bytes"] = len(raw["raw_events"][0].encode("utf-8"))
+
+    result = project(workflow, channel, timed_record(workflow, channel, raw))
+    row = result["observation"]["normalized_observation"]["events"][0]
+    assert row["binding"] == "outside_scope"
+    assert row["observed_at"] == when
+
+
+@pytest.mark.parametrize(
+    "event_id,fields,binding",
+    [
+        (4624, {}, "matched"),
+        (5145, {}, "matched"),
+        (4624, {"TargetUserSid": None}, "incomplete"),
+        (5145, {"SubjectUserSid": None}, "incomplete"),
+    ],
+)
+@pytest.mark.parametrize(
+    "when",
+    ["2026-10-08T23:59:59.9999999Z", "2026-10-09T00:00:01.0000001Z"],
+    ids=["before", "after"],
+)
+def test_audit_projection_rejects_tampered_matched_or_incomplete_out_of_window_rows(
+    event_id, fields, binding, when
+):
+    from bluefire.ad_smb_results import validate_execution
+
+    workflow, channel = original("audit")
+    _, raw = audit_fixture()
+    raw["raw_events"] = [
+        audit_event(event_id, when="2026-10-09T00:00:00.5000000Z", fields=fields).decode("utf-8")
+    ]
+    raw["utf8_bytes"] = len(raw["raw_events"][0].encode("utf-8"))
+    request = workflow["manifest"]["params"]["ad_smb_request"]
+    result = project(workflow, channel, timed_record(workflow, channel, raw))
+    row = result["observation"]["normalized_observation"]["events"][0]
+    assert row["binding"] == binding
+    row["observed_at"] = when
+
+    with pytest.raises(AdSmbError, match="outside the captured window"):
+        validate_execution(request, result)
 
 
 @pytest.mark.parametrize(

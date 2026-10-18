@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from .ad_smb_acl import AdSmbAclChange, plan_hardening, snapshot, verify_readback
 from .ad_smb_audit_observation import validate_normalized_audit
 from .ad_smb_contract import (
+    MAX_AUDIT_EXECUTION_BYTES,
     AdSmbError,
     AdSmbReadTarget,
     AdSmbScope,
@@ -450,11 +451,7 @@ def original_context(request: Mapping[str, Any], value: Any) -> dict[str, Any]:
 
 
 def validate_execution(request: Mapping[str, Any], value: Any) -> dict[str, Any]:
-    limit = (
-        AdSmbScope.from_mapping(request["scope"]).to_dict()["limits"]["returned_payload_bytes"]
-        if request.get("step") == "collect_audit"
-        else 256 * 1024
-    )
+    limit = MAX_AUDIT_EXECUTION_BYTES if request.get("step") == "collect_audit" else 256 * 1024
     row = document(value, limit=limit)
     exact(
         row,
