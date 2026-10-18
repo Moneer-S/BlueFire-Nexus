@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from .ad_smb_audit import normalize_events
 from .ad_smb_channel import AdSmbHostChannel
 from .ad_smb_contract import AdSmbError, AdSmbScope
 from .ad_smb_native_results import project_native_read
@@ -90,13 +91,51 @@ def project_original(
         execution["observation"] = observation
         execution["cleanup"] = observation["local_cleanup"]
     else:
+        source_digest = content_hash(raw)
+        receipt_digest = content_hash(row)
+        completeness = {
+            "query_exhausted": "complete",
+            "event_limit": "truncated",
+            "byte_limit": "truncated",
+            "event_rejected": "incomplete",
+            "deadline": "incomplete",
+            "cancelled": "incomplete",
+            "read_failed": "incomplete",
+            "cleanup_unknown": "unknown",
+        }[raw["state"]]
+        scope = AdSmbScope.from_mapping(request["scope"])
+        member_host_id = scope.to_dict()["hosts"]["member"]["host_id"]
+        capture_batch_digest = content_hash(
+            {
+                "source_receipt_digest": receipt_digest,
+                "channel": raw["channel"],
+                "window_start": raw["window_start"],
+                "window_end": raw["window_end"],
+            }
+        )
+        try:
+            normalized = normalize_events(
+                scope,
+                [event.encode("utf-8") for event in raw["raw_events"]],
+                source_host_id=member_host_id,
+                source_receipt_digest=receipt_digest,
+                capture_batch_digest=capture_batch_digest,
+                window_start=raw["window_start"],
+                window_end=raw["window_end"],
+                completeness=completeness,
+            )
+        except AdSmbError:
+            normalized = None
+        if normalized is not None:
+            normalized["capture_state"] = raw["state"]
         execution["observation"] = {
-            "source_digest": content_hash(raw),
+            "source_digest": source_digest,
             "events": len(raw["raw_events"]),
             "truncated": raw["state"] != "query_exhausted",
             "authenticated_source": False,
             "independent_observation": False,
             "effective_access_claim": False,
+            **({"normalized_observation": normalized} if normalized is not None else {}),
         }
         if raw["handles_closed"] is not True:
             execution["cleanup"] = "unknown"

@@ -17,14 +17,40 @@ export const adChild = `job-${"2".repeat(32)}`;
 export const adSubmission = "22222222-2222-4222-8222-222222222222";
 export const adSids = { probe: "S-1-5-21-1-2-3-1001", legitimate: "S-1-5-21-1-2-3-1002", controller: "S-1-5-21-1-2-3-1003" };
 export function rawAdEnvironment() {
+  const createdAt = new Date(Date.now() - 60_000).toISOString();
   return { environment_id: `ad-env-${"3".repeat(32)}`, provenance: "synthetic_fixture", scope: {
     schema_version: "bluefire.ad-smb-scope.v1", scope_id: "3".repeat(32), domain: { dns: "lab.example.test" },
-    hosts: { member: { fqdn: "member.lab.example.test" }, client: { fqdn: "client.lab.example.test" } },
+    hosts: { member: { host_id: adHash, fqdn: "member.lab.example.test" }, client: { host_id: adHash, fqdn: "client.lab.example.test", ipv4: "10.44.0.3" } },
     principals: Object.fromEntries(Object.entries(adSids).map(([role, sid]) => [role, { sid, credential_handle: `credential-${"f".repeat(32)}` }])),
     share: { unc: `\\\\member.lab.example.test\\bf_${"3".repeat(32)}` },
     files: [{ purpose: "primary", name: "records.jsonl", size_bytes: 48, sha256: adHash }, { purpose: "health", name: "health.jsonl", size_bytes: 24, sha256: adHash }],
-    created_at: new Date(Date.now() - 60_000).toISOString(), expires_at: new Date(Date.now() + 3_000_000).toISOString(), limits: { business_seconds: 1800, audit_seconds: 600 },
+    created_at: createdAt, expires_at: new Date(Date.now() + 3_000_000).toISOString(), limits: { business_seconds: 1800, audit_seconds: 600, audit_events: 1000, audit_bytes: 4 * 1024 * 1024 },
   } };
+}
+function auditUtc(date: Date) { return date.toISOString().replace(/\.(\d{3})Z$/, (_match, milliseconds: string) => `.${milliseconds}0000Z`); }
+export function rawAdNormalizedObservation(createdAt: string, count = 26) {
+  const start = Date.parse(createdAt);
+  const events = Array.from({ length: count }, (_, index) => {
+    const common = { record_id: String(index + 10), computer: "member.lab.example.test", observed_at: auditUtc(new Date(start + (index + 1) * 1_000)), audit_outcome: index % 3 === 1 ? "failure" : "success", raw_sha256: adHash };
+    if (index % 3 === 0) return { ...common, event_id: 4624, version: 2, binding: "matched", logon_id: "0xabc", principal_role: "legitimate", principal_sid: adSids.legitimate, client_ip: "10.44.0.3", logon_type: 3, authentication_package: "Kerberos", kerberos_network_logon: true };
+    if (index % 3 === 1) return { ...common, event_id: 5145, version: 0, binding: "matched", logon_id: "0xabc", principal_role: "probe", principal_sid: adSids.probe, client_ip: "10.44.0.3", file_purpose: "primary", relative_target: "records.jsonl", access_mask: "0x1", requests_file_data: true, share_check: "denied", server_logon: "ambiguous" };
+    return { ...common, event_id: 5145, version: 0, binding: "incomplete", logon_id: "0xdef" };
+  });
+  return {
+    schema_version: "bluefire.ad-smb-audit-observation.v2", scope_digest: adHash, source_host_id: adHash,
+    source_receipt_digest: adHash, capture_batch_digest: adHash,
+    window_start: auditUtc(new Date(start)), window_end: auditUtc(new Date(start + 10 * 60_000)),
+    reported_completeness: "complete", capture_state: "query_exhausted",
+    input_events: count, input_bytes: count * 128, duplicate_events: 0, events,
+    source_authenticity_verified: false, log_continuity_verified: false, independent_observation: false,
+    effective_access_claim: false, fresh_session_claim: false, file_content_read_claim: false,
+    limitations: [
+      "Source receipts and completeness are caller assertions until an enrolled collector verifies them.",
+      "A 5145 success is a share access check, not proof of a successful NTFS read or returned bytes.",
+      "A 5145 failure describes share-level denial; missing events cannot establish NTFS denial or prevention.",
+      "A matching server logon does not bind an execution attempt or prove a newly created client session.",
+    ],
+  };
 }
 export function rawAdEnvironments() { return { native_execution_available: false, environments: [{ environment: rawAdEnvironment(), available: true, readiness: { available: true, member_observation: true, client_read_admission: true, secret_channel_available: true, problem: null } }] }; }
 export function rawAdDescriptor(after = false) {
@@ -36,7 +62,8 @@ export function rawAdOperation(phase: AdPhase, expectation: "matched" | "not_met
 }
 export function rawAdWorkflow(options: { id?: string; phases?: AdPhase[]; allowed?: AdPhase[]; pending?: string | null; stopped?: boolean; expectation?: "matched" | "not_met" | "incomplete"; unavailable?: boolean } = {}) {
   const phases = options.phases ?? [];
-  return { workflow: { job_id: options.id ?? adOwner, kind: "ad_smb.exercise", request: { environment: rawAdEnvironment(), submitted_request: { environment_id: rawAdEnvironment().environment_id } }, progress: { revision: phases.length * 2, stopped: options.stopped ?? false, pending_operation: options.pending ?? null, policy_state: phases.includes("harden") && !phases.includes("rollback") ? "hardened" : "baseline", operations: phases.map(phase => rawAdOperation(phase, options.expectation)), reserved: {} } }, allowed_phases: options.allowed ?? (options.pending ? [] : ["inspect"]), remaining: { business_attempts: 6, sessions: 6, share_changes: 1, rollbacks: 1 }, effective_access_claim: false, execution_integration: options.unavailable ? "unavailable" : "injected_adapter" };
+  const environment = rawAdEnvironment();
+  return { workflow: { job_id: options.id ?? adOwner, kind: "ad_smb.exercise", request: { environment, submitted_request: { environment_id: environment.environment_id } }, progress: { revision: phases.length * 2, stopped: options.stopped ?? false, pending_operation: options.pending ?? null, policy_state: phases.includes("harden") && !phases.includes("rollback") ? "hardened" : "baseline", operations: phases.map(phase => rawAdOperation(phase, options.expectation)), reserved: {} } }, allowed_phases: options.allowed ?? (options.pending ? [] : ["inspect"]), remaining: { business_attempts: 6, sessions: 6, share_changes: 1, rollbacks: 1 }, effective_access_claim: false, execution_integration: options.unavailable ? "unavailable" : "injected_adapter" };
 }
 export function rawAdReview(phase: AdPhase = "inspect", revision = 0) { return { schema_version: "bluefire.ad-smb-review.v1", workflow_job_id: adOwner, revision, phase, policy_state: phase === "rollback" || phase === "retest" ? "hardened" : "baseline", steps: adSteps[phase], budget: { business_attempts: phase === "baseline" || phase === "retest" ? 3 : 0, sessions: phase === "baseline" || phase === "retest" ? 3 : 0, share_changes: phase === "harden" ? 1 : 0, rollbacks: phase === "rollback" ? 1 : 0 }, change: ["harden", "retest", "rollback"].includes(phase) ? rawAdChange() : null, review_digest: adHash }; }
 export function adPendingFixture() { return { kind: "submit" as const, id: adJobId(adSubmission), workflow: adOwner, body: { submission_id: adSubmission, phase: "inspect" as const, review_digest: adHash, reviewed_by: "operator" } }; }

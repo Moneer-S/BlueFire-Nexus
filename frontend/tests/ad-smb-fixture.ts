@@ -8,12 +8,38 @@ export const adSids = { probe: "S-1-5-21-1-2-3-1001", legitimate: "S-1-5-21-1-2-
 export function rawAdEnvironment() {
   return { environment_id: `ad-env-${"3".repeat(32)}`, provenance: "synthetic_fixture", scope: {
     schema_version: "bluefire.ad-smb-scope.v1", scope_id: "3".repeat(32), domain: { dns: "lab.example.test" },
-    hosts: { member: { fqdn: "member.lab.example.test" }, client: { fqdn: "client.lab.example.test" } },
+    hosts: { member: { host_id: adHash, fqdn: "member.lab.example.test", ipv4: "10.44.0.2" }, client: { host_id: adHash, fqdn: "client.lab.example.test", ipv4: "10.44.0.3" } },
     principals: Object.fromEntries(Object.entries(adSids).map(([role, sid]) => [role, { sid, credential_handle: `credential-${"f".repeat(32)}` }])),
     share: { unc: `\\\\member.lab.example.test\\bf_${"3".repeat(32)}` },
     files: [{ purpose: "primary", name: "records.jsonl", size_bytes: 48, sha256: adHash }, { purpose: "health", name: "health.jsonl", size_bytes: 24, sha256: adHash }],
-    created_at: new Date(Date.now() - 60_000).toISOString(), expires_at: new Date(Date.now() + 3_000_000).toISOString(), limits: { business_seconds: 1800, audit_seconds: 600 },
+    created_at: new Date(Date.now() - 60_000).toISOString(), expires_at: new Date(Date.now() + 3_000_000).toISOString(), limits: { business_seconds: 1800, audit_seconds: 600, audit_events: 1000, audit_bytes: 4 * 1024 * 1024 },
   } };
+}
+export function rawAdNormalizedObservation(eventCount = 3, windowStart = "2026-10-18T14:59:00.0000000Z") {
+  const base = [
+    { event_id: 4624, version: 2, record_id: "10", computer: "member.lab.example.test", observed_at: "2026-10-18T15:00:00.0000000Z", audit_outcome: "success", raw_sha256: adHash, binding: "matched", logon_id: "0xabc", principal_role: "legitimate", principal_sid: adSids.legitimate, client_ip: "10.44.0.3", logon_type: 3, authentication_package: "Kerberos", kerberos_network_logon: true },
+    { event_id: 5145, version: 0, record_id: "11", computer: "member.lab.example.test", observed_at: "2026-10-18T15:00:01.0000000Z", audit_outcome: "failure", raw_sha256: adHash, binding: "matched", logon_id: "0xabc", principal_role: "probe", principal_sid: adSids.probe, client_ip: "10.44.0.3", file_purpose: "primary", relative_target: "records.jsonl", access_mask: "0x1", requests_file_data: true, share_check: "denied", server_logon: "ambiguous" },
+    { event_id: 5145, version: 0, record_id: "12", computer: "member.lab.example.test", observed_at: "2026-10-18T15:00:02.0000000Z", audit_outcome: "success", raw_sha256: adHash, binding: "incomplete", logon_id: "0xdef" },
+  ];
+  const events = Array.from({ length: eventCount }, (_, index) => ({ ...base[index % base.length]!, record_id: String(index + 10) }));
+  return {
+    schema_version: "bluefire.ad-smb-audit-observation.v2", scope_digest: adHash, source_host_id: adHash,
+    source_receipt_digest: adHash, capture_batch_digest: adHash,
+    window_start: windowStart, window_end: "2026-10-18T15:01:00.0000000Z",
+    reported_completeness: "complete", capture_state: "query_exhausted",
+    input_events: eventCount, input_bytes: eventCount * 128, duplicate_events: 0, events,
+    source_authenticity_verified: false, log_continuity_verified: false, independent_observation: false,
+    effective_access_claim: false, fresh_session_claim: false, file_content_read_claim: false,
+    limitations: [
+      "Source receipts and completeness are caller assertions until an enrolled collector verifies them.",
+      "A 5145 success is a share access check, not proof of a successful NTFS read or returned bytes.",
+      "A 5145 failure describes share-level denial; missing events cannot establish NTFS denial or prevention.",
+      "A matching server logon does not bind an execution attempt or prove a newly created client session.",
+    ],
+  };
+}
+export function auditWindowStartForFixture(value: string) {
+  return value.replace(/\.(\d{3})Z$/, (_match, milliseconds: string) => `.${milliseconds}0000Z`);
 }
 export function rawAdEnvironments() { return { native_execution_available: false, environments: [{ environment: rawAdEnvironment(), available: true, readiness: { available: true, member_observation: true, client_read_admission: true, secret_channel_available: true, problem: null } }] }; }
 export function rawAdDescriptor(after = false) {

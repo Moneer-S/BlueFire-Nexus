@@ -6,8 +6,8 @@ export const adPhaseLabels: Record<AdPhase, string> = { inspect: "Inspect share"
 export const adSteps: Record<AdPhase, string[]> = { inspect: ["inspect_member"], baseline: ["read_probe_primary", "read_legitimate_primary", "read_legitimate_health"], harden: ["harden_share"], retest: ["read_probe_primary", "read_legitimate_primary", "read_legitimate_health"], rollback: ["rollback_share"], audit: ["collect_audit"] };
 export interface AdBudget { business_attempts: number; sessions: number; share_changes: number; rollbacks: number }
 export interface AdEnvironment {
-  id: string; provenance: "synthetic_fixture" | "runner_reported"; scopeId: string; domain: string; member: string; client: string; share: string;
-  createdAt: string; expiresAt: string; businessSeconds: number; auditSeconds: number;
+  id: string; provenance: "synthetic_fixture" | "runner_reported"; scopeId: string; domain: string; member: string; memberHostId: string; client: string; clientIp: string; share: string;
+  createdAt: string; expiresAt: string; businessSeconds: number; auditSeconds: number; auditEvents: number; auditBytes: number;
   principals: { probe: string; legitimate: string; controller: string };
   files: { purpose: "primary" | "health"; name: string; bytes: number; digest: string }[];
 }
@@ -28,7 +28,21 @@ export interface AdAce { sid: string; right: "Read" | "Full"; digest: string }
 export interface AdDescriptor { digest: string; owner: string; group: string; control: number; aces: AdAce[] }
 export interface AdChange { before: AdDescriptor; after: AdDescriptor; removed: AdAce; beforeDigest: string; afterDigest: string }
 export interface AdRead { reader: "probe" | "legitimate"; purpose: "primary" | "health"; state: string; bytes: number; digest: string | null; localContext: string | null; cleanup: "verified" | "unknown" }
-export interface AdExecution { provenance: "synthetic_fixture" | "runner_reported"; dispatch: "not_started" | "attempted" | "unknown"; cleanup: "verified" | "unknown"; read: AdRead | null; audit: { events: number; truncated: boolean; digest: string } | null; change: AdChange | null }
+export interface AdAuditEvent {
+  eventId: 4624 | 5145; version: number; recordId: string; computer: string; observedAt: string;
+  outcome: "success" | "failure" | "unknown"; rawDigest: string; binding: "matched" | "incomplete" | "outside_scope";
+  logonId?: string; principalRole?: "probe" | "legitimate"; principalSid?: string; clientIp?: string;
+  logonType?: number; authenticationPackage?: "Kerberos" | "NTLM" | "Negotiate" | "other"; kerberosNetworkLogon?: boolean;
+  filePurpose?: "primary" | "health"; relativeTarget?: string; accessMask?: string; requestsFileData?: boolean;
+  shareCheck?: "granted" | "denied" | "unknown"; serverLogon?: "missing" | "ambiguous" | "kerberos_network" | "not_verified_kerberos"; logonRecordId?: string;
+}
+export interface AdNormalizedAudit {
+  scopeDigest: string; sourceHostId: string; sourceReceiptDigest: string; captureBatchDigest: string;
+  windowStart: string; windowEnd: string; completeness: "complete" | "truncated" | "incomplete" | "unknown";
+  captureState: "query_exhausted" | "event_limit" | "byte_limit" | "event_rejected" | "deadline" | "cancelled" | "read_failed" | "cleanup_unknown";
+  inputEvents: number; inputBytes: number; duplicateEvents: number; events: AdAuditEvent[]; limitations: string[];
+}
+export interface AdExecution { provenance: "synthetic_fixture" | "runner_reported"; dispatch: "not_started" | "attempted" | "unknown"; cleanup: "verified" | "unknown"; read: AdRead | null; audit: { events: number; truncated: boolean; digest: string; normalized?: AdNormalizedAudit } | null; change: AdChange | null }
 export interface AdOperation { id: string; phase: AdPhase; runId: string; state: "complete" | "partial" | "not_started" | "unknown"; expectation: "matched" | "not_met" | "incomplete" | null; distinctContexts: boolean | null; cleanup: "verified" | "unknown"; digest: string; executions: AdExecution[] }
 export interface AdWorkflow { id: string; environment: AdEnvironment; revision: number; stopped: boolean; pending: string | null; policy: "baseline" | "hardened" | "unknown"; operations: AdOperation[]; allowed: AdPhase[]; remaining: AdBudget; integration: "unavailable" | "injected_adapter" | "configured_admission" }
 export interface AdReview { workflow: string; revision: number; phase: AdPhase; digest: string; steps: string[]; budget: AdBudget; change: AdChange | null; policy: string }
@@ -57,7 +71,8 @@ function environment(value: unknown): AdEnvironment {
   if (scope.schema_version !== "bluefire.ad-smb-scope.v1" || typeof scope.scope_id !== "string" || !/^[a-f0-9]{32}$/.test(scope.scope_id)) throw bad();
   const files = list(scope.files, 2).map(value => { const file = object(value); return { purpose: oneOf(file.purpose, ["primary", "health"]), name: text(file.name, 32), bytes: integer(file.size_bytes, 65536), digest: digest(file.sha256) }; });
   if (files.length !== 2 || files[0]?.purpose !== "primary" || files[0]?.name !== "records.jsonl" || files[1]?.purpose !== "health" || files[1]?.name !== "health.jsonl") throw bad();
-  return { id: environmentId(row.environment_id), provenance: oneOf(row.provenance, ["synthetic_fixture", "runner_reported"]), scopeId: scope.scope_id, domain: text(object(scope.domain).dns, 253), member: text(object(hosts.member).fqdn, 253), client: text(object(hosts.client).fqdn, 253), share: text(object(scope.share).unc), createdAt: stamp(scope.created_at), expiresAt: stamp(scope.expires_at), businessSeconds: integer(limits.business_seconds, 1800), auditSeconds: integer(limits.audit_seconds, 600), principals: { probe: sid(object(principals.probe).sid), legitimate: sid(object(principals.legitimate).sid), controller: sid(object(principals.controller).sid) }, files };
+  const member = object(hosts.member), client = object(hosts.client);
+  return { id: environmentId(row.environment_id), provenance: oneOf(row.provenance, ["synthetic_fixture", "runner_reported"]), scopeId: scope.scope_id, domain: text(object(scope.domain).dns, 253), member: text(member.fqdn, 253), memberHostId: digest(member.host_id), client: text(client.fqdn, 253), clientIp: ipv4(client.ipv4), share: text(object(scope.share).unc), createdAt: stamp(scope.created_at), expiresAt: stamp(scope.expires_at), businessSeconds: integer(limits.business_seconds, 1800), auditSeconds: integer(limits.audit_seconds, 600), auditEvents: integer(limits.audit_events, 1000), auditBytes: integer(limits.audit_bytes, 4 * 1024 * 1024), principals: { probe: sid(object(principals.probe).sid), legitimate: sid(object(principals.legitimate).sid), controller: sid(object(principals.controller).sid) }, files };
 }
 export function checkedAdEnvironments(value: unknown): AdEnvironments {
   const row = object(value);
@@ -77,6 +92,94 @@ function structuralChange(value: AdChange): AdChange {
   return value;
 }
 function change(value: unknown): AdChange { const row = object(value); if (row.schema_version !== "bluefire.ad-smb-acl-change.v1" || row.native_projection_verified !== false || row.effective_access_claim !== false) throw bad(); return structuralChange({ before: descriptor(object(row.before).descriptor), after: descriptor(row.after_descriptor), removed: ace(row.removed_ace), beforeDigest: digest(row.before_digest), afterDigest: digest(row.after_digest) }); }
+const utcStamp = (value: unknown): string => { const result = text(value, 28); if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$/.test(result) || !Number.isFinite(Date.parse(result)) || new Date(result).toISOString() !== `${result.slice(0, 23)}Z`) throw bad(); return result; };
+function auditEventUtc(value: unknown): string {
+  const result = text(value, 30), match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/.exec(result);
+  if (!match || (match[2] ?? "").slice(7).split("").some(digit => digit !== "0")) throw bad();
+  const fraction = (match[2] ?? "").slice(0, 7).padEnd(7, "0"), canonical = `${match[1]}.${fraction}Z`;
+  if (!Number.isFinite(Date.parse(canonical)) || new Date(canonical).toISOString() !== `${canonical.slice(0, 23)}Z`) throw bad();
+  return canonical;
+}
+function auditUtc(value: string): string {
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.exec(value);
+  if (!match) throw bad();
+  const micros = (match[3] ?? "").padEnd(6, "0").slice(0, 6);
+  const local = `${match[1]}T${match[2]}Z`, localEpoch = Date.parse(local);
+  if (!Number.isFinite(localEpoch) || new Date(localEpoch).toISOString().slice(0, 19) !== local.slice(0, 19)) throw bad();
+  const epoch = Date.parse(`${match[1]}T${match[2]}${match[4]}`);
+  if (!Number.isFinite(epoch)) throw bad();
+  return `${new Date(epoch + Number(micros.slice(0, 3))).toISOString().slice(0, 19)}.${micros}0Z`;
+}
+const uint64Decimal = (value: unknown): string => { if (typeof value !== "string" || !/^[1-9]\d{0,19}$/.test(value) || BigInt(value) >= (1n << 64n)) throw bad(); return value; };
+const ipv4 = (value: unknown): string => { const address = text(value, 15), parts = address.split("."); if (parts.length !== 4 || parts.some(part => !/^(0|[1-9]\d{0,2})$/.test(part) || Number(part) > 255)) throw bad(); return address; };
+const auditLimitations = [
+  "Source receipts and completeness are caller assertions until an enrolled collector verifies them.",
+  "A 5145 success is a share access check, not proof of a successful NTFS read or returned bytes.",
+  "A 5145 failure describes share-level denial; missing events cannot establish NTFS denial or prevention.",
+  "A matching server logon does not bind an execution attempt or prove a newly created client session.",
+];
+function normalizedAudit(value: unknown): AdNormalizedAudit {
+  const row = object(value), expected = ["schema_version", "scope_digest", "source_host_id", "source_receipt_digest", "capture_batch_digest", "window_start", "window_end", "reported_completeness", "source_authenticity_verified", "log_continuity_verified", "independent_observation", "effective_access_claim", "fresh_session_claim", "file_content_read_claim", "input_events", "input_bytes", "duplicate_events", "events", "limitations", "capture_state"];
+  if (Object.keys(row).length !== expected.length || Object.keys(row).sort().join() !== expected.sort().join() || row.schema_version !== "bluefire.ad-smb-audit-observation.v2" || ["source_authenticity_verified", "log_continuity_verified", "independent_observation", "effective_access_claim", "fresh_session_claim", "file_content_read_claim"].some(key => row[key] !== false)) throw bad();
+  const captureState = oneOf(row.capture_state, ["query_exhausted", "event_limit", "byte_limit", "event_rejected", "deadline", "cancelled", "read_failed", "cleanup_unknown"] as const);
+  const completeness = ({ query_exhausted: "complete", event_limit: "truncated", byte_limit: "truncated", event_rejected: "incomplete", deadline: "incomplete", cancelled: "incomplete", read_failed: "incomplete", cleanup_unknown: "unknown" } as const)[captureState];
+  const inputEvents = integer(row.input_events, 1000), inputBytes = integer(row.input_bytes, 4 * 1024 * 1024), windowStart = utcStamp(row.window_start), windowEnd = utcStamp(row.window_end), events = list(row.events, 1000).map(auditEvent);
+  const limitations = list(row.limitations, auditLimitations.length);
+  if (row.reported_completeness !== completeness || integer(row.duplicate_events, 1000) !== inputEvents - events.length || events.length > inputEvents || inputBytes < inputEvents || windowStart >= windowEnd || events.some(event => event.observedAt < windowStart || event.observedAt > windowEnd) || JSON.stringify(limitations) !== JSON.stringify(auditLimitations)) throw bad();
+  const recordIds = events.map(event => event.recordId);
+  if (new Set(recordIds).size !== recordIds.length) throw bad();
+  validateAuditCorrelation(events);
+  return { scopeDigest: digest(row.scope_digest), sourceHostId: digest(row.source_host_id), sourceReceiptDigest: digest(row.source_receipt_digest), captureBatchDigest: digest(row.capture_batch_digest), windowStart, windowEnd, completeness, captureState, inputEvents, inputBytes, duplicateEvents: integer(row.duplicate_events, 1000), events, limitations: [...auditLimitations] };
+}
+function validateAuditCorrelation(events: AdAuditEvent[]): void {
+  for (const event of events) {
+    if (event.eventId !== 5145 || event.binding !== "matched") continue;
+    const candidates = events.filter(row => row.eventId === 4624 && row.logonId === event.logonId);
+    let serverLogon: NonNullable<AdAuditEvent["serverLogon"]> = candidates.length ? "ambiguous" : "missing";
+    let recordId: string | undefined;
+    if (candidates.length === 1) {
+      const candidate = candidates[0]!;
+      if (candidate.binding === "matched" && candidate.principalSid === event.principalSid && candidate.observedAt <= event.observedAt && BigInt(candidate.recordId) < BigInt(event.recordId)) {
+        serverLogon = candidate.kerberosNetworkLogon ? "kerberos_network" : "not_verified_kerberos";
+        recordId = candidate.recordId;
+      }
+    }
+    if (event.serverLogon !== serverLogon || event.logonRecordId !== recordId) throw bad();
+  }
+}
+function auditEvent(value: unknown): AdAuditEvent {
+  const row = object(value), common = ["event_id", "version", "record_id", "computer", "observed_at", "audit_outcome", "raw_sha256", "binding"], matched = row.binding === "matched";
+  const identity = ["logon_id", "principal_role", "principal_sid", "client_ip"];
+  let required: string[];
+  if (!matched) required = [...common, ...(Object.hasOwn(row, "logon_id") ? ["logon_id"] : [])];
+  else if (row.event_id === 4624) required = [...common, ...identity, "logon_type", "authentication_package", "kerberos_network_logon"];
+  else required = [...common, ...identity, "file_purpose", "relative_target", "access_mask", "requests_file_data", "share_check", "server_logon", ...(Object.hasOwn(row, "logon_record_id") ? ["logon_record_id"] : [])];
+  if (Object.keys(row).sort().join() !== required.sort().join()) throw bad();
+  const eventIdValue = integer(row.event_id, 65535);
+  if (eventIdValue !== 4624 && eventIdValue !== 5145) throw bad();
+  const eventId = eventIdValue, version = integer(row.version, 2), binding = oneOf(row.binding, ["matched", "incomplete", "outside_scope"] as const);
+  if ((eventId === 4624 && ![0, 1, 2].includes(version)) || (eventId === 5145 && version !== 0)) throw bad();
+  const recordId = uint64Decimal(row.record_id), outcome = oneOf(row.audit_outcome, ["success", "failure", "unknown"] as const);
+  const event: AdAuditEvent = { eventId, version, recordId, computer: text(row.computer, 253), observedAt: auditEventUtc(row.observed_at), outcome, rawDigest: digest(row.raw_sha256), binding };
+  if ("logon_id" in row) { const id = text(row.logon_id, 18); if (!/^0x[0-9a-f]{1,16}$/.test(id) || BigInt(id) === 0n) throw bad(); event.logonId = id; }
+  if (matched) {
+    event.principalRole = oneOf(row.principal_role, ["probe", "legitimate"] as const); event.principalSid = sid(row.principal_sid); event.clientIp = ipv4(row.client_ip);
+    if (!event.logonId) throw bad();
+    if (eventId === 4624) {
+      event.logonType = integer(row.logon_type, 0xffff_ffff); event.authenticationPackage = oneOf(row.authentication_package, ["Kerberos", "NTLM", "Negotiate", "other"] as const); event.kerberosNetworkLogon = bool(row.kerberos_network_logon);
+      if (event.kerberosNetworkLogon !== (event.logonType === 3 && event.authenticationPackage === "Kerberos" && outcome === "success")) throw bad();
+    } else {
+      event.filePurpose = oneOf(row.file_purpose, ["primary", "health"] as const); event.relativeTarget = oneOf(row.relative_target, ["records.jsonl", "health.jsonl"] as const);
+      if ((event.filePurpose === "primary") !== (event.relativeTarget === "records.jsonl")) throw bad();
+      event.accessMask = text(row.access_mask, 10); if (!/^0x[0-9a-f]{1,8}$/.test(event.accessMask)) throw bad();
+      event.requestsFileData = bool(row.requests_file_data); if (event.requestsFileData !== (Number.parseInt(event.accessMask, 16) % 2 === 1)) throw bad();
+      event.shareCheck = oneOf(row.share_check, ["granted", "denied", "unknown"] as const); if (event.shareCheck !== ({ success: "granted", failure: "denied", unknown: "unknown" } as const)[outcome]) throw bad();
+      event.serverLogon = oneOf(row.server_logon, ["missing", "ambiguous", "kerberos_network", "not_verified_kerberos"] as const);
+      if ("logon_record_id" in row) { event.logonRecordId = uint64Decimal(row.logon_record_id); if (!["kerberos_network", "not_verified_kerberos"].includes(event.serverLogon)) throw bad(); }
+    }
+  }
+  return event;
+}
 function execution(value: unknown): AdExecution {
   const row = object(value), observation = row.observation === null ? null : object(row.observation);
   const result: AdExecution = { provenance: oneOf(row.provenance, ["synthetic_fixture", "runner_reported"]), dispatch: oneOf(row.dispatch, ["not_started", "attempted", "unknown"]), cleanup: oneOf(row.cleanup, ["verified", "unknown"]), read: null, audit: null, change: null };
@@ -85,6 +188,7 @@ function execution(value: unknown): AdExecution {
   if (!observation) return result;
   if (result.dispatch !== "attempted") throw bad();
   if ("reader" in observation) {
+    if ("normalized_observation" in observation) throw bad();
     noClaims(observation);
     if (observation.fresh_server_logon !== false || observation.server_session_closed !== null) throw bad();
     const localContext = observation.local_authentication_id === null ? null : text(observation.local_authentication_id, 16);
@@ -92,8 +196,11 @@ function execution(value: unknown): AdExecution {
     result.read = { reader: oneOf(observation.reader, ["probe", "legitimate"]), purpose: oneOf(observation.purpose, ["primary", "health"]), state: oneOf(observation.state, ["bytes_matched", "open_access_denied", "unknown", "deadline", "cancelled", "not_started"]), bytes: integer(observation.bytes_read, 65537), digest: observation.sha256 === null ? null : digest(observation.sha256), localContext, cleanup: oneOf(observation.local_cleanup, ["verified", "unknown"]) };
   } else if ("events" in observation) {
     if (observation.authenticated_source !== false || observation.independent_observation !== false || observation.effective_access_claim !== false) throw bad();
-    result.audit = { events: integer(observation.events, 1000), truncated: bool(observation.truncated), digest: digest(observation.source_digest) };
+    const events = integer(observation.events, 1000), truncated = bool(observation.truncated), normalized = observation.normalized_observation === undefined ? null : normalizedAudit(observation.normalized_observation);
+    if (normalized && (normalized.inputEvents !== events || normalized.captureState !== "query_exhausted" && !truncated || normalized.captureState === "query_exhausted" && truncated)) throw bad();
+    result.audit = { events, truncated, digest: digest(observation.source_digest), ...(normalized ? { normalized } : {}) };
   } else if ("after_descriptor" in observation) {
+    if ("normalized_observation" in observation) throw bad();
     // Retain only the operator-facing structural diff, never binary descriptor or protected task data.
     const before = descriptor(object(observation.snapshot).descriptor), after = descriptor(observation.after_descriptor);
     const removed = before.aces.filter(entry => !after.aces.some(other => other.digest === entry.digest));
@@ -123,7 +230,14 @@ export function checkedAdWorkflow(value: unknown, expected?: string): AdWorkflow
   const pending = progress.pending_operation === null ? null : job(progress.pending_operation);
   if (pending && (allowed.length || operations.some(row => row.id === pending))) throw bad();
   const selected = environment(object(row.request).environment);
-  if (operations.some(row => row.executions.some(entry => entry.change && entry.change.removed.sid !== selected.principals.probe))) throw bad();
+  if (operations.some(row => row.executions.some(entry => {
+    if (entry.change && entry.change.removed.sid !== selected.principals.probe) return true;
+    const normalized = entry.audit?.normalized;
+    return Boolean(normalized && (normalized.inputEvents > selected.auditEvents || normalized.inputBytes > selected.auditBytes || normalized.windowStart !== auditUtc(selected.createdAt) || normalized.sourceHostId !== selected.memberHostId || normalized.events.some(event =>
+      event.computer.toLowerCase() !== selected.member.toLowerCase()
+      || (event.binding === "matched" && (event.principalSid !== selected.principals[event.principalRole!] || event.clientIp !== selected.clientIp))
+      || (event.eventId === 5145 && event.binding === "matched" && !selected.files.some(file => file.name === event.relativeTarget && file.purpose === event.filePurpose)))));
+  }))) throw bad();
   return { id, environment: selected, revision: integer(progress.revision, 1000), stopped: bool(progress.stopped), pending, policy: oneOf(progress.policy_state, ["baseline", "hardened", "unknown"]), operations, allowed, remaining: budget(envelope.remaining), integration: oneOf(envelope.execution_integration, ["unavailable", "injected_adapter", "configured_admission"]) };
 }
 export function checkedAdList(value: unknown): AdWorkflow[] { const rows = list(object(value).workflows, 4096).map(value => checkedAdWorkflow(value)); if (new Set(rows.map(row => row.id)).size !== rows.length) throw bad(); return rows; }

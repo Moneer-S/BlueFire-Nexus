@@ -14,6 +14,7 @@ def event(
     *,
     record_id=None,
     outcome="success",
+    version=None,
     when=None,
     fields=None,
     computer="member.lab.example",
@@ -29,9 +30,11 @@ def event(
     )
     values = {
         "EventID": str(event_id),
-        "Version": "0" if event_id == 5145 else "2",
+        "Version": str(version) if version is not None else ("0" if event_id == 5145 else "2"),
         "Keywords": "0x8020000000000000" if outcome == "success" else "0x8010000000000000",
-        "EventRecordID": str(record_id or (20 if event_id == 5145 else 10)),
+        "EventRecordID": str(
+            record_id if record_id is not None else (20 if event_id == 5145 else 10)
+        ),
         "Channel": "Security",
         "Computer": computer,
     }
@@ -73,7 +76,7 @@ def normalize(rows, **kwargs):
     options = {
         "source_host_id": pin("2"),
         "source_receipt_digest": pin("a"),
-        "record_epoch_digest": pin("b"),
+        "capture_batch_digest": pin("b"),
         "window_start": "2026-10-09T00:00:00Z",
         "window_end": "2026-10-09T00:30:00Z",
     }
@@ -88,8 +91,12 @@ def test_out_of_order_join_is_narrow_and_never_authenticates_imports():
     assert row["share_check"] == "granted"
     assert row["requests_file_data"] is True
     assert row["server_logon"] == "kerberos_network"
-    assert row["logon_record_id"] == 10
+    assert row["logon_record_id"] == "10"
+    assert row["client_ip"] == "10.44.0.3"
     assert row["observed_at"] == "2026-10-09T00:01:02.1234567Z"
+    assert result["schema_version"] == "bluefire.ad-smb-audit-observation.v2"
+    assert result["capture_batch_digest"] == pin("b")
+    assert result["log_continuity_verified"] is False
     assert result["reported_completeness"] == "complete"
     for key in (
         "source_authenticity_verified",
@@ -165,6 +172,21 @@ def test_duplicate_idempotence_and_conflict():
     assert len(result["events"]) == 1 and result["duplicate_events"] == 1
     with pytest.raises(AdSmbError, match="conflicts"):
         normalize([raw, event(outcome="failure")])
+
+
+def test_v2_record_identifiers_are_lossless_canonical_uint64_strings():
+    maximum = 2**64 - 1
+    result = normalize([event(4624, record_id=maximum - 1), event(record_id=maximum)])
+    logon, share = result["events"]
+    assert logon["record_id"] == str(maximum - 1)
+    assert share["record_id"] == str(maximum)
+    assert share["logon_record_id"] == str(maximum - 1)
+
+
+@pytest.mark.parametrize("record_id", [0, 2**64])
+def test_native_record_identifier_rejects_zero_and_uint64_overflow(record_id):
+    with pytest.raises(AdSmbError):
+        normalize([event(record_id=record_id)])
 
 
 def test_reused_logon_identifier_and_late_logon_are_ambiguous():
@@ -379,7 +401,7 @@ def test_malformed_identity_and_access_fields_refused(fields):
     [
         {"source_host_id": pin("3")},
         {"source_receipt_digest": "unbound"},
-        {"record_epoch_digest": "unbound"},
+        {"capture_batch_digest": "unbound"},
         {"completeness": "verified"},
         {"window_start": "2026-10-08T23:59:59Z"},
         {"window_end": "2026-10-09T01:00:00Z"},
@@ -402,3 +424,15 @@ def test_unneeded_identity_text_is_not_projected():
     result = normalize([raw])
     assert "private-user" not in str(result) and "untrusted-message" not in str(result)
     assert result["events"][0]["raw_sha256"].startswith("sha256:")
+
+
+def test_unmatched_rows_do_not_expose_untrusted_client_address():
+    row = normalize([event(fields={"IpAddress": "10.44.0.99"})])["events"][0]
+    assert row["binding"] == "outside_scope"
+    assert "client_ip" not in row
+
+
+def test_correct_principal_on_out_of_scope_share_stays_unprojected():
+    row = normalize([event(fields={"ShareName": "\\\\*\\other"})])["events"][0]
+    assert row["binding"] == "outside_scope"
+    assert not {"principal_role", "principal_sid", "client_ip"} & set(row)
