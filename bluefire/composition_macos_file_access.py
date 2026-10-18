@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from typing import Any
 
@@ -13,6 +14,78 @@ from .macos_attempt_workspace import MacOSAttemptWorkspaceGuard
 from .macos_file_access_contract import validate_binding
 from .product_store_errors import ProductStoreError
 from .util import content_hash
+
+
+def attempt_deadlines(binding, lease, origin_ms, started_ns):
+    cleanup_reserve_ns = (
+        lease["attempt_expires_at_ms"] - lease["business_expires_at_ms"]
+    ) * 1_000_000
+    cleanup_deadline_ns = min(
+        binding["original_deadline_ns"],
+        started_ns + (lease["attempt_expires_at_ms"] - origin_ms) * 1_000_000,
+    )
+    business_deadline_ns = min(
+        cleanup_deadline_ns - cleanup_reserve_ns,
+        started_ns + (lease["business_expires_at_ms"] - origin_ms) * 1_000_000,
+    )
+    if cleanup_reserve_ns <= 0 or business_deadline_ns <= started_ns:
+        raise ProductStoreError("The original workspace has no business window before cleanup.")
+    return business_deadline_ns, cleanup_deadline_ns
+
+
+def attempt_admission_deadlines(binding, reservation, grant_expiry_ms, origin_ms, started_ns):
+    cleanup_reserve_ms = reservation["cleanup_reserve_ms"]
+    attempt_ms = reservation["reserved_attempt_ms"]
+    predicted_lease = {
+        "business_expires_at_ms": min(grant_expiry_ms, origin_ms + attempt_ms - cleanup_reserve_ms),
+        "attempt_expires_at_ms": origin_ms + attempt_ms,
+    }
+    return attempt_deadlines(binding, predicted_lease, origin_ms, started_ns)
+
+
+def admit_attempt(jobs, current, compiled, grant, marker):
+    from .macos_file_access_peer import darwin_clock_ns
+
+    attempt_admission_deadlines(
+        current["macos_file_access_binding"].to_dict(),
+        compiled["reservation"],
+        grant["expires_at_ms"],
+        jobs.clock(),
+        darwin_clock_ns(),
+    )
+    current["runner"].reserve_composition_probe_budget(
+        attempt_id=marker["attempt_id"],
+        compiled_digest=marker["compiled_digest"],
+        current_environment=current["current_environment"],
+    )
+
+
+def reserve_attempt(jobs, attempt_id, current, lease, origin, macos_clock, macos_started):
+    assert macos_clock is not None and macos_started is not None
+    binding = current["macos_file_access_binding"].to_dict()
+    business_deadline_ns, cleanup_deadline_ns = attempt_deadlines(
+        binding, lease, origin, macos_started
+    )
+    jobs.store.reserve_macos_capability_attempt(
+        attempt_id,
+        now_ms=jobs.clock(),
+        monotonic_ns=macos_clock(),
+        business_deadline_ns=business_deadline_ns,
+        cleanup_deadline_ns=cleanup_deadline_ns,
+    )
+
+
+def claim_cleanup_authority(
+    jobs, attempt_id, profile, params, receipts, sealed_profile, macos_clock
+):
+    assert macos_clock is not None
+    if params or receipts or profile != sealed_profile:
+        raise ProductStoreError("macOS closure cannot acquire filesystem receipt authority.")
+    return jobs.store.claim_macos_capability_cleanup(
+        attempt_id,
+        now_ms=jobs.clock(),
+        now_monotonic_ns=macos_clock(),
+    )
 
 
 def prepare(jobs, job_id: str, attempt_id: str, current: Mapping[str, Any]) -> None:
@@ -110,6 +183,219 @@ def settle(jobs, marker, job_id, lease, run_result, cleanup_result) -> None:
     jobs._publish(
         job_id, {"verified_result": result, "verified_result_digest": content_hash(result)}
     )
+
+
+def recovery_events(jobs, attempt_id):
+    with jobs.store._connection() as connection:
+        rows = connection.execute(
+            "SELECT event_type,event_key FROM capability_macos_file_access_events "
+            "WHERE attempt_id=? AND event_type IN ('dispatch','cleanup_claim','producer_closure')",
+            (attempt_id,),
+        ).fetchall()
+        return {(row["event_type"], row["event_key"]) for row in rows}
+
+
+def retain_close_recovery(jobs, attempt_id, marker, job_id, lease, orchestrator):
+    """Keep only original-process authority for a proven zero-dispatch close retry."""
+    from .macos_attempt_workspace import MacOSAttemptWorkspaceGuard
+
+    context = getattr(orchestrator, "_macos_recovery_context", None)
+    guard = jobs.store._macos_attempt_workspaces.get(attempt_id)
+    events = jobs._macos_recovery_events(attempt_id)
+    progress = jobs.store.get_job(job_id)["progress"]
+    guard_matches = (
+        type(guard) is MacOSAttemptWorkspaceGuard
+        and guard._pid == os.getpid()
+        and guard._attempt_id == attempt_id
+        and guard._lease_digest == lease.get("lease_digest")
+        and guard._compiled_digest == marker.get("compiled_digest")
+    )
+    if (
+        jobs.store._macos_workspace_pid != os.getpid()
+        or not guard_matches
+        or not isinstance(context, dict)
+        or context.get("run_id") != marker["run_id"]
+        or progress.get("settlement") != "pending_cleanup"
+        or any(event_type == "dispatch" for event_type, _ in events)
+        or ("cleanup_claim", "close_attempt") in events
+        or any(event_type == "producer_closure" for event_type, _ in events)
+    ):
+        return False
+    try:
+        jobs.store.get_macos_capability_closure(attempt_id)
+    except (ProductStoreError, KeyError):
+        pass
+    else:
+        return False
+    with jobs._macos_recovery_lock:
+        jobs._macos_recoveries[attempt_id] = {
+            "owner_id": marker["parent_job_id"],
+            "job_id": job_id,
+            "marker": dict(marker),
+            "lease": dict(lease),
+            "orchestrator": orchestrator,
+            "context": dict(context),
+        }
+        jobs._publish(
+            job_id,
+            {"macos_recovery": {"state": "available", "scope": "close_only"}},
+        )
+    return True
+
+
+def finish_close_recovery(jobs, attempt_id, marker, job_id, lease, orchestrator):
+    try:
+        retained = jobs._retain_macos_close_recovery(
+            attempt_id, marker, job_id, lease, orchestrator
+        )
+    except Exception:
+        with jobs._macos_recovery_lock:
+            jobs._macos_recoveries.pop(attempt_id, None)
+        retained = False
+    if not retained:
+        jobs.store.release_macos_attempt_workspace(attempt_id)
+
+
+def recover_attempt(jobs, owner_id: str, attempt_id: str):
+    """Close a retained zero-dispatch attempt once; never recreate lost authority."""
+    jobs._owner(owner_id)
+    children = {
+        row["request"]["composition_attempt"]["attempt_id"]: row for row in jobs._children(owner_id)
+    }
+    child = children.get(attempt_id)
+    if child is None:
+        raise ProductStoreError("Select an exact attempt belonging to this objective.")
+    marker = child["request"]["composition_attempt"]
+    attempt = jobs.store.get_capability_attempt(attempt_id)
+    if (
+        not isinstance(attempt.get("compiled", {}).get("macos_file_access"), Mapping)
+        or attempt.get("lease", {}).get("run_id") != marker.get("run_id")
+        or attempt.get("lease", {}).get("compiled_digest") != marker.get("compiled_digest")
+        or marker.get("parent_job_id") != owner_id
+    ):
+        raise ProductStoreError("Recovery is limited to the exact original macOS attempt.")
+    job_id = child["job_id"]
+    with jobs._macos_recovery_lock:
+        # A competing recovery may have completed while this request waited
+        # for the lock. Never replace its terminal state using stale progress.
+        progress = jobs.store.get_job(job_id)["progress"]
+        recovery_state = progress.get("macos_recovery", {})
+        if recovery_state.get("state") in {"closed", "unavailable", "unresolved"}:
+            return jobs.read(owner_id)
+        if progress.get("settlement") != "pending_cleanup":
+            return jobs.read(owner_id)
+
+        retained = jobs._macos_recoveries.get(attempt_id)
+        if retained is None:
+            jobs._publish(
+                job_id,
+                {
+                    "macos_recovery": {
+                        "state": "unavailable",
+                        "reason": "original_process_authority_unavailable",
+                    }
+                },
+            )
+            return jobs.read(owner_id)
+        if retained["owner_id"] != owner_id or retained["job_id"] != job_id:
+            raise ProductStoreError("The retained close authority belongs to another attempt.")
+        events = jobs._macos_recovery_events(attempt_id)
+        from .macos_attempt_workspace import MacOSAttemptWorkspaceGuard
+
+        guard = jobs.store._macos_attempt_workspaces.get(attempt_id)
+        guard_matches = (
+            type(guard) is MacOSAttemptWorkspaceGuard
+            and guard._pid == os.getpid()
+            and guard._attempt_id == attempt_id
+            and guard._lease_digest == retained["lease"].get("lease_digest")
+            and guard._compiled_digest == retained["marker"].get("compiled_digest")
+        )
+        if (
+            jobs.store._macos_workspace_pid != os.getpid()
+            or not guard_matches
+            or any(event_type == "dispatch" for event_type, _ in events)
+            or ("cleanup_claim", "close_attempt") in events
+            or any(event_type == "producer_closure" for event_type, _ in events)
+        ):
+            jobs._macos_recoveries.pop(attempt_id, None)
+            jobs.store.release_macos_attempt_workspace(attempt_id)
+            jobs._publish(
+                job_id,
+                {
+                    "macos_recovery": {
+                        "state": "unavailable",
+                        "reason": "dispatch_or_original_guard_changed",
+                    }
+                },
+            )
+            return jobs.read(owner_id)
+
+        try:
+            attempt = jobs.store.get_capability_attempt(attempt_id)
+            from . import product_store_macos_composition as macos_journal
+
+            for task in attempt["tasks"]:
+                with jobs.store._connection() as connection:
+                    receipt = macos_journal._event(
+                        connection, attempt_id, "receipt", task["step_id"]
+                    )
+                    terminal = connection.execute(
+                        "SELECT attempt_id,request_hash,terminal_digest FROM "
+                        "capability_task_terminals WHERE task_id=?",
+                        (task["task_id"],),
+                    ).fetchone()
+                if receipt is None and terminal is None:
+                    not_sent = {
+                        "schema_version": "bluefire.task-not-sent.v1",
+                        "task_id": task["task_id"],
+                        "request_hash": task["request_hash"],
+                    }
+                    jobs.store.record_capability_task_terminal(
+                        task["task_id"],
+                        request_hash=task["request_hash"],
+                        terminal_digest=content_hash(not_sent),
+                    )
+                    jobs.store.record_macos_capability_terminal(task["task_id"], result=not_sent)
+                elif (
+                    receipt is None
+                    or receipt.get("state") != "not_sent"
+                    or terminal is None
+                    or terminal["attempt_id"] != attempt_id
+                    or terminal["request_hash"] != task["request_hash"]
+                    or terminal["terminal_digest"] != receipt.get("terminal_digest")
+                ):
+                    raise ProductStoreError("An attempt task is not provably undispatched.")
+
+            recovery = retained["orchestrator"]
+            recovery._macos_close_attempted = False
+            recovery._attempt_emergency_cleanup(**retained["context"])
+            jobs.store.get_macos_capability_closure(attempt_id)
+            jobs._settle_attempt(retained["marker"], job_id, retained["lease"], None, None)
+            settled = jobs.store.get_job(job_id)["progress"].get("settlement") == "settled"
+            jobs._publish(
+                job_id,
+                {
+                    "macos_recovery": {
+                        "state": "closed" if settled else "unresolved",
+                        "scope": "close_only",
+                        **({} if settled else {"reason": "settlement_unverified"}),
+                    }
+                },
+            )
+        except Exception:
+            jobs._publish(
+                job_id,
+                {
+                    "macos_recovery": {
+                        "state": "unresolved",
+                        "reason": "original_close_not_verified",
+                    }
+                },
+            )
+        finally:
+            jobs._macos_recoveries.pop(attempt_id, None)
+            jobs.store.release_macos_attempt_workspace(attempt_id)
+    return jobs.read(owner_id)
 
 
 def _terminal_events(store, attempt_id: str):

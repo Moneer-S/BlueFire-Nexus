@@ -59,6 +59,17 @@ def connected(original, pack_state, tmp_path, monkeypatch):
     initial = producer._binding()
     frames = []
     failures = {"close_lost": False}
+    monkeypatch.setattr(
+        bridge,
+        "select",
+        SimpleNamespace(
+            select=lambda *_args: (
+                ([], [], [])
+                if parent._received_request is not None or parent._in_task
+                else ([parent._stream], [], [])
+            )
+        ),
+    )
 
     def advance(wall):
         state.update(wall=wall, clock=1000 + (wall - 1000) * 1_000_000)
@@ -78,6 +89,19 @@ def connected(original, pack_state, tmp_path, monkeypatch):
 
         def review_context(self, operation):
             return producer.review_context(operation)
+
+        def reserve_composition_probe_budget(self, request):
+            channel_request = {
+                "schema_version": "bluefire.macos-workspace-request.v1",
+                "sequence": parent._sequence + 1,
+                "operation": "reserve_composition_probe_budget",
+                "payload": request,
+            }
+            parent._received_request = channel_request
+            try:
+                return parent._received(channel_request)["payload"]
+            finally:
+                parent._received_request = None
 
         def dispatch_committed(self, frame, *, cancel_event):
             assert not cancel_event.is_set()
@@ -262,6 +286,18 @@ def connected(original, pack_state, tmp_path, monkeypatch):
     args = reservation_args(saved)
     args.update(plan_digest=plan_digest, native_envelope_digest=content_hash(envelope))
     advance(3000)
+    budget = endpoint.reserve_composition_probe_budget(
+        {
+            "schema_version": "bluefire.macos-composition-budget-request.v1",
+            "attempt_id": args["attempt_id"],
+            "compiled_digest": compiled["compiled_digest"],
+            "control_owner_id": environment["control_owner_id"],
+            "binding_digest": environment["binding_digest"],
+            "control_revision": environment["control_revision"],
+        }
+    )
+    assert budget["idempotent"] is False and budget["units"] == 2
+    assert producer._used_budget == 5
     lease = store.reserve_capability_attempt(grant["grant_id"], compiled, **args)
     advance(4000)
     claim = store.claim_capability_attempt(

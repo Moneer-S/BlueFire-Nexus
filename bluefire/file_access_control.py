@@ -400,14 +400,33 @@ class FileAccessControl:
                 and records["outcome"] is None
             ):
                 # Historical polling never re-enters the original channel.
+                dispatched = macos.has_dispatch(self.store, job_id)
+                if not dispatched:
+                    for row in records["tasks"]:
+                        claim = row["task"]
+                        not_sent = {
+                            "schema_version": "bluefire.task-not-sent.v1",
+                            "task_id": claim["task_id"],
+                            "request_hash": claim["request_hash"],
+                        }
+                        self.store.record_file_access_task_terminal(
+                            claim["task_id"], request_hash=claim["request_hash"], result=not_sent
+                        )
+                        self.store.record_file_access_worker_closure(
+                            claim["task_id"],
+                            request_hash=claim["request_hash"],
+                            proof={
+                                "state": "not_sent",
+                                "binding_digest": content_hash(
+                                    claim["runner_profile"]["macos_file_access_binding"]
+                                ),
+                                "evidence_digest": content_hash(not_sent),
+                            },
+                        )
                 self.store.finish_file_access_operation(
                     job_id,
                     outcome={
-                        "state": (
-                            "unknown"
-                            if records["tasks"] or macos.has_dispatch(self.store, job_id)
-                            else "refused_no_effect"
-                        ),
+                        "state": "unknown" if dispatched else "refused_no_effect",
                         "evidence_digest": content_hash(records["tasks"]),
                     },
                 )

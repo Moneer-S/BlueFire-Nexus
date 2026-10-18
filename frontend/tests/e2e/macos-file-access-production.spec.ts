@@ -1,9 +1,13 @@
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import process from "node:process";
 import { macOSControlFixture, macOSOperationFixture, macOSOwner, macOSReviewFixture, macOSStatusFixture } from "../macos-file-access-fixture";
+import { macObjectiveFixture } from "../macos-composition-fixture";
+import type { CompositionObjective } from "../../src/lib/composition";
+import { ownerId } from "../composition-fixture";
 import type { FileAccessOperationEnvelope, FileAccessReviewRequest, FileAccessSubmission, MacOSFileAccessControl } from "../../src/lib/file-access";
 
 const viewports = [{ width: 1440, height: 900 }, { width: 390, height: 844 }] as const;
+const MACOS_FILE_ACCESS_PACK = "bluefire.macos-file-access-pack.v1";
 
 async function syntheticSession(page: Page) {
   const port = process.env.BLUEFIRE_S3_BROWSER_PORT;
@@ -103,6 +107,88 @@ async function capture(page: Page, info: TestInfo, viewport: typeof viewports[nu
   await info.attach(`${name}-${viewport.width}`, { path, contentType: "image/png" });
 }
 
+async function syntheticRecoverySession(page: Page, initialState: "available" | "unavailable" | "unresolved") {
+  const port = process.env.BLUEFIRE_S3_BROWSER_PORT;
+  if (!/^\d{4,5}$/.test(port ?? "") || Number(port) > 65535) throw new Error("A dedicated loopback browser port is required.");
+  const origin = `http://127.0.0.1:${port}`;
+  const code = "e".repeat(64);
+  const session = "f".repeat(64);
+  let connected = false;
+  let recovered = false;
+  const objectiveFor = (state: "available" | "unavailable" | "unresolved" | "closed"): CompositionObjective => {
+    const objective = macObjectiveFixture("unknown");
+    objective.attempts[0]!.progress.macos_recovery = { state, scope: "close_only" };
+    if (state === "closed") {
+      objective.attempts[0]!.progress.settlement = "settled";
+      objective.attempts[0]!.progress.macos_file_access_request_state = "not_sent";
+    }
+    return objective;
+  };
+  let objective = objectiveFor(initialState);
+  const attemptId = objective.attempts[0]!.request.composition_attempt.attempt_id;
+  const counts = { recovery: 0, unexpected: 0, pageErrors: 0, websocket: 0 };
+  page.on("pageerror", () => { counts.pageErrors += 1; });
+  await page.context().routeWebSocket("**/*", socket => { counts.websocket += 1; socket.close(); });
+  await page.context().route("**/*", async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const method = request.method();
+    const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+    if (url.origin !== origin || url.search || url.username || url.password) { counts.unexpected += 1; await route.abort(); return; }
+    if (method === "GET" && /^\/ui\/[a-zA-Z0-9_.-]*$/.test(url.pathname)) { await route.continue(); return; }
+    if (url.pathname === "/api/v1/session") {
+      if (method === "POST" && !connected && request.headers()["x-bluefire-browser-bootstrap"] === code) {
+        connected = true; await json({ session }); return;
+      }
+      if (method === "GET" && connected && request.headers()["x-bluefire-session"] === session) { await route.fulfill({ status: 204 }); return; }
+      await json({ error: { code: "browser_session_unavailable", message: "Synthetic browser session unavailable." } }, 401); return;
+    }
+    if (!connected || request.headers()["x-bluefire-session"] !== session) { counts.unexpected += 1; await route.abort(); return; }
+    if (method === "GET" && url.pathname === "/api/v1/catalog") { await json({ behaviors: [], actions: [], runner_profiles: [], runners: [], ai: { providers: [] } }); return; }
+    if (method === "GET" && url.pathname === "/api/v1/scenarios") { await json({ scenarios: [] }); return; }
+    if (method === "POST" && url.pathname === "/api/v1/composition/objective-list") {
+      if (JSON.stringify(request.postDataJSON()) !== JSON.stringify({ control_owner_id: macOSOwner })) { counts.unexpected += 1; await route.abort(); return; }
+      await json({ schema_version: "bluefire.composition-objective-list.v1", objectives: [{ owner_id: ownerId, title: "Verify the retained Mac control", status: "active", job_state: "completed" }] }); return;
+    }
+    if (method === "GET" && url.pathname === `/api/v1/composition/objectives/${ownerId}`) { await json(objective); return; }
+    if (method === "GET" && url.pathname === "/api/v1/file-access/status") {
+      const status = macOSStatusFixture();
+      if (status.enrollment) status.enrollment.expires_at_ms = Date.now() + 600_000;
+      await json(status); return;
+    }
+    if (method === "GET" && url.pathname === `/api/v1/file-access/controls/${macOSOwner}`) { await json(macOSControlFixture("hardened")); return; }
+    if (method === "POST" && url.pathname === `/api/v1/composition/objectives/${ownerId}/recover`) {
+      const body = request.postDataJSON() as { attempt_id?: unknown };
+      if (initialState !== "available" || recovered || body.attempt_id !== attemptId) { counts.unexpected += 1; await route.abort(); return; }
+      counts.recovery += 1;
+      recovered = true;
+      objective = objectiveFor("closed");
+      await json(objective); return;
+    }
+    counts.unexpected += 1;
+    await route.abort();
+  });
+
+  await page.goto(`./#/composition?control=${macOSOwner}&objective=${ownerId}&pack=${MACOS_FILE_ACCESS_PACK}`);
+  await expect(page.getByRole("heading", { name: "Connect to your workspace" })).toBeVisible();
+  await page.getByLabel("One-time connection code", { exact: false }).fill(code);
+  await page.getByRole("button", { name: "Connect", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Verify the retained Mac control" })).toBeVisible();
+  return { counts, getObjective: () => objective, attemptId };
+}
+
+async function captureRecovery(page: Page, info: TestInfo, viewport: typeof viewports[number], name: string) {
+  await page.setViewportSize(viewport);
+  const recoveryTitle = page.getByText(/^(Attempt closure pending|Original attempt close needs review)$/);
+  await (await recoveryTitle.count() ? recoveryTitle : page.getByRole("heading", { name: "Verify the retained Mac control" })).scrollIntoViewIfNeeded();
+  await page.evaluate(async () => { await document.fonts.ready; });
+  const geometry = await page.evaluate(() => ({ clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth }));
+  expect(geometry.scrollWidth, `${viewport.width}px document overflow`).toBeLessThanOrEqual(geometry.clientWidth);
+  const path = info.outputPath(`${name}-${viewport.width}.png`);
+  await page.screenshot({ path, fullPage: false, animations: "disabled" });
+  await info.attach(`${name}-${viewport.width}`, { path, contentType: "image/png" });
+}
+
 test.use({ trace: "off", video: "off", screenshot: "off", serviceWorkers: "block" });
 
 for (const viewport of viewports) {
@@ -145,4 +231,40 @@ for (const viewport of viewports) {
     expect(mutations.every(path => ["/api/v1/session", "/api/v1/file-access/control-list", "/api/v1/file-access/review", "/api/v1/file-access/operations"].includes(path))).toBe(true);
     expect(fixture.getControl().status).toBe("hardened");
   });
+
+  for (const state of ["available", "unavailable", "unresolved"] as const) {
+    test(`synthetic macOS attempt recovery ${state} state is bounded at ${viewport.width}x${viewport.height}`, async ({ page }, info) => {
+      await page.setViewportSize(viewport);
+      const fixture = await syntheticRecoverySession(page, state);
+      const mutations: string[] = [];
+      page.on("request", request => {
+        if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method())) mutations.push(new URL(request.url()).pathname);
+      });
+
+      if (state === "available") {
+        const close = page.getByRole("button", { name: "Close undispatched attempt" });
+        await expect(close).toBeEnabled();
+        await captureRecovery(page, info, viewport, "macos-recovery-before-close");
+        await close.click();
+        await expect(page.getByRole("button", { name: "Close undispatched attempt" })).toHaveCount(0);
+        await expect(page.getByLabel("Attempt evidence").getByText("Settled", { exact: true })).toBeVisible();
+        expect(fixture.getObjective().attempts[0]!.progress.macos_recovery).toMatchObject({ state: "closed", scope: "close_only" });
+        expect(fixture.getObjective().attempts[0]!.progress.verified_result).toBeUndefined();
+        expect(fixture.counts.recovery).toBe(1);
+      } else {
+        await expect(page.getByText(state === "unavailable"
+          ? "The original process authority is unavailable. No workspace was re-adopted and no new attempt was started."
+          : "The original close could not be verified. Review retained evidence before taking any further action.")).toBeVisible();
+        await expect(page.getByRole("button", { name: "Close undispatched attempt" })).toHaveCount(0);
+        expect(fixture.counts.recovery).toBe(0);
+      }
+
+      await expect(page.getByRole("alert")).toHaveCount(0);
+      await captureRecovery(page, info, viewport, `macos-recovery-${state}`);
+      expect(fixture.counts).toMatchObject({ recovery: state === "available" ? 1 : 0, unexpected: 0, pageErrors: 0, websocket: 0 });
+      const effectRequests = mutations.filter(path => path !== "/api/v1/composition/objective-list");
+      expect(effectRequests).toEqual(state === "available" ? [`/api/v1/composition/objectives/${ownerId}/recover`] : []);
+      expect(fixture.getObjective().attempts[0]!.request.composition_attempt.attempt_id).toBe(fixture.attemptId);
+    });
+  }
 }

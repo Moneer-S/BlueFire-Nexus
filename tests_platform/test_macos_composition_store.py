@@ -117,6 +117,7 @@ def test_attempt_closure_accepts_probe_only_or_both_exact_business_terminals(jou
     assert all(row["state"] == "complete" for row in rows)
 
 
+@pytest.mark.parametrize("attempt", [{"prior_used": 3}], indirect=True)
 def test_zero_business_tasks_allow_original_no_effect_closure_without_fabricated_probe(
     journal, attempt
 ):
@@ -131,10 +132,9 @@ def test_zero_business_tasks_allow_original_no_effect_closure_without_fabricated
         ("task-close", "attempt-a", "close_attempt", content_hash("close")),
     )
     assert macos_store._task_closures(journal, "attempt-a", reservation) == []
-    attempt.producer._used_budget = 3
     closure = attempt.dispatch(attempt.frame("close_attempt"))
     assert closure["task_closures"] == [] and not attempt.state["calls"]
-    assert closure["shared_request_budget_used"] == 3
+    assert closure["shared_request_budget_used"] == 5
     macos_store._validate_closure_budget(journal, "attempt-a", reservation, closure)
 
 
@@ -217,10 +217,8 @@ def test_compiled_step_implementation_join_refuses_changed_or_mixed_graph(change
 
 
 @pytest.mark.parametrize("owner_read", [False, True])
-def test_closure_uses_real_cumulative_reserved_budget_after_prior_control_requests(
-    journal, attempt, owner_read
-):
-    attempt.producer._used_budget = 3
+@pytest.mark.parametrize("attempt", [{"prior_used": 3}], indirect=True)
+def test_closure_receipts_preserve_the_exact_prepaid_budget(journal, attempt, owner_read):
     probe = attempt.dispatch(attempt.frame())
     _receipt(
         journal, task_id="task-probe", step_id="probe", budget=probe["shared_request_budget_used"]
@@ -266,7 +264,6 @@ def test_no_native_receipt_preserves_bounded_parent_counter_without_inventing_ze
 @pytest.fixture
 def terminal_journal(journal, attempt, monkeypatch):
     """Use actual producer receipts and a real transaction around journal writes."""
-    attempt.producer._used_budget = 3
     clock = {"wall": attempt.state["wall"], "monotonic": attempt.state["clock"]}
     monkeypatch.setattr(
         macos_store, "_acceptance_clock", lambda: (clock["wall"], clock["monotonic"])
@@ -414,6 +411,7 @@ def terminal_journal(journal, attempt, monkeypatch):
     return make
 
 
+@pytest.mark.parametrize("attempt", [{"prior_used": 3}], indirect=True)
 @pytest.mark.parametrize("operation", ["probe", "close_attempt"])
 def test_stalled_wall_clock_during_success_journal_write_rolls_back_acceptance(
     terminal_journal, monkeypatch, operation
@@ -439,6 +437,7 @@ def test_stalled_wall_clock_during_success_journal_write_rolls_back_acceptance(
     ).fetchone()
 
 
+@pytest.mark.parametrize("attempt", [{"prior_used": 3}], indirect=True)
 def test_final_closure_persists_full_post_inventory_in_same_bounded_transaction(terminal_journal):
     current = terminal_journal("close_attempt")
     task_id = current.frame["intent"]["task_id"]
@@ -454,6 +453,7 @@ def test_final_closure_persists_full_post_inventory_in_same_bounded_transaction(
     assert macos_store.get_macos_capability_closure(current.store, current.attempt_id) == settled
 
 
+@pytest.mark.parametrize("attempt", [{"prior_used": 3}], indirect=True)
 def test_stalled_final_inventory_write_cannot_commit_closure_after_original_cleanup_deadline(
     terminal_journal, monkeypatch
 ):
@@ -486,6 +486,7 @@ def test_stalled_final_inventory_write_cannot_commit_closure_after_original_clea
     )
 
 
+@pytest.mark.parametrize("attempt", [{"prior_used": 3}], indirect=True)
 def test_unknown_terminal_can_remain_truthful_after_deadline_without_accepting_success(
     terminal_journal,
 ):

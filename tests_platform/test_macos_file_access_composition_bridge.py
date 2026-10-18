@@ -18,7 +18,7 @@ original = bridge_cases.original
 
 
 @pytest.fixture
-def attempt(original):
+def attempt(original, request):
     producer, value, state = original.producer, original.value, original.state
     producer._namespace.mode = "0600"
     producer._state = "hardened"
@@ -52,6 +52,33 @@ def attempt(original):
         "cleanup_claim": None,
         "cleanup_claim_digest": None,
     }
+    options = getattr(request, "param", {})
+    if isinstance(options, dict):
+        prior_used = options.get("prior_used", 0)
+        prepaid = options.get("prepaid", True)
+    else:
+        prior_used, prepaid = 0, options
+    producer._used_budget = prior_used
+    if prepaid:
+        request = {
+            "schema_version": "bluefire.macos-composition-budget-request.v1",
+            "attempt_id": base["attempt_id"],
+            "compiled_digest": base["compiled_digest"],
+            "control_owner_id": base["control_owner_id"],
+            "binding_digest": content_hash(producer._binding()),
+            "control_revision": producer._revision,
+        }
+        channel_request = {
+            "schema_version": "bluefire.macos-workspace-request.v1",
+            "sequence": value._sequence + 1,
+            "operation": "reserve_composition_probe_budget",
+            "payload": request,
+        }
+        value._received_request = channel_request
+        try:
+            value._received(channel_request)
+        finally:
+            value._received_request = None
     frames, receipts = {}, {}
 
     def frame(operation="probe"):
@@ -270,7 +297,8 @@ def test_original_task_or_closure_cannot_be_replayed(attempt, operation):
     assert len(attempt.state["calls"]) == before and attempt.producer._used_budget == 2
 
 
-def test_budget_shortage_refuses_whole_pair_before_first_probe(attempt):
+@pytest.mark.parametrize("attempt", [False], indirect=True)
+def test_unreserved_attempt_refuses_before_first_probe(attempt):
     attempt.producer._used_budget = 63
     with pytest.raises(MacOSFileAccessContractError):
         attempt.dispatch(attempt.frame())
@@ -318,7 +346,7 @@ def test_cleanup_can_close_only_original_completed_or_unsent_usage_without_new_r
     closure = attempt.dispatch(frame)
     assert closure["state"] == "closed" and closure["producer_request_usage"] == "settled"
     assert len(attempt.state["calls"]) == int(started)
-    assert attempt.producer._used_budget == (2 if started else 0)
+    assert attempt.producer._used_budget == 2
     if owner_frame is not None:
         with pytest.raises(MacOSFileAccessContractError):
             attempt.dispatch(owner_frame)
@@ -444,4 +472,4 @@ def test_composition_transport_never_replays_cancelled_or_uncommitted_work(attem
             cancel_event=cancelled,
         )
     assert calls == (["commit", "exchange"] if failure == "channel_lost" else ["commit"])
-    assert not attempt.state["calls"] and attempt.producer._used_budget == 0
+    assert not attempt.state["calls"] and attempt.producer._used_budget == 2

@@ -379,5 +379,6 @@ export const compositionApi = {
   proposal: (id: string) => request<CompositionProposal>(`/composition/proposals/${encodeURIComponent(id)}`),
   submit: (value: CompositionPending) => post<CompositionObjectiveState | CompositionProposal>(value.kind === "grant" ? "objectives" : `objectives/${encodeURIComponent(value.owner)}/${value.kind === "attempt" ? "attempts" : "proposals"}`, value.body),
   control: (id: string, operation: "stop" | "revoke" | "continue") => post<CompositionObjectiveState>(`objectives/${encodeURIComponent(id)}/${operation}`, {}),
+  recover: (id: string, attempt_id: string) => post<CompositionObjectiveState>(`objectives/${encodeURIComponent(id)}/recover`, { attempt_id }),
   cancel: (id: string) => post<CompositionProposal>(`proposals/${encodeURIComponent(id)}/cancel`, {}),
 };

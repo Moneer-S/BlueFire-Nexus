@@ -1,6 +1,7 @@
 """Original creator state with fake namespace/workers/lease, not installed proof."""
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from copy import deepcopy
 from types import SimpleNamespace
@@ -12,6 +13,81 @@ from bluefire.macos_file_access_contract import MacOSFileAccessContractError
 from bluefire.macos_file_access_peer import MacOSChildConsistency
 from bluefire.util import content_hash
 from tests_platform.test_macos_file_access_contract import binding, credentials, observation
+
+
+def _budget_creator(used=0):
+    value = object.__new__(creator.MacOSFileAccessCreator)
+    value._lock = threading.Lock()
+    value._state = "hardened"
+    value._revision = 4
+    value._used_budget = used
+    value._composition_reservations = {}
+    value._require_lease = lambda: None
+    current = {"binding": "unchanged"}
+    value._binding = lambda: current
+    return value
+
+
+def _budget_request(attempt_id="attempt-" + "a" * 32):
+    return {
+        "schema_version": "bluefire.macos-composition-budget-request.v1",
+        "attempt_id": attempt_id,
+        "compiled_digest": content_hash("compiled"),
+        "control_owner_id": "file-control-" + "b" * 64,
+        "binding_digest": content_hash({"binding": "unchanged"}),
+        "control_revision": 4,
+    }
+
+
+def test_composition_budget_reservation_is_idempotent_and_attempt_bound():
+    value = _budget_creator(62)
+    request = _budget_request()
+    first = value.reserve_composition_probe_budget(request)
+    retry = value.reserve_composition_probe_budget(request)
+    assert first["units"] == 2 and first["idempotent"] is False
+    assert retry["idempotent"] is True
+    assert value._used_budget == 64
+    changed = {**request, "compiled_digest": content_hash("different")}
+    with pytest.raises(MacOSFileAccessContractError):
+        value.reserve_composition_probe_budget(changed)
+    assert value._used_budget == 64
+
+
+def test_exact_reservation_retry_survives_lost_ack_and_mutable_context_changes():
+    value = _budget_creator(10)
+    request = _budget_request()
+    first = value.reserve_composition_probe_budget(request)
+    value._revision += 1
+    value._state = "expired"
+    value._require_lease = lambda: pytest.fail(
+        "an exact retry must not renew or revalidate authority"
+    )
+    value._binding = lambda: {"binding": "changed after lost acknowledgment"}
+
+    retry = value.reserve_composition_probe_budget(request)
+
+    assert retry == {**first, "idempotent": True}
+    assert value._used_budget == 12
+    changed = {**request, "control_owner_id": "file-control-" + "c" * 64}
+    with pytest.raises(MacOSFileAccessContractError):
+        value.reserve_composition_probe_budget(changed)
+    assert value._used_budget == 12
+
+
+def test_competing_composition_budget_reservations_cannot_overbook_creator():
+    value = _budget_creator(62)
+    requests = [_budget_request("attempt-" + letter * 32) for letter in ("a", "c")]
+
+    def reserve(request):
+        try:
+            return value.reserve_composition_probe_budget(request)
+        except MacOSFileAccessContractError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(reserve, requests))
+    assert sum(result is not None for result in results) == 1
+    assert value._used_budget == 64
 
 
 @pytest.fixture

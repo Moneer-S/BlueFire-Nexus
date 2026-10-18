@@ -109,6 +109,7 @@ def test_host_validator_boundary_does_not_import_the_pretrust_adapter():
     assert {node.name for node in endpoint.body if isinstance(node, ast.FunctionDef)} == {
         "assert_current",
         "review_context",
+        "reserve_composition_probe_budget",
         "dispatch_committed",
     }
     assert all(

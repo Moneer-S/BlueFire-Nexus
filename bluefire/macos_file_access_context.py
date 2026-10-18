@@ -105,6 +105,18 @@ class OriginalMacOSCompositionRunner:
     def execute_task(self, manifest, profile, **kwargs):
         return self._transport.execute_task(manifest, profile, **kwargs)
 
+    def reserve_composition_probe_budget(self, *, attempt_id, compiled_digest, current_environment):
+        return self._endpoint.reserve_composition_probe_budget(
+            {
+                "schema_version": "bluefire.macos-composition-budget-request.v1",
+                "attempt_id": attempt_id,
+                "compiled_digest": compiled_digest,
+                "control_owner_id": current_environment["control_owner_id"],
+                "binding_digest": current_environment["binding_digest"],
+                "control_revision": current_environment["control_revision"],
+            }
+        )
+
     def validate_plan_inventory(self, plan, inventory):
         if (
             inventory != self.inventory()

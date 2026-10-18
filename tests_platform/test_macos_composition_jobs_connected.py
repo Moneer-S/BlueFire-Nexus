@@ -25,6 +25,46 @@ from bluefire.util import content_hash
 from tests_platform import test_macos_composition_connected as connected_cases
 from tests_platform.test_runner_contracts import _execute_profile
 
+
+def test_macos_attempt_deadlines_preserve_cleanup_reserve_at_workspace_expiry():
+    origin_ms = 1_000
+    started_ns = 5_000_000_000
+    lease = {"business_expires_at_ms": 131_000, "attempt_expires_at_ms": 151_000}
+    business, cleanup = composition_jobs._macos_attempt_deadlines(
+        {"original_deadline_ns": started_ns + 120_000_000_000},
+        lease,
+        origin_ms,
+        started_ns,
+    )
+    assert cleanup == started_ns + 120_000_000_000
+    assert business == cleanup - 20_000_000_000
+    assert business < cleanup
+
+
+def test_macos_admission_rejects_cleanup_only_window_and_caps_late_business_time():
+    reservation = {"reserved_attempt_ms": 30_000, "cleanup_reserve_ms": 5_000}
+    origin_ms = 1_000
+    started_ns = 5_000_000_000
+    with pytest.raises(ProductStoreError, match="no business window"):
+        composition_jobs._macos_attempt_admission_deadlines(
+            {"original_deadline_ns": started_ns + 5_000_000_000},
+            reservation,
+            100_000,
+            origin_ms,
+            started_ns,
+        )
+
+    business, cleanup = composition_jobs._macos_attempt_admission_deadlines(
+        {"original_deadline_ns": started_ns + 8_000_000_000},
+        reservation,
+        100_000,
+        origin_ms,
+        started_ns,
+    )
+    assert cleanup == started_ns + 8_000_000_000
+    assert business == started_ns + 3_000_000_000
+
+
 creator_fake = connected_cases.creator_fake
 original = connected_cases.original
 pack_state = connected_cases.pack_state

@@ -8,6 +8,7 @@ receipt, PID, or digest alone cannot enter any of the private effect methods.
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -153,6 +154,7 @@ class MacOSFileAccessCreator:
     _revision: int
     _state: str
     _used_budget: int
+    _composition_reservations: dict[str, dict[str, Any]]
     _sequences: dict[str, int]
     _tasks: dict[str, OwnedMacOSTaskReceipt | None]
     _task_attempts: dict[str, str | None]
@@ -191,6 +193,7 @@ class MacOSFileAccessCreator:
         value._revision = 1
         value._state = "creating"
         value._used_budget = 0
+        value._composition_reservations = {}
         value._sequences = {role: 0 for role in ("reader", "owner", "control")}
         value._tasks = {}
         value._task_attempts = {}
@@ -339,6 +342,83 @@ class MacOSFileAccessCreator:
                 return {**body, "context_digest": content_hash(body)}
         finally:
             self._lock.release()
+
+    def reserve_composition_probe_budget(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Charge the shared creator budget before a durable composition attempt."""
+        _require(
+            type(request) is dict
+            and set(request)
+            == {
+                "schema_version",
+                "attempt_id",
+                "compiled_digest",
+                "control_owner_id",
+                "binding_digest",
+                "control_revision",
+            }
+            and request["schema_version"] == "bluefire.macos-composition-budget-request.v1"
+            and type(request["attempt_id"]) is str
+            and re.fullmatch(r"attempt-[0-9a-f]{32}", request["attempt_id"]) is not None
+            and type(request["compiled_digest"]) is str
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", request["compiled_digest"]) is not None
+            and type(request["control_owner_id"]) is str
+            and re.fullmatch(r"file-control-[0-9a-f]{64}", request["control_owner_id"]) is not None
+            and type(request["binding_digest"]) is str
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", request["binding_digest"]) is not None
+            and type(request["control_revision"]) is int
+            and request["control_revision"] > 0
+        )
+        if not self._lock.acquire(blocking=False):
+            _require(False)
+        try:
+            request_digest = content_hash(request)
+            prior = self._composition_reservations.get(request["attempt_id"])
+            if prior is not None:
+                _require(prior["request_digest"] == request_digest)
+                return {**prior, "idempotent": True}
+            self._require_lease()
+            binding = self._binding()
+            _require(
+                self._state == "hardened"
+                and request["binding_digest"] == content_hash(binding)
+                and request["control_revision"] == self._revision
+            )
+            _require(self._used_budget + 2 <= MAX_REQUESTS)
+            reservation = {
+                "schema_version": "bluefire.macos-composition-budget-reservation.v1",
+                "attempt_id": request["attempt_id"],
+                "compiled_digest": request["compiled_digest"],
+                "control_owner_id": request["control_owner_id"],
+                "binding_digest": request["binding_digest"],
+                "control_revision": request["control_revision"],
+                "units": 2,
+                "request_digest": request_digest,
+                "usage": "reserved_consumed",
+            }
+            self._used_budget += 2
+            self._composition_reservations[request["attempt_id"]] = reservation
+            return {**reservation, "idempotent": False}
+        finally:
+            self._lock.release()
+
+    def _consume_composition_probe_budget(
+        self, attempt: dict[str, Any], row: dict[str, Any]
+    ) -> None:
+        """Consume a prepaid probe reservation while the caller holds _lock."""
+        budget = self._composition_reservations.get(attempt["attempt_id"])
+        if budget is None:
+            raise MacOSFileAccessContractError(
+                "The original Darwin creator operation is unavailable."
+            )
+        _require(
+            budget["usage"] == "reserved_consumed"
+            and budget["units"] == 2
+            and budget["compiled_digest"] == attempt["compiled_digest"]
+            and budget["control_owner_id"] == attempt["control_owner_id"]
+            and budget["binding_digest"] == row["binding_digest"]
+            and budget["control_revision"] == row["control_revision"]
+        )
+        budget["usage"] = "dispatched_consumed"
 
     def _receipt(
         self,

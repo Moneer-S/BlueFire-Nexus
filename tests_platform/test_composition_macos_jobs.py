@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -204,6 +205,8 @@ def test_mac_guard_is_released_even_when_final_reporting_fails(monkeypatch, fail
         "run_intent": {"target_scope": {}},
     }
     jobs = object.__new__(composition_jobs.CompositionJobs)
+    jobs._macos_recovery_lock = threading.Lock()
+    jobs._macos_recoveries = {}
     jobs.clock = lambda: 2000
     jobs.store = SimpleNamespace(
         start_capability_preparation=lambda *args, **kwargs: None,

@@ -116,6 +116,11 @@ class OriginalWorkspaceEndpoint:
 
         return exchange(self, "review_context", {"operation": operation})
 
+    def reserve_composition_probe_budget(self, request: dict[str, Any]) -> dict[str, Any]:
+        from bluefire.macos_file_access_bridge import exchange
+
+        return exchange(self, "reserve_composition_probe_budget", request)
+
     def dispatch_committed(
         self, frame: dict[str, Any], *, cancel_event: threading.Event
     ) -> dict[str, Any]:

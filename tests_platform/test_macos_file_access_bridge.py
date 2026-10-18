@@ -1,6 +1,7 @@
 """Fake original-channel integration only; no threads, sockets or workers start."""
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -98,7 +99,11 @@ def original(creator_fake, monkeypatch):
         bridge,
         "select",
         SimpleNamespace(
-            select=lambda *_args: ([], [], []) if value._in_task else ([owner._stream], [], [])
+            select=lambda *_args: (
+                ([], [], [])
+                if value._received_request is not None or value._in_task
+                else ([owner._stream], [], [])
+            )
         ),
     )
 
@@ -267,6 +272,58 @@ def test_original_guard_and_nonrefundable_primitive_reservation(original, monkey
         assert original.producer._used_budget == (
             creator.MAX_REQUESTS - 1 if failure == "budget" else 0
         )
+
+
+def test_ordinary_and_composition_reservations_cannot_overbook_shared_budget(original):
+    producer = original.producer
+    producer._namespace.mode = "0600"
+    producer._state = "hardened"
+    producer._revision = 3
+    producer._last_binding = producer._binding()
+    producer._used_budget = creator.MAX_REQUESTS - 3
+    frame = original.frame("rollback")
+    original.value._in_task = True
+    original.value._pending = frame
+    request = {
+        "schema_version": "bluefire.macos-composition-budget-request.v1",
+        "attempt_id": "attempt-" + "a" * 32,
+        "compiled_digest": content_hash("compiled"),
+        "control_owner_id": "file-control-" + "b" * 64,
+        "binding_digest": content_hash(producer._binding()),
+        "control_revision": producer._revision,
+    }
+    start = threading.Barrier(3)
+
+    def reserve_ordinary():
+        start.wait(timeout=3)
+        try:
+            original.value._reserve_received(frame)
+            return True
+        except MacOSFileAccessContractError:
+            return False
+
+    def reserve_composition():
+        start.wait(timeout=3)
+        try:
+            producer.reserve_composition_probe_budget(request)
+            return True
+        except MacOSFileAccessContractError:
+            return False
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            ordinary = pool.submit(reserve_ordinary)
+            composition = pool.submit(reserve_composition)
+            start.wait(timeout=3)
+            outcomes = [ordinary.result(timeout=3), composition.result(timeout=3)]
+    finally:
+        original.value._in_task = False
+        original.value._pending = None
+
+    assert sum(outcomes) == 1
+    winner_cost = 3 if outcomes[0] else 2
+    assert producer._used_budget == creator.MAX_REQUESTS - 3 + winner_cost
+    assert producer._used_budget <= creator.MAX_REQUESTS
 
 
 def test_transport_commits_dispatch_before_endpoint_exchange(original):

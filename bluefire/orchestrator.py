@@ -345,6 +345,7 @@ class Orchestrator:
                 )
         self.macos_file_access_binding = macos_file_access_binding
         self._macos_close_attempted = False
+        self._macos_recovery_context = None
         self.catalog_authority = dict(catalog_authority) if catalog_authority is not None else None
         self.action_bindings = {
             (str(behavior_id), str(action_id)): dict(binding)
@@ -833,6 +834,18 @@ class Orchestrator:
         simulation = _SimulationProgress() if mode is ExecutionMode.SIMULATE else None
         receipt_ids: list[str] = []
         self._macos_close_attempted = False
+        if self.macos_file_access_binding is not None:
+            self._macos_recovery_context = {
+                "run_id": handle.run_id,
+                "plan": plan,
+                "profile": profile,
+                "runner_profile": runner_profile_doc,
+                "observer": observer,
+                "approved_by": approved_by,
+                "approval_record": validated_approval,
+                "authorized_target_scope": authorized_target_scope,
+                "receipt_ids": receipt_ids,
+            }
         try:
             starting_budget = (
                 initial_budget(scenario.adaptive_execution, replay)

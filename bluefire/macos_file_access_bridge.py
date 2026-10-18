@@ -36,6 +36,7 @@ from .util import content_hash, json_clone
 
 _REQUEST = "bluefire.macos-workspace-request.v1"
 _RESPONSE = "bluefire.macos-workspace-response.v1"
+_OPERATIONS = ("review_context", "reserve_composition_probe_budget", "dispatch_committed")
 _COMMITTED = "bluefire.macos-file-access-committed-task.v1"
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _COSTS = {"baseline": 2, "harden": 1, "rollback": 3}
@@ -391,6 +392,8 @@ class MacOSWorkspaceTaskEndpoint(Protocol):
 
     def review_context(self, operation: str) -> dict[str, Any]: ...
 
+    def reserve_composition_probe_budget(self, request: dict[str, Any]) -> dict[str, Any]: ...
+
     def dispatch_committed(
         self, frame: dict[str, Any], *, cancel_event: threading.Event
     ) -> dict[str, Any]: ...
@@ -528,7 +531,7 @@ def exchange(
     """Exactly one reader; cancellation closes custody instead of sending a retry."""
     with endpoint._io_lock:
         endpoint.assert_current()
-        _require(operation in ("review_context", "dispatch_committed"))
+        _require(operation in _OPERATIONS)
         started_wall = time.time_ns() // 1_000_000
         started_monotonic = endpoint._api.darwin_clock_ns()
         binding = endpoint._recipe["binding"]
@@ -730,7 +733,8 @@ class OriginalMacOSWorkspaceBridge:
                         and len(self._attempts) < MAX_REQUESTS
                         and not any(not item["closed"] for item in self._attempts.values())
                     )
-                    cost = 2
+                    creator._consume_composition_probe_budget(attempt, row)
+                    cost = 0
                 else:
                     _require(row["operation"] == "verify_owner" and memo is not None)
                     if memo is None:
@@ -900,6 +904,8 @@ class OriginalMacOSWorkspaceBridge:
                 and payload["operation"] in (*_COSTS, *_ATTEMPT_ACTIONS)
             )
             result = self._creator.review_context(payload["operation"])
+        elif operation == "reserve_composition_probe_budget":
+            result = self._creator.reserve_composition_probe_budget(payload)
         else:
             _require(operation == "dispatch_committed")
             frame = _committed(payload)

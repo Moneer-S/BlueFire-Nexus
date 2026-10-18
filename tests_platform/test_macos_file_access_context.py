@@ -276,6 +276,24 @@ def test_effective_profile_and_original_binding_are_used_without_rust_or_collect
     assert set(current["implementation_digests"]) == set(MACOS_FILE_ACCESS_METHODS)
 
 
+def test_expired_original_endpoint_is_unavailable_in_status_and_projection(original, monkeypatch):
+    def expired(self, handshake=False):
+        raise RuntimeError("The original Darwin workspace bootstrap is unavailable.")
+
+    monkeypatch.setattr(OriginalWorkspaceEndpoint, "assert_current", expired)
+    original.service.product_store.list_jobs = lambda: []
+    assert macos_control.status(original.service, 5000)["available"] is False
+    view = {
+        "document": original.state["control"],
+        "document_digest": content_hash(original.state["control"]),
+        "pending_operation": None,
+        "usages_settled": True,
+    }
+    projection = macos_control.projection(original.service, view, 5000)
+    assert projection["allowed_operations"] == []
+    assert projection["status"] == "hardened"
+
+
 @pytest.mark.parametrize("kind", ["inactive", "blocked", "missing_method", "ambiguous"])
 def test_effective_profile_removal_or_change_is_not_replaced_by_startup_config(original, kind):
     original.service.config = SimpleNamespace(runner_profiles=(original.active,))

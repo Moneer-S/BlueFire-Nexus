@@ -45,7 +45,7 @@ def status(service, now_ms) -> dict[str, Any]:
         setup = macos.setup_document(endpoint(service).current_setup())
         enrolled = macos.enrollment_document(setup)
         macos.require(now_ms < enrolled["expires_at_ms"])
-    except (OSError, ValueError, ProductStoreError):
+    except (OSError, RuntimeError, ValueError, ProductStoreError):
         return {
             "schema_version": "bluefire.file-access-status.v1",
             "platform": "macos",
@@ -116,7 +116,7 @@ def projection(service, view, now_ms) -> dict[str, Any]:
     live = False
     try:
         live = endpoint(service).review_context("baseline")["binding"] == control["binding"]
-    except (OSError, ValueError, ProductStoreError):
+    except (OSError, RuntimeError, ValueError, ProductStoreError):
         pass
     binding = control["binding"]
     return {

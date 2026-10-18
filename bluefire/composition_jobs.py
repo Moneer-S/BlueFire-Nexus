@@ -37,6 +37,9 @@ from .runner_contracts import (
 )
 from .util import content_hash, json_clone
 
+_macos_attempt_deadlines = composition_macos_file_access.attempt_deadlines
+_macos_attempt_admission_deadlines = composition_macos_file_access.attempt_admission_deadlines
+
 OWNER_KIND = "composition.objective"
 ATTEMPT_KIND = "composition.attempt"
 
@@ -52,6 +55,8 @@ class CompositionJobs:
         self.controller = service.job_controller
         self.clock = clock
         self._authorization_lock = threading.Lock()
+        self._macos_recovery_lock = threading.Lock()
+        self._macos_recoveries: dict[str, dict[str, Any]] = {}
         self.owners = OwnedReceiverRegistry(
             state=lambda identifier: self.store.get_job(identifier)["progress"],
             publish=self._publish,
@@ -345,6 +350,8 @@ class CompositionJobs:
             action_implementations=compiled["action_implementations"],
         )
         envelope = native_envelope(plan, compiled)
+        if grant_pack(grant) == MACOS_FILE_ACCESS_PACK:
+            composition_macos_file_access.admit_attempt(self, current, compiled, grant, marker)
         lease = self.store.reserve_capability_attempt(
             grant["grant_id"],
             compiled,
@@ -435,34 +442,15 @@ class CompositionJobs:
                 current_environment=fresh["current_environment"],
             )
             if macos_file_access:
-                assert macos_clock is not None and macos_started is not None
-                binding = current["macos_file_access_binding"].to_dict()
-                self.store.reserve_macos_capability_attempt(
-                    attempt_id,
-                    now_ms=self.clock(),
-                    monotonic_ns=macos_clock(),
-                    business_deadline_ns=min(
-                        binding["original_deadline_ns"],
-                        macos_started + (lease["business_expires_at_ms"] - origin) * 1_000_000,
-                    ),
-                    cleanup_deadline_ns=min(
-                        binding["original_deadline_ns"],
-                        macos_started + (lease["attempt_expires_at_ms"] - origin) * 1_000_000,
-                    ),
+                composition_macos_file_access.reserve_attempt(
+                    self, attempt_id, current, lease, origin, macos_clock, macos_started
                 )
 
         def cleanup_authority(profile, params, receipts):
             nonlocal cleanup_claim, cleanup_result
             if macos_file_access:
-                assert macos_clock is not None
-                if params or receipts or profile != sealed_profile:
-                    raise ProductStoreError(
-                        "macOS closure cannot acquire filesystem receipt authority."
-                    )
-                cleanup_claim = self.store.claim_macos_capability_cleanup(
-                    attempt_id,
-                    now_ms=self.clock(),
-                    now_monotonic_ns=macos_clock(),
+                cleanup_claim = composition_macos_file_access.claim_cleanup_authority(
+                    self, attempt_id, profile, params, receipts, sealed_profile, macos_clock
                 )
                 return _verified_macos_file_access_cleanup(
                     cleanup_claim["document"],
@@ -664,6 +652,7 @@ class CompositionJobs:
         )
         monitor.start()
         run_result = None
+        orchestrator = None
         try:
             fresh = check()
             self.store.start_capability_preparation(
@@ -758,8 +747,20 @@ class CompositionJobs:
                 self._settle_attempt(marker, ctx.job_id, lease, run_result, cleanup_result)
             finally:
                 if macos_file_access:
-                    # Releasing local handles never settles or enables replay of an unknown request.
-                    self.store.release_macos_attempt_workspace(attempt_id)
+                    composition_macos_file_access.finish_close_recovery(
+                        self, attempt_id, marker, ctx.job_id, lease, orchestrator
+                    )
+
+    def _macos_recovery_events(self, attempt_id):
+        return composition_macos_file_access.recovery_events(self, attempt_id)
+
+    def _retain_macos_close_recovery(self, attempt_id, marker, job_id, lease, orchestrator):
+        return composition_macos_file_access.retain_close_recovery(
+            self, attempt_id, marker, job_id, lease, orchestrator
+        )
+
+    def recover_macos_attempt(self, owner_id: str, attempt_id: str):
+        return composition_macos_file_access.recover_attempt(self, owner_id, attempt_id)
 
     def _settle_attempt(self, marker, job_id, lease, run_result, cleanup_result):
         state = self.store.get_job(job_id)["progress"]

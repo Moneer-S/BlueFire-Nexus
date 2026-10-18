@@ -105,6 +105,7 @@ export function CompositionPage() {
     await client.cancelQueries({ queryKey: ["composition-objective", owner], exact: true });
     return checkedCompositionObjective(await compositionApi.control(owner, operation), owner, retainedControl || undefined, macOSFileAccessControlIdValid(retainedControl) ? MACOS_FILE_ACCESS_PACK : undefined);
   }, onSuccess: (value, target) => { client.setQueryData(["composition-objective", target.owner], value); if (target.operation === "continue") stoppedOwners.current.delete(target.owner); void client.invalidateQueries({ queryKey: ["composition-list", target.control] }); void client.invalidateQueries({ queryKey: ["composition-context", target.owner], refetchType: "none" }); void client.invalidateQueries({ queryKey: ["composition-proposal"] }); } });
+  const recovery = useMutation({ mutationFn: async ({ owner, attempt, control: retainedControl }: { owner: string; attempt: string; control: string }) => { await client.cancelQueries({ queryKey: ["composition-objective", owner], exact: true }); return checkedCompositionObjective(await compositionApi.recover(owner, attempt), owner, retainedControl || undefined, MACOS_FILE_ACCESS_PACK); }, onSuccess: (value, target) => { client.setQueryData(["composition-objective", target.owner], value); void client.invalidateQueries({ queryKey: ["composition-list", target.control] }); } });
   const controlObjective = (operation: CompositionControl) => { if ((operation !== "continue" || currentMutationReady()) && (!macOSContext || envelope)) safety.mutate({ owner: id, control, operation }); };
   const cancel = useMutation({ mutationFn: async ({ owner, job }: { owner: string; job: string }) => {
     if (!mutationReady || macOSContext) throw new Error("The fixed macOS graph has no provider request to cancel.");
@@ -137,6 +138,7 @@ export function CompositionPage() {
       </Callout> : null}
       {write.error ? <ErrorState title="Submission not confirmed" error={write.error} /> : null}
       {safety.error ? <ErrorState title="Control request not confirmed" error={safety.error} /> : null}
+      {recovery.error ? <ErrorState title="Original close status not confirmed" error={recovery.error} /> : null}
       {pendingControls[id] ? <Callout title={`${sentence(pendingControls[id]!)} confirmation pending`}><p>New work remains disabled until this exact control request is reconciled.</p><div className="composition-actions"><Button disabled={safety.isPending || (pendingControls[id] === "continue" && !mutationReady) || (macOSContext && !envelope)} onClick={() => controlObjective(pendingControls[id]!)}>Retry exact control request</Button><Button onClick={() => { void objective.refetch(); }}>Check control state</Button></div></Callout> : null}
       {!id ? <CompositionSetup key={`${control}:${pack}`} control={control} pack={pack} disabled={!mutationReady || Boolean(pending) || Boolean(localError)} onSubmit={send} initialRequest={reviewSeed} /> : <>
         {!compositionJobValid(id) ? <ErrorState error={new Error("This objective link is incomplete.")} /> : objective.error ? <ErrorState title="Current objective unavailable" error={objective.error} retry={() => { void objective.refetch(); }} /> : !envelope && !refusal ? <LoadingState label="Opening objective" /> : null}
@@ -148,6 +150,13 @@ export function CompositionPage() {
             {envelope.grant.status === "paused" ? <><p>Continue preserves spent budgets and the original expiry. It does not replay an interrupted attempt.</p><Button disabled={!mutationReady || safety.isPending || Boolean(pending) || Boolean(pendingControls[id]) || Boolean(objective.error)} onClick={() => controlObjective("continue")}><Play />Continue objective</Button></> : null}
           </section>
           <CompositionAttempts objective={envelope} />
+          {macOSContext ? envelope.attempts.filter(attempt => attempt.progress.settlement === "pending_cleanup").map(attempt => {
+            const recoveryState = compositionRecord(attempt.progress.macos_recovery);
+            const state = String(recoveryState.state ?? "");
+            return <Callout key={attempt.job_id} title={state === "unavailable" || state === "unresolved" ? "Original attempt close needs review" : "Attempt closure pending"}>
+              {state === "unavailable" ? <p>The original process authority is unavailable. No workspace was re-adopted and no new attempt was started.</p> : state === "unresolved" ? <p>The original close could not be verified. Review retained evidence before taking any further action.</p> : <><p>This action can only close the exact original attempt when its live workspace guard remains and no dispatch was recorded. It does not replay the graph.</p><Button disabled={recovery.isPending} onClick={() => recovery.mutate({ owner: id, control, attempt: attempt.request.composition_attempt.attempt_id })}>{recovery.isPending ? "Checking original close…" : "Close undispatched attempt"}</Button></>}
+            </Callout>;
+          }) : null}
           <CompositionPlanning key={id} objective={envelope} proposal={proposal.data} proposalId={proposalId} pending={Boolean(pending)} disabled={!mutationReady || Boolean(objective.error) || Boolean(proposal.error) || proposal.isFetching || cancel.isPending || Boolean(cancellations[id]) || stopped || safety.isPending || write.isPending || Boolean(localError)} onSubmit={send} onProposal={(next) => navigate(id, next)} />
         </> : null}
         {proposal.error ? <ErrorState title="Proposal status unavailable" error={proposal.error} retry={() => { void proposal.refetch(); }} /> : null}

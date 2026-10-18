@@ -698,6 +698,25 @@ def test_service_controls_reject_extra_authority_input(action):
         BlueFireService.control_composition(SimpleNamespace(), "owner", action, {"grant": {}})
 
 
+def test_service_recovery_requires_one_canonical_original_attempt():
+    attempt_id = "attempt-" + "a" * 32
+    calls = []
+    service = SimpleNamespace(
+        composition=SimpleNamespace(
+            recover_macos_attempt=lambda owner, attempt: calls.append((owner, attempt))
+            or {"attempts": []}
+        )
+    )
+    assert BlueFireService.control_composition(
+        service, "owner", "recover", {"attempt_id": attempt_id}
+    ) == {"attempts": []}
+    assert calls == [("owner", attempt_id)]
+    for body in ({}, {"attempt_id": attempt_id, "retry": True}, {"attempt_id": "attempt-xyz"}):
+        with pytest.raises(ProductStoreError, match="exact original attempt"):
+            BlueFireService.control_composition(service, "owner", "recover", body)
+    assert calls == [("owner", attempt_id)]
+
+
 def test_service_proposal_context_requires_explicit_prior_attempt_field():
     with pytest.raises(ProductStoreError, match="prior attempt"):
         BlueFireService.composition_proposal_context(SimpleNamespace(), "owner", {})
