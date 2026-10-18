@@ -174,6 +174,16 @@ bluefire --runs-dir .bluefire-runs compare BASELINE_RUN_ID CANDIDATE_RUN_ID [MOR
 
 The result contains normalized summaries and one delta from the baseline to each candidate.
 
+Each `POST /api/v1/comparisons` response also includes `saved_snapshot` metadata
+for an immutable, content-addressed snapshot. `GET /api/v1/comparison-snapshots`
+lists recent snapshots; `GET /api/v1/comparison-snapshots/{snapshot_id}` returns
+the retained comparison, its ordered source-bundle bindings, and a current
+integrity status for each source. Missing or changed source bundles make that
+status unavailable but do not rewrite or recompute the historical comparison.
+This snapshot does not run a detector: current detector evaluations remain
+separate saved results and should be reviewed independently. Neither comparison
+nor a detector evaluation establishes causality by itself.
+
 ### Summary fields
 
 - mode and runner profile;

@@ -1137,6 +1137,27 @@ export interface ComparisonResponse {
   summaries: ComparisonSummary[];
   deltas: ComparisonDelta[];
   s3_access?: S3AccessComparison;
+  saved_snapshot?: { snapshot_id: string; digest: string; created_at: string };
+}
+
+export interface SavedComparisonSummary {
+  snapshot_id: string;
+  digest: string;
+  created_at: string;
+  run_ids: string[];
+  baseline_run_id: string;
+}
+
+export interface SavedComparisonSnapshot {
+  snapshot_id: string;
+  digest: string;
+  created_at: string;
+  comparison: ComparisonResponse;
+  source_bindings: Array<{ run_id: string; bundle_hash: string }>;
+  source_integrity: {
+    status: "verified" | "unavailable";
+    runs: Array<{ run_id: string; status: "verified" | "missing" | "changed" | "invalid" }>;
+  };
 }
 
 export interface RunConfiguration {

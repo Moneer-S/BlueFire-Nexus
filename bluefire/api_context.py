@@ -450,6 +450,12 @@ class PlatformService(Protocol):
     def compare(self, request: JsonObject) -> JsonResult:
         """Compare two or more runs from canonical records."""
 
+    def comparison_snapshots(self) -> JsonResult:
+        """List recent immutable saved run-comparison snapshots."""
+
+    def comparison_snapshot(self, snapshot_id: str) -> JsonResult:
+        """Reopen one saved comparison and report current source integrity."""
+
 
 class RouteRequest(Protocol):
     """Only the request path and error response are needed to parse routes."""
