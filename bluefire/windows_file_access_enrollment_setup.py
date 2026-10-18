@@ -154,10 +154,10 @@ def _query_capability_for(
                 creationflags=0x08000000,
             )
         except subprocess.TimeoutExpired as exc:
-            setattr(exc, "diagnostic_category", "timeout")
+            exc.diagnostic_category = "timeout"  # type: ignore[attr-defined]
             raise
         except OSError as exc:
-            setattr(exc, "diagnostic_category", "launch_failure")
+            exc.diagnostic_category = "launch_failure"  # type: ignore[attr-defined]
             raise
         if time.monotonic() >= original_deadline:
             raise WindowsPairCapabilityError("deadline_expired")
