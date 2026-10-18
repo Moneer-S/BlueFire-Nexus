@@ -82,10 +82,27 @@ it("shows unavailable observation as unknown, with uncertain cleanup and no prev
 function pendingCreate(): ReceiverPending {
   return { kind: "create", id: receiverFixtureId, body: receiverFixture("baseline", "idle").job.request!.submitted_request as Extract<ReceiverPending, { kind: "create" }>["body"] };
 }
-function mountPage(ownerId = receiverFixtureId) {
+function mountPage(ownerId = receiverFixtureId, path = `/compare?receiver_job=${ownerId}`) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return { client, user: userEvent.setup(), ...render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={[`/compare?receiver_job=${ownerId}`]}><ReceiverDefensePage /></MemoryRouter></ProductProvider></QueryClientProvider>) };
+  return { client, user: userEvent.setup(), ...render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={[path]}><ReceiverDefensePage /></MemoryRouter></ProductProvider></QueryClientProvider>) };
 }
+
+it("retains selected objective context throughout receiver recovery and preserves comparison sources", async () => {
+  vi.spyOn(api, "receiverTest").mockResolvedValue(receiverFixture("restored", "completed"));
+  mountPage(receiverFixtureId, `/compare?receiver_job=${receiverFixtureId}&goal=data-handoff&source=run-source&replay=run-retest`);
+  expect(await screen.findByText("Can a redaction requirement stop unredacted records while allowing legitimate redacted use?")).toBeVisible();
+  const changeObjective = screen.getByRole("link", { name: "Change objective" });
+  const chooser = new URL(changeObjective.getAttribute("href")!, "https://example.test");
+  expect(chooser.searchParams.get("source")).toBe("run-source");
+  expect(chooser.searchParams.get("replay")).toBe("run-retest");
+  expect(chooser.searchParams.get("goal")).toBe("data-handoff");
+  const compareRuns = screen.getByRole("link", { name: /Compare runs/ });
+  const compare = new URL(compareRuns.getAttribute("href")!, "https://example.test");
+  expect(compare.searchParams.get("source")).toBe("run-source");
+  expect(compare.searchParams.get("replay")).toBe("run-retest");
+  expect(compare.searchParams.has("receiver_job")).toBe(false);
+  expect(compare.searchParams.has("goal")).toBe(false);
+});
 
 it("retains measured outcomes across a rejected poll and recovers by GET without repeating work", async () => {
   const complete = receiverFixture("restored", "completed");

@@ -58,6 +58,12 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
+it("keeps the selected file-access question visible on the saved control page", () => {
+  mount(<FileAccessPage />, `/file-access?goal=file-access&context=retained&control=${controlId}`);
+  expect(screen.getByRole("complementary", { name: "Selected objective" })).toHaveTextContent("Can we remove a test identity's file access while preserving the application's access?");
+  expect(screen.getByRole("link", { name: "Change objective" })).toHaveAttribute("href", "/getting-started?context=retained&goal=file-access");
+});
+
 it("posts only the selected verified setup through the ordinary authenticated request helper", async () => {
   const body = { enrollment_id: windowsSetupStatus().setup.enrollment_id, enrollment_digest: "sha256:" + "a".repeat(64) };
   const saved = windowsSetupControl();

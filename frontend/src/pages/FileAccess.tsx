@@ -6,6 +6,7 @@ import { compositionJobId, compositionJobValid, FILE_ACCESS_PACK } from "../lib/
 import { checkedFileAccessControl, checkedFileAccessList, checkedFileAccessOperation, checkedFileAccessStatus, clearFileAccessPending, fileAccessApi, fileAccessConfirmed, fileAccessControlIdValid, fileAccessJobActive, fileAccessOperationLabels, readFileAccessPending, readFileAccessReconciliationPending, storeFileAccessPending, type FileAccessObservation, type FileAccessPending, type FileAccessReviewRequest, type FileAccessSubmission, type LinuxFileAccessControl, type WindowsFileAccessControl, type WindowsPairedFileAccessControl, type WindowsSetupFileAccessControl } from "../lib/file-access";
 import { FileAccessReview } from "../components/FileAccessReview";
 import { FileAccessReconciliation } from "../components/FileAccessReconciliation";
+import { ObjectiveContext } from "../components/ObjectiveContext";
 import { WindowsFileAccessCorrection } from "../components/WindowsFileAccessCorrection";
 import { Badge, Button, Callout, DataList, ErrorState, LoadingState, PageHeader, sentence } from "../components/Primitives";
 import "./FileAccess.css";
@@ -22,6 +23,13 @@ export function FileAccessPage() {
   const locked = useRef(false);
   const restoredNavigation = useRef(false);
   const pendingOwner = pending ? pending.body.review.control_owner_id ?? pending.id : reconciliation?.control_owner_id ?? "";
+  const fileAccessPath = (values: Record<string, string>, remove: string[] = ["operation"]) => {
+    const next = new URLSearchParams(params);
+    remove.forEach(key => next.delete(key));
+    Object.entries(values).forEach(([key, value]) => next.set(key, value));
+    const query = next.toString();
+    return "/file-access" + (query ? "?" + query : "");
+  };
   const owner = params.get("control") ?? pendingOwner;
   const operationId = params.get("operation") ?? (owner === pendingOwner ? pending?.id ?? reconciliation?.operation_job_id : "") ?? "";
   const status = useQuery({ queryKey: ["file-access-status"], queryFn: async () => checkedFileAccessStatus(await fileAccessApi.status()), retry: false });
@@ -33,7 +41,12 @@ export function FileAccessPage() {
     if (restoredNavigation.current) return;
     restoredNavigation.current = true;
     if ((!pending && !reconciliation) || params.get("operation") || params.get("control")) return;
-    setParams({ control: pendingOwner, operation: operationId }, { replace: true });
+    setParams(current => {
+      const next = new URLSearchParams(current);
+      next.set("control", pendingOwner);
+      next.set("operation", operationId);
+      return next;
+    }, { replace: true });
   }, [pending, reconciliation, pendingOwner, operationId, params, setParams]);
   useEffect(() => {
     if (!pending || !operation.data || !fileAccessConfirmed(operation.data, pending)) return;
@@ -66,7 +79,12 @@ export function FileAccessPage() {
       client.setQueryData(["file-access-control", saved.control_owner_id], saved);
       void client.invalidateQueries({ queryKey: ["file-access-list"] });
       void client.invalidateQueries({ queryKey: ["file-access-status"] });
-      setParams({ control: saved.control_owner_id });
+      setParams(current => {
+        const next = new URLSearchParams(current);
+        next.delete("operation");
+        next.set("control", saved.control_owner_id);
+        return next;
+      });
     },
   });
   const send = (body: FileAccessSubmission) => {
@@ -74,7 +92,12 @@ export function FileAccessPage() {
     const value = { id: compositionJobId(body.submission_id), body };
     try {
       storeFileAccessPending(value); locked.current = true; setPending(value); setReview(undefined);
-      setParams({ control: body.review.control_owner_id ?? value.id, operation: value.id });
+      setParams(current => {
+        const next = new URLSearchParams(current);
+        next.set("control", body.review.control_owner_id ?? value.id);
+        next.set("operation", value.id);
+        return next;
+      });
       write.mutate(value);
     } catch (error) { locked.current = false; setLocalError(error); }
   };
@@ -100,6 +123,7 @@ export function FileAccessPage() {
   const refresh = () => { void status.refetch(); void list.refetch(); if (owner) void control.refetch(); if (operationId) void operation.refetch(); };
   return <div className="page file-access-page">
     <PageHeader title="Effective file access" actions={<Button disabled={status.isFetching || control.isFetching || operation.isFetching} onClick={refresh}><RefreshCw />Refresh state</Button>} />
+    <ObjectiveContext expected="file-access" />
     {localError ? <ErrorState title="Saved operation needs attention" error={localError} /> : null}
     <section className="file-access-section" aria-label="File-access enrollment">
       {status.isPending ? <LoadingState label="Checking protected file-access setup" /> : status.error ? <ErrorState error={status.error} /> : null}
@@ -120,11 +144,11 @@ export function FileAccessPage() {
       {!owner && canCreate ? <Button disabled={!ready || blocked} onClick={() => setReview({ operation: "create", control_owner_id: null })}><FileLock2 />Review generated resource</Button> : null}
     </section>
     <section className="file-access-section" aria-label="Saved file-access controls"><h2>Saved controls</h2>
-      {list.error ? <ErrorState error={list.error} /> : list.isPending ? <LoadingState label="Opening saved controls" /> : <div className="file-access-list">{list.data?.controls.map(item => <div key={item.control_owner_id}><Link aria-label={`Open ${item.platform === "windows" ? "Windows protected setup" : "generated file access"}, ${sentence(item.status)}, revision ${item.revision}, reference ${item.control_owner_id.slice(-8)}`} aria-current={owner === item.control_owner_id ? "page" : undefined} to={`/file-access?control=${encodeURIComponent(item.control_owner_id)}`}><strong>{item.platform === "windows" ? "Windows protected setup" : "Generated file access"}</strong><span>{sentence(item.status)} / revision {item.revision}</span></Link><details><summary>Control reference</summary><code>{item.control_owner_id}</code></details></div>)}{!list.data?.controls.length ? <p>No saved controls.</p> : null}</div>}
-      {owner ? <Link to="/file-access">Enrollment and resource review</Link> : null}
+      {list.error ? <ErrorState error={list.error} /> : list.isPending ? <LoadingState label="Opening saved controls" /> : <div className="file-access-list">{list.data?.controls.map(item => <div key={item.control_owner_id}><Link aria-label={`Open ${item.platform === "windows" ? "Windows protected setup" : "generated file access"}, ${sentence(item.status)}, revision ${item.revision}, reference ${item.control_owner_id.slice(-8)}`} aria-current={owner === item.control_owner_id ? "page" : undefined} to={fileAccessPath({ control: item.control_owner_id })}><strong>{item.platform === "windows" ? "Windows protected setup" : "Generated file access"}</strong><span>{sentence(item.status)} / revision {item.revision}</span></Link><details><summary>Control reference</summary><code>{item.control_owner_id}</code></details></div>)}{!list.data?.controls.length ? <p>No saved controls.</p> : null}</div>}
+      {owner ? <Link to={fileAccessPath({}, ["control", "operation"])}>Enrollment and resource review</Link> : null}
     </section>
     {pending ? <Callout title="Operation confirmation pending"><p>The original request is retained. Resubmission uses its unchanged identity, not a new operation. No automatic effect retry is performed.</p><details><summary>Original submission reference</summary><code>{pending.id}</code></details>
-      {operationId !== pending.id ? <Link to={`/file-access?${new URLSearchParams({ control: pending.body.review.control_owner_id ?? pending.id, operation: pending.id })}`}>Open pending operation</Link> : <div className="file-access-actions"><Button disabled={operation.isFetching || write.isPending} onClick={() => { void operation.refetch(); }}><RefreshCw />Check saved operation</Button><Button disabled={write.isPending || locked.current} onClick={() => { if (!locked.current) { locked.current = true; write.mutate(pending); } }}>Resubmit original request</Button></div>}
+      {operationId !== pending.id ? <Link to={fileAccessPath({ control: pending.body.review.control_owner_id ?? pending.id, operation: pending.id })}>Open pending operation</Link> : <div className="file-access-actions"><Button disabled={operation.isFetching || write.isPending} onClick={() => { void operation.refetch(); }}><RefreshCw />Check saved operation</Button><Button disabled={write.isPending || locked.current} onClick={() => { if (!locked.current) { locked.current = true; write.mutate(pending); } }}>Resubmit original request</Button></div>}
     </Callout> : null}
     {write.error ? <ErrorState title="Operation not confirmed" error={write.error} /> : null}
     <FileAccessReconciliation operation={operation.error ? undefined : operation.data} pending={reconciliation} disabled={Boolean(pending) || Boolean(localError) || write.isPending} onPending={setReconciliation} onError={setLocalError} />

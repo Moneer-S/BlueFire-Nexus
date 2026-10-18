@@ -3,6 +3,7 @@ import { ArrowLeft, Check, Cloud, FileSearch, Pause, Play, Plus, RefreshCw, Rota
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState, PageHeader, sentence } from "../components/Primitives";
+import { ObjectiveContext } from "../components/ObjectiveContext";
 import { clearS3Pending, clearS3Stop, confirmsS3Pending, phaseName, readS3Pending, readS3Stops, s3Api, s3JobId, s3ReviewCurrent, s3StageAvailable, storeS3Pending, storeS3Stop, validS3Job, type S3Exercise, type S3Operation, type S3Pending, type S3Phase, type S3Review } from "../lib/s3-access";
 import { auditBudgetKeys, type AuditStageReview, type AuditWorkspace } from "../lib/s3-audit-workspace";
 import { writeComparisonContext } from "../lib/comparison-context";
@@ -31,7 +32,7 @@ export function S3AccessPage() {
   const environment = useQuery({ queryKey: ["s3-environments"], queryFn: s3Api.environments, retry: false });
   const list = useQuery({ queryKey: ["s3-exercises"], queryFn: s3Api.list, retry: false });
   const exercise = useQuery({ queryKey: ["s3-exercise", owner], queryFn: () => s3Api.read(owner), enabled: validS3Job(owner), retry: false, refetchInterval: query => query.state.data?.active_job && !query.state.data.saved_result_recovery_available ? 2000 : false });
-  const navigate = (next: string) => { setReview(null); setConfirmed(false); setParams(next ? { exercise: next } : {}); };
+  const navigate = (next: string) => { setReview(null); setConfirmed(false); const value = new URLSearchParams(params); if (next) value.set("exercise", next); else value.delete("exercise"); setParams(value); };
   const save = useMutation({ mutationFn: s3Api.send, onSuccess: value => { client.setQueryData(["s3-exercise", value.workflow_job_id], value); void list.refetch(); setReview(null); }, onSettled: () => { lock.current = false; } });
   const inspect = useMutation({ mutationFn: (phase: S3Phase) => s3Api.review(owner, phase), onSuccess: value => { if (value.workflow_job_id === owner) { setReview(value); setConfirmed(false); setReviewer(""); } } });
   const control = useMutation({ mutationFn: (command: { identifier: string; action: "stop" | "recover"; finalizedRecheck?: boolean }) => s3Api.control(command.identifier, command.action), onMutate: command => { if (command.finalizedRecheck) setRecheckNotice(current => current === command.identifier ? null : current); }, onSuccess: (value, command) => { if (value.workflow_job_id === command.identifier) client.setQueryData(["s3-exercise", value.workflow_job_id], value); if (ownerRef.current === command.identifier) { setReview(null); if (command.finalizedRecheck) setRecheckNotice(finalizedAuditRecheckOperations(value).length > 0 ? command.identifier : null); } void list.refetch(); } });
@@ -53,6 +54,7 @@ export function S3AccessPage() {
   const finalizedRecheckOperations = finalizedAuditRecheckOperations(value);
   return <div className="page s3-access-page">
     <PageHeader title={value ? value.environment.display_name : "S3 access"} eyebrow="Cloud access review" actions={<><Button disabled={environment.isFetching || exercise.isFetching} onClick={() => { void environment.refetch(); void list.refetch(); if (owner) void exercise.refetch(); }}><RefreshCw />Refresh</Button>{validS3Job(owner) ? <Button variant="danger" disabled={control.isPending || Boolean(value?.stopped && !value.active_job)} onClick={stop}><Pause />{stops.includes(owner) ? "Retry stop" : value?.active_job ? "Stop current operation" : value?.stopped ? "Stopped" : "Stop new work"}</Button> : null}</>} />
+    <ObjectiveContext expected="s3-access" />
     {localError ? <ErrorState title="Saved request needs attention" error={localError} /> : null}
     {pending ? <Callout tone="warning" title="Submission confirmation pending"><p>The original request may already be saved. No automatic retry has been sent.</p><div className="s3-actions"><Button disabled={save.isPending} onClick={() => { navigate(pending.owner); void client.invalidateQueries({ queryKey: ["s3-exercise", pending.owner] }); }}><FileSearch />Check saved status</Button><Button disabled={save.isPending || Boolean(localError) || stops.includes(pending.owner)} onClick={() => send(pending)}><RefreshCw />Retry exact submission</Button></div></Callout> : null}
     {save.error ? <ErrorState title="Submission not confirmed" error={save.error} /> : null}
