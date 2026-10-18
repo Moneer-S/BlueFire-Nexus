@@ -5,14 +5,18 @@ from __future__ import annotations
 import re
 from collections import Counter
 from datetime import datetime
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from .collector_comparison import collector_session_delta, summarize_collector_session
 from .collectors import CollectorError
+from .comparison_dimensions import cleanup_summary as _cleanup_summary
 from .comparison_dimensions import delta_dimensions, summary_dimensions
 from .comparison_materiality import configuration_changes, material_delta_fields
 from .run_store import RunStore
 from .util import content_hash
+
+if TYPE_CHECKING:
+    from .s3_access_jobs import S3AccessJobs
 
 
 class ComparisonError(ValueError):
@@ -88,7 +92,9 @@ _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _BLOCKED_STATUSES = frozenset({"blocked", "control_blocked", "refused"})
 
 
-def compare_runs(store: RunStore, run_ids: Sequence[str]) -> Mapping[str, Any]:
+def compare_runs(
+    store: RunStore, run_ids: Sequence[str], *, s3_access: S3AccessJobs | None = None
+) -> Mapping[str, Any]:
     if len(run_ids) < 2:
         raise ComparisonError("comparison requires at least two runs")
     if len(run_ids) != len(set(run_ids)):
@@ -105,13 +111,18 @@ def compare_runs(store: RunStore, run_ids: Sequence[str]) -> Mapping[str, Any]:
         raise ComparisonError(f"collector session failed integrity validation: {exc}") from exc
     baseline = summaries[0]
     deltas = [_delta(baseline, candidate) for candidate in summaries[1:]]
-    body = {
+    body: dict[str, Any] = {
         "schema_version": "bluefire.comparison.v1",
         "run_ids": list(run_ids),
         "baseline_run_id": run_ids[0],
         "summaries": summaries,
         "deltas": deltas,
     }
+    from .comparison_s3 import project_s3_access
+
+    s3_projection = project_s3_access(snapshots, s3_access)
+    if s3_projection is not None:
+        body["s3_access"] = s3_projection
     return dict(body, comparison_id="comparison-" + content_hash(body)[7:27])
 
 
@@ -476,58 +487,6 @@ def _observed_detection_matches(candidates: Any, records: Any) -> int | None:
             return None
         rows.append(observed_ids)
     return sum(len(row) for row in rows)
-
-
-def _cleanup_summary(value: Any, step_success: bool | None) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        return {
-            "authoritative": False,
-            "source": "step_heuristic" if step_success is not None else "not_recorded",
-            "attempted": None,
-            "success": step_success,
-            "outstanding_receipt_count": None,
-            "state": (
-                "success"
-                if step_success is True
-                else "failed" if step_success is False else "unknown"
-            ),
-        }
-    attempted = value.get("attempted") if type(value.get("attempted")) is bool else None
-    success_value = value.get("success")
-    success = success_value if type(success_value) is bool else None
-    outstanding_value = value.get("outstanding_receipt_count")
-    outstanding = (
-        outstanding_value if type(outstanding_value) is int and outstanding_value >= 0 else None
-    )
-    structurally_authoritative = (
-        attempted is not None
-        and "success" in value
-        and (type(success_value) is bool or success_value is None)
-        and outstanding is not None
-    )
-    internally_consistent = bool(
-        (attempted is False and success is None and outstanding == 0)
-        or (attempted is True and ((success is True and outstanding == 0) or success is False))
-    )
-    step_consistent = step_success is None or success is step_success
-    authoritative = structurally_authoritative and internally_consistent and step_consistent
-    effective_success = success if authoritative else step_success
-    if attempted is False and outstanding == 0:
-        state = "not_attempted"
-    elif authoritative and success is True:
-        state = "verified_success"
-    elif authoritative and success is False:
-        state = "failed_or_incomplete"
-    else:
-        state = "contradictory" if structurally_authoritative else "unknown"
-    return {
-        "authoritative": authoritative,
-        "source": "run_result",
-        "attempted": attempted,
-        "success": effective_success,
-        "outstanding_receipt_count": outstanding,
-        "state": state,
-    }
 
 
 def _frontier_explanation(

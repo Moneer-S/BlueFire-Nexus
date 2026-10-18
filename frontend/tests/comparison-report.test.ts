@@ -1,6 +1,8 @@
 import { expect, it } from "vitest";
 import { comparisonReport } from "../src/lib/comparison-report";
 import { compareDemoRuns, demoRuns } from "../src/lib/demo";
+import capture from "../../tests_platform/fixtures/s3_comparison_v1.json";
+import type { ComparisonResponse } from "../src/types";
 
 it("exports unmet objectives, unknown evidence and failed cleanup without substituting success", () => {
   const comparison = compareDemoRuns(demoRuns.map((run) => run.run_id));
@@ -27,4 +29,19 @@ it("keeps untrusted gap content inert in the readable report and preserves it in
   expect(readable).not.toContain("<img");
   expect(readable).not.toContain("[remote]");
   expect(JSON.parse(json!.slice(0, json!.lastIndexOf("\n```"))).summaries[0].evidence_details.evidence_gaps[0].reason).toBe(untrusted);
+});
+
+it("exports the captured S3 read comparison without turning unknown into a cloud conclusion", () => {
+  const fixture = capture as unknown as { cases: Array<{ name: string; response: ComparisonResponse }> };
+  const comparison = fixture.cases.find((item) => item.name === "unknown_cleanup")?.response;
+  expect(comparison?.s3_access).toBeDefined();
+  const report = comparisonReport(comparison!);
+  const [readable, json] = report.split("```json\n");
+  expect(readable).toContain("## S3 access outcomes");
+  expect(readable).toContain("Reported change: unknown");
+  expect(readable).toContain("cleanup unknown");
+  expect(readable).toContain("does not establish defensive effectiveness");
+  expect(readable).not.toMatch(/prevention rate|coverage percentage|effectiveness percentage/i);
+  const exported = JSON.parse(json!.slice(0, json!.lastIndexOf("\n```"))) as ComparisonResponse;
+  expect(exported.s3_access).toEqual(comparison!.s3_access);
 });

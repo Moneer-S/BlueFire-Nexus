@@ -10,6 +10,7 @@ import { registeredDetectionLink } from "../src/lib/run-handoffs";
 import { writeComparisonContext } from "../src/lib/comparison-context";
 import { compareDemoRuns, demoCatalog, demoRuns, demoScenario } from "../src/lib/demo";
 import type { ComparisonResponse, DetectionResource } from "../src/types";
+import capture from "../../tests_platform/fixtures/s3_comparison_v1.json";
 
 function mount(path: string, page: React.ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -79,6 +80,37 @@ it("reports a comparison whose returned run identities do not match the request"
   await user.click(screen.getByRole("button", { name: "Compare selected" }));
   expect(await screen.findByText(/returned comparison does not match/)).toBeInTheDocument();
   expect(screen.queryByRole("heading", { name: "Compare detector results" })).not.toBeInTheDocument();
+});
+
+it("hides the prior comparison and its report when a later captured S3 response has an invalid binding", async () => {
+  const user = userEvent.setup();
+  baseMocks();
+  const document = capture as unknown as {
+    cases: Array<{ name: string; request: { run_ids: string[] }; response: ComparisonResponse }>;
+    browser: { routes: Array<{ path: string; body_utf8: string }> };
+  };
+  const captured = document.cases.find((item) => item.name === "paired_denied")?.response;
+  if (!captured?.s3_access || captured.s3_access.state !== "paired") throw new Error("The paired backend capture is unavailable.");
+  const runsRoute = document.browser.routes.find((route) => route.path === "/api/v1/runs");
+  if (!runsRoute) throw new Error("The backend capture has no saved run-list response.");
+  const actualRunList = JSON.parse(runsRoute.body_utf8) as Awaited<ReturnType<typeof api.runs>>;
+  vi.mocked(api.runs).mockResolvedValue(actualRunList);
+  const malformed: ComparisonResponse = {
+    ...captured,
+    s3_access: { ...captured.s3_access, baseline: { ...captured.s3_access.baseline!, selection_complete: false } },
+  };
+  const compare = vi.spyOn(api, "compare").mockResolvedValueOnce(captured).mockResolvedValueOnce(malformed);
+  mount(contextPath(captured.run_ids), <ComparePage />);
+  await screen.findByRole("heading", { name: "Compare runs" });
+  await user.click(screen.getByRole("button", { name: "Compare selected" }));
+  expect(await screen.findByRole("link", { name: "Download report" })).toBeVisible();
+  expect(screen.getByRole("region", { name: "Comparison results" })).toBeVisible();
+
+  await user.click(screen.getByRole("button", { name: "Compare selected" }));
+  expect(await screen.findByText(/S3 access comparison is invalid/)).toBeVisible();
+  expect(screen.queryByRole("region", { name: "Comparison results" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Download report" })).not.toBeInTheDocument();
+  expect(compare.mock.calls.map(([runIds]) => runIds)).toEqual([captured.run_ids, captured.run_ids]);
 });
 
 it("restores ordered runs and exact detector revisions only after an explicit comparison", async () => {
