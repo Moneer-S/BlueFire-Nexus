@@ -78,6 +78,41 @@ fn exclusive_lease_and_replay_never_reissue_dispatch() {
 }
 
 #[test]
+fn audited_reservation_and_full_scope_are_durable_before_any_worker_handoff() {
+    let directory = Directory::new();
+    let mut value = crate::s3_admission::tests::audit_tests::fixture();
+    value["admission"]["host"]["ledger_root"] = json!(directory.path);
+    value["admission"]["host"]["owner_uid"] =
+        json!(fs::symlink_metadata(&directory.path).unwrap().uid());
+    reseal(&mut value);
+    let admission = checked(&value).unwrap();
+    let store = S3ReservationStore::open(&admission).unwrap();
+    let reserved = store.reserve(&admission, now()).unwrap();
+    let bytes = fs::read(directory.path.join("reservations.jsonl")).unwrap();
+    let header_end = bytes.iter().position(|byte| *byte == b'\n').unwrap() + 1;
+    let ledger = Ledger::load(&bytes[header_end..], admission.enrollment_digest()).unwrap();
+    let row = &ledger.requests[admission.binding().digest()];
+    assert_eq!(row.digest, reserved.digest());
+    assert_eq!(row.debits, 0);
+    assert!(row.completion.is_none());
+    let entry: Value = serde_json::from_slice(&bytes[header_end..]).unwrap();
+    assert_eq!(entry["record"]["kind"], "audited_reservation");
+    assert_eq!(
+        entry["record"]["reservation"]["scope"],
+        value["manifest"]["params"]["worker_request"]["scope"]
+    );
+    assert_eq!(
+        entry["record"]["reservation"]["profile_digest"],
+        value["admission"]["profile_digest"]
+    );
+    drop(reserved); // No process, credentials handoff or send is needed for one-use reservation.
+    assert_eq!(
+        store.reserve(&admission, now()).err(),
+        Some(Error::AlreadyReserved)
+    );
+}
+
+#[test]
 fn debit_is_on_disk_before_the_permit_and_is_not_refunded_on_drop() {
     let directory = Directory::new();
     let admission = directory.admission();
@@ -179,6 +214,165 @@ fn boxed_reservation_preserves_canonical_journal_bytes_and_digest() {
     assert_eq!(canonical_json(&restored), canonical_json(&before));
     assert_eq!(canonical_hash(&restored), canonical_hash(&before));
 }
+
+fn result_journal_entry(record: Record, sequence: usize, previous: &str) -> (Vec<u8>, String) {
+    let entry = Entry {
+        schema_version: SCHEMA.into(),
+        sequence,
+        previous_hash: previous.into(),
+        record,
+    };
+    let value = serde_json::to_value(entry).unwrap();
+    let digest = canonical_hash(&value);
+    let mut bytes = canonical_json(&value).into_bytes();
+    bytes.push(b'\n');
+    (bytes, digest)
+}
+
+fn result_journal() -> (String, String, String, Vec<u8>) {
+    let enrollment = format!("sha256:{}", "e".repeat(64));
+    let initial = canonical_hash(&json!({
+        "schema_version": SCHEMA, "enrollment_digest": enrollment
+    }));
+    let row = operation(1, "inspect", "inspect_policy");
+    let request_digest = row.request_digest.clone();
+    let (mut bytes, reservation_digest) = result_journal_entry(
+        Record::Reservation {
+            operation: Box::new(row),
+        },
+        1,
+        &initial,
+    );
+    let (debit, _) = result_journal_entry(
+        Record::Debit {
+            reservation_digest: reservation_digest.clone(),
+            sequence: 1,
+            preview_digest: format!("sha256:{}", "6".repeat(64)),
+            is_write: false,
+        },
+        2,
+        &reservation_digest,
+    );
+    bytes.extend(debit);
+    (enrollment, request_digest, reservation_digest, bytes)
+}
+
+#[test]
+fn completion_result_digest_survives_validated_journal_replay() {
+    let (enrollment, request, reservation, mut bytes) = result_journal();
+    let initial = Ledger::load(&bytes, &enrollment).unwrap();
+    assert!(initial.requests[&request]
+        .completion_result_digest
+        .is_none());
+    let digest = canonical_hash(&json!({"synthetic_result": "original"}));
+    let (completion, _) = result_journal_entry(
+        Record::Completion {
+            reservation_digest: reservation,
+            result_digest: digest.clone(),
+            observed: true,
+            policy_position: PolicyPosition::Before,
+            cleanup_verified: true,
+            fixture_position: None,
+        },
+        initial.entries + 1,
+        &initial.previous_hash,
+    );
+    bytes.extend(completion);
+    for _ in 0..2 {
+        let replayed = Ledger::load(&bytes, &enrollment).unwrap();
+        let retained = &replayed.requests[&request];
+        assert_eq!(
+            retained.completion_result_digest.as_deref(),
+            Some(digest.as_str())
+        );
+        assert_eq!(
+            retained.completion,
+            Some((true, PolicyPosition::Before, true))
+        );
+        assert_eq!(retained.debits, 1);
+        assert_eq!(replayed.entries, 3);
+    }
+}
+
+#[test]
+fn malformed_completion_never_establishes_a_result_digest() {
+    for invalid_digest in [true, false] {
+        let (enrollment, request, reservation, mut bytes) = result_journal();
+        let mut ledger = Ledger::load(&bytes, &enrollment).unwrap();
+        let record = Record::Completion {
+            reservation_digest: reservation,
+            result_digest: if invalid_digest {
+                "not-a-digest".into()
+            } else {
+                canonical_hash(&json!({"synthetic_result": "unaccepted"}))
+            },
+            observed: true,
+            policy_position: PolicyPosition::Before,
+            cleanup_verified: true,
+            fixture_position: (!invalid_digest).then_some(FixturePosition {
+                state: "absent".into(),
+                etag: None,
+            }),
+        };
+        let (completion, hash) =
+            result_journal_entry(record.clone(), ledger.entries + 1, &ledger.previous_hash);
+        assert_eq!(ledger.apply(record, hash), Err(Error::Corrupt));
+        assert!(ledger.requests[&request].completion_result_digest.is_none());
+        assert!(ledger.requests[&request].completion.is_none());
+        bytes.extend(completion);
+        assert_eq!(
+            Ledger::load(&bytes, &enrollment).err(),
+            Some(Error::Corrupt)
+        );
+    }
+}
+
+#[test]
+fn duplicate_completion_cannot_replace_the_original_result_digest() {
+    let (enrollment, request, reservation, mut bytes) = result_journal();
+    let mut ledger = Ledger::load(&bytes, &enrollment).unwrap();
+    let original_digest = canonical_hash(&json!({"synthetic_result": "original"}));
+    let completion = Record::Completion {
+        reservation_digest: reservation.clone(),
+        result_digest: original_digest.clone(),
+        observed: true,
+        policy_position: PolicyPosition::Before,
+        cleanup_verified: true,
+        fixture_position: None,
+    };
+    let (entry, _) = result_journal_entry(completion, ledger.entries + 1, &ledger.previous_hash);
+    bytes.extend(entry);
+    ledger = Ledger::load(&bytes, &enrollment).unwrap();
+    let replacement = Record::Completion {
+        reservation_digest: reservation,
+        result_digest: canonical_hash(&json!({"synthetic_result": "replacement"})),
+        observed: true,
+        policy_position: PolicyPosition::After,
+        cleanup_verified: false,
+        fixture_position: None,
+    };
+    let (entry, hash) = result_journal_entry(
+        replacement.clone(),
+        ledger.entries + 1,
+        &ledger.previous_hash,
+    );
+    assert_eq!(ledger.apply(replacement, hash), Err(Error::Corrupt));
+    let retained = &ledger.requests[&request];
+    assert_eq!(
+        retained.completion_result_digest.as_deref(),
+        Some(original_digest.as_str())
+    );
+    assert_eq!(
+        retained.completion,
+        Some((true, PolicyPosition::Before, true))
+    );
+    bytes.extend(entry);
+    assert_eq!(
+        Ledger::load(&bytes, &enrollment).err(),
+        Some(Error::Corrupt)
+    );
+}
+
 fn complete_state(ledger: &mut Ledger, hash: &str, position: PolicyPosition) {
     ledger
         .apply(

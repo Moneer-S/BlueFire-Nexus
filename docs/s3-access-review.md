@@ -92,22 +92,28 @@ authority. This workspace does not enroll an AWS account, invent a credential
 source, or widen the supported native action set.
 
 Product tests use an explicitly synthetic executor. Runner-reported read and
-policy observations remain distinct from independently collected cloud audit.
-The workspace reports audit as **not collected** and independent observations as
-**none**. The original workflow retains generated resources. The v2 fixture
-workflow separately records whether its exact objects are not prepared, retained,
-in need of reconciliation, or removed. Fixture cleanup retains the policy state
-accepted at its review; it does not restore the original policy automatically.
-Synthetic and runner-reported fixture outcomes retain those provenance labels.
-They do not establish live defensive effectiveness, independent deletion proof,
-or separate-identity runtime isolation.
+policy observations remain distinct from cloud audit collection. The v3 workspace
+has separate bounded `audit_baseline` and `audit_retest` stages; collected
+`authenticated_source_retrieval` and operator-supplied `operator_import` reviews
+retain distinct provenance. Retrieval authentication does not establish
+CloudTrail signature-chain or full-object integrity, complete delivery, effective
+access or defensive effectiveness. Production collection dispatch is
+`DISPATCH_RELEASED = false`, and no live cloud proof is established. The original
+workflow retains generated resources. The v2 fixture workflow separately records
+whether its exact objects are not prepared, retained, in need of reconciliation,
+or removed. Fixture cleanup retains the policy state accepted at its review; it
+does not restore the original policy automatically. Synthetic and runner-reported
+fixture outcomes retain those provenance labels. They do not establish live
+defensive effectiveness, independent deletion proof, or separate-identity runtime
+isolation.
 
 ## Saved audit explanations
 
-An imported audit review can open in the shared Assistant through **Explain
-review**. The request binds the workflow, immutable review identifier and digest.
-Only bounded outcome categories, counts and provenance reach the selected model;
-raw imported events, resource names and audit event identifiers do not.
+An imported or collected audit review can open in the shared Assistant through
+**Explain review**. The request binds the workflow, immutable review identifier
+and digest. Only bounded outcome categories, counts and provenance reach the
+selected model; raw event bytes, resource names and audit event identifiers do
+not.
 
 Off makes no model request. Assist and Auto each permit a single read-only
 explanation through the existing Assistant turn lifecycle. This context has no
@@ -116,7 +122,8 @@ or deploy a detection. Cancellation, provider authorization, saved conversations
 and exact-request recovery retain their existing behavior. Source and provider
 bindings are rechecked before the answer is retained.
 
-An explanation does not turn an operator import into independent collection or
-prove complete delivery, full object bytes, effective access or prevention.
-Saved audit reviews remain inspectable without model access. Synthetic browser
-and mocked-provider tests do not establish live model or AWS integration.
+An explanation does not turn an operator import into authenticated collection,
+nor does collected retrieval prove signature integrity, complete delivery, full
+object bytes, effective access or prevention. Saved audit reviews remain
+inspectable without model access. Synthetic browser and mocked-provider tests do
+not establish live model or AWS integration.

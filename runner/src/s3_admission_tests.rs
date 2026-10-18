@@ -3,6 +3,9 @@ use crate::canonical::canonical_hash;
 use crate::contract::{seal_manifest, seal_profile, ExecutionManifest, RunnerProfile};
 use serde_json::{json, Value};
 
+#[path = "s3_admission_audit_tests.rs"]
+pub(crate) mod audit_tests;
+
 pub(crate) fn fixture() -> Value {
     let service: Value = serde_json::from_str(include_str!(
         "../../tests_platform/fixtures/owned_service_admission_v1.json"

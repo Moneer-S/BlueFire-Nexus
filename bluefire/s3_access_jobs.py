@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from . import product_store_s3_access as records
 from . import s3_access_results as results
+from . import s3_audit_workflow as audit_workflow
 from . import s3_fixture_results as fixtures
 from .evidence import EvidenceProvenance, EvidenceRecord
 from .job_runtime import JobResult, JobRuntimeError, RunJobController
@@ -19,7 +20,7 @@ from .s3_access_contract import S3AccessError, S3AccessScope, digest, exact, tim
 from .s3_access_executor import S3AccessExecutor, validate_execution
 from .s3_access_policy import plan_hardening
 from .s3_access_wire import REQUEST_SCHEMA, S3WorkerRequest
-from .util import content_hash
+from .util import canonical_json_bytes, content_hash
 
 _SETUP_PROBLEMS = {
     "profile_changed": "The installed S3 configuration no longer matches the active runner profile. Review local setup.",
@@ -74,20 +75,27 @@ class S3AccessJobs:
                 scope.assert_current(clock=self.clock)
             except S3AccessError:
                 current = False
+            source_current = "audit_source" not in selected or self.clock() < timestamp(
+                selected["audit_source"]["expires_at"]
+            )
             rows.append(
                 {
                     "environment": selected,
                     "runtime": runtime,
-                    "available": runtime["available"] and current,
+                    "available": runtime["available"] and current and source_current,
                     "problem": (
                         None
-                        if runtime["available"] and current
+                        if runtime["available"] and current and source_current
                         else (
                             "The enrolled scope has expired."
                             if not current
-                            else _SETUP_PROBLEMS.get(
-                                runtime["problem"],
-                                "The exact enrolled scope, protected runtime and temporary access must be ready.",
+                            else (
+                                "The enrolled audit source has expired."
+                                if not source_current
+                                else _SETUP_PROBLEMS.get(
+                                    runtime["problem"],
+                                    "The exact enrolled scope, protected runtime and temporary access must be ready.",
+                                )
                             )
                         )
                     ),
@@ -156,7 +164,8 @@ class S3AccessJobs:
     def _fresh(self, owner: Mapping[str, Any], phase: str) -> Mapping[str, Any]:
         selected = self._selected(owner["request"]["environment"]["environment_id"])
         if (
-            not selected["available"]
+            not selected["runtime"]["available"]
+            or (not selected["available"] and phase not in fixtures.RECOVERY_PHASES)
             or selected["environment"] != owner["request"]["environment"]
             or selected["runtime"] != owner["request"]["runtime"]
         ):
@@ -164,6 +173,9 @@ class S3AccessJobs:
         results.assert_phase_current(
             S3AccessScope.from_mapping(selected["environment"]["scope"]), phase, self.clock()
         )
+        if audit_workflow.enrolled(owner) and phase not in fixtures.RECOVERY_PHASES:
+            if self.clock() >= timestamp(selected["environment"]["audit_source"]["expires_at"]):
+                raise S3AccessError("The original audit source has expired.")
         if (
             phase in {"apply", "rollback"}
             and selected["environment"]["exclusive_writer_digest"] is None
@@ -206,6 +218,17 @@ class S3AccessJobs:
             ):
                 raise S3AccessError("Saved S3 result lineage is invalid.")
             requests = records.validate_requests(owner, child["request"])
+            if row["phase"] in audit_workflow.PHASES:
+                pair, host = records.collection_pair(
+                    self.store, identifier, row["phase"].removeprefix("audit_")
+                )
+                if (
+                    marker.get("audit_original_host_digest") != host
+                    or marker["review"]["audit_collection"]["original_pair"] != pair
+                ):
+                    raise S3AccessError(
+                        "The collection no longer joins its original paired source."
+                    )
             if len(row["run_ids"]) != len(row["executions"]) or len(row["executions"]) > len(
                 requests
             ):
@@ -234,6 +257,7 @@ class S3AccessJobs:
         ]
         pending = owner["progress"].get("pending_operation")
         active = self.store.get_job(pending) if pending else None
+        finalized_rechecks = self._finalized_audit_rechecks(owner, retained) if not pending else []
         allowed = results.allowed_phases(owner)
         problem = None
         baseline = results.latest(owner, "baseline")
@@ -250,6 +274,12 @@ class S3AccessJobs:
         for phase in allowed:
             try:
                 self._fresh(owner, phase)
+                if phase in audit_workflow.PHASES:
+                    pair, _host = records.collection_pair(
+                        self.store, identifier, phase.removeprefix("audit_")
+                    )
+                    if self.clock() >= timestamp(audit_workflow.absolute_expiry(owner, pair)):
+                        continue
             except (S3AccessError, ProductStoreError):
                 continue
             current.append(phase)
@@ -269,14 +299,33 @@ class S3AccessJobs:
             "operations": history,
             "active_job": active,
             "allowed_phases": allowed,
-            "saved_result_recovery_available": bool(active and active["state"] in results.TERMINAL),
+            "saved_result_recovery_available": bool(
+                active and active["state"] in results.TERMINAL or finalized_rechecks
+            ),
             "remaining": results.remaining(owner),
             "problem": problem,
             "audit": "not_collected",
+            **(
+                {"audit": "authenticated_retrieval"}
+                if any(
+                    row["phase"] in audit_workflow.PHASES
+                    and row["outcome"]["audit"] == "authenticated_retrieval"
+                    for row, _requests in retained
+                )
+                else {}
+            ),
             "resource_disposition": "retained",
             "independent_observations": 0,
             "live_outcome_verified": False,
             **(fixtures.projection(owner) if fixtures.enabled(owner) else {}),
+            **(
+                {
+                    "schema_version": "bluefire.s3-exercise.v3",
+                    "audit_collection": self._audit_projection(owner),
+                }
+                if audit_workflow.enrolled(owner)
+                else {}
+            ),
         }
 
     def review(self, identifier: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -288,7 +337,66 @@ class S3AccessJobs:
         if phase not in results.allowed_phases(owner):
             raise S3AccessError("This S3 stage is unavailable or needs reconciliation.")
         self._fresh(owner, phase)
-        return results.review_document(owner, phase)
+        pair = None
+        if phase in audit_workflow.PHASES:
+            pair, _host = records.collection_pair(
+                self.store, identifier, phase.removeprefix("audit_")
+            )
+            if self.clock() >= timestamp(audit_workflow.absolute_expiry(owner, pair)):
+                raise S3AccessError("The original paired audit interval expired.")
+        return results.review_document(
+            owner, phase, pair=pair, listing_date=self.clock().date().isoformat()
+        )
+
+    def _audit_projection(self, owner):
+        pairs, reasons = {}, {}
+        base = None
+        try:
+            current = self._selected(owner["request"]["environment"]["environment_id"])
+            original = owner["request"]["environment"]
+            if current["environment"].get("audit_source") != original.get("audit_source"):
+                base = "source_changed"
+            elif (
+                current["runtime"]["runner_profile_id"]
+                != owner["request"]["runtime"]["runner_profile_id"]
+            ):
+                base = "profile_changed"
+            elif current["runtime"] != owner["request"]["runtime"]:
+                base = current["runtime"]["problem"] or "runtime_changed"
+            elif current["environment"] != original:
+                base = "environment_changed"
+            elif self.clock() >= timestamp(original["audit_source"]["expires_at"]):
+                base = "source_expired"
+            elif not current["available"]:
+                base = current["runtime"]["problem"] or "scope_expired"
+        except (S3AccessError, ProductStoreError):
+            base = "host_unavailable"
+        if base not in {
+            None,
+            "source_changed",
+            "profile_changed",
+            "runtime_changed",
+            "environment_changed",
+            "runtime_unavailable",
+            "access_reference_absent",
+            "access_reference_expired",
+            "scope_expired",
+            "source_expired",
+            "host_unavailable",
+        }:
+            base = "runtime_unavailable"
+        for phase in ("baseline", "retest"):
+            reasons[phase] = base
+            try:
+                pair, _host = records.collection_pair(self.store, owner["job_id"], phase)
+                pairs[phase] = pair
+                if self.clock() >= timestamp(audit_workflow.absolute_expiry(owner, pair)):
+                    reasons[phase] = "original_interval_expired"
+                elif not results.stage_affordable(owner, "audit_" + phase):
+                    reasons[phase] = "budget_exhausted"
+            except (S3AccessError, ProductStoreError):
+                pass
+        return audit_workflow.projection(owner, pairs, reasons)
 
     def submit(self, identifier: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
         exact(
@@ -309,7 +417,7 @@ class S3AccessJobs:
             raise S3AccessError("The exact S3 stage needs a fresh review.")
         owner = self._owner(identifier)
         operation_id = "job-" + uuid.UUID(submission).hex
-        worker_requests = self._requests(owner, request["phase"], operation_id)
+        worker_requests = self._requests(owner, request["phase"], operation_id, review=review)
         marker = {
             "workflow_job_id": identifier,
             "operation_job_id": operation_id,
@@ -317,6 +425,11 @@ class S3AccessJobs:
             "expected_revision": owner["progress"]["revision"],
             "review": review,
         }
+        if request["phase"] in audit_workflow.PHASES:
+            _pair, host = records.collection_pair(
+                self.store, identifier, request["phase"].removeprefix("audit_")
+            )
+            marker["audit_original_host_digest"] = host
         self.controller.submit(
             results.OPERATION_KIND,
             {
@@ -330,7 +443,9 @@ class S3AccessJobs:
         )
         return self.read(identifier)
 
-    def _requests(self, owner, phase: str, operation_id: str) -> list[S3WorkerRequest]:
+    def _requests(
+        self, owner, phase: str, operation_id: str, *, review=None
+    ) -> list[S3WorkerRequest]:
         selected, runtime = owner["request"]["environment"], owner["request"]["runtime"]
         scope = S3AccessScope.from_mapping(selected["scope"])
         change = plan_hardening(scope, selected["baseline_policy"])
@@ -338,34 +453,51 @@ class S3AccessJobs:
             self.clock() + timedelta(seconds=selected["scope"]["limits"]["request_seconds"]),
             timestamp(selected["scope"]["expires_at"]),
         )
-        return [
-            S3WorkerRequest.from_mapping(
-                {
-                    "schema_version": REQUEST_SCHEMA,
-                    "launch_id": uuid.uuid4().hex + uuid.uuid4().hex,
-                    "request_id": hashlib.sha256(f"{operation_id}:{index}".encode()).hexdigest(),
-                    "worker_generation": runtime["worker_generation"],
-                    "runtime_digest": runtime["runtime_digest"],
-                    "scope": scope.to_dict(),
-                    "scope_digest": scope.digest,
-                    "operation": operation,
-                    "policy_change": (
-                        change.to_dict()
-                        if operation in {"apply_policy", "rollback_policy", "reconcile_policy"}
-                        else None
-                    ),
-                    "exclusive_writer_digest": (
-                        selected["exclusive_writer_digest"]
-                        if operation in {"apply_policy", "rollback_policy"}
-                        else None
-                    ),
-                    "deadline": deadline.isoformat().replace("+00:00", "Z"),
-                    "max_sends": results.SEND_LIMITS[operation],
-                    **fixtures.request_fields(owner, phase, index),
-                }
+        answer = []
+        for index, operation in enumerate(results.PHASES[phase]):
+            launch_id = uuid.uuid4().hex + uuid.uuid4().hex
+            request_id = hashlib.sha256(f"{operation_id}:{index}".encode()).hexdigest()
+            fields = (
+                audit_workflow.request_fields(
+                    owner,
+                    phase,
+                    review["audit_collection"],
+                    operation_id,
+                    launch_id,
+                    request_id,
+                    self.clock().isoformat().replace("+00:00", "Z"),
+                )
+                if phase in audit_workflow.PHASES
+                else fixtures.request_fields(owner, phase, index)
             )
-            for index, operation in enumerate(results.PHASES[phase])
-        ]
+            answer.append(
+                S3WorkerRequest.from_mapping(
+                    {
+                        "schema_version": REQUEST_SCHEMA,
+                        "launch_id": launch_id,
+                        "request_id": request_id,
+                        "worker_generation": runtime["worker_generation"],
+                        "runtime_digest": runtime["runtime_digest"],
+                        "scope": scope.to_dict(),
+                        "scope_digest": scope.digest,
+                        "operation": operation,
+                        "policy_change": (
+                            change.to_dict()
+                            if operation in {"apply_policy", "rollback_policy", "reconcile_policy"}
+                            else None
+                        ),
+                        "exclusive_writer_digest": (
+                            selected["exclusive_writer_digest"]
+                            if operation in {"apply_policy", "rollback_policy"}
+                            else None
+                        ),
+                        "deadline": deadline.isoformat().replace("+00:00", "Z"),
+                        "max_sends": results.SEND_LIMITS[operation],
+                        **fields,
+                    }
+                )
+            )
+        return answer
 
     def _execute(self, context, document: Mapping[str, Any]) -> JobResult:
         marker = document["s3_access"]
@@ -415,6 +547,7 @@ class S3AccessJobs:
                         authorization=authorization,
                         cancellation_event=context.cancellation_event,
                         before_dispatch=before_dispatch,
+                        **({"run_id": handle.run_id} if audit_workflow.enrolled(owner) else {}),
                     ),
                 )
                 self._finalize_run(
@@ -531,11 +664,34 @@ class S3AccessJobs:
         )
 
     def recover(self, identifier: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
-        """Adopt only authenticated original results; never dispatch or replay."""
+        """Recover pending originals or recheck finalized originals without replay."""
         exact(request, set(), "S3 saved result recovery")
         owner = self._owner(identifier)
         pending = owner["progress"].get("pending_operation")
         if not pending:
+            owner, retained = self.retained_operations(identifier)
+            checks = self._finalized_audit_rechecks(owner, retained)
+            for check in checks:
+                original = S3WorkerRequest.from_mapping(check["request"])
+                recovered = self.executor.recover_original(original, check["context"])
+                exact(recovered, {"status", "execution"}, "S3 original task recheck")
+                if recovered["status"] != "finalized":
+                    raise S3AccessError(
+                        "The original collection task is unavailable or not finalized. Cleanup remains unresolved."
+                    )
+                execution = validate_execution(original, recovered["execution"])
+                if canonical_json_bytes(execution) != canonical_json_bytes(check["execution"]):
+                    raise S3AccessError(
+                        "The original collection execution differs from its immutable saved result. Cleanup remains unresolved."
+                    )
+            if checks:
+                current, retained = self.retained_operations(identifier)
+                if canonical_json_bytes(
+                    self._finalized_audit_rechecks(current, retained)
+                ) != canonical_json_bytes(checks):
+                    raise S3AccessError(
+                        "The saved collection identity changed during its original-task check."
+                    )
             return self.read(identifier)
         child = self.store.get_job(pending)
         if child["state"] not in results.TERMINAL:
@@ -572,6 +728,34 @@ class S3AccessJobs:
             )
         records.finish(self.store, pending, executions, run_ids, failure=True)
         return self.read(identifier)
+
+    def _finalized_audit_rechecks(self, owner, retained):
+        if owner["progress"].get("pending_operation") or not audit_workflow.retained(owner):
+            return []
+        checks = []
+        for phase in ("baseline", "retest"):
+            claim = owner["progress"]["audit_slots"].get(phase)
+            if claim is None:
+                continue
+            rows = [
+                row
+                for row, _requests in retained
+                if row["operation_job_id"] == claim["operation_job_id"]
+            ]
+            if not rows:
+                continue
+            if len(rows) != 1 or rows[0]["phase"] != "audit_" + phase:
+                raise S3AccessError("The consumed collection slot has ambiguous original lineage.")
+            if rows[0]["outcome"]["cleanup"] != "unknown":
+                continue
+            check = records.finalized_collection_recheck(
+                self.store,
+                owner["job_id"],
+                claim["operation_job_id"],
+            )
+            if check is not None:
+                checks.append(check)
+        return checks
 
     def _recover_original_run(self, owner, child, run_id, request, run):
         retained = child["progress"].get("original_tasks", {})

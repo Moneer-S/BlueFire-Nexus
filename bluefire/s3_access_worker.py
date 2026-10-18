@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any, BinaryIO, Mapping
 
+from . import s3_audit_collection_contract as audit
+from . import s3_audit_wire as audit_wire
 from .s3_access_contract import S3AccessError
 from .s3_access_sdk import S3SdkAdapter
 from .s3_access_sdk_boundary import S3ClientFactory
@@ -62,6 +64,12 @@ class _Conversation:
     def write(self, document: Mapping[str, Any]) -> None:
         self.checkpoint()
         payload = encode_frame(document)
+        if (
+            self.request is not None
+            and self.request.to_dict()["schema_version"] == audit_wire.REQUEST_SCHEMA
+            and len(payload) > audit.MAX_FRAME_BYTES
+        ):
+            raise S3AccessError("audit worker output frame exceeds its unchanged bound")
         self.output_bytes += len(payload)
         if self.output_bytes > MAX_OUTPUT_BYTES:
             raise S3AccessError("worker output exceeds its bound")
@@ -76,6 +84,15 @@ class _Conversation:
         self.checkpoint()
 
     def permit(self, preview: Mapping[str, Any]) -> dict[str, Any]:
+        self.write(preview)
+        return decode_frame(self.read(2048), maximum=2048)
+
+    def discovery(self, preview: Mapping[str, Any]) -> dict[str, Any]:
+        if (
+            self.request is None
+            or self.request.to_dict()["schema_version"] != audit_wire.REQUEST_SCHEMA
+        ):
+            raise S3AccessError("Discovery requires an original audit worker request")
         self.write(preview)
         return decode_frame(self.read(2048), maximum=2048)
 
@@ -146,6 +163,10 @@ def run_worker(
             factory=factory,
             permit=channel.permit,
             clock=clock,
+            discovery=(
+                channel.discovery if row["schema_version"] == audit_wire.REQUEST_SCHEMA else None
+            ),
+            audit_reservation_digest=handshake.reservation_digest,
         ).execute()
         channel.write({"kind": "result", "result": validate_result(request, result)})
         channel.closed = True

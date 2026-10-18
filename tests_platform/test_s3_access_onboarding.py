@@ -14,10 +14,13 @@ from bluefire.application_errors import APIError
 from bluefire.contracts import ExecutionMode
 from bluefire.runner_contracts import execution_limits, seal_profile
 from bluefire.runner_lifecycle import RunnerLifecycleError
+from bluefire.s3_access_configuration import AUDIT_SCHEMA
+from bluefire.s3_access_contract import S3AccessScope
 from bluefire.s3_access_setup_status import _result
 from bluefire.util import content_hash
 from tests_platform.s3_profile_fixtures import managed_profile
 from tests_platform.test_s3_access_host_config import configured as host_configuration
+from tests_platform.test_s3_audit_collection_contract import source_row
 
 
 @pytest.fixture
@@ -159,6 +162,21 @@ def draft_request(configured):
     profile["limits"] = execution_limits(configured.profile)
     row["environments"][0]["profile"] = seal_profile(profile)
     return {**configured.request, "configuration_json": json.dumps(row, indent=2)}
+
+
+def audit_draft_request(configured):
+    request = draft_request(configured)
+    row = json.loads(request["configuration_json"])
+    row["schema_version"] = AUDIT_SCHEMA
+    entry = row["environments"][0]
+    scope = S3AccessScope.from_mapping(entry["scope"])
+    descriptor = source_row(scope)
+    descriptor["managed_profile_digest"] = entry["managed_profile_digest"]
+    descriptor["protected_runtime_digest"] = entry["runtime_digest"]
+    descriptor["worker_generation"] = entry["worker_generation"]
+    entry["audit_source"] = descriptor
+    request["configuration_json"] = json.dumps(row, indent=2)
+    return request, descriptor
 
 
 @pytest.fixture
@@ -307,6 +325,48 @@ def test_draft_review_is_structural_and_retains_exact_source_without_host_effect
     again = onboarding.review_draft(configured.service, changed_whitespace)
     assert again["configuration_digest"] == value["configuration_digest"]
     assert again["source_sha256"] != value["source_sha256"]
+
+
+def test_audit_v4_draft_review_exposes_only_validated_source_structure(configured):
+    request, descriptor = audit_draft_request(configured)
+    value = onboarding.review_draft(configured.service, request)
+    assert value["schema_version"] == onboarding.DRAFT_AUDIT_SCHEMA
+    assert set(value) == {
+        "schema_version",
+        "profile_id",
+        "profile_digest",
+        "validation_scope",
+        "source_sha256",
+        "configuration_digest",
+        "environments",
+    }
+    environment = value["environments"][0]
+    assert environment["audit_source"] == descriptor
+    assert environment["audit_collection"] == {
+        "state": "unavailable",
+        "reason": "collection_not_enabled",
+    }
+    assert value["validation_scope"] == "structural_only"
+    assert configured.calls == []
+
+
+@pytest.mark.parametrize("mutation", ["account", "runtime", "extra"])
+def test_audit_v4_draft_rejects_unbound_or_widened_source_without_effects(configured, mutation):
+    request, _ = audit_draft_request(configured)
+    row = json.loads(request["configuration_json"])
+    descriptor = row["environments"][0]["audit_source"]
+    if mutation == "account":
+        descriptor["source_account_id"] = "999999999999"
+    elif mutation == "runtime":
+        descriptor["protected_runtime_digest"] = "sha256:" + "f" * 64
+    else:
+        descriptor["credentials"] = "never-echo"
+    request["configuration_json"] = json.dumps(row)
+    with pytest.raises(APIError) as caught:
+        onboarding.review_draft(configured.service, request)
+    assert caught.value.code == "s3_setup_draft_invalid"
+    assert "never-echo" not in str(caught.value)
+    assert configured.calls == []
 
 
 @pytest.mark.parametrize(

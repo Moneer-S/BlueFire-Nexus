@@ -6,6 +6,7 @@ import re
 from datetime import timedelta
 from typing import Any, Mapping
 
+from . import s3_audit_collection_contract as audit
 from . import s3_fixture_contract as fixtures
 from .runner_contracts import seal_manifest, seal_profile
 from .s3_access_contract import S3AccessError, digest, document, exact
@@ -14,6 +15,7 @@ from .s3_access_wire import S3WorkerRequest, timestamp
 from .util import canonical_json_bytes, content_hash
 
 SCHEMA = "bluefire.s3-original-task.v1"
+BOUND_SCHEMA = "bluefire.s3-original-task.v2"
 _PROFILE = {
     "schema_version",
     "profile_id",
@@ -66,9 +68,13 @@ _TRANSPORT = {
 def _review(request: S3WorkerRequest, approval: Any) -> None:
     row = request.to_dict()
     fixture_request = row["schema_version"] == fixtures.REQUEST_SCHEMA
+    audited = (
+        isinstance(approval, Mapping) and approval.get("schema_version") == audit.APPROVAL_SCHEMA
+    )
     exact(
         approval,
         _APPROVAL
+        | ({"audit_workflow_digest"} if audited else set())
         | ({"fixture_authority_digest", "fixture_intent_id"} if fixture_request else set()),
         "S3 original review",
     )
@@ -101,14 +107,20 @@ def _review(request: S3WorkerRequest, approval: Any) -> None:
         "prepare": {"prepare_fixture"},
         "reconcile_fixtures": {"reconcile_fixture"},
         "cleanup": {"cleanup_fixture"},
+        "audit_baseline": {"collect_audit"},
+        "audit_retest": {"collect_audit"},
     }
     change = row["policy_change"]
     if (
         approval["schema_version"]
         != (
-            "bluefire.s3-workflow-approval.v2"
-            if fixture_request
-            else "bluefire.s3-workflow-approval.v1"
+            audit.APPROVAL_SCHEMA
+            if audited
+            else (
+                "bluefire.s3-workflow-approval.v2"
+                if fixture_request
+                else "bluefire.s3-workflow-approval.v1"
+            )
         )
         or not isinstance(approval["phase"], str)
         or row["operation"] not in phases.get(approval["phase"], set())
@@ -127,22 +139,47 @@ def _review(request: S3WorkerRequest, approval: Any) -> None:
     ):
         raise S3AccessError("The original fixture review differs from its exact enrolled intent")
     digest(approval["review_digest"])
+    if audited:
+        digest(approval["audit_workflow_digest"])
+    if row["operation"] == "collect_audit":
+        pair = row["audit"]["original_pair"]
+        if (
+            not audited
+            or approval["phase"] != "audit_" + pair["phase"]
+            or row["audit"]["workflow_job_id"] != approval["workflow_job_id"]
+            or row["audit"]["operation_job_id"] != approval["operation_job_id"]
+            or any(read["run_id"] not in runs for read in pair["reads"])
+        ):
+            raise S3AccessError("The original collection approval differs from its paired reads.")
 
 
 def execution_manifest(
-    request: S3WorkerRequest, authorization: Mapping[str, Any], profile: Mapping[str, Any]
+    request: S3WorkerRequest,
+    authorization: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    *,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     row = request.to_dict()
     deadline = timestamp(row["deadline"])
     seconds = row["scope"]["limits"]["request_seconds"]
     issued = (deadline - timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+    if row["operation"] == "collect_audit":
+        issued = row["audit"]["issued_at"]
+        seconds = (deadline - timestamp(issued)).total_seconds()
+    if run_id is not None and (
+        not isinstance(run_id, str)
+        or re.fullmatch(r"run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}", run_id) is None
+        or authorization.get("schema_version") != audit.APPROVAL_SCHEMA
+    ):
+        raise S3AccessError("A fresh audited task requires its exact saved run identity.")
     limits = dict(profile["limits"])
-    limits["timeout_ms"] = min(limits["timeout_ms"], seconds * 1000)
+    limits["timeout_ms"] = min(limits["timeout_ms"], int(seconds * 1000))
     return seal_manifest(
         {
             "schema_version": "bluefire.runner-manifest.v1",
             "request_id": "s3-" + row["request_id"],
-            "run_id": authorization["operation_job_id"],
+            "run_id": run_id if run_id is not None else authorization["operation_job_id"],
             "step_id": row["operation"],
             "behavior_id": "cloud.s3.access_hardening.v1",
             "action_id": "owned.aws.s3_access.v1",
@@ -189,7 +226,10 @@ def validate_recovery_context(request: S3WorkerRequest, value: Any) -> dict[str,
         "S3 original task",
     )
     try:
-        if row["schema_version"] != SCHEMA or row["request_digest"] != request.digest:
+        if (
+            row["schema_version"] not in {SCHEMA, BOUND_SCHEMA}
+            or row["request_digest"] != request.digest
+        ):
             raise S3AccessError("S3 original task belongs to another request")
         profile, manifest, identity = row["profile"], row["manifest"], row["transport_identity"]
         if not isinstance(profile, dict) or set(profile) - _PROFILE:
@@ -200,7 +240,12 @@ def validate_recovery_context(request: S3WorkerRequest, value: Any) -> dict[str,
         exact(params, {"worker_request", "workflow_approval"}, "S3 original parameters")
         approval = params["workflow_approval"]
         _review(request, approval)
-        expected = execution_manifest(request, approval, profile)
+        expected = execution_manifest(
+            request,
+            approval,
+            profile,
+            **({"run_id": manifest["run_id"]} if row["schema_version"] == BOUND_SCHEMA else {}),
+        )
         if canonical_json_bytes(manifest) != canonical_json_bytes(expected):
             raise S3AccessError("S3 original manifest differs from its request")
         transport_hash = content_hash({"manifest": manifest, "profile": profile})
