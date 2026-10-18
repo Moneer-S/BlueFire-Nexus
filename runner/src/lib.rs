@@ -36,6 +36,7 @@ mod reviewed_native_builds;
 pub mod runner;
 pub mod runner_s3_access;
 pub mod s3_access_binding;
+mod s3_access_plan;
 mod s3_access_policy;
 mod s3_access_scope;
 pub mod s3_access_send;
@@ -52,7 +53,9 @@ mod s3_runtime_manifest;
 mod s3_worker_process;
 #[cfg(target_os = "linux")]
 mod s3_worker_protocol;
+#[cfg(any(target_os = "linux", test))]
 mod s3_worker_result;
+mod s3_worker_result_contract;
 #[cfg(target_os = "linux")]
 mod s3_worker_secret;
 pub mod safety;

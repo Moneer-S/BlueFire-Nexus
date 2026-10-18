@@ -14,25 +14,23 @@ from datetime import timedelta
 from typing import Any, Sequence
 
 from .s3_access_contract import S3AccessError, S3AccessScope, document, timestamp
-from .s3_access_wire import SAFE_ERROR_CODES, SAFE_REQUEST_ID, S3WorkerRequest, validate_result
+from .s3_access_wire import S3WorkerRequest
+from .s3_access_wire_contract import SAFE_ERROR_CODES, SAFE_REQUEST_ID
+from .s3_audit_read_contract import (
+    _ERROR_OUTCOMES as _ERROR_OUTCOMES,
+)
+from .s3_audit_read_contract import (
+    _EVENT_ID as _EVENT_ID,
+)
+from .s3_audit_read_contract import (
+    validated_read,
+)
 from .util import content_hash
 
-_EVENT_ID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", re.ASCII)
 _VERSION = re.compile(r"1\.([1-9][0-9]?)", re.ASCII)
 _TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z", re.ASCII)
 _SESSION = re.compile(r"bf-[0-9a-f]{32}-(?:probe|legitimate)", re.ASCII)
 _DELIVERY = {"complete", "incomplete", "truncated", "unknown"}
-_ERROR_OUTCOMES = {
-    "AccessDenied": "service_denied",
-    "NoSuchKey": "object_missing",
-    "NoSuchBucket": "bucket_missing",
-    "ExpiredToken": "credential_error",
-    "InvalidToken": "credential_error",
-    "InvalidAccessKeyId": "credential_error",
-    "SignatureDoesNotMatch": "credential_error",
-    "RequestExpired": "credential_error",
-    "AuthorizationHeaderMalformed": "credential_error",
-}
 
 
 def _utc(value: Any) -> str:
@@ -253,15 +251,7 @@ def _validated_read(
 ) -> tuple[S3WorkerRequest, dict[str, Any], dict[str, Any]]:
     request = S3WorkerRequest.from_mapping(request.to_dict())
     source = request.to_dict()
-    if source["operation"] not in {"probe_read", "legitimate_read"}:
-        raise S3AccessError("audit correlation requires a scoped read request")
-    result = validate_result(request, worker_result)
-    read_ids = [call["request_id"] for call in result["calls"][3:]]
-    if len(set(read_ids)) != len(read_ids) or (
-        read_ids and any("error_code" in call for call in result["calls"][:3])
-    ):
-        raise S3AccessError("worker read identity or unique request mapping is invalid")
-    return request, source, result
+    return request, source, validated_read(source, worker_result)
 
 
 def _correlate_projection(

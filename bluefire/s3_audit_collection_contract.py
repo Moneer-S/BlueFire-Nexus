@@ -255,9 +255,8 @@ def build_workflow(
 
 def original_pair(scope: S3AccessScope, value: Any) -> dict[str, Any]:
     """Validate raw read consistency; authenticated store/native joins are separate."""
-    # Wire may call this domain helper for the new discriminant in a later layer.
-    from .s3_access_audit import _validated_read
-    from .s3_access_wire import S3WorkerRequest
+    from .s3_access_wire_contract import request as ordinary_request
+    from .s3_audit_read_contract import validated_read
 
     row = document(value, limit=MAX_REQUEST_BYTES)
     exact(
@@ -326,14 +325,13 @@ def original_pair(scope: S3AccessScope, value: Any) -> dict[str, Any]:
             and original.get("operation") == reader + "_read",
             "audit requires an original business read request",
         )
-        request, raw, checked = _validated_read(
-            S3WorkerRequest.from_mapping(original), entry["result"]
-        )
+        raw = ordinary_request(original)
+        checked = validated_read(raw, entry["result"])
         _require(
             raw["schema_version"] == "bluefire.s3-worker-request.v1"
             and raw["operation"] == reader + "_read"
             and raw["scope"] == scope.to_dict()
-            and request.digest == entry["request_digest"]
+            and content_hash(raw) == entry["request_digest"]
             and content_hash(checked) == entry["worker_result_digest"],
             "original audit read request or result differs",
         )

@@ -13,13 +13,15 @@ pub(crate) const MAX_TOTAL: u64 = 512 * 1024 * 1024;
 // binds observed source bytes, not merely version labels or an ambient install.
 const SDK_INVENTORY: &str =
     "sha256:3a0b54afdb950def6428f2e0b837d254918757f3b0b145bfea376bc7ac68536b";
-pub(crate) const WORKER_FILES: [&str; 18] = [
+pub(crate) const WORKER_FILES: [&str; 20] = [
     "s3_access_runtime.py",
     "s3_access_worker_entry.py",
     "s3_access_contract.py",
     "s3_access_policy.py",
     "s3_access_wire.py",
+    "s3_access_wire_contract.py",
     "s3_access_audit.py",
+    "s3_audit_read_contract.py",
     "s3_audit_collection_contract.py",
     "s3_audit_wire.py",
     "s3_audit_send.py",
@@ -34,7 +36,7 @@ pub(crate) const WORKER_FILES: [&str; 18] = [
     "util.py",
 ];
 
-const WORKER_SOURCES: [(&str, &[u8]); 18] = [
+const WORKER_SOURCES: [(&str, &[u8]); 20] = [
     (
         "s3_access_runtime.py",
         include_bytes!("../../bluefire/s3_access_runtime.py"),
@@ -56,8 +58,16 @@ const WORKER_SOURCES: [(&str, &[u8]); 18] = [
         include_bytes!("../../bluefire/s3_access_wire.py"),
     ),
     (
+        "s3_access_wire_contract.py",
+        include_bytes!("../../bluefire/s3_access_wire_contract.py"),
+    ),
+    (
         "s3_access_audit.py",
         include_bytes!("../../bluefire/s3_access_audit.py"),
+    ),
+    (
+        "s3_audit_read_contract.py",
+        include_bytes!("../../bluefire/s3_audit_read_contract.py"),
     ),
     (
         "s3_audit_collection_contract.py",

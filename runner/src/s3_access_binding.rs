@@ -38,23 +38,7 @@ struct Request {
     audit: Option<audit::Collection>,
 }
 
-/// A finite operation description, not a send permit or execution capability.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct S3PlannedCall {
-    pub service: &'static str,
-    pub operation: &'static str,
-    pub role: &'static str,
-}
-
-impl S3PlannedCall {
-    fn new(service: &'static str, operation: &'static str, role: &'static str) -> Self {
-        Self {
-            service,
-            operation,
-            role,
-        }
-    }
-}
+pub use crate::s3_access_plan::S3PlannedCall;
 
 /// Only constructed through independent closed parsing of the worker's canonical data.
 #[derive(Clone)]
@@ -236,15 +220,6 @@ impl S3WorkerBinding {
         )?;
         Ok(digest)
     }
-    pub(crate) fn validate_fixture_observation(
-        &self,
-        data: &serde_json::Value,
-        calls: &[serde_json::Value],
-    ) -> Checked<()> {
-        self.fixture()
-            .ok_or("fixture operation is absent")?
-            .validate_observation(&self.request.scope, self.operation(), data, calls)
-    }
     pub(crate) fn api_limit(&self) -> u64 {
         self.request.scope.limits.api_calls
     }
@@ -293,45 +268,7 @@ impl S3WorkerBinding {
                 .operation_plan(self.scope(), 0)
                 .expect("validated audit plan");
         }
-        let selected = self.request.operation.as_str();
-        if let Some(fixture) = self.fixture() {
-            return fixture
-                .operations(selected)
-                .into_iter()
-                .map(|operation| {
-                    S3PlannedCall::new(
-                        if operation == "GetCallerIdentity" {
-                            "sts"
-                        } else {
-                            "s3"
-                        },
-                        operation,
-                        "controller",
-                    )
-                })
-                .collect();
-        }
-        let mut plan = vec![S3PlannedCall::new("sts", "GetCallerIdentity", "controller")];
-        if ["probe_read", "legitimate_read"].contains(&selected) {
-            let reader = if selected == "probe_read" {
-                "probe"
-            } else {
-                "legitimate"
-            };
-            plan.push(S3PlannedCall::new("sts", "AssumeRole", "controller"));
-            plan.push(S3PlannedCall::new("sts", "GetCallerIdentity", reader));
-            plan.push(S3PlannedCall::new("s3", "GetObject", reader));
-            if reader == "legitimate" {
-                plan.push(S3PlannedCall::new("s3", "GetObject", reader));
-            }
-        } else {
-            plan.push(S3PlannedCall::new("s3", "GetBucketPolicy", "controller"));
-            if !["inspect_policy", "reconcile_policy"].contains(&selected) {
-                plan.push(S3PlannedCall::new("s3", "PutBucketPolicy", "controller"));
-                plan.push(S3PlannedCall::new("s3", "GetBucketPolicy", "controller"));
-            }
-        }
-        plan
+        crate::s3_access_plan::ordinary_plan(self.operation(), self.fixture())
     }
 
     /// Exact safe resource projection for a one-based planned call, never permission.

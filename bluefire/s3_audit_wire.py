@@ -273,7 +273,7 @@ def discovery(value: Any, frame: Any, *, reservation_digest: str) -> dict[str, A
 def _read_correlation(
     original: Mapping[str, Any], value: Any, *, delivery_state: str, event_count: int
 ) -> None:
-    from .s3_access_audit import _ERROR_OUTCOMES, _EVENT_ID
+    from .s3_audit_read_contract import _ERROR_OUTCOMES, _EVENT_ID
 
     row = exact(
         value,
@@ -397,7 +397,7 @@ def _read_correlation(
 
 
 def validate_result(value: Any, result: Any) -> dict[str, Any]:
-    from .s3_access_wire import SAFE_ERROR_CODES, SAFE_REQUEST_ID
+    from .s3_access_wire_contract import SAFE_ERROR_CODES, SAFE_REQUEST_ID
 
     row = request(value)
     checked = document(result, limit=audit.MAX_FRAME_BYTES - 1)

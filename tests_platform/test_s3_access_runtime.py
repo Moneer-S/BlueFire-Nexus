@@ -111,6 +111,8 @@ def test_matching_version_labels_do_not_admit_different_sdk_bytes():
     "name",
     [
         "s3_access_audit.py",
+        "s3_access_wire_contract.py",
+        "s3_audit_read_contract.py",
         "s3_audit_collection_contract.py",
         "s3_audit_wire.py",
         "s3_audit_send.py",
