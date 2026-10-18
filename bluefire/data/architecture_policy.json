@@ -332,6 +332,7 @@
         "bluefire.comparison",
         "bluefire.comparison_dimensions",
         "bluefire.comparison_materiality",
+        "bluefire.comparison_s3",
         "bluefire.detection_lab",
         "bluefire.detection_context",
         "bluefire.detection_evaluations",

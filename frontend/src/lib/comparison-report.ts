@@ -1,7 +1,35 @@
-import type { ComparisonResponse } from "../types";
+import type { ComparisonResponse, S3AccessComparison, S3AccessComparisonAvailable, S3AccessComparisonCell } from "../types";
 
 function cell(value: unknown): string {
   return String(value ?? "Not reported").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replace(/[\\`*[\]|]/g, "\\$&").replace(/[\r\n]+/g, " ");
+}
+
+function s3Cell(value: S3AccessComparisonCell): string {
+  return `${cell(value.state)}; ${cell(value.provenance === null ? "Provenance not reported" : value.provenance)}; cleanup ${cell(value.cleanup)}; run ${cell(value.run_id)}`;
+}
+
+function s3Section(result: S3AccessComparison): string[] {
+  if (result.state === "unavailable") return [
+    "## S3 access outcomes",
+    "",
+    `Unavailable: ${cell(result.reason)}. No S3 outcomes are inferred.`,
+    "",
+  ];
+  const available: S3AccessComparisonAvailable = result;
+  return [
+    "## S3 access outcomes",
+    "",
+    `State: ${cell(available.state)}. Reported change: ${cell(available.change_state)}.`,
+    "Saved read results only; this comparison does not establish defensive effectiveness.",
+    "",
+    "| Reader / purpose | Baseline | Retest | Reported change |",
+    "| --- | --- | --- | --- |",
+    ...available.rows.map((row) => `| ${cell(row.reader)} / ${cell(row.purpose)} | ${s3Cell(row.baseline)} | ${s3Cell(row.retest)} | ${cell(row.changed)} |`),
+    "",
+    `Recorded gaps: ${available.gaps.length ? available.gaps.map(cell).join(", ") : "None reported"}.`,
+    `Workflow: ${cell(available.workflow_job_id)}. Scope digest: ${cell(available.scope_digest)}. Source digest: ${cell(available.source_digest)}.`,
+    "",
+  ];
 }
 
 /** A readable export of actual comparison fields, with no inferred defense success. */
@@ -52,6 +80,7 @@ export function comparisonReport(comparison: ComparisonResponse, names: Record<s
     "",
     "This report describes the retained run comparison. Simulate outcomes are synthetic. An unmet objective or a stopped step does not establish target prevention. Missing observations do not establish defense success.",
     "",
+    ...(comparison.s3_access ? s3Section(comparison.s3_access) : []),
     "Query evaluations and rule revisions are separate records. Export the selected detector comparison and revised rule from Compare detector results to include those measured results.",
     "",
     ...details,

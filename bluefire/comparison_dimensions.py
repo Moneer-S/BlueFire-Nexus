@@ -24,6 +24,58 @@ _IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
+def cleanup_summary(value: Any, step_success: bool | None) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {
+            "authoritative": False,
+            "source": "step_heuristic" if step_success is not None else "not_recorded",
+            "attempted": None,
+            "success": step_success,
+            "outstanding_receipt_count": None,
+            "state": (
+                "success"
+                if step_success is True
+                else "failed" if step_success is False else "unknown"
+            ),
+        }
+    attempted = value.get("attempted") if type(value.get("attempted")) is bool else None
+    success_value = value.get("success")
+    success = success_value if type(success_value) is bool else None
+    outstanding_value = value.get("outstanding_receipt_count")
+    outstanding = (
+        outstanding_value if type(outstanding_value) is int and outstanding_value >= 0 else None
+    )
+    structurally_authoritative = (
+        attempted is not None
+        and "success" in value
+        and (type(success_value) is bool or success_value is None)
+        and outstanding is not None
+    )
+    internally_consistent = bool(
+        (attempted is False and success is None and outstanding == 0)
+        or (attempted is True and ((success is True and outstanding == 0) or success is False))
+    )
+    step_consistent = step_success is None or success is step_success
+    authoritative = structurally_authoritative and internally_consistent and step_consistent
+    effective_success = success if authoritative else step_success
+    if attempted is False and outstanding == 0:
+        state = "not_attempted"
+    elif authoritative and success is True:
+        state = "verified_success"
+    elif authoritative and success is False:
+        state = "failed_or_incomplete"
+    else:
+        state = "contradictory" if structurally_authoritative else "unknown"
+    return {
+        "authoritative": authoritative,
+        "source": "run_result",
+        "attempted": attempted,
+        "success": effective_success,
+        "outstanding_receipt_count": outstanding,
+        "state": state,
+    }
+
+
 def summary_dimensions(
     snapshot: Mapping[str, Any],
     decisions: Sequence[Any],

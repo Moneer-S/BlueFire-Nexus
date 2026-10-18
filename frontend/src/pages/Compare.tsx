@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, buildReplayPayload, DEMO_MODE, type ReplayPreparation } from "../lib/api";
 import { hasMaterialDelta } from "../lib/comparison-materiality";
+import { checkedComparisonResponse } from "../lib/s3-comparison";
 import { hasReplayExtent, readPendingReplay, storePendingReplay, clearPendingReplay, settleReplayResolution } from "../lib/replay-submission";
 import { sameJson } from "../lib/replay-review";
 import { comparisonReport } from "../lib/comparison-report";
@@ -14,6 +15,7 @@ import { ReplayParameterEditor } from "../components/ReplayParameterEditor";
 import { CanonicalPlanReview } from "../components/CanonicalPlanReview";
 import { DetectorEvaluationComparison } from "../components/DetectorEvaluationComparison";
 import { MethodComparison } from "../components/MethodComparison";
+import { S3AccessComparisonResults } from "../components/S3AccessComparison";
 import { ReceiverDefensePage } from "./ReceiverDefense";
 import type { AutonomyLevel, ComparisonResponse, PreflightReport, RunConfiguration, RunRecord, Scenario } from "../types";
 import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, LoadingState, PageHeader, Panel, PanelHeader, formatDate, sentence } from "../components/Primitives";
@@ -90,7 +92,7 @@ function ComparisonWorkspace() {
     if (JSON.stringify(result.summaries.map((run) => run.run_id)) !== JSON.stringify(attempt.runIds)
       || JSON.stringify(result.run_ids) !== JSON.stringify(attempt.runIds)
       || result.baseline_run_id !== attempt.runIds[0]) throw new Error("The returned comparison does not match the selected runs. Refresh the history and compare again.");
-    return result;
+    return checkedComparisonResponse(result);
   }, onSuccess: (result, attempt) => {
     if (attempt.generation === comparisonGeneration.current) setComparison(result);
   } });
@@ -323,6 +325,7 @@ function resolvedActions(source?: RunRecord, omittedStep?: string) { const steps
 export function ComparisonResult({ comparison, names = {}, createdAt = {} }: { comparison: ComparisonResponse; names?: Record<string, string>; createdAt?: Record<string, string | undefined> }) {
   const baseline = comparison.summaries.find((item) => item.run_id === comparison.baseline_run_id) ?? comparison.summaries[0];
   const changed = comparison.deltas.filter(hasMaterialDelta).length;
+  const hasS3Projection = comparison.s3_access !== undefined;
   const comparedRunLabel = (runId: string) => `${runId === comparison.baseline_run_id ? "Baseline" : `Variant ${comparison.summaries.findIndex(item => item.run_id === runId)}`} · ${names[runId] ?? "Run"}`;
   const [reportUrl, setReportUrl] = useState<string>();
   const reportContent = useMemo(() => comparisonReport(comparison, names, createdAt), [comparison, names, createdAt]);
@@ -334,7 +337,7 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {} }: { c
   return <div className="comparison-results">
     <Panel className="comparison-outcomes">
       <PanelHeader title="Run outcomes" detail="Objective, observation, and cleanup are separate results. A stopped step alone does not establish target prevention." actions={reportUrl ? <a className="button button-secondary button-medium" href={reportUrl} download="bluefire-comparison.md">Download report</a> : null} />
-      <div className="comparison-context"><span>{comparison.run_ids.length} runs</span><span className="comparison-changes">Runs with meaningful changes <strong>{changed}</strong></span><span>{changed ? "Compared with the baseline; inspect the recorded differences below." : "No meaningful change reported against the baseline."}</span></div>
+      <div className="comparison-context"><span>{comparison.run_ids.length} runs</span><span className="comparison-changes">{hasS3Projection ? "Task-level changes reported" : "Runs with meaningful changes"} <strong>{changed}</strong></span><span>{hasS3Projection ? "Generic run-level comparison; S3 access outcomes are reported separately below." : changed ? "Compared with the baseline; inspect the recorded differences below." : "No meaningful change reported against the baseline."}</span></div>
       <div className="table-scroll" role="region" aria-label="Compared run outcomes" tabIndex={0}>
         <table><thead><tr><th scope="col">Run</th><th scope="col">Mode</th><th scope="col">Objective</th><th scope="col">Independent evidence</th><th scope="col">First stopped step</th><th scope="col">Cleanup</th></tr></thead>
           <tbody>{comparison.summaries.map((summary, index) => <tr key={summary.run_id}>
@@ -349,6 +352,7 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {} }: { c
       </div>
       <details className="comparison-identity"><summary>Comparison record</summary><code>{comparison.comparison_id}</code><p>Baseline: {baseline?.run_id ?? comparison.baseline_run_id}</p></details>
     </Panel>
+    {comparison.s3_access ? <S3AccessComparisonResults result={comparison.s3_access} /> : null}
     <details className="comparison-detail"><summary>Step-by-step results and run details</summary>
     <Panel><PanelHeader eyebrow="Path overlay" title="Side-by-side execution lanes" detail="Human-readable outcomes come first; each run links back to its canonical review."/><div className="compare-lanes">{comparison.summaries.map((summary, laneIndex) => <article key={summary.run_id}>
       <header><Badge tone={laneIndex === 0 ? "info" : "neutral"}>{laneIndex === 0 ? "Baseline" : `Variant ${laneIndex}`}</Badge><Link to={runReviewPath(summary.run_id)} aria-label={`Review ${laneIndex === 0 ? "baseline" : `variant ${laneIndex}`} execution lane`}>{names[summary.run_id] ?? "Run"}</Link></header>

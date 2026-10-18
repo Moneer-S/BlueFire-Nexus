@@ -1073,12 +1073,70 @@ export interface ComparisonDelta {
   signals?: string[];
 }
 
+export type S3AccessComparisonGap =
+  | "baseline_missing"
+  | "retest_missing"
+  | "baseline_selection_incomplete"
+  | "retest_selection_incomplete"
+  | "baseline_observations_incomplete"
+  | "retest_observations_incomplete"
+  | "cleanup_unresolved";
+
+export interface S3AccessComparisonCell {
+  run_id: string | null;
+  state: "read" | "service_denied" | "unreported" | "not_selected" | "not_recorded";
+  provenance: "synthetic" | "runner_reported" | null;
+  cleanup: "verified" | "unknown" | null;
+}
+
+export interface S3AccessComparisonRow {
+  reader: "probe" | "legitimate";
+  purpose: "primary" | "health";
+  baseline: S3AccessComparisonCell;
+  retest: S3AccessComparisonCell;
+  changed: boolean | null;
+}
+
+export interface S3AccessComparisonPhase {
+  operation_job_id: string;
+  run_ids: string[];
+  selection_complete: boolean;
+  observation_complete: boolean;
+  cleanup: "verified" | "unknown";
+}
+
+export interface S3AccessComparisonAvailable {
+  schema_version: "bluefire.s3-access-comparison.v1";
+  state: "paired" | "baseline_only" | "retest_only" | "partial";
+  workflow_job_id: string;
+  scope_digest: string;
+  source_digest: string;
+  baseline: S3AccessComparisonPhase | null;
+  retest: S3AccessComparisonPhase | null;
+  rows: [S3AccessComparisonRow, S3AccessComparisonRow, S3AccessComparisonRow];
+  change_state: "changed" | "unchanged" | "unknown";
+  gaps: S3AccessComparisonGap[];
+  proof_scope: "saved_read_results_only";
+  effective_access_claim: false;
+  defensive_effectiveness_claim: false;
+}
+
+export interface S3AccessComparisonUnavailable {
+  schema_version: "bluefire.s3-access-comparison.v1";
+  state: "unavailable";
+  reason: "mixed_selection" | "unsupported_operation" | "ambiguous_phase" | "incompatible_context" | "saved_context_unavailable" | "saved_binding_invalid";
+  proof_scope: "saved_read_results_only";
+}
+
+export type S3AccessComparison = S3AccessComparisonAvailable | S3AccessComparisonUnavailable;
+
 export interface ComparisonResponse {
   comparison_id: string;
   baseline_run_id: string;
   run_ids: string[];
   summaries: ComparisonSummary[];
   deltas: ComparisonDelta[];
+  s3_access?: S3AccessComparison;
 }
 
 export interface RunConfiguration {
