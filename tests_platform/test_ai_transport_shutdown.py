@@ -27,6 +27,40 @@ from tests_platform.test_ai_wire_runtime import _provider_config
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _linux_worker_state(worker_pid: int) -> str | None:
+    try:
+        return Path(f"/proc/{worker_pid}/stat").read_text().split(")", 1)[1].split()[0]
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError, ProcessLookupError])
+def test_linux_worker_state_treats_disappeared_process_as_gone(monkeypatch, error):
+    def read_text(_path, *args, **kwargs):
+        raise error()
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    assert _linux_worker_state(1234) is None
+
+
+@pytest.mark.parametrize(("state", "expected"), [("S", "S"), ("Z", "Z")])
+def test_linux_worker_state_preserves_live_and_zombie_states(monkeypatch, state, expected):
+    monkeypatch.setattr(Path, "read_text", lambda _path: f"1234 (worker process) {state} 1")
+
+    assert _linux_worker_state(1234) == expected
+
+
+def test_linux_worker_state_propagates_unexpected_read_errors(monkeypatch):
+    def read_text(_path, *args, **kwargs):
+        raise PermissionError("unexpected procfs read failure")
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    with pytest.raises(PermissionError, match="unexpected procfs read failure"):
+        _linux_worker_state(1234)
+
+
 def test_service_close_cancels_its_pending_checks_and_waits_for_worker_cleanup(
     tmp_path: Path,
     endpoint: tuple[str, threading.Event, list[str]],
@@ -228,9 +262,8 @@ sys.stdin.readline()
             # that process owns no socket or running code and is already done.
             end = time.monotonic() + 2.5
             while time.monotonic() < end:
-                try:
-                    state = Path(f"/proc/{worker_pid}/stat").read_text().split(")", 1)[1].split()[0]
-                except FileNotFoundError:
+                state = _linux_worker_state(worker_pid)
+                if state is None:
                     break
                 if state == "Z":
                     break
