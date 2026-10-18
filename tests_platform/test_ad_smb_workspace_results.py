@@ -313,6 +313,80 @@ def test_audit_projection_preserves_ambiguous_logon_correlation():
 
 
 @pytest.mark.parametrize(
+    "event_id,logon_field", [(4624, "TargetLogonId"), (5145, "SubjectLogonId")]
+)
+def test_zero_logon_id_is_valid_outside_scope_in_original_projection(event_id, logon_field):
+    from bluefire.ad_smb_results import validate_execution
+
+    workflow, channel = original("audit")
+    _, raw = audit_fixture()
+    event_xml = audit_event(
+        event_id,
+        when="2026-10-09T00:00:00.5000000Z",
+        fields={logon_field: "0x0"},
+    ).decode("utf-8")
+    raw["raw_events"] = [event_xml]
+    raw["utf8_bytes"] = len(event_xml.encode("utf-8"))
+    request = workflow["manifest"]["params"]["ad_smb_request"]
+
+    result = project(workflow, channel, timed_record(workflow, channel, raw))
+
+    row = result["observation"]["normalized_observation"]["events"][0]
+    assert row["binding"] == "outside_scope"
+    assert row["logon_id"] == "0x0"
+    assert "principal_sid" not in row
+    validate_execution(request, result)
+
+
+@pytest.mark.parametrize(
+    "event_id,sid_field,logon_field",
+    [(4624, "TargetUserSid", "TargetLogonId"), (5145, "SubjectUserSid", "SubjectLogonId")],
+)
+def test_zero_logon_id_is_valid_for_incomplete_original_projection(
+    event_id, sid_field, logon_field
+):
+    from bluefire.ad_smb_results import validate_execution
+
+    workflow, channel = original("audit")
+    _, raw = audit_fixture()
+    event_xml = audit_event(
+        event_id,
+        when="2026-10-09T00:00:00.5000000Z",
+        fields={sid_field: None, logon_field: "0x0"},
+    ).decode("utf-8")
+    raw["raw_events"] = [event_xml]
+    raw["utf8_bytes"] = len(event_xml.encode("utf-8"))
+    request = workflow["manifest"]["params"]["ad_smb_request"]
+
+    result = project(workflow, channel, timed_record(workflow, channel, raw))
+
+    row = result["observation"]["normalized_observation"]["events"][0]
+    assert row["binding"] == "incomplete"
+    assert row["logon_id"] == "0x0"
+    assert "principal_sid" not in row
+    validate_execution(request, result)
+
+
+@pytest.mark.parametrize("event_id", [4624, 5145])
+def test_zero_logon_id_remains_forbidden_for_matched_saved_rows(event_id):
+    from bluefire.ad_smb_results import validate_execution
+
+    workflow, channel = original("audit")
+    _, raw = audit_fixture()
+    event_xml = audit_event(event_id, when="2026-10-09T00:00:00.5000000Z").decode("utf-8")
+    raw["raw_events"] = [event_xml]
+    raw["utf8_bytes"] = len(event_xml.encode("utf-8"))
+    request = workflow["manifest"]["params"]["ad_smb_request"]
+    result = project(workflow, channel, timed_record(workflow, channel, raw))
+    row = result["observation"]["normalized_observation"]["events"][0]
+    assert row["binding"] == "matched"
+    row["logon_id"] = "0x0"
+
+    with pytest.raises(AdSmbError, match="logon identity"):
+        validate_execution(request, result)
+
+
+@pytest.mark.parametrize(
     "raw_events",
     [
         ["<Event />"],

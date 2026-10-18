@@ -106,12 +106,14 @@ def _validate_event(
     if not start <= observed <= end:
         raise AdSmbError("Normalized AD event time is outside the captured window.")
     digest(row["raw_sha256"])
-    if "logon_id" in row and (
-        not isinstance(row["logon_id"], str)
-        or re.fullmatch(r"0x[0-9a-f]{1,16}", row["logon_id"]) is None
-        or int(row["logon_id"], 16) == 0
-    ):
-        raise AdSmbError("Normalized AD audit logon identity is invalid.")
+    if "logon_id" in row:
+        logon_id = row["logon_id"]
+        if (
+            not isinstance(logon_id, str)
+            or re.fullmatch(r"0x[0-9a-f]{1,16}", logon_id) is None
+            or (int(logon_id, 16) == 0 and (logon_id != "0x0" or row["binding"] == "matched"))
+        ):
+            raise AdSmbError("Normalized AD audit logon identity is invalid.")
     matched = row["binding"] == "matched"
     if not matched and not set(row) <= common | {"logon_id"}:
         raise AdSmbError("Unmatched AD audit event exposes projected identity fields.")
