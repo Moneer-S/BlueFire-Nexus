@@ -1281,3 +1281,12 @@ input:not([type="checkbox"]):not([type="radio"]), select { font-size: .875rem; }
 .compare-page .history-panel .history-search, .compare-page .run-select-list { padding-left: 0; padding-right: 0; }
 .compare-page .replay-body { padding-left: 0; padding-right: 0; }
 .compare-page .method-comparison { margin-top: 20px; }
+.compare-page .saved-comparisons-panel { border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.saved-comparisons-list { display: grid; max-height: 192px; gap: 0; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.saved-comparisons-list li { border-top: 1px solid var(--line); }
+.saved-comparison-link { display: flex; width: 100%; min-height: 52px; align-items: center; justify-content: space-between; gap: 14px; padding: 8px 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.saved-comparison-link:hover, .saved-comparison-link[aria-current="page"] { color: var(--blue-soft); }
+.saved-comparison-link span { display: grid; gap: 3px; min-width: 0; }
+.saved-comparison-link strong { font-size: .875rem; }
+.saved-comparison-link small, .saved-comparison-link code { color: var(--muted); font-size: .75rem; overflow-wrap: anywhere; }
+.saved-comparison-link:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }

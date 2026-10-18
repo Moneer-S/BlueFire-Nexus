@@ -29,6 +29,7 @@ from . import product_store_capability_api as capability_store_api
 from . import product_store_detection_evaluations as detection_evaluation_store
 from . import product_store_file_access as file_access_store
 from . import product_store_proposal_reviews as proposal_review_store
+from .comparison_snapshot_store import list_legacy_resources, reject_generic_resource_write
 from .contracts import ScenarioDefinition
 from .local_lock import (
     LocalLockError,
@@ -1200,6 +1201,7 @@ class ProductStore(
         if kind not in _RESOURCE_KINDS:
             raise ProductStoreError("resource kind is unsupported")
         stable_id = _identifier(resource_id, f"{kind} ID")
+        reject_generic_resource_write(kind, stable_id, document)
         persisted_status = "draft" if kind == "research_source" else "ready"
         if status is not None:
             persisted_status = status
@@ -1456,6 +1458,8 @@ class ProductStore(
         return rows[0] if rows else None
 
     def list_resources(self, kind: str) -> list[Mapping[str, Any]]:
+        if kind == "comparison":
+            return list_legacy_resources(self)
         return self._resource_rows(kind)
 
     def _resource_rows(

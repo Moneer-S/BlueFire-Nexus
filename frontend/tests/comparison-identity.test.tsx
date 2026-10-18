@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
+import * as Tooltip from "@radix-ui/react-tooltip";
 import { afterEach, expect, it, vi } from "vitest";
 import { ComparePage } from "../src/pages/Compare";
 import { DetectionLabPage } from "../src/pages/DetectionLab";
@@ -14,7 +15,7 @@ import capture from "../../tests_platform/fixtures/s3_comparison_v1.json";
 
 function mount(path: string, page: React.ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}>{page}</MemoryRouter></QueryClientProvider>);
+  return render(<QueryClientProvider client={client}><Tooltip.Provider><MemoryRouter initialEntries={[path]}>{page}</MemoryRouter></Tooltip.Provider></QueryClientProvider>);
 }
 function NavigationProbe() {
   const location = useLocation();
@@ -29,6 +30,7 @@ function baseMocks() {
   vi.spyOn(api, "catalog").mockResolvedValue(demoCatalog);
   vi.spyOn(api, "runDetail").mockImplementation(async (id) => demoRuns.find((run) => run.run_id === id)!);
   vi.spyOn(api, "detections").mockResolvedValue({ schema_version: "v1", candidates: [] });
+  vi.spyOn(api, "comparisonSnapshots").mockResolvedValue({ snapshots: [] });
 }
 afterEach(() => { vi.restoreAllMocks(); });
 
@@ -95,6 +97,14 @@ it("hides the prior comparison and its report when a later captured S3 response 
   if (!runsRoute) throw new Error("The backend capture has no saved run-list response.");
   const actualRunList = JSON.parse(runsRoute.body_utf8) as Awaited<ReturnType<typeof api.runs>>;
   vi.mocked(api.runs).mockResolvedValue(actualRunList);
+  const snapshotListRoute = document.browser.routes.find((route) => route.path === "/api/v1/comparison-snapshots");
+  const snapshotId = captured.saved_snapshot?.snapshot_id;
+  const snapshotDetailRoute = snapshotId
+    ? document.browser.routes.find((route) => route.path === `/api/v1/comparison-snapshots/${snapshotId}`)
+    : undefined;
+  if (!snapshotListRoute || !snapshotDetailRoute) throw new Error("The backend capture has no saved snapshot list/detail responses.");
+  vi.mocked(api.comparisonSnapshots).mockResolvedValue(JSON.parse(snapshotListRoute.body_utf8) as Awaited<ReturnType<typeof api.comparisonSnapshots>>);
+  const readSnapshot = vi.spyOn(api, "comparisonSnapshot").mockResolvedValue(JSON.parse(snapshotDetailRoute.body_utf8) as Awaited<ReturnType<typeof api.comparisonSnapshot>>);
   const malformed: ComparisonResponse = {
     ...captured,
     s3_access: { ...captured.s3_access, baseline: { ...captured.s3_access.baseline!, selection_complete: false } },
@@ -105,7 +115,13 @@ it("hides the prior comparison and its report when a later captured S3 response 
   await user.click(screen.getByRole("button", { name: "Compare selected" }));
   expect(await screen.findByRole("link", { name: "Download report" })).toBeVisible();
   expect(screen.getByRole("region", { name: "Comparison results" })).toBeVisible();
+  await waitFor(() => expect(readSnapshot).toHaveBeenCalledWith(snapshotId));
+  await waitFor(() => expect(screen.getByRole("button", { name: `Open saved comparison ${snapshotId}` })).toHaveAttribute("aria-current", "page"));
+  await screen.findByRole("heading", { name: "Current detector evaluations" });
 
+  await user.click(screen.getByText("Choose different runs or prepare a replay"));
+  expect(screen.getByRole("region", { name: "Comparison results" })).toBeVisible();
+  expect(screen.getByRole("link", { name: "Download report" })).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Compare selected" }));
   expect(await screen.findByText(/S3 access comparison is invalid/)).toBeVisible();
   expect(screen.queryByRole("region", { name: "Comparison results" })).not.toBeInTheDocument();

@@ -26,6 +26,7 @@ from tests_platform.test_s3_comparison import stable_identities as stable_identi
 
 FIXTURE = Path(__file__).with_name("fixtures") / "s3_comparison_v1.json"
 MAX_CAPTURE_BYTES = 8 * 1024 * 1024
+COMPARISON_CAPTURE_TIMEOUT = 10
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +42,9 @@ def local_transport_only(monkeypatch):
 
 
 def capture(server, method, path, body=None):
-    status, headers, raw = request(server, method, path, body=body)
+    # Saved comparisons verify source bundles before and after producing the report.
+    timeout = COMPARISON_CAPTURE_TIMEOUT if (method, path) == ("POST", "/api/v1/comparisons") else 3
+    status, headers, raw = request(server, method, path, body=body, timeout=timeout)
     assert status == 200, (method, path, status)
     assert len(raw) <= MAX_CAPTURE_BYTES
     assert headers["Content-Type"].startswith("application/json")
@@ -53,6 +56,28 @@ def capture(server, method, path, body=None):
         "content_type": headers["Content-Type"],
         "body_utf8": raw.decode("utf-8"),
     }
+
+
+@pytest.mark.parametrize(
+    "method,path,expected_timeout",
+    [
+        ("POST", "/api/v1/comparisons", COMPARISON_CAPTURE_TIMEOUT),
+        ("GET", "/api/v1/comparison-snapshots", 3),
+        ("GET", "/api/v1/comparisons", 3),
+    ],
+)
+def test_capture_timeout_is_scoped_to_comparison_creation(
+    monkeypatch, method, path, expected_timeout
+):
+    calls = []
+
+    def recorded_request(server, method, path, *, body, timeout):
+        calls.append(timeout)
+        return 200, {"Content-Type": "application/json"}, b"{}"
+
+    monkeypatch.setitem(capture.__globals__, "request", recorded_request)
+    assert capture(object(), method, path)["body_utf8"] == "{}"
+    assert calls == [expected_timeout]
 
 
 def compare_case(server, name, identifiers):
@@ -71,7 +96,11 @@ def test_authenticated_compare_route_joins_saved_results_and_has_no_effects(
         executor.environments = executor.readiness = executor.execute = forbidden
         with running_server(app) as (server, _):
             status, _, raw = request(
-                server, "POST", "/api/v1/comparisons", body={"run_ids": identifiers}
+                server,
+                "POST",
+                "/api/v1/comparisons",
+                body={"run_ids": identifiers},
+                timeout=COMPARISON_CAPTURE_TIMEOUT,
             )
             assert status == 200 and json_body(raw) == expected
         assert server.socket.fileno() == -1
@@ -114,6 +143,18 @@ def produce_contract(root):
                 case, route = compare_case(server, name, selected)
                 cases.append(case)
                 routes.append(route)
+                if name == "paired_denied":
+                    snapshot_id = case["response"]["saved_snapshot"]["snapshot_id"]
+                    routes.extend(
+                        [
+                            capture(server, "GET", "/api/v1/comparison-snapshots"),
+                            capture(
+                                server,
+                                "GET",
+                                f"/api/v1/comparison-snapshots/{snapshot_id}",
+                            ),
+                        ]
+                    )
             saved_jobs = app.s3_access
             try:
                 app.s3_access = None
@@ -175,11 +216,12 @@ def test_actual_api_contract_fixture(tmp_path, stable_identities):
         "X-BlueFire-Browser-Bootstrap",
     ):
         assert forbidden_value not in encoded.decode("utf-8")
+    fixture_path = Path(os.environ.get("BLUEFIRE_S3_COMPARISON_FIXTURE_PATH", str(FIXTURE)))
     if os.environ.get("BLUEFIRE_WRITE_S3_COMPARISON_FIXTURE") == "1":
-        FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-        with FIXTURE.open("xb") as target:
+        fixture_path.parent.mkdir(parents=True, exist_ok=True)
+        with fixture_path.open("xb") as target:
             target.write(encoded)
     assert (
-        FIXTURE.is_file()
-    ), "Generate the actual response fixture with BLUEFIRE_WRITE_S3_COMPARISON_FIXTURE=1."
-    assert json.loads(FIXTURE.read_text(encoding="utf-8")) == document
+        fixture_path.is_file()
+    ), "Generate actual response bytes with BLUEFIRE_WRITE_S3_COMPARISON_FIXTURE=1."
+    assert json.loads(fixture_path.read_text(encoding="utf-8")) == document

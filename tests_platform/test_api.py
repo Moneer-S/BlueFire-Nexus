@@ -721,6 +721,14 @@ class StubService:
         self.calls.append(("compare", request))
         return {"run_ids": request.get("run_ids", []), "status": "complete"}
 
+    def comparison_snapshots(self) -> Mapping[str, Any]:
+        self.calls.append(("comparison_snapshots",))
+        return {"snapshots": []}
+
+    def comparison_snapshot(self, snapshot_id: str) -> Mapping[str, Any]:
+        self.calls.append(("comparison_snapshot", snapshot_id))
+        return {"snapshot_id": snapshot_id}
+
 
 @contextmanager
 def running_server(
@@ -770,9 +778,10 @@ def request(
     origin: str | None = "same",
     extra_headers: Mapping[str, str] | None = None,
     authenticated: bool = True,
+    timeout: float = 3,
 ) -> tuple[int, Mapping[str, str], bytes]:
     port = server.server_address[1]
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
     payload = (
         None if body is None else (body if isinstance(body, bytes) else json.dumps(body).encode())
     )

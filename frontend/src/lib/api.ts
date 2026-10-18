@@ -5,7 +5,7 @@ import type { AILiveAuthorization, AILiveAuthorizationList, AILiveAuthorizationR
 import type { RunnerUpgradeReview } from "./runner-upgrade";
 import type { ReceiverContext, ReceiverContextRequest, ReceiverControlDecision, ReceiverDecision, ReceiverDefenseEnvelope, ReceiverPhase, ReceiverTestList } from "./receiver-defense-types";
 import type { RunDetectionSelection, DetectionCreationSource, DetectionCreationEnvelope, DetectionCreationDecision, DetectionCreationValidation } from "./detection-creation";
-import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionRunEvaluation, DetectionCaseRole, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunPresentation, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
+import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, SavedComparisonSnapshot, SavedComparisonSummary, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionRunEvaluation, DetectionCaseRole, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunPresentation, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
 import { approvalDeadline, hasAdaptiveApprovalReview, requiresAdaptiveReview, storedRunApprovalPreflight } from "./approvalReview";
 import { isRunPresentation } from "./runPresentation";
 import { sameJson } from "./replay-review";
@@ -857,6 +857,14 @@ export const api = {
   async compare(runIds: string[]): Promise<ComparisonResponse> {
     if (DEMO_MODE) return compareDemoRuns(runIds);
     return request("/comparisons", { method: "POST", body: JSON.stringify({ run_ids: runIds }) });
+  },
+  async comparisonSnapshots(): Promise<{ snapshots: SavedComparisonSummary[] }> {
+    if (DEMO_MODE) return { snapshots: [] };
+    return request("/comparison-snapshots");
+  },
+  async comparisonSnapshot(snapshotId: string): Promise<SavedComparisonSnapshot> {
+    if (DEMO_MODE) throw new ApiError("Demo mode has no saved comparison snapshots.", "comparison_snapshot_not_found", undefined, 404);
+    return request(`/comparison-snapshots/${encodeURIComponent(snapshotId)}`);
   },
   async methodComparisonContext(runId: string): Promise<MethodContext> {
     if (DEMO_MODE) throw new ApiError("Use a connected run with independent observations to compare methods.", "demo_method_comparison_refused", undefined, 409);

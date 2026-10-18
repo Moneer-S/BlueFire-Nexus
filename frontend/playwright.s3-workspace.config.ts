@@ -20,7 +20,7 @@ if (existsSync(join(output, "playwright.json"))) throw new Error("The synthetic 
 
 export default defineConfig({
   testDir: "./tests/e2e",
-  testMatch: "s3-workspace-production.spec.ts",
+  testMatch: ["s3-workspace-production.spec.ts", "s3-comparison-snapshots-production.spec.ts"],
   globalSetup: "./tests/s3-browser-setup.ts",
   timeout: 90_000,
   globalTimeout: 240_000,
