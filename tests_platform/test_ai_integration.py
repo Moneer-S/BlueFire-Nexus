@@ -4,6 +4,7 @@ import hashlib
 import json
 import shutil
 import tempfile
+import threading
 from dataclasses import replace
 from pathlib import Path
 from time import monotonic
@@ -323,6 +324,43 @@ class AlternateProposalProvider:
         )
 
 
+class _AssistPipelineStageTrace:
+    _MAX_EVENTS = 64
+    _ALLOWED = {
+        "job.submitting",
+        "provider.entered",
+        "provider.returned",
+        "service_run.entered",
+        "service_run.returned",
+        "review_persist.entered",
+        "review_persist.returned",
+    }
+
+    def __init__(self) -> None:
+        self._started = monotonic()
+        self._lock = threading.Lock()
+        self._events: list[tuple[str, float]] = []
+
+    def mark(self, stage: str) -> None:
+        if stage not in self._ALLOWED:
+            raise ValueError("unknown assist pipeline stage")
+        with self._lock:
+            if len(self._events) == self._MAX_EVENTS:
+                del self._events[0]
+            self._events.append((stage, monotonic() - self._started))
+
+    def snapshot(self) -> tuple[tuple[str, float], ...]:
+        with self._lock:
+            return tuple(self._events)
+
+    def failure_summary(self) -> str:
+        events = self.snapshot()
+        if not events:
+            return "last_stage=none"
+        stage, elapsed = events[-1]
+        return f"last_stage={stage}; last_stage_elapsed={elapsed:.3f}s"
+
+
 class RepeatingTransport:
     def __init__(self, payload: bytes) -> None:
         self.payload = payload
@@ -581,6 +619,7 @@ def _wait_for_proposal_approval(
     *,
     diagnostic_stage: str | None = None,
     add_report_section: Callable[[str, str, str], None] | None = None,
+    stage_trace: _AssistPipelineStageTrace | None = None,
 ) -> Mapping[str, Any]:
     started = monotonic()
     try:
@@ -598,6 +637,21 @@ def _wait_for_proposal_approval(
             )
     except JobWaitTimeout:
         elapsed = monotonic() - started
+        if stage_trace is not None and add_report_section is not None:
+            try:
+                add_report_section(
+                    "call",
+                    "Assist pipeline stages",
+                    json.dumps(
+                        [
+                            {"stage": stage, "elapsed_seconds": round(offset, 3)}
+                            for stage, offset in stage_trace.snapshot()
+                        ],
+                        sort_keys=True,
+                    ),
+                )
+            except BaseException:
+                pass
         state = phase = "unavailable"
         try:
             snapshot = service.job_controller.snapshot(job_id)
@@ -612,10 +666,12 @@ def _wait_for_proposal_approval(
                 state = observed_state
             if isinstance(observed_phase, str) and observed_phase in known_states:
                 phase = observed_phase
-    pytest.fail(
-        f"Approval wait failed: limit=5s; elapsed={elapsed:.2f}s; state={state}; phase={phase}.",
-        pytrace=False,
-    )
+        trace_summary = f"; {stage_trace.failure_summary()}" if stage_trace is not None else ""
+        pytest.fail(
+            "Approval wait failed: limit=5s; "
+            f"elapsed={elapsed:.2f}s; state={state}; phase={phase}{trace_summary}.",
+            pytrace=False,
+        )
 
 
 @pytest.mark.parametrize(
@@ -646,6 +702,9 @@ def test_assist_approval_wait_reports_before_failure_and_keeps_five_second_bound
     service = SimpleNamespace(job_controller=Controller())
     report_sections = []
     cleanup = []
+    stage_trace = _AssistPipelineStageTrace()
+    stage_trace.mark("provider.entered")
+    stage_trace.mark("review_persist.entered")
 
     def add_report_section(*args):
         if sink_fails:
@@ -659,23 +718,57 @@ def test_assist_approval_wait_reports_before_failure_and_keeps_five_second_bound
                 private_marker,
                 diagnostic_stage=stage,
                 add_report_section=add_report_section,
+                stage_trace=stage_trace,
             )
     finally:
         cleanup.append("service-close")
 
     assert "state=running; phase=running" in str(caught.value)
     assert private_marker not in str(caught.value)
+    assert "last_stage=review_persist.entered" in str(caught.value)
     assert wait_calls == [(private_marker, {JobState.AWAITING_APPROVAL}, 5)]
     assert snapshots == [private_marker]
     assert cleanup == ["service-close"]
     if sink_fails:
         assert report_sections == []
         return
-    assert len(report_sections) == 1
-    when, title, payload = report_sections[0]
-    assert (when, title) == ("call", "Job wait diagnostic")
-    assert private_marker not in payload
-    assert json.loads(payload)["stage"] == stage
+    assert len(report_sections) == 2
+    diagnostic = report_sections[0]
+    assert diagnostic[:2] == ("call", "Job wait diagnostic")
+    assert private_marker not in diagnostic[2]
+    assert json.loads(diagnostic[2])["stage"] == stage
+    trace_section = report_sections[1]
+    assert trace_section[:2] == ("call", "Assist pipeline stages")
+    assert private_marker not in trace_section[2]
+    trace_events = json.loads(trace_section[2])
+    assert [event["stage"] for event in trace_events] == [
+        "provider.entered",
+        "review_persist.entered",
+    ]
+    assert all(
+        set(event) == {"stage", "elapsed_seconds"}
+        and isinstance(event["elapsed_seconds"], (int, float))
+        for event in trace_events
+    )
+
+
+def test_assist_pipeline_stage_trace_is_bounded_and_success_wait_is_unchanged():
+    trace = _AssistPipelineStageTrace()
+    for _ in range(trace._MAX_EVENTS + 1):
+        trace.mark("provider.entered")
+    assert len(trace.snapshot()) == trace._MAX_EVENTS
+
+    result = {"state": "awaiting_approval"}
+
+    class Controller:
+        def wait_for_state(self, job_id, states, *, timeout):
+            assert job_id == "job-safe-id"
+            assert states == {JobState.AWAITING_APPROVAL}
+            assert timeout == 5
+            return result
+
+    service = SimpleNamespace(job_controller=Controller())
+    assert _wait_for_proposal_approval(service, "job-safe-id", stage_trace=trace) is result
 
 
 def test_off_never_constructs_or_calls_a_proposal_provider(tmp_path: Path) -> None:
@@ -970,19 +1063,62 @@ def test_assist_proposal_acceptance_replans_and_resumes_simulate_job(tmp_path: P
 def test_assist_proposal_rejection_and_cancellation_do_not_resume(
     tmp_path: Path,
     request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    active_trace: _AssistPipelineStageTrace | None = None
+
     def factory(config: AIConfig, provider_id: str) -> AlternateProposalProvider:
-        return AlternateProposalProvider(config.provider(provider_id))
+        class ObservedAlternateProposalProvider(AlternateProposalProvider):
+            def propose(self, proposal_request: AIProposalRequest) -> AIProviderResult:
+                trace = active_trace
+                if trace is not None:
+                    trace.mark("provider.entered")
+                result = super().propose(proposal_request)
+                if trace is not None:
+                    trace.mark("provider.returned")
+                return result
+
+        return ObservedAlternateProposalProvider(config.provider(provider_id))
 
     service = BlueFireService(
         project_root=ROOT,
         runs_dir=tmp_path / "runs",
         ai_provider_factory=factory,
     )
+    service_run = service.run
+    create_review = service.product_store.create_ai_proposal_review
+
+    def observed_run(run_request: Mapping[str, Any], **kwargs: Any) -> Mapping[str, Any]:
+        trace = active_trace
+        if trace is not None:
+            trace.mark("service_run.entered")
+        result = service_run(run_request, **kwargs)
+        if trace is not None:
+            trace.mark("service_run.returned")
+        return result
+
+    def observed_create_review(*args: Any, **kwargs: Any) -> Mapping[str, Any]:
+        trace = active_trace
+        if trace is not None:
+            trace.mark("review_persist.entered")
+        result = create_review(*args, **kwargs)
+        if trace is not None:
+            trace.mark("review_persist.returned")
+        return result
+
+    monkeypatch.setattr(service, "run", observed_run)
+    monkeypatch.setattr(
+        service.product_store,
+        "create_ai_proposal_review",
+        observed_create_review,
+    )
 
     try:
 
         def pending_job(diagnostic_stage: str) -> tuple[str, Mapping[str, Any]]:
+            nonlocal active_trace
+            active_trace = _AssistPipelineStageTrace()
+            active_trace.mark("job.submitting")
             submission = service.submit_run(_request("assist"))
             job_id = str(submission["job"]["job_id"])
             awaiting = _wait_for_proposal_approval(
@@ -990,6 +1126,7 @@ def test_assist_proposal_rejection_and_cancellation_do_not_resume(
                 job_id,
                 diagnostic_stage=diagnostic_stage,
                 add_report_section=request.node.add_report_section,
+                stage_trace=active_trace,
             )
             review = service.proposal_review(
                 job_id,
