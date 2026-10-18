@@ -76,6 +76,8 @@ Do not expose this API through a reverse proxy, tunnel, port forward, or contain
 | GET | `/api/v1/runs/{run_id}/events` | Cursor-paginated run events |
 | POST | `/api/v1/runs/{run_id}/replays` | Create a lineage-linked replay (`201`) |
 | POST | `/api/v1/comparisons` | Compare two or more runs |
+| GET | `/api/v1/comparison-snapshots` | List recent immutable run-comparison snapshots |
+| GET | `/api/v1/comparison-snapshots/{snapshot_id}` | Reopen a saved comparison and check current source-bundle integrity |
 
 The service maintains a migrated local SQLite product store and exposes its schema/seed/restart-recovery summary in `catalog.product_state`. Settings, saved scenario versions, and allowlisted resource documents can be managed through the routes above. The ProductStore remains authoritative for recursive plaintext-secret rejection and content-addressed scenario versioning; the underlying Python store is not an implied public API.
 

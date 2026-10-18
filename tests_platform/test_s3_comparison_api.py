@@ -114,6 +114,18 @@ def produce_contract(root):
                 case, route = compare_case(server, name, selected)
                 cases.append(case)
                 routes.append(route)
+                if name == "paired_denied":
+                    snapshot_id = case["response"]["saved_snapshot"]["snapshot_id"]
+                    routes.extend(
+                        [
+                            capture(server, "GET", "/api/v1/comparison-snapshots"),
+                            capture(
+                                server,
+                                "GET",
+                                f"/api/v1/comparison-snapshots/{snapshot_id}",
+                            ),
+                        ]
+                    )
             saved_jobs = app.s3_access
             try:
                 app.s3_access = None
@@ -175,11 +187,12 @@ def test_actual_api_contract_fixture(tmp_path, stable_identities):
         "X-BlueFire-Browser-Bootstrap",
     ):
         assert forbidden_value not in encoded.decode("utf-8")
+    fixture_path = Path(os.environ.get("BLUEFIRE_S3_COMPARISON_FIXTURE_PATH", str(FIXTURE)))
     if os.environ.get("BLUEFIRE_WRITE_S3_COMPARISON_FIXTURE") == "1":
-        FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-        with FIXTURE.open("xb") as target:
+        fixture_path.parent.mkdir(parents=True, exist_ok=True)
+        with fixture_path.open("xb") as target:
             target.write(encoded)
     assert (
-        FIXTURE.is_file()
-    ), "Generate the actual response fixture with BLUEFIRE_WRITE_S3_COMPARISON_FIXTURE=1."
-    assert json.loads(FIXTURE.read_text(encoding="utf-8")) == document
+        fixture_path.is_file()
+    ), "Generate actual response bytes with BLUEFIRE_WRITE_S3_COMPARISON_FIXTURE=1."
+    assert json.loads(fixture_path.read_text(encoding="utf-8")) == document

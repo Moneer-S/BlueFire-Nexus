@@ -17,8 +17,8 @@ import { DetectorEvaluationComparison } from "../components/DetectorEvaluationCo
 import { MethodComparison } from "../components/MethodComparison";
 import { S3AccessComparisonResults } from "../components/S3AccessComparison";
 import { ReceiverDefensePage } from "./ReceiverDefense";
-import type { AutonomyLevel, ComparisonResponse, PreflightReport, RunConfiguration, RunRecord, Scenario } from "../types";
-import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, LoadingState, PageHeader, Panel, PanelHeader, formatDate, sentence } from "../components/Primitives";
+import type { AutonomyLevel, ComparisonResponse, PreflightReport, RunConfiguration, RunRecord, SavedComparisonSnapshot, Scenario } from "../types";
+import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, IconButton, LoadingState, PageHeader, Panel, PanelHeader, formatDate, sentence } from "../components/Primitives";
 
 type ReplayStrategy = "exact" | "from_node" | "swap" | "parameters" | "setup";
 const defaultParameterJson = "{}";
@@ -65,7 +65,20 @@ function ComparisonWorkspace() {
   const comparisonContext = useMemo(() => readComparisonContext(searchParams), [searchParams]);
   const selected = comparisonContext.runIds;
   const selectionKey = JSON.stringify(selected);
+  const snapshotId = searchParams.get("snapshot") ?? "";
   const runsQuery = useQuery({ queryKey: ["runs"], queryFn: api.runs }); const catalogQuery = useQuery({ queryKey: ["catalog"], queryFn: api.catalog }); const client = useQueryClient();
+  const savedComparisonsQuery = useQuery({ queryKey: ["comparison-snapshots"], queryFn: api.comparisonSnapshots, enabled: !DEMO_MODE });
+  const savedSnapshotQuery = useQuery({
+    queryKey: ["comparison-snapshot", snapshotId],
+    queryFn: async (): Promise<SavedComparisonSnapshot> => {
+      const snapshot = await api.comparisonSnapshot(snapshotId);
+      if (snapshot.snapshot_id !== snapshotId || snapshot.comparison.baseline_run_id !== snapshot.comparison.run_ids[0]
+        || JSON.stringify(snapshot.comparison.summaries.map((run) => run.run_id)) !== JSON.stringify(snapshot.comparison.run_ids))
+        throw new Error("The saved comparison does not match its recorded run identities.");
+      return { ...snapshot, comparison: checkedComparisonResponse(snapshot.comparison) };
+    },
+    enabled: Boolean(snapshotId),
+  });
   const runIdentityCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const run of runsQuery.data?.runs ?? []) counts.set(run.run_id, (counts.get(run.run_id) ?? 0) + 1);
@@ -86,6 +99,7 @@ function ComparisonWorkspace() {
   useEffect(() => { if (resolutionNotice) replayChoiceRef.current?.focus(); }, [resolutionNotice]);
   useEffect(() => () => { navigationGeneration.current += 1; preflightGeneration.current += 1; comparisonGeneration.current += 1; }, []);
   useEffect(() => { if (comparison) { resultsRef.current?.focus({ preventScroll: true }); resultsRef.current?.scrollIntoView({ block: "start" }); } }, [comparison]);
+  useEffect(() => { comparisonGeneration.current += 1; setComparison(undefined); }, [snapshotId]);
   const detailQuery = useQuery({ queryKey: ["run", sourceId], queryFn: () => api.runDetail(sourceId), enabled: Boolean(sourceId) });
   const compareMutation = useMutation({ mutationFn: async (attempt: ComparisonAttempt) => {
     const result = await api.compare(attempt.runIds);
@@ -94,7 +108,12 @@ function ComparisonWorkspace() {
       || result.baseline_run_id !== attempt.runIds[0]) throw new Error("The returned comparison does not match the selected runs. Refresh the history and compare again.");
     return checkedComparisonResponse(result);
   }, onSuccess: (result, attempt) => {
-    if (attempt.generation === comparisonGeneration.current) setComparison(result);
+    if (attempt.generation !== comparisonGeneration.current) return;
+    setComparison(result);
+    if (result.saved_snapshot?.snapshot_id) {
+      setSearchParams((current) => { const next = new URLSearchParams(current); next.set("snapshot", result.saved_snapshot!.snapshot_id); return next; });
+      void client.invalidateQueries({ queryKey: ["comparison-snapshots"] });
+    }
   } });
   const source = detailQuery.data ?? runsQuery.data?.runs.find((run) => run.run_id === sourceId);
   const changeSelection = (runId: string, checked: boolean) => {
@@ -102,7 +121,7 @@ function ComparisonWorkspace() {
     comparisonGeneration.current += 1;
     setComparison(undefined);
     const runIds = checked ? [...new Set([...selected, runId])] : selected.filter(id => id !== runId);
-    setSearchParams(current => writeComparisonContext(current, { runIds, baselineId: runIds.length >= 2 ? comparisonContext.baselineId : "", revisedId: runIds.length >= 2 ? comparisonContext.revisedId : "" }));
+    setSearchParams(current => { const next = writeComparisonContext(current, { runIds, baselineId: runIds.length >= 2 ? comparisonContext.baselineId : "", revisedId: runIds.length >= 2 ? comparisonContext.revisedId : "" }); next.delete("snapshot"); return next; });
   };
   useEffect(() => { comparisonGeneration.current += 1; setComparison(undefined); }, [selectionKey]);
   const reviewedSource = useRef<RunRecord | undefined>(undefined);
@@ -260,13 +279,34 @@ function ComparisonWorkspace() {
   const execute = source?.mode === "execute"; const reviewReady = executeReviewReady(replayPreflight) && Boolean(preparation) && variantReady;
   const unavailableRuns = selected.filter(id => runIdentityCounts.get(id) !== 1);
   const comparisonReady = !comparisonContext.invalid && !unavailableRuns.length && !runsQuery.isFetching && selected.length >= 2;
-  const displayedComparison = comparisonReady && comparison && JSON.stringify(comparison.summaries.map(run => run.run_id)) === selectionKey ? comparison : undefined;
+  const loadedSnapshot = snapshotId && savedSnapshotQuery.data?.snapshot_id === snapshotId ? savedSnapshotQuery.data : undefined;
+  const displayedComparison = loadedSnapshot?.comparison ?? (!snapshotId && comparisonReady && comparison && JSON.stringify(comparison.summaries.map(run => run.run_id)) === selectionKey ? comparison : undefined);
+  const openSavedSnapshot = (snapshot: { snapshot_id: string; run_ids: string[] }) => {
+    comparisonGeneration.current += 1;
+    setComparison(undefined);
+    setSearchParams((current) => {
+      const next = writeComparisonContext(current, { runIds: snapshot.run_ids, baselineId: "", revisedId: "" });
+      next.set("snapshot", snapshot.snapshot_id);
+      return next;
+    });
+  };
+  const snapshotSourcesVerified = Boolean(loadedSnapshot
+    && loadedSnapshot.source_integrity.status === "verified"
+    && loadedSnapshot.source_integrity.runs.length === loadedSnapshot.comparison.run_ids.length
+    && loadedSnapshot.source_integrity.runs.every((run) => run.status === "verified"));
+  const detectorEvaluationRunIds = loadedSnapshot?.comparison.run_ids ?? selected;
   return <div className="page compare-page"><PageHeader title="Compare runs" actions={<><Link className="button button-ghost button-medium" to="/compare?receiver=1">Test a lab receiver control</Link><Link className="button button-ghost button-medium" to="/file-access">Test effective file access</Link><Button variant="secondary" onClick={() => runsQuery.refetch()}><RotateCcw/>Refresh history</Button></>} />
+    {!DEMO_MODE ? <Panel className="saved-comparisons-panel"><PanelHeader title="Saved comparisons" actions={<IconButton label="Reload saved comparisons" onClick={() => { void savedComparisonsQuery.refetch(); if (snapshotId) void savedSnapshotQuery.refetch(); }} disabled={savedComparisonsQuery.isFetching || savedSnapshotQuery.isFetching}><RotateCcw aria-hidden="true"/></IconButton>} />
+      {savedComparisonsQuery.isError ? <p className="workspace-note">Saved comparison history is unavailable.</p> : savedComparisonsQuery.isPending ? <LoadingState label="Loading saved comparisons"/> : savedComparisonsQuery.data.snapshots.length ? <ul className="saved-comparisons-list">{savedComparisonsQuery.data.snapshots.map((item) => <li key={item.snapshot_id}><button className="saved-comparison-link" type="button" aria-label={`Open saved comparison ${item.snapshot_id}`} aria-current={snapshotId === item.snapshot_id ? "page" : undefined} onClick={() => openSavedSnapshot(item)}><span><strong>{formatDate(item.created_at)}</strong><small>{item.run_ids.length} runs · baseline {shortId(item.baseline_run_id)}</small></span><code>{shortDigest(item.digest)}</code></button></li>)}</ul> : <p className="workspace-note">No saved comparisons yet.</p>}
+      {snapshotId && savedSnapshotQuery.isError ? <ErrorState title="Saved comparison unavailable" error={savedSnapshotQuery.error} retry={() => void savedSnapshotQuery.refetch()} /> : null}
+      {snapshotId && savedSnapshotQuery.isPending ? <LoadingState label="Opening saved comparison"/> : null}
+    </Panel> : null}
     {comparisonContext.invalid ? <Callout tone="warning" title="Comparison selection unavailable"><p>This link has an invalid or oversized selection. Clear it and choose the runs and detector revisions again.</p><Button onClick={() => setSearchParams(current => writeComparisonContext(current, { runIds: [], baselineId: "", revisedId: "" }))}>Clear comparison selection</Button></Callout> : null}
-    {unavailableRuns.length ? <Callout tone="warning" title="Selected runs unavailable"><p>{unavailableRuns.length} selected run record{unavailableRuns.length === 1 ? " is" : "s are"} missing or ambiguous in the available history. Refresh history or remove them before comparing; no other run has been substituted.</p><Button onClick={() => setSearchParams(current => writeComparisonContext(current, { runIds: selected.filter(id => !unavailableRuns.includes(id)), baselineId: "", revisedId: "" }))}>Remove unavailable selections</Button></Callout> : null}
-    {comparisonContext.explicit && !comparisonContext.invalid && !displayedComparison ? <p className="workspace-note">Comparison selection restored. Choose Compare selected to load results. This link retains selections, not a saved comparison.</p> : null}
+    {!snapshotId && unavailableRuns.length ? <Callout tone="warning" title="Selected runs unavailable"><p>{unavailableRuns.length} selected run record{unavailableRuns.length === 1 ? " is" : "s are"} missing or ambiguous in the available history. Refresh history or remove them before comparing; no other run has been substituted.</p><Button onClick={() => setSearchParams(current => writeComparisonContext(current, { runIds: selected.filter(id => !unavailableRuns.includes(id)), baselineId: "", revisedId: "" }))}>Remove unavailable selections</Button></Callout> : null}
+    {!snapshotId && comparisonContext.explicit && !comparisonContext.invalid && !displayedComparison ? <p className="workspace-note">Comparison selection restored. Choose Compare selected to load results.</p> : null}
+    {loadedSnapshot && (loadedSnapshot.source_integrity.status !== "verified" || loadedSnapshot.source_integrity.runs.some((run) => run.status !== "verified")) ? <Callout tone="warning" title="Historical result; source integrity unavailable"><p>One or more source run records are now missing, changed, or invalid. This comparison is shown as saved and was not recomputed.</p></Callout> : null}
     {runsQuery.data.unavailable_run_count ? <Callout tone="warning" title="Unavailable run records excluded">{runsQuery.data.unavailable_run_count} in-flight, interrupted, or integrity-failed run record{runsQuery.data.unavailable_run_count === 1 ? " is" : "s are"} unavailable for replay and comparison. Refresh after finalization or recovery completes.</Callout> : null}
-    {compareMutation.isError && compareMutation.variables?.generation === comparisonGeneration.current ? <ErrorState title="Comparison unavailable" error={compareMutation.error} /> : displayedComparison ? <div className="comparison-workspace" ref={resultsRef} tabIndex={-1} role="region" aria-label="Comparison results"><ComparisonResult comparison={displayedComparison} names={Object.fromEntries(runsQuery.data.runs.map(run => [run.run_id, runLabel(run)]))} createdAt={Object.fromEntries(runsQuery.data.runs.map(run => [run.run_id, run.created_at]))} /><DetectorEvaluationComparison runIds={selected} selection={comparisonContext} onSelectionChange={selection => setSearchParams(current => writeComparisonContext(current, { runIds: selected, ...selection }))} /></div> : null}
+    {compareMutation.isError && compareMutation.variables?.generation === comparisonGeneration.current ? <ErrorState title="Comparison unavailable" error={compareMutation.error} /> : displayedComparison ? <div className="comparison-workspace" ref={resultsRef} tabIndex={-1} role="region" aria-label="Comparison results"><ComparisonResult comparison={displayedComparison} names={Object.fromEntries(runsQuery.data.runs.map(run => [run.run_id, runLabel(run)]))} createdAt={Object.fromEntries(runsQuery.data.runs.map(run => [run.run_id, run.created_at]))} />{loadedSnapshot ? snapshotSourcesVerified ? <section className="current-detector-evaluations" aria-label="Current detector evaluations"><h2>Current detector evaluations</h2><DetectorEvaluationComparison runIds={detectorEvaluationRunIds} selection={comparisonContext} onSelectionChange={selection => setSearchParams(current => writeComparisonContext(current, { runIds: detectorEvaluationRunIds, ...selection }))} /></section> : null : <DetectorEvaluationComparison runIds={selected} selection={comparisonContext} onSelectionChange={selection => setSearchParams(current => writeComparisonContext(current, { runIds: selected, ...selection }))} />}</div> : null}
     <details className="compare-setup" open={!displayedComparison}><summary>{displayedComparison ? "Choose different runs or prepare a replay" : "Choose runs and prepare a replay"}</summary>
     <div className="compare-top-grid"><Panel className="history-panel"><PanelHeader title="Choose runs to compare" actions={<Badge>{selected.length} selected</Badge>} /><div className="history-search"><Search/><input aria-label="Search run history" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name or run ID"/></div><div className="run-select-list">{runs.map((run) => <label key={run.run_id}><input type="checkbox" checked={selected.includes(run.run_id)} disabled={!selected.includes(run.run_id) && selected.length >= MAX_COMPARISON_RUNS} onChange={(event) => changeSelection(run.run_id, event.target.checked)}/><span><strong>{runLabel(source?.run_id === run.run_id ? source : run)}</strong><small>{formatDate(run.created_at)} · {run.steps.length} steps{selected.includes(run.run_id) ? ` · ${selected.indexOf(run.run_id) === 0 ? "Comparison baseline" : "Variant " + selected.indexOf(run.run_id)}` : ""}</small></span><span><Badge tone={run.mode === "execute" ? "warning" : "info"}>{sentence(run.mode)}</Badge><Badge tone={run.status === "failed" ? "danger" : "neutral"}>{sentence(run.status)}</Badge></span></label>)}</div>{!runs.length ? <EmptyState title="No run records" description="Run an experiment to create your first result. Simulate is available without a lab." /> : null}<footer>{selected.length >= MAX_COMPARISON_RUNS ? <p className="workspace-note">Up to {MAX_COMPARISON_RUNS} runs can be retained in one comparison selection.</p> : null}{selected.length < 2 ? <p className="workspace-note">Select at least two runs. The first selected run is the comparison baseline.</p> : null}<Button variant="primary" onClick={() => compareMutation.mutate({ runIds: [...selected], generation: comparisonGeneration.current })} disabled={!comparisonReady || compareMutation.isPending}><GitCompareArrows/>{compareMutation.isPending ? "Comparing" : "Compare selected"}</Button></footer></Panel>
       <Panel className="replay-panel"><PanelHeader title="Prepare another run" detail="Keep the original result and test the same experiment with a deliberate change." /><div className="replay-body">{resolutionNotice ? <Callout title="Submission closed">{resolutionNotice}</Callout> : null}<fieldset className="replay-form" disabled={Boolean(uncertainSubmission) || replayMutation.isPending}><Field label="Source run"><select value={sourceId} onChange={(event) => { const selectedSource = event.target.value; setSearchParams((current) => { const next = clearComparisonContext(current); if (selectedSource) next.set("source", selectedSource); else next.delete("source"); next.delete("replay"); return next; }); }} disabled={replayMutation.isPending}><option value="">Choose a completed run</option>{sourceId && !runsQuery.data.runs.some((run) => run.run_id === sourceId) ? <option value={sourceId}>{sourceId}</option> : null}{availableRuns.map((run) => <option value={run.run_id} key={run.run_id}>{runLabel(source?.run_id === run.run_id ? source : run)} · {sentence(run.mode)} · {formatDate(run.created_at)}</option>)}</select></Field>{sourceId && detailQuery.isError ? <ErrorState title="Source run unavailable" error={detailQuery.error} retry={() => detailQuery.refetch()} /> : null}{sourceId && detailQuery.isPending ? <LoadingState label="Loading the original experiment"/> : null}<Field label="What will change?"><select ref={replayChoiceRef} value={strategy} onChange={(event) => { setStrategy(event.target.value as ReplayStrategy); parameterDraftValidRef.current = true; setParameterDraftValid(true); resetReview(); }} disabled={!sourceId || replayMutation.isPending}>
