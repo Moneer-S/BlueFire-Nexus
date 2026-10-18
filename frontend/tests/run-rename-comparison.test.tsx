@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import * as Tooltip from "@radix-ui/react-tooltip";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -40,7 +41,7 @@ function mount() {
   const approve = vi.spyOn(api, "approveJob");
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
   clients.push(client);
-  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/compare?source=${source.run_id}`]}><ComparePage/></MemoryRouter></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><Tooltip.Provider><MemoryRouter initialEntries={[`/compare?source=${source.run_id}`]}><ComparePage/></MemoryRouter></Tooltip.Provider></QueryClientProvider>);
   return { client, prepare, submit, replay, approve };
 }
 async function prepareNarrowed() {
