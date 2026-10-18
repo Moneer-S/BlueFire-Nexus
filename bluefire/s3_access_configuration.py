@@ -12,6 +12,7 @@ from .s3_access_policy import plan_hardening
 SCHEMA = "bluefire.s3-host-environments.v1"
 BOUND_SCHEMA = "bluefire.s3-host-environments.v3"
 AUDIT_SCHEMA = "bluefire.s3-host-environments.v4"
+_SETUP_REVIEW_WORKFLOW_JOB_ID = "job-" + "0" * 32
 _FIELDS = {
     "environment_id",
     "display_name",
@@ -117,6 +118,12 @@ def validate_configuration(
                 or descriptor["worker_generation"] != entry["worker_generation"]
             ):
                 raise S3AccessError("Audit source differs from its enrolled profile or runtime")
+            audit.build_workflow(
+                scope,
+                descriptor,
+                workflow_job_id=_SETUP_REVIEW_WORKFLOW_JOB_ID,
+                environment_id=identifier,
+            )
         _path(entry["runtime_root"])
         ledger = _path(entry["ledger_root"])
         if ledger in ledgers:

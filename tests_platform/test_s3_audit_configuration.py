@@ -4,6 +4,7 @@ from copy import deepcopy
 
 import pytest
 
+from bluefire import s3_audit_collection_contract as audit
 from bluefire.s3_access_configuration import AUDIT_SCHEMA, BOUND_SCHEMA
 from bluefire.s3_access_contract import S3AccessError, S3AccessScope
 from bluefire.s3_access_host_config import public_environments
@@ -46,6 +47,41 @@ def test_audit_configuration_requires_explicit_new_version_and_exact_bindings():
     assert "runtime_root" not in public
     assert "ledger_root" not in public
     assert row == original
+
+
+@pytest.mark.parametrize(
+    ("limit", "value"),
+    [("sessions", 2), ("sessions", 5), ("api_calls", 17), ("business_attempts", 5)],
+)
+def test_audit_configuration_requires_full_workflow_budget(limit, value):
+    row = audit_configured()
+    entry = row["environments"][0]
+    entry["scope"]["limits"][limit] = value
+    scope = S3AccessScope.from_mapping(entry["scope"])
+    entry["audit_source"]["experiment_scope_digest"] = scope.digest
+    assert audit.source(scope, entry["audit_source"]) == entry["audit_source"]
+
+    with pytest.raises(S3AccessError, match="original scope cannot cover"):
+        checked(row)
+
+
+def test_audit_configuration_accepts_exact_minimum_workflow_budget():
+    row = audit_configured()
+    entry = row["environments"][0]
+    entry["scope"]["limits"].update(sessions=6, api_calls=18, business_attempts=6)
+    scope = S3AccessScope.from_mapping(entry["scope"])
+    entry["audit_source"]["experiment_scope_digest"] = scope.digest
+
+    assert checked(row) == row
+
+
+def test_legacy_configuration_does_not_require_audit_workflow_budget():
+    row = configured()
+    entry = row["environments"][0]
+    entry["scope"]["limits"].update(sessions=2, api_calls=17, business_attempts=5)
+    S3AccessScope.from_mapping(entry["scope"])
+
+    assert checked(row) == row
 
 
 @pytest.mark.parametrize("schema", ["bluefire.s3-host-environments.v1", BOUND_SCHEMA])
