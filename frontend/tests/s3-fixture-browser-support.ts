@@ -10,6 +10,36 @@ export const desktop = { width: 1440, height: 900 };
 export const mobile = { width: 390, height: 844 };
 export interface FixtureSnapshot { name: string; exercise: S3Exercise; review: S3Review | null }
 
+export function outsideMainElements() {
+  const main = document.querySelector("main") as HTMLElement | null;
+  if (!main) throw new Error("A main content region is required for geometry checks.");
+  const rect = main.getBoundingClientRect();
+  return [...main.querySelectorAll<HTMLElement>("h1,h2,h3,p,button,input,summary,a,article")].flatMap(node => {
+    const style = getComputedStyle(node);
+    const child = node.getBoundingClientRect();
+    if (style.display === "none" || style.visibility === "hidden" || child.width <= 0 || child.height <= 0) return [];
+    for (let ancestor: HTMLElement | null = node.parentElement; ancestor && ancestor !== main; ancestor = ancestor.parentElement) {
+      if (ancestor.tagName !== "DETAILS" || ancestor.hasAttribute("open")) continue;
+      const summary = [...ancestor.children].find(child => child.tagName === "SUMMARY");
+      if (!summary?.contains(node)) return [];
+    }
+    let left = child.left;
+    let right = child.right;
+    let clippedBy: { tag: string; className: string } | null = null;
+    for (let ancestor: HTMLElement | null = node.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      if (["auto", "scroll"].includes(getComputedStyle(ancestor).overflowX)) {
+        const bounds = ancestor.getBoundingClientRect();
+        left = Math.max(left, bounds.left);
+        right = Math.min(right, bounds.right);
+        clippedBy ??= { tag: ancestor.tagName, className: ancestor.className };
+      }
+      if (ancestor === main) break;
+    }
+    if (left >= rect.left - 1 && right <= rect.right + 1) return [];
+    return [{ tag: node.tagName, className: node.className, bounds: { left: child.left, right: child.right }, visibleBounds: { left, right }, clippedBy }];
+  });
+}
+
 export function snapshot(name: string): FixtureSnapshot {
   const rows = productCorpus.snapshots.filter(row => row.name === name);
   if (rows.length !== 1 || productCorpus.provenance !== "synthetic") throw new Error("A closed synthetic corpus state is required.");
@@ -128,15 +158,12 @@ export async function capture(page: Page, name: string, viewport: { width: numbe
     samples.push(next);
     return matching;
   }, { timeout: 3_000, intervals: [50] }).toBeGreaterThanOrEqual(4).then(() => true, () => false);
-  const dimensions = await page.evaluate(() => {
+  const outside = await page.evaluate(outsideMainElements);
+  const layout = await page.evaluate(() => {
     const main = document.querySelector("main")!;
-    const rect = main.getBoundingClientRect();
-    const outside = [...main.querySelectorAll<HTMLElement>("h1,h2,h3,p,button,input,summary,a,article")].filter(node => {
-      const child = node.getBoundingClientRect();
-      return child.width > 0 && child.height > 0 && (child.left < rect.left - 1 || child.right > rect.right + 1);
-    }).map(node => node.tagName);
-    return { document: { client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }, main: { client: main.clientWidth, scroll: main.scrollWidth }, outside };
+    return { document: { client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }, main: { client: main.clientWidth, scroll: main.scrollWidth } };
   });
+  const dimensions = { ...layout, outside };
   const target = join(output, `${name}-${viewport.width}.png`);
   if (existsSync(target)) throw new Error("A browser screenshot already exists.");
   const beforeScreenshot = await geometry(page, targetSelector);

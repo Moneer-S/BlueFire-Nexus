@@ -591,7 +591,11 @@ def produce_replay_gate_evidence(repository: Path, evidence_dir: Path) -> Mappin
                 "GATE-06 combined replay variants are incomplete",
             )
             corruption = _corruption_report(service, runner, run_root, source_run_id)
-            comparison = service.compare({"run_ids": run_ids})
+            comparison_response = service.compare({"run_ids": run_ids})
+            # Saved-snapshot navigation is not part of the canonical gate evidence.
+            comparison = {
+                key: value for key, value in comparison_response.items() if key != "saved_snapshot"
+            }
             _require(
                 _comparison_dimensions(comparison), "GATE-06 comparison dimensions are incomplete"
             )

@@ -174,8 +174,13 @@ def test_actual_producer_service_comparison_reports_access_change_not_step_succe
     assert value["effective_access_claim"] is value["defensive_effectiveness_claim"] is False
     assert all(row["objective_reached"] is False for row in response["summaries"])
     assert all(row["outcomes"] == {"s3-operation": "success"} for row in response["summaries"])
-    body = {key: item for key, item in response.items() if key != "comparison_id"}
+    body = {
+        key: item
+        for key, item in response.items()
+        if key not in {"comparison_id", "saved_snapshot"}
+    }
     assert response["comparison_id"] == "comparison-" + content_hash(body)[7:27]
+    assert set(response["saved_snapshot"]) == {"snapshot_id", "digest", "created_at"}
     assert saved_state(app, owner) == before and executor.calls == calls
 
 
@@ -291,7 +296,11 @@ def test_missing_context_is_explicit_and_generic_fields_unchanged(service):
     assert generic["s3_access"]["reason"] == "saved_context_unavailable"
     assert {
         key: value for key, value in generic.items() if key not in {"s3_access", "comparison_id"}
-    } == {key: value for key, value in actual.items() if key not in {"s3_access", "comparison_id"}}
+    } == {
+        key: value
+        for key, value in actual.items()
+        if key not in {"s3_access", "comparison_id", "saved_snapshot"}
+    }
 
 
 def test_selected_join_change_during_projection_refuses_without_writes(service, monkeypatch):
@@ -333,7 +342,10 @@ def test_non_s3_output_and_identifier_are_identical_with_context_provider(servic
     identifiers = [generic_run(app.store), generic_run(app.store)]
     expected = compare_runs(app.store, identifiers)
     assert "s3_access" not in expected
-    assert app.compare({"run_ids": identifiers}) == expected
+    actual = app.compare({"run_ids": identifiers})
+    assert actual["comparison_id"] == expected["comparison_id"]
+    assert {key: value for key, value in actual.items() if key != "saved_snapshot"} == expected
+    assert set(actual["saved_snapshot"]) == {"snapshot_id", "digest", "created_at"}
 
 
 def test_mixed_objective_does_not_borrow_cloud_context(service):

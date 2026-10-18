@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import * as Tooltip from "@radix-ui/react-tooltip";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
@@ -73,7 +74,7 @@ function LocationProbe() {
 
 function renderJourney(path: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return { client, ...render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={[path]}><LocationProbe /><Routes><Route path="/runs" element={<RunsPage />} /><Route path="/runs/:runId" element={<RunsPage />} /><Route path="/detection-lab" element={<DetectionLabPage />} /><Route path="/compare" element={<ComparePage />} /></Routes></MemoryRouter></ProductProvider></QueryClientProvider>) };
+  return { client, ...render(<QueryClientProvider client={client}><ProductProvider><Tooltip.Provider><MemoryRouter initialEntries={[path]}><LocationProbe /><Routes><Route path="/runs" element={<RunsPage />} /><Route path="/runs/:runId" element={<RunsPage />} /><Route path="/detection-lab" element={<DetectionLabPage />} /><Route path="/compare" element={<ComparePage />} /></Routes></MemoryRouter></Tooltip.Provider></ProductProvider></QueryClientProvider>) };
 }
 
 function postBody(suffix: string) {
@@ -255,7 +256,7 @@ describe("run journey handoffs", () => {
     expect(returnUrl.searchParams.getAll("compare_run")).toEqual([sourceId, syntheticId, replayId]);
     expect(returnUrl.searchParams.get("compare_baseline")).toBe(candidateId);
     expect(returnUrl.searchParams.get("compare_revised")).toBe(savedId);
-    expect(screen.getByText("Comparison selection restored. Choose Compare selected to load results. This link retains selections, not a saved comparison.")).toBeVisible();
+    expect(screen.getByText("Comparison selection restored. Choose Compare selected to load results.")).toBeVisible();
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "Compare selected" }));
     await waitFor(() => expect(postBody("/comparisons")).toEqual({ run_ids: [sourceId, syntheticId, replayId] }));

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import math
 import os
 import re
@@ -812,10 +813,16 @@ class BlueFireService(
         """List one explicitly allowlisted resource kind."""
 
         stable_kind = _managed_resource_kind(kind)
+        if stable_kind == "comparison":
+            from .comparison_snapshot_store import list_legacy_resources
+
+            resources = list_legacy_resources(self.product_store)
+        else:
+            resources = self.product_store.list_resources(stable_kind)
         response: dict[str, Any] = {
             "schema_version": "bluefire.resource-list.v1",
             "kind": stable_kind,
-            "resources": self.product_store.list_resources(stable_kind),
+            "resources": resources,
         }
         if stable_kind == "plugin":
             response["inventory"] = self._plugin_inventory()
@@ -826,6 +833,12 @@ class BlueFireService(
 
         stable_kind = _managed_resource_kind(kind)
         stable_id = _management_identifier(resource_id, f"{stable_kind} ID")
+        if stable_kind == "comparison" and stable_id.startswith("run-comparison-"):
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "comparison_snapshot_route_required",
+                "Open saved run comparisons through the comparison snapshot route.",
+            )
         try:
             resource = self.product_store.get_resource(stable_kind, stable_id)
         except ProductStoreError as exc:
@@ -5615,14 +5628,126 @@ class BlueFireService(
                 "Comparison requires a list of run IDs.",
             )
         try:
-            return compare_runs(self.store, run_ids, s3_access=self.s3_access)
-        except (ComparisonError, RunStoreError) as exc:
+            from .comparison_snapshot_store import MAX_COMPARISON_RUNS, save
+
+            if len(run_ids) > MAX_COMPARISON_RUNS:
+                raise ComparisonError("comparison exceeds its run limit")
+            before = self._comparison_source_bindings(run_ids)
+            comparison = compare_runs(self.store, run_ids, s3_access=self.s3_access)
+            after = self._comparison_source_bindings(run_ids)
+            if before != after:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "comparison_source_changed",
+                    "A source run changed while the comparison was being captured. Compare again.",
+                )
+            snapshot = save(self.product_store, comparison, after)
+            return {
+                **comparison,
+                "saved_snapshot": {
+                    "snapshot_id": snapshot["snapshot_id"],
+                    "digest": snapshot["digest"],
+                    "created_at": snapshot["created_at"],
+                },
+            }
+        except APIError:
+            raise
+        except (ComparisonError, RunStoreError, ProductStoreError) as exc:
             raise APIError(
                 HTTPStatus.UNPROCESSABLE_ENTITY,
                 "comparison_invalid",
                 "Runs could not be compared.",
                 [str(exc)],
             ) from exc
+
+    def comparison_snapshots(self) -> Mapping[str, Any]:
+        from .comparison_snapshot_store import list_recent
+
+        try:
+            snapshots = list_recent(self.product_store)
+        except ProductStoreError as exc:
+            raise APIError(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "comparison_snapshots_invalid",
+                "Saved comparison history could not be verified.",
+            ) from exc
+        return {"snapshots": snapshots}
+
+    def comparison_snapshot(self, snapshot_id: str) -> Mapping[str, Any]:
+        from .comparison_snapshot_store import (
+            SnapshotIntegrityError,
+            SnapshotNotFound,
+        )
+        from .comparison_snapshot_store import (
+            get as get_snapshot,
+        )
+
+        try:
+            snapshot = get_snapshot(self.product_store, snapshot_id)
+        except SnapshotNotFound as exc:
+            raise APIError(
+                HTTPStatus.NOT_FOUND,
+                "comparison_snapshot_not_found",
+                "Saved comparison was not found.",
+            ) from exc
+        except (SnapshotIntegrityError, ProductStoreError) as exc:
+            raise APIError(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "comparison_snapshot_invalid",
+                "Saved comparison failed integrity validation.",
+            ) from exc
+
+        statuses = []
+        for binding in snapshot["source_bindings"]:
+            run_id = binding["run_id"]
+            try:
+                integrity = self.store.validate_bundle(run_id)
+            except RunStoreError as exc:
+                status = "missing" if str(exc).startswith("unknown run:") else "invalid"
+            except OSError:
+                status = "invalid"
+            else:
+                manifest = integrity.get("manifest")
+                if not integrity.get("valid") or not isinstance(manifest, Mapping):
+                    status = "invalid"
+                elif manifest.get("bundle_hash") != binding["bundle_hash"]:
+                    status = "changed"
+                else:
+                    status = "verified"
+            statuses.append({"run_id": run_id, "status": status})
+        source_status = (
+            "verified" if all(row["status"] == "verified" for row in statuses) else "unavailable"
+        )
+        return {
+            "snapshot_id": snapshot["snapshot_id"],
+            "digest": snapshot["digest"],
+            "created_at": snapshot["created_at"],
+            "comparison": snapshot["comparison"],
+            "source_bindings": snapshot["source_bindings"],
+            "source_integrity": {"status": source_status, "runs": statuses},
+        }
+
+    def _comparison_source_bindings(
+        self, run_ids: Sequence[str]
+    ) -> builtins.list[Mapping[str, Any]]:
+        bindings: builtins.list[Mapping[str, Any]] = []
+        for run_id in run_ids:
+            try:
+                integrity = self.store.validate_bundle(run_id)
+            except OSError as exc:
+                raise ComparisonError(
+                    f"run bundle could not be integrity validated: {run_id}"
+                ) from exc
+            manifest = integrity.get("manifest")
+            bundle_hash = manifest.get("bundle_hash") if isinstance(manifest, Mapping) else None
+            if (
+                not integrity.get("valid")
+                or not isinstance(bundle_hash, str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", bundle_hash) is None
+            ):
+                raise ComparisonError(f"run bundle failed integrity validation: {run_id}")
+            bindings.append({"run_id": run_id, "bundle_hash": bundle_hash})
+        return bindings
 
     def _bind_and_consume_approval(
         self,

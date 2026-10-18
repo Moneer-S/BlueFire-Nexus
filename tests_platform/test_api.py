@@ -721,6 +721,14 @@ class StubService:
         self.calls.append(("compare", request))
         return {"run_ids": request.get("run_ids", []), "status": "complete"}
 
+    def comparison_snapshots(self) -> Mapping[str, Any]:
+        self.calls.append(("comparison_snapshots",))
+        return {"snapshots": []}
+
+    def comparison_snapshot(self, snapshot_id: str) -> Mapping[str, Any]:
+        self.calls.append(("comparison_snapshot", snapshot_id))
+        return {"snapshot_id": snapshot_id}
+
 
 @contextmanager
 def running_server(

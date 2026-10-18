@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import * as Tooltip from "@radix-ui/react-tooltip";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
@@ -35,7 +36,7 @@ function mount(extraSearch = "") {
     job: { schema_version: "bluefire.job.v1", job_id: `job-${submissionId.replaceAll("-", "")}`, kind: "scenario.replay", state: "awaiting_approval", progress: {}, request: { source_run_id: source.run_id, replay_preparation: preparation } },
   }));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/compare?source=${source.run_id}${extraSearch}`]}><Location /><Link to="/builder">Leave comparison</Link><Link to="/compare">Clear source selection</Link><Routes><Route path="/compare" element={<ComparePage />} /><Route path="/builder" element={<h1>Experiment builder</h1>} /><Route path="/runs" element={<h1>Saved job status</h1>} /></Routes></MemoryRouter></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><Tooltip.Provider><MemoryRouter initialEntries={[`/compare?source=${source.run_id}${extraSearch}`]}><Location /><Link to="/builder">Leave comparison</Link><Link to="/compare">Clear source selection</Link><Routes><Route path="/compare" element={<ComparePage />} /><Route path="/builder" element={<h1>Experiment builder</h1>} /><Route path="/runs" element={<h1>Saved job status</h1>} /></Routes></MemoryRouter></Tooltip.Provider></QueryClientProvider>);
   return replay;
 }
 afterEach(() => vi.restoreAllMocks());

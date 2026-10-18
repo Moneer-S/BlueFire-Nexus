@@ -265,6 +265,25 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             if self._routes._management_query_free():
                 self._send(HTTPStatus.NO_CONTENT, b"", "application/json; charset=utf-8")
             return
+        comparison_snapshots_path = f"{API_PREFIX}/comparison-snapshots"
+        if path == comparison_snapshots_path:
+            if self._routes._management_query_free():
+                self._dispatch(lambda: self.platform_server.service.comparison_snapshots())
+            return
+        comparison_snapshot_prefix = comparison_snapshots_path + "/"
+        if path.startswith(comparison_snapshot_prefix):
+            snapshot_id = path[len(comparison_snapshot_prefix) :]
+            if not snapshot_id or "/" in snapshot_id:
+                self._error(
+                    HTTPStatus.NOT_FOUND,
+                    "comparison_snapshot_not_found",
+                    "Saved comparison was not found.",
+                )
+            elif self._routes._management_query_free():
+                self._dispatch(
+                    lambda: self.platform_server.service.comparison_snapshot(snapshot_id)
+                )
+            return
         preparation_run_id = self._routes._run_replay_preparation_id(path)
         if preparation_run_id is not None:
             if preparation_run_id:
@@ -665,6 +684,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         body = self._read_json_object()
         if body is None:
+            return
+        comparison_snapshots_path = f"{API_PREFIX}/comparison-snapshots"
+        if path == comparison_snapshots_path or path.startswith(comparison_snapshots_path + "/"):
+            self._method_not_allowed("GET")
             return
         retained_id = self._routes._run_retained_observations_id(path)
         if retained_id is not None:
