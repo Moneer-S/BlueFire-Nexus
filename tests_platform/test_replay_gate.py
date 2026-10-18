@@ -81,6 +81,8 @@ def test_replay_journey_produces_four_real_verified_runs(
     replay_evidence: tuple[Path, Mapping[str, object]],
 ) -> None:
     evidence, summary = replay_evidence
+    comparison = json.loads((evidence / COMPARISON_REPORT).read_text(encoding="utf-8"))
+    assert "saved_snapshot" not in comparison
     checks, bundles = validate_persisted_replay_gate(Path.cwd(), evidence)
 
     assert summary == {
