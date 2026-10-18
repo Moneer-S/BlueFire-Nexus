@@ -113,6 +113,9 @@ pub struct S3SendPreview {
 impl S3SendPreview {
     /// One bounded JSON line, tied to the caller's exact next sequence.
     pub fn from_frame(binding: &S3WorkerBinding, bytes: &[u8], next: u64) -> Checked<Self> {
+        if binding.audit().is_some() {
+            return Self::from_audit_frame(binding, bytes, next, None);
+        }
         require(bytes.len() <= 4096 && bytes.last() == Some(&b'\n'))?;
         require(!bytes[..bytes.len() - 1].contains(&b'\n'))?;
         let frame: Frame =
@@ -134,6 +137,45 @@ impl S3SendPreview {
             sequence: next,
             is_write: ["PutBucketPolicy", "PutObject", "DeleteObject"]
                 .contains(&frame.send.operation.as_str()),
+        })
+    }
+
+    pub(crate) fn from_audit_frame(
+        binding: &S3WorkerBinding,
+        bytes: &[u8],
+        next: u64,
+        discovery: Option<&crate::s3_access_binding::audit::Discovery>,
+    ) -> Checked<Self> {
+        require(
+            bytes.len() <= crate::s3_access_binding::audit::MAX_SEND
+                && bytes.last() == Some(&b'\n')
+                && !bytes[..bytes.len() - 1].contains(&b'\n'),
+        )?;
+        let frame: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|_| "invalid audit send")?;
+        let row = frame.as_object().ok_or("invalid audit send")?;
+        require(
+            row.len() == 5
+                && ["kind", "request_digest", "sequence", "send", "send_digest"]
+                    .iter()
+                    .all(|name| row.contains_key(*name))
+                && canonical_json(&frame).as_bytes() == &bytes[..bytes.len() - 1]
+                && frame["kind"] == "send"
+                && frame["request_digest"] == binding.digest()
+                && frame["sequence"].as_u64() == Some(next)
+                && (1..=binding.max_sends()).contains(&next),
+        )?;
+        let planned = binding
+            .audit()
+            .ok_or("audit request absent")?
+            .planned_send(binding, next as usize, discovery)?;
+        let preview = serde_json::json!({"kind":"send","request_digest":binding.digest(),"sequence":next,"send":planned});
+        require(frame["send"] == planned && frame["send_digest"] == canonical_hash(&preview))?;
+        Ok(Self {
+            canonical: canonical_json(&frame),
+            digest: canonical_hash(&preview),
+            sequence: next,
+            is_write: false,
         })
     }
 

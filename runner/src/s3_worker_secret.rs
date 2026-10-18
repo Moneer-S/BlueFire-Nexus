@@ -56,12 +56,18 @@ impl WorkerSecret {
         Ok(Self { document: value })
     }
 
-    pub(crate) fn frame(self, request_digest: &str, nonce: &str) -> Vec<u8> {
-        let mut bytes = canonical_json(
-            &json!({"kind":"credentials", "request_digest":request_digest,
-            "nonce":nonce,"credentials":self.document}),
-        )
-        .into_bytes();
+    pub(crate) fn frame(
+        self,
+        request_digest: &str,
+        nonce: &str,
+        audit_reservation: Option<&str>,
+    ) -> Vec<u8> {
+        let mut value = json!({"kind":"credentials", "request_digest":request_digest,
+            "nonce":nonce,"credentials":self.document});
+        if let Some(reservation) = audit_reservation {
+            value["reservation_digest"] = json!(reservation);
+        }
+        let mut bytes = canonical_json(&value).into_bytes();
         bytes.push(b'\n');
         bytes
     }

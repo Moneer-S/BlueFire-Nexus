@@ -13,12 +13,19 @@ pub(crate) const MAX_TOTAL: u64 = 512 * 1024 * 1024;
 // binds observed source bytes, not merely version labels or an ambient install.
 const SDK_INVENTORY: &str =
     "sha256:3a0b54afdb950def6428f2e0b837d254918757f3b0b145bfea376bc7ac68536b";
-pub(crate) const WORKER_FILES: [&str; 13] = [
+pub(crate) const WORKER_FILES: [&str; 20] = [
     "s3_access_runtime.py",
     "s3_access_worker_entry.py",
     "s3_access_contract.py",
     "s3_access_policy.py",
     "s3_access_wire.py",
+    "s3_access_wire_contract.py",
+    "s3_access_audit.py",
+    "s3_audit_read_contract.py",
+    "s3_audit_collection_contract.py",
+    "s3_audit_wire.py",
+    "s3_audit_send.py",
+    "s3_audit_sdk.py",
     "s3_access_sdk.py",
     "s3_access_sdk_boundary.py",
     "s3_access_sdk_transport.py",
@@ -29,61 +36,90 @@ pub(crate) const WORKER_FILES: [&str; 13] = [
     "util.py",
 ];
 
+const WORKER_SOURCES: [(&str, &[u8]); 20] = [
+    (
+        "s3_access_runtime.py",
+        include_bytes!("../../bluefire/s3_access_runtime.py"),
+    ),
+    (
+        "s3_access_worker_entry.py",
+        include_bytes!("../../bluefire/s3_access_worker_entry.py"),
+    ),
+    (
+        "s3_access_contract.py",
+        include_bytes!("../../bluefire/s3_access_contract.py"),
+    ),
+    (
+        "s3_access_policy.py",
+        include_bytes!("../../bluefire/s3_access_policy.py"),
+    ),
+    (
+        "s3_access_wire.py",
+        include_bytes!("../../bluefire/s3_access_wire.py"),
+    ),
+    (
+        "s3_access_wire_contract.py",
+        include_bytes!("../../bluefire/s3_access_wire_contract.py"),
+    ),
+    (
+        "s3_access_audit.py",
+        include_bytes!("../../bluefire/s3_access_audit.py"),
+    ),
+    (
+        "s3_audit_read_contract.py",
+        include_bytes!("../../bluefire/s3_audit_read_contract.py"),
+    ),
+    (
+        "s3_audit_collection_contract.py",
+        include_bytes!("../../bluefire/s3_audit_collection_contract.py"),
+    ),
+    (
+        "s3_audit_wire.py",
+        include_bytes!("../../bluefire/s3_audit_wire.py"),
+    ),
+    (
+        "s3_audit_send.py",
+        include_bytes!("../../bluefire/s3_audit_send.py"),
+    ),
+    (
+        "s3_audit_sdk.py",
+        include_bytes!("../../bluefire/s3_audit_sdk.py"),
+    ),
+    (
+        "s3_access_sdk.py",
+        include_bytes!("../../bluefire/s3_access_sdk.py"),
+    ),
+    (
+        "s3_access_sdk_boundary.py",
+        include_bytes!("../../bluefire/s3_access_sdk_boundary.py"),
+    ),
+    (
+        "s3_access_sdk_transport.py",
+        include_bytes!("../../bluefire/s3_access_sdk_transport.py"),
+    ),
+    (
+        "s3_access_worker.py",
+        include_bytes!("../../bluefire/s3_access_worker.py"),
+    ),
+    (
+        "s3_fixture_contract.py",
+        include_bytes!("../../bluefire/s3_fixture_contract.py"),
+    ),
+    (
+        "s3_fixture_send.py",
+        include_bytes!("../../bluefire/s3_fixture_send.py"),
+    ),
+    (
+        "s3_fixture_sdk.py",
+        include_bytes!("../../bluefire/s3_fixture_sdk.py"),
+    ),
+    ("util.py", include_bytes!("../../bluefire/util.py")),
+];
+
 fn compiled_worker_generation() -> String {
-    let sources: [(&str, &[u8]); 13] = [
-        (
-            "s3_access_runtime.py",
-            include_bytes!("../../bluefire/s3_access_runtime.py"),
-        ),
-        (
-            "s3_access_worker_entry.py",
-            include_bytes!("../../bluefire/s3_access_worker_entry.py"),
-        ),
-        (
-            "s3_access_contract.py",
-            include_bytes!("../../bluefire/s3_access_contract.py"),
-        ),
-        (
-            "s3_access_policy.py",
-            include_bytes!("../../bluefire/s3_access_policy.py"),
-        ),
-        (
-            "s3_access_wire.py",
-            include_bytes!("../../bluefire/s3_access_wire.py"),
-        ),
-        (
-            "s3_access_sdk.py",
-            include_bytes!("../../bluefire/s3_access_sdk.py"),
-        ),
-        (
-            "s3_access_sdk_boundary.py",
-            include_bytes!("../../bluefire/s3_access_sdk_boundary.py"),
-        ),
-        (
-            "s3_access_sdk_transport.py",
-            include_bytes!("../../bluefire/s3_access_sdk_transport.py"),
-        ),
-        (
-            "s3_access_worker.py",
-            include_bytes!("../../bluefire/s3_access_worker.py"),
-        ),
-        (
-            "s3_fixture_contract.py",
-            include_bytes!("../../bluefire/s3_fixture_contract.py"),
-        ),
-        (
-            "s3_fixture_send.py",
-            include_bytes!("../../bluefire/s3_fixture_send.py"),
-        ),
-        (
-            "s3_fixture_sdk.py",
-            include_bytes!("../../bluefire/s3_fixture_sdk.py"),
-        ),
-        ("util.py", include_bytes!("../../bluefire/util.py")),
-    ];
     // Packaged Python source is LF-normalized, independent of the compiler
     // checkout's Windows text conversion. Runtime inventories still bind raw LF bytes.
-    let rows: BTreeMap<_, _> = sources.into_iter().map(|(name, bytes)| {
+    let rows: BTreeMap<_, _> = WORKER_SOURCES.into_iter().map(|(name, bytes)| {
         let canonical: Vec<u8> = bytes.iter().enumerate().filter_map(|(index, byte)|
             if *byte == b'\r' && bytes.get(index + 1) == Some(&b'\n') { None } else { Some(*byte) }).collect();
         (name, json!({"sha256":crate::canonical::sha256_hex(&canonical),"size_bytes":canonical.len()}))
@@ -232,5 +268,19 @@ impl RuntimeManifest {
                 && canonical_hash(&serde_json::to_value(workers).map_err(|_| ())?) == generation,
         )?;
         Ok(manifest)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compiled_worker_sources_match_the_exact_runtime_inventory() {
+        let names: BTreeSet<_> = WORKER_SOURCES.iter().map(|(name, _)| *name).collect();
+        assert_eq!(names.len(), WORKER_SOURCES.len());
+        assert_eq!(names, WORKER_FILES.into_iter().collect());
+        assert!(WORKER_SOURCES.iter().all(|(_, source)| !source.is_empty()));
+        assert!(compiled_worker_generation().starts_with("sha256:"));
     }
 }

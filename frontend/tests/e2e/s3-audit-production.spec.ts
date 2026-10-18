@@ -49,7 +49,7 @@ async function fixture(page: Page) {
   await page.goto(`./#/s3-access?exercise=${owner}`);
   await page.getByLabel("One-time connection code", { exact: false }).fill(code);
   await page.getByRole("button", { name: "Connect", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Imported cloud audit", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Cloud audit", exact: true })).toBeVisible();
   return state;
 }
 
@@ -72,7 +72,7 @@ for (const width of [1366, 390, 320]) {
     await page.getByLabel("Original read attempt").selectOption(source.input.run_id);
     await page.getByLabel("Reported delivery").selectOption("complete");
     await page.getByLabel("Audit files").setInputFiles({ name: "synthetic-audit.json.gz", mimeType: "application/gzip", buffer: Buffer.from(source.input.logs[0]!.data, "base64") });
-    await page.getByRole("heading", { name: "Imported cloud audit", exact: true }).scrollIntoViewIfNeeded();
+    await page.getByRole("heading", { name: "Cloud audit", exact: true }).scrollIntoViewIfNeeded();
     await capture(page, `audit-import-${width}`);
     await page.getByRole("button", { name: "Save audit review", exact: true }).click();
     await expect(page.getByText("Import confirmation pending", { exact: true })).toBeVisible();

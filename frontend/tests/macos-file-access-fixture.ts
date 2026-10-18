@@ -1,4 +1,4 @@
-import { compositionJobId, type CompositionJob } from "../src/lib/composition";
+import type { CompositionJob } from "../src/lib/composition";
 import type { FileAccessOperationEnvelope, FileAccessReview, FileAccessSubmission, MacOSFileAccessControl, MacOSFileAccessControlState, MacOSFileAccessStatus } from "../src/lib/file-access";
 
 // Authored contract fixtures only; no native workspace or access proof.
@@ -16,7 +16,7 @@ export function macOSSubmissionFixture(operation: "baseline" | "harden" | "rollb
   return { submission_id: "11111111-1111-4111-8111-111111111111", review: { operation, control_owner_id: macOSOwner }, review_digest: macOSDigest("d"), reviewed_by: "synthetic-reviewer" };
 }
 export function macOSJobFixture(body = macOSSubmissionFixture(), state = "completed"): CompositionJob {
-  return { job_id: compositionJobId(body.submission_id), kind: "file_access.operation", state, request: { ...body.review }, progress: { submitted_request: body } };
+  return { job_id: `job-${body.submission_id.replaceAll("-", "")}`, kind: "file_access.operation", state, request: { ...body.review }, progress: { submitted_request: body } };
 }
 export function macOSControlFixture(status: MacOSFileAccessControlState = "created"): MacOSFileAccessControl {
   const revision = status === "created" ? 1 : status === "baseline_verified" ? 2 : status === "rolled_back" ? 4 : 3;

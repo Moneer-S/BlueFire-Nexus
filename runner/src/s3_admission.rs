@@ -22,6 +22,7 @@ const ENVELOPE_ENV: &str = "BLUEFIRE_S3_ENVELOPE_FD";
 pub struct VerifiedS3Admission {
     binding: S3WorkerBinding,
     manifest: crate::contract::ExecutionManifest,
+    manifest_digest: String,
     profile: crate::contract::RunnerProfile,
     enrollment_digest: String,
     approval_digest: String,
@@ -31,6 +32,8 @@ pub struct VerifiedS3Admission {
     phase: String,
     revision: u64,
     fixture_authority_digest: Option<String>,
+    audit_workflow: Option<crate::s3_audit_binding::AuditWorkflow>,
+    profile_digest: String,
     owner_uid: u32,
     ledger_root: String,
     runtime_root: String,
@@ -45,6 +48,9 @@ impl VerifiedS3Admission {
     }
     pub(crate) fn manifest(&self) -> &crate::contract::ExecutionManifest {
         &self.manifest
+    }
+    pub(crate) fn manifest_digest(&self) -> &str {
+        &self.manifest_digest
     }
     pub(crate) fn profile(&self) -> &crate::contract::RunnerProfile {
         &self.profile
@@ -72,6 +78,12 @@ impl VerifiedS3Admission {
     }
     pub(crate) fn fixture_authority_digest(&self) -> Option<&str> {
         self.fixture_authority_digest.as_deref()
+    }
+    pub(crate) fn audit_workflow(&self) -> Option<&crate::s3_audit_binding::AuditWorkflow> {
+        self.audit_workflow.as_ref()
+    }
+    pub(crate) fn profile_digest(&self) -> &str {
+        &self.profile_digest
     }
     pub(crate) fn owner_uid(&self) -> u32 {
         self.owner_uid

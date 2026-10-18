@@ -1,18 +1,20 @@
 import { DEMO_MODE, request } from "./api";
 import { isFixturePhase, validFixtureEnrollment, validFixtureProjection, validFixtureReview, type FixtureEnrollment, type FixtureReceipt, type FixtureReview, type FixtureState, type PolicyRetention, type ResourceDisposition } from "./s3-fixtures";
+import { checkedAuditSourceDescriptor, type AuditSourceDescriptor } from "./s3-audit-collection";
+import { auditPhases, checkedAuditStageReview, checkedAuditWorkspace, isAuditPhase, sameAuditValue, type AuditStageReview, type AuditWorkspace } from "./s3-audit-workspace";
 
-export const s3Phases = ["inspect", "baseline", "apply", "retest", "reconcile", "rollback", "prepare", "reconcile_fixtures", "cleanup"] as const;
+export const s3Phases = ["inspect", "baseline", "apply", "retest", "reconcile", "rollback", "prepare", "reconcile_fixtures", "cleanup", ...auditPhases] as const;
 export type S3Phase = typeof s3Phases[number];
-export const phaseName: Record<S3Phase, string> = { inspect: "Inspect policy", baseline: "Baseline reads", apply: "Apply reviewed change", retest: "Fresh access checks", reconcile: "Inspect current policy", rollback: "Restore reviewed policy", prepare: "Prepare test objects", reconcile_fixtures: "Check test objects", cleanup: "Remove test objects" };
-export interface S3Environment { environment_id: string; display_name: string; scope: { bucket: string; region: string; account_id: string; expires_at: string; roles: Record<string, unknown>; objects: unknown[]; limits: Record<string, number> }; baseline_policy: unknown; exclusive_writer_digest: string | null; fixture_lifecycle?: FixtureEnrollment }
+export const phaseName: Record<S3Phase, string> = { inspect: "Inspect policy", baseline: "Baseline reads", apply: "Apply reviewed change", retest: "Fresh access checks", reconcile: "Inspect current policy", rollback: "Restore reviewed policy", prepare: "Prepare test objects", reconcile_fixtures: "Check test objects", cleanup: "Remove test objects", audit_baseline: "Collect baseline audit", audit_retest: "Collect retest audit" };
+export interface S3Environment { environment_id: string; display_name: string; scope: { bucket: string; region: string; account_id: string; expires_at: string; roles: Record<string, unknown>; objects: unknown[]; limits: Record<string, number> }; baseline_policy: unknown; exclusive_writer_digest: string | null; fixture_lifecycle?: FixtureEnrollment; audit_source?: AuditSourceDescriptor }
 export interface S3EnvironmentRow { environment: S3Environment; available: boolean; problem: string | null; context_digest: string }
 export interface S3Environments { schema_version: "bluefire.s3-environments.v1"; environments: S3EnvironmentRow[]; problem: string | null }
 export interface S3Fact { reader: "probe" | "legitimate"; purpose: string; result: string }
-export interface S3Outcome { state: string; cleanup: "verified" | "unknown"; complete: boolean; facts: S3Fact[]; policy_observation: string | null; provenance: "synthetic" | "runner_reported"; independent_observations: 0; audit: "not_collected"; resource_disposition: ResourceDisposition }
+export interface S3Outcome { state: string; cleanup: "verified" | "unknown"; complete: boolean; facts: S3Fact[]; policy_observation: string | null; provenance: "synthetic" | "runner_reported"; independent_observations: 0; audit: "not_collected" | "authenticated_retrieval"; resource_disposition: ResourceDisposition }
 export interface S3Operation { phase: S3Phase; operation_job_id: string; review_digest: string; run_ids: string[]; outcome: S3Outcome; outcome_digest: string }
-export interface S3Exercise { schema_version: "bluefire.s3-exercise.v1" | "bluefire.s3-exercise.v2"; workflow_job_id: string; context_digest: string; environment: S3Environment; revision: number; policy_state: string; stopped: boolean; operations: S3Operation[]; active_job: { job_id: string; state: string; request: { s3_access: { workflow_job_id: string; phase: S3Phase; review: { review_digest: string } } } } | null; allowed_phases: S3Phase[]; saved_result_recovery_available: boolean; remaining: Record<string, number>; problem: string | null; audit: "not_collected"; resource_disposition: ResourceDisposition; independent_observations: 0; live_outcome_verified: false; fixture_state?: FixtureState; fixtures?: FixtureReceipt[]; policy_retention?: PolicyRetention | null }
+export interface S3Exercise { schema_version: "bluefire.s3-exercise.v1" | "bluefire.s3-exercise.v2" | "bluefire.s3-exercise.v3"; workflow_job_id: string; context_digest: string; environment: S3Environment; revision: number; policy_state: string; stopped: boolean; operations: S3Operation[]; active_job: { job_id: string; state: string; request: { s3_access: { workflow_job_id: string; phase: S3Phase; review: { review_digest: string } } } } | null; allowed_phases: S3Phase[]; saved_result_recovery_available: boolean; remaining: Record<string, number>; problem: string | null; audit: "not_collected" | "authenticated_retrieval"; resource_disposition: ResourceDisposition; independent_observations: 0; live_outcome_verified: false; fixture_state?: FixtureState; fixtures?: FixtureReceipt[]; policy_retention?: PolicyRetention | null; audit_collection?: AuditWorkspace }
 export interface S3List { schema_version: "bluefire.s3-exercise-list.v1"; exercises: Array<{ workflow_job_id: string; name: string; bucket: string; policy_state: string; updated_at: string }>; truncated: boolean }
-export interface S3Review { schema_version: "bluefire.s3-stage-review.v1" | "bluefire.s3-stage-review.v2"; workflow_job_id: string; phase: S3Phase; revision: number; review_digest: string; reserved: Record<string, number>; remaining: Record<string, number>; required_remaining: Record<string, number>; policy_change: { before: unknown; after: unknown } | null; prior_run_ids: string[]; fixture_lifecycle?: FixtureReview | null }
+export interface S3Review { schema_version: "bluefire.s3-stage-review.v1" | "bluefire.s3-stage-review.v2" | "bluefire.s3-stage-review.v3"; workflow_job_id: string; phase: S3Phase; revision: number; review_digest: string; reserved: Record<string, number>; remaining: Record<string, number>; required_remaining: Record<string, number>; policy_change: { before: unknown; after: unknown } | null; prior_run_ids: string[]; fixture_lifecycle?: FixtureReview | null; audit_collection?: AuditStageReview | null }
 export type S3Pending = { kind: "create"; owner: string; request: { submission_id: string; environment_id: string; context_digest: string } } | { kind: "stage"; owner: string; operation: string; request: { submission_id: string; phase: S3Phase; review_digest: string; reviewed_by: string } };
 const pendingKey = "bluefire.s3.pending.v1";
 const stopKey = "bluefire.s3.pending-stops.v1";
@@ -42,7 +44,8 @@ function validEnvironment(value: S3Environment) {
     && Array.isArray(value.scope.objects) && value.scope.objects.length <= 2
     && record(value.scope.limits) && budgetKeys.every(key => integer(value.scope.limits[key]))
     && record(value.baseline_policy) && (value.exclusive_writer_digest === null || hash(value.exclusive_writer_digest))
-    && (!Object.hasOwn(value, "fixture_lifecycle") || validFixtureEnrollment(value.fixture_lifecycle));
+    && (!Object.hasOwn(value, "fixture_lifecycle") || validFixtureEnrollment(value.fixture_lifecycle))
+    && (!Object.hasOwn(value, "audit_source") || Boolean(checkedAuditSourceDescriptor(value.audit_source)));
 }
 
 export function checkedEnvironments(value: S3Environments): S3Environments {
@@ -64,25 +67,26 @@ export function checkedList(value: S3List): S3List {
 }
 
 export function checkedExercise(value: S3Exercise, expected: string): S3Exercise {
-  const fixtures = value?.schema_version === "bluefire.s3-exercise.v2";
-  if ((!fixtures && value?.schema_version !== "bluefire.s3-exercise.v1") || value.workflow_job_id !== expected || !validS3Job(expected)
+  const audit = value?.schema_version === "bluefire.s3-exercise.v3";
+  const fixtures = value?.schema_version === "bluefire.s3-exercise.v2" || audit && value.environment?.fixture_lifecycle !== undefined;
+  if ((!audit && !fixtures && value?.schema_version !== "bluefire.s3-exercise.v1") || value.workflow_job_id !== expected || !validS3Job(expected)
     || !hash(value.context_digest) || !integer(value.revision) || !validEnvironment(value.environment) || !policyStates.includes(value.policy_state)
     || typeof value.stopped !== "boolean" || typeof value.saved_result_recovery_available !== "boolean"
     || !budget(value.remaining) || !nullableProblem(value.problem) || !Array.isArray(value.operations)
     || value.operations.length > 150 || !Array.isArray(value.allowed_phases) || !unique(value.allowed_phases)
-    || value.allowed_phases.some(p => !s3Phases.includes(p)) || value.independent_observations !== 0
-    || value.live_outcome_verified !== false || value.audit !== "not_collected") throw invalid();
+    || value.allowed_phases.some(p => !s3Phases.includes(p) || !audit && isAuditPhase(p)) || value.independent_observations !== 0
+    || value.live_outcome_verified !== false || !(audit ? ["not_collected", "authenticated_retrieval"] : ["not_collected"]).includes(value.audit)
+    || !audit && Object.hasOwn(value, "audit_collection")) throw invalid();
   if (fixtures ? !validFixtureEnrollment(value.environment.fixture_lifecycle) || !validFixtureProjection(value)
     : value.resource_disposition !== "retained" || value.environment.fixture_lifecycle !== undefined
       || ["fixture_state", "fixtures", "policy_retention"].some(key => Object.hasOwn(value, key))
       || value.allowed_phases.some(isFixturePhase)) throw invalid();
-  if ((value.stopped && value.allowed_phases.some(phase => !["rollback", "reconcile", ...(fixtures ? ["cleanup", "reconcile_fixtures"] : [])].includes(phase)))
-    || (value.problem !== null && value.allowed_phases.length > 0)) throw invalid();
+  if (value.stopped && value.allowed_phases.some(phase => !["rollback", "reconcile", ...(fixtures ? ["cleanup", "reconcile_fixtures"] : [])].includes(phase))) throw invalid();
   const ids = new Set<string>();
   const runs = new Set<string>();
   for (const row of value.operations) {
     if (!row || !validS3Job(row.operation_job_id) || row.operation_job_id === expected || ids.has(row.operation_job_id)
-      || !s3Phases.includes(row.phase) || (!fixtures && isFixturePhase(row.phase)) || !hash(row.review_digest) || !hash(row.outcome_digest)
+      || !s3Phases.includes(row.phase) || (!fixtures && isFixturePhase(row.phase)) || (!audit && isAuditPhase(row.phase)) || !hash(row.review_digest) || !hash(row.outcome_digest)
       || !Array.isArray(row.run_ids) || !row.run_ids.every(validS3Run) || !unique(row.run_ids)
       || row.run_ids.some(id => runs.has(id)) || row.run_ids.length > (["baseline", "retest"].includes(row.phase) || isFixturePhase(row.phase) ? 2 : 1)
       || !row.outcome || !outcomeStates.includes(row.outcome.state) || typeof row.outcome.complete !== "boolean"
@@ -93,7 +97,10 @@ export function checkedExercise(value: S3Exercise, expected: string): S3Exercise
         || (fact.reader === "probe" && fact.purpose !== "primary"))
       || !unique(row.outcome.facts.map(fact => `${fact.reader}:${fact.purpose}`))
       || (row.outcome.policy_observation !== null && !["matched_before", "matched_after", "drift"].includes(row.outcome.policy_observation))
-      || row.outcome.independent_observations !== 0 || row.outcome.audit !== "not_collected"
+      || row.outcome.independent_observations !== 0 || !(audit && isAuditPhase(row.phase) ? ["not_collected", "authenticated_retrieval"] : ["not_collected"]).includes(row.outcome.audit)
+      || (isAuditPhase(row.phase) && (row.outcome.facts.length !== 0 || row.outcome.policy_observation !== null
+        || !["observed", "failed", "uncertain"].includes(row.outcome.state)
+        || (row.outcome.audit === "authenticated_retrieval" && (row.outcome.state !== "observed" || row.outcome.cleanup !== "verified" || row.outcome.provenance !== "runner_reported"))))
       || !(fixtures ? ["not_prepared", "retained", "cleanup_required", "removed"] : ["retained"]).includes(row.outcome.resource_disposition)) throw invalid();
     ids.add(row.operation_job_id);
     row.run_ids.forEach(id => runs.add(id));
@@ -101,17 +108,25 @@ export function checkedExercise(value: S3Exercise, expected: string): S3Exercise
   const active = value.active_job;
   if (active !== null && (!active || !validS3Job(active.job_id) || active.job_id === expected || ids.has(active.job_id)
     || !jobStates.includes(active.state) || active.request?.s3_access?.workflow_job_id !== expected
-    || !s3Phases.includes(active.request.s3_access.phase) || (!fixtures && isFixturePhase(active.request.s3_access.phase)) || !hash(active.request.s3_access.review?.review_digest))) throw invalid();
-  if ((active && value.allowed_phases.length > 0) || (value.saved_result_recovery_available
-    && (!active || !["completed", "failed", "cancelled", "interrupted"].includes(active.state)))) throw invalid();
+    || !s3Phases.includes(active.request.s3_access.phase) || (!fixtures && isFixturePhase(active.request.s3_access.phase)) || (!audit && isAuditPhase(active.request.s3_access.phase)) || !hash(active.request.s3_access.review?.review_digest))) throw invalid();
+  if ((active && value.allowed_phases.length > 0) || (active && value.saved_result_recovery_available
+    && !["completed", "failed", "cancelled", "interrupted"].includes(active.state))) throw invalid();
+  if (value.saved_result_recovery_available && !active) {
+    const hasFinalizedAuditRecheck = audit && value.audit_collection?.slots.some(slot => slot.state === "failed"
+      && slot.problem === "phase_consumed" && slot.operation_job_id !== null
+      && value.operations.some(row => row.operation_job_id === slot.operation_job_id && row.phase === slot.stage && row.outcome.cleanup === "unknown"));
+    if (!hasFinalizedAuditRecheck) throw invalid();
+  }
   const last = value.operations.at(-1);
   if (last && last.outcome.cleanup !== "verified" && value.allowed_phases.length > 0) throw invalid();
+  if (audit) checkedAuditWorkspace(value.audit_collection, value);
   return value;
 }
 
 export function checkedReview(value: S3Review, owner: string, phase: S3Phase): S3Review {
-  const fixtures = value?.schema_version === "bluefire.s3-stage-review.v2";
-  if ((!fixtures && value?.schema_version !== "bluefire.s3-stage-review.v1") || !validS3Job(owner) || !s3Phases.includes(phase)
+  const audit = value?.schema_version === "bluefire.s3-stage-review.v3";
+  const fixtures = value?.schema_version === "bluefire.s3-stage-review.v2" || audit;
+  if ((!audit && !fixtures && value?.schema_version !== "bluefire.s3-stage-review.v1") || !validS3Job(owner) || !s3Phases.includes(phase) || (!audit && isAuditPhase(phase))
     || value.workflow_job_id !== owner || value.phase !== phase || !hash(value.review_digest) || !integer(value.revision)
     || !budget(value.remaining) || !budget(value.reserved) || !budget(value.required_remaining)
     || budgetKeys.some(key => value.required_remaining[key]! < value.reserved[key]! || value.required_remaining[key]! > value.remaining[key]!)
@@ -122,7 +137,28 @@ export function checkedReview(value: S3Review, owner: string, phase: S3Phase): S
       : value.policy_change !== null)) throw invalid();
   if (fixtures ? isFixturePhase(phase) ? !validFixtureReview(value.fixture_lifecycle) : value.fixture_lifecycle !== null
     : isFixturePhase(phase) || Object.hasOwn(value, "fixture_lifecycle")) throw invalid();
+  if (audit) {
+    if (isAuditPhase(phase)) {
+      const collection = checkedAuditStageReview(value.audit_collection, owner, phase);
+      if (collection.original_pair.reads.some(read => !value.prior_run_ids.includes(read.run_id)) || value.reserved.api_calls !== 9 || value.reserved.sessions !== 1 || ["business_attempts", "policy_changes", "rollbacks"].some(key => value.reserved[key] !== 0)) throw invalid();
+    } else if (value.audit_collection !== null) throw invalid();
+  } else if (Object.hasOwn(value, "audit_collection")) throw invalid();
   return value;
+}
+
+export function s3StageAvailable(value: S3Exercise, phase: S3Phase): boolean {
+  if (!value.allowed_phases?.includes(phase)) return false;
+  if (!isAuditPhase(phase)) return true;
+  if (value.stopped || value.active_job || value.saved_result_recovery_available) return false;
+  const slot = value.audit_collection?.slots.find(row => row.stage === phase);
+  return value.schema_version === "bluefire.s3-exercise.v3" && slot?.state === "ready" && slot.problem === null && slot.original_pair !== null;
+}
+
+export function s3ReviewCurrent(value: S3Exercise, review: S3Review): boolean {
+  if (review.workflow_job_id !== value.workflow_job_id || review.revision !== value.revision || !s3StageAvailable(value, review.phase)) return false;
+  if (!isAuditPhase(review.phase)) return true;
+  const slot = value.audit_collection?.slots.find(row => row.stage === review.phase);
+  return Boolean(review.schema_version === "bluefire.s3-stage-review.v3" && review.audit_collection && value.audit_collection && slot && review.audit_collection.source_digest === value.audit_collection.source_digest && sameAuditValue(review.audit_collection.source, value.audit_collection.source) && sameAuditValue(review.audit_collection.original_pair, slot.original_pair));
 }
 
 function validatePending(value: S3Pending): S3Pending {

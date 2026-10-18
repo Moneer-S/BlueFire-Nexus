@@ -4,13 +4,19 @@ import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import corpus from "../../../tests_platform/fixtures/s3_audit_reviews_v1.json" with { type: "json" };
 import exercise from "../../../tests_platform/fixtures/s3_audit_exercise_v1.json" with { type: "json" };
-import type { AssistanceContext, AssistanceEnvelope, AssistanceRequest } from "../../src/lib/assistance";
+import type { AssistanceEnvelope, AssistanceRequest } from "../../src/lib/assistance";
+import { checkedAuditAssistanceContext } from "../../src/lib/audit-assistance";
 
 const output = process.env.BLUEFIRE_S3_BROWSER_OUTPUT!;
 const review = corpus.cases[0]!.review;
 const owner = corpus.history.workflow_job_id;
 const selected = { kind: "s3_audit_review" as const, workflow_job_id: owner, review_id: review.review_id, review_digest: review.review_digest };
-const context: AssistanceContext = { schema_version: "bluefire.assistance-context.v1", selected, context_digest: `sha256:${"a".repeat(64)}`, capabilities: [], analysis_only: true, limitations: ["Operator imports do not independently prove collection or effective access."] };
+const context = checkedAuditAssistanceContext({ schema_version: "bluefire.assistance-context.v1", selected, context_digest: `sha256:${"a".repeat(64)}`, capabilities: [], analysis_only: true, limitations: ["Operator imports do not independently prove collection or effective access."], reference_summary: {
+  phase: review.source.phase, runner_source: review.source.provenance, cleanup: review.source.cleanup, collection_provenance: "operator_import",
+  reported_delivery_state: review.correlation.audit.reported_delivery_state, source_event_count: review.correlation.audit.source_event_count, counts: review.correlation.audit.counts,
+  reads: review.correlation.reads.map(row => ({ purpose: row.purpose, reader: row.reader, status: row.status, worker_outcome: row.worker_outcome, matched_event_count: row.audit_event_ids.length, full_object_bytes_proven: false })),
+  independent_collection_proven: false, effective_access_claim: false,
+} }, selected);
 const answer = "One imported record matches the synthetic read. Collection and effective access remain unproven.";
 const provider = { provider_id: "audit-browser-fixture", kind: "chat_completions", model: "synthetic-no-model-call", health: { state: "ready", credential_available: true } };
 

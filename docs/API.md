@@ -489,9 +489,25 @@ mutation-Origin requirements.
 | `POST /s3-access/exercises/{job_id}/review` | Review one `phase` against the current saved revision and remaining authority. |
 | `POST /s3-access/exercises/{job_id}/operations` | Submit the exact `phase`, `review_digest`, bounded `reviewed_by` and fresh canonical `submission_id`. |
 | `POST /s3-access/exercises/{job_id}/stop` | Stop new work and request cancellation of the original pending job; body `{}`. |
-| `POST /s3-access/exercises/{job_id}/recover` | Use already-sealed results or authenticated original-task recovery to adopt a finalized result into the same pristine or known-startup run; body `{}`. This never replays execution or renews approval. Missing, running or unavailable results remain unresolved; partial publication is refused. |
+| `POST /s3-access/exercises/{job_id}/recover` | Recover a pending original result or manually recheck the exact finalized original collection task when cleanup is unresolved; body `{}`. A finalized recheck never replays work, changes saved evidence, unlocks its consumed slot, or renews approval. |
+| `GET /s3-access/exercises/{job_id}/audit-reviews` | Read saved operator-import reviews and bounded collected-review summaries. |
+| `POST /s3-access/exercises/{job_id}/audit-reviews` | Save a local operator-import review; it does not initiate cloud retrieval. |
+| `GET /s3-access/exercises/{job_id}/audit-reviews/{review_id}` | Read one immutable imported or collected review. |
+| `GET /s3-access/exercises/{job_id}/audit-reviews/{review_id}/assistant-context` | Read the bounded, provenance-specific explanation context. |
 
-The phases are `inspect`, `baseline`, `apply`, `retest`, `reconcile` and `rollback`.
+Pending-result recovery uses already-sealed results or authenticated original-task
+recovery to adopt a finalized result into the same pristine or known-startup run.
+Missing, running or unavailable results remain unresolved; partial publication is
+refused. It never replays execution or renews approval.
+
+The phases are `inspect`, `baseline`, `apply`, `retest`, `reconcile`, `rollback`,
+`audit_baseline` and `audit_retest`. The audit phases collect bounded CloudTrail
+source data against the exact original read pair and configured source; they are
+separate from the operator-import review route above. Their authenticated
+retrieval provenance does not establish signature-chain integrity, complete
+delivery or defensive effectiveness. Production audit dispatch remains
+`DISPATCH_RELEASED = false`; no live cloud proof is established.
+
 A review distinguishes this stage's `reserved` budget from `required_remaining`,
 which also protects capacity for necessary fresh checks and bounded recovery.
 That allowance does not increase the scope or refund previous reservations.
@@ -502,7 +518,9 @@ cloud operation. Recovery refuses missing or mismatched original evidence.
 Missing enrollment remains unavailable. A saved review or its digest is not native
 execution authority. Synthetic test evidence is labeled separately from
 runner-reported observations; neither is an independent effectiveness claim.
-Cloud audit remains `not_collected`, and generated resources remain `retained`.
+Authenticated audit retrieval remains distinct from operator-imported evidence
+and does not prove log integrity, complete delivery or effectiveness. Generated
+resources remain `retained`.
 See [S3 access review](s3-access-review.md) for workflow and evidence boundaries.
 
 ## Effective file access

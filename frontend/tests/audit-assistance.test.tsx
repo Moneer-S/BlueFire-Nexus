@@ -9,14 +9,20 @@ import { S3Audit } from "../src/pages/S3Audit";
 import { api } from "../src/lib/api";
 import * as auditContext from "../src/lib/audit-assistance";
 import { checkedAuditHistory, checkedAuditReview, s3AuditApi, type AuditHistory, type AuditReview } from "../src/lib/s3-audit";
-import { assistanceJobId, matchesAssistanceReceipt, readAssistanceHistory, readAssistanceReceipt, type AssistanceContext, type AssistanceEnvelope, type AssistanceRequest } from "../src/lib/assistance";
+import { assistanceJobId, matchesAssistanceReceipt, readAssistanceHistory, readAssistanceReceipt, type AssistanceEnvelope, type AssistanceRequest } from "../src/lib/assistance";
 import { AssistanceProvider } from "../src/state/AssistanceContext";
 import { ProductProvider } from "../src/state/ProductContext";
 
 const owner = corpus.history.workflow_job_id;
 const review = checkedAuditReview(corpus.cases[0]!.review as AuditReview, owner, corpus.cases[0]!.review.review_id);
+if (review.schema_version !== "bluefire.s3-audit-review.v1") throw new Error("Expected imported fixture");
 const selected: auditContext.AuditAssistanceSelection = { kind: "s3_audit_review", workflow_job_id: owner, review_id: review.review_id, review_digest: review.review_digest };
-const context: AssistanceContext = { schema_version: "bluefire.assistance-context.v1", context_digest: `sha256:${"a".repeat(64)}`, selected, capabilities: [], analysis_only: true, limitations: ["Operator imports do not independently prove collection or effective access."] };
+const context = auditContext.checkedAuditAssistanceContext({ schema_version: "bluefire.assistance-context.v1", context_digest: `sha256:${"a".repeat(64)}`, selected, capabilities: [], analysis_only: true, limitations: ["Operator imports do not independently prove collection or effective access."], reference_summary: {
+  phase: review.source.phase, runner_source: review.source.provenance, cleanup: review.source.cleanup, collection_provenance: "operator_import",
+  reported_delivery_state: review.correlation.audit.reported_delivery_state, source_event_count: review.correlation.audit.source_event_count, counts: review.correlation.audit.counts,
+  reads: review.correlation.reads.map(row => ({ purpose: row.purpose, reader: row.reader, status: row.status, worker_outcome: row.worker_outcome, matched_event_count: row.audit_event_ids.length, full_object_bytes_proven: false })),
+  independent_collection_proven: false, effective_access_claim: false,
+} }, selected);
 const provider = { provider_id: "audit-provider", kind: "chat_completions", model: "unit-model" };
 
 function envelope(body: AssistanceRequest): AssistanceEnvelope {
@@ -39,6 +45,7 @@ it.each(["assist", "auto"] as const)("opens the actual saved audit in %s and ret
   await user.click((await screen.findAllByRole("button", { name: /Baseline reads.*Probe/ }))[0]!);
   await user.click(await screen.findByRole("button", { name: "Explain review" }));
   await waitFor(() => expect(get).toHaveBeenCalledWith(selected));
+  expect(screen.getByText("Operator-imported evidence. Collection is not independently verified. Explanation only; no cloud operations or changes.")).toBeInTheDocument();
   expect(submit).not.toHaveBeenCalled();
   expect(screen.queryByLabelText("Development activity")).not.toBeInTheDocument();
   await user.selectOptions(screen.getByLabelText("AI mode"), autonomy);

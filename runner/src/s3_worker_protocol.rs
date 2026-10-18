@@ -111,11 +111,14 @@ impl<'a> Conversation<'a> {
                 let mut ack = frame.clone();
                 ack["kind"] = json!("contained");
                 self.queue(&ack)?;
-                let mut secret = self
-                    .secret
-                    .take()
-                    .ok_or(())?
-                    .frame(self.reservation.binding().digest(), nonce);
+                let mut secret = self.secret.take().ok_or(())?.frame(
+                    self.reservation.binding().digest(),
+                    nonce,
+                    self.reservation
+                        .binding()
+                        .audit()
+                        .map(|_| self.reservation.digest()),
+                );
                 self.input_total += secret.len();
                 if secret.len() > 16 * 1024 || self.input_total > 128 * 1024 {
                     secret.fill(0);
@@ -133,12 +136,20 @@ impl<'a> Conversation<'a> {
                     .map_err(|_| ())?;
                 self.queue(&permit)?;
             }
+            Phase::Running if frame["kind"] == "discovery" => {
+                let acknowledgement = self
+                    .reservation
+                    .commit_discovery(bytes, driver.wall())
+                    .map_err(|_| ())?;
+                self.queue(&acknowledgement)?;
+            }
             Phase::Running if frame["kind"] == "result" => {
                 self.result = Some(
-                    WorkerResult::from_frame(
+                    WorkerResult::from_frame_with_discovery(
                         self.reservation.binding(),
                         bytes,
                         self.reservation.send_debits(),
+                        self.reservation.discovery(),
                     )
                     .map_err(|_| ())?,
                 );

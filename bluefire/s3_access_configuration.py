@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import s3_audit_collection_contract as audit
 from . import s3_fixture_contract as fixtures
 from .s3_access_contract import S3AccessError, S3AccessScope, digest, document, exact
 from .s3_access_policy import plan_hardening
 
 SCHEMA = "bluefire.s3-host-environments.v1"
 BOUND_SCHEMA = "bluefire.s3-host-environments.v3"
+AUDIT_SCHEMA = "bluefire.s3-host-environments.v4"
+_SETUP_REVIEW_WORKFLOW_JOB_ID = "job-" + "0" * 32
 _FIELDS = {
     "environment_id",
     "display_name",
@@ -57,7 +60,8 @@ def validate_configuration(
     row = document(value, limit=512 * 1024)
     exact(row, {"schema_version", "runner_id", "environments"}, "S3 host configuration")
     if (
-        row["schema_version"] not in (SCHEMA, "bluefire.s3-host-environments.v2", BOUND_SCHEMA)
+        row["schema_version"]
+        not in (SCHEMA, "bluefire.s3-host-environments.v2", BOUND_SCHEMA, AUDIT_SCHEMA)
         or row["runner_id"] != runner_id
     ):
         raise S3AccessError("S3 configuration belongs to another enrolled host")
@@ -67,7 +71,8 @@ def validate_configuration(
     identifiers: set[str] = set()
     ledgers: set[str] = set()
     buckets: set[tuple[str, str, str]] = set()
-    bound = row["schema_version"] == BOUND_SCHEMA
+    bound = row["schema_version"] in (BOUND_SCHEMA, AUDIT_SCHEMA)
+    audit_enabled = row["schema_version"] == AUDIT_SCHEMA
     for entry in entries:
         fixture_keys = (
             {"fixture_lifecycle"}
@@ -76,7 +81,12 @@ def validate_configuration(
             else set()
         )
         binding_keys = {"managed_profile_digest"} if bound else set()
-        exact(entry, _FIELDS | fixture_keys | binding_keys, "configured S3 environment")
+        audit_keys = {"audit_source"} if audit_enabled else set()
+        exact(
+            entry,
+            _FIELDS | fixture_keys | binding_keys | audit_keys,
+            "configured S3 environment",
+        )
         if bound:
             digest(entry["managed_profile_digest"])
         identifier = _identifier(entry["environment_id"])
@@ -100,6 +110,20 @@ def validate_configuration(
                 raise S3AccessError("Fixture enrollment has a different exclusive writer")
         digest(entry["runtime_digest"])
         digest(entry["worker_generation"])
+        if audit_enabled:
+            descriptor = audit.source(scope, entry["audit_source"])
+            if (
+                descriptor["managed_profile_digest"] != entry["managed_profile_digest"]
+                or descriptor["protected_runtime_digest"] != entry["runtime_digest"]
+                or descriptor["worker_generation"] != entry["worker_generation"]
+            ):
+                raise S3AccessError("Audit source differs from its enrolled profile or runtime")
+            audit.build_workflow(
+                scope,
+                descriptor,
+                workflow_job_id=_SETUP_REVIEW_WORKFLOW_JOB_ID,
+                environment_id=identifier,
+            )
         _path(entry["runtime_root"])
         ledger = _path(entry["ledger_root"])
         if ledger in ledgers:
