@@ -19,7 +19,7 @@ from .s3_access_admission import approved_request
 from .s3_access_contract import S3AccessError, S3AccessScope, document, exact
 from .s3_access_execution_contract import validate_execution as validate_execution
 from .s3_access_profile import validate_managed_s3_profile, validate_s3_host_binding
-from .s3_access_recovery import SCHEMA, validate_recovery_context
+from .s3_access_recovery import BOUND_SCHEMA, SCHEMA, validate_recovery_context
 from .s3_access_recovery import execution_manifest as _manifest
 from .s3_access_wire import S3WorkerRequest, timestamp
 from .util import canonical_json_bytes, content_hash
@@ -37,6 +37,7 @@ class S3AccessExecutor(Protocol):
         authorization: Mapping[str, Any],
         cancellation_event: threading.Event,
         before_dispatch: Callable[[dict[str, Any]], None] | None = None,
+        run_id: str | None = None,
     ) -> dict[str, Any]: ...
 
     def recover_original(
@@ -65,6 +66,7 @@ class _UnavailableExecutor:
         authorization: Mapping[str, Any],
         cancellation_event: threading.Event,
         before_dispatch: Callable[[dict[str, Any]], None] | None = None,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         return validate_execution(
             request,
@@ -204,6 +206,7 @@ class _ConfiguredExecutor(_UnavailableExecutor):
         authorization: Mapping[str, Any],
         cancellation_event: threading.Event,
         before_dispatch: Callable[[dict[str, Any]], None] | None = None,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         request = S3WorkerRequest.from_mapping(request.to_dict())
         request.assert_current(lambda: datetime.now(timezone.utc))
@@ -228,7 +231,10 @@ class _ConfiguredExecutor(_UnavailableExecutor):
             )
         client, sandbox, row = selected[0]
         profile = row["profile"]
-        manifest = _manifest(request, authorization, profile)
+        audited = authorization.get("schema_version") == "bluefire.s3-workflow-approval.v3"
+        if audited and run_id is None:
+            raise S3AccessError("A fresh audited task requires its saved run identity.")
+        manifest = _manifest(request, authorization, profile, run_id=run_id)
         task_id, request_hash = execution_task_identity(manifest, profile)
         approved_request(manifest, profile, task_id=task_id, now=datetime.now(timezone.utc))
         if not callable(before_dispatch):
@@ -237,7 +243,7 @@ class _ConfiguredExecutor(_UnavailableExecutor):
             context = validate_recovery_context(
                 request,
                 {
-                    "schema_version": SCHEMA,
+                    "schema_version": BOUND_SCHEMA if audited else SCHEMA,
                     "request_digest": request.digest,
                     "task_id": task_id,
                     "transport_request_hash": request_hash,

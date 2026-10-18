@@ -8,9 +8,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, cast
 
+from . import s3_audit_collection_contract as audit
 from . import s3_fixture_contract as fixtures
 from .runner_contracts import seal_manifest, seal_profile
-from .s3_access_contract import S3AccessError, digest, document, exact
+from .s3_access_configuration import AUDIT_SCHEMA
+from .s3_access_contract import S3AccessError, S3AccessScope, digest, document, exact
 from .s3_access_host_config import selected_environment
 from .s3_access_results import reviewer
 from .s3_access_wire import S3WorkerRequest, timestamp
@@ -18,6 +20,7 @@ from .util import canonical_json_bytes, content_hash
 
 ACTION = "owned.aws.s3_access.v1"
 SCHEMA = "bluefire.s3-access-admission.v1"
+AUDIT_ADMISSION_SCHEMA = "bluefire.s3-access-admission.v3"
 PROTOCOL = "bluefire.s3-access-launch.v1"
 _APPROVAL = {
     "schema_version",
@@ -43,6 +46,16 @@ _PHASES = {
     "prepare": {"prepare_fixture"},
     "reconcile_fixtures": {"reconcile_fixture"},
     "cleanup": {"cleanup_fixture"},
+}
+_AUDIT_PHASES = {
+    "audit_baseline": {"collect_audit"},
+    "audit_retest": {"collect_audit"},
+}
+_AUDIT_EXPIRY_RECOVERY = {
+    "reconcile_policy",
+    "rollback_policy",
+    "reconcile_fixture",
+    "cleanup_fixture",
 }
 
 
@@ -71,20 +84,30 @@ def approved_request(
     row = request.to_dict()
     fixture_request = row["schema_version"] == fixtures.REQUEST_SCHEMA
     workflow = params["workflow_approval"]
+    audited = (
+        isinstance(workflow, Mapping) and workflow.get("schema_version") == audit.APPROVAL_SCHEMA
+    )
     exact(
         workflow,
         _APPROVAL
+        | ({"audit_workflow_digest"} if audited else set())
         | ({"fixture_authority_digest", "fixture_intent_id"} if fixture_request else set()),
         "S3 workflow approval",
     )
     _require(
         workflow["schema_version"]
         == (
-            "bluefire.s3-workflow-approval.v2"
-            if fixture_request
-            else "bluefire.s3-workflow-approval.v1"
+            audit.APPROVAL_SCHEMA
+            if audited
+            else (
+                "bluefire.s3-workflow-approval.v2"
+                if fixture_request
+                else "bluefire.s3-workflow-approval.v1"
+            )
         )
     )
+    if audited:
+        digest(workflow["audit_workflow_digest"])
     if fixture_request:
         _require(
             workflow["fixture_authority_digest"] == row["fixture_authority_digest"]
@@ -102,10 +125,23 @@ def approved_request(
         _identifier(run)
     _require(len(runs) == len(set(runs)))
     row = request.to_dict()
+    phases = {**_PHASES, **_AUDIT_PHASES} if audited else _PHASES
     _require(
         isinstance(workflow["phase"], str)
-        and row["operation"] in _PHASES.get(workflow["phase"], set())
+        and row["operation"] in phases.get(workflow["phase"], set())
     )
+    if row["operation"] == "collect_audit":
+        collection = row["audit"]
+        pair = collection["original_pair"]
+        _require(
+            audited
+            and workflow["workflow_job_id"] == collection["workflow_job_id"]
+            and workflow["operation_job_id"] == collection["operation_job_id"]
+            and workflow["phase"] == "audit_" + pair["phase"]
+            and all(read["run_id"] in runs for read in pair["reads"])
+            and timestamp(manifest.get("requested_at")) == timestamp(collection["issued_at"])
+            and timestamp(manifest.get("expires_at")) == timestamp(collection["deadline"])
+        )
     change = row["policy_change"]
     _require(
         workflow["policy_change_digest"] == (content_hash(change) if change is not None else None)
@@ -199,6 +235,17 @@ class S3HostAdmission:
     ) -> S3HostAdmission:
         request, workflow = approved_request(manifest, profile, task_id=task_id, now=now)
         entry = selected_environment(configuration, request, workflow, profile)
+        audited = configuration["schema_version"] == AUDIT_SCHEMA
+        audit_workflow = (
+            audit.build_workflow(
+                S3AccessScope.from_mapping(request.to_dict()["scope"]),
+                entry["audit_source"],
+                workflow_job_id=workflow["workflow_job_id"],
+                environment_id=entry["environment_id"],
+            )
+            if audited
+            else None
+        )
         exact(
             issuer,
             {
@@ -232,10 +279,29 @@ class S3HostAdmission:
             timestamp(manifest["expires_at"]),
             timestamp(manifest["approval"]["expires_at"]),
         )
+        if (
+            audit_workflow is not None
+            and request.to_dict()["operation"] not in _AUDIT_EXPIRY_RECOVERY
+        ):
+            source_expires = timestamp(audit_workflow["source"]["expires_at"])
+            _require(now < source_expires)
+            expires = min(expires, source_expires)
+        if request.to_dict()["operation"] == "collect_audit":
+            collection = request.to_dict()["audit"]
+            _require(
+                timestamp(collection["issued_at"])
+                <= now
+                < expires
+                <= timestamp(collection["deadline"])
+            )
         return cls(
             canonical_json_bytes(
                 {
-                    "schema_version": "bluefire.s3-access-admission.v2" if fixture_host else SCHEMA,
+                    "schema_version": (
+                        AUDIT_ADMISSION_SCHEMA
+                        if audited
+                        else "bluefire.s3-access-admission.v2" if fixture_host else SCHEMA
+                    ),
                     "issuer": dict(issuer),
                     "manifest_digest": content_hash(manifest),
                     "profile_digest": content_hash(profile),
@@ -250,9 +316,16 @@ class S3HostAdmission:
                         "runtime_root": entry["runtime_root"],
                         "owner_uid": owner_uid,
                         **(
-                            {"fixture_lifecycle": entry["fixture_lifecycle"]}
-                            if fixture_host
-                            else {}
+                            {
+                                "audit_workflow": audit_workflow,
+                                "fixture_lifecycle": entry.get("fixture_lifecycle"),
+                            }
+                            if audited
+                            else (
+                                {"fixture_lifecycle": entry["fixture_lifecycle"]}
+                                if fixture_host
+                                else {}
+                            )
                         ),
                     },
                     "native_runner_digest": runner_digest,

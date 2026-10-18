@@ -7,6 +7,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
+from . import s3_audit_collection_contract as audit
+from . import s3_audit_workflow as audit_workflow
 from . import s3_fixture_contract as fixture_contract
 from . import s3_fixture_results as fixtures
 from .s3_access_contract import S3AccessError, S3AccessScope, digest, exact, timestamp
@@ -23,6 +25,7 @@ PHASES = {
     "reconcile": ("reconcile_policy",),
     "rollback": ("rollback_policy",),
     **fixtures.PHASES,
+    **audit_workflow.PHASES,
 }
 SEND_LIMITS = {
     "inspect_policy": 2,
@@ -32,6 +35,7 @@ SEND_LIMITS = {
     "rollback_policy": 4,
     "reconcile_policy": 2,
     **fixture_contract.SEND_LIMITS,
+    "collect_audit": 9,
 }
 TERMINAL = {"completed", "failed", "cancelled", "interrupted"}
 _REFERENCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", re.ASCII)
@@ -67,10 +71,12 @@ def environment(value: Any) -> dict[str, Any]:
     fixture_keys = (
         {"fixture_lifecycle"} if isinstance(value, dict) and "fixture_lifecycle" in value else set()
     )
+    audit_keys = {"audit_source"} if isinstance(value, dict) and "audit_source" in value else set()
     row = exact(
         value,
         {"environment_id", "display_name", "scope", "baseline_policy", "exclusive_writer_digest"}
-        | fixture_keys,
+        | fixture_keys
+        | audit_keys,
         "S3 environment",
     )
     if (
@@ -92,6 +98,8 @@ def environment(value: Any) -> dict[str, Any]:
         descriptor = fixture_contract.enrollment(scope, row["fixture_lifecycle"])
         if descriptor["exclusive_writer_digest"] != row["exclusive_writer_digest"]:
             raise S3AccessError("Fixture enrollment needs the same explicit exclusive writer.")
+    if audit_keys:
+        audit.source(scope, row["audit_source"])
     return {**row, "scope": scope.to_dict(), "baseline_policy": change.to_dict()["before"]}
 
 
@@ -102,7 +110,7 @@ def phase_budget(phase: str) -> dict[str, int]:
     return {
         "api_calls": sum(SEND_LIMITS[item] for item in PHASES[phase]),
         "business_attempts": 3 if reads else 0,
-        "sessions": 2 if reads else 0,
+        "sessions": 2 if reads else int(phase in audit_workflow.PHASES),
         "policy_changes": int(phase == "apply"),
         "rollbacks": int(phase == "rollback"),
     }
@@ -119,6 +127,14 @@ def required_remaining(owner: Mapping[str, Any], phase: str) -> dict[str, int]:
     future: tuple[str, ...]
     if phase == "apply":
         future = ("retest", "reconcile", "rollback", "reconcile")
+    elif phase in audit_workflow.PHASES:
+        future = (
+            ("rollback", "reconcile")
+            if remaining(owner)["rollbacks"] and latest(owner, "apply")
+            else ()
+        )
+        if owner["progress"]["policy_state"] in {"uncertain", "drift"}:
+            future = ("reconcile", *future)
     elif phase == "rollback":
         future = ("reconcile",)
     elif phase in {"retest", "reconcile"} and remaining(owner)["rollbacks"]:
@@ -132,10 +148,15 @@ def required_remaining(owner: Mapping[str, Any], phase: str) -> dict[str, int]:
         required = {name: amount + allowance[name] for name, amount in required.items()}
     if fixtures.enabled(owner):
         required["api_calls"] += fixtures.recovery_floor(owner, phase)
+    holds = audit_workflow.extra_holds(owner, phase, {phase, *future})
+    for name, amount in holds.items():
+        required[name] += amount
     return required
 
 
 def stage_affordable(owner: Mapping[str, Any], phase: str) -> bool:
+    if phase in audit_workflow.PHASES and not audit_workflow.retained(owner):
+        return False
     required = required_remaining(owner, phase)
     available = remaining(owner)
     return all(available[name] >= amount for name, amount in required.items())
@@ -146,7 +167,7 @@ def latest(owner: Mapping[str, Any], phase: str) -> Mapping[str, Any] | None:
     return rows[-1] if rows else None
 
 
-def allowed_phases(owner: Mapping[str, Any]) -> list[str]:
+def _ordinary_allowed_phases(owner: Mapping[str, Any]) -> list[str]:
     progress = owner["progress"]
     if progress.get("pending_operation"):
         return []
@@ -190,12 +211,43 @@ def allowed_phases(owner: Mapping[str, Any]) -> list[str]:
     return [phase for phase in choices if stage_affordable(owner, phase)]
 
 
+def allowed_phases(owner: Mapping[str, Any]) -> list[str]:
+    if not audit_workflow.enrolled(owner):
+        return _ordinary_allowed_phases(owner)
+    if not audit_workflow.retained(owner):
+        return [
+            phase for phase in _ordinary_allowed_phases(owner) if phase in fixtures.RECOVERY_PHASES
+        ]
+    if any(row["outcome"]["cleanup"] != "verified" for row in owner["progress"]["operations"]):
+        return []
+    ordinary = {
+        **owner,
+        "progress": {
+            **owner["progress"],
+            "operations": [
+                row
+                for row in owner["progress"]["operations"]
+                if row["phase"] not in audit_workflow.PHASES
+            ],
+        },
+    }
+    choices = _ordinary_allowed_phases(ordinary)
+    claims = owner["progress"]["audit_read_slots"]
+    choices = [phase for phase in choices if phase not in claims]
+    choices.extend(
+        stage
+        for stage in audit_workflow.PHASES
+        if audit_workflow.eligible(owner, stage) and stage_affordable(owner, stage)
+    )
+    return choices
+
+
 def assert_phase_current(scope: S3AccessScope, phase: str, now: datetime) -> None:
     scope.assert_current(clock=lambda: now)
     row = scope.to_dict()
-    if phase not in fixtures.RECOVERY_PHASES and now >= timestamp(row["created_at"]) + timedelta(
-        seconds=row["limits"]["business_seconds"]
-    ):
+    if phase not in fixtures.RECOVERY_PHASES | audit_workflow.PHASES.keys() and now >= timestamp(
+        row["created_at"]
+    ) + timedelta(seconds=row["limits"]["business_seconds"]):
         raise S3AccessError("The business window ended; only scoped recovery remains available.")
 
 
@@ -216,7 +268,12 @@ def outcome(phase: str, executions: Sequence[Mapping[str, Any]]) -> dict[str, An
     facts: list[dict[str, Any]] = []
     for execution in executions:
         result = execution["result"]
-        if result and result["outcome"] == "observed" and "objects" in result["data"]:
+        if (
+            phase not in audit_workflow.PHASES
+            and result
+            and result["outcome"] == "observed"
+            and "objects" in result["data"]
+        ):
             facts.extend(
                 {"reader": result["data"]["reader"], **item} for item in result["data"]["objects"]
             )
@@ -267,12 +324,18 @@ def outcome(phase: str, executions: Sequence[Mapping[str, Any]]) -> dict[str, An
             else "runner_reported"
         ),
         "independent_observations": 0,
-        "audit": "not_collected",
+        "audit": (
+            "authenticated_retrieval"
+            if phase in audit_workflow.PHASES and observed and cleanup == "verified"
+            else "not_collected"
+        ),
         "resource_disposition": "retained",
     }
 
 
-def review_document(owner: Mapping[str, Any], phase: str) -> dict[str, Any]:
+def review_document(
+    owner: Mapping[str, Any], phase: str, *, pair=None, listing_date=None
+) -> dict[str, Any]:
     selected = owner["request"]["environment"]
     scope = S3AccessScope.from_mapping(selected["scope"])
     change = plan_hardening(scope, selected["baseline_policy"])
@@ -296,6 +359,16 @@ def review_document(owner: Mapping[str, Any], phase: str) -> dict[str, Any]:
         value.update(
             schema_version="bluefire.s3-stage-review.v2",
             fixture_lifecycle=fixtures.review(owner, phase),
+        )
+    if audit_workflow.enrolled(owner):
+        value.update(
+            schema_version="bluefire.s3-stage-review.v3",
+            fixture_lifecycle=fixtures.review(owner, phase) if fixtures.enabled(owner) else None,
+            audit_collection=(
+                audit_workflow.stage_review(owner, phase, pair, listing_date)
+                if phase in audit_workflow.PHASES
+                else None
+            ),
         )
     return {**value, "review_digest": content_hash(value)}
 

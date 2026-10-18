@@ -8,13 +8,15 @@ import hashlib
 import zlib
 from typing import Any, Mapping
 
+from . import product_store_s3_access as records
+from . import s3_audit_workflow as audit_workflow
 from .product_store_assistance import job_at
 from .product_store_contracts import safe_document
 from .product_store_s3_access import owner_at
 from .product_store_serialization import canonical_json, utc_now
 from .s3_access_audit import correlate_reads
 from .s3_access_contract import S3AccessError, digest, exact
-from .s3_access_results import job_id, submission
+from .s3_access_results import OPERATION_KIND, job_id, submission
 from .util import canonical_json_bytes, content_hash
 
 KIND = "s3.audit.review"
@@ -118,7 +120,13 @@ def _checked_record(record, owner_id: str, sources: list[dict[str, Any]]) -> dic
 
 def read_review(jobs, owner_id: str, review_id: str) -> Mapping[str, Any]:
     sources = _sources(jobs, owner_id)
-    return _checked_record(jobs.store.get_job(job_id(review_id)), owner_id, sources)
+    record = jobs.store.get_job(job_id(review_id))
+    if record["kind"] == OPERATION_KIND:
+        collected = records.checked_collected_review(jobs.store, owner_id, review_id)
+        if not isinstance(collected, Mapping):
+            raise S3AccessError("Saved collected review is unavailable.")
+        return collected
+    return _checked_record(record, owner_id, sources)
 
 
 def list_reviews(jobs, owner_id: str) -> Mapping[str, Any]:
@@ -144,7 +152,7 @@ def list_reviews(jobs, owner_id: str) -> Mapping[str, Any]:
                 "statuses": [read["status"] for read in reads],
             }
         )
-    return {
+    value = {
         "schema_version": "bluefire.s3-audit-reviews.v1",
         "workflow_job_id": owner_id,
         "reads": [row["source"] for row in sources],
@@ -155,6 +163,44 @@ def list_reviews(jobs, owner_id: str) -> Mapping[str, Any]:
         "collection_provenance": "operator_import",
         "independent_collection_proven": False,
     }
+    owner = jobs._owner(owner_id)
+    if audit_workflow.enrolled(owner):
+        collections = []
+        for operation in owner["progress"]["operations"]:
+            if operation["phase"] not in audit_workflow.PHASES:
+                continue
+            child = jobs.store.get_job(operation["operation_job_id"])
+            if child["progress"].get("collected_review") is None:
+                continue
+            review = records.checked_collected_review(jobs.store, owner_id, child["job_id"])
+            data = review["receipt"]["result"]["data"]
+            collections.append(
+                {
+                    "review_id": review["review_id"],
+                    "created_at": review["created_at"],
+                    "review_digest": review["review_digest"],
+                    "phase": review["phase"],
+                    "collection_run_id": review["collection_run_id"],
+                    "original_run_ids": [row["run_id"] for row in review["original_pair"]["reads"]],
+                    "reported_delivery_state": data["delivery_state"],
+                    "statuses": [
+                        row["status"]
+                        for reader in ("probe", "legitimate")
+                        for row in data["correlations"][reader]["reads"]
+                    ],
+                    "collection_provenance": "authenticated_source_retrieval",
+                }
+            )
+        if len(collections) > 2 or len({row["phase"] for row in collections}) != len(collections):
+            raise S3AccessError("The collected phase history exceeds its immutable slots.")
+        value.update(
+            schema_version="bluefire.s3-audit-reviews.v2",
+            collections=collections,
+            maximum_collections=2,
+        )
+        del value["collection_provenance"]
+        del value["independent_collection_proven"]
+    return value
 
 
 def save_review(jobs, owner_id: str, value: Mapping[str, Any]) -> Mapping[str, Any]:

@@ -11,15 +11,17 @@ from .runner_lifecycle import RunnerLifecycleError
 from .runner_transport import AuthenticatedRunnerClient
 from .runner_transport_errors import RunnerTransportError
 from .s3_access_admission import ACTION
-from .s3_access_configuration import _identifier, _path, validate_configuration
-from .s3_access_contract import S3AccessError, digest, document, exact
+from .s3_access_configuration import AUDIT_SCHEMA, _identifier, _path, validate_configuration
+from .s3_access_contract import S3AccessError, S3AccessScope, digest, document, exact
 from .s3_access_profile import validate_s3_host_binding, validate_s3_profile_binding
 from .s3_access_setup_status import _result, validate_status
+from .s3_audit_collection_contract import source as validate_audit_source
 from .util import content_hash
 
 SCHEMA = "bluefire.s3-onboarding.v1"
 CHECK_SCHEMA = "bluefire.s3-onboarding-check.v1"
 DRAFT_SCHEMA = "bluefire.s3-onboarding-draft-review.v1"
+DRAFT_AUDIT_SCHEMA = "bluefire.s3-onboarding-draft-review.v2"
 MAX_DRAFT_BYTES = 128 * 1024
 
 
@@ -178,23 +180,33 @@ def review_draft(service: Any, request: Mapping[str, Any]) -> Mapping[str, Any]:
             "The configuration must contain only the supported S3 scope, policy, dedicated profile and local runtime references. Credentials and extra fields are not accepted.",
         ) from None
     _selected(service, profile_id, expected)
+    audit_enabled = row["schema_version"] == AUDIT_SCHEMA
+    environments = []
+    for entry in row["environments"]:
+        environment = {
+            "environment_id": entry["environment_id"],
+            "display_name": entry["display_name"],
+            "account_id": entry["scope"]["account_id"],
+            "region": entry["scope"]["region"],
+            "bucket": entry["scope"]["bucket"],
+            "expires_at": entry["scope"]["expires_at"],
+            "fixture_generation": 2 if "fixture_lifecycle" in entry else 1,
+        }
+        if audit_enabled:
+            environment["audit_source"] = validate_audit_source(
+                S3AccessScope.from_mapping(entry["scope"]), entry["audit_source"]
+            )
+            environment["audit_collection"] = {
+                "state": "unavailable",
+                "reason": "collection_not_enabled",
+            }
+        environments.append(environment)
     return {
-        "schema_version": DRAFT_SCHEMA,
+        "schema_version": DRAFT_AUDIT_SCHEMA if audit_enabled else DRAFT_SCHEMA,
         "profile_id": profile_id,
         "profile_digest": expected,
         "validation_scope": "structural_only",
         "source_sha256": "sha256:" + hashlib.sha256(source).hexdigest(),
         "configuration_digest": content_hash(row),
-        "environments": [
-            {
-                "environment_id": entry["environment_id"],
-                "display_name": entry["display_name"],
-                "account_id": entry["scope"]["account_id"],
-                "region": entry["scope"]["region"],
-                "bucket": entry["scope"]["bucket"],
-                "expires_at": entry["scope"]["expires_at"],
-                "fixture_generation": 2 if "fixture_lifecycle" in entry else 1,
-            }
-            for entry in row["environments"]
-        ],
+        "environments": environments,
     }

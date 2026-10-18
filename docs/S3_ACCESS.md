@@ -280,7 +280,25 @@ access remain unproven. The exercise's `audit: not_collected` field and original
 execution grants are unchanged. This feature makes no AWS calls, enrolls no audit
 collector, and does not deploy detections or prove a defensive change.
 
-The cross-language audit corpus is generated from the synthetic saved-store test
+## Bounded Authenticated Audit Retrieval
+
+The v3 workspace also defines separate `audit_baseline` and `audit_retest`
+stages. They bind bounded CloudTrail listing and selected-object retrieval to the
+configured source and the exact original read pair. Collected reviews retain
+minimized projections and source bindings, not raw audit bytes. Their
+`authenticated_source_retrieval` provenance is distinct from `operator_import`;
+authentication of retrieval does not establish CloudTrail signature-chain
+integrity, full-object integrity, complete delivery, effective access or
+defensive effectiveness.
+
+Production collection dispatch is `DISPATCH_RELEASED = false`. No live AWS audit
+retrieval or cloud proof is established; synthetic tests and browser fixtures
+verify software behavior only. When a finalized collection has unknown cleanup,
+the explicit original-task check examines only that exact task. It never replays
+collection, changes the immutable result, unlocks the consumed audit slot or
+renews approval. The check does not turn unknown cleanup into success.
+
+The cross-language operator-import audit corpus is generated from the synthetic saved-store test
 executor. Its compressed inputs contain only generated CloudTrail-shaped records
 for the example account `123456789012` and the `bluefire-owned-fixture` bucket.
 The two exact encoded samples and the negative test's explicit synthetic password

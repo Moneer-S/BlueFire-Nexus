@@ -74,8 +74,14 @@ pub(super) fn validate(
     now: DateTime<FixedOffset>,
 ) -> Result<VerifiedS3Admission, String> {
     fields(admission, "schema_version issuer manifest_digest profile_digest request_digest approval_digest host native_runner_digest credential_digest issued_at expires_at")?;
-    let fixture_enrolled = admission["schema_version"] == "bluefire.s3-access-admission.v2";
-    require(fixture_enrolled || admission["schema_version"] == "bluefire.s3-access-admission.v1")?;
+    let audited = admission["schema_version"] == "bluefire.s3-access-admission.v3";
+    let fixture_enrolled = admission["schema_version"] == "bluefire.s3-access-admission.v2"
+        || (audited && !admission["host"]["fixture_lifecycle"].is_null());
+    require(
+        audited
+            || fixture_enrolled
+            || admission["schema_version"] == "bluefire.s3-access-admission.v1",
+    )?;
     fields(
         expected_issuer,
         "runner_id client_id enrollment_generation peer_fingerprint",
@@ -108,17 +114,20 @@ pub(super) fn validate(
     )?;
     let workflow = &manifest["params"]["workflow_approval"];
     let fixture = binding.fixture();
-    fields(
-        workflow,
-        if fixture.is_some() {
-            "schema_version workflow_job_id operation_job_id environment_id scope_digest request_digest phase reviewed_by review_digest expected_workflow_revision prior_run_ids policy_change_digest fixture_authority_digest fixture_intent_id"
-        } else {
-            "schema_version workflow_job_id operation_job_id environment_id scope_digest request_digest phase reviewed_by review_digest expected_workflow_revision prior_run_ids policy_change_digest"
-        },
-    )?;
+    let mut workflow_fields = String::from(if fixture.is_some() {
+        "schema_version workflow_job_id operation_job_id environment_id scope_digest request_digest phase reviewed_by review_digest expected_workflow_revision prior_run_ids policy_change_digest fixture_authority_digest fixture_intent_id"
+    } else {
+        "schema_version workflow_job_id operation_job_id environment_id scope_digest request_digest phase reviewed_by review_digest expected_workflow_revision prior_run_ids policy_change_digest"
+    });
+    if audited {
+        workflow_fields.push_str(" audit_workflow_digest");
+    }
+    fields(workflow, &workflow_fields)?;
     require(
         workflow["schema_version"]
-            == if fixture.is_some() {
+            == if audited {
+                "bluefire.s3-workflow-approval.v3"
+            } else if fixture.is_some() {
                 "bluefire.s3-workflow-approval.v2"
             } else {
                 "bluefire.s3-workflow-approval.v1"
@@ -164,6 +173,7 @@ pub(super) fn validate(
         "prepare" => &["prepare_fixture"],
         "reconcile_fixtures" => &["reconcile_fixture"],
         "cleanup" => &["cleanup_fixture"],
+        "audit_baseline" | "audit_retest" if audited => &["collect_audit"],
         _ => return Err(REFUSAL.into()),
     };
     require(operations.contains(&binding.operation()))?;
@@ -176,7 +186,9 @@ pub(super) fn validate(
     let host = &admission["host"];
     fields(
         host,
-        if fixture_enrolled {
+        if audited {
+            "environment_id scope_digest runtime_digest worker_generation ledger_root runtime_root owner_uid fixture_lifecycle audit_workflow"
+        } else if fixture_enrolled {
             "environment_id scope_digest runtime_digest worker_generation ledger_root runtime_root owner_uid fixture_lifecycle"
         } else {
             "environment_id scope_digest runtime_digest worker_generation ledger_root runtime_root owner_uid"
@@ -188,10 +200,36 @@ pub(super) fn validate(
     } else {
         None
     };
+    let audit_workflow = if audited {
+        let checked = crate::s3_audit_binding::AuditWorkflow::from_json(
+            canonical_json(&host["audit_workflow"]).as_bytes(),
+            binding.scope(),
+            binding.runtime_digest(),
+            binding.worker_generation(),
+        )
+        .map_err(|_| REFUSAL)?;
+        digest(&workflow["audit_workflow_digest"])?;
+        require(
+            workflow["audit_workflow_digest"] == checked.digest()
+                && workflow["workflow_job_id"] == checked.workflow_id()
+                && workflow["environment_id"] == checked.environment_id(),
+        )?;
+        Some(checked)
+    } else {
+        None
+    };
     let owner_uid = host["owner_uid"]
         .as_u64()
         .filter(|uid| (1..u32::MAX as u64).contains(uid))
         .ok_or(REFUSAL)? as u32;
+    if let Some(collection) = binding.audit() {
+        collection.matches_workflow(
+            audit_workflow.as_ref().ok_or(REFUSAL)?,
+            text(&workflow["operation_job_id"])?,
+            phase,
+        )?;
+        collection.matches_prior_runs(runs)?;
+    }
     require(
         host["environment_id"] == workflow["environment_id"]
             && host["scope_digest"] == binding.scope_digest()
@@ -200,6 +238,17 @@ pub(super) fn validate(
     )?;
     let issued = time(&admission["issued_at"])?;
     let expires = time(&admission["expires_at"])?;
+    if let Some(collection) = binding.audit() {
+        collection.admission_interval(issued, expires)?;
+    }
+    if let Some(audit) = &audit_workflow {
+        if !matches!(
+            binding.operation(),
+            "reconcile_policy" | "rollback_policy" | "reconcile_fixture" | "cleanup_fixture"
+        ) {
+            require(now < *audit.source_expires_at() && expires <= *audit.source_expires_at())?;
+        }
+    }
     require(
         issued <= now
             && now < expires
@@ -251,6 +300,7 @@ pub(super) fn validate(
     )?;
     Ok(VerifiedS3Admission {
         manifest: typed_manifest,
+        manifest_digest: text(&admission["manifest_digest"])?.into(),
         profile: typed_profile,
         binding,
         enrollment_digest: canonical_hash(expected_issuer),
@@ -261,6 +311,8 @@ pub(super) fn validate(
         phase: phase.into(),
         revision,
         fixture_authority_digest,
+        audit_workflow,
+        profile_digest: text(&admission["profile_digest"])?.into(),
         owner_uid,
         ledger_root: path(&host["ledger_root"])?,
         runtime_root: path(&host["runtime_root"])?,

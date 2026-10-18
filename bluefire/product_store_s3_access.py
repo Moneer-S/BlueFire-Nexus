@@ -8,6 +8,8 @@ import uuid
 from contextlib import contextmanager
 from typing import Any, Mapping
 
+from . import s3_audit_collection_contract as audit
+from . import s3_audit_workflow as audit_workflow
 from . import s3_fixture_results as fixtures
 from .product_store_assistance import job_at, patch
 from .product_store_contracts import safe_document
@@ -54,6 +56,12 @@ def create_owner(store, document, *, submission_id: str, intent_digest: str):
             "policy_state": "baseline",
             "stopped": False,
         }
+        if "audit_source" in safe["environment"]:
+            progress.update(
+                audit_workflow.initial(
+                    {"job_id": identifier, "request": safe, "progress": progress}
+                )
+            )
         now = utc_now()
         connection.execute(
             "INSERT INTO jobs(job_id,kind,state,request_json,progress_json,created_at,updated_at) VALUES(?,?,'completed',?,?,?,?)",
@@ -70,7 +78,19 @@ def publication_guard(store, connection, kind: str, document: Mapping[str, Any])
     phase = marker["phase"]
     submitted = document["submitted_request"]
     validate_requests(owner, document)
-    expected = review_document(owner, phase)
+    pair, host_digest = (None, None)
+    if phase in audit_workflow.PHASES:
+        pair, host_digest = _collection_pair(store, connection, owner, phase.removeprefix("audit_"))
+        if marker.get("audit_original_host_digest") != host_digest:
+            raise ProductStoreError("The collection differs from its original authenticated host.")
+    expected = review_document(
+        owner,
+        phase,
+        pair=pair,
+        listing_date=(
+            marker["review"]["audit_collection"]["listing_date"] if pair is not None else None
+        ),
+    )
     if (
         phase not in allowed_phases(owner)
         or marker["review"] != expected
@@ -105,6 +125,33 @@ def publication_guard(store, connection, kind: str, document: Mapping[str, Any])
             raise ProductStoreError("Another saved S3 operation has this bucket reserved.")
     budget = phase_budget(phase)
     used = owner["progress"].get("reserved", {})
+    claims = {}
+    if audit_workflow.enrolled(owner):
+        retained = audit_workflow.retained(owner)
+        if not retained and phase not in fixtures.RECOVERY_PHASES:
+            raise ProductStoreError("Historical work cannot adopt audit authority.")
+        if retained and phase in {"baseline", "retest"}:
+            slots = owner["progress"]["audit_read_slots"]
+            if phase in slots:
+                raise ProductStoreError("An original audited read stage cannot be replaced.")
+            claims["audit_read_slots"] = {
+                **slots,
+                phase: {"operation_job_id": marker["operation_job_id"]},
+            }
+        elif retained and phase in audit_workflow.PHASES:
+            original = phase.removeprefix("audit_")
+            slots = owner["progress"]["audit_slots"]
+            if original in slots:
+                raise ProductStoreError("This paired audit slot is already reserved.")
+            claims["audit_slots"] = {
+                **slots,
+                original: {
+                    "operation_job_id": marker["operation_job_id"],
+                    "review_digest": expected["review_digest"],
+                    "pair_digest": content_hash(pair),
+                    "source_digest": expected["audit_collection"]["source_digest"],
+                },
+            }
     patch(
         connection,
         owner,
@@ -112,6 +159,7 @@ def publication_guard(store, connection, kind: str, document: Mapping[str, Any])
             "revision": owner["progress"]["revision"] + 1,
             "pending_operation": marker["operation_job_id"],
             "reserved": {key: used.get(key, 0) + value for key, value in budget.items()},
+            **claims,
         },
     )
 
@@ -145,7 +193,19 @@ def validate_requests(owner, document) -> list[S3WorkerRequest]:
             "exclusive_writer_digest": (
                 selected["exclusive_writer_digest"] if phase in {"apply", "rollback"} else None
             ),
-            **fixtures.request_fields(owner, phase, index, marker["review"]),
+            **(
+                audit_workflow.request_fields(
+                    owner,
+                    phase,
+                    marker["review"]["audit_collection"],
+                    operation_id,
+                    row["launch_id"],
+                    row["request_id"],
+                    row["audit"]["issued_at"],
+                )
+                if phase in audit_workflow.PHASES
+                else fixtures.request_fields(owner, phase, index, marker["review"])
+            ),
         }
         if any(row[key] != value for key, value in expected.items()):
             raise ProductStoreError(
@@ -168,6 +228,8 @@ def guard_execution(store, operation_id: str) -> Mapping[str, Any]:
             )
         ):
             raise ProductStoreError("This S3 operation is no longer the active saved stage.")
+        if marker["phase"] in audit_workflow.PHASES:
+            _check_collection_document(store, connection, owner, child["request"])
         return owner
 
 
@@ -194,6 +256,18 @@ def workflow_approval(owner, operation_id, document, request) -> dict[str, Any]:
             schema_version="bluefire.s3-workflow-approval.v2",
             fixture_authority_digest=payload["fixture_authority_digest"],
             fixture_intent_id=payload["fixture"]["intent_id"],
+        )
+    selected = owner["request"]["environment"]
+    if "audit_source" in selected:
+        commitment = audit.build_workflow(
+            S3AccessScope.from_mapping(selected["scope"]),
+            selected["audit_source"],
+            workflow_job_id=owner["job_id"],
+            environment_id=selected["environment_id"],
+        )
+        value.update(
+            schema_version=audit.APPROVAL_SCHEMA,
+            audit_workflow_digest=content_hash(commitment),
         )
     return value
 
@@ -224,6 +298,17 @@ def original_task_context(owner, child, run_id, request, value) -> dict[str, Any
         or checked["profile"]["profile_id"] != owner["request"]["runtime"]["runner_profile_id"]
     ):
         raise ProductStoreError("The original S3 task differs from its saved approval or host.")
+    if (
+        checked["schema_version"] == "bluefire.s3-original-task.v2"
+        and checked["manifest"]["run_id"] != run_id
+    ):
+        raise ProductStoreError("The original task differs from its immutable run identity.")
+    if request.to_dict()["operation"] == "collect_audit" and (
+        checked["schema_version"] != "bluefire.s3-original-task.v2"
+        or content_hash({name: checked[name] for name in ("profile", "transport_identity")})
+        != child["request"]["s3_access"].get("audit_original_host_digest")
+    ):
+        raise ProductStoreError("Collection cannot adopt a replacement original host.")
     return checked
 
 
@@ -241,6 +326,13 @@ def retain_original_task(store, operation_id, run_id, request, value) -> None:
         ):
             raise ProductStoreError("The original S3 task no longer has an active reservation.")
         checked = original_task_context(owner, child, run_id, request, value)
+        if (
+            audit_workflow.enrolled(owner)
+            and checked["schema_version"] != "bluefire.s3-original-task.v2"
+        ):
+            raise ProductStoreError("New audited tasks require their exact immutable run identity.")
+        if marker["phase"] in audit_workflow.PHASES:
+            _check_collection_document(store, connection, owner, child["request"])
         retained = child["progress"].get("original_tasks", {})
         if not isinstance(retained, dict) or set(retained) - set(child["progress"]["run_ids"]):
             raise ProductStoreError("The original S3 task checkpoint is invalid.")
@@ -261,6 +353,8 @@ def result_publication(store, operation_id, run_id, request, execution):
         validate_run_request(owner, child, run_id, request)
         if owner["progress"].get("pending_operation") != operation_id:
             raise ProductStoreError("The original S3 result no longer owns its reservation.")
+        if child["request"]["s3_access"]["phase"] in audit_workflow.PHASES:
+            _check_collection_document(store, connection, owner, child["request"])
         if execution["provenance"] != "synthetic" and execution["dispatch"] != "not_started":
             retained = child["progress"].get("original_tasks", {})
             if not isinstance(retained, dict) or run_id not in retained:
@@ -278,6 +372,8 @@ def finish(
         owner = owner_at(store, connection, marker["workflow_job_id"])
         phase = marker["phase"]
         requests = validate_requests(owner, child["request"])
+        if phase in audit_workflow.PHASES:
+            _check_collection_document(store, connection, owner, child["request"])
         if child["kind"] != OPERATION_KIND or marker["operation_job_id"] != operation_id:
             raise ProductStoreError("The S3 result belongs to another operation.")
         if (
@@ -339,6 +435,16 @@ def finish(
             return old
         if owner["progress"].get("pending_operation") != operation_id:
             raise ProductStoreError("The S3 reservation belongs to another operation.")
+        if (
+            phase in audit_workflow.PHASES
+            and summary["state"] == "observed"
+            and summary["cleanup"] == "verified"
+        ):
+            review = collected_review_document(store, connection, owner, child, value)
+            prior = child["progress"].get("collected_review")
+            if prior is not None and prior != review:
+                raise ProductStoreError("The collection already has different immutable evidence.")
+            patch(connection, child, {"collected_review": review})
         policy = owner["progress"]["policy_state"]
         if summary["cleanup"] == "verified" and summary["state"] == "observed":
             if phase == "apply" or summary["policy_observation"] == "matched_after":
@@ -363,6 +469,222 @@ def finish(
             },
         )
         return value
+
+
+def _collection_pair(store, connection, owner, phase):
+    if phase not in {"baseline", "retest"} or not audit_workflow.pair_available(owner, phase):
+        raise ProductStoreError("Both clean original read results are required.")
+    identifier = owner["progress"]["audit_read_slots"][phase]["operation_job_id"]
+    matches = [
+        row for row in owner["progress"]["operations"] if row["operation_job_id"] == identifier
+    ]
+    if len(matches) != 1:
+        raise ProductStoreError("The original paired operation is ambiguous.")
+    outcome = matches[0]
+    if outcome["outcome_digest"] != content_hash(
+        {key: value for key, value in outcome.items() if key != "outcome_digest"}
+    ):
+        raise ProductStoreError("The original paired outcome changed.")
+    child = job_at(store, connection, identifier)
+    marker = child["request"]["s3_access"]
+    if (
+        child["state"] not in {"completed", "failed", "cancelled", "interrupted"}
+        or marker["phase"] != phase
+    ):
+        raise ProductStoreError("The original paired operation has not settled.")
+    requests = validate_requests(owner, child["request"])
+    contexts = child["progress"].get("original_tasks", {})
+    reads, hosts = [], []
+    for reader, run_id, request, execution in zip(
+        ("probe", "legitimate"), outcome["run_ids"], requests, outcome["executions"], strict=True
+    ):
+        context = original_task_context(owner, child, run_id, request, contexts.get(run_id))
+        if context["schema_version"] != "bluefire.s3-original-task.v2":
+            raise ProductStoreError(
+                "Historical task identities cannot become a new collection pair."
+            )
+        hosts.append(
+            content_hash({name: context[name] for name in ("profile", "transport_identity")})
+        )
+        reads.append(
+            {
+                "reader": reader,
+                "run_id": run_id,
+                "manifest_digest": content_hash(context["manifest"]),
+                "request_digest": request.digest,
+                "worker_result_digest": content_hash(execution["result"]),
+                "reservation_digest": execution["reservation_digest"],
+                "cleanup": execution["cleanup"],
+                "request": request.to_dict(),
+                "result": execution["result"],
+            }
+        )
+    if len(set(hosts)) != 1 or outcome["review_digest"] != marker["review"]["review_digest"]:
+        raise ProductStoreError("The paired reads do not share their original host and review.")
+    pair = audit.original_pair(
+        S3AccessScope.from_mapping(owner["request"]["environment"]["scope"]),
+        {
+            "schema_version": audit.PAIR_SCHEMA,
+            "workflow_job_id": owner["job_id"],
+            "operation_job_id": identifier,
+            "phase": phase,
+            "outcome_digest": outcome["outcome_digest"],
+            "review_digest": outcome["review_digest"],
+            "reads": reads,
+        },
+    )
+    return pair, hosts[0]
+
+
+def collection_pair(store, owner_id: str, phase: str):
+    with store._connection() as connection:
+        return _collection_pair(store, connection, owner_at(store, connection, owner_id), phase)
+
+
+def _check_collection_document(store, connection, owner, document):
+    marker = document["s3_access"]
+    phase = marker["phase"].removeprefix("audit_")
+    pair, host = _collection_pair(store, connection, owner, phase)
+    review = marker["review"]
+    expected_slot = {
+        "operation_job_id": marker["operation_job_id"],
+        "review_digest": review["review_digest"],
+        "pair_digest": content_hash(pair),
+        "source_digest": content_hash(audit_workflow.commitment(owner)["source"]),
+    }
+    if (
+        marker.get("audit_original_host_digest") != host
+        or review["audit_collection"]["original_pair"] != pair
+        or owner["progress"]["audit_slots"].get(phase) != expected_slot
+        or review["review_digest"]
+        != content_hash({key: value for key, value in review.items() if key != "review_digest"})
+    ):
+        raise ProductStoreError("The retained collection no longer joins its exact original pair.")
+    return pair
+
+
+def collected_review_document(store, connection, owner, child, outcome):
+    pair = _check_collection_document(store, connection, owner, child["request"])
+    requests = validate_requests(owner, child["request"])
+    if len(requests) != 1 or len(outcome["run_ids"]) != 1 or len(outcome["executions"]) != 1:
+        raise ProductStoreError("The original collection result is incomplete.")
+    request, run_id = requests[0], outcome["run_ids"][0]
+    if (
+        outcome["operation_job_id"] != child["job_id"]
+        or outcome["phase"] != child["request"]["s3_access"]["phase"]
+        or outcome["review_digest"] != child["request"]["s3_access"]["review"]["review_digest"]
+        or outcome["outcome_digest"]
+        != content_hash({key: value for key, value in outcome.items() if key != "outcome_digest"})
+    ):
+        raise ProductStoreError("The collected review differs from its original outcome.")
+    execution = validate_execution(request, outcome["executions"][0])
+    result = execution["result"]
+    context = original_task_context(
+        owner, child, run_id, request, child["progress"].get("original_tasks", {}).get(run_id)
+    )
+    if (
+        execution["provenance"] != "runner_reported"
+        or execution["cleanup"] != "verified"
+        or execution["dispatch"] != "permit_issued"
+        or result is None
+        or result["outcome"] != "observed"
+        or result["data"]["reservation_digest"] != execution["reservation_digest"]
+        or result["data"]["pair_digest"] != content_hash(pair)
+    ):
+        raise ProductStoreError("The collection lacks its exact authenticated retrieval receipt.")
+    value = {
+        "schema_version": "bluefire.s3-audit-collected-review.v1",
+        "workflow_job_id": owner["job_id"],
+        "operation_job_id": child["job_id"],
+        "phase": pair["phase"],
+        "collection_run_id": run_id,
+        "manifest_digest": content_hash(context["manifest"]),
+        "request_digest": request.digest,
+        "worker_result_digest": content_hash(result),
+        "reservation_digest": execution["reservation_digest"],
+        "outcome_digest": outcome["outcome_digest"],
+        "source": request.to_dict()["audit"]["source"],
+        "original_pair": pair,
+        "receipt": execution,
+        "collection_provenance": "authenticated_source_retrieval",
+        "raw_bytes_retained": False,
+        "log_integrity_proven": False,
+        "effective_access_claim": False,
+    }
+    return {**value, "review_digest": content_hash(value)}
+
+
+def checked_collected_review(store, owner_id, operation_id):
+    with store._connection() as connection:
+        owner = owner_at(store, connection, owner_id)
+        child = job_at(store, connection, job_id(operation_id))
+        rows = [
+            row
+            for row in owner["progress"]["operations"]
+            if row["operation_job_id"] == operation_id
+        ]
+        if len(rows) != 1 or rows[0]["phase"] not in audit_workflow.PHASES:
+            raise ProductStoreError("Select one finalized collected review.")
+        expected = collected_review_document(store, connection, owner, child, rows[0])
+        if child["progress"].get("collected_review") != expected:
+            raise ProductStoreError("The immutable collected review changed.")
+        return {"review_id": child["job_id"], "created_at": child["created_at"], **expected}
+
+
+def finalized_collection_recheck(store, owner_id, operation_id):
+    """Retain exact query identity, never adopt a different finalized execution."""
+    with store._connection() as connection:
+        owner = owner_at(store, connection, owner_id)
+        child = job_at(store, connection, job_id(operation_id))
+        rows = [
+            row
+            for row in owner["progress"]["operations"]
+            if row["operation_job_id"] == operation_id
+        ]
+        if (
+            not audit_workflow.retained(owner)
+            or len(rows) != 1
+            or rows[0]["phase"] not in audit_workflow.PHASES
+            or child["state"] not in {"completed", "failed", "cancelled", "interrupted"}
+            or rows[0]["outcome"]["cleanup"] != "unknown"
+        ):
+            raise ProductStoreError("Select a finalized collection with unresolved cleanup.")
+        row = rows[0]
+        _check_collection_document(store, connection, owner, child["request"])
+        requests = validate_requests(owner, child["request"])
+        if (
+            len(requests) != 1
+            or len(row["run_ids"]) != 1
+            or len(row["executions"]) != 1
+            or row["phase"] != child["request"]["s3_access"]["phase"]
+            or row["review_digest"] != child["request"]["s3_access"]["review"]["review_digest"]
+            or row["outcome_digest"]
+            != content_hash({key: value for key, value in row.items() if key != "outcome_digest"})
+        ):
+            raise ProductStoreError("The finalized collection has incomplete original lineage.")
+        request, run_id = requests[0], row["run_ids"][0]
+        execution = validate_execution(request, row["executions"][0])
+        if (
+            request.to_dict()["operation"] != "collect_audit"
+            or execution["cleanup"] != "unknown"
+            or execution["provenance"] != "runner_reported"
+            or execution["reservation_digest"] is None
+        ):
+            return None
+        contexts = child["progress"].get("original_tasks", {})
+        if not isinstance(contexts, dict):
+            raise ProductStoreError("The original collection task checkpoint is invalid.")
+        if run_id not in contexts:
+            return None
+        context = original_task_context(owner, child, run_id, request, contexts[run_id])
+        return {
+            "operation_job_id": operation_id,
+            "run_id": run_id,
+            "outcome_digest": row["outcome_digest"],
+            "request": request.to_dict(),
+            "execution": execution,
+            "context": context,
+        }
 
 
 def stop(store, owner_id: str) -> str | None:
