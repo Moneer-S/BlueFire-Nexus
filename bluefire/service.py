@@ -5625,7 +5625,7 @@ class BlueFireService(
                 "Comparison requires a list of run IDs.",
             )
         try:
-            return compare_runs(self.store, run_ids)
+            return compare_runs(self.store, run_ids, s3_access=self.s3_access)
         except (ComparisonError, RunStoreError) as exc:
             raise APIError(
                 HTTPStatus.UNPROCESSABLE_ENTITY,

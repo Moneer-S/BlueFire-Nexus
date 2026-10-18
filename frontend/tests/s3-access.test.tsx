@@ -198,7 +198,10 @@ it("compares fresh denial with both legitimate reads without an independent succ
   expect(within(comparison).getAllByText("Read")).toHaveLength(5);
   const target = new URL(within(comparison).getByRole("link", { name: "Compare saved runs" }).getAttribute("href")!, "http://localhost");
   expect(target.pathname).toBe("/compare");
+  expect(target.searchParams.get("compare_context")).toBe("1");
   expect(target.searchParams.getAll("compare_run")).toEqual([...value.operations[0]!.run_ids, ...retest.run_ids]);
+  expect(target.searchParams.has("compare_baseline")).toBe(false);
+  expect(target.searchParams.has("compare_revised")).toBe(false);
   expect(screen.getByText("No live defensive effectiveness has been independently verified.")).toBeVisible();
   expect(s3Api.send).not.toHaveBeenCalled();
 });
