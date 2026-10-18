@@ -9,9 +9,9 @@ from types import SimpleNamespace
 import pytest
 
 from bluefire import composition_jobs as composition_jobs_module
+from bluefire.capability_packs import MACOS_FILE_ACCESS_PACK
 from bluefire.composition_jobs import CompositionJobs
 from bluefire.product_store_errors import ProductStoreError
-from bluefire.capability_packs import MACOS_FILE_ACCESS_PACK
 
 OWNER = "job-" + "a" * 32
 JOB = "job-" + "b" * 32
