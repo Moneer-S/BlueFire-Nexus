@@ -32,11 +32,13 @@ it("opens AD readiness from the objective chooser without creating or authorizin
     <Route path="/ad-smb" element={<AdSmbPage />} />
   </Routes></MemoryRouter></QueryClientProvider>);
   fireEvent.change(screen.getByRole("combobox", { name: "Objective" }), { target: { value: "ad-access" } });
-  expect(screen.getByText("Not checked")).toBeVisible();
+  expect(screen.getByText("Not checked here")).toBeVisible();
   expect(adSmbApi.environments).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("link", { name: "Review environment" }));
   expect(await screen.findByText("Live AD execution unavailable")).toBeVisible();
   expect(screen.getByRole("heading", { name: "AD share access" })).toBeVisible();
+  expect(screen.getByText("Can we remove the probe identity's share access while preserving legitimate domain reads?")).toBeVisible();
+  expect(screen.getByRole("link", { name: "Change objective" })).toHaveAttribute("href", "/getting-started?goal=ad-access");
   expect(adSmbApi.create).not.toHaveBeenCalled();
   expect(adSmbApi.review).not.toHaveBeenCalled();
   expect(adSmbApi.submit).not.toHaveBeenCalled();

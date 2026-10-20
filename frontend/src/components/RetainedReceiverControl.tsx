@@ -8,8 +8,9 @@ import { Button, Callout, DataList, ErrorState, Field, LoadingState } from "./Pr
 
 type StartRequest = ReceiverContextRequest & { submission_id: string; context_digest: string };
 
-export function RetainedReceiverControl({ envelope, disabled, onStart, onRollback }: {
+export function RetainedReceiverControl({ envelope, disabled, receiverJobHref, onStart, onRollback }: {
   envelope: ReceiverDefenseEnvelope & { context: ReceiverContext }; disabled: boolean;
+  receiverJobHref: (jobId: string) => string;
   onStart: (body: StartRequest) => void; onRollback: (ownerId: string, body: ReceiverControlDecision) => void;
 }) {
   const control = envelope.control!;
@@ -31,7 +32,7 @@ export function RetainedReceiverControl({ envelope, disabled, onStart, onRollbac
       { label: "Receiver state", value: control.receiver_state === "stopped" ? "Stopped; no active receiver" : control.receiver_state === "active" ? "Active bounded receiver" : "Shutdown not verified" },
     ]} />
     <p>The policy applies to this saved control test and its linked fresh retests in the exact reviewed environment. Independently created tests do not inherit it. Retaining a policy does not leave a receiver running.</p>
-    {envelope.context.source_control ? <p>Fresh retest of <Link to={`/compare?receiver_job=${encodeURIComponent(control.owner_job_id)}`}>the retained policy</Link>. The <Link to={`/runs/${encodeURIComponent(envelope.context.source_baseline!.run_id)}`}>original baseline</Link> is lineage; only this test's new runs establish its outcomes.</p> : null}
+    {envelope.context.source_control ? <p>Fresh retest of <Link to={receiverJobHref(control.owner_job_id)}>the retained policy</Link>. The <Link to={`/runs/${encodeURIComponent(envelope.context.source_baseline!.run_id)}`}>original baseline</Link> is lineage; only this test's new runs establish its outcomes.</p> : null}
     {control.status === "rolled_back" ? <Callout title="Retained policy rolled back">The desired policy is now the prior reviewed-records policy. Previous prevention and legitimate-use evidence remains historical.</Callout> : null}
     <div className="receiver-actions">
       {!envelope.context.source_control && envelope.status === "completed" && control.status !== "rolled_back" ? <Link className="button button-secondary button-medium" to={`/composition?control=${encodeURIComponent(control.owner_job_id)}`}>Open composition workspace</Link> : null}

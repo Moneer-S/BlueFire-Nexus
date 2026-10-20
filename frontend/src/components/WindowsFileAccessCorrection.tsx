@@ -3,8 +3,9 @@ import { Link } from "react-router-dom";
 import { type FileAccessReviewRequest, type FileAccessSubmission, type WindowsCorrectionFileAccessControl } from "../lib/file-access";
 import { Badge, Button, Callout, DataList, sentence } from "./Primitives";
 
-export function WindowsFileAccessCorrection({ control, disabled, reviewAvailable, onReview }: {
+export function WindowsFileAccessCorrection({ control, disabled, reviewAvailable, fileAccessPath, onReview }: {
   control: WindowsCorrectionFileAccessControl; disabled: boolean; reviewAvailable: boolean;
+  fileAccessPath: (values: Record<string, string>, remove?: string[]) => string;
   onReview: (request: FileAccessReviewRequest) => void;
 }) {
   const expired = control.expires_at_ms <= Date.now();
@@ -57,7 +58,7 @@ export function WindowsFileAccessCorrection({ control, disabled, reviewAvailable
     {control.allowed_operations.includes("harden") && !expired ? <div className="file-access-actions"><Button disabled={disabled || !reviewAvailable} onClick={() => onReview({ operation: "harden", control_owner_id: control.control_owner_id })}><FileLock2 />Review Windows access change</Button></div> : null}
     <details><summary>Saved control operations</summary><ol className="file-access-history">{control.operations.map(job => {
       const operation = (job.progress.submitted_request as FileAccessSubmission).review.operation;
-      return <li key={job.job_id}><div><Link to={`/file-access?${new URLSearchParams({ control: control.control_owner_id, operation: job.job_id })}`}>{operation === "baseline" ? "Baseline attempt" : "Access-change attempt"}</Link><span>{sentence(job.state)}</span></div><details><summary>Operation reference</summary><code>{job.job_id}</code></details></li>;
+      return <li key={job.job_id}><div><Link to={fileAccessPath({ control: control.control_owner_id, operation: job.job_id })}>{operation === "baseline" ? "Baseline attempt" : "Access-change attempt"}</Link><span>{sentence(job.state)}</span></div><details><summary>Operation reference</summary><code>{job.job_id}</code></details></li>;
     })}</ol></details>
   </section>;
 }

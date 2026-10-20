@@ -149,7 +149,7 @@ it("recovers only the exact durable rollback receipt", () => {
 function mountControl(value = retainedReceiverFixture()) {
   const onStart = vi.fn(), onRollback = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return { onStart, onRollback, user: userEvent.setup(), ...render(<QueryClientProvider client={client}><MemoryRouter><RetainedReceiverControl envelope={value} disabled={false} onStart={onStart} onRollback={onRollback} /></MemoryRouter></QueryClientProvider>) };
+  return { onStart, onRollback, user: userEvent.setup(), ...render(<QueryClientProvider client={client}><MemoryRouter><RetainedReceiverControl envelope={value} disabled={false} receiverJobHref={(jobId) => `/compare?receiver_job=${encodeURIComponent(jobId)}`} onStart={onStart} onRollback={onRollback} /></MemoryRouter></QueryClientProvider>) };
 }
 
 it("labels legitimate-use review without claiming an unchanged byte replay", () => {
