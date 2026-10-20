@@ -1386,14 +1386,8 @@ def test_descriptor_bootstrap_runs_helper_without_reclosing_its_source_fd(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    echo = shutil.which("echo")
-    if echo is None:
-        pytest.skip("echo executable is unavailable")
-    runner_binary = tmp_path / "runner"
-    shutil.copyfile(Path(echo).resolve(), runner_binary)
-    runner_binary.chmod(0o700)
-    launch_path = tmp_path / (".bluefire-verified-launch-" + "f" * 64)
-    os.link(runner_binary, launch_path)
+    launch_path = _copied_supervisor_runtime(tmp_path)
+    runner_binary = tmp_path / "python-runtime"
     helper = tmp_path / "bootstrap_helper.py"
     helper.write_text(
         """
@@ -1469,7 +1463,7 @@ os.execve(target_arguments[0], target_arguments, dict(os.environ))
     process: subprocess.Popen[bytes] | None = None
     try:
         process = darwin_containment.spawn_no_fork_exec(
-            [str(launch_path), "bootstrap-ok"],
+            [str(launch_path), "-I", "-B", "-c", "print('bootstrap-ok')"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             environment=dict(os.environ),
@@ -1489,8 +1483,8 @@ os.execve(target_arguments[0], target_arguments, dict(os.environ))
             proof_callback=lambda _process: None,
         )
         stdout, stderr = process.communicate(timeout=5)
-        assert process.returncode == 0
-        assert stdout == b"bootstrap-ok\n"
+        assert process.returncode == 0, stderr[:_SUPERVISOR_STDERR_LIMIT]
+        assert stdout == b"bootstrap-ok\n", stderr[:_SUPERVISOR_STDERR_LIMIT]
         assert stderr == b""
     finally:
         if process is not None and process.poll() is None:

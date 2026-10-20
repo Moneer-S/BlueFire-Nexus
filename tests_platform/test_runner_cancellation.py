@@ -696,11 +696,16 @@ def test_posix_verified_launch_cannot_be_redirected_before_receiver_key_exposure
     tmp_path: Path,
 ) -> None:
     runner = _runner(tmp_path)
-    executable = (tmp_path / "verified-echo").resolve()
-    parked = (tmp_path / "verified-echo.parked").resolve()
+    executable = (tmp_path / "verified-python").resolve()
+    parked = (tmp_path / "verified-python.parked").resolve()
     leaked = Path(str(executable) + ".leaked")
-    shutil.copyfile("/bin/echo", executable)
+    shutil.copyfile(Path(sys.executable).resolve(strict=True), executable)
     executable.chmod(0o700)
+    base_executable = Path(os.path.abspath(sys._base_executable))
+    (tmp_path / "pyvenv.cfg").write_text(
+        f"home = {base_executable.parent}\ninclude-system-site-packages = false\n",
+        encoding="utf-8",
+    )
     expected_digest = runner_client_module.file_hash(executable)
     receiver_environment = {
         "BLUEFIRE_RECEIVER_TASK_ID": "task-posix-launch-01",
@@ -715,7 +720,7 @@ def test_posix_verified_launch_cannot_be_redirected_before_receiver_key_exposure
         )
         executable.chmod(0o700)
         process = runner._spawn(
-            [launch[0], "trusted"],
+            [launch[0], "-I", "-B", "-c", "print('trusted')"],
             stdout=subprocess.PIPE,
             receiver_environment=receiver_environment,
             inherited_descriptors=launch[1],
