@@ -20,6 +20,9 @@ from typing import Any, Mapping, Sequence
 
 from .config import EnvironmentReference, RunnerProfile
 from .contracts import ActionDefinition, ContractError, SafetyTier
+from .macos_file_access_contract import MacOSFileAccessContractError, validate_binding
+from .macos_file_access_method import CLOSE_ACTION as MACOS_CLOSE_ACTION
+from .macos_file_access_method import METHODS as MACOS_METHODS
 from .native_tool_installations import canonical_native_tool_installations
 from .provider_runner_contracts import (
     ProviderRunnerContractError,
@@ -371,6 +374,137 @@ def _verified_grant_cleanup(
     return verified
 
 
+class VerifiedMacOSFileAccessBinding:
+    """Immutable original-workspace provenance, never creator custody authority."""
+
+    __slots__ = ("_document",)
+    _document: bytes
+
+    def __init__(self) -> None:
+        raise TypeError("Darwin provenance requires the original workspace binding adapter")
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("Verified Darwin provenance is immutable")
+
+    def to_dict(self) -> dict[str, Any]:
+        document: dict[str, Any] = json.loads(self._document)
+        return document
+
+
+def _canonical_macos_binding(document: Any) -> dict[str, Any]:
+    try:
+        binding = validate_binding(document)
+    except MacOSFileAccessContractError as exc:
+        raise RunnerContractError(str(exc)) from exc
+    if binding["mode"] != "0600":
+        raise RunnerContractError("Darwin composition requires the original hardened binding")
+    return binding
+
+
+def verify_macos_file_access_binding(
+    document: Mapping[str, Any],
+    *,
+    expected_document_digest: str,
+    now_ms: int,
+    now_monotonic_ns: int,
+) -> VerifiedMacOSFileAccessBinding:
+    """Called after independent live original-endpoint and retained-control checks.
+
+    The expected digest must come from that retained record, not client input.
+    This factory neither authenticates an endpoint nor reserves native requests.
+    """
+    if (
+        not isinstance(expected_document_digest, str)
+        or _SHA256_DIGEST.fullmatch(expected_document_digest) is None
+        or content_hash(document) != expected_document_digest
+    ):
+        raise RunnerContractError("Darwin binding differs from the original retained document")
+    binding = _canonical_macos_binding(dict(document))
+    if (
+        type(now_ms) is not int
+        or not binding["issued_at_ms"] <= now_ms < binding["expires_at_ms"]
+        or type(now_monotonic_ns) is not int
+        or not 0 < now_monotonic_ns < binding["original_deadline_ns"]
+    ):
+        raise RunnerContractError("Darwin original binding deadline has elapsed")
+    verified = object.__new__(VerifiedMacOSFileAccessBinding)
+    object.__setattr__(verified, "_document", canonical_json_bytes(binding))
+    return verified
+
+
+def _canonical_macos_cleanup(document: Any) -> dict[str, Any]:
+    fields = set(
+        "schema_version attempt_id lease_digest compiled_digest run_id cleanup_step_id "
+        "issued_at_ms expires_at_ms issued_monotonic_ns deadline_ns scope".split()
+    )
+    if (
+        not isinstance(document, Mapping)
+        or set(document) != fields
+        or document["schema_version"] != "bluefire.macos-file-access-artifact-closure-claim.v1"
+        or document["scope"] != "attempt_artifact_closure_only"
+    ):
+        raise RunnerContractError("Darwin closure requires its exact independent claim")
+    if (
+        not isinstance(document["attempt_id"], str)
+        or re.fullmatch(r"attempt-[0-9a-f]{32}", document["attempt_id"]) is None
+    ):
+        raise RunnerContractError("Darwin closure attempt identity is invalid")
+    for field in ("lease_digest", "compiled_digest"):
+        if (
+            not isinstance(document[field], str)
+            or _SHA256_DIGEST.fullmatch(document[field]) is None
+        ):
+            raise RunnerContractError("Darwin closure digest is invalid")
+    for field in ("run_id", "cleanup_step_id"):
+        if (
+            not isinstance(document[field], str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", document[field]) is None
+        ):
+            raise RunnerContractError("Darwin closure task identity is invalid")
+    for field in ("issued_at_ms", "expires_at_ms", "issued_monotonic_ns", "deadline_ns"):
+        if type(document[field]) is not int or not 0 < document[field] < 2**63:
+            raise RunnerContractError("Darwin closure original clock is invalid")
+    if (
+        not 0 < document["expires_at_ms"] - document["issued_at_ms"] <= 120_000
+        or not 0 < document["deadline_ns"] - document["issued_monotonic_ns"] <= 120_000_000_000
+    ):
+        raise RunnerContractError("Darwin closure exceeds its independent finite allowance")
+    return dict(document)
+
+
+class VerifiedMacOSFileAccessCleanup:
+    """A durable attempt-local closure claim, not native filesystem cleanup."""
+
+    __slots__ = ("_document",)
+    _document: bytes
+
+    def __init__(self) -> None:
+        raise TypeError("Darwin closure requires the trusted committed cleanup claim")
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("Verified Darwin closure provenance is immutable")
+
+    def to_dict(self) -> dict[str, Any]:
+        document: dict[str, Any] = json.loads(self._document)
+        return document
+
+
+def _verified_macos_file_access_cleanup(
+    document: Mapping[str, Any], *, expected_document_digest: str
+) -> VerifiedMacOSFileAccessCleanup:
+    """Mint only from claim_macos_capability_cleanup's independently retained digest."""
+    if (
+        not isinstance(expected_document_digest, str)
+        or _SHA256_DIGEST.fullmatch(expected_document_digest) is None
+        or content_hash(document) != expected_document_digest
+    ):
+        raise RunnerContractError("Darwin closure differs from its durable claim")
+    canonical = _canonical_macos_cleanup(document)
+    verified = object.__new__(VerifiedMacOSFileAccessCleanup)
+    object.__setattr__(verified, "_document", canonical_json_bytes(canonical))
+    return verified
+
+
 def _canonical_execution_binding(
     value: Mapping[str, Any],
     *,
@@ -548,6 +682,34 @@ def seal_profile(document: Mapping[str, Any]) -> dict[str, Any]:
     sealed: dict[str, Any] = dict(json_clone(document))
     if sealed.get("schema_version") != "bluefire.runner-profile.v1":
         raise RunnerContractError("runner profile schema version is unsupported")
+    if "macos_file_access_binding" in sealed:
+        actions = sealed.get("allowed_actions")
+        if (
+            sealed.get("platform") != "macos"
+            or sealed.get("runner_id") != "bluefire-macos-workspace.v1"
+            or "file_access_binding" in sealed
+            or not isinstance(actions, list)
+            or not actions
+            or any(not isinstance(action, str) or action not in MACOS_METHODS for action in actions)
+            or len(set(actions)) != len(actions)
+            or sealed.get("target_scope") != {"filesystem": [], "network": []}
+            or any(
+                sealed.get(field)
+                for field in (
+                    "native_tool_installations",
+                    "action_bindings",
+                    "provider_bindings",
+                    "provider_artifacts",
+                )
+            )
+            or "reviewed_execution" not in sealed
+        ):
+            raise RunnerContractError(
+                "Darwin workspace profile must contain only reviewed metadata methods"
+            )
+        sealed["macos_file_access_binding"] = _canonical_macos_binding(
+            sealed["macos_file_access_binding"]
+        )
     if "file_access_binding" in sealed:
         from .file_access_contract import FileAccessContractError, canonical_file_access_binding
 
@@ -635,9 +797,17 @@ def build_runner_profile(
     provider_artifacts: Sequence[Mapping[str, Any]] = (),
     reviewed_execution: Mapping[str, Any] | None = None,
     file_access_binding: Any = None,
+    macos_file_access_binding: VerifiedMacOSFileAccessBinding | None = None,
 ) -> dict[str, Any]:
     if profile.mode.value != "execute":
         raise RunnerContractError("only Execute profiles can be compiled for the Rust runner")
+    if macos_file_access_binding is not None and (
+        type(macos_file_access_binding) is not VerifiedMacOSFileAccessBinding
+        or file_access_binding is not None
+    ):
+        raise RunnerContractError(
+            "Darwin provenance requires its separate original verified binding"
+        )
     sandbox = Path(sandbox_root)
     if not sandbox.is_absolute():
         raise RunnerContractError("runner sandbox root must be absolute")
@@ -704,6 +874,9 @@ def build_runner_profile(
     if providers:
         profile_doc["provider_bindings"] = providers
         profile_doc["provider_artifacts"] = artifacts
+    if macos_file_access_binding is not None:
+        profile_doc["runner_id"] = "bluefire-macos-workspace.v1"
+        profile_doc["macos_file_access_binding"] = macos_file_access_binding.to_dict()
     if reviewed_execution is not None:
         try:
             profile_doc["reviewed_execution"] = canonical_reviewed_execution(reviewed_execution)
@@ -775,6 +948,48 @@ def seal_manifest(document: Mapping[str, Any]) -> dict[str, Any]:
     approval = sealed.get("approval")
     grant_attempt = None
     grant_cleanup = None
+    closure = None
+    if sealed.get("action_id") in MACOS_METHODS:
+        close = sealed["action_id"] == MACOS_CLOSE_ACTION
+        if (
+            sealed.get("platform") != "macos"
+            or sealed.get("runner_id") != "bluefire-macos-workspace.v1"
+            or sealed.get("behavior_id") != sealed["action_id"]
+            or sealed.get("cleanup_action_id") != MACOS_CLOSE_ACTION
+            or sealed.get("params") != {}
+            or sealed.get("target_scope") != {"filesystem": [], "network": []}
+            or approval is not None
+            or "grant_cleanup" in sealed
+            or "execution_binding" in sealed
+            or "provider_binding" in sealed
+            or close != ("macos_file_access_cleanup" in sealed)
+            or (not close and "grant_attempt" not in sealed)
+        ):
+            raise RunnerContractError(
+                "Darwin metadata manifest requires its distinct task authority"
+            )
+    elif sealed.get("runner_id") == "bluefire-macos-workspace.v1":
+        raise RunnerContractError("Darwin workspace cannot dispatch a native runner action")
+    if "macos_file_access_cleanup" in sealed:
+        closure = _canonical_macos_cleanup(sealed["macos_file_access_cleanup"])
+        if (
+            approval is not None
+            or "grant_attempt" in sealed
+            or "grant_cleanup" in sealed
+            or sealed.get("platform") != "macos"
+            or sealed.get("runner_id") != "bluefire-macos-workspace.v1"
+            or sealed.get("action_id") != MACOS_CLOSE_ACTION
+            or sealed.get("behavior_id") != MACOS_CLOSE_ACTION
+            or sealed.get("cleanup_action_id") != MACOS_CLOSE_ACTION
+            or sealed.get("run_id") != closure["run_id"]
+            or sealed.get("step_id") != closure["cleanup_step_id"]
+            or sealed.get("params") != {}
+            or sealed.get("target_scope") != {"filesystem": [], "network": []}
+            or "execution_binding" in sealed
+            or "provider_binding" in sealed
+        ):
+            raise RunnerContractError("Darwin closure claim cannot authorize another operation")
+        sealed["macos_file_access_cleanup"] = closure
     if "grant_attempt" in sealed:
         if approval is not None or "grant_cleanup" in sealed:
             raise RunnerContractError("runner manifest cannot combine approval and grant authority")
@@ -797,6 +1012,11 @@ def seal_manifest(document: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(value, str):
             raise RunnerContractError(f"manifest {field} must be an explicit string")
         sealed[field] = _normalize_rust_datetime(value, context=f"manifest {field}")
+    if closure is not None:
+        requested_ms = int(parse_iso8601_datetime(sealed["requested_at"]).timestamp() * 1000)
+        expires_ms = int(parse_iso8601_datetime(sealed["expires_at"]).timestamp() * 1000)
+        if not closure["issued_at_ms"] <= requested_ms < expires_ms <= closure["expires_at_ms"]:
+            raise RunnerContractError("Darwin manifest cannot renew its original closure deadline")
     sealed["request_hash"] = ""
     if isinstance(approval, dict):
         for field in ("approved_at", "expires_at"):
@@ -834,12 +1054,14 @@ def build_execution_manifest(
     approval_record: Mapping[str, Any] | None,
     grant_attempt: VerifiedGrantAttempt | None = None,
     grant_cleanup: VerifiedGrantCleanup | None = None,
+    macos_file_access_cleanup: VerifiedMacOSFileAccessCleanup | None = None,
     execution_binding: Mapping[str, Any] | None = None,
     provider_binding: Mapping[str, Any] | None = None,
     reviewed_operation: Mapping[str, Any] | None = None,
     resolved_cleanup_action_id: str | None = None,
     timeout_ms: int | None = None,
     now: datetime | None = None,
+    now_monotonic_ns: int | None = None,
 ) -> dict[str, Any]:
     timestamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     expires = timestamp + timedelta(minutes=5)
@@ -852,6 +1074,7 @@ def build_execution_manifest(
             type(grant_attempt) is not VerifiedGrantAttempt
             or approval_record is not None
             or grant_cleanup is not None
+            or macos_file_access_cleanup is not None
         ):
             raise RunnerContractError(
                 "grant authority requires the verified claim without approval"
@@ -876,7 +1099,11 @@ def build_execution_manifest(
         grant_document["request_hash"] = ""
     cleanup_document = None
     if grant_cleanup is not None:
-        if type(grant_cleanup) is not VerifiedGrantCleanup or approval_record is not None:
+        if (
+            type(grant_cleanup) is not VerifiedGrantCleanup
+            or approval_record is not None
+            or macos_file_access_cleanup is not None
+        ):
             raise RunnerContractError(
                 "cleanup authority requires the verified obligation without approval"
             )
@@ -909,6 +1136,49 @@ def build_execution_manifest(
         expires = min(expires, parse_iso8601_datetime(cleanup_document["expires_at"]))
         expires_at = _format_rust_datetime(expires, context="manifest expires_at")
         cleanup_document["request_hash"] = ""
+    macos_cleanup_document = None
+    if macos_file_access_cleanup is not None:
+        if (
+            type(macos_file_access_cleanup) is not VerifiedMacOSFileAccessCleanup
+            or approval_record is not None
+            or grant_attempt is not None
+            or grant_cleanup is not None
+        ):
+            raise RunnerContractError("Darwin closure requires its separate verified claim")
+        macos_cleanup_document = _canonical_macos_cleanup(macos_file_access_cleanup.to_dict())
+        macos_binding = _canonical_macos_binding(runner_profile.get("macos_file_access_binding"))
+        wall_ms = int(timestamp.timestamp() * 1000)
+        if (
+            action.id != MACOS_CLOSE_ACTION
+            or behavior_id != MACOS_CLOSE_ACTION
+            or runner_profile.get("platform") != "macos"
+            or "macos_file_access_binding" not in runner_profile
+            or macos_cleanup_document["run_id"] != run_id
+            or macos_cleanup_document["cleanup_step_id"] != step_id
+            or execution_binding is not None
+            or provider_binding is not None
+            or filesystem_scope
+            or network_destinations
+            or dict(params) != {}
+            or macos_cleanup_document["issued_at_ms"] < macos_binding["issued_at_ms"]
+            or macos_cleanup_document["expires_at_ms"] > macos_binding["expires_at_ms"]
+            or macos_cleanup_document["deadline_ns"] > macos_binding["original_deadline_ns"]
+            or not macos_cleanup_document["issued_at_ms"]
+            <= wall_ms
+            < macos_cleanup_document["expires_at_ms"]
+            or type(now_monotonic_ns) is not int
+            or not macos_cleanup_document["issued_monotonic_ns"]
+            <= now_monotonic_ns
+            < macos_cleanup_document["deadline_ns"]
+        ):
+            raise RunnerContractError(
+                "Darwin closure does not bind its original task and deadlines"
+            )
+        expires = min(
+            expires,
+            datetime.fromtimestamp(macos_cleanup_document["expires_at_ms"] / 1000, timezone.utc),
+        )
+        expires_at = _format_rust_datetime(expires, context="manifest expires_at")
     if approval_record is not None:
         raw_identity = approval_record.get("approved_by")
         identity = raw_identity.strip() if isinstance(raw_identity, str) else ""
@@ -1055,6 +1325,20 @@ def build_execution_manifest(
     if isinstance(maximum_timeout, bool) or not isinstance(maximum_timeout, int):
         raise RunnerContractError("runner profile timeout is invalid")
     effective_timeout = maximum_timeout if timeout_ms is None else timeout_ms
+    if macos_cleanup_document is not None:
+        # A monotonic sample is mandatory above; no new allowance is minted here.
+        assert now_monotonic_ns is not None
+        remaining_ms = min(
+            int((expires - timestamp).total_seconds() * 1000),
+            (macos_cleanup_document["deadline_ns"] - now_monotonic_ns) // 1_000_000,
+            maximum_timeout,
+        )
+        if timeout_ms is None:
+            effective_timeout = remaining_ms
+        elif type(timeout_ms) is not int or not 1 <= timeout_ms <= remaining_ms:
+            raise RunnerContractError(
+                "manifest timeout exceeds the original Darwin closure allowance"
+            )
     if cleanup_document is not None:
         if (
             type(profile_limits.get("max_files")) is not int
@@ -1075,9 +1359,32 @@ def build_execution_manifest(
         raise RunnerContractError("manifest timeout must be within the runner profile limit")
     manifest_limits = dict(profile_limits)
     manifest_limits["timeout_ms"] = effective_timeout
+    macos_method = action.id in MACOS_METHODS
+    if not macos_method and "macos_file_access_binding" in runner_profile:
+        raise RunnerContractError("Darwin workspace cannot dispatch a native runner action")
+    if macos_method and seal_profile(runner_profile) != dict(runner_profile):
+        raise RunnerContractError("Darwin task requires its exact sealed workspace profile")
+    if macos_method and (
+        behavior_id != action.id
+        or platform != "macos"
+        or runner_id != "bluefire-macos-workspace.v1"
+        or "macos_file_access_binding" not in runner_profile
+        or action.id not in runner_profile.get("allowed_actions", [])
+        or dict(params) != {}
+        or filesystem_scope
+        or network_destinations
+        or binding is not None
+        or provider is not None
+        or approval_record is not None
+        or grant_cleanup is not None
+        or (action.id == MACOS_CLOSE_ACTION) != (macos_cleanup_document is not None)
+        or (action.id != MACOS_CLOSE_ACTION and grant_document is None)
+    ):
+        raise RunnerContractError("Darwin methods require the exact original-workspace task path")
     if resolved_cleanup_action_id is not None and (
         not isinstance(resolved_cleanup_action_id, str)
-        or resolved_cleanup_action_id != "sandbox.cleanup.v1"
+        or resolved_cleanup_action_id
+        != (MACOS_CLOSE_ACTION if macos_method else "sandbox.cleanup.v1")
     ):
         raise RunnerContractError("resolved native cleanup action must be sandbox.cleanup.v1")
     cleanup_action = (
@@ -1087,9 +1394,9 @@ def build_execution_manifest(
             if binding is not None or provider is not None
             else action.cleanup_action_id
         )
-        or "sandbox.cleanup.v1"
+        or (MACOS_CLOSE_ACTION if macos_method else "sandbox.cleanup.v1")
     )
-    if cleanup_action != "sandbox.cleanup.v1":
+    if cleanup_action != (MACOS_CLOSE_ACTION if macos_method else "sandbox.cleanup.v1"):
         raise RunnerContractError("native runner cleanup action must be sandbox.cleanup.v1")
     document = {
         "schema_version": "bluefire.runner-manifest.v1",
@@ -1134,6 +1441,8 @@ def build_execution_manifest(
         document["grant_attempt"] = grant_document
     if cleanup_document is not None:
         document["grant_cleanup"] = cleanup_document
+    if macos_cleanup_document is not None:
+        document["macos_file_access_cleanup"] = macos_cleanup_document
     return seal_manifest(document)
 
 
@@ -1142,6 +1451,8 @@ __all__ = [
     "RunnerContractError",
     "VerifiedGrantAttempt",
     "VerifiedGrantCleanup",
+    "VerifiedMacOSFileAccessBinding",
+    "VerifiedMacOSFileAccessCleanup",
     "build_execution_manifest",
     "build_runner_profile",
     "current_platform",
@@ -1151,4 +1462,5 @@ __all__ = [
     "resolve_environment_path",
     "seal_manifest",
     "seal_profile",
+    "verify_macos_file_access_binding",
 ]

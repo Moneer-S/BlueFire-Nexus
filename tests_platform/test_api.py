@@ -778,9 +778,10 @@ def request(
     origin: str | None = "same",
     extra_headers: Mapping[str, str] | None = None,
     authenticated: bool = True,
+    timeout: float = 3,
 ) -> tuple[int, Mapping[str, str], bytes]:
     port = server.server_address[1]
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
     payload = (
         None if body is None else (body if isinstance(body, bytes) else json.dumps(body).encode())
     )

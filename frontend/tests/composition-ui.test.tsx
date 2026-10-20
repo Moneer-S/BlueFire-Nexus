@@ -5,7 +5,10 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { CompositionSetup } from "../src/components/CompositionReview";
 import { CompositionPage } from "../src/pages/Composition";
-import { compositionApi, FILE_ACCESS_PACK, readCompositionPending, storeCompositionCancellation, storeCompositionControl, storeCompositionPending } from "../src/lib/composition";
+import { compositionApi, FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, readCompositionPending, storeCompositionCancellation, storeCompositionControl, storeCompositionPending } from "../src/lib/composition";
+import { fileAccessApi } from "../src/lib/file-access";
+import { macOSControlFixture, macOSOwner, macOSStatusFixture } from "./macos-file-access-fixture";
+import { macContextFixture, macObjectiveFixture, macRequestFixture, macReviewFixture } from "./macos-composition-fixture";
 import { fileAccessObjectiveFixture } from "./file-access-fixture";
 import { attemptFixture, contextFixture, controlId, grantRequestFixture, objectiveFixture, ownerId, proposalFixture, proposalId, question, refusalFixture, reviewFixture, testDigest } from "./composition-fixture";
 
@@ -14,6 +17,171 @@ vi.mock("../src/lib/api", () => ({ DEMO_MODE: false, request: vi.fn(), ApiError:
 function mount(element: React.ReactNode, path = "/composition") { const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); return { ...render(<QueryClientProvider client={client}><Tooltip.Provider><MemoryRouter initialEntries={[path]}>{element}</MemoryRouter></Tooltip.Provider></QueryClientProvider>), client }; }
 beforeEach(() => { localStorage.clear(); vi.spyOn(compositionApi, "list").mockResolvedValue({ schema_version: "bluefire.composition-objective-list.v1", objectives: [{ owner_id: ownerId, title: question, status: "active", job_state: "completed" }] }); vi.spyOn(compositionApi, "context").mockResolvedValue(contextFixture()); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
+function macWorkspace(outcome: "none" | "settled" | "unknown" = "none") {
+  vi.spyOn(fileAccessApi, "status").mockResolvedValue(macOSStatusFixture());
+  vi.spyOn(fileAccessApi, "control").mockResolvedValue(macOSControlFixture("hardened"));
+  const value = macObjectiveFixture(outcome);
+  vi.spyOn(compositionApi, "objective").mockResolvedValue(value);
+  vi.mocked(compositionApi.context).mockResolvedValue(macContextFixture());
+  return value;
+}
+
+it("reviews Mac delegation with its distinct pack and original-request closure wording", async () => {
+  vi.spyOn(compositionApi, "review").mockResolvedValue(macReviewFixture());
+  const submit = vi.fn();
+  mount(<CompositionSetup control={macOSOwner} pack={MACOS_FILE_ACCESS_PACK} disabled={false} onSubmit={submit} />);
+  fireEvent.change(screen.getByLabelText("Objective question"), { target: { value: macRequestFixture().question } });
+  fireEvent.click(screen.getByRole("button", { name: "Review finite delegation" }));
+  await screen.findByRole("button", { name: "Issue capability grant" });
+  expect(compositionApi.review).toHaveBeenCalledWith(macRequestFixture());
+  expect(screen.getByText(/not independent telemetry/)).toBeInTheDocument();
+  expect(screen.getByText(/not enrollment cleanup/)).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Delegation reviewed by"), { target: { value: "operator" } });
+  fireEvent.click(screen.getByRole("checkbox"));
+  fireEvent.click(screen.getByRole("button", { name: "Issue capability grant" }));
+  expect(submit.mock.calls[0]![0]).toMatchObject({ kind: "grant", control: macOSOwner, body: { review: macRequestFixture() } });
+});
+
+it("dispatches only the reviewed backend initial Mac graph without AI planning", async () => {
+  macWorkspace();
+  const submit = vi.spyOn(compositionApi, "submit").mockRejectedValue(new Error("Response pending"));
+  mount(<CompositionPage />, `/composition?control=${macOSOwner}&objective=${ownerId}&pack=${MACOS_FILE_ACCESS_PACK}`);
+  fireEvent.click(await screen.findByRole("button", { name: "Review established graph" }));
+  expect(screen.queryByLabelText("Configured model provider")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Request AI graph" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Start fresh attempt within grant" }));
+  await waitFor(() => expect(submit).toHaveBeenCalledOnce());
+  expect(submit.mock.calls[0]![0]).toMatchObject({ kind: "attempt", control: macOSOwner, body: { proposal: macContextFixture().initial_proposal, prior_attempt_id: null } });
+});
+
+it.each(["settled", "unknown"] as const)("keeps a %s Mac attempt in history without another attempt or revision", async outcome => {
+  macWorkspace(outcome);
+  const submit = vi.spyOn(compositionApi, "submit");
+  mount(<CompositionPage />, `/composition?control=${macOSOwner}&objective=${ownerId}&pack=${MACOS_FILE_ACCESS_PACK}`);
+  await screen.findByRole("link", { name: "Review retained file-access control" });
+  expect(screen.queryByRole("button", { name: /Start fresh attempt|Request.*graph|Request.*revision/ })).not.toBeInTheDocument();
+  expect(compositionApi.context).not.toHaveBeenCalled();
+  expect(screen.queryByText("Native cleanup")).not.toBeInTheDocument();
+  expect(screen.getByText("Whole-enrollment cleanup")).toBeInTheDocument();
+  if (outcome === "settled") {
+    expect(screen.getByText("Not created")).toBeInTheDocument();
+    expect(screen.getByText("Retained")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Inspect verified run evidence" })).toHaveAttribute("href", "/runs/run-proof");
+  } else expect(screen.getByRole("link", { name: "Inspect finalized run evidence" })).toHaveAttribute("href", "/runs/run-proof");
+  expect(submit).not.toHaveBeenCalled();
+});
+
+it("blocks new Mac dispatch throughout deferred status refresh but preserves Stop and Revoke", async () => {
+  const value = macWorkspace();
+  const submit = vi.spyOn(compositionApi, "submit");
+  const control = vi.spyOn(compositionApi, "control").mockResolvedValue({ ...value, grant: { ...value.grant, status: "revoked" } });
+  const { client } = mount(<CompositionPage />, `/composition?control=${macOSOwner}&objective=${ownerId}&pack=${MACOS_FILE_ACCESS_PACK}`);
+  fireEvent.click(await screen.findByRole("button", { name: "Review established graph" }));
+  const start = screen.getByRole("button", { name: "Start fresh attempt within grant" });
+  expect(start).toBeEnabled();
+  let resolveStatus!: (status: ReturnType<typeof macOSStatusFixture>) => void;
+  vi.mocked(fileAccessApi.status).mockReturnValue(new Promise(resolve => { resolveStatus = resolve; }));
+  void client.invalidateQueries({ queryKey: ["file-access-status"] });
+  await waitFor(() => expect(start).toBeDisabled());
+  fireEvent.click(start);
+  expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Revoke" })).toBeEnabled();
+  await act(async () => resolveStatus(macOSStatusFixture(false)));
+  await screen.findByText("Original macOS workspace is read-only");
+  expect(start).toBeDisabled();
+  expect(submit).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
+  await waitFor(() => expect(control).toHaveBeenCalledWith(ownerId, "revoke"));
+});
+
+it("retains pending Mac attempts for status checks without exact-submission replay", async () => {
+  macWorkspace();
+  storeCompositionPending({ kind: "attempt", owner: ownerId, control: macOSOwner, id: proposalId, body: { submission_id: "cccccccc-cccc-cccc-cccc-cccccccccccc", proposal: macContextFixture().initial_proposal, prior_attempt_id: null } });
+  const submit = vi.spyOn(compositionApi, "submit");
+  mount(<CompositionPage />);
+  await screen.findByText("Request confirmation pending");
+  expect(screen.getByRole("button", { name: "Check saved status" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Retry exact submission" })).not.toBeInTheDocument();
+  expect(submit).not.toHaveBeenCalled();
+});
+
+it("keeps a Mac admission refusal readable without offering a grant while custody is unavailable", async () => {
+  macWorkspace();
+  vi.mocked(fileAccessApi.status).mockResolvedValue(macOSStatusFixture(false));
+  const refusal = refusalFixture();
+  refusal.owner.progress.submitted_request = { ...grantRequestFixture(), review: macRequestFixture() };
+  vi.mocked(compositionApi.objective).mockResolvedValue(refusal);
+  const submit = vi.spyOn(compositionApi, "submit");
+  mount(<CompositionPage />, `/composition?control=${macOSOwner}&objective=${ownerId}&pack=${MACOS_FILE_ACCESS_PACK}`);
+  await screen.findByText("Delegation refused");
+  expect(screen.getByRole("button", { name: "Review again" })).toBeDisabled();
+  expect(screen.getByText("No capability grant or execution authority was issued.")).toBeInTheDocument();
+  expect(submit).not.toHaveBeenCalled();
+});
+
+it("keeps Mac Continue disabled without live custody while saved revocation remains available", async () => {
+  const value = macWorkspace("unknown"); value.grant.status = "paused";
+  vi.mocked(fileAccessApi.status).mockResolvedValue(macOSStatusFixture(false));
+  mount(<CompositionPage />, `/composition?control=${macOSOwner}&objective=${ownerId}&pack=${MACOS_FILE_ACCESS_PACK}`);
+  expect(await screen.findByRole("button", { name: "Continue objective" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Revoke" })).toBeEnabled();
+  expect(screen.getByRole("link", { name: "Inspect finalized run evidence" })).toBeInTheDocument();
+});
+
+it("does not obtain a new Mac graph from an expired original enrollment", async () => {
+  macWorkspace();
+  const status = macOSStatusFixture(); status.enrollment!.expires_at_ms = Date.now() - 1;
+  vi.mocked(fileAccessApi.status).mockResolvedValue(status);
+  const submit = vi.spyOn(compositionApi, "submit");
+  mount(<CompositionPage />, `/composition?control=${macOSOwner}&objective=${ownerId}&pack=${MACOS_FILE_ACCESS_PACK}`);
+  await screen.findByRole("heading", { name: "Verify the retained Mac control" });
+  expect(screen.getByText("Original macOS workspace is read-only")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Review established graph" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Revoke" })).toBeEnabled();
+  expect(compositionApi.context).not.toHaveBeenCalled(); expect(submit).not.toHaveBeenCalled();
+});
+
+it.each(["attempt", "continue"] as const)("refuses Mac %s at the exact grant expiry before the next UI clock tick", async operation => {
+  const observed = Date.now();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(observed);
+  const value = macWorkspace();
+  value.grant.document.expires_at_ms = observed + 10_000;
+  if (operation === "continue") value.grant.status = "paused";
+  const submit = vi.spyOn(compositionApi, "submit");
+  const control = vi.spyOn(compositionApi, "control").mockResolvedValue({ ...value, grant: { ...value.grant, status: "revoked" } });
+  mount(<CompositionPage />, `/composition?control=${macOSOwner}&objective=${ownerId}&pack=${MACOS_FILE_ACCESS_PACK}`);
+  if (operation === "attempt") fireEvent.click(await screen.findByRole("button", { name: "Review established graph" }));
+  const button = await screen.findByRole("button", { name: operation === "attempt" ? "Start fresh attempt within grant" : "Continue objective" });
+  await waitFor(() => expect(button).toBeEnabled());
+  clock.mockReturnValue(value.grant.document.expires_at_ms);
+  // No timer or render runs between the boundary crossing and this click.
+  expect(button).toBeEnabled();
+  fireEvent.click(button);
+  expect(submit).not.toHaveBeenCalled(); expect(control).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Revoke" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
+  await waitFor(() => expect(control).toHaveBeenCalledWith(ownerId, "revoke"));
+});
+
+it("allows initial Mac grant submission without a saved grant expiry", async () => {
+  macWorkspace();
+  vi.spyOn(compositionApi, "review").mockResolvedValue(macReviewFixture());
+  const submit = vi.spyOn(compositionApi, "submit").mockRejectedValue(new Error("Response pending"));
+  mount(<CompositionPage />, `/composition?control=${macOSOwner}&pack=${MACOS_FILE_ACCESS_PACK}`);
+  const question = await screen.findByLabelText("Objective question");
+  await waitFor(() => expect(question).toBeEnabled());
+  fireEvent.change(question, { target: { value: macRequestFixture().question } });
+  fireEvent.click(screen.getByRole("button", { name: "Review finite delegation" }));
+  await screen.findByRole("button", { name: "Issue capability grant" });
+  fireEvent.change(screen.getByLabelText("Delegation reviewed by"), { target: { value: "operator" } });
+  fireEvent.click(screen.getByRole("checkbox"));
+  fireEvent.click(screen.getByRole("button", { name: "Issue capability grant" }));
+  await waitFor(() => expect(submit).toHaveBeenCalledOnce());
+  expect(submit.mock.calls[0]![0]).toMatchObject({ kind: "grant", control: macOSOwner, body: { review: macRequestFixture() } });
+});
 
 it("requires fresh finite review, unchecked acknowledgment and reviewer before issue", async () => {
   vi.spyOn(compositionApi, "review").mockResolvedValue(reviewFixture()); const onSubmit = vi.fn();
@@ -215,6 +383,68 @@ it.each(["stop", "revoke"] as const)("discards a late context failure after %s w
     expect(submit).not.toHaveBeenCalled();
   }
 });
+
+it.each([
+  ["available", true, "This action can only close the exact original attempt"],
+  ["unavailable", false, "The original process authority is unavailable"],
+  ["unresolved", false, "The original close could not be verified"],
+] as const)("renders macOS close recovery state %s without widening its action", async (state, actionable, message) => {
+  const value = macWorkspace("unknown");
+  value.attempts[0]!.progress.macos_recovery = { state, scope: "close_only" };
+  mount(<CompositionPage />, `/composition?control=${macOSOwner}&objective=${ownerId}&pack=${MACOS_FILE_ACCESS_PACK}`);
+  expect(await screen.findByText(new RegExp(message))).toBeVisible();
+  const button = screen.queryByRole("button", { name: "Close undispatched attempt" });
+  if (actionable) expect(button).toBeEnabled();
+  else expect(button).not.toBeInTheDocument();
+});
+
+it("hides recovery action after a confirmed close", async () => {
+  const value = macWorkspace("settled");
+  value.attempts[0]!.progress.macos_recovery = { state: "closed", scope: "close_only" };
+  mount(<CompositionPage />, `/composition?control=${macOSOwner}&objective=${ownerId}&pack=${MACOS_FILE_ACCESS_PACK}`);
+  await screen.findByRole("heading", { name: "Capability grant" });
+  expect(screen.queryByRole("button", { name: "Close undispatched attempt" })).not.toBeInTheDocument();
+  expect(screen.queryByText("Attempt closure pending")).not.toBeInTheDocument();
+});
+
+it("shows pending and failed recovery honestly without retrying", async () => {
+  const value = macWorkspace("unknown");
+  value.attempts[0]!.progress.macos_recovery = { state: "available", scope: "close_only" };
+  let rejectRecovery!: (error: Error) => void;
+  const recover = vi.spyOn(compositionApi, "recover").mockReturnValue(new Promise((_resolve, reject) => { rejectRecovery = reject; }));
+  mount(<CompositionPage />, `/composition?control=${macOSOwner}&objective=${ownerId}&pack=${MACOS_FILE_ACCESS_PACK}`);
+  fireEvent.click(await screen.findByRole("button", { name: "Close undispatched attempt" }));
+  expect(await screen.findByRole("button", { name: "Checking original close…" })).toBeDisabled();
+  expect(recover).toHaveBeenCalledOnce();
+  await act(async () => rejectRecovery(new Error("Original close response unavailable")));
+  expect(await screen.findByText("Original close response unavailable")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Close undispatched attempt" })).toBeEnabled();
+  expect(recover).toHaveBeenCalledOnce();
+});
+
+it("cancels an older objective read before publishing confirmed recovery", async () => {
+  const value = macWorkspace("unknown");
+  value.attempts[0]!.progress.macos_recovery = { state: "available", scope: "close_only" };
+  const closed = structuredClone(value);
+  closed.attempts[0]!.progress.settlement = "settled";
+  closed.attempts[0]!.progress.macos_recovery = { state: "closed", scope: "close_only" };
+  let finishRead!: (result: typeof value) => void;
+  const objective = vi.spyOn(compositionApi, "objective")
+    .mockResolvedValueOnce(value)
+    .mockReturnValueOnce(new Promise(resolve => { finishRead = resolve; }));
+  vi.spyOn(compositionApi, "recover").mockResolvedValue(closed);
+  const { client } = mount(<CompositionPage />, `/composition?control=${macOSOwner}&objective=${ownerId}&pack=${MACOS_FILE_ACCESS_PACK}`);
+  await screen.findByRole("button", { name: "Close undispatched attempt" });
+  const staleRead = client.refetchQueries({ queryKey: ["composition-objective", ownerId], exact: true });
+  await waitFor(() => expect(objective).toHaveBeenCalledTimes(2));
+  fireEvent.click(screen.getByRole("button", { name: "Close undispatched attempt" }));
+  await waitFor(() => expect(client.getQueryData(["composition-objective", ownerId])).toEqual(closed));
+  await act(async () => finishRead(value));
+  await staleRead;
+  expect(client.getQueryData(["composition-objective", ownerId])).toEqual(closed);
+  expect(screen.queryByRole("button", { name: "Close undispatched attempt" })).not.toBeInTheDocument();
+});
+
 it("still exposes a current active planning failure", async () => {
   vi.spyOn(compositionApi, "objective").mockResolvedValue(objectiveFixture());
   vi.mocked(compositionApi.context).mockRejectedValue(new Error("Current evidence cannot be verified"));

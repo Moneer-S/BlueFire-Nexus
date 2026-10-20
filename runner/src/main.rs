@@ -82,6 +82,17 @@ fn dispatch(args: &[String]) -> Result<i32, String> {
         return Err(usage().to_string());
     };
     match command {
+        "macos-file-access-capability" => {
+            if args.len() != 1 {
+                return Err("the fixed Darwin capability accepts no arguments".into());
+            }
+            println!("{}", bluefire_runner::macos_file_access::capability());
+            Ok(0)
+        }
+        "macos-file-access-reader" => bluefire_runner::macos_file_access::run_reader(&args[1..]),
+        "macos-file-access-owner-control" => {
+            bluefire_runner::macos_file_access::run_owner_control(&args[1..])
+        }
         "windows-file-correction-worker" => {
             require_no_windows_worker_arguments(&args[1..])?;
             bluefire_runner::windows_file_access_worker::run_fixed_correction()

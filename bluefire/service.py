@@ -254,6 +254,7 @@ class BlueFireService(
         self._built_in_registry = registry or load_builtin_registry()
         self.registry = self._built_in_registry
         self.config = config or self._load_default_config(config_path)
+        self._macos_workspace_endpoint: Any | None = None
         self.store = RunStore(runs_dir or Path.cwd() / ".bluefire-runs")
         self.recovered_runs = self.store.recover_interrupted_runs()
         self.runner_lifecycle = runner_lifecycle or ManagedRunnerLifecycle(managed_product_root())
@@ -2741,6 +2742,15 @@ class BlueFireService(
     def control_composition(
         self, owner_id: str, action: str, request: Mapping[str, Any]
     ) -> Mapping[str, Any]:
+        if action == "recover":
+            if (
+                not isinstance(request, dict)
+                or set(request) != {"attempt_id"}
+                or not isinstance(request["attempt_id"], str)
+                or re.fullmatch(r"attempt-[0-9a-f]{32}", request["attempt_id"]) is None
+            ):
+                raise ProductStoreError("Recovery requires one exact original attempt identifier.")
+            return dict(self.composition.recover_macos_attempt(owner_id, request["attempt_id"]))
         if not isinstance(request, dict) or request:
             raise ProductStoreError("Composition control accepts only an empty object.")
         if action == "continue":

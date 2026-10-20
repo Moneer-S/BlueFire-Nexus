@@ -686,7 +686,7 @@ class APIRoutes:
         if proposal is not None:
             return ("proposal-cancel" if proposal.group(2) else "proposal-read", proposal.group(1))
         match = re.fullmatch(
-            r"objectives/(job-[0-9a-f]{32})(?:/(proposal-context|proposals|attempts|stop|revoke|continue))?",
+            r"objectives/(job-[0-9a-f]{32})(?:/(proposal-context|proposals|attempts|stop|revoke|continue|recover))?",
             suffix,
         )
         if match is None:
@@ -710,6 +710,9 @@ class APIRoutes:
         windows_control = re.fullmatch(r"controls/(win-file-control-[0-9a-f]{32})", suffix)
         if windows_control is not None:
             return "control", windows_control.group(1), ""
+        macos_control = re.fullmatch(r"controls/(file-control-[0-9a-f]{64})", suffix)
+        if macos_control is not None:
+            return "control", macos_control.group(1), ""
         match = re.fullmatch(
             r"(operations|controls)/(job-[0-9a-f]{32})(?:/(reconcile)|/reconciliations/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}))?",
             suffix,

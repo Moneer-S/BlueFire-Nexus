@@ -250,3 +250,83 @@ def test_zero_task_preparation_failure_records_no_effect(operation, monkeypatch)
         operation.store.file_access_operation_records(operation.job["job_id"])["outcome"]["state"]
         == "refused_no_effect"
     )
+
+
+def test_interrupted_macos_task_without_dispatch_is_settled_not_sent(monkeypatch):
+    from contextlib import nullcontext
+
+    from bluefire import product_store_macos_file_access as macos
+    from bluefire.file_access_control import FileAccessControl
+
+    binding = {"generation": "generation-a", "resource": {"sha256": "a" * 64}}
+    claim = {
+        "task_id": "task-a",
+        "request_hash": "b" * 64,
+        "runner_profile": {"macos_file_access_binding": binding},
+    }
+    records = {
+        "document": {
+            "review_context": {"schema_version": "bluefire.macos-file-access-control-context.v1"}
+        },
+        "tasks": [{"task": claim}],
+        "outcome": None,
+    }
+    calls = []
+
+    class Store:
+        def get_job(self, _job_id):
+            return {
+                "kind": "file_access.operation",
+                "state": "interrupted",
+                "request": {"control_owner_id": "owner-a"},
+                "progress": {},
+            }
+
+        def _connection(self):
+            return nullcontext(
+                SimpleNamespace(execute=lambda *_args: SimpleNamespace(fetchone=lambda: None))
+            )
+
+        def file_access_operation_records(self, _job_id):
+            return records
+
+        def record_file_access_task_terminal(self, task_id, *, request_hash, result):
+            calls.append(("terminal", task_id, request_hash, result))
+
+        def record_file_access_worker_closure(self, task_id, *, request_hash, proof):
+            calls.append(("closure", task_id, request_hash, proof))
+
+        def finish_file_access_operation(self, _job_id, *, outcome):
+            records["outcome"] = outcome
+            records["outcome_digest"] = content_hash(outcome)
+
+        def latest_file_access_reconciliation(self, _job_id):
+            return None
+
+    monkeypatch.setattr(macos, "has_dispatch", lambda *_args: False)
+    control = object.__new__(FileAccessControl)
+    control.store = Store()
+    control.control = lambda _owner: {"status": "unchanged"}
+
+    result = control.operation("job-a")
+
+    not_sent = {
+        "schema_version": "bluefire.task-not-sent.v1",
+        "task_id": "task-a",
+        "request_hash": "b" * 64,
+    }
+    assert calls == [
+        ("terminal", "task-a", "b" * 64, not_sent),
+        (
+            "closure",
+            "task-a",
+            "b" * 64,
+            {
+                "state": "not_sent",
+                "binding_digest": content_hash(binding),
+                "evidence_digest": content_hash(not_sent),
+            },
+        ),
+    ]
+    assert result["job"]["state"] == "interrupted"
+    assert result["reconciliation"]["state"] == "refused_no_effect"

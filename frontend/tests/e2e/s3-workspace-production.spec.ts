@@ -37,6 +37,12 @@ async function fixture(page: Page, initial: S3Exercise | null) {
     if (method === "GET" && url.pathname === "/api/v1/s3-access/exercises") { await json({ schema_version: "bluefire.s3-exercise-list.v1", exercises: value ? [{ workflow_job_id: s3Owner, name: "Synthetic S3 review", bucket: value.environment.scope.bucket, policy_state: value.policy_state, updated_at: "2026-10-09T00:00:00Z" }] : [], truncated: false }); return; }
     const root = `/api/v1/s3-access/exercises/${s3Owner}`;
     if (method === "GET" && url.pathname === root && value) { await json(value); return; }
+    if (method === "GET" && url.pathname === `${root}/audit-reviews` && value) {
+      await json({ schema_version: "bluefire.s3-audit-reviews.v2", workflow_job_id: s3Owner,
+        reads: [], reviews: [], collections: [], maximum_reviews: 32, maximum_collections: 2,
+        maximum_input_bytes: 524288, maximum_expanded_bytes: 1048576,
+      }); return;
+    }
     if (method === "POST" && url.pathname === `${root}/review` && value) {
       const body = request.postDataJSON() as { phase: S3Phase };
       if (!value.allowed_phases.includes(body.phase)) { counts.unexpected += 1; await route.abort(); return; }

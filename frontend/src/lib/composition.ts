@@ -4,14 +4,15 @@ import { sameJson } from "./replay-review";
 import { parseScenarioDocument } from "./scenario";
 
 export const FILE_ACCESS_PACK = "bluefire.linux-file-access-pack.v1";
+export const MACOS_FILE_ACCESS_PACK = "bluefire.macos-file-access-pack.v1";
 export const RECEIVER_PACK = "bluefire.receiver-composition-pack.v1";
-export type CompositionPack = typeof FILE_ACCESS_PACK | typeof RECEIVER_PACK;
-export type CompositionReviewRequest = { control_owner_id: string; question: string; limits: Record<string, number> | null } & ({ schema_version?: never; pack?: never } | { schema_version: "bluefire.composition-review-request.v2"; pack: typeof FILE_ACCESS_PACK });
+export type CompositionPack = typeof FILE_ACCESS_PACK | typeof MACOS_FILE_ACCESS_PACK | typeof RECEIVER_PACK;
+export type CompositionReviewRequest = { control_owner_id: string; question: string; limits: Record<string, number> | null } & ({ schema_version?: never; pack?: never } | { schema_version: "bluefire.composition-review-request.v2"; pack: typeof FILE_ACCESS_PACK | typeof MACOS_FILE_ACCESS_PACK });
 export interface CompositionMethod { behavior_id: string; action_id: string; behavior: Behavior; action: ActionDefinition; implementation_digest: string; parameter_domains: Record<string, unknown[]>; cost: Record<string, unknown> }
 export interface CompositionReview {
   schema_version: string; pack?: CompositionPack; objective: { question: string; predicate: Record<string, unknown> };
   environment: { control_owner_id: string; runner_id: string; [key: string]: unknown };
-  limits: Record<string, number>; snapshot: { pack?: CompositionPack; snapshot_digest: string; methods: CompositionMethod[]; artifact_context: Record<string, unknown> };
+  limits: Record<string, number>; snapshot: { schema_version?: string; platform?: string; pack?: CompositionPack; snapshot_digest: string; methods: CompositionMethod[]; artifact_context: Record<string, unknown> };
   limitations: string[]; review_digest: string;
 }
 export interface CompositionJob { job_id: string; kind: string; state: string; request: Record<string, unknown>; progress: Record<string, unknown>; error?: unknown }
@@ -31,12 +32,22 @@ export interface CompositionProposal { job: CompositionJob; candidate_ready: boo
 export interface CompositionList { schema_version: "bluefire.composition-objective-list.v1"; objectives: Array<{ owner_id: string; title: string; status: string; job_state: string }> }
 
 export const compositionJobValid = (value: unknown): value is string => typeof value === "string" && /^job-[0-9a-f]{32}$/.test(value);
+export function compositionControlValid(value: unknown, pack?: CompositionPack): value is string {
+  const mac = typeof value === "string" && /^file-control-[0-9a-f]{64}$/.test(value);
+  return pack === MACOS_FILE_ACCESS_PACK ? mac : pack === undefined ? mac || compositionJobValid(value) : compositionJobValid(value);
+}
 export const compositionJobId = (submission: string) => `job-${submission.replaceAll("-", "")}`;
 const digest = (value: unknown) => typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
 export const compositionRecord = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const bad = () => new Error("This composition response is incomplete or belongs to different saved work.");
+const exactKeys = (value: Record<string, unknown>, keys: string[]) => Object.keys(value).sort().join(",") === [...keys].sort().join(",");
+const macMethods = ["macos.file_access.probe.v1", "macos.file_access.verify_owner.v1", "macos.file_access.close_attempt.v1"];
+const macChecks = ["probe_authenticated", "non_owner_denied", "owner_read_verified", "same_resource", "same_control_revision", "same_original_binding", "content_preserved", "requests_closed", "no_attempt_artifacts", "enrollment_retained"];
 
 export function compositionPack(value: Pick<CompositionReview, "schema_version" | "pack" | "snapshot">): CompositionPack {
+  if (["bluefire.composition-review.v2", "bluefire.capability-grant.v2"].includes(value.schema_version)
+    && value.pack === MACOS_FILE_ACCESS_PACK && value.snapshot?.pack === MACOS_FILE_ACCESS_PACK
+    && value.snapshot.schema_version === "bluefire.macos-file-access-capability-snapshot.v1" && value.snapshot.platform === "macos") return MACOS_FILE_ACCESS_PACK;
   if (["bluefire.composition-review.v2", "bluefire.capability-grant.v2"].includes(value.schema_version)
     && value.pack === FILE_ACCESS_PACK && value.snapshot?.pack === FILE_ACCESS_PACK) return FILE_ACCESS_PACK;
   if (["bluefire.composition-review.v1", "bluefire.capability-grant.v1"].includes(value.schema_version)
@@ -46,8 +57,9 @@ export function compositionPack(value: Pick<CompositionReview, "schema_version" 
 
 export function checkedCompositionReview(value: CompositionReview, submitted: CompositionReviewRequest): CompositionReview {
   const pack = compositionPack(value);
-  if ((submitted.pack === FILE_ACCESS_PACK ? submitted.schema_version !== "bluefire.composition-review-request.v2" || pack !== FILE_ACCESS_PACK || value.schema_version !== "bluefire.composition-review.v2" : pack !== RECEIVER_PACK || value.schema_version !== "bluefire.composition-review.v1") || !digest(value.review_digest) || value.environment?.control_owner_id !== submitted.control_owner_id || value.objective?.question !== submitted.question || !Array.isArray(value.snapshot?.methods) || !value.snapshot.methods.length || !digest(value.snapshot.snapshot_digest) || !Array.isArray(value.limitations) || !Object.entries(value.limits ?? {}).every(([key, item]) => Number.isSafeInteger(item) && item >= (key === "max_edges_per_attempt" ? 0 : 1)) || (submitted.limits !== null && !sameJson(submitted.limits, value.limits))) throw bad();
+  if (compositionRequestPack(submitted) !== pack || value.schema_version !== (pack === RECEIVER_PACK ? "bluefire.composition-review.v1" : "bluefire.composition-review.v2") || !digest(value.review_digest) || value.environment?.control_owner_id !== submitted.control_owner_id || value.objective?.question !== submitted.question || !Array.isArray(value.snapshot?.methods) || !value.snapshot.methods.length || !digest(value.snapshot.snapshot_digest) || !Array.isArray(value.limitations) || !Object.entries(value.limits ?? {}).every(([key, item]) => Number.isSafeInteger(item) && item >= (key === "max_edges_per_attempt" ? 0 : 1)) || (submitted.limits !== null && !sameJson(submitted.limits, value.limits))) throw bad();
   if (pack === FILE_ACCESS_PACK) checkedFileAccessScope(value);
+  if (pack === MACOS_FILE_ACCESS_PACK) checkedMacOSFileAccessScope(value);
   return value;
 }
 export function checkedCompositionObjective<T extends CompositionObjectiveState>(value: T, id: string, control?: string, expectedPack?: CompositionPack): T {
@@ -57,17 +69,19 @@ export function checkedCompositionObjective<T extends CompositionObjectiveState>
     const problem = compositionRecord(admission.problem);
     const submitted = compositionRecord(value.owner.progress.submitted_request);
     const review = compositionRecord(submitted.review);
-    if (value.owner.state !== "completed" || admission.accepted !== false || !["composition_review_changed", "composition_admission_unavailable", "composition_admission_interrupted"].includes(String(problem.code)) || typeof problem.message !== "string" || value.attempts.length || typeof submitted.submission_id !== "string" || compositionJobId(submitted.submission_id) !== id || !compositionJobValid(review.control_owner_id) || typeof review.question !== "string" || (review.limits !== null && (typeof review.limits !== "object" || Array.isArray(review.limits))) || (control && review.control_owner_id !== control)) throw bad();
+    if (value.owner.state !== "completed" || admission.accepted !== false || !["composition_review_changed", "composition_admission_unavailable", "composition_admission_interrupted"].includes(String(problem.code)) || typeof problem.message !== "string" || value.attempts.length || typeof submitted.submission_id !== "string" || compositionJobId(submitted.submission_id) !== id || typeof review.question !== "string" || (review.limits !== null && (typeof review.limits !== "object" || Array.isArray(review.limits))) || (control && review.control_owner_id !== control)) throw bad();
     const pack = compositionRequestPack(review);
+    if (!compositionControlValid(review.control_owner_id, pack)) throw bad();
     if (expectedPack && pack !== expectedPack) throw bad();
     return value;
   }
   const grant = value?.grant?.document;
   if (value?.schema_version !== "bluefire.composition-objective.v1" || value.owner?.job_id !== id || value.owner.kind !== "composition.objective" || !grant || !digest(grant.grant_digest) || !Array.isArray(value.attempts) || !Array.isArray(grant.snapshot?.methods) || !Number.isSafeInteger(grant.expires_at_ms) || !Number.isSafeInteger(grant.created_at_ms) || grant.expires_at_ms <= grant.created_at_ms || (control && grant.environment?.control_owner_id !== control) || value.owner.request.grant_id !== grant.grant_id || value.owner.request.grant_digest !== grant.grant_digest) throw bad();
   const pack = compositionPack(grant);
-  if (grant.schema_version !== (pack === FILE_ACCESS_PACK ? "bluefire.capability-grant.v2" : "bluefire.capability-grant.v1")) throw bad();
+  if (grant.schema_version !== (pack === RECEIVER_PACK ? "bluefire.capability-grant.v1" : "bluefire.capability-grant.v2")) throw bad();
   if (expectedPack && pack !== expectedPack) throw bad();
   if (pack === FILE_ACCESS_PACK) checkedFileAccessScope(grant);
+  if (pack === MACOS_FILE_ACCESS_PACK) checkedMacOSFileAccessScope(grant);
   const ids = new Set<string>();
   for (const attempt of value.attempts) {
     const binding = attempt?.request?.composition_attempt;
@@ -77,9 +91,10 @@ export function checkedCompositionObjective<T extends CompositionObjectiveState>
       const result = compositionRecord(attempt.progress.verified_result);
       const outcome = compositionRecord(result.objective);
       const checks = compositionRecord(outcome.checks);
-      const required = pack === FILE_ACCESS_PACK ? ["probe_authenticated", "non_owner_denied", "owner_read_verified", "same_resource", "same_control_revision", "same_probe_enrollment", "content_preserved", "identity_unchanged", "parents_unchanged", "acl_unchanged", "run_cleaned", "request_closed"] : ["receiver_verified", "policy_unchanged", "data_class_preserved", "record_count_preserved", "all_records_redacted", "accepted", "run_cleaned", "receiver_closed"];
+      const required = pack === MACOS_FILE_ACCESS_PACK ? macChecks : pack === FILE_ACCESS_PACK ? ["probe_authenticated", "non_owner_denied", "owner_read_verified", "same_resource", "same_control_revision", "same_probe_enrollment", "content_preserved", "identity_unchanged", "parents_unchanged", "acl_unchanged", "run_cleaned", "request_closed"] : ["receiver_verified", "policy_unchanged", "data_class_preserved", "record_count_preserved", "all_records_redacted", "accepted", "run_cleaned", "receiver_closed"];
       if (!digest(attempt.progress.verified_result_digest) || result.run_id !== binding.run_id || typeof outcome.established !== "boolean" || required.some(key => typeof checks[key] !== "boolean") || outcome.established !== required.every(key => checks[key] === true)) throw bad();
       if (pack === FILE_ACCESS_PACK) checkedFileAccessResult(result, grant, checks);
+      if (pack === MACOS_FILE_ACCESS_PACK) checkedMacOSFileAccessResult(result, grant, checks);
     }
   }
   return value;
@@ -92,6 +107,78 @@ function checkedFileAccessScope(value: Pick<CompositionReview, "environment" | "
     || !Number.isSafeInteger(environment.control_revision) || Number(environment.control_revision) < 1 || environment.mode !== "0600"
     || predicate.kind !== "non_owner_denied_owner_preserves_records" || predicate.data_class !== "generated_public_jsonl" || !digest(predicate.sha256)
     || !Number.isSafeInteger(predicate.record_count) || Number(predicate.record_count) < 1 || Number(predicate.record_count) > 100) throw bad();
+}
+function checkedMacOSSnapshot(snapshot: CompositionReview["snapshot"]) {
+  if (snapshot.schema_version !== "bluefire.macos-file-access-capability-snapshot.v1" || snapshot.pack !== MACOS_FILE_ACCESS_PACK
+    || snapshot.platform !== "macos" || !digest(snapshot.snapshot_digest) || !Array.isArray(snapshot.methods) || snapshot.methods.length !== 3
+    || snapshot.artifact_context?.materialization !== "original_workspace_metadata_only"
+    || snapshot.artifact_context.data_class !== "generated_public_jsonl" || !digest(snapshot.artifact_context.environment_digest)) throw bad();
+  const inputs = [[], [["probe", "artifact.macos_file_access.probe.v1", false, true]], [["workspace", "artifact.macos_file_access.attempt.v1", false, true]]];
+  const outputs = [[["probe", "artifact.macos_file_access.probe.v1", false], ["workspace", "artifact.macos_file_access.attempt.v1", false]], [["verification", "artifact.macos_file_access.verification.v1", false]], [["closure", "artifact.macos_file_access.attempt_closure.v1", false]]];
+  for (const [index, method] of snapshot.methods.entries()) {
+    const id = macMethods[index];
+    if (method.behavior_id !== id || method.action_id !== id || method.behavior?.id !== id || method.action?.id !== id
+      || method.behavior.execution_state !== "action" || !method.behavior.platforms?.includes("macos") || !method.action.platforms?.includes("macos")
+      || !sameJson(method.behavior.action_ids, [id]) || method.behavior.safety_tier !== "controlled" || method.action.safety_tier !== "controlled"
+      || !sameJson(method.behavior.capabilities, [index === 2 ? "cleanup" : "filesystem.read"]) || !sameJson(method.action.capabilities, [index === 2 ? "cleanup" : "filesystem.read"])
+      || method.action.mutates !== false || method.action.cleanup_action_id !== (index === 2 ? null : macMethods[2])
+      || !digest(method.implementation_digest) || !sameJson(method.parameter_domains, {})
+      || !sameJson(method.behavior.parameters, []) || !sameJson(method.action.parameters, [])
+      || !Array.isArray(method.behavior.inputs) || !Array.isArray(method.behavior.outputs)
+      || !sameJson(method.behavior.inputs.map(port => [port.name, port.type, port.multiple, port.required]), inputs[index])
+      || !sameJson(method.behavior.outputs.map(port => [port.name, port.type, port.multiple]), outputs[index])
+      || !Array.isArray(method.action.inputs) || !Array.isArray(method.action.outputs)
+      || !sameJson(method.action.inputs.map(port => [port.name, port.type, port.multiple, port.required]), inputs[index])
+      || !sameJson(method.action.outputs.map(port => [port.name, port.type, port.multiple]), outputs[index])
+      || method.cost.schema_version !== "bluefire.macos-file-access-method-cost.v1" || method.cost.pack !== MACOS_FILE_ACCESS_PACK
+      || method.cost.method_id !== id || !digest(method.cost.cost_digest) || method.cost.native_primitive_requests !== (index === 2 ? 0 : 1)
+      || method.cost.generated_bytes !== 0 || method.cost.network_bytes !== 0 || !sameJson(method.cost.writes, [])
+      || !sameJson(method.cost.material_directories, []) || method.cost.removes !== null) throw bad();
+  }
+}
+function checkedMacOSFileAccessScope(value: Pick<CompositionReview, "environment" | "objective" | "snapshot">) {
+  checkedFileAccessScope(value);
+  const environment = value.environment;
+  if (!compositionControlValid(environment.control_owner_id, MACOS_FILE_ACCESS_PACK) || environment.runner_id !== "bluefire-macos-workspace.v1"
+    || ["enrollment_digest", "profile_digest", "target_scope_digest", "collector_digest", "workspace_custody_digest", "binding_digest"].some(key => !digest(environment[key]))
+    || value.objective.predicate.record_count !== 8) throw bad();
+  checkedMacOSSnapshot(value.snapshot);
+}
+function checkedMacOSFileAccessResult(result: Record<string, unknown>, grant: CompositionObjective["grant"]["document"], checks: Record<string, unknown>) {
+  const evidence = compositionRecord(result.macos_file_access_result);
+  const cleanup = compositionRecord(result.cleanup);
+  const source = compositionRecord(result.source_binding);
+  if (!exactKeys(result, ["run_id", "source_binding", "macos_file_access_result", "cleanup", "objective"])
+    || source.run_id !== result.run_id || source.mode !== "execute" || typeof source.finalized_at !== "string" || !Number.isFinite(Date.parse(source.finalized_at))
+    || ["manifest_digest", "evidence_digest", "observed_records_digest"].some(key => !digest(source[key]))
+    || !Number.isSafeInteger(source.evidence_count) || Number(source.evidence_count) < 0 || source.observed_count !== 0
+    || !exactKeys(evidence, ["probe_verified", "non_owner_decision", "owner_verified", "owner_decision", "resource_digest", "resource_generation", "control_revision", "binding_digest", "sha256", "record_count", "request_closure", "attempt_artifacts", "workers_retained", "whole_enrollment_cleanup"])
+    || !exactKeys(checks, macChecks) || !exactKeys(cleanup, ["request", "attempt_artifacts", "workers", "whole_enrollment"])
+    || ["probe_verified", "owner_verified", "workers_retained", "whole_enrollment_cleanup"].some(key => typeof evidence[key] !== "boolean")
+    || !["allowed", "denied", "unknown"].includes(String(evidence.non_owner_decision)) || !["allowed", "denied", "unknown"].includes(String(evidence.owner_decision))
+    || !Number.isSafeInteger(evidence.record_count) || Number(evidence.record_count) < 0 || Number(evidence.record_count) > 8
+    || !Number.isSafeInteger(evidence.control_revision) || Number(evidence.control_revision) < 1
+    || !digest(evidence.resource_digest) || !digest(evidence.binding_digest) || !digest(evidence.sha256)
+    || typeof evidence.resource_generation !== "string" || !evidence.resource_generation
+    || evidence.probe_verified !== true || evidence.owner_verified !== true || evidence.owner_decision !== "allowed" || evidence.non_owner_decision === "unknown"
+    || evidence.resource_digest !== grant.environment.resource_digest || evidence.resource_generation !== grant.environment.resource_generation
+    || evidence.control_revision !== grant.environment.control_revision || evidence.binding_digest !== grant.environment.binding_digest
+    || evidence.sha256 !== grant.objective.predicate.sha256 || evidence.record_count !== grant.objective.predicate.record_count
+    || evidence.request_closure !== "verified_closed" || evidence.attempt_artifacts !== "not_created" || evidence.workers_retained !== true || evidence.whole_enrollment_cleanup !== false
+    || cleanup.request !== evidence.request_closure || cleanup.attempt_artifacts !== evidence.attempt_artifacts || cleanup.workers !== "retained" || cleanup.whole_enrollment !== false) throw bad();
+  const expected = {
+    probe_authenticated: evidence.probe_verified,
+    non_owner_denied: evidence.non_owner_decision === "denied",
+    owner_read_verified: evidence.owner_verified === true && evidence.owner_decision === "allowed",
+    same_resource: evidence.resource_digest === grant.environment.resource_digest && evidence.resource_generation === grant.environment.resource_generation,
+    same_control_revision: evidence.control_revision === grant.environment.control_revision,
+    same_original_binding: evidence.binding_digest === grant.environment.binding_digest,
+    content_preserved: evidence.sha256 === grant.objective.predicate.sha256 && evidence.record_count === grant.objective.predicate.record_count,
+    requests_closed: evidence.request_closure === "verified_closed",
+    no_attempt_artifacts: evidence.attempt_artifacts === "not_created",
+    enrollment_retained: evidence.workers_retained && !evidence.whole_enrollment_cleanup,
+  };
+  if (Object.entries(expected).some(([key, value]) => checks[key] !== value)) throw bad();
 }
 function checkedFileAccessResult(result: Record<string, unknown>, grant: CompositionObjective["grant"]["document"], checks: Record<string, unknown>) {
   const evidence = compositionRecord(result.file_access_result);
@@ -115,6 +202,21 @@ function checkedFileAccessResult(result: Record<string, unknown>, grant: Composi
 export function checkedCompositionContext(value: CompositionContext, grant: string, pack: CompositionPack = RECEIVER_PACK): CompositionContext {
   if (value?.schema_version !== "bluefire.composition-proposal-context.v1" || value.grant_id !== grant || !digest(value.context_digest) || !Array.isArray(value.snapshot?.methods) || !Array.isArray(value.facts?.facts) || value.facts.facts.some(fact => typeof fact.fact_id !== "string" || typeof fact.kind !== "string") || Boolean(value.initial_proposal) !== Boolean(value.initial_scenario)) throw bad();
   if (value.snapshot.pack !== pack) throw bad();
+  if (pack === MACOS_FILE_ACCESS_PACK) {
+    checkedMacOSSnapshot(value.snapshot);
+    const facts = compositionRecord(value.facts);
+    const fact = compositionRecord(value.facts.facts[0]);
+    const source = compositionRecord(fact.source);
+    const dependency = compositionRecord(fact.value);
+    if (facts.schema_version !== "bluefire.macos-file-access-composition-facts.v1" || facts.pack !== MACOS_FILE_ACCESS_PACK
+      || facts.grant_id !== grant || facts.prior_attempt_id !== null || facts.prior_graph_digest !== null || !digest(facts.facts_digest)
+      || facts.environment_digest !== value.snapshot.artifact_context.environment_digest || !digest(facts.control_digest)
+      || value.facts.facts.length !== 1 || fact.fact_id !== "control" || fact.kind !== "retained_macos_file_control" || fact.provenance !== "observed"
+      || fact.attempt_id !== null || source.kind !== "control_record" || !compositionControlValid(source.id, MACOS_FILE_ACCESS_PACK)
+      || source.digest !== facts.control_digest || fact.control_digest !== facts.control_digest || fact.environment_digest !== facts.environment_digest
+      || dependency.control_owner_id !== source.id || dependency.control_digest !== facts.control_digest
+      || ["resource_digest", "probe_enrollment_digest", "baseline_digest", "workspace_custody_digest", "binding_digest"].some(key => !digest(dependency[key]))) throw bad();
+  }
   if (value.initial_scenario) parseScenarioDocument(value.initial_scenario);
   return value;
 }
@@ -132,7 +234,7 @@ export function checkedCompositionList(value: CompositionList): CompositionList 
   return value;
 }
 export function compositionCanRevise(attempt: CompositionAttempt, objective: CompositionObjective): boolean {
-  if (compositionPack(objective.grant.document) === FILE_ACCESS_PACK) return false;
+  if (compositionPack(objective.grant.document) !== RECEIVER_PACK) return false;
   const result = compositionRecord(attempt.progress.verified_result);
   const receiver = compositionRecord(result.receiver_result);
   const cleanup = compositionRecord(result.cleanup);
@@ -224,7 +326,11 @@ export function readCompositionPending(): CompositionPending | undefined {
   if (!raw) return;
   if (raw.length > 500_000) throw new Error("The saved composition request needs recovery.");
   const value = JSON.parse(raw) as CompositionPending;
-  if (!["grant", "attempt", "proposal"].includes(value.kind) || !compositionJobValid(value.owner) || !compositionJobValid(value.control) || !compositionJobValid(value.id) || typeof value.body?.submission_id !== "string" || compositionJobId(value.body.submission_id) !== value.id) throw new Error("The saved composition request is malformed; it has not been sent.");
+  if (!["grant", "attempt", "proposal"].includes(value.kind) || !compositionJobValid(value.owner) || !compositionControlValid(value.control) || !compositionJobValid(value.id) || typeof value.body?.submission_id !== "string" || compositionJobId(value.body.submission_id) !== value.id) throw new Error("The saved composition request is malformed; it has not been sent.");
+  if (value.kind === "grant") {
+    const review = compositionRecord(value.body.review);
+    if (!compositionControlValid(value.control, compositionRequestPack(review)) || review.control_owner_id !== value.control) throw bad();
+  }
   return value;
 }
 export function storeCompositionPending(value: CompositionPending) {
@@ -251,6 +357,12 @@ export function compositionConfirmed(value: CompositionObjectiveState | Composit
   return value.attempts.some(attempt => attempt.job_id === pending.id && sameJson(attempt.progress.submitted_request, pending.body));
 }
 export function compositionRequestPack(value: Record<string, unknown>): CompositionPack {
+  if (value.schema_version === "bluefire.composition-review-request.v2" && value.pack === MACOS_FILE_ACCESS_PACK
+    && exactKeys(value, ["schema_version", "pack", "control_owner_id", "question", "limits"])
+    && typeof value.question === "string" && Boolean(value.question.trim()) && value.question.length <= 4000
+    && (value.limits === null || (typeof value.limits === "object" && !Array.isArray(value.limits)
+      && Object.entries(compositionRecord(value.limits)).every(([key, item]) => Number.isSafeInteger(item) && Number(item) >= (key === "max_edges_per_attempt" ? 0 : 1))))
+    && compositionControlValid(value.control_owner_id, MACOS_FILE_ACCESS_PACK)) return MACOS_FILE_ACCESS_PACK;
   if (value.schema_version === "bluefire.composition-review-request.v2" && value.pack === FILE_ACCESS_PACK) return FILE_ACCESS_PACK;
   if (value.schema_version === undefined && value.pack === undefined) return RECEIVER_PACK;
   throw bad();
@@ -267,5 +379,6 @@ export const compositionApi = {
   proposal: (id: string) => request<CompositionProposal>(`/composition/proposals/${encodeURIComponent(id)}`),
   submit: (value: CompositionPending) => post<CompositionObjectiveState | CompositionProposal>(value.kind === "grant" ? "objectives" : `objectives/${encodeURIComponent(value.owner)}/${value.kind === "attempt" ? "attempts" : "proposals"}`, value.body),
   control: (id: string, operation: "stop" | "revoke" | "continue") => post<CompositionObjectiveState>(`objectives/${encodeURIComponent(id)}/${operation}`, {}),
+  recover: (id: string, attempt_id: string) => post<CompositionObjectiveState>(`objectives/${encodeURIComponent(id)}/recover`, { attempt_id }),
   cancel: (id: string) => post<CompositionProposal>(`proposals/${encodeURIComponent(id)}/cancel`, {}),
 };

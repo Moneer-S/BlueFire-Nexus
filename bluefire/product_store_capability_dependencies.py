@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from .capability_packs import FILE_ACCESS_PACK, grant_pack
+from .capability_packs import FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, grant_pack
 from .capability_resources import digest
 from .product_store_capability_grants import (
     _attempt_at,
@@ -30,8 +30,56 @@ def _dependency_query(is_file):
 
 
 def dependency_at(connection, attempt_id, lease):
-    query = _dependency_query(_file_access(connection, lease))
+    _, grant, _ = _grant_at(connection, lease["grant_id"])
+    query = _dependency_query(grant_pack(grant) in {FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK})
     return _document(_one(connection, query, attempt_id))
+
+
+def bind_macos_file_access(store: Any, attempt_id: str) -> dict[str, Any]:
+    with store._connection(write=True) as connection:
+        _, lease, compiled = _attempt_at(connection, attempt_id)
+        _claim_at(connection, attempt_id, lease)
+        _, grant, _ = _grant_at(connection, lease["grant_id"])
+        _one(
+            connection, "SELECT * FROM capability_preparation_starts WHERE attempt_id=?", attempt_id
+        )
+        if (
+            grant_pack(grant) != MACOS_FILE_ACCESS_PACK
+            or connection.execute(
+                "SELECT 1 FROM capability_attempt_settlements WHERE attempt_id=?", (attempt_id,)
+            ).fetchone()
+        ):
+            raise ProductStoreError("The exact macOS attempt cannot acquire a dependency.")
+        dependency = compiled["macos_file_access"]
+        document = {
+            "schema_version": "bluefire.capability-macos-file-access-binding.v1",
+            "attempt_id": attempt_id,
+            "lease_digest": lease["lease_digest"],
+            **{
+                key: dependency[key]
+                for key in (
+                    "binding_digest",
+                    "resource_generation",
+                    "control_revision",
+                    "resource_digest",
+                    "workspace_custody_digest",
+                )
+            },
+        }
+        previous = connection.execute(
+            "SELECT * FROM capability_file_access_bindings WHERE attempt_id=?", (attempt_id,)
+        ).fetchone()
+        if previous is not None:
+            if _document(previous) != document:
+                raise ProductStoreError("The attempt already owns another resource dependency.")
+            return document
+        _insert_document(
+            connection,
+            "INSERT INTO capability_file_access_bindings VALUES(?,?,?)",
+            attempt_id,
+            document,
+        )
+        return document
 
 
 def bind_file_access(store, attempt_id, *, binding_digest, resource_generation, control_revision):

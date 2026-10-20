@@ -1,6 +1,6 @@
-"""Exact retained dependency identities for the two admitted capability packs."""
+"""Exact retained dependency identities for the admitted capability packs."""
 
-from .capability_packs import FILE_ACCESS_PACK, grant_pack
+from .capability_packs import FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, grant_pack
 from .util import content_hash
 
 
@@ -14,6 +14,12 @@ def usage_document(grant, compiled, lease):
         "lease_digest": lease["lease_digest"],
         "compiled_digest": compiled["compiled_digest"],
     }
+    if grant_pack(grant) == MACOS_FILE_ACCESS_PACK:
+        return {
+            "schema_version": "bluefire.macos-file-access-control-usage.v1",
+            **common,
+            "macos_file_access": compiled["macos_file_access"],
+        }
     if grant_pack(grant) == FILE_ACCESS_PACK:
         return {
             "schema_version": "bluefire.file-access-control-usage.v1",

@@ -1,18 +1,25 @@
 """File-access routes retain the authenticated HTTP shell and exact saved identities."""
 
+from types import SimpleNamespace
+
 import pytest
 
-from tests_platform.test_api import JOB_ID, json_body, request, running_server
+from bluefire.file_access_control import FileAccessControl
+from bluefire.product_store import ProductStore
+from tests_platform.test_api import JOB_ID, StubService, json_body, request, running_server
+from tests_platform.test_macos_file_access_contract import binding
 
 SUBMISSION_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 PREFIX = "/api/v1/file-access/"
 WINDOWS_CONTROL = "win-file-control-" + "b" * 32
+MACOS_CONTROL = "file-control-" + "c" * 64
 READS = (
     "status",
     f"operations/{JOB_ID}",
     f"controls/{JOB_ID}",
     f"operations/{JOB_ID}/reconciliations/{SUBMISSION_ID}",
     f"controls/{WINDOWS_CONTROL}",
+    f"controls/{MACOS_CONTROL}",
 )
 WRITES = ("review", "operations", "control-list", f"operations/{JOB_ID}/reconcile", "setup-import")
 
@@ -25,6 +32,7 @@ def test_file_access_routes_forward_exact_bodies_and_saved_identifiers():
         ("GET", READS[2], ("file_access_control", JOB_ID)),
         ("GET", READS[3], ("file_access_reconciliation", JOB_ID, SUBMISSION_ID)),
         ("GET", READS[4], ("file_access_control", WINDOWS_CONTROL)),
+        ("GET", READS[5], ("file_access_control", MACOS_CONTROL)),
         ("POST", WRITES[0], ("file_access_review", body)),
         ("POST", WRITES[1], ("submit_file_access_operation", body)),
         ("POST", WRITES[2], ("list_file_access_controls", body)),
@@ -41,6 +49,31 @@ def test_file_access_routes_forward_exact_bodies_and_saved_identifiers():
             assert json_body(payload) == {"saved": True}
             assert service.calls[-1] == expected
         assert service.calls == [expected for _, _, expected in routes]
+
+
+def test_authenticated_http_reads_a_saved_macos_file_access_control(tmp_path):
+    store = ProductStore(tmp_path / "owner.sqlite3")
+    setup = {"schema_version": "bluefire.macos-file-access-setup.v1", "binding": binding()}
+    saved = store.import_macos_file_access_setup(setup, now_ms=1000)
+    owner = saved["control_owner_id"]
+    assert owner.startswith("file-control-")
+    assert len(owner) == len("file-control-") + 64
+
+    service = StubService()
+    control = FileAccessControl(SimpleNamespace(product_store=store), clock=lambda: 1000)
+    service.file_access_control = lambda owner_id: control.control(owner_id)
+
+    with running_server(service) as (server, _):
+        status, headers, payload = request(server, "GET", PREFIX + f"controls/{owner}")
+
+    result = json_body(payload)
+    assert status == 200
+    assert headers["Content-Type"] == "application/json; charset=utf-8"
+    assert result["schema_version"] == "bluefire.file-access-control.v1"
+    assert result["platform"] == "macos"
+    assert result["control_owner_id"] == owner
+    assert result["status"] == "created"
+    assert result["allowed_operations"] == []
 
 
 @pytest.mark.parametrize("suffix", WRITES)
@@ -97,6 +130,10 @@ def test_file_access_reads_keep_session_query_and_verb_guards(suffix):
         f"operations/{WINDOWS_CONTROL}",
         f"controls/{WINDOWS_CONTROL}/reconcile",
         f"controls/{WINDOWS_CONTROL.upper()}",
+        "controls/file-control-" + "c" * 63,
+        "controls/file-control-" + "c" * 65,
+        "controls/file-control-" + "C" * 64,
+        "controls/" + MACOS_CONTROL + "/reconcile",
         "controls",
         "enrollments",
         "approve",

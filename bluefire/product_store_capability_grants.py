@@ -586,20 +586,38 @@ def claim_attempt(
 
 
 def register_task(
-    store, attempt_id, *, task_id, step_id, request_hash, now_ms, current_environment
+    store,
+    attempt_id,
+    *,
+    task_id,
+    step_id,
+    request_hash,
+    now_ms,
+    current_environment,
+    manifest: Mapping[str, Any] | None = None,
+    runner_profile: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     identifier(task_id, "composition task")
     digest(request_hash, "task request hash")
+    if (manifest is None) != (runner_profile is None):
+        raise ProductStoreError("The runner manifest and profile must be registered together.")
     with store._connection(write=True) as connection:
         _, lease, compiled = _attempt_live(
             store, connection, attempt_id, now_ms, current_environment
         )
-        _, claim = _claim_at(connection, attempt_id, lease)
-        store._capability_workspace_at(connection, attempt_id, lease)
+        claim_row, claim = _claim_at(connection, attempt_id, lease)
+        workspace = store._capability_workspace_at(connection, attempt_id, lease)
         _one(
             connection, "SELECT * FROM capability_preparation_starts WHERE attempt_id=?", attempt_id
         )
-        store._capability_dependency_at(connection, attempt_id, lease)
+        dependency = store._capability_dependency_at(connection, attempt_id, lease)
+        if (
+            "macos_file_access" in compiled
+            and step_id == compiled["macos_file_access"]["cleanup_step_id"]
+        ):
+            raise ProductStoreError(
+                "macOS closure requires its distinct cleanup registration authority."
+            )
         if claim["lease_digest"] != lease["lease_digest"] or step_id not in {
             step["id"] for step in compiled["scenario"]["steps"]
         }:
@@ -614,16 +632,43 @@ def register_task(
             ).fetchone()
         ):
             raise ProductStoreError("This capability task or step was already claimed.")
+        payload = None
+        if manifest is not None and runner_profile is not None:
+            from .product_store_capability_transport import payload_document
+
+            payload = payload_document(
+                purpose="business",
+                task_id=task_id,
+                attempt_id=attempt_id,
+                lease=lease,
+                step_id=step_id,
+                request_hash=request_hash,
+                manifest=manifest,
+                runner_profile=runner_profile,
+                attempt_claim=claim,
+                attempt_claim_digest=claim_row["document_digest"],
+                workspace=workspace,
+                dependency=dependency,
+            )
         connection.execute(
             "INSERT INTO capability_task_claims VALUES(?,?,?,?,?)",
             (task_id, attempt_id, step_id, request_hash, now_ms),
         )
-        return {
+        result = {
             "task_id": task_id,
             "attempt_id": attempt_id,
             "step_id": step_id,
             "request_hash": request_hash,
         }
+        if payload is not None:
+            from .product_store_capability_transport import insert_payload
+
+            insert_payload(connection, purpose="business", task_id=task_id, document=payload)
+            result.update(
+                transport_request_hash=payload["transport_request_hash"],
+                payload_digest=content_hash(payload),
+            )
+        return result
 
 
 def start_preparation(store, attempt_id, *, now_ms, current_environment):
@@ -706,6 +751,11 @@ def record_task_terminal(store, task_id, *, request_hash, terminal_digest):
 
 def _settlement(store, connection, attempt_id, receipt):
     _, lease, _ = _attempt_at(connection, attempt_id)
+    from .capability_packs import MACOS_FILE_ACCESS_PACK, grant_pack
+
+    _, grant, _ = _grant_at(connection, lease["grant_id"])
+    if grant_pack(grant) == MACOS_FILE_ACCESS_PACK:
+        return store._validate_macos_capability_settlement(connection, attempt_id, receipt)
     store._validate_capability_dependency(connection, attempt_id, lease, receipt)
     native = receipt["native"]
     tasks = connection.execute(
