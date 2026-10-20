@@ -591,3 +591,57 @@ items:
     mutates: true
     cleanup_action_id: sandbox.cleanup.v1
     provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: macos.file_access.probe.v1
+    title: Read as original macOS non-owner
+    purpose: Freshly read the retained generated file through its original protected workspace.
+    safety_tier: controlled
+    platforms: [macos]
+    capabilities: [filesystem.read]
+    inputs: []
+    outputs:
+      - name: probe
+        type: artifact.macos_file_access.probe.v1
+      - name: workspace
+        type: artifact.macos_file_access.attempt.v1
+    parameters: []
+    mutates: false
+    cleanup_action_id: macos.file_access.close_attempt.v1
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: macos.file_access.verify_owner.v1
+    title: Verify original macOS owner read
+    purpose: Check the same retained resource after the exact probe in this attempt.
+    safety_tier: controlled
+    platforms: [macos]
+    capabilities: [filesystem.read]
+    inputs:
+      - name: probe
+        type: artifact.macos_file_access.probe.v1
+    outputs:
+      - name: verification
+        type: artifact.macos_file_access.verification.v1
+    parameters: []
+    mutates: false
+    cleanup_action_id: macos.file_access.close_attempt.v1
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: macos.file_access.close_attempt.v1
+    title: Close macOS access attempt
+    purpose: Close exact request obligations while preserving hardening and enrollment workers.
+    safety_tier: controlled
+    platforms: [macos]
+    capabilities: [cleanup]
+    inputs:
+      - name: workspace
+        type: artifact.macos_file_access.attempt.v1
+    outputs:
+      - name: closure
+        type: artifact.macos_file_access.attempt_closure.v1
+    parameters: []
+    mutates: false
+    cleanup_action_id: null
+    provenance: *authored

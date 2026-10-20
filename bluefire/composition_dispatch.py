@@ -1,12 +1,14 @@
 """Grant hooks on the existing orchestrator, without a separate execution loop."""
 
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import Any
 
 from .contracts import StepOutcome
 from .evidence import EvidenceRecord
 from .policy import GrantPolicyState, PolicyDecision
 from .runner_client import RunnerTransportError
+from .runner_contracts import VerifiedMacOSFileAccessCleanup
 from .util import content_hash
 
 
@@ -19,6 +21,33 @@ def step_authority(
     execution = engine.grant_execution
     if execution is None:
         return {}, None
+    if action.id == "macos.file_access.close_attempt.v1":
+        try:
+            if engine.macos_file_access_binding is None:
+                raise ValueError("Original Darwin closure requires its verified workspace binding")
+            authority = execution.cleanup_authority(runner_profile, adapted.params, {})
+            if type(authority) is not VerifiedMacOSFileAccessCleanup:
+                raise ValueError("Original Darwin closure requires its separate committed claim")
+        except ValueError:
+            decision = engine._adapter_refusal(
+                step,
+                profile,
+                "Original Darwin attempt closure authority is unavailable; "
+                "the close task was not dispatched.",
+            )
+            record = engine._control_record(run_id, step, decision, parent_ids)
+            row = engine._row(
+                step,
+                StepOutcome.BLOCKED,
+                artifacts={},
+                telemetry=("macos_file_access.closure_authority_unavailable",),
+                evidence_ids=(record.evidence_id,),
+                execution_disposition="not_dispatched",
+                policy=decision.to_dict(),
+                receipts=[],
+            )
+            return {}, (row, (record,), decision, ())
+        return {"macos_file_access_cleanup": authority}, None
     if action.id != "sandbox.cleanup.v1":
         execution.check()
         return {"grant_attempt": execution.authority}, None
@@ -50,6 +79,23 @@ def policy_state(
 ):
     if execution is None:
         return None
+    if "macos_file_access_cleanup" in manifest:
+        document = manifest["macos_file_access_cleanup"]
+        if not isinstance(document, Mapping):
+            raise error_type("Original Darwin closure lost its committed claim")
+        return GrantPolicyState(
+            authority_kind="macos_file_access_cleanup",
+            issued_at=datetime.fromtimestamp(
+                document["issued_at_ms"] / 1000, timezone.utc
+            ).isoformat(),
+            expires_at=datetime.fromtimestamp(
+                document["expires_at_ms"] / 1000, timezone.utc
+            ).isoformat(),
+            request_hash=manifest["request_hash"],
+            action_id=action_id,
+            runner_profile_id=profile_id,
+            target_scope_digest=content_hash(target_scope),
+        )
     key = "grant_cleanup" if "grant_cleanup" in manifest else "grant_attempt"
     document = manifest.get(key)
     if not isinstance(document, Mapping):

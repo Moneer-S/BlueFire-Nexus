@@ -41,7 +41,7 @@ from tests_platform.test_api import JOB_ID, request, running_server
                 f"objectives/{JOB_ID}/{action}",
                 ("control_composition", JOB_ID, action, {}),
             )
-            for action in ("stop", "revoke", "continue")
+            for action in ("stop", "revoke", "continue", "recover")
         ],
     ],
 )
@@ -73,6 +73,7 @@ def test_composition_routes(method, suffix, call):
                 "stop",
                 "revoke",
                 "continue",
+                "recover",
             )
         ],
     ],
@@ -102,3 +103,18 @@ def test_composition_has_no_unreviewed_authority_write(suffix):
     with running_server() as (server, service):
         actual, _, _ = request(server, "POST", "/api/v1/composition/" + suffix, body={})
         assert actual == 400 and not service.calls
+
+
+def test_composition_recovery_forwards_only_explicit_attempt_binding():
+    attempt_id = "attempt-" + "a" * 32
+    with running_server() as (server, service):
+        status, _, body = request(
+            server,
+            "POST",
+            f"/api/v1/composition/objectives/{JOB_ID}/recover",
+            body={"attempt_id": attempt_id},
+        )
+        assert status == 200 and json.loads(body) == {"saved": True}
+        assert service.calls == [
+            ("control_composition", JOB_ID, "recover", {"attempt_id": attempt_id})
+        ]

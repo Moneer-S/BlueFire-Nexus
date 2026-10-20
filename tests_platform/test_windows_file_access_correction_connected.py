@@ -49,6 +49,7 @@ def connected(reviewed, paired, monkeypatch):
     control = service.file_access
     control.windows_correction = value.runtime
     value.runtime.control = control
+    monkeypatch.setattr(file_access_context, "is_macos_host", lambda: False)
     monkeypatch.setattr(file_access_context, "is_windows_host", lambda: True)
     monkeypatch.setattr(windows_context, "_clock", lambda: at_ms(value.state.wall))
     monkeypatch.setattr(control.windows, "execute", forbidden)
@@ -174,6 +175,7 @@ def test_uncompleted_pair_cannot_review_harden(saved, paired, monkeypatch):
     store = saved["store"]
     service = SimpleNamespace(product_store=store)
     control = FileAccessControl(service, clock=lambda: ISSUED + 2501)
+    monkeypatch.setattr(file_access_context, "is_macos_host", lambda: False)
     monkeypatch.setattr(file_access_context, "is_windows_host", lambda: True)
     monkeypatch.setattr(windows_context, "read_windows_file_setup_status", lambda **_: paired[1])
     monkeypatch.setattr(

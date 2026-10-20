@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 
+from .macos_file_access_contract import MacOSFileAccessContractError, validate_binding
+from .macos_file_access_method import METHODS as MACOS_METHODS
 from .runner_inventory import BUILTIN_RUNNER_ACTION_IDS
 from .util import content_hash
 
@@ -79,6 +81,25 @@ def reviewed_action_ids(profile: Mapping[str, Any]) -> set[str]:
     native = profile.get("action_bindings", [])
     providers = profile.get("provider_bindings", [])
     bindings = [*native, *providers]
+    macos_workspace = "macos_file_access_binding" in profile
+    if macos_workspace:
+        try:
+            macos_binding = validate_binding(profile["macos_file_access_binding"])
+        except MacOSFileAccessContractError as exc:
+            raise ReviewedExecutionError(str(exc)) from exc
+        if (
+            profile.get("platform") != "macos"
+            or profile.get("runner_id") != "bluefire-macos-workspace.v1"
+            or macos_binding["mode"] != "0600"
+            or "file_access_binding" in profile
+            or bindings
+            or profile.get("native_tool_installations")
+            or profile.get("provider_artifacts")
+            or profile.get("target_scope") != {"filesystem": [], "network": []}
+        ):
+            raise ReviewedExecutionError(
+                "Darwin reviewed metadata requires its distinct workspace profile"
+            )
     required: set[str] = set()
     used_bindings: set[str] = set()
     for operation in authority["operations"]:
@@ -91,6 +112,16 @@ def reviewed_action_ids(profile: Mapping[str, Any]) -> set[str]:
             and binding["logical_action_id"] == action
         ]
         digest = operation["execution_binding_digest"]
+        if macos_workspace:
+            if (
+                action not in MACOS_METHODS
+                or operation["behavior_id"] != action
+                or digest is not None
+            ):
+                raise ReviewedExecutionError(
+                    "Darwin workspace cannot mix metadata and native operations"
+                )
+            continue
         if digest is None:
             if action not in BUILTIN_RUNNER_ACTION_IDS or matching:
                 raise ReviewedExecutionError("reviewed operation is missing its execution binding")

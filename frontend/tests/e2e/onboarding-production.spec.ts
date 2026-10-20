@@ -183,7 +183,16 @@ test("file-access selection is passive, honest about protected setup, and keeps 
   await expect(page.getByRole("heading", { name: "Start an experiment", exact: true })).toBeVisible();
   await expect(page.getByRole("combobox", { name: "Objective" })).toHaveValue("file-access");
   await expect(page).toHaveURL(/#\/getting-started\?context=onboarding&source=saved-run&retest=retained&goal=file-access$/);
-  expect(fixture.passiveReads).toHaveLength(2);
+  // Navigation may refetch these cached reads after the 15-second freshness window.
+  for (const read of fixture.passiveReads) expect(passiveReads).toContainEqual(read);
+  const statusReads = fixture.passiveReads.filter(read => read.path === "/api/v1/file-access/status").length;
+  const controlLists = fixture.passiveReads.filter(read => read.path === "/api/v1/file-access/control-list").length;
+  expect(fixture.counts.fileStatus).toBe(statusReads);
+  expect(fixture.counts.controlList).toBe(controlLists);
+  expect(statusReads).toBeGreaterThanOrEqual(1);
+  expect(controlLists).toBeGreaterThanOrEqual(1);
+  expect(fixture.passiveReads).toHaveLength(fixture.counts.fileStatus + fixture.counts.controlList);
+  expect(fixture.counts.adEnvironment + fixture.counts.s3Environment + fixture.counts.providerProbe).toBe(0);
   assertQuiet(fixture.counts);
   writeFileSync(join(output, "file-objective-summary.json"), `${JSON.stringify({ proof: "synthetic-production-bundle-ui-only", counts: fixture.counts, passiveReads: fixture.passiveReads, captures }, null, 2)}\n`, { flag: "wx" });
 });

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Mapping
 
 from . import product_store_capability_grants as records
 from .capability_grant import digest, identifier
@@ -284,19 +284,37 @@ def claim_cleanup(store, attempt_id, *, now_ms, timeout_ms) -> dict[str, Any]:
 
 
 def register_cleanup_task(
-    store, attempt_id, *, task_id, request_hash, expected_document_digest, now_ms
+    store,
+    attempt_id,
+    *,
+    task_id,
+    request_hash,
+    expected_document_digest,
+    now_ms,
+    step_id: str | None = None,
+    manifest: Mapping[str, Any] | None = None,
+    runner_profile: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     identifier(task_id, "cleanup task")
     digest(request_hash, "cleanup request")
+    if (manifest is None) != (runner_profile is None):
+        raise ProductStoreError("The runner manifest and profile must be registered together.")
     records._time(now_ms)
     with store._connection(write=True) as connection:
-        row, lease, _ = records._attempt_at(connection, attempt_id)
-        claim, _ = claim_at(connection, attempt_id, lease)
+        row, lease, compiled = records._attempt_at(connection, attempt_id)
+        attempt_claim_row, attempt_claim = records._claim_at(connection, attempt_id, lease)
+        cleanup_claim_row, cleanup_claim = claim_at(connection, attempt_id, lease)
+        obligation_row, _ = obligation_at(connection, attempt_id, lease)
+        workspace = workspace_at(connection, attempt_id, lease)
+        dependency = store._capability_dependency_at(connection, attempt_id, lease)
         if (
-            claim["document_digest"] != expected_document_digest
-            or not max(claim["claimed_at_ms"], records._lineage_time(connection, row["lineage_id"]))
+            cleanup_claim_row["document_digest"] != expected_document_digest
+            or not max(
+                cleanup_claim_row["claimed_at_ms"],
+                records._lineage_time(connection, row["lineage_id"]),
+            )
             <= now_ms
-            < claim["expires_at_ms"]
+            < cleanup_claim_row["expires_at_ms"]
             or records._settled(store, connection, attempt_id)
             or connection.execute(
                 "SELECT 1 FROM capability_task_claims WHERE task_id=?", (task_id,)
@@ -309,11 +327,45 @@ def register_cleanup_task(
             raise ProductStoreError(
                 "Cleanup task authority is expired, changed or already consumed."
             )
+        payload = None
+        if manifest is not None and runner_profile is not None:
+            from .product_store_capability_transport import cleanup_step_id, payload_document
+
+            compiled_cleanup_step_id = cleanup_step_id(compiled)
+            if step_id != compiled_cleanup_step_id:
+                raise ProductStoreError("Cleanup manifest step ID differs from the compiled step.")
+
+            payload = payload_document(
+                purpose="cleanup",
+                task_id=task_id,
+                attempt_id=attempt_id,
+                lease=lease,
+                step_id=compiled_cleanup_step_id,
+                request_hash=request_hash,
+                manifest=manifest,
+                runner_profile=runner_profile,
+                attempt_claim=attempt_claim,
+                attempt_claim_digest=attempt_claim_row["document_digest"],
+                workspace=workspace,
+                dependency=dependency,
+                cleanup_claim=cleanup_claim,
+                cleanup_claim_digest=cleanup_claim_row["document_digest"],
+                cleanup_obligation_digest=obligation_row["document_digest"],
+            )
         connection.execute(
             "INSERT INTO capability_cleanup_task_claims VALUES(?,?,?,?,?)",
             (task_id, attempt_id, request_hash, expected_document_digest, now_ms),
         )
-        return {"task_id": task_id, "attempt_id": attempt_id, "request_hash": request_hash}
+        result = {"task_id": task_id, "attempt_id": attempt_id, "request_hash": request_hash}
+        if payload is not None:
+            from .product_store_capability_transport import insert_payload
+
+            insert_payload(connection, purpose="cleanup", task_id=task_id, document=payload)
+            result.update(
+                transport_request_hash=payload["transport_request_hash"],
+                payload_digest=content_hash(payload),
+            )
+        return result
 
 
 def record_cleanup_terminal(store, task_id, *, request_hash, terminal_digest):

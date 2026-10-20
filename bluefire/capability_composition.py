@@ -7,10 +7,10 @@ import re
 from collections import defaultdict
 from typing import Any, Mapping, Sequence
 
-from . import capability_file_access
+from . import capability_file_access, capability_macos_file_access
 from .capability_facts import validate_facts
 from .capability_grant import digest, text, validate_grant
-from .capability_packs import FILE_ACCESS_PACK, grant_pack
+from .capability_packs import FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, grant_pack
 from .capability_resources import METHODS, CapabilityContractError, exact, reserve_resources
 from .contracts import ScenarioDefinition, StepOutcome
 from .registry import BehaviorRegistry, _dominators, _reachable_from, _topological_order
@@ -152,9 +152,13 @@ def _graph(
                 inputs[input_spec.name] = candidates[0]
         row["inputs"] = inputs
     details = (
-        capability_file_access.graph_details(steps, successors, routes, grant)
-        if grant_pack(grant) == FILE_ACCESS_PACK
-        else _receiver_details(steps, successors, predecessors, routes, grant)
+        capability_macos_file_access.graph_details(steps, successors, routes, grant)
+        if grant_pack(grant) == MACOS_FILE_ACCESS_PACK
+        else (
+            capability_file_access.graph_details(steps, successors, routes, grant)
+            if grant_pack(grant) == FILE_ACCESS_PACK
+            else _receiver_details(steps, successors, predecessors, routes, grant)
+        )
     )
     reservation = reserve_resources(list(steps.values()), grant["limits"], pack=grant_pack(grant))
     indexes = {identity: index for index, identity in enumerate(order)}
@@ -326,9 +330,13 @@ def _compile(
     ):
         raise CapabilityContractError("proposal references unknown, stale or unobserved evidence")
     required = (
-        {"retained_file_control"}
-        if grant_pack(grant) == FILE_ACCESS_PACK
-        else {"receiver_result", "cleanup"} if revision else {"retained_policy"}
+        {"retained_macos_file_control"}
+        if grant_pack(grant) == MACOS_FILE_ACCESS_PACK
+        else (
+            {"retained_file_control"}
+            if grant_pack(grant) == FILE_ACCESS_PACK
+            else {"receiver_result", "cleanup"} if revision else {"retained_policy"}
+        )
     )
     if not required <= {by_id[key]["kind"] for key in references}:
         raise CapabilityContractError("proposal omits its supporting evidence references")

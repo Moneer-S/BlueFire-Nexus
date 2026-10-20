@@ -3,6 +3,10 @@ import { checkedCompositionContext, checkedCompositionObjective, checkedComposit
 import { attemptFixture, contextFixture, controlId, grantRequestFixture, objectiveFixture, ownerId, proposalFixture, proposalId, question, refusalFixture, reviewFixture, testDigest } from "./composition-fixture";
 import { clearCompositionControl, compositionControlConfirmed, readCompositionControls, storeCompositionControl } from "../src/lib/composition";
 import { clearCompositionCancellation, compositionCanRevise, compositionCancellationConfirmed, readCompositionCancellations, storeCompositionCancellation } from "../src/lib/composition";
+import { compositionControlValid, compositionEstablished, compositionPack, compositionRecord, compositionRequestPack, FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, type CompositionObjective, type CompositionReview, type CompositionReviewRequest } from "../src/lib/composition";
+import { fileAccessCompositionPack } from "../src/lib/file-access";
+import { fileAccessCompositionReviewFixture, fileAccessControlFixture, fileAccessObjectiveFixture } from "./file-access-fixture";
+import { macOSControlFixture, macOSOwner } from "./macos-file-access-fixture";
 
 beforeEach(() => localStorage.clear());
 const pending = (): CompositionPending => ({ kind: "proposal", owner: ownerId, control: controlId, id: proposalId, body: { submission_id: "cccccccc-cccc-cccc-cccc-cccccccccccc", provider_id: "configured", context_digest: testDigest, prior_attempt_id: null } });
@@ -119,4 +123,165 @@ it.each(["composition_review_changed", "composition_admission_unavailable", "com
   expect(() => checkedCompositionObjective(value, ownerId, controlId)).toThrow();
   value.owner.state = "completed"; value.owner.progress.admission = { accepted: false, problem: { code: "composition_admission_pending", message: "Not yet admitted." } };
   expect(() => checkedCompositionObjective(value, ownerId, controlId)).toThrow();
+});
+
+// Authored UI contracts only; these documents do not establish original native custody.
+function macCompositionReviewFixture(): CompositionReview {
+  const original = reviewFixture();
+  const template = original.snapshot.methods[0]!;
+  const methods = ["macos.file_access.probe.v1", "macos.file_access.verify_owner.v1", "macos.file_access.close_attempt.v1"];
+  const probe = { name: "probe", type: "artifact.macos_file_access.probe.v1", multiple: false, required: true };
+  const workspace = { name: "workspace", type: "artifact.macos_file_access.attempt.v1", multiple: false, required: true };
+  return {
+    ...original, schema_version: "bluefire.composition-review.v2", pack: MACOS_FILE_ACCESS_PACK,
+    objective: { question: "Verify the retained Mac control", predicate: { kind: "non_owner_denied_owner_preserves_records", record_count: 8, data_class: "generated_public_jsonl", sha256: testDigest } },
+    environment: { environment_id: "environment-test", environment_generation: "generation-test", control_owner_id: macOSOwner, runner_id: "bluefire-macos-workspace.v1", enrollment_digest: testDigest, profile_digest: testDigest, target_scope_digest: testDigest, collector_digest: testDigest, control_digest: testDigest, resource_id: "resource-test", resource_generation: "generation-test", resource_digest: testDigest, probe_enrollment_digest: testDigest, baseline_digest: testDigest, control_revision: 3, mode: "0600", workspace_custody_digest: testDigest, binding_digest: testDigest },
+    snapshot: {
+      schema_version: "bluefire.macos-file-access-capability-snapshot.v1", platform: "macos", pack: MACOS_FILE_ACCESS_PACK, snapshot_digest: testDigest,
+      artifact_context: { environment_digest: testDigest, materialization: "original_workspace_metadata_only", data_class: "generated_public_jsonl" },
+      methods: methods.map((id, index) => ({
+        ...template, behavior_id: id, action_id: id, parameter_domains: {},
+        behavior: { ...template.behavior, id, execution_state: "action", action_ids: [id], platforms: ["macos"], safety_tier: "controlled", capabilities: [index === 2 ? "cleanup" : "filesystem.read"], parameters: [], inputs: index === 0 ? [] : index === 1 ? [probe] : [workspace], outputs: index === 0 ? [probe, workspace] : [{ name: index === 1 ? "verification" : "closure", type: index === 1 ? "artifact.macos_file_access.verification.v1" : "artifact.macos_file_access.attempt_closure.v1", multiple: false }] },
+        action: { ...template.action, id, platforms: ["macos"], safety_tier: "controlled", capabilities: [index === 2 ? "cleanup" : "filesystem.read"], parameters: [], mutates: false, cleanup_action_id: index === 2 ? null : methods[2], inputs: index === 0 ? [] : index === 1 ? [probe] : [workspace], outputs: index === 0 ? [probe, workspace] : [{ name: index === 1 ? "verification" : "closure", type: index === 1 ? "artifact.macos_file_access.verification.v1" : "artifact.macos_file_access.attempt_closure.v1", multiple: false }] },
+        cost: { schema_version: "bluefire.macos-file-access-method-cost.v1", pack: MACOS_FILE_ACCESS_PACK, method_id: id, cost_digest: testDigest, native_primitive_requests: index === 2 ? 0 : 1, reads: index === 2 ? [] : ["retained_resource"], business_steps: index === 2 ? 0 : 1, maximum_material_file_bytes: 0, retained_metadata_bytes: 128 * 1024, generated_bytes: 0, network_bytes: 0, writes: [], material_directories: [], removes: null },
+      })),
+    },
+  };
+}
+function macCompositionRequestFixture(): CompositionReviewRequest {
+  return { schema_version: "bluefire.composition-review-request.v2", pack: MACOS_FILE_ACCESS_PACK, control_owner_id: macOSOwner, question: "Verify the retained Mac control", limits: null };
+}
+function macCompositionObjectiveFixture(): CompositionObjective {
+  const original = objectiveFixture();
+  const review = macCompositionReviewFixture();
+  const attempt = attemptFixture(true);
+  const checks = Object.fromEntries(["probe_authenticated", "non_owner_denied", "owner_read_verified", "same_resource", "same_control_revision", "same_original_binding", "content_preserved", "requests_closed", "no_attempt_artifacts", "enrollment_retained"].map(key => [key, true]));
+  attempt.progress.verified_result = {
+    run_id: "run-proof",
+    source_binding: { run_id: "run-proof", mode: "execute", finalized_at: "2026-10-16T00:00:00Z", manifest_digest: testDigest, evidence_digest: testDigest, observed_records_digest: testDigest, evidence_count: 3, observed_count: 0, excluded_provenance_counts: { executed: 3 } },
+    macos_file_access_result: { probe_verified: true, non_owner_decision: "denied", owner_verified: true, owner_decision: "allowed", resource_digest: testDigest, resource_generation: "generation-test", control_revision: 3, binding_digest: testDigest, sha256: testDigest, record_count: 8, request_closure: "verified_closed", attempt_artifacts: "not_created", workers_retained: true, whole_enrollment_cleanup: false },
+    cleanup: { request: "verified_closed", attempt_artifacts: "not_created", workers: "retained", whole_enrollment: false },
+    objective: { established: true, checks },
+  };
+  return {
+    ...original, attempts: [attempt], grant: { ...original.grant, document: {
+      schema_version: "bluefire.capability-grant.v2", pack: MACOS_FILE_ACCESS_PACK, objective: review.objective, environment: review.environment, limits: review.limits, snapshot: review.snapshot,
+      grant_id: original.grant.document.grant_id, grant_digest: testDigest, approved_by: "operator", created_at_ms: 1000, expires_at_ms: 901000,
+    } },
+  };
+}
+it("accepts only the closed original Mac review, grant and metadata result shape", () => {
+  const review = macCompositionReviewFixture();
+  expect(checkedCompositionReview(review, macCompositionRequestFixture())).toBe(review);
+  expect(compositionPack(review)).toBe(MACOS_FILE_ACCESS_PACK);
+  expect(compositionRequestPack(macCompositionRequestFixture())).toBe(MACOS_FILE_ACCESS_PACK);
+  const objective = macCompositionObjectiveFixture();
+  expect(checkedCompositionObjective(objective, ownerId, macOSOwner, MACOS_FILE_ACCESS_PACK)).toBe(objective);
+  expect(compositionEstablished(objective)).toBe(true);
+  expect(compositionCanRevise(objective.attempts[0]!, objective)).toBe(false);
+});
+it("keeps an authenticated allowed Mac probe unestablished rather than inventing denial", () => {
+  const value = macCompositionObjectiveFixture();
+  const result = compositionRecord(value.attempts[0]!.progress.verified_result);
+  compositionRecord(result.macos_file_access_result).non_owner_decision = "allowed";
+  const objective = compositionRecord(result.objective);
+  objective.established = false; compositionRecord(objective.checks).non_owner_denied = false;
+  expect(checkedCompositionObjective(value, ownerId, macOSOwner, MACOS_FILE_ACCESS_PACK)).toBe(value);
+  expect(compositionEstablished(value)).toBe(false);
+  expect(compositionCanRevise(value.attempts[0]!, value)).toBe(false);
+});
+it.each(["pack", "schema", "platform", "method", "parameter", "port", "cost", "control"])("rejects a Mac snapshot/request discriminator mismatch: %s", change => {
+  const review = macCompositionReviewFixture();
+  if (change === "pack") review.snapshot.pack = FILE_ACCESS_PACK;
+  if (change === "schema") review.snapshot.schema_version = "bluefire.file-access-capability-snapshot.v1";
+  if (change === "platform") review.snapshot.platform = "linux";
+  if (change === "method") review.snapshot.methods[0]!.action_id = "sandbox.cleanup.v1";
+  if (change === "parameter") review.snapshot.methods[0]!.parameter_domains = { path: ["arbitrary"] };
+  if (change === "port") review.snapshot.methods[1]!.behavior.inputs = [];
+  if (change === "cost") review.snapshot.methods[2]!.cost.native_primitive_requests = 1;
+  if (change === "control") review.environment.control_owner_id = controlId;
+  expect(() => checkedCompositionReview(review, macCompositionRequestFixture())).toThrow();
+});
+it.each(["decision", "binding", "binding_unestablished", "generation", "run", "source", "cleanup", "workers", "enrollment", "check", "linux_result"])("rejects a malformed Mac result join: %s", change => {
+  const value = macCompositionObjectiveFixture();
+  const result = compositionRecord(value.attempts[0]!.progress.verified_result);
+  const evidence = compositionRecord(result.macos_file_access_result);
+  if (change === "decision") evidence.non_owner_decision = "permission_denied";
+  if (change === "binding") evidence.binding_digest = `sha256:${"e".repeat(64)}`;
+  if (change === "binding_unestablished") {
+    evidence.binding_digest = `sha256:${"e".repeat(64)}`;
+    compositionRecord(result.objective).established = false;
+    compositionRecord(compositionRecord(result.objective).checks).same_original_binding = false;
+  }
+  if (change === "generation") evidence.resource_generation = "different";
+  if (change === "run") result.run_id = "different";
+  if (change === "source") compositionRecord(result.source_binding).run_id = "different";
+  if (change === "cleanup") compositionRecord(result.cleanup).request = "unknown";
+  if (change === "workers") compositionRecord(result.cleanup).workers = "closed";
+  if (change === "enrollment") evidence.whole_enrollment_cleanup = true;
+  if (change === "check") compositionRecord(compositionRecord(result.objective).checks).requests_closed = false;
+  if (change === "linux_result") { result.file_access_result = evidence; delete result.macos_file_access_result; }
+  expect(() => checkedCompositionObjective(value, ownerId, macOSOwner, MACOS_FILE_ACCESS_PACK)).toThrow();
+});
+it("validates Mac refusal control identity and never accepts a Linux response for its pending review", () => {
+  const value = refusalFixture();
+  value.owner.progress.submitted_request = { ...grantRequestFixture(), review: macCompositionRequestFixture() };
+  expect(checkedCompositionObjective(value, ownerId, macOSOwner, MACOS_FILE_ACCESS_PACK)).toBe(value);
+  expect(() => checkedCompositionObjective(value, ownerId, macOSOwner, FILE_ACCESS_PACK)).toThrow();
+  const submitted = compositionRecord(value.owner.progress.submitted_request);
+  compositionRecord(submitted.review).control_owner_id = controlId;
+  expect(() => checkedCompositionObjective(value, ownerId, undefined, MACOS_FILE_ACCESS_PACK)).toThrow();
+  expect(() => checkedCompositionReview(fileAccessCompositionReviewFixture(), macCompositionRequestFixture())).toThrow();
+});
+it("retains a Mac pending control separately from job identity and rejects cross-pack control recovery", () => {
+  const operation: CompositionPending = { kind: "grant", owner: ownerId, control: macOSOwner, id: ownerId, body: { ...grantRequestFixture(), review: macCompositionRequestFixture() } };
+  storeCompositionPending(operation);
+  expect(readCompositionPending()).toEqual(operation);
+  expect(compositionControlValid(macOSOwner, MACOS_FILE_ACCESS_PACK)).toBe(true);
+  expect(compositionControlValid(macOSOwner, FILE_ACCESS_PACK)).toBe(false);
+  expect(compositionControlValid(controlId, MACOS_FILE_ACCESS_PACK)).toBe(false);
+  clearCompositionPending(operation);
+  storeCompositionPending({ ...operation, body: grantRequestFixture() });
+  expect(readCompositionPending).toThrow();
+});
+it("keeps Linux composition semantics and selects only settled hardened file controls", () => {
+  const linux = fileAccessObjectiveFixture();
+  expect(checkedCompositionObjective(linux, ownerId, controlId, FILE_ACCESS_PACK)).toBe(linux);
+  expect(fileAccessCompositionPack(fileAccessControlFixture())).toBe(FILE_ACCESS_PACK);
+  expect(fileAccessCompositionPack(macOSControlFixture("hardened"))).toBe(MACOS_FILE_ACCESS_PACK);
+  const pendingControl = macOSControlFixture("hardened"); pendingControl.usage_state = "pending";
+  expect(fileAccessCompositionPack(pendingControl)).toBeUndefined();
+  expect(fileAccessCompositionPack(macOSControlFixture("baseline_verified"))).toBeUndefined();
+});
+it("keeps noncurrent Mac hardened control history read-only without changing Linux eligibility", () => {
+  const mac = macOSControlFixture("hardened");
+  mac.allowed_operations = [];
+  expect(fileAccessCompositionPack(mac)).toBeUndefined();
+  const linux = fileAccessControlFixture();
+  linux.allowed_operations = [];
+  expect(fileAccessCompositionPack(linux)).toBe(FILE_ACCESS_PACK);
+});
+it.each(["identity", "extra", "version"])("rejects a noncanonical Mac review request: %s", change => {
+  const request = macCompositionRequestFixture();
+  if (change === "identity") request.control_owner_id = controlId;
+  if (change === "extra") Object.assign(request, { arbitrary_path: "/not-authorized" });
+  if (change === "version") Object.assign(request, { schema_version: "bluefire.composition-review-request.v1" });
+  expect(() => compositionRequestPack(request)).toThrow();
+});
+it("keeps Mac proposal-context facts bound to the original pack and control", () => {
+  const value = contextFixture();
+  const review = macCompositionReviewFixture();
+  value.snapshot = review.snapshot;
+  value.objective = review.objective;
+  value.initial_proposal = null; value.initial_scenario = null;
+  value.facts = {
+    schema_version: "bluefire.macos-file-access-composition-facts.v1", pack: MACOS_FILE_ACCESS_PACK, grant_id: value.grant_id,
+    environment_digest: testDigest, control_digest: testDigest, facts_digest: testDigest, prior_attempt_id: null, prior_graph_digest: null,
+    facts: [{ fact_id: "control", kind: "retained_macos_file_control", provenance: "observed", attempt_id: null,
+      source: { kind: "control_record", id: macOSOwner, digest: testDigest }, environment_digest: testDigest, control_digest: testDigest,
+      value: { control_owner_id: macOSOwner, control_digest: testDigest, resource_id: "resource-test", resource_generation: "generation-test", resource_digest: testDigest, probe_enrollment_digest: testDigest, baseline_digest: testDigest, control_revision: 3, workspace_custody_digest: testDigest, binding_digest: testDigest } }],
+  };
+  expect(checkedCompositionContext(value, value.grant_id, MACOS_FILE_ACCESS_PACK)).toBe(value);
+  value.facts.facts[0]!.kind = "retained_file_control";
+  expect(() => checkedCompositionContext(value, value.grant_id, MACOS_FILE_ACCESS_PACK)).toThrow();
 });

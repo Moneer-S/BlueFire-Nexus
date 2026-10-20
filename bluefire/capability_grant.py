@@ -5,8 +5,14 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 
-from . import capability_file_access
-from .capability_packs import FILE_ACCESS_METHODS, FILE_ACCESS_PACK, grant_pack
+from . import capability_file_access, capability_macos_file_access
+from .capability_packs import (
+    FILE_ACCESS_METHODS,
+    FILE_ACCESS_PACK,
+    MACOS_FILE_ACCESS_METHODS,
+    MACOS_FILE_ACCESS_PACK,
+    grant_pack,
+)
 from .capability_resources import (
     METHODS,
     PACK,
@@ -65,6 +71,8 @@ def authority_id(value: Any, kind: str) -> str:
 
 
 def validate_objective(value: Any, *, pack: str = PACK) -> dict[str, Any]:
+    if pack == MACOS_FILE_ACCESS_PACK:
+        return capability_macos_file_access.validate_objective(value)
     if pack == FILE_ACCESS_PACK:
         return capability_file_access.validate_objective(value)
     if pack != PACK:
@@ -84,6 +92,8 @@ def validate_objective(value: Any, *, pack: str = PACK) -> dict[str, Any]:
 
 
 def validate_environment(value: Any, *, pack: str = PACK) -> dict[str, Any]:
+    if pack == MACOS_FILE_ACCESS_PACK:
+        return capability_macos_file_access.validate_environment(value)
     if pack == FILE_ACCESS_PACK:
         return capability_file_access.validate_environment(value)
     if pack != PACK:
@@ -111,24 +121,33 @@ def build_snapshot(
     objective, environment = validate_objective(objective, pack=pack), validate_environment(
         environment, pack=pack
     )
-    methods_ids = FILE_ACCESS_METHODS if pack == FILE_ACCESS_PACK else METHODS
+    methods_ids = (
+        MACOS_FILE_ACCESS_METHODS
+        if pack == MACOS_FILE_ACCESS_PACK
+        else FILE_ACCESS_METHODS if pack == FILE_ACCESS_PACK else METHODS
+    )
+    platform = "macos" if pack == MACOS_FILE_ACCESS_PACK else "linux"
     exact(implementation_digests, set(methods_ids), "installed implementation snapshot")
-    domains = (
-        {
-            FILE_ACCESS_METHODS[0]: {},
-            FILE_ACCESS_METHODS[1]: {},
-            FILE_ACCESS_METHODS[2]: {"verify_removal": [True]},
-        }
-        if pack == FILE_ACCESS_PACK
-        else {
-            METHODS[0]: {"record_count": [objective["predicate"]["record_count"]]},
-            METHODS[1]: {"redact_values": [False, True]},
-            METHODS[2]: {},
-            METHODS[3]: {},
-            METHODS[4]: {"bundle_format": ["jsonl"]},
-            METHODS[5]: {"port": [environment["port"]]},
-            METHODS[6]: {"verify_removal": [True]},
-        }
+    domains: dict[str, dict[str, list[Any]]] = (
+        {method: {} for method in MACOS_FILE_ACCESS_METHODS}
+        if pack == MACOS_FILE_ACCESS_PACK
+        else (
+            {
+                FILE_ACCESS_METHODS[0]: {},
+                FILE_ACCESS_METHODS[1]: {},
+                FILE_ACCESS_METHODS[2]: {"verify_removal": [True]},
+            }
+            if pack == FILE_ACCESS_PACK
+            else {
+                METHODS[0]: {"record_count": [objective["predicate"]["record_count"]]},
+                METHODS[1]: {"redact_values": [False, True]},
+                METHODS[2]: {},
+                METHODS[3]: {},
+                METHODS[4]: {"bundle_format": ["jsonl"]},
+                METHODS[5]: {"port": [environment["port"]]},
+                METHODS[6]: {"verify_removal": [True]},
+            }
+        )
     )
     methods = []
     for method_id in methods_ids:
@@ -136,8 +155,8 @@ def build_snapshot(
         if (
             behavior.execution_state is not ExecutionState.ACTION
             or method_id not in behavior.action_ids
-            or "linux" not in behavior.platforms
-            or "linux" not in action.platforms
+            or platform not in behavior.platforms
+            or platform not in action.platforms
         ):
             raise CapabilityContractError("installed method does not support the reviewed pack")
         actual_ports = (
@@ -167,19 +186,27 @@ def build_snapshot(
         )
     body = {
         "schema_version": (
-            "bluefire.file-access-capability-snapshot.v1"
-            if pack == FILE_ACCESS_PACK
-            else "bluefire.capability-snapshot.v1"
+            "bluefire.macos-file-access-capability-snapshot.v1"
+            if pack == MACOS_FILE_ACCESS_PACK
+            else (
+                "bluefire.file-access-capability-snapshot.v1"
+                if pack == FILE_ACCESS_PACK
+                else "bluefire.capability-snapshot.v1"
+            )
         ),
         "pack": pack,
-        "platform": "linux",
+        "platform": platform,
         "methods": methods,
         "artifact_context": {
             "environment_digest": content_hash(environment),
             "materialization": (
-                "retained_resource_fresh_observations"
-                if pack == FILE_ACCESS_PACK
-                else "fresh_attempt"
+                "original_workspace_metadata_only"
+                if pack == MACOS_FILE_ACCESS_PACK
+                else (
+                    "retained_resource_fresh_observations"
+                    if pack == FILE_ACCESS_PACK
+                    else "fresh_attempt"
+                )
             ),
             "data_class": objective["predicate"]["data_class"],
         },
@@ -208,8 +235,8 @@ def create_grant(
         environment, pack=pack
     )
     body = {
-        "schema_version": "bluefire.capability-grant.v2" if pack == FILE_ACCESS_PACK else SCHEMA,
-        **({"pack": pack} if pack == FILE_ACCESS_PACK else {}),
+        "schema_version": "bluefire.capability-grant.v2" if pack != PACK else SCHEMA,
+        **({"pack": pack} if pack != PACK else {}),
         "grant_id": grant_id,
         "approved_by": approved_by,
         "created_at_ms": created_at_ms,
@@ -240,9 +267,7 @@ def validate_grant(
         pack = grant_pack(value)
     except ValueError as exc:
         raise CapabilityContractError(str(exc)) from exc
-    row = exact(
-        value, _GRANT_FIELDS | ({"pack"} if pack == FILE_ACCESS_PACK else set()), "capability grant"
-    )
+    row = exact(value, _GRANT_FIELDS | ({"pack"} if pack != PACK else set()), "capability grant")
     digest(expected_digest, "trusted grant digest")
     integer(now_ms, 1, 2**63 - 1, "current time")
     expected = create_grant(
@@ -275,6 +300,8 @@ def validate_grant(
 
 def objective_result(grant: Mapping[str, Any], result: Any) -> dict[str, Any]:
     """Evaluate only independently verified terminal facts supplied by the caller."""
+    if grant_pack(grant) == MACOS_FILE_ACCESS_PACK:
+        return capability_macos_file_access.objective_result(grant, result)
     if grant_pack(grant) == FILE_ACCESS_PACK:
         return capability_file_access.objective_result(grant, result)
     objective = validate_objective(grant["objective"])

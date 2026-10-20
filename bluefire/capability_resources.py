@@ -5,7 +5,13 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping, Sequence
 
-from .capability_packs import FILE_ACCESS_METHODS, FILE_ACCESS_PACK, RECEIVER_PACK
+from .capability_packs import (
+    FILE_ACCESS_METHODS,
+    FILE_ACCESS_PACK,
+    MACOS_FILE_ACCESS_METHODS,
+    MACOS_FILE_ACCESS_PACK,
+    RECEIVER_PACK,
+)
 from .util import content_hash, json_clone
 
 PACK = RECEIVER_PACK
@@ -126,6 +132,26 @@ def validate_limits(value: Any) -> dict[str, int]:
 
 def method_cost(method_id: str, *, pack: str = PACK) -> dict[str, Any]:
     """Conservative material bounds; metadata reservations need writer enforcement."""
+    if pack == MACOS_FILE_ACCESS_PACK:
+        if method_id not in MACOS_FILE_ACCESS_METHODS:
+            raise CapabilityContractError("method is outside the fixed macOS file-access pack")
+        closure = method_id == MACOS_FILE_ACCESS_METHODS[2]
+        body = {
+            "schema_version": "bluefire.macos-file-access-method-cost.v1",
+            "pack": pack,
+            "method_id": method_id,
+            "reads": [] if closure else ["retained_resource"],
+            "writes": [],
+            "material_directories": [],
+            "removes": None,
+            "generated_bytes": 0,
+            "network_bytes": 0,
+            "retained_metadata_bytes": 128 * 1024,
+            "business_steps": 0 if closure else 1,
+            "maximum_material_file_bytes": 0,
+            "native_primitive_requests": 0 if closure else 1,
+        }
+        return {**body, "cost_digest": content_hash(body)}
     if pack == FILE_ACCESS_PACK:
         if method_id not in FILE_ACCESS_METHODS:
             raise CapabilityContractError("method is outside the fixed file-access pack")
@@ -171,6 +197,21 @@ def method_cost(method_id: str, *, pack: str = PACK) -> dict[str, Any]:
 
 def semantic_ports(method_id: str, *, pack: str = PACK) -> tuple[tuple, tuple]:
     """The semantic I/O boundary for which the pack's effect bounds were reviewed."""
+    if pack == MACOS_FILE_ACCESS_PACK:
+        if method_id == MACOS_FILE_ACCESS_METHODS[0]:
+            return (), (
+                ("probe", "artifact.macos_file_access.probe.v1", False),
+                ("workspace", "artifact.macos_file_access.attempt.v1", False),
+            )
+        if method_id == MACOS_FILE_ACCESS_METHODS[1]:
+            return (("probe", "artifact.macos_file_access.probe.v1", False, True),), (
+                ("verification", "artifact.macos_file_access.verification.v1", False),
+            )
+        if method_id == MACOS_FILE_ACCESS_METHODS[2]:
+            return (("workspace", "artifact.macos_file_access.attempt.v1", False, True),), (
+                ("closure", "artifact.macos_file_access.attempt_closure.v1", False),
+            )
+        raise CapabilityContractError("method has no reviewed macOS semantic contract")
     if pack == FILE_ACCESS_PACK and method_id in FILE_ACCESS_METHODS[:2]:
         if method_id == FILE_ACCESS_METHODS[0]:
             return (), (
@@ -231,6 +272,10 @@ def reserve_resources(
         FILE_ACCESS_METHODS
     ):
         raise CapabilityContractError("file-access composition requires exactly its three methods")
+    if pack == MACOS_FILE_ACCESS_PACK and sorted(step["behavior_id"] for step in steps) != sorted(
+        MACOS_FILE_ACCESS_METHODS
+    ):
+        raise CapabilityContractError("macOS composition requires exactly its three methods")
     if peak > checked["max_peak_workspace_bytes"] or len(occupied) > checked["max_workspace_files"]:
         raise CapabilityContractError("graph exceeds its workspace material allowance")
     for name, bound in RESERVATION_LIMITS.items():
@@ -243,6 +288,7 @@ def reserve_resources(
         "workspace_files": len(occupied),
         "cleanup_reserve_ms": checked["cleanup_reserve_ms"],
         "material_write_slots": sorted(occupied),
+        **({"native_primitive_requests": 2} if pack == MACOS_FILE_ACCESS_PACK else {}),
     }
 
 

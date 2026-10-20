@@ -33,6 +33,10 @@ RESERVED_TYPES = (
     "artifact.sandbox.workspace.v2",
     "artifact.endpoint.process-records.v1",
     "artifact.file_access.probe.v1",
+    "artifact.macos_file_access.probe.v1",
+    "artifact.macos_file_access.verification.v1",
+    "artifact.macos_file_access.attempt.v1",
+    "artifact.macos_file_access.attempt_closure.v1",
     "artifact.permission.mode.v1",
     "artifact.research.hypothesis.v1",
 )

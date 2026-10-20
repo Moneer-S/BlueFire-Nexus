@@ -25,6 +25,7 @@ def imported_source(observed_setup, tmp_path, monkeypatch):
     store = ProductStore(tmp_path / "windows.db")
     service = SimpleNamespace(product_store=store)
     control = FileAccessControl(service, clock=lambda: state["wall"])
+    monkeypatch.setattr(file_access_context, "is_macos_host", lambda: False)
     monkeypatch.setattr(file_access_context, "is_windows_host", lambda: True)
     monkeypatch.setattr(windows_context, "read_windows_file_setup_status", lambda **_: checked)
     selection = {"enrollment_id": row["enrollment_id"], "enrollment_digest": content_hash(row)}

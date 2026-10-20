@@ -390,6 +390,48 @@ class SandboxObserver:
                 finalizer()
             raise EvidenceError("sandbox observer root is unavailable or unsafe") from None
 
+    def close(self) -> None:
+        """Release the original directory pin; further observation is unavailable."""
+        finalizer = getattr(self, "_root_finalizer", None)
+        if finalizer is not None and finalizer.alive:
+            finalizer()
+
+    def empty_posix_inventory(self) -> dict[str, Any]:
+        """Verify an empty original directory without opening or reading any entry."""
+        if os.name != "posix" or os.scandir not in os.supports_fd:
+            raise EvidenceError("descriptor-based sandbox inventory is unavailable")
+        self._assert_root_identity()
+        descriptor = self._posix_root_descriptor
+        if descriptor is None or not self._root_finalizer.alive:
+            raise EvidenceError("observer sandbox root pin is unavailable")
+        try:
+            before = os.fstat(descriptor)
+            try:
+                with os.scandir(descriptor) as entries:
+                    empty = next(entries, None) is None
+            finally:
+                self._assert_root_identity()
+            after = os.fstat(descriptor)
+        except (MemoryError, OSError):
+            raise EvidenceError("sandbox inventory is unavailable or unsafe") from None
+        if not empty or (before.st_dev, before.st_ino, before.st_mtime_ns, before.st_ctime_ns) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            raise EvidenceError("sandbox inventory is not stably empty")
+        return {
+            "entry_count": 0,
+            "workspace_identity_digest": content_hash(
+                {
+                    "schema_version": "bluefire.sandbox-directory-identity.v1",
+                    "device": self._root_identity[0],
+                    "inode": self._root_identity[1],
+                }
+            ),
+        }
+
     def observe_file(
         self,
         *,
