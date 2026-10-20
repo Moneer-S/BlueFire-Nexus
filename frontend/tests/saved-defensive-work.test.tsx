@@ -10,7 +10,7 @@ import { fileAccessApi, type FileAccessControlList } from "../src/lib/file-acces
 import type { ReceiverTestList } from "../src/lib/receiver-defense-types";
 import { loadSavedWork } from "../src/lib/saved-defensive-work";
 import { s3Api } from "../src/lib/s3-access";
-import { rawAdWorkflow } from "./ad-smb-fixture";
+import { rawAdList, rawAdWorkflow } from "./ad-smb-fixture";
 
 const owner = `job-${"1".repeat(32)}`;
 const receiver = (): ReceiverTestList => ({ schema_version: "bluefire.receiver-defense-list.v1", jobs: [{ job_id: owner, title: "Retained redaction test", status: "blocked", phase: "protected", updated_at: null, native_path: "https://invalid.test/ignored" }], truncated: false, next_cursor: null });
@@ -18,7 +18,7 @@ const clients: QueryClient[] = [];
 beforeEach(() => {
   vi.spyOn(api, "receiverTests").mockResolvedValue(receiver());
   vi.spyOn(fileAccessApi, "list").mockResolvedValue({ schema_version: "bluefire.file-access-control-list.v1", controls: [{ control_owner_id: owner, status: "recovery_required", revision: 3 }] });
-  vi.spyOn(adSmbApi, "list").mockResolvedValue({ workflows: [rawAdWorkflow({ pending: `job-${"2".repeat(32)}` })] });
+  vi.spyOn(adSmbApi, "list").mockResolvedValue(rawAdList([rawAdWorkflow({ pending: `job-${"2".repeat(32)}` })]));
   vi.spyOn(s3Api, "list").mockResolvedValue({ schema_version: "bluefire.s3-exercise-list.v1", exercises: [{ workflow_job_id: owner, name: "Synthetic bucket exercise", bucket: "generated-example", policy_state: "hardened", updated_at: "2026-10-11T00:00:00Z" }], truncated: false });
 });
 afterEach(() => { clients.splice(0).forEach(client => client.clear()); });
@@ -125,9 +125,9 @@ it("shows the newest five file controls without reordering the server list", asy
 });
 
 it("shows the newest five domain workflows without reordering the server list", async () => {
-  const workflows = Array.from({ length: 8 }, (_, index) => rawAdWorkflow({ id: `job-${String(index + 1).repeat(32)}` }));
-  const value = { workflows };
-  const originalIds = workflows.map(item => item.workflow.job_id);
+  const value = rawAdList(Array.from({ length: 8 }, (_, index) => rawAdWorkflow({ id: `job-${String(index + 1).repeat(32)}` })));
+  const workflows = value.workflows;
+  const originalIds = workflows.map(item => item.workflow_job_id);
   vi.mocked(adSmbApi.list).mockResolvedValue(value);
 
   const result = await loadSavedWork("domain");
@@ -135,7 +135,7 @@ it("shows the newest five domain workflows without reordering the server list", 
   expect(result.rows.map(row => row.id)).toEqual(originalIds.slice(-5).reverse());
   expect(result.more).toBe(true);
   expect(value.workflows).toBe(workflows);
-  expect(value.workflows.map(item => item.workflow.job_id)).toEqual(originalIds);
+  expect(value.workflows.map(item => item.workflow_job_id)).toEqual(originalIds);
 });
 
 it("refuses invalid saved identities without creating links from them", async () => {

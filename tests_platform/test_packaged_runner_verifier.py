@@ -30,6 +30,19 @@ def test_failure_diagnostic_is_bounded_and_never_emits_unapproved_values():
     }
 
 
+@pytest.mark.parametrize("category", ["private-category", ["timeout"], {"timeout": True}])
+def test_failure_diagnostic_ignores_unknown_or_unhashable_pair_category(category):
+    error = RuntimeError("private detail")
+    error.diagnostic_category = category
+
+    payload = verifier._failure_diagnostic("windows_pair_capability", error)
+
+    assert "failure_category" not in json.loads(payload)
+    assert "private-category" not in payload
+    assert "timeout" not in payload
+    assert "private detail" not in payload
+
+
 @pytest.mark.parametrize("failure", ["exception", "status"])
 def test_smoke_bootstrap_failure_reports_safe_phase_without_starting_runner(
     monkeypatch, tmp_path, capsys, failure
@@ -389,16 +402,26 @@ def installed_smoke_boundary(monkeypatch, tmp_path):
         assert command == [str(binary), "windows-file-baseline-worker-capability"]
         assert kwargs["stdin"] == setup.subprocess.DEVNULL and kwargs["shell"] is False
         assert kwargs["timeout"] == 5.0
-        row = synthetic_query_capability(setup.enrollment._PAIR_SETUP)
         fault = state["fault"]
+        if fault == "timeout":
+            raise setup.subprocess.TimeoutExpired(command, 5.0)
+        if fault == "launch":
+            raise OSError("private executable path")
+        row = synthetic_query_capability(setup.enrollment._PAIR_SETUP)
         if fault == "old":
             row = synthetic_query_capability(setup.enrollment._READER_SETUP)
         if fault == "unsupported":
             row["supported"] = False
         raw = json.dumps(row).encode()
-        kwargs["stdout"].write(b"private malformed" if fault == "malformed" else raw)
+        if fault == "malformed":
+            raw = b"private malformed"
+        elif fault == "oversize":
+            raw = b"x" * 1025
+        kwargs["stdout"].write(raw)
         if fault == "stderr":
             kwargs["stderr"].write(b"private capability stderr")
+        if fault == "after_deadline":
+            setup.time.monotonic = lambda: 106.0
         return SimpleNamespace(returncode=4 if fault == "exit" else 0)
 
     monkeypatch.setattr(runner_bootstrap, "bootstrap_runner", bootstrap)
@@ -433,9 +456,22 @@ def test_installed_smoke_queries_only_windows_x86_pair_support_and_preserves_old
         assert calls == [] and "windows_pair_worker" not in reports[0]
 
 
-@pytest.mark.parametrize("fault", ["old", "unsupported", "exit", "stderr", "malformed"])
+@pytest.mark.parametrize(
+    ("fault", "category"),
+    [
+        ("old", "contract_mismatch"),
+        ("unsupported", "contract_mismatch"),
+        ("exit", "nonzero_exit"),
+        ("stderr", "stderr_nonempty"),
+        ("malformed", "output_malformed"),
+        ("oversize", "output_oversize"),
+        ("timeout", "timeout"),
+        ("launch", "launch_failure"),
+        ("after_deadline", "deadline_expired"),
+    ],
+)
 def test_installed_pair_capability_failure_precedes_fixture_and_has_sanitized_diagnostic(
-    installed_smoke_boundary, fault, capsys
+    installed_smoke_boundary, fault, category, capsys
 ):
     args, state, calls, executions, reports, _binary = installed_smoke_boundary
     state["fault"] = fault
@@ -455,3 +491,22 @@ def test_installed_pair_capability_failure_precedes_fixture_and_has_sanitized_di
     diagnostic = json.loads(captured.err.splitlines()[1])
     assert diagnostic["phase"] == "protocol_support"
     assert diagnostic["reason"] == "windows_pair_capability_invalid"
+    assert diagnostic["failure_category"] == category
+
+
+def test_pair_capability_invalid_deadline_is_classified_without_launch(
+    installed_smoke_boundary,
+):
+    from bluefire import windows_file_access_enrollment_setup as setup
+
+    _args, _state, calls, _executions, _reports, binary = installed_smoke_boundary
+    with pytest.raises(setup.contract.NativeWireError) as invalid:
+        setup._query_capability_for(binary, "0.1.0", None, setup.enrollment._PAIR_SETUP)
+    assert invalid.value.diagnostic_category == "invalid_deadline"
+    with pytest.raises(setup.contract.NativeWireError) as expired:
+        setup._query_capability_for(binary, "0.1.0", 100.0, setup.enrollment._PAIR_SETUP)
+    assert expired.value.diagnostic_category == "deadline_expired"
+    with pytest.raises(setup.contract.NativeWireError) as unbounded:
+        setup._query_capability_for(binary, "0.1.0", 106.0, setup.enrollment._PAIR_SETUP)
+    assert unbounded.value.diagnostic_category == "invalid_deadline"
+    assert calls == []

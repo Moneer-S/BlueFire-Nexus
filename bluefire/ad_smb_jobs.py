@@ -11,7 +11,15 @@ from typing import Any, Mapping
 
 from . import ad_smb_results as results
 from . import product_store_ad_smb as records
-from .ad_smb_contract import AdSmbError, AdSmbScope, document, exact, timestamp
+from .ad_smb_contract import (
+    MAX_AUDIT_EXECUTION_BYTES,
+    MAX_DOCUMENT_BYTES,
+    AdSmbError,
+    AdSmbScope,
+    document,
+    exact,
+    timestamp,
+)
 from .ad_smb_execution import (
     AdSmbExecutor,
     InstalledAdSmbExecutor,
@@ -133,7 +141,27 @@ class AdSmbJobs:
         }
 
     def list(self) -> dict[str, Any]:
-        return {"workflows": [self.read(row["job_id"]) for row in records.list_owners(self.store)]}
+        workflows = []
+        for owner in records.list_owners(self.store):
+            selected = results.environment(owner["request"]["environment"])
+            results.readiness(owner["request"]["readiness"])
+            progress = owner["progress"]
+            workflows.append(
+                {
+                    "workflow_job_id": results.job_id(owner["job_id"]),
+                    "member": selected["scope"]["hosts"]["member"]["fqdn"],
+                    "provenance": selected["provenance"],
+                    "revision": progress["revision"],
+                    "stopped": progress["stopped"],
+                    "pending_operation": progress["pending_operation"],
+                    "policy_state": progress["policy_state"],
+                }
+            )
+        return {
+            "schema_version": "bluefire.ad-smb-workflow-list.v1",
+            "effective_access_claim": False,
+            "workflows": workflows,
+        }
 
     def review(self, identifier, phase) -> dict[str, Any]:
         owner = self._owner(identifier)
@@ -304,7 +332,13 @@ class AdSmbJobs:
                 continue
             request = child["request"]["requests"][index]
             original = results.original_context(request, task["context"])
-            recovered = document(self.executor.recover_original(request, original))
+            # The canonical terminal wrapper adds 34 bytes beyond its execution.
+            limit = (
+                MAX_AUDIT_EXECUTION_BYTES + 64
+                if request["step"] == "collect_audit"
+                else MAX_DOCUMENT_BYTES
+            )
+            recovered = document(self.executor.recover_original(request, original), limit=limit)
             exact(recovered, {"status", "execution"}, "AD original result recovery")
             if recovered["status"] != "terminal" or recovered["execution"] is None:
                 raise AdSmbError(

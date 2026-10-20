@@ -11,7 +11,13 @@ import pytest
 
 from bluefire import ad_smb_results as results
 from bluefire import product_store_ad_smb as records
-from bluefire.ad_smb_contract import AdSmbError
+from bluefire.ad_smb_audit import normalize_events
+from bluefire.ad_smb_contract import (
+    MAX_AUDIT_EXECUTION_BYTES,
+    MAX_DOCUMENT_BYTES,
+    AdSmbError,
+    AdSmbScope,
+)
 from bluefire.ad_smb_execution import UnavailableAdSmbExecutor
 from bluefire.ad_smb_jobs import AdSmbJobs
 from bluefire.execution_contracts import execution_task_identity
@@ -19,8 +25,9 @@ from bluefire.job_runtime import TERMINAL_JOB_STATES, JobWaitTimeout, RunJobCont
 from bluefire.product_store import ProductStore
 from bluefire.run_store import RunStore
 from bluefire.runner_contracts import seal_profile
-from bluefire.util import content_hash
+from bluefire.util import canonical_json_bytes, content_hash
 from tests_platform.test_ad_smb_acl import fixture, observe
+from tests_platform.test_ad_smb_audit import event as audit_event
 from tests_platform.test_ad_smb_contract import NOW, pin
 
 JOB_WAIT_TIMEOUT = 30
@@ -317,6 +324,238 @@ def test_original_result_recovery_does_not_rediscover_or_redispatch(workspace):
         "run.finalized",
     ]
     assert jobs.recover(identifier) == recovered
+
+
+def large_audit_observation(request):
+    start = "2026-10-09T00:00:00.0000000Z"
+    end = "2026-10-09T00:00:02.0000000Z"
+    source_receipt = pin("c")
+    raw_events = [
+        audit_event(record_id=index + 1, when="2026-10-09T00:00:00.5000000Z")
+        for index in range(600)
+    ]
+    scope = AdSmbScope.from_mapping(request["scope"])
+    normalized = normalize_events(
+        scope,
+        raw_events,
+        source_host_id=scope.to_dict()["hosts"]["member"]["host_id"],
+        source_receipt_digest=source_receipt,
+        capture_batch_digest=content_hash(
+            {
+                "source_receipt_digest": source_receipt,
+                "channel": "Security",
+                "window_start": start,
+                "window_end": end,
+            }
+        ),
+        window_start=start,
+        window_end=end,
+        completeness="complete",
+    )
+    normalized["capture_state"] = "query_exhausted"
+    return {
+        "source_digest": pin("e"),
+        "events": len(raw_events),
+        "truncated": False,
+        "authenticated_source": False,
+        "independent_observation": False,
+        "effective_access_claim": False,
+        "normalized_observation": normalized,
+    }
+
+
+def test_summary_list_omits_large_audit_without_changing_detail_or_saved_evidence(
+    workspace, monkeypatch
+):
+    jobs, executor, service = workspace
+    identifier = create(jobs)
+    assert submit(jobs, identifier, "inspect")[0]["state"] == "completed"
+    jobs.clock = lambda: NOW + timedelta(seconds=2)
+    terminal = executor.terminal
+
+    def audit_terminal(request):
+        execution = terminal(request)
+        execution["observation"] = large_audit_observation(request)
+        return execution
+
+    executor.terminal = audit_terminal
+    assert submit(jobs, identifier, "audit")[0]["state"] == "completed"
+    detail = jobs.read(identifier)
+    stored = service.product_store.get_job(identifier)
+    assert len(canonical_json_bytes(detail)) > MAX_DOCUMENT_BYTES
+    observation = detail["workflow"]["progress"]["operations"][-1]["executions"][0]["observation"]
+    assert len(observation["normalized_observation"]["events"]) == 600
+    read = jobs.read
+
+    def no_detail_or_host_work(*_args, **_kwargs):
+        pytest.fail("Summary listing must not read detail, discover hosts or dispatch work")
+
+    monkeypatch.setattr(jobs, "read", no_detail_or_host_work)
+    for method in ("environments", "readiness", "execute", "recover_original"):
+        monkeypatch.setattr(executor, method, no_detail_or_host_work)
+
+    listed = jobs.list()
+
+    selected = detail["workflow"]["request"]["environment"]
+    progress = detail["workflow"]["progress"]
+    assert listed == {
+        "schema_version": "bluefire.ad-smb-workflow-list.v1",
+        "effective_access_claim": False,
+        "workflows": [
+            {
+                "workflow_job_id": identifier,
+                "member": selected["scope"]["hosts"]["member"]["fqdn"],
+                "provenance": selected["provenance"],
+                "revision": progress["revision"],
+                "stopped": progress["stopped"],
+                "pending_operation": progress["pending_operation"],
+                "policy_state": progress["policy_state"],
+            }
+        ],
+    }
+    assert len(canonical_json_bytes(listed)) < 1024
+    assert canonical_json_bytes(read(identifier)) == canonical_json_bytes(detail)
+    assert service.product_store.get_job(identifier) == stored
+
+
+def test_summary_list_preserves_owner_order_and_pending_stopped_state(workspace):
+    jobs, executor, _service = workspace
+    first = create(jobs)
+    second = create(jobs)
+    jobs.stop(first)
+    executor.crash = True
+    child, _ = submit(jobs, second, "inspect")
+    assert child["state"] == "failed"
+    expected = records.list_owners(jobs.store)
+
+    listed = jobs.list()["workflows"]
+
+    assert [row["workflow_job_id"] for row in listed] == [row["job_id"] for row in expected]
+    assert next(row for row in listed if row["workflow_job_id"] == first)["stopped"] is True
+    assert next(row for row in listed if row["workflow_job_id"] == second)["stopped"] is False
+    assert (
+        next(row for row in listed if row["workflow_job_id"] == first)["pending_operation"] is None
+    )
+    assert (
+        next(row for row in listed if row["workflow_job_id"] == second)["pending_operation"]
+        == child["job_id"]
+    )
+
+
+def test_large_normalized_audit_recovery_after_restart_stays_read_only(workspace):
+    jobs, executor, service = workspace
+    identifier = create(jobs)
+    assert submit(jobs, identifier, "inspect")[0]["state"] == "completed"
+    jobs.clock = lambda: NOW + timedelta(seconds=2)
+    terminal = executor.terminal
+
+    def audit_terminal(request):
+        execution = terminal(request)
+        execution["observation"] = large_audit_observation(request)
+        return execution
+
+    executor.terminal = audit_terminal
+    executor.crash = True
+    child, _ = submit(jobs, identifier, "audit")
+    assert child["state"] == "failed"
+    assert child["progress"]["tasks"][0]["execution"] is None
+    request = child["request"]["requests"][0]
+    execution = executor.originals[request["request_id"]]
+    assert MAX_DOCUMENT_BYTES < len(canonical_json_bytes(execution)) <= MAX_AUDIT_EXECUTION_BYTES
+    assert results.validate_execution(request, execution) == execution
+    calls = deepcopy(executor.calls)
+
+    def no_new_work(*_args, **_kwargs):
+        pytest.fail("Recovery must not rediscover admission or dispatch work")
+
+    executor.environments = executor.readiness = executor.execute = no_new_work
+    reopened_store = ProductStore(service.product_store.path)
+    reopened_runs = RunStore(service.store.root)
+    reopened_runs.recover_interrupted_runs()
+    reopened = AdSmbJobs(
+        SimpleNamespace(
+            product_store=reopened_store,
+            store=reopened_runs,
+            job_controller=service.job_controller,
+        ),
+        executor,
+        clock=lambda: NOW + timedelta(days=10),
+    )
+
+    recovered = reopened.recover(identifier)
+
+    assert executor.calls == calls and len(executor.recovered) == 1
+    operation = recovered["workflow"]["progress"]["operations"][-1]
+    assert operation["outcome"]["state"] == "complete"
+    assert operation["executions"] == [execution]
+    observation = operation["executions"][0]["observation"]
+    assert len(observation["normalized_observation"]["events"]) == 600
+    assert observation["authenticated_source"] is False
+    assert observation["independent_observation"] is False
+    assert observation["effective_access_claim"] is False
+    assert recovered["workflow"]["progress"]["pending_operation"] is None
+    assert reopened_runs.validate_bundle(child["progress"]["run_id"])["valid"]
+    assert reopened.recover(identifier) == recovered
+
+
+@pytest.mark.parametrize("boundary", ["envelope", "execution"])
+def test_audit_recovery_rejects_oversized_original_without_releasing_reservation(
+    workspace, monkeypatch, boundary
+):
+    jobs, executor, service = workspace
+    identifier = create(jobs)
+    assert submit(jobs, identifier, "inspect")[0]["state"] == "completed"
+    executor.crash = True
+    child, _ = submit(jobs, identifier, "audit")
+    assert child["state"] == "failed"
+    request = child["request"]["requests"][0]
+    execution = deepcopy(executor.originals[request["request_id"]])
+    execution["padding"] = ""
+    target_bytes = MAX_AUDIT_EXECUTION_BYTES + (65 if boundary == "envelope" else 1)
+    execution["padding"] = "x" * (target_bytes - len(canonical_json_bytes(execution)))
+    envelope = {"status": "terminal", "execution": execution}
+    assert len(canonical_json_bytes(envelope)) - len(canonical_json_bytes(execution)) == 34
+    if boundary == "execution":
+        assert len(canonical_json_bytes(envelope)) <= MAX_AUDIT_EXECUTION_BYTES + 64
+    executor.originals[request["request_id"]] = execution
+    recorded = []
+    record_recovery = records.record_recovery
+
+    def record(*args):
+        recorded.append(True)
+        return record_recovery(*args)
+
+    monkeypatch.setattr(records, "record_recovery", record)
+
+    with pytest.raises(AdSmbError, match="^document is not supported bounded JSON$"):
+        jobs.recover(identifier)
+
+    assert bool(recorded) is (boundary == "execution")
+    current = service.product_store.get_job(child["job_id"])
+    assert current["progress"]["tasks"][0]["recovery"] is None
+    assert jobs.read(identifier)["workflow"]["progress"]["pending_operation"] == child["job_id"]
+    assert len(executor.calls) == 2
+
+
+def test_non_audit_recovery_keeps_default_outer_document_bound(workspace):
+    jobs, executor, service = workspace
+    identifier = create(jobs)
+    executor.crash = True
+    child, _ = submit(jobs, identifier, "inspect")
+    assert child["state"] == "failed"
+    original_recovery = executor.recover_original
+
+    def oversized_recovery(request, context):
+        return {**original_recovery(request, context), "padding": "x" * MAX_DOCUMENT_BYTES}
+
+    executor.recover_original = oversized_recovery
+    with pytest.raises(AdSmbError, match="^document is not supported bounded JSON$"):
+        jobs.recover(identifier)
+
+    current = service.product_store.get_job(child["job_id"])
+    assert current["progress"]["tasks"][0]["recovery"] is None
+    assert jobs.read(identifier)["workflow"]["progress"]["pending_operation"] == child["job_id"]
+    assert len(executor.calls) == 1
 
 
 @pytest.mark.parametrize(
