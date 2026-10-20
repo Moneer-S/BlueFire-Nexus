@@ -13,6 +13,29 @@ pub(crate) mod audit;
 
 pub const MAX_DOCUMENT_BYTES: usize = 80 * 1024;
 
+const AUDIT_COLLECTION_DISPATCH_RELEASED: bool = false;
+const SUPPORTED_OPERATIONS: [&str; 10] = [
+    "inspect_policy",
+    "apply_policy",
+    "rollback_policy",
+    "reconcile_policy",
+    "probe_read",
+    "legitimate_read",
+    "prepare_fixture",
+    "reconcile_fixture",
+    "cleanup_fixture",
+    "collect_audit",
+];
+
+pub(crate) fn supported_operations() -> &'static [&'static str] {
+    let count = if AUDIT_COLLECTION_DISPATCH_RELEASED {
+        SUPPORTED_OPERATIONS.len()
+    } else {
+        SUPPORTED_OPERATIONS.len() - 1
+    };
+    &SUPPORTED_OPERATIONS[..count]
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
@@ -203,10 +226,10 @@ impl S3WorkerBinding {
         self.request.audit.as_ref()
     }
     pub(crate) fn assert_dispatch_supported(&self) -> Checked<()> {
-        if self.audit().is_some() {
-            Err("S3 audit collector dispatch is not connected")
-        } else {
+        if supported_operations().contains(&self.operation()) {
             Ok(())
+        } else {
+            Err("S3 audit collector dispatch is not connected")
         }
     }
     pub(crate) fn fixture_authority_digest(&self) -> Option<&str> {

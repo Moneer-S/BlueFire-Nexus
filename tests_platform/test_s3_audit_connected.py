@@ -103,6 +103,8 @@ def bridge(tmp_path, monkeypatch):
         "worker_generation": entry["worker_generation"],
         "available": True,
         "problem": None,
+        # This opt-in bridge advertises its explicit test-only collector.
+        "supported_operations": [*executor_module.ORDINARY_OPERATIONS, "collect_audit"],
     }
     _request, original = original_context(audit_admitted())
     identity = original["transport_identity"]

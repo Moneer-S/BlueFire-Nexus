@@ -21,6 +21,7 @@ from .s3_access_execution_contract import validate_execution as validate_executi
 from .s3_access_profile import validate_managed_s3_profile, validate_s3_host_binding
 from .s3_access_recovery import BOUND_SCHEMA, SCHEMA, validate_recovery_context
 from .s3_access_recovery import execution_manifest as _manifest
+from .s3_access_transport import ORDINARY_OPERATIONS
 from .s3_access_wire import S3WorkerRequest, timestamp
 from .util import canonical_json_bytes, content_hash
 
@@ -29,6 +30,8 @@ class S3AccessExecutor(Protocol):
     def environments(self) -> list[dict[str, Any]]: ...
 
     def readiness(self, scope: S3AccessScope) -> dict[str, Any]: ...
+
+    def supports_operation(self, scope: S3AccessScope, operation: str) -> bool: ...
 
     def execute(
         self,
@@ -58,6 +61,10 @@ class _UnavailableExecutor:
             "worker_generation": None,
             "runtime_digest": None,
         }
+
+    def supports_operation(self, scope: S3AccessScope, operation: str) -> bool:
+        S3AccessScope.from_mapping(scope.to_dict())
+        return False
 
     def execute(
         self,
@@ -199,6 +206,16 @@ class _ConfiguredExecutor(_UnavailableExecutor):
                 }
         return super().readiness(scope)
 
+    def supports_operation(self, scope: S3AccessScope, operation: str) -> bool:
+        scope = S3AccessScope.from_mapping(scope.to_dict())
+        return any(
+            row["available"]
+            and operation in row.get("supported_operations", ORDINARY_OPERATIONS)
+            and canonical_json_bytes(row["environment"]["scope"])
+            == canonical_json_bytes(scope.to_dict())
+            for _client, _sandbox, row in self._discovered()
+        )
+
     def execute(
         self,
         request: S3WorkerRequest,
@@ -219,6 +236,7 @@ class _ConfiguredExecutor(_UnavailableExecutor):
             (client, sandbox, row)
             for client, sandbox, row in self._discovered()
             if row["available"]
+            and value["operation"] in row.get("supported_operations", ORDINARY_OPERATIONS)
             and row["environment"]["environment_id"] == authorization.get("environment_id")
             and canonical_json_bytes(row["environment"]["scope"])
             == canonical_json_bytes(value["scope"])

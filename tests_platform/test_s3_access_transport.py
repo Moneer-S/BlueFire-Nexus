@@ -57,10 +57,54 @@ def response(host):
 def test_discovery_contains_no_secret_reference_or_runtime_path(host):
     rows = response(host)["environments"]
     assert len(rows) == 1 and rows[0]["available"] is True
+    assert rows[0]["supported_operations"] == list(module.ORDINARY_OPERATIONS)
     assert rows[0]["environment"] == public_environments(host.configuration)[0]
     assert "credential_reference" not in str(rows)
     assert "runtime_root" not in str(rows)
     assert "ledger_root" not in str(rows)
+
+
+def _operation_schema(operations):
+    return {
+        "properties": {
+            "worker_request": {
+                "properties": {"operation": {"type": "string", "enum": operations}},
+            }
+        }
+    }
+
+
+def test_server_uses_only_the_authenticated_compiled_operation_enum(host):
+    enum = [*module.ORDINARY_OPERATIONS, "collect_audit"]
+    host.descriptor["parameter_schema"] = _operation_schema(enum)
+    row = response(host)["environments"][0]
+    assert row["supported_operations"] == enum
+
+
+@pytest.mark.parametrize(
+    "enum",
+    [
+        [*module.ORDINARY_OPERATIONS, "collect_audit", "collect_audit"],
+        [*module.ORDINARY_OPERATIONS, "unexpected_operation"],
+        list(reversed(module.ORDINARY_OPERATIONS)),
+        [],
+        "inspect_policy",
+        None,
+        [*module.ORDINARY_OPERATIONS, {"operation": "collect_audit"}],
+    ],
+)
+def test_server_refuses_malformed_or_unsupported_operation_enum(host, enum):
+    host.descriptor["parameter_schema"] = _operation_schema(enum)
+    with pytest.raises(RuntimeError, match="runner_failure"):
+        response(host)
+
+
+def test_server_refuses_non_string_operation_schema(host):
+    schema = _operation_schema([*module.ORDINARY_OPERATIONS, "collect_audit"])
+    schema["properties"]["worker_request"]["properties"]["operation"]["type"] = "boolean"
+    host.descriptor["parameter_schema"] = schema
+    with pytest.raises(RuntimeError, match="runner_failure"):
+        response(host)
 
 
 @pytest.mark.parametrize("kind", ["authority", "capability", "action"])
@@ -126,6 +170,32 @@ def test_client_validates_exact_enrolled_response(host):
     assert (
         payload["environments"][0]["managed_profile_digest"] == host.entry["managed_profile_digest"]
     )
+
+
+def test_new_client_keeps_old_server_response_ordinary_only(host):
+    payload = response(host)
+    row = payload["environments"][0]
+    del row["supported_operations"]
+    validated = module.client_environments(client(host, payload))
+    assert validated[0]["supported_operations"] == list(module.ORDINARY_OPERATIONS)
+    assert "collect_audit" not in validated[0]["supported_operations"]
+
+
+@pytest.mark.parametrize(
+    "operations",
+    [
+        [*module.ORDINARY_OPERATIONS, "collect_audit", "collect_audit"],
+        [*module.ORDINARY_OPERATIONS, "unknown"],
+        list(reversed(module.ORDINARY_OPERATIONS)),
+        None,
+        [*module.ORDINARY_OPERATIONS, ["collect_audit"]],
+    ],
+)
+def test_client_rejects_malformed_or_unsupported_operation_response(host, operations):
+    payload = deepcopy(response(host))
+    payload["environments"][0]["supported_operations"] = operations
+    with pytest.raises(RunnerAuthenticationError, match="response is invalid"):
+        module.client_environments(client(host, payload))
 
 
 def test_legacy_discovery_remains_readable_but_cannot_claim_current_authority(host):
