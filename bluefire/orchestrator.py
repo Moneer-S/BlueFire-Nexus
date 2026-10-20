@@ -72,6 +72,8 @@ from .execution_progress import (
 )
 from .file_access_contract import VerifiedFileAccessBinding
 from .job_runtime import JobCancelled
+from .macos_execution import CLOSE_ACTION as MACOS_CLOSE_ACTION
+from .macos_execution import emergency_attempt_close
 from .native_tool_execution_readiness import inspected_tool_rows
 from .observation_integrity import evaluate_observation_integrity
 from .owned_service_authority import (
@@ -129,7 +131,12 @@ from .runner_client import (
     canonical_runner_inventory,
     execution_task_identity,
 )
-from .runner_contracts import build_execution_manifest, build_runner_profile, current_platform
+from .runner_contracts import (
+    VerifiedMacOSFileAccessBinding,
+    build_execution_manifest,
+    build_runner_profile,
+    current_platform,
+)
 from .runner_inventory import (
     RunnerInventoryAuthorityError,
     validate_builtin_action_inventory,
@@ -287,7 +294,7 @@ class PreflightReport:
 
 
 class Orchestrator:
-    """Own graph transitions while delegating effects exclusively to Rust."""
+    """Own graph transitions while delegating effects to admitted transports."""
 
     def __init__(
         self,
@@ -306,6 +313,7 @@ class Orchestrator:
         service_intent_journal: ServiceIntentJournal | None = None,
         grant_execution: GrantExecution | None = None,
         file_access_binding: VerifiedFileAccessBinding | None = None,
+        macos_file_access_binding: VerifiedMacOSFileAccessBinding | None = None,
     ) -> None:
         self.registry = registry
         self.store = store
@@ -324,6 +332,20 @@ class Orchestrator:
         ):
             raise OrchestrationError("File-access execution requires its trusted stored binding")
         self.file_access_binding = file_access_binding
+        if macos_file_access_binding is not None:
+            from .macos_file_access_context import OriginalMacOSCompositionRunner
+
+            if (
+                type(macos_file_access_binding) is not VerifiedMacOSFileAccessBinding
+                or file_access_binding is not None
+                or type(runner) is not OriginalMacOSCompositionRunner
+            ):
+                raise OrchestrationError(
+                    "macOS execution requires the original workspace transport."
+                )
+        self.macos_file_access_binding = macos_file_access_binding
+        self._macos_close_attempted = False
+        self._macos_recovery_context = None
         self.catalog_authority = dict(catalog_authority) if catalog_authority is not None else None
         self.action_bindings = {
             (str(behavior_id), str(action_id)): dict(binding)
@@ -727,6 +749,7 @@ class Orchestrator:
                     else runner_authorization(plan, adaptive_authorization)
                 ),
                 file_access_binding=self.file_access_binding,
+                macos_file_access_binding=self.macos_file_access_binding,
             )
             if self.grant_execution is not None:
                 self.grant_execution.bind_profile(runner_profile_doc)
@@ -756,9 +779,21 @@ class Orchestrator:
                 self.runner.inventory()
             ) != canonical_runner_inventory(inventory):
                 raise OrchestrationError("Runner inventory changed during tool inspection")
-            self._validate_inventory(
-                native_plan, inventory, structural_tool_action_ids=tuple(tools)
-            )
+            if self.macos_file_access_binding is not None:
+                from .macos_file_access_context import OriginalMacOSCompositionRunner
+
+                if (
+                    type(self.runner) is not OriginalMacOSCompositionRunner
+                    or self.grant_execution is None
+                ):
+                    raise OrchestrationError(
+                        "macOS composition requires its original admitted attempt."
+                    )
+                self.runner.validate_plan_inventory(native_plan, inventory)
+            else:
+                self._validate_inventory(
+                    native_plan, inventory, structural_tool_action_ids=tuple(tools)
+                )
         elif approval_record is not None:
             raise OrchestrationError("Simulate does not accept an Execute approval capability")
 
@@ -798,6 +833,19 @@ class Orchestrator:
         )
         simulation = _SimulationProgress() if mode is ExecutionMode.SIMULATE else None
         receipt_ids: list[str] = []
+        self._macos_close_attempted = False
+        if self.macos_file_access_binding is not None:
+            self._macos_recovery_context = {
+                "run_id": handle.run_id,
+                "plan": plan,
+                "profile": profile,
+                "runner_profile": runner_profile_doc,
+                "observer": observer,
+                "approved_by": approved_by,
+                "approval_record": validated_approval,
+                "authorized_target_scope": authorized_target_scope,
+                "receipt_ids": receipt_ids,
+            }
         try:
             starting_budget = (
                 initial_budget(scenario.adaptive_execution, replay)
@@ -905,7 +953,7 @@ class Orchestrator:
                 and profile is not None
                 and runner_profile_doc is not None
                 and observer is not None
-                and receipt_ids
+                and (receipt_ids or self.macos_file_access_binding is not None)
                 and compiled_owned_service_scope is None
             ):
                 self._attempt_emergency_cleanup(
@@ -995,6 +1043,12 @@ class Orchestrator:
         cleanup_forced = False
         counterfactual_step: str | None = None
         cleanup_attempted = False
+        cleanup_opcode = (
+            MACOS_CLOSE_ACTION
+            if self.macos_file_access_binding is not None
+            else "sandbox.cleanup.v1"
+        )
+        macos_attempt = self.macos_file_access_binding is not None
         approval_pause: dict[str, Any] | None = None
         planning_stopped = False
         adaptive_digest = (
@@ -1095,6 +1149,7 @@ class Orchestrator:
                 )
             if (
                 mode is ExecutionMode.EXECUTE
+                and not macos_attempt
                 and replay is None
                 and observer is not None
                 and profile is not None
@@ -1141,12 +1196,16 @@ class Orchestrator:
                 self.store.append_event(handle.run_id, "step.counterfactual", row)
                 current_step_id = None
                 counterfactual_step = None
-                if mode is ExecutionMode.EXECUTE and receipt_ids and not cleanup_attempted:
+                if (
+                    mode is ExecutionMode.EXECUTE
+                    and (receipt_ids or macos_attempt)
+                    and not cleanup_attempted
+                ):
                     cleanup_step = next(
                         (
                             item
                             for item in plan.steps
-                            if self._runner_opcode(item) == "sandbox.cleanup.v1"
+                            if self._runner_opcode(item) == cleanup_opcode
                         ),
                         None,
                     )
@@ -1158,7 +1217,7 @@ class Orchestrator:
 
             bound_inputs: Mapping[str, Any]
             parent_ids: tuple[str, ...]
-            if forced_cleanup and self._runner_opcode(plan_step) == "sandbox.cleanup.v1":
+            if forced_cleanup and self._runner_opcode(plan_step) == cleanup_opcode:
                 bound_inputs = {}
                 parent_ids = tuple(step_rows[-1].get("evidence_ids", []) if step_rows else [])
             else:
@@ -1179,7 +1238,7 @@ class Orchestrator:
                 assert profile is not None
                 assert runner_profile is not None
                 assert observer is not None
-                is_cleanup = self._runner_opcode(plan_step) == "sandbox.cleanup.v1"
+                is_cleanup = self._runner_opcode(plan_step) == cleanup_opcode
                 remaining = max((deadline or time.monotonic()) - time.monotonic(), 0.0)
                 # Cleanup is the compensating safety boundary. A runner call can
                 # return just beyond its requested timeout (scheduler jitter is
@@ -1232,7 +1291,7 @@ class Orchestrator:
                     reviewed_step_check=recheck_reviewed_step,
                 )
                 policy_rows.append(decision.to_dict())
-                if self._runner_opcode(plan_step) == "sandbox.cleanup.v1":
+                if self._runner_opcode(plan_step) == cleanup_opcode:
                     cleanup_attempted = True
                     if row["status"] == StepOutcome.SUCCESS.value:
                         receipt_ids.clear()
@@ -1353,22 +1412,19 @@ class Orchestrator:
                     }
                 )
 
-            if (
-                approval_pause is not None
-                and self._runner_opcode(plan_step) == "sandbox.cleanup.v1"
-            ):
+            if approval_pause is not None and self._runner_opcode(plan_step) == cleanup_opcode:
                 current_step_id = None
                 continue
 
             if mode is ExecutionMode.EXECUTE and step_budget_exhausted:
                 current_step_id = None
                 forced_cleanup = False
-                if mode is ExecutionMode.EXECUTE and receipt_ids:
+                if mode is ExecutionMode.EXECUTE and (receipt_ids or macos_attempt):
                     cleanup_step = next(
                         (
                             item
                             for item in plan.steps
-                            if self._runner_opcode(item) == "sandbox.cleanup.v1"
+                            if self._runner_opcode(item) == cleanup_opcode
                         ),
                         None,
                     )
@@ -1574,13 +1630,13 @@ class Orchestrator:
             ):
                 counterfactual_step = current_step_id
 
-            if current_step_id is None and mode is ExecutionMode.EXECUTE and receipt_ids:
+            if (
+                current_step_id is None
+                and mode is ExecutionMode.EXECUTE
+                and (receipt_ids or macos_attempt)
+            ):
                 cleanup_step = next(
-                    (
-                        item
-                        for item in plan.steps
-                        if self._runner_opcode(item) == "sandbox.cleanup.v1"
-                    ),
+                    (item for item in plan.steps if self._runner_opcode(item) == cleanup_opcode),
                     None,
                 )
                 if cleanup_step is not None and not cleanup_attempted:
@@ -1625,7 +1681,7 @@ class Orchestrator:
 
         detections = self._build_detections(evidence.records())
         cleanup_success = any(
-            self._row_runner_opcode(row) == "sandbox.cleanup.v1"
+            self._row_runner_opcode(row) == cleanup_opcode
             and row.get("status") == StepOutcome.SUCCESS.value
             for row in step_rows
         )
@@ -1634,9 +1690,7 @@ class Orchestrator:
             and self.registry.get_action(step.action_id).cleanup_action_id is not None
             for step in plan.steps
         )
-        business_rows = [
-            row for row in step_rows if self._row_runner_opcode(row) != "sandbox.cleanup.v1"
-        ]
+        business_rows = [row for row in step_rows if self._row_runner_opcode(row) != cleanup_opcode]
         terminal_business = business_rows[-1] if business_rows else None
         terminal_satisfied = bool(
             terminal_business
@@ -1689,6 +1743,7 @@ class Orchestrator:
         replay_checkpoints: list[Mapping[str, Any]] = []
         if (
             mode is ExecutionMode.EXECUTE
+            and not macos_attempt
             and replay is None
             and objective_reached
             and cleanup_attempted
@@ -1798,10 +1853,29 @@ class Orchestrator:
             "planner_decisions": decisions,
             "ai_proposals": ai_proposals,
             "cleanup": {
-                "attempted": cleanup_attempted if mode is ExecutionMode.EXECUTE else False,
-                "success": cleanup_success if mode is ExecutionMode.EXECUTE else None,
+                "attempted": (
+                    cleanup_attempted
+                    if mode is ExecutionMode.EXECUTE and not macos_attempt
+                    else False
+                ),
+                "success": (
+                    cleanup_success if mode is ExecutionMode.EXECUTE and not macos_attempt else None
+                ),
                 "outstanding_receipt_count": len(receipt_ids),
             },
+            **(
+                {
+                    "attempt_closure": {
+                        "attempted": self._macos_close_attempted,
+                        "success": cleanup_success,
+                        "scope": "attempt_request_usage_only",
+                        "native_filesystem_receipts": False,
+                        "whole_enrollment_cleanup": False,
+                    }
+                }
+                if macos_attempt
+                else {}
+            ),
             "replay": dict(replay) if replay else None,
             "collector_session": (
                 collection_session.to_dict() if collection_session is not None else None
@@ -2378,6 +2452,19 @@ class Orchestrator:
         authorized_target_scope: Mapping[str, Any],
         receipt_ids: list[str],
     ) -> None:
+        if self.macos_file_access_binding is not None:
+            emergency_attempt_close(
+                self,
+                plan=plan,
+                run_id=run_id,
+                profile=profile,
+                runner_profile=runner_profile,
+                observer=observer,
+                approved_by=approved_by,
+                approval_record=None,
+                authorized_target_scope=authorized_target_scope,
+            )
+            return
         emergency_cleanup(
             store=self.store,
             run_id=run_id,
@@ -2407,7 +2494,11 @@ class Orchestrator:
         )
         if not requires_cleanup:
             return ()
-        cleanup_id = "sandbox.cleanup.v1"
+        cleanup_id = (
+            "macos.file_access.close_attempt.v1"
+            if self.macos_file_access_binding is not None
+            else "sandbox.cleanup.v1"
+        )
         problems: list[str] = []
         if profile.cleanup_policy is not CleanupPolicy.ALWAYS:
             problems.append("Mutating Execute actions require cleanup_policy: always.")
@@ -2622,6 +2713,15 @@ class Orchestrator:
         owned_service_operation_binding: ServiceOperationBinding | None = None,
         task_lifecycle: Any = None,
     ) -> tuple[dict[str, Any], tuple[EvidenceRecord, ...], PolicyDecision, tuple[str, ...]]:
+        macos_attempt = self.macos_file_access_binding is not None
+        macos_close = macos_attempt and step.action_id == MACOS_CLOSE_ACTION
+        if macos_close:
+            if self._macos_close_attempted:
+                raise OrchestrationError("The original attempt closure was already attempted")
+            self._macos_close_attempted = True
+            reviewed_step_check = None
+            action_timeout_ms = None
+            cancel_event = threading.Event()
         action = self.registry.get_action(str(step.action_id))
         if reviewed_step_check is not None:
             reviewed_step_check()
@@ -2716,6 +2816,10 @@ class Orchestrator:
             return undispatched
         if "grant_cleanup" in delegated:
             action_timeout_ms, cancel_event = None, None
+        if "macos_file_access_cleanup" in delegated:
+            from .macos_file_access_peer import darwin_clock_ns
+
+            delegated["now_monotonic_ns"] = darwin_clock_ns()
         manifest = build_execution_manifest(
             run_id=run_id,
             step_id=step.step_id,
@@ -2793,6 +2897,8 @@ class Orchestrator:
             raise OrchestrationError("runner manifest has invalid receipt recovery limits")
 
         def discover_current_receipts(*, require_commit: bool = False) -> tuple[str, ...]:
+            if macos_attempt:
+                return ()
             return self._discover_runner_receipts(
                 observer.root,
                 expected_profile_id=profile.id,
@@ -3040,7 +3146,9 @@ class Orchestrator:
             behavior_id=step.behavior_id,
             action_id=step.action_id,
             provenance=provenance,
-            producer="bluefire-rust-runner",
+            producer=(
+                "bluefire-macos-original-workspace" if macos_attempt else "bluefire-rust-runner"
+            ),
             runner_profile_id=profile.id,
             environment={
                 "environment_type": profile.environment_type.value,
@@ -3066,7 +3174,16 @@ class Orchestrator:
                 "error": runner_result.get("error"),
             },
             confidence=1.0,
-            limitations=tuple(str(item) for item in runner_result.get("limitations", [])),
+            limitations=(
+                *(str(item) for item in runner_result.get("limitations", [])),
+                *(
+                    (
+                        "Original producer metadata only; no independent filesystem observation or whole enrollment cleanup.",
+                    )
+                    if macos_attempt
+                    else ()
+                ),
+            ),
             target_scope_ref=f"runner-profile:{profile.id}",
         )
         records: list[EvidenceRecord] = [record]
@@ -3157,7 +3274,7 @@ class Orchestrator:
             runner_status=runner_status,
             request_hash=str(manifest["request_hash"]),
             receipts=effective_receipts,
-            cleanup=runner_result.get("cleanup"),
+            cleanup=None if macos_attempt else runner_result.get("cleanup"),
             error=runner_result.get("error"),
             **({"runner_task_id": runner_task_id} if runner_task_id is not None else {}),
         )

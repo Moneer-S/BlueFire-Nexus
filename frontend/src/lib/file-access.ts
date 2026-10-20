@@ -1,5 +1,5 @@
 import { DEMO_MODE, request } from "./api";
-import { compositionJobId, compositionJobValid, type CompositionJob } from "./composition";
+import { compositionJobId, compositionJobValid, FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, type CompositionJob } from "./composition";
 import { sameJson } from "./replay-review";
 
 export type FileAccessOperation = "create" | "baseline" | "harden" | "rollback" | "reset";
@@ -13,31 +13,52 @@ export interface FileAccessReview {
 export interface FileAccessSubmission { submission_id: string; review: FileAccessReviewRequest; review_digest: string; reviewed_by: string }
 export interface WindowsSetupSummary { enrollment_id: string; enrollment_digest: string; expires_at_ms: number; verification: "protected_setup_only" }
 export interface WindowsSetupImportRequest { enrollment_id: string; enrollment_digest: string }
+export type FileAccessSetupImportRequest = WindowsSetupImportRequest;
 interface FileAccessStatusBase { schema_version: "bluefire.file-access-status.v1"; available: boolean; problem: null | { code: string; message: string }; allowed_operations: FileAccessOperation[] }
 export interface LinuxFileAccessStatus extends FileAccessStatusBase {
   platform?: never; setup?: never;
   enrollment: null | { enrollment_id: string; enrollment_digest: string; expires_at_ms: number; owner_uid: number; probe_uid: number };
 }
+export interface MacOSFileAccessStatus extends FileAccessStatusBase {
+  platform: "macos"; setup?: never; allowed_operations: [];
+  enrollment: LinuxFileAccessStatus["enrollment"];
+}
 export interface WindowsSetupFileAccessStatus extends FileAccessStatusBase {
+  platform?: never;
   available: false; problem: { code: "windows_native_admission_unavailable"; message: string };
   enrollment: null; allowed_operations: [];
   setup: WindowsSetupSummary;
 }
 export interface WindowsPairFileAccessStatus extends FileAccessStatusBase {
+  platform?: never;
   available: true; problem: null; enrollment: null; allowed_operations: [];
   setup: WindowsSetupSummary;
 }
-export type FileAccessStatus = LinuxFileAccessStatus | WindowsSetupFileAccessStatus | WindowsPairFileAccessStatus;
+export type FileAccessStatus = LinuxFileAccessStatus | WindowsSetupFileAccessStatus | WindowsPairFileAccessStatus | MacOSFileAccessStatus;
 export type FileAccessControlState = "created" | "baseline_verified" | "hardened" | "rolled_back" | "reset" | "uncertain" | "recovery_required";
 interface FileAccessControlSummaryBase { control_owner_id: string; revision: number }
 export interface LinuxFileAccessControlSummary extends FileAccessControlSummaryBase { platform?: never; status: FileAccessControlState }
 export interface WindowsFileAccessControlSummary extends FileAccessControlSummaryBase { platform: "windows"; status: "setup_verified" | "uncertain" | "baseline_verified" | "hardened"; revision: 1 | 2 | 3 }
-export type FileAccessControlSummary = LinuxFileAccessControlSummary | WindowsFileAccessControlSummary;
+export type MacOSFileAccessControlState = "created" | "baseline_verified" | "hardened" | "rolled_back" | "uncertain";
+export interface MacOSFileAccessControlSummary extends FileAccessControlSummaryBase { platform: "macos"; status: MacOSFileAccessControlState }
+export type FileAccessControlSummary = LinuxFileAccessControlSummary | WindowsFileAccessControlSummary | MacOSFileAccessControlSummary;
 export interface LinuxFileAccessControl extends LinuxFileAccessControlSummary {
   schema_version: "bluefire.file-access-control.v1"; control_digest: string;
   resource: null | { resource_id: string; resource_generation: string; sha256: string; size: number; record_count: number; mode: "0640" | "0600" };
   baseline: null | { baseline_digest: string; non_owner: "allowed"; owner: "allowed"; record_count: number; sha256: string };
   usage_state: "settled" | "pending" | "unknown"; allowed_operations: FileAccessOperation[]; operations: CompositionJob[];
+}
+export interface MacOSFileAccessControl extends MacOSFileAccessControlSummary {
+  schema_version: "bluefire.file-access-control.v1"; control_digest: string;
+  resource: NonNullable<LinuxFileAccessControl["resource"]>;
+  baseline: LinuxFileAccessControl["baseline"];
+  usage_state: "settled" | "pending"; allowed_operations: ("baseline" | "harden" | "rollback")[]; operations: CompositionJob[];
+}
+export function fileAccessCompositionPack(control: FileAccessControl): typeof FILE_ACCESS_PACK | typeof MACOS_FILE_ACCESS_PACK | undefined {
+  if (control.platform === "windows" || control.status !== "hardened" || control.usage_state !== "settled"
+    || !control.baseline || control.resource?.mode !== "0600") return;
+  if (control.platform === "macos" && !control.allowed_operations.includes("rollback")) return;
+  return control.platform === "macos" ? MACOS_FILE_ACCESS_PACK : FILE_ACCESS_PACK;
 }
 interface WindowsFileAccessControlBase {
   platform: "windows"; control_owner_id: string; control_digest: string; expires_at_ms: number;
@@ -79,7 +100,7 @@ export interface WindowsCorrectionFileAccessControl extends Omit<WindowsFileAcce
   correction: WindowsCorrectionRecord | null; retest: WindowsCorrectionRetest | null;
 }
 export type WindowsFileAccessControl = WindowsSetupFileAccessControl | WindowsPairedFileAccessControl | WindowsCorrectionFileAccessControl;
-export type FileAccessControl = LinuxFileAccessControl | WindowsFileAccessControl;
+export type FileAccessControl = LinuxFileAccessControl | WindowsFileAccessControl | MacOSFileAccessControl;
 export interface FileAccessControlList { schema_version: "bluefire.file-access-control-list.v1"; controls: FileAccessControlSummary[] }
 export interface FileAccessOperationEnvelope {
   schema_version: "bluefire.file-access-operation.v1"; job: CompositionJob; control: FileAccessControl | null;
@@ -106,7 +127,10 @@ const natural = (value: unknown) => Number.isSafeInteger(value) && Number(value)
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const exactKeys = (value: unknown, keys: string[]) => record(value) && Object.keys(value).sort().join(",") === [...keys].sort().join(",");
 const windowsControlId = (value: unknown): value is string => typeof value === "string" && /^win-file-control-[0-9a-f]{32}$/.test(value);
-export const fileAccessControlIdValid = (value: string) => compositionJobValid(value) || windowsControlId(value);
+export const macOSFileAccessControlIdValid = (value: unknown): value is string => typeof value === "string" && /^file-control-[0-9a-f]{64}$/.test(value);
+export const fileAccessControlIdValid = (value: string) => compositionJobValid(value) || windowsControlId(value) || macOSFileAccessControlIdValid(value);
+const macOSControlStates = ["created", "baseline_verified", "hardened", "rolled_back", "uncertain"];
+const macOSOperations = { created: ["baseline"], baseline_verified: ["harden"], hardened: ["rollback"], rolled_back: ["baseline", "harden"], uncertain: [] };
 const operationsValid = (value: unknown, allowed: string[]) => Array.isArray(value) && new Set(value).size === value.length && value.every(item => typeof item === "string" && allowed.includes(item));
 function windowsPairJobValid(job: CompositionJob, owner: string): boolean {
   const submitted = job?.progress?.submitted_request as FileAccessSubmission | undefined;
@@ -126,6 +150,7 @@ export function fileAccessReviewRequestValid(value: FileAccessReviewRequest): bo
   return Boolean(value && Object.keys(value).sort().join(",") === "control_owner_id,operation"
     && Object.hasOwn(fileAccessOperationLabels, value.operation)
     && (value.operation === "create" ? value.control_owner_id === null
+      : macOSFileAccessControlIdValid(value.control_owner_id) ? ["baseline", "harden", "rollback"].includes(value.operation)
       : (value.operation === "baseline" || value.operation === "harden") && windowsControlId(value.control_owner_id)
         ? true : compositionJobValid(value.control_owner_id)));
 }
@@ -142,6 +167,19 @@ export function checkedFileAccessStatus(value: FileAccessStatus): FileAccessStat
   if (!record(value) || value.schema_version !== "bluefire.file-access-status.v1" || typeof value.available !== "boolean"
     || !operationsValid(value.allowed_operations, ["create"])
     || (value.problem !== null && (!record(value.problem) || typeof value.problem.code !== "string" || typeof value.problem.message !== "string"))) throw bad();
+  if (value.platform === "macos") {
+    const mac = value as MacOSFileAccessStatus;
+    const enrollment = mac.enrollment;
+    if (!exactKeys(mac, ["schema_version", "platform", "available", "problem", "enrollment", "allowed_operations"])
+      || mac.allowed_operations.length !== 0
+      || (mac.available ? mac.problem !== null || !exactKeys(enrollment, ["enrollment_id", "enrollment_digest", "expires_at_ms", "owner_uid", "probe_uid"])
+        || !/^file-enrollment-[0-9a-f]{32}$/.test(enrollment?.enrollment_id ?? "") || !digest(enrollment?.enrollment_digest)
+        || !Number.isSafeInteger(enrollment?.expires_at_ms) || Number(enrollment?.expires_at_ms) <= 0
+        || !natural(enrollment?.owner_uid) || !natural(enrollment?.probe_uid) || Number(enrollment?.owner_uid) < 1 || Number(enrollment?.probe_uid) < 1
+        || enrollment?.owner_uid === enrollment?.probe_uid
+        : enrollment !== null || !exactKeys(mac.problem, ["code", "message"]) || mac.problem?.code !== "file_access_enrollment_unavailable")) throw bad();
+    return mac;
+  }
   if (Object.hasOwn(value, "setup")) {
     const windows = value as WindowsSetupFileAccessStatus | WindowsPairFileAccessStatus;
     if (!exactKeys(value, ["schema_version", "available", "problem", "enrollment", "allowed_operations", "setup"])
@@ -162,8 +200,39 @@ export function checkedFileAccessStatus(value: FileAccessStatus): FileAccessStat
   if (!linux.available && linux.allowed_operations.length) throw bad();
   return linux;
 }
-export function checkedFileAccessControl(value: FileAccessControl, owner?: string, expectedSetup?: WindowsSetupImportRequest): FileAccessControl {
+export function checkedFileAccessControl(value: FileAccessControl, owner?: string, expectedSetup?: FileAccessSetupImportRequest): FileAccessControl {
   if (!record(value)) throw bad();
+  if (value.platform === "macos") {
+    const mac = value as MacOSFileAccessControl;
+    if (!exactKeys(mac, ["schema_version", "platform", "control_owner_id", "control_digest", "revision", "status", "resource", "baseline", "usage_state", "allowed_operations", "operations"])
+      || mac.schema_version !== "bluefire.file-access-control.v1" || !macOSFileAccessControlIdValid(mac.control_owner_id)
+      || (owner !== undefined && mac.control_owner_id !== owner) || !digest(mac.control_digest)
+      || !natural(mac.revision) || mac.revision < 1 || mac.revision > 2 ** 31 - 1 || !macOSControlStates.includes(mac.status)
+      || !["settled", "pending"].includes(mac.usage_state)
+      || !operationsValid(mac.allowed_operations, macOSOperations[mac.status] ?? [])
+      || (mac.usage_state === "pending") !== (mac.status === "uncertain")
+      || !Array.isArray(mac.operations) || new Set(mac.operations.map(job => job?.job_id)).size !== mac.operations.length
+      || mac.operations.some(job => {
+        const submitted = job?.progress?.submitted_request as FileAccessSubmission;
+        return !compositionJobValid(job?.job_id) || job.kind !== "file_access.operation" || typeof job.state !== "string"
+          || !fileAccessSubmissionValid(submitted) || compositionJobId(submitted.submission_id) !== job.job_id
+          || submitted.review.control_owner_id !== mac.control_owner_id;
+      })) throw bad();
+    const resource = mac.resource;
+    if (!exactKeys(resource, ["resource_id", "resource_generation", "sha256", "size", "record_count", "mode"])
+      || !/^file-generation-[0-9a-f]{32}$/.test(resource.resource_generation) || resource.resource_id !== resource.resource_generation
+      || !digest(resource.sha256) || !natural(resource.size) || resource.size < 1 || !natural(resource.record_count) || resource.record_count < 1
+      || !["0640", "0600"].includes(resource.mode)
+      || (mac.status !== "uncertain" && resource.mode !== (mac.status === "hardened" ? "0600" : "0640"))) throw bad();
+    const baseline = mac.baseline;
+    if (baseline !== null && (!exactKeys(baseline, ["baseline_digest", "non_owner", "owner", "record_count", "sha256"])
+      || !digest(baseline.baseline_digest) || baseline.non_owner !== "allowed" || baseline.owner !== "allowed"
+      || baseline.record_count !== resource.record_count || baseline.sha256 !== resource.sha256)) throw bad();
+    if ((mac.status === "created" && (baseline !== null || mac.revision !== 1))
+      || (["baseline_verified", "hardened", "rolled_back"].includes(mac.status) && (baseline === null || mac.revision < 2))
+      || (mac.status === "hardened" && mac.revision < 3) || (mac.status === "rolled_back" && mac.revision < 4)) throw bad();
+    return mac;
+  }
   if (value.platform === "windows") {
     const windows = value as WindowsFileAccessControl;
     if (windows.schema_version === "bluefire.windows-file-access-control.v3") {
@@ -295,6 +364,9 @@ export function checkedFileAccessList(value: FileAccessControlList): FileAccessC
     || new Set(value.controls.map(item => item.control_owner_id)).size !== value.controls.length
     || value.controls.some(item => {
       if (!record(item)) return true;
+      if (item.platform === "macos") return !exactKeys(item, ["control_owner_id", "status", "revision", "platform"])
+        || !macOSFileAccessControlIdValid(item.control_owner_id) || !macOSControlStates.includes(String(item.status))
+        || !natural(item.revision) || Number(item.revision) < 1;
       if (item.platform === "windows") return !exactKeys(item, ["control_owner_id", "status", "revision", "platform"])
         || !windowsControlId(item.control_owner_id)
         || !(
@@ -319,7 +391,7 @@ export function checkedFileAccessOperation(value: FileAccessOperationEnvelope, i
     || typeof value.reconciliation.available !== "boolean" || (value.reconciliation.state !== "unknown" && value.reconciliation.available))) throw bad();
   if (value.job.progress.verified_observation !== undefined) {
     const observed = value.job.progress.verified_observation as FileAccessObservation;
-    if (windowsControlId(submittedOwner) || fileAccessJobActive(value.job) || (value.job.state !== "completed" && value.reconciliation?.state !== "complete")
+    if (windowsControlId(submittedOwner) || macOSFileAccessControlIdValid(submittedOwner) || fileAccessJobActive(value.job) || (value.job.state !== "completed" && value.reconciliation?.state !== "complete")
       || (value.reconciliation !== null && value.reconciliation.state !== "complete")
       || observed?.schema_version !== "bluefire.file-access-control-observation.v1"
       || !["baseline", "rollback"].includes(observed.operation) || observed.operation !== submitted.review.operation
@@ -338,6 +410,8 @@ export function checkedFileAccessOperation(value: FileAccessOperationEnvelope, i
     || (submitted.review.operation === "harden" && value.control.schema_version !== "bluefire.windows-file-access-control.v3")
     || (submitted.review.operation === "baseline" && !["bluefire.windows-file-access-control.v2", "bluefire.windows-file-access-control.v3"].includes(String(value.control.schema_version)))
   )) throw bad();
+  if (macOSFileAccessControlIdValid(submittedOwner) && ((!record(value.control) || value.control.platform !== "macos")
+    || value.reconciliation?.available || value.reconciliation_receipt !== null)) throw bad();
   if (value.reconciliation_receipt !== null) checkedFileAccessReconciliationReceipt(value.reconciliation_receipt);
   return value;
 }
@@ -387,7 +461,7 @@ export function fileAccessConfirmed(value: FileAccessOperationEnvelope, pending:
   return value.job.job_id === pending.id && sameJson(value.job.progress.submitted_request, pending.body);
 }
 async function live<T>(callback: () => Promise<T>): Promise<T> {
-  if (DEMO_MODE) throw new Error("Effective file access requires an explicitly enrolled Linux session. Demo mode cannot execute it.");
+  if (DEMO_MODE) throw new Error("Effective file access requires an explicitly prepared session. Demo mode cannot execute it.");
   return callback();
 }
 function post<T>(path: string, body: unknown): Promise<T> {
@@ -397,7 +471,7 @@ export const fileAccessApi = {
   review: (body: FileAccessReviewRequest) => post<FileAccessReview>("review", body),
   status: (): Promise<FileAccessStatus> => DEMO_MODE ? Promise.resolve({ schema_version: "bluefire.file-access-status.v1", available: false, enrollment: null, allowed_operations: [], problem: { code: "demo_no_enrollment", message: "Demo mode has no enrolled test identity or generated application file." } }) : request<FileAccessStatus>("/file-access/status"),
   list: (): Promise<FileAccessControlList> => DEMO_MODE ? Promise.resolve({ schema_version: "bluefire.file-access-control-list.v1", controls: [] }) : post<FileAccessControlList>("control-list", {}),
-  importSetup: (body: WindowsSetupImportRequest) => post<WindowsFileAccessControl>("setup-import", body),
+  importSetup: (body: FileAccessSetupImportRequest) => post<WindowsFileAccessControl | MacOSFileAccessControl>("setup-import", body),
   control: (id: string) => live(() => request<FileAccessControl>(`/file-access/controls/${encodeURIComponent(id)}`)),
   operation: (id: string) => live(() => request<FileAccessOperationEnvelope>(`/file-access/operations/${encodeURIComponent(id)}`)),
   submit: (body: FileAccessSubmission) => post<FileAccessOperationEnvelope>("operations", body),
@@ -412,11 +486,11 @@ export function readFileAccessReconciliationPending(): FileAccessReconciliationP
   if (raw.length > 100_000) throw new Error("The retained reconciliation request exceeds the recovery limit.");
   const value = JSON.parse(raw) as FileAccessReconciliationPending;
   if (!value || Object.keys(value).sort().join(",") !== "body,control_owner_id,operation_job_id" || !compositionJobValid(value.operation_job_id)
-    || !fileAccessControlIdValid(value.control_owner_id) || !reconciliationSubmissionValid(value.body)) throw new Error("The saved evidence request needs recovery. Nothing was sent.");
+    || !fileAccessControlIdValid(value.control_owner_id) || macOSFileAccessControlIdValid(value.control_owner_id) || !reconciliationSubmissionValid(value.body)) throw new Error("The saved evidence request needs recovery. Nothing was sent.");
   return value;
 }
 export function storeFileAccessReconciliationPending(value: FileAccessReconciliationPending) {
-  if (!compositionJobValid(value.operation_job_id) || !fileAccessControlIdValid(value.control_owner_id) || !reconciliationSubmissionValid(value.body)) throw bad();
+  if (!compositionJobValid(value.operation_job_id) || !fileAccessControlIdValid(value.control_owner_id) || macOSFileAccessControlIdValid(value.control_owner_id) || !reconciliationSubmissionValid(value.body)) throw bad();
   const previous = readFileAccessReconciliationPending();
   if (previous && !sameJson(previous, value)) throw new Error("Reconcile the original evidence request before another request.");
   const raw = JSON.stringify(value); localStorage.setItem(reconciliationKey, raw);

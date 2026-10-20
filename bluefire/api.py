@@ -1104,7 +1104,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     composition[1], body
                 ),
             }
-            if composition[0] in {"stop", "revoke", "continue"}:
+            if composition[0] in {"stop", "revoke", "continue", "recover"}:
                 self._dispatch(
                     lambda: self.platform_server.service.control_composition(
                         composition[1], composition[0], body

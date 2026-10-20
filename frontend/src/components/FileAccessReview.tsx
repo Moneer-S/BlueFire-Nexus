@@ -4,11 +4,12 @@ import { RefreshCw, ShieldCheck, X } from "lucide-react";
 import { checkedFileAccessReview, fileAccessApi, fileAccessOperationLabels, type FileAccessReview as Review, type FileAccessReviewRequest, type FileAccessSubmission } from "../lib/file-access";
 import { Button, Callout, DataList, ErrorState, Field, LoadingState } from "./Primitives";
 
-export function FileAccessReview({ request, disabled, expectedControlDigest, onSubmit, onClose }: {
-  request: FileAccessReviewRequest; disabled: boolean; expectedControlDigest?: string; onSubmit: (body: FileAccessSubmission) => void; onClose: () => void;
+export function FileAccessReview({ request, disabled, expectedControlDigest, expectedEnrollmentDigest, onSubmit, onClose }: {
+  request: FileAccessReviewRequest; disabled: boolean; expectedControlDigest?: string; expectedEnrollmentDigest?: string; onSubmit: (body: FileAccessSubmission) => void; onClose: () => void;
 }) {
   const review = useQuery({ queryKey: ["file-access-review", request], queryFn: async () => checkedFileAccessReview(await fileAccessApi.review(request), request), retry: false, staleTime: 0, refetchOnWindowFocus: false });
-  const changed = expectedControlDigest !== undefined && review.data !== undefined && review.data.control_digest !== expectedControlDigest;
+  const changed = review.data !== undefined && ((expectedControlDigest !== undefined && review.data.control_digest !== expectedControlDigest)
+    || (expectedEnrollmentDigest !== undefined && review.data.enrollment_digest !== expectedEnrollmentDigest));
   return <section className="file-access-section" aria-label="File-access operation review">
     <div className="file-access-heading"><h2>{fileAccessOperationLabels[request.operation]}</h2><Button disabled={disabled} onClick={onClose}><X />Cancel review</Button></div>
     {review.isFetching ? <LoadingState label="Checking current resource and enrollment" /> : null}

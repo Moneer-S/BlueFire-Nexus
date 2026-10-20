@@ -9,6 +9,9 @@ from bluefire.planner import PlanStep
 from bluefire.runner_adapter import AdaptedAction, RunnerActionAdapter, RunnerAdapterError
 
 ACTION_IDS = {
+    "macos.file_access.probe.v1",
+    "macos.file_access.verify_owner.v1",
+    "macos.file_access.close_attempt.v1",
     "file_access.probe.non_owner.v1",
     "file_access.verify.owner.v1",
     "sandbox.fixture.create.v1",

@@ -386,7 +386,7 @@ it("recovers an unknown request after reload without replay or replacement", asy
   const submit = vi.spyOn(fileAccessApi, "submit");
   mount(<FileAccessPage />);
   await screen.findByText("Operation confirmation pending");
-  expect(screen.getByRole("button", { name: "Resubmit original request" })).toBeEnabled();
+  expect(await screen.findByRole("button", { name: "Resubmit original request" })).toBeEnabled();
   expect(submit).not.toHaveBeenCalled();
   expect(readFileAccessPending()?.body).toEqual(fileAccessSubmissionFixture());
 });
