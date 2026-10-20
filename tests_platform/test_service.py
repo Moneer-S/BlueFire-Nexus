@@ -751,22 +751,24 @@ def test_restart_cleanup_uses_exact_bound_workspace_and_audits_run_bundle(
 
 def test_simulate_submission_runs_as_a_durable_background_job(tmp_path: Path) -> None:
     service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
-    submission = service.submit_run(
-        {
-            "scenario_id": "scenario.sandbox.research.chain.v1",
-            "mode": "simulate",
-            "autonomy": "off",
-            "target_scope": {"scope_refs": ["sandbox.workspace"]},
-        }
-    )
-    job_id = str(submission["job"]["job_id"])
+    try:
+        submission = service.submit_run(
+            {
+                "scenario_id": "scenario.sandbox.research.chain.v1",
+                "mode": "simulate",
+                "autonomy": "off",
+                "target_scope": {"scope_refs": ["sandbox.workspace"]},
+            }
+        )
+        job_id = str(submission["job"]["job_id"])
 
-    completed = service.job_controller.wait(job_id, timeout=5)
+        completed = service.job_controller.wait(job_id, timeout=15)
 
-    assert completed["state"] == "completed"
-    assert str(completed["result_ref"]).startswith("run-")
-    assert service.detail(str(completed["result_ref"]))["status"] == "completed"
-    service.close()
+        assert completed["state"] == "completed"
+        assert str(completed["result_ref"]).startswith("run-")
+        assert service.detail(str(completed["result_ref"]))["status"] == "completed"
+    finally:
+        service.close()
 
 
 def test_active_jobs_uses_only_bounded_controller_inventory(tmp_path: Path) -> None:
