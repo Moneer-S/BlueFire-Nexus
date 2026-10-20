@@ -21,7 +21,7 @@ function props(): Props {
     preflightPending: false, preflightDisabled: false, job: null,
     approvalReleased: false, run: null, jobSubmissionPending: false,
     canCreateJob: false, demoMode: false,
-    onRunnerAction: vi.fn(), onSelectScenario: vi.fn(), onPreflight: vi.fn(),
+    onRunnerAction: vi.fn(), onRunnerRefresh: vi.fn(), onSelectScenario: vi.fn(), onPreflight: vi.fn(),
     onCreateJob: vi.fn(), onReviewEnvelope: vi.fn(), onReviewApproval: vi.fn(),
   };
 }
