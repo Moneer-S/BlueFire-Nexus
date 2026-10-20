@@ -447,7 +447,8 @@ pub struct ExecutionManifest {
     pub required_capabilities: Vec<Capability>,
     pub safety_tier: SafetyTier,
     pub limits: ExecutionLimits,
-    pub cleanup_action_id: String,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub cleanup_action_id: Option<String>,
     pub policy_digest: String,
     #[serde(default)]
     pub approval: Option<Approval>,

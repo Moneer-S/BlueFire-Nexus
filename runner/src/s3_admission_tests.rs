@@ -110,6 +110,49 @@ fn valid_configured_admission_binds_the_exact_request_and_review() {
 }
 
 #[test]
+fn explicit_cleanup_null_and_string_preserve_manifest_hash_and_admission() {
+    for base in [fixture(), audit_tests::fixture()] {
+        for cleanup in [Value::Null, json!("sandbox.cleanup.v1")] {
+            let mut value = base.clone();
+            value["manifest"]["cleanup_action_id"] = cleanup.clone();
+            reseal(&mut value);
+            assert_eq!(value["manifest"]["cleanup_action_id"], cleanup);
+            let admission = checked(&value).unwrap();
+            assert_eq!(
+                serde_json::to_value(admission.manifest()).unwrap(),
+                value["manifest"]
+            );
+            assert_eq!(
+                crate::contract::expected_manifest_hash(admission.manifest()),
+                value["manifest"]["request_hash"].as_str().unwrap()
+            );
+            assert_eq!(
+                admission.manifest_digest(),
+                canonical_hash(&value["manifest"])
+            );
+        }
+    }
+}
+
+#[test]
+fn cleanup_field_remains_required_and_rejects_non_string_non_null_values() {
+    let original = fixture();
+    let mut missing = original.clone();
+    missing["manifest"]
+        .as_object_mut()
+        .unwrap()
+        .remove("cleanup_action_id");
+    assert!(serde_json::from_value::<ExecutionManifest>(missing["manifest"].clone()).is_err());
+    assert!(checked(&missing).is_err());
+    for cleanup in [json!(false), json!(0), json!([]), json!({})] {
+        let mut value = original.clone();
+        value["manifest"]["cleanup_action_id"] = cleanup;
+        assert!(serde_json::from_value::<ExecutionManifest>(value["manifest"].clone()).is_err());
+        assert!(checked(&value).is_err());
+    }
+}
+
+#[test]
 fn human_reviewer_name_matches_saved_product_contract() {
     let mut value = fixture();
     value["manifest"]["params"]["workflow_approval"]["reviewed_by"] = json!("Jane Doe");

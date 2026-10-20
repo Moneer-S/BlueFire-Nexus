@@ -567,8 +567,11 @@ class S3AccessJobs:
                 progress={"outcome_digest": saved["outcome_digest"]},
                 completion_confirmed=True,
             )
-        except BaseException:
-            records.finish(self.store, context.job_id, executions, run_ids, failure=True)
+        except BaseException as error:
+            try:
+                records.finish(self.store, context.job_id, executions, run_ids, failure=True)
+            except Exception as finalization_error:
+                raise error from finalization_error
             raise
 
     def _finalize_run(self, run_id, owner_id, operation_id, request, execution) -> None:

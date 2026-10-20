@@ -117,7 +117,7 @@ fn manifest(profile: &RunnerProfile, action: &str, params: Value) -> ExecutionMa
         required_capabilities: descriptor.capabilities.to_vec(),
         safety_tier: descriptor.safety_tier,
         limits: limits(),
-        cleanup_action_id: "sandbox.cleanup.v1".into(),
+        cleanup_action_id: Some("sandbox.cleanup.v1".into()),
         policy_digest: profile.policy_digest.clone(),
         approval: None,
         evidence_refs: Vec::new(),

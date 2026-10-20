@@ -674,7 +674,7 @@ fn validate_policy<'a>(
             "manifest is bound to a different runner policy",
         ));
     }
-    if manifest.cleanup_action_id != "sandbox.cleanup.v1" {
+    if manifest.cleanup_action_id.as_deref() != Some("sandbox.cleanup.v1") {
         return Err(blocked(
             "cleanup_action_blocked",
             "manifest must bind cleanup to sandbox.cleanup.v1",
