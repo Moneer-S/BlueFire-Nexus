@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { useEffect, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { expect, it, vi } from "vitest";
-import { api } from "../src/lib/api";
+import { api, ApiError } from "../src/lib/api";
 import { demoCatalog, demoScenario } from "../src/lib/demo";
 import { RunWorkspace } from "../src/components/RunWorkspace";
 import { ProductProvider, useProduct } from "../src/state/ProductContext";
@@ -103,4 +103,54 @@ it("refuses a mismatched setup result and hides stale ready data after a failed 
   await act(async () => { await client.invalidateQueries({ queryKey: ["runner-lifecycle", first] }); });
   await waitFor(() => expect(guide().getByText("Unavailable")).toBeVisible());
   expect(guide().queryByText("Ready")).not.toBeInTheDocument();
+});
+
+it("retries a failed selected runner check without preparing or running anything", async () => {
+  const status = vi.spyOn(api, "runnerStatus").mockRejectedValueOnce(new Error("Runner status timed out")).mockResolvedValue(ready);
+  const bootstrap = vi.spyOn(api, "bootstrapRunner");
+  const start = vi.spyOn(api, "startRunner");
+  const preflight = vi.spyOn(api, "preflight");
+  const { user, submit } = mount();
+  await screen.findByRole("region", { name: "Guided local Execute" });
+  expect(await guide().findByText("Runner status timed out")).toBeVisible();
+  expect(guide().getByText("Unavailable")).toBeVisible();
+  expect(guide().queryByText("Ready")).not.toBeInTheDocument();
+  await user.click(guide().getByRole("button", { name: "Try again" }));
+  await waitFor(() => expect(guide().getByText("Ready")).toBeVisible());
+  expect(status).toHaveBeenCalledTimes(2);
+  expect(status).toHaveBeenNthCalledWith(1, first);
+  expect(status).toHaveBeenNthCalledWith(2, first);
+  expect(bootstrap).not.toHaveBeenCalled();
+  expect(start).not.toHaveBeenCalled();
+  expect(preflight).not.toHaveBeenCalled();
+  expect(submit).not.toHaveBeenCalled();
+});
+
+it("shows reconnect guidance and keeps a retried wrong-profile response unavailable", async () => {
+  let secondProfileReads = 0;
+  const status = vi.spyOn(api, "runnerStatus").mockImplementation(async profile => {
+    if (profile === first) throw new ApiError("Browser session expired", "browser_session_unavailable", undefined, 401);
+    secondProfileReads += 1;
+    if (secondProfileReads === 1) throw new Error("Runner status unavailable");
+    return { ...ready, profile_id: first };
+  });
+  const bootstrap = vi.spyOn(api, "bootstrapRunner");
+  const start = vi.spyOn(api, "startRunner");
+  const preflight = vi.spyOn(api, "preflight");
+  const { user, submit } = mount();
+  await screen.findByRole("region", { name: "Guided local Execute" });
+  expect(await guide().findByText("Reconnect to the workspace")).toBeVisible();
+  expect(guide().getByText(/one-use browser link/)).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Choose other profile" }));
+  expect(await guide().findByText("Runner status unavailable")).toBeVisible();
+  await user.click(guide().getByRole("button", { name: "Try again" }));
+  await guide().findByRole("link", { name: /Open runner diagnostics/ });
+  expect(status).toHaveBeenCalledTimes(3);
+  expect(status).toHaveBeenNthCalledWith(3, second);
+  expect(guide().queryByText("Ready")).not.toBeInTheDocument();
+  expect(guide().queryByRole("button", { name: "Start runner" })).not.toBeInTheDocument();
+  expect(bootstrap).not.toHaveBeenCalled();
+  expect(start).not.toHaveBeenCalled();
+  expect(preflight).not.toHaveBeenCalled();
+  expect(submit).not.toHaveBeenCalled();
 });

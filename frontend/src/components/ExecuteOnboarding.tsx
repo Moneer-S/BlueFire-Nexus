@@ -1,9 +1,9 @@
 import { Activity, ArrowRight, CheckCircle2, CircleDashed, Play, ShieldCheck } from "lucide-react";
 import type { ReactNode } from "react";
-import { runnerDiagnosticsPath } from "../lib/runner-diagnostics";
+import { runnerDiagnosticsPath, runnerLifecycleFailure } from "../lib/runner-diagnostics";
 import { Link } from "react-router-dom";
 import type { PreflightReport, RunConfiguration, RunJob, RunRecord, RunnerLifecycleStatus, RunnerProfile, Scenario } from "../types";
-import { Badge, Button, Callout, Panel, PanelHeader, sentence } from "./Primitives";
+import { Badge, Button, Callout, ErrorState, Panel, PanelHeader, sentence } from "./Primitives";
 
 export const GUIDED_EXECUTE_PROFILE_ID = "sandbox-restricted-owned.v1";
 export const GUIDED_EXECUTE_SCENARIO_ID = "scenario.restricted.persistence-canary.v1";
@@ -68,6 +68,7 @@ interface ExecuteOnboardingProps {
   demoMode: boolean;
   submissionControls?: ReactNode;
   onRunnerAction: (action: RunnerAction) => void;
+  onRunnerRefresh: () => void;
   onSelectScenario: () => void;
   onPreflight: () => void;
   onCreateJob: () => void;
@@ -127,6 +128,7 @@ export function ExecuteOnboarding(props: ExecuteOnboardingProps) {
   return <Panel className="execute-onboarding" id="guided-execute" aria-label="Guided local Execute">
     <PanelHeader eyebrow="Guided local Execute" title="Prepare, review, and run" detail="Follow the current step. Execution needs a separate approval for this run." actions={<Badge tone={completed ? "success" : resultReady ? "info" : "warning"}>{completed ? "Completed" : resultReady ? "Results ready" : "Review required"}</Badge>} />
     {props.demoMode ? <Callout tone="warning" title="Production local service required">Demo mode cannot enroll a runner or execute effects. Relaunch the installed local service to use this guide.</Callout> : null}
+    {props.runnerError && !props.runnerPending && props.profile ? <><ErrorState error={props.runnerError} retry={props.onRunnerRefresh}/>{runnerLifecycleFailure(props.runnerError).map((detail, index) => <p key={index}>{detail}</p>)}</> : null}
     <ol className="execute-onboarding-steps">
       <Step number={1} state={runnerState} title="Make the local runner ready" detail="Prepare the installed runner, then start it in your chosen environment." status={props.runnerPending ? "Checking" : runnerReady ? "Ready" : props.runnerError ? "Unavailable" : sentence(props.runner?.state ?? "unavailable")} action={runnerAction} />
       <Step number={2} state={scenarioState} title="Review the selected experiment" detail={scenarioReady ? `${props.selectedScenario.title || props.selectedScenario.id} · ${props.selectedScenario.steps.length} steps. Preflight will check which effects are allowed.` : "Choose or build an experiment, or load the optional starter example."} status={scenarioReady ? "Selected for review" : "Choose an experiment"} action={scenarioState === "current" && props.profile && props.seededScenario ? <Button size="small" variant="primary" onClick={props.onSelectScenario}>Load starter example</Button> : undefined} />
