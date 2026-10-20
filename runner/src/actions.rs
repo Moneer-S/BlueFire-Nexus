@@ -3940,7 +3940,16 @@ fn s3_access_descriptor() -> ActionDescriptor {
             serde_json::json!({
                 "type":"object", "additionalProperties":false,
                 "required":["worker_request","workflow_approval"],
-                "properties":{"worker_request":{"type":"object"},"workflow_approval":{"type":"object"}},
+                "properties":{
+                    "worker_request":{
+                        "type":"object",
+                        "properties":{"operation":{
+                            "type":"string",
+                            "enum":crate::s3_access_binding::supported_operations()
+                        }}
+                    },
+                    "workflow_approval":{"type":"object"}
+                },
             })
         },
         capabilities: &[Capability::CloudAwsS3Access],
@@ -4148,6 +4157,92 @@ mod tests {
         assert_eq!(reserved[0].capabilities, &[Capability::CloudAwsS3Access]);
         assert_eq!(reserved[0].platforms, &[Platform::Linux]);
         assert!(reserved[0].network_effect);
+    }
+
+    #[test]
+    fn cloud_inventory_advertises_exact_released_operations() {
+        let descriptor = serde_json::to_value(s3_access_descriptor()).unwrap();
+        let operation = &descriptor["parameter_schema"]["properties"]["worker_request"]
+            ["properties"]["operation"];
+        let expected = [
+            "inspect_policy",
+            "apply_policy",
+            "rollback_policy",
+            "reconcile_policy",
+            "probe_read",
+            "legitimate_read",
+            "prepare_fixture",
+            "reconcile_fixture",
+            "cleanup_fixture",
+        ];
+        assert_eq!(operation["type"], "string");
+        assert_eq!(operation["enum"], json!(expected));
+        assert_eq!(
+            operation["enum"],
+            json!(crate::s3_access_binding::supported_operations())
+        );
+        assert!(!crate::s3_access_binding::supported_operations().contains(&"collect_audit"));
+    }
+
+    #[test]
+    fn cloud_inventory_operations_match_parsed_dispatch_decisions() {
+        use crate::canonical::canonical_json;
+        use crate::s3_access_binding::S3WorkerBinding;
+
+        let descriptor = serde_json::to_value(s3_access_descriptor()).unwrap();
+        let advertised = descriptor["parameter_schema"]["properties"]["worker_request"]
+            ["properties"]["operation"]["enum"]
+            .as_array()
+            .unwrap();
+        let corpus: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/s3_access_binding_v1.json"))
+                .unwrap();
+        let mut requests: Vec<_> = corpus["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|case| case["request"].clone())
+            .collect();
+        let mut reconcile = requests
+            .iter()
+            .find(|request| request["operation"] == "apply_policy")
+            .unwrap()
+            .clone();
+        reconcile["operation"] = json!("reconcile_policy");
+        reconcile["max_sends"] = json!(2);
+        reconcile["exclusive_writer_digest"] = serde_json::Value::Null;
+        requests.push(reconcile);
+        for operation in ["prepare_fixture", "reconcile_fixture", "cleanup_fixture"] {
+            let fixture =
+                crate::s3_fixture_binding::tests::fixture_admission(operation, "primary", None);
+            requests.push(fixture["manifest"]["params"]["worker_request"].clone());
+        }
+        for phase in ["baseline", "retest"] {
+            requests.push(crate::s3_access_binding::audit::tests::request(phase));
+        }
+        let mut dispatched = BTreeSet::new();
+        for request in requests {
+            let binding = S3WorkerBinding::from_json(canonical_json(&request).as_bytes()).unwrap();
+            let supported = binding.assert_dispatch_supported().is_ok();
+            assert_eq!(
+                supported,
+                advertised.contains(&json!(binding.operation())),
+                "{}",
+                binding.operation()
+            );
+            if supported {
+                dispatched.insert(binding.operation().to_owned());
+            } else {
+                assert_eq!(binding.operation(), "collect_audit");
+            }
+        }
+        assert_eq!(
+            dispatched,
+            advertised
+                .iter()
+                .map(|operation| operation.as_str().unwrap().to_owned())
+                .collect::<BTreeSet<_>>()
+        );
     }
 
     #[test]

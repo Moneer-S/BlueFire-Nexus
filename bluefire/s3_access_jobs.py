@@ -161,6 +161,15 @@ class S3AccessJobs:
         results.environment(owner["request"]["environment"])
         return owner
 
+    def _collection_supported(self, scope: S3AccessScope) -> bool:
+        checker = getattr(self.executor, "supports_operation", None)
+        if not callable(checker):
+            return False
+        try:
+            return checker(scope, "collect_audit") is True
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError):
+            return False
+
     def _fresh(self, owner: Mapping[str, Any], phase: str) -> Mapping[str, Any]:
         selected = self._selected(owner["request"]["environment"]["environment_id"])
         if (
@@ -173,6 +182,10 @@ class S3AccessJobs:
         results.assert_phase_current(
             S3AccessScope.from_mapping(selected["environment"]["scope"]), phase, self.clock()
         )
+        if phase in audit_workflow.PHASES and not self._collection_supported(
+            S3AccessScope.from_mapping(selected["environment"]["scope"])
+        ):
+            raise S3AccessError("The enrolled runner does not support audit collection.")
         if audit_workflow.enrolled(owner) and phase not in fixtures.RECOVERY_PHASES:
             if self.clock() >= timestamp(selected["environment"]["audit_source"]["expires_at"]):
                 raise S3AccessError("The original audit source has expired.")
@@ -369,6 +382,8 @@ class S3AccessJobs:
                 base = "source_expired"
             elif not current["available"]:
                 base = current["runtime"]["problem"] or "scope_expired"
+            elif not self._collection_supported(S3AccessScope.from_mapping(original["scope"])):
+                base = "collection_not_enabled"
         except (S3AccessError, ProductStoreError):
             base = "host_unavailable"
         if base not in {
@@ -383,6 +398,7 @@ class S3AccessJobs:
             "scope_expired",
             "source_expired",
             "host_unavailable",
+            "collection_not_enabled",
         }:
             base = "runtime_unavailable"
         for phase in ("baseline", "retest"):

@@ -47,12 +47,17 @@ class ReceiptExecutor(SyntheticExecutor):
         self.identity = context["transport_identity"]
         self.receipts = {}
         self.recovered = []
+        self.collection_supported = True
 
     def environments(self):
         return [{**super().environments()[0], "audit_source": source_row(self.scope)}]
 
     def readiness(self, scope):
         return {**super().readiness(scope), "runner_profile_id": self.profile["profile_id"]}
+
+    def supports_operation(self, scope, operation):
+        assert scope.digest == self.scope.digest
+        return self.ready and self.collection_supported and operation == "collect_audit"
 
     def execute(self, request, *, authorization, cancellation_event, before_dispatch, run_id):
         manifest = execution_manifest(request, authorization, self.profile, run_id=run_id)
@@ -209,6 +214,26 @@ def test_collection_remains_closed_with_distinct_actual_original_run_ids(app):
     assert len(executor.calls) == 3
 
 
+@pytest.mark.parametrize("support", [False, None])
+def test_missing_native_collection_support_keeps_original_reads(released, support):
+    jobs, executor = released
+    owner = through_baseline(jobs)
+    calls = len(executor.calls)
+    if support is None:
+        executor.supports_operation = None
+    else:
+        executor.collection_supported = False
+    value = jobs.read(owner)
+    assert "audit_baseline" not in value["allowed_phases"]
+    slot = value["audit_collection"]["slots"][0]
+    assert slot["problem"] == "collection_not_enabled"
+    assert len(slot["original_pair"]["reads"]) == 2
+    with pytest.raises(S3AccessError):
+        jobs.review(owner, {"phase": "audit_baseline"})
+    assert len(executor.calls) == calls
+    assert jobs._owner(owner)["progress"]["audit_slots"] == {}
+
+
 def test_paired_collection_journey_has_two_immutable_reviews_and_no_reload_dispatch(released):
     jobs, executor = released
     owner = through_baseline(jobs)
@@ -349,6 +374,7 @@ def test_original_task_recovery_after_publication_failure_does_not_repeat_or_ren
     jobs.stop(owner, {})
     jobs.clock = lambda: NOW + timedelta(hours=2)
     executor.ready = False
+    executor.collection_supported = False
     monkeypatch.setattr(jobs, "_publish_run", original)
     recovered = jobs.recover(owner, {})
     assert recovered["active_job"] is None and recovered["stopped"] is True

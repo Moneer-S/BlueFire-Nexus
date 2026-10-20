@@ -17,6 +17,19 @@ from .s3_access_setup import inspect_extension
 from .util import canonical_json_bytes
 
 OPERATION = "s3_access_environments"
+ORDINARY_OPERATIONS = (
+    "inspect_policy",
+    "apply_policy",
+    "rollback_policy",
+    "reconcile_policy",
+    "probe_read",
+    "legitimate_read",
+    "prepare_fixture",
+    "reconcile_fixture",
+    "cleanup_fixture",
+)
+_COLLECT_AUDIT_OPERATION = "collect_audit"
+_ALL_OPERATIONS = (*ORDINARY_OPERATIONS, _COLLECT_AUDIT_OPERATION)
 UNAVAILABLE_PROBLEMS = frozenset(
     {
         "runtime_unavailable",
@@ -25,6 +38,34 @@ UNAVAILABLE_PROBLEMS = frozenset(
         "profile_changed",
     }
 )
+
+
+def _advertised_operations(descriptor: Mapping[str, Any]) -> tuple[str, ...]:
+    """Read the operation enum from an authenticated compiled inventory row."""
+
+    schema = descriptor.get("parameter_schema")
+    properties = schema.get("properties") if isinstance(schema, Mapping) else None
+    worker = properties.get("worker_request") if isinstance(properties, Mapping) else None
+    worker_properties = worker.get("properties") if isinstance(worker, Mapping) else None
+    operation = (
+        worker_properties.get("operation") if isinstance(worker_properties, Mapping) else None
+    )
+    if not isinstance(operation, Mapping) or "enum" not in operation:
+        return ORDINARY_OPERATIONS
+    advertised = operation["enum"]
+    if (
+        operation.get("type") != "string"
+        or type(advertised) is not list
+        or tuple(advertised) not in {ORDINARY_OPERATIONS, _ALL_OPERATIONS}
+    ):
+        raise S3AccessError("S3 runner operation inventory is unsupported")
+    return tuple(advertised)
+
+
+def _validated_operations(value: Any) -> tuple[str, ...]:
+    if type(value) is not list or tuple(value) not in {ORDINARY_OPERATIONS, _ALL_OPERATIONS}:
+        raise S3AccessError("S3 supported-operation response is invalid")
+    return tuple(value)
 
 
 def server_environments(server, request, enrollment, *, refusal):
@@ -37,6 +78,7 @@ def server_environments(server, request, enrollment, *, refusal):
     if len(descriptors) != 1 or descriptors[0].get("capabilities") != ["cloud_aws_s3_access"]:
         return {"environments": []}
     try:
+        supported_operations = _advertised_operations(descriptors[0])
         configuration = read_configuration(enrollment)
         if configuration is None:
             return {"environments": []}
@@ -79,6 +121,7 @@ def server_environments(server, request, enrollment, *, refusal):
                     "worker_generation": entry["worker_generation"],
                     "available": problem is None,
                     "problem": problem,
+                    "supported_operations": list(supported_operations),
                 }
             )
         return {"environments": rows}
@@ -110,20 +153,27 @@ def client_environments(client: Any) -> list[dict[str, Any]]:
         if not isinstance(rows, list) or len(rows) > 8:
             raise S3AccessError("S3 environment response is unbounded")
         identifiers = set()
+        validated_rows = []
         for row in rows:
-            exact(
-                row,
-                {
-                    "environment",
-                    "profile",
-                    "managed_profile_digest",
-                    "runtime_digest",
-                    "worker_generation",
-                    "available",
-                    "problem",
-                },
-                "S3 environment status",
-            )
+            environment_fields = {
+                "environment",
+                "profile",
+                "managed_profile_digest",
+                "runtime_digest",
+                "worker_generation",
+                "available",
+                "problem",
+            }
+            if isinstance(row, Mapping) and "supported_operations" in row:
+                exact(
+                    row,
+                    environment_fields | {"supported_operations"},
+                    "S3 environment status",
+                )
+                supported_operations = _validated_operations(row["supported_operations"])
+            else:
+                exact(row, environment_fields, "S3 environment status")
+                supported_operations = ORDINARY_OPERATIONS
             public = environment(row["environment"])
             if public["environment_id"] in identifiers or canonical_json_bytes(
                 public
@@ -155,6 +205,9 @@ def client_environments(client: Any) -> list[dict[str, Any]]:
                 or ACTION in profile.get("control_blocked_actions", [])
             ):
                 raise S3AccessError("S3 environment response differs from its enrolled profile")
-        return rows
+            validated = dict(row)
+            validated["supported_operations"] = list(supported_operations)
+            validated_rows.append(validated)
+        return validated_rows
     except (TypeError, ValueError, KeyError):
         raise RunnerAuthenticationError("S3 environment response is invalid.") from None

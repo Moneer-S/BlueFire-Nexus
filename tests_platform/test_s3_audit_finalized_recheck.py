@@ -82,6 +82,45 @@ def test_manual_recheck_preserves_unknown_result_and_authority_after_reload(app,
     assert "collected_review" not in child["progress"]
 
 
+@pytest.mark.parametrize("phase", ["baseline", "retest"])
+def test_finalized_original_recheck_survives_collection_support_removal(app, monkeypatch, phase):
+    jobs, executor = app
+    owner, operation = unknown_collection(app, phase)
+    child = jobs.store.get_job(operation)
+    run_id = child["progress"]["run_ids"][0]
+    original_context = deepcopy(child["progress"]["original_tasks"][run_id])
+    original_request = deepcopy(child["request"]["worker_requests"][0])
+    original_recover = executor.recover_original
+    seen = []
+
+    def recover(request, context):
+        seen.append((request.to_dict(), deepcopy(context)))
+        return original_recover(request, context)
+
+    def unexpected_dispatch(*args, **kwargs):
+        pytest.fail("Removing collection support must not reopen original-task dispatch.")
+
+    executor.collection_supported = False
+    monkeypatch.setattr(executor, "recover_original", recover)
+    monkeypatch.setattr(executor, "execute", unexpected_dispatch)
+    before = retained_snapshot(jobs, owner)
+    calls = deepcopy(executor.calls)
+    expected = jobs.read(owner)
+    assert expected["active_job"] is None
+    assert expected["saved_result_recovery_available"] is True
+    assert expected["allowed_phases"] == []
+    with pytest.raises(S3AccessError):
+        jobs.review(owner, {"phase": "audit_" + phase})
+    assert seen == []
+    assert jobs.recover(owner, {}) == expected
+    reloaded = S3AccessJobs(jobs.service, executor, clock=lambda: NOW)
+    assert reloaded.recover(owner, {}) == expected
+    assert seen == [(original_request, original_context), (original_request, original_context)]
+    assert executor.recovered == [original_context["task_id"], original_context["task_id"]]
+    assert executor.calls == calls
+    assert retained_snapshot(jobs, owner) == before
+
+
 def test_recheck_uses_original_interval_after_stop_expiry_and_runtime_unavailability(
     app, monkeypatch
 ):

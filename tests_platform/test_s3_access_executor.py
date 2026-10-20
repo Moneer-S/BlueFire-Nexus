@@ -144,6 +144,47 @@ def test_only_safe_environment_fields_are_exposed(configured):
     assert "profile" not in readiness and "runtime_root" not in readiness
 
 
+def test_old_host_support_never_implies_collection_support(configured):
+    scope = S3AccessScope.from_mapping(configured.row["environment"]["scope"])
+    assert configured.executor.supports_operation(scope, "inspect_policy") is True
+    assert configured.executor.supports_operation(scope, "collect_audit") is False
+    configured.row["supported_operations"] = [*module.ORDINARY_OPERATIONS, "collect_audit"]
+    assert configured.executor.supports_operation(scope, "collect_audit") is True
+    configured.row.update(available=False, problem="runtime_unavailable")
+    assert configured.executor.supports_operation(scope, "collect_audit") is False
+
+
+def test_unsupported_operation_never_saves_or_dispatches_task(configured):
+    configured.row["supported_operations"] = []
+    saved = []
+    result = configured.executor.execute(
+        configured.request,
+        authorization=configured.approval,
+        cancellation_event=Event(),
+        before_dispatch=saved.append,
+    )
+    assert result["dispatch"] == "not_started" and result["send_debits"] == 0
+    assert not saved and not configured.client.calls
+
+
+def test_operation_support_drift_after_save_never_dispatches(configured):
+    configured.row["supported_operations"] = list(module.ORDINARY_OPERATIONS)
+    saved = []
+
+    def checkpoint(context):
+        saved.append(context)
+        configured.row["supported_operations"] = []
+
+    result = configured.executor.execute(
+        configured.request,
+        authorization=configured.approval,
+        cancellation_event=Event(),
+        before_dispatch=checkpoint,
+    )
+    assert result["dispatch"] == "not_started" and result["send_debits"] == 0
+    assert len(saved) == 1 and not configured.client.calls
+
+
 def test_active_managed_profiles_refresh_without_static_config_fallback(configured):
     assert configured.service.config.runner_profiles == ()
     assert configured.executor.environments() == [configured.row["environment"]]
