@@ -226,7 +226,7 @@ function AuditEventRow({ event }: { event: AdAuditEvent }) {
     ? event.binding === "matched" ? `Share check ${event.shareCheck}` : `Share event ${event.binding.replaceAll("_", " ")}`
     : `Logon event ${event.outcome}`;
   const correlation = event.eventId === 5145 && event.binding === "matched"
-    ? ({ missing: "No matching logon record", ambiguous: "Multiple possible logon records", kerberos_network: "Kerberos network logon correlated", not_verified_kerberos: "Logon correlated; Kerberos not verified" } as const)[event.serverLogon!]
+    ? ({ missing: "No matching logon record", ambiguous: "No unique qualifying logon record", kerberos_network: "Kerberos network logon correlated", not_verified_kerberos: "Logon correlated; Kerberos not verified" } as const)[event.serverLogon!]
     : event.binding === "matched" ? "Scoped identity matched" : `Identity ${event.binding.replaceAll("_", " ")}`;
   return <tr>
     <td><time dateTime={event.observedAt}>{event.observedAt}</time></td>

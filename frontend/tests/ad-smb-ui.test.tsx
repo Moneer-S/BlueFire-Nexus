@@ -230,11 +230,12 @@ function normalizedAuditWorkflow(count: number) {
   payload.normalized_observation = rawAdNormalizedObservation(count, auditWindowStartForFixture(raw.workflow.request.environment.scope.created_at));
   return raw;
 }
-it("renders bounded normalized rows and opens exact source references without raw event content", async () => {
-  vi.mocked(adSmbApi.workflow).mockResolvedValue(normalizedAuditWorkflow(3)); mount();
+it.each([2, 3])("renders %i normalized rows without inferring multiple logon candidates", async (count) => {
+  vi.mocked(adSmbApi.workflow).mockResolvedValue(normalizedAuditWorkflow(count)); mount();
   expect(await screen.findByRole("heading", { name: "Normalized Security events" })).toBeVisible();
   expect(screen.getByText("Share check denied")).toBeVisible();
-  expect(screen.getByText("Multiple possible logon records")).toBeVisible();
+  expect(screen.getByText("No unique qualifying logon record")).toBeVisible();
+  expect(screen.queryByText("Multiple possible logon records")).not.toBeInTheDocument();
   expect(screen.getByText(/A 5145 result is a share-level access check/)).toBeVisible();
   const sourceRefs = screen.getAllByText("Source refs", { selector: "summary" })[0]!;
   fireEvent.click(sourceRefs);
