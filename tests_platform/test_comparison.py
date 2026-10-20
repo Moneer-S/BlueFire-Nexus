@@ -4,7 +4,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from bluefire.comparison import compare_runs
+import pytest
+
+from bluefire.comparison import ComparisonError, compare_runs
 from bluefire.run_store import RunStore
 from bluefire.util import content_hash
 
@@ -101,6 +103,79 @@ def _run(
         ),
     )
     return handle.run_id
+
+
+def test_comparison_validates_each_bundle_once(tmp_path: Path, monkeypatch) -> None:
+    store = RunStore(tmp_path / "runs")
+    run_ids = [
+        _run(
+            store,
+            objective=objective,
+            observed=1,
+            detection_matches=1,
+            benign_matches=0,
+            autonomy="off",
+        )
+        for objective in (False, True)
+    ]
+    validated = []
+    original_validate = store.validate_bundle
+
+    def validate(run_id):
+        validated.append(run_id)
+        return original_validate(run_id)
+
+    monkeypatch.setattr(store, "validate_bundle", validate)
+
+    assert compare_runs(store, run_ids)["run_ids"] == run_ids
+    assert validated == run_ids
+
+
+@pytest.mark.parametrize("mutation", ["missing_manifest", "malformed_manifest", "result"])
+def test_comparison_rejects_invalid_bundle(tmp_path: Path, mutation: str) -> None:
+    store = RunStore(tmp_path / "runs")
+    run_ids = [
+        _run(
+            store,
+            objective=True,
+            observed=1,
+            detection_matches=1,
+            benign_matches=0,
+            autonomy="off",
+        )
+        for _ in range(2)
+    ]
+    target = run_ids[1]
+    if mutation == "missing_manifest":
+        (store.root / target / "manifest.json").unlink()
+    elif mutation == "malformed_manifest":
+        (store.root / target / "manifest.json").write_text("{}", encoding="utf-8")
+    else:
+        store.write_json(target, "result.json", {"status": "forged"})
+
+    with pytest.raises(ComparisonError) as error:
+        compare_runs(store, run_ids)
+    assert str(error.value) == f"run bundle failed integrity validation: {target}"
+
+
+def test_comparison_rejects_unfinalized_run_with_forged_manifest(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs")
+    baseline = _run(
+        store,
+        objective=True,
+        observed=1,
+        detection_matches=1,
+        benign_matches=0,
+        autonomy="off",
+    )
+    candidate = store.create_run(scenario={}, plan={}, policy={}, profile=None)
+    result = dict(store.read_json(candidate.run_id, "result.json"))
+    result["manifest"] = store.read_json(baseline, "manifest.json")
+    store.write_json(candidate.run_id, "result.json", result)
+
+    with pytest.raises(ComparisonError) as error:
+        compare_runs(store, [baseline, candidate.run_id])
+    assert str(error.value) == f"run bundle failed integrity validation: {candidate.run_id}"
 
 
 def _sha(character: str) -> str:

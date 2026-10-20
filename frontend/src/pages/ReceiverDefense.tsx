@@ -10,6 +10,7 @@ import { ReceiverTestSetup } from "../components/ReceiverTestSetup";
 import { ReceiverSavedTests } from "../components/ReceiverSavedTests";
 import { ReceiverTestProgress } from "../components/ReceiverTestProgress";
 import { RetainedReceiverControl } from "../components/RetainedReceiverControl";
+import { ObjectiveContext } from "../components/ObjectiveContext";
 import "./ReceiverDefense.css";
 
 export function ReceiverDefensePage() {
@@ -23,6 +24,20 @@ export function ReceiverDefensePage() {
   const [stopsRequested, setStopsRequested] = useState<string[]>([]);
   const stopRequestedRef = useRef(new Set<string>());
   const stopRequested = stopsRequested.includes(id);
+  const receiverJobHref = (jobId: string) => {
+    const next = new URLSearchParams(params);
+    next.delete("receiver");
+    next.set("receiver_job", jobId);
+    return `/compare?${next.toString()}`;
+  };
+  const compareRunsHref = () => {
+    const next = new URLSearchParams(params);
+    next.delete("receiver");
+    next.delete("receiver_job");
+    next.delete("goal");
+    const query = next.toString();
+    return query ? `/compare?${query}` : "/compare";
+  };
   const write = useMutation({ mutationFn: async (operation: ReceiverPending) => {
     // Persist before every attempt, including retry after an earlier storage failure.
     storeReceiverPending(operation);
@@ -79,14 +94,15 @@ export function ReceiverDefensePage() {
     write.reset(); stop.reset(); setLocalError(undefined);
   };
   return <div className="page receiver-defense-page">
-    <Link className="receiver-back" to="/compare">← Compare runs</Link>
+    <Link className="receiver-back" to={compareRunsHref()}>← Compare runs</Link>
     <PageHeader title={envelope?.context?.scenario_title ?? "Receiver control tests"} />
+    <ObjectiveContext expected="data-handoff" />
     {localError ? <ErrorState title="Request needs attention" error={localError} /> : null}
     {!id ? <><ReceiverSavedTests /><ReceiverTestSetup disabled={Boolean(restored.error)} onStart={(body) => submit({ kind: "create", id: receiverJobId(body.submission_id), body })} /></> : <>
       {!receiverJobValid(id) ? <ErrorState error={new Error("This control-test link is incomplete. Open the saved test from Runs.")} /> : query.isError ? <ErrorState title="Saved test status unavailable" error={query.error} retry={() => { void query.refetch(); }} /> : !envelope ? <LoadingState label={write.isPending ? "Saving the control test" : "Opening the control test"} /> : null}
       {pending ? <Callout title={write.isPending ? "Saving this request" : "Confirm this request before continuing"}>
         <p>{write.isPending ? "Keep working here or return to this saved test later." : "The original request is retained. Check its status or retry the same request; a retry keeps its identity and reviewed contents."}</p>
-        {pending.id !== id ? <p>This retained request belongs to another test. <Link to={`/compare?receiver_job=${encodeURIComponent(pending.id)}`}>Return to the retained control test</Link> to inspect and recover its exact request.</p> : !write.isPending ? <div className="receiver-actions">{!stopRequested || pending.kind === "control" ? <Button onClick={retry}>Retry this exact request</Button> : null}<Button onClick={() => { void query.refetch(); }}>Check saved status</Button>{envelope?.status === "stopped" && pending.kind !== "control" ? <Button onClick={() => { try { clearReceiverPending(pending); setPending(undefined); setLocalError(undefined); } catch (error) { setLocalError(error); } }}>Close retained request after confirmed stop</Button> : null}</div> : null}
+        {pending.id !== id ? <p>This retained request belongs to another test. <Link to={receiverJobHref(pending.id)}>Return to the retained control test</Link> to inspect and recover its exact request.</p> : !write.isPending ? <div className="receiver-actions">{!stopRequested || pending.kind === "control" ? <Button onClick={retry}>Retry this exact request</Button> : null}<Button onClick={() => { void query.refetch(); }}>Check saved status</Button>{envelope?.status === "stopped" && pending.kind !== "control" ? <Button onClick={() => { try { clearReceiverPending(pending); setPending(undefined); setLocalError(undefined); } catch (error) { setLocalError(error); } }}>Close retained request after confirmed stop</Button> : null}</div> : null}
         <details><summary>Retained request details</summary><pre>{JSON.stringify(pending, null, 2)}</pre></details>
       </Callout> : null}
       {write.error ? <ErrorState title="Request not confirmed" error={write.error} /> : null}
@@ -100,7 +116,7 @@ export function ReceiverDefensePage() {
         <p>{receiverJobValid(assistantParentId) ? "Return to the operation that coordinates this test and its phase analyses. Its submitted mode and provider stay bound." : "Ask for an interpretation of the verified phases. Analysis does not take ownership of this test or start another phase."}</p>
         <Button onClick={() => { if (receiverJobValid(assistantParentId)) assistant.openJob(assistantParentId, id); else assistant.setOpen(true); }}>{receiverJobValid(assistantParentId) ? "Open saved Assistant work" : "Analyse with Assistant"}</Button>
       </div> : null}
-      {envelope?.admission.accepted && envelope.context && envelope.control ? <RetainedReceiverControl key={`${id}:${envelope.control.status}:${envelope.control.control_digest}`} envelope={{ ...envelope, context: envelope.context }} disabled={Boolean(pending) || write.isPending || (stopRequested && !["stopped", "completed"].includes(envelope.status)) || Boolean(query.error)} onStart={(body) => submit({ kind: "create", id: receiverJobId(body.submission_id), body })} onRollback={(ownerId, body) => submit({ kind: "control", id: ownerId, body })} /> : null}
+      {envelope?.admission.accepted && envelope.context && envelope.control ? <RetainedReceiverControl key={`${id}:${envelope.control.status}:${envelope.control.control_digest}`} envelope={{ ...envelope, context: envelope.context }} disabled={Boolean(pending) || write.isPending || (stopRequested && !["stopped", "completed"].includes(envelope.status)) || Boolean(query.error)} receiverJobHref={receiverJobHref} onStart={(body) => submit({ kind: "create", id: receiverJobId(body.submission_id), body })} onRollback={(ownerId, body) => submit({ kind: "control", id: ownerId, body })} /> : null}
       {envelope?.admission.accepted && envelope.context ? <ReceiverTestProgress key={id} envelope={{ ...envelope, context: envelope.context }} disabled={Boolean(pending) || write.isPending || stopRequested || Boolean(query.error)}
         onPrepare={(body) => submit({ kind: "prepare", id, body })} onReview={(body) => submit({ kind: "review", id, body })} /> : null}
       {envelope && envelope.status !== "completed" && envelope.status !== "stopped" ? <div className="receiver-stop"><Button variant="danger" disabled={stop.isPending} onClick={() => stop.mutate(id)}>{stop.isPending ? "Requesting stop" : "Stop control test"}</Button><p>Stop requests cancellation and receiver cleanup. The test stays open until shutdown is confirmed.</p></div> : null}

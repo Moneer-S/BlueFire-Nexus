@@ -1,13 +1,20 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { phaseTitle, receiverJobValid } from "../lib/receiver-defense";
 import { Button, ErrorState, LoadingState, formatDate, sentence } from "./Primitives";
 
 export function ReceiverSavedTests() {
+  const [params] = useSearchParams();
   const [cursors, setCursors] = useState<string[]>([]);
   const cursor = cursors.at(-1);
+  const savedTestHref = (jobId: string) => {
+    const next = new URLSearchParams(params);
+    next.delete("receiver");
+    next.set("receiver_job", jobId);
+    return "/compare?" + next.toString();
+  };
   const history = useQuery({ queryKey: ["receiver-tests", cursor], queryFn: async () => {
     const value = await api.receiverTests(cursor);
     if (value?.schema_version !== "bluefire.receiver-defense-list.v1" || !Array.isArray(value.jobs) || value.jobs.length > 128 || typeof value.truncated !== "boolean" ||
@@ -19,7 +26,7 @@ export function ReceiverSavedTests() {
   if (!history.data) return <LoadingState label="Finding saved control tests" />;
   if (!history.data.jobs.length && !history.data.truncated && !cursor) return null;
   return <section className="receiver-saved-tests" aria-label="Saved control tests"><h2>Saved control tests</h2>
-    <ul>{history.data.jobs.map((job) => <li key={job.job_id}><Link to={`/compare?receiver_job=${encodeURIComponent(job.job_id)}`}><strong>{job.title}</strong><span>{sentence(job.status)}{job.phase ? ` · ${phaseTitle[job.phase]}` : ""}</span><small>{formatDate(job.updated_at ?? undefined)}</small></Link></li>)}</ul>
+    <ul>{history.data.jobs.map((job) => <li key={job.job_id}><Link to={savedTestHref(job.job_id)}><strong>{job.title}</strong><span>{sentence(job.status)}{job.phase ? ` · ${phaseTitle[job.phase]}` : ""}</span><small>{formatDate(job.updated_at ?? undefined)}</small></Link></li>)}</ul>
     <div className="receiver-actions">{cursor ? <Button onClick={() => setCursors((old) => old.slice(0, -1))}>Previous saved tests</Button> : null}{history.data.next_cursor ? <Button onClick={() => setCursors((old) => [...old, history.data!.next_cursor!])}>More saved tests</Button> : null}</div>
   </section>;
 }

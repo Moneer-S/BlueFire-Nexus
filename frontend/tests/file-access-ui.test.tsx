@@ -1,13 +1,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { FileAccessPage } from "../src/pages/FileAccess";
 import { FileAccessReview } from "../src/components/FileAccessReview";
 import { CompositionAttempts } from "../src/components/CompositionAttempts";
 import { CompositionCapabilities, CompositionSetup } from "../src/components/CompositionReview";
 import { compositionApi, FILE_ACCESS_PACK } from "../src/lib/composition";
-import { fileAccessApi, readFileAccessPending, readFileAccessReconciliationPending, storeFileAccessPending, type FileAccessOperationEnvelope, type LinuxFileAccessControl, type WindowsPairedFileAccessControl, type WindowsSetupFileAccessControl, type WindowsSetupFileAccessStatus, type WindowsPairFileAccessStatus } from "../src/lib/file-access";
+import { fileAccessApi, readFileAccessPending, readFileAccessReconciliationPending, storeFileAccessPending, storeFileAccessReconciliationPending, type FileAccessOperationEnvelope, type LinuxFileAccessControl, type WindowsPairedFileAccessControl, type WindowsSetupFileAccessControl, type WindowsSetupFileAccessStatus, type WindowsPairFileAccessStatus } from "../src/lib/file-access";
 import { request } from "../src/lib/api";
 import { controlId, ownerId, proposalId } from "./composition-fixture";
 import { fileAccessCompositionReviewFixture, fileAccessControlFixture, fileAccessObjectiveFixture, fileAccessObservationFixture, fileAccessOperationFixture, fileAccessReviewFixture, fileAccessStatusFixture, fileAccessSubmissionFixture } from "./file-access-fixture";
@@ -47,6 +47,7 @@ function mount(element: React.ReactNode, path = "/file-access") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return { ...render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}>{element}</MemoryRouter></QueryClientProvider>), client };
 }
+function CurrentLocation() { const location = useLocation(); return <output data-testid="current-location">{location.pathname}{location.search}</output>; }
 beforeEach(() => {
   localStorage.clear();
   vi.mocked(request).mockReset();
@@ -57,6 +58,12 @@ beforeEach(() => {
   vi.spyOn(fileAccessApi, "review").mockResolvedValue(fileAccessReviewFixture());
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
+it("keeps the selected file-access question visible on the saved control page", () => {
+  mount(<FileAccessPage />, `/file-access?goal=file-access&context=retained&control=${controlId}`);
+  expect(screen.getByRole("complementary", { name: "Selected objective" })).toHaveTextContent("Can we remove a test identity's file access while preserving the application's access?");
+  expect(screen.getByRole("link", { name: "Change objective" })).toHaveAttribute("href", "/getting-started?context=retained&goal=file-access");
+});
 
 it("posts only the selected verified setup through the ordinary authenticated request helper", async () => {
   const body = { enrollment_id: windowsSetupStatus().setup.enrollment_id, enrollment_digest: "sha256:" + "a".repeat(64) };
@@ -191,10 +198,46 @@ it("shows a no-effect baseline attempt as history without offering another basel
   vi.mocked(fileAccessApi.status).mockResolvedValue(windowsPairStatus());
   vi.mocked(fileAccessApi.control).mockResolvedValue(noEffect);
   vi.mocked(fileAccessApi.list).mockResolvedValue({ schema_version: "bluefire.file-access-control-list.v1", controls: [{ control_owner_id: control.control_owner_id, status: "setup_verified", revision: 1, platform: "windows" }] });
-  mount(<FileAccessPage />, `/file-access?control=${control.control_owner_id}`);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/file-access?goal=file-access&context=retained&control=${control.control_owner_id}`]}><FileAccessPage /><CurrentLocation /></MemoryRouter></QueryClientProvider>);
   expect(await screen.findByText("The saved attempt did not establish a baseline. This one-shot control cannot be submitted again.")).toBeInTheDocument();
   expect(screen.getByText("Saved baseline operations")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Review paired baseline" })).not.toBeInTheDocument();
+  const link = await screen.findByRole("link", { name: "Baseline operation 1" });
+  fireEvent.click(link);
+  await waitFor(() => expect(screen.getByTestId("current-location")).toHaveTextContent(`goal=file-access&context=retained&control=${control.control_owner_id}&operation=${windowsPairJob().job_id}`));
+});
+
+it("preserves selected context when opening a saved Linux control operation", async () => {
+  const control = fileAccessControlFixture();
+  const operation = fileAccessOperationFixture().job;
+  control.operations = [operation];
+  vi.spyOn(fileAccessApi, "control").mockResolvedValue(control);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/file-access?goal=file-access&context=retained&control=${control.control_owner_id}`]}><FileAccessPage /><CurrentLocation /></MemoryRouter></QueryClientProvider>);
+  const link = await screen.findByRole("link", { name: /Operation 1:/ });
+  fireEvent.click(link);
+  await waitFor(() => expect(screen.getByTestId("current-location")).toHaveTextContent(`goal=file-access&context=retained&control=${control.control_owner_id}&operation=${operation.job_id}`));
+});
+
+it("preserves selected objective and unrelated query context when opening pending reconciliation", async () => {
+  const pending = { operation_job_id: proposalId, control_owner_id: controlId, body: { submission_id: "dddddddd-dddd-dddd-dddd-dddddddddddd", expected_outcome_digest: `sha256:${"e".repeat(64)}`, reviewed_by: "operator" } };
+  storeFileAccessReconciliationPending(pending);
+  vi.spyOn(fileAccessApi, "reconciliation").mockRejectedValue(new Error("Receipt not observed"));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/file-access?goal=file-access&context=retained&source=original&keep=1&control=${controlId}&operation=other-operation`]}><FileAccessPage /><CurrentLocation /></MemoryRouter></QueryClientProvider>);
+
+  const link = await screen.findByRole("link", { name: "Open original operation" });
+  fireEvent.click(link);
+  await waitFor(() => {
+    const location = new URL(screen.getByTestId("current-location").textContent!, "http://local.test");
+    expect(location.searchParams.get("goal")).toBe("file-access");
+    expect(location.searchParams.get("context")).toBe("retained");
+    expect(location.searchParams.get("source")).toBe("original");
+    expect(location.searchParams.get("keep")).toBe("1");
+    expect(location.searchParams.get("control")).toBe(controlId);
+    expect(location.searchParams.get("operation")).toBe(proposalId);
+  });
 });
 
 it("does not offer an old verified setup after its fresh observation fails", async () => {

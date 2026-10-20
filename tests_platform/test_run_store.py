@@ -238,6 +238,55 @@ def test_unfinalized_run_detail_and_list_behavior_is_preserved(tmp_path: Path) -
     ]
 
 
+@pytest.mark.parametrize("require_finalized", [False, True])
+def test_run_detail_uses_validated_manifest_once(
+    tmp_path: Path, monkeypatch, require_finalized: bool
+) -> None:
+    store = RunStore(tmp_path / "runs")
+    handle = _create(store)
+    manifest = store.finalize(
+        handle.run_id,
+        result={"status": "completed", "manifest": {"bundle_hash": "forged"}},
+        evidence=[],
+        detections=[],
+    )
+    validated = []
+    original_validate = store.validate_bundle
+
+    def validate(run_id):
+        validated.append(run_id)
+        return original_validate(run_id)
+
+    monkeypatch.setattr(store, "validate_bundle", validate)
+
+    detail = store.get_run(handle.run_id, require_finalized=require_finalized)
+
+    assert detail["manifest"] == manifest
+    assert validated == [handle.run_id]
+
+
+def test_run_detail_requires_real_manifest_only_when_requested(tmp_path: Path, monkeypatch) -> None:
+    store = RunStore(tmp_path / "runs")
+    handle = _create(store)
+    result = dict(store.read_json(handle.run_id, "result.json"))
+    result["manifest"] = {"bundle_hash": "forged"}
+    store.write_json(handle.run_id, "result.json", result)
+    validated = []
+    original_validate = store.validate_bundle
+
+    def validate(run_id):
+        validated.append(run_id)
+        return original_validate(run_id)
+
+    monkeypatch.setattr(store, "validate_bundle", validate)
+
+    assert store.get_run(handle.run_id)["status"] == "created"
+    assert validated == []
+    with pytest.raises(RunStoreError, match="cannot read manifest.json"):
+        store.get_run(handle.run_id, require_finalized=True)
+    assert validated == [handle.run_id]
+
+
 def test_finalized_recovery_journal_is_atomic_independent_and_tamper_evident(
     tmp_path: Path,
 ) -> None:

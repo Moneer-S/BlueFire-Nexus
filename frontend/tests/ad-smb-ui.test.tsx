@@ -32,11 +32,13 @@ it("opens AD readiness from the objective chooser without creating or authorizin
     <Route path="/ad-smb" element={<AdSmbPage />} />
   </Routes></MemoryRouter></QueryClientProvider>);
   fireEvent.change(screen.getByRole("combobox", { name: "Objective" }), { target: { value: "ad-access" } });
-  expect(screen.getByText("Not checked")).toBeVisible();
+  expect(screen.getByText("Not checked here")).toBeVisible();
   expect(adSmbApi.environments).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("link", { name: "Review environment" }));
   expect(await screen.findByText("Live AD execution unavailable")).toBeVisible();
   expect(screen.getByRole("heading", { name: "AD share access" })).toBeVisible();
+  expect(screen.getByText("Can we remove the probe identity's share access while preserving legitimate domain reads?")).toBeVisible();
+  expect(screen.getByRole("link", { name: "Change objective" })).toHaveAttribute("href", "/getting-started?goal=ad-access");
   expect(adSmbApi.create).not.toHaveBeenCalled();
   expect(adSmbApi.review).not.toHaveBeenCalled();
   expect(adSmbApi.submit).not.toHaveBeenCalled();
@@ -59,14 +61,19 @@ it("loads saved work read-only and hides opaque credentials and binary descripto
   expect(screen.getByText(/Effective access not established/)).toBeInTheDocument();
   expect(adSmbApi.review).not.toHaveBeenCalled(); expect(adSmbApi.submit).not.toHaveBeenCalled(); expect(adSmbApi.recover).not.toHaveBeenCalled();
 });
-it("opens a saved summary through the separate detail request before offering work", async () => {
+it.each(["/ad-smb", "/ad-smb?goal=ad-access"])("opens a saved summary through the separate detail request from %s", async path => {
   vi.mocked(adSmbApi.workflow).mockRejectedValue(new Error("Detail unavailable"));
-  mount("/ad-smb");
+  mount(path);
   const saved = await within(screen.getByRole("complementary", { name: "Saved AD exercises" })).findByRole("link", { name: /member\.lab\.example\.test/ });
+  if (path.includes("goal=")) expect(saved).toHaveAttribute("href", `/ad-smb?goal=ad-access&workflow=${adOwner}`);
   expect(adSmbApi.workflow).not.toHaveBeenCalled();
   fireEvent.click(saved);
   expect(await screen.findByText("Saved AD exercise unavailable")).toBeVisible();
   expect(adSmbApi.workflow).toHaveBeenCalledWith(adOwner);
+  if (path.includes("goal=")) {
+    expect(screen.getByRole("link", { name: "Environment selection" })).toHaveAttribute("href", "/ad-smb?goal=ad-access");
+    expect(screen.getByRole("link", { name: "Change objective" })).toHaveAttribute("href", "/getting-started?goal=ad-access");
+  }
   expect(screen.queryByRole("button", { name: "Review inspect share" })).not.toBeInTheDocument();
   expect(screen.queryByRole("region", { name: "Retained AD evidence" })).not.toBeInTheDocument();
   expect(adSmbApi.review).not.toHaveBeenCalled();

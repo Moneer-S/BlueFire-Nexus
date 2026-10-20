@@ -3,12 +3,20 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ArrowRight, ChevronLeft, ChevronRight, ClipboardCheck, FileSearch, History, Plus, RefreshCw, Square, Undo2, X } from "lucide-react";
 import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState, PageHeader, formatDate, sentence } from "../components/Primitives";
+import { ObjectiveContext } from "../components/ObjectiveContext";
 import { adConfirmed, adJobId, adJobValid, adPhaseCurrent, adPhaseLabels, adReadinessLabels, adSmbApi, checkedAdEnvironments, checkedAdList, checkedAdReview, checkedAdWorkflow, clearAdPending, readAdPending, storeAdPending, type AdAuditEvent, type AdBudget, type AdChange, type AdEnvironment, type AdNormalizedAudit, type AdOperation, type AdPending, type AdPhase, type AdReview, type AdWorkflow } from "../lib/ad-smb";
 import "./AdSmb.css";
 
 export function AdSmbPage() {
   const client = useQueryClient();
   const [params, setParams] = useSearchParams();
+  const adSmbPath = (values: Record<string, string>, remove: string[] = []) => {
+    const next = new URLSearchParams(params);
+    remove.forEach(key => next.delete(key));
+    Object.entries(values).forEach(([key, value]) => next.set(key, value));
+    const query = next.toString();
+    return "/ad-smb" + (query ? "?" + query : "");
+  };
   const [restored] = useState(() => { try { return { pending: readAdPending(), error: undefined }; } catch (error) { return { pending: undefined, error }; } });
   const [pending, setPending] = useState(restored.pending);
   const [localError, setLocalError] = useState<unknown>(restored.error);
@@ -61,7 +69,7 @@ export function AdSmbPage() {
     if (locked.current || pending || localError) return;
     try {
       storeAdPending(submitted); locked.current = true; setPending(submitted); setReview(undefined);
-      setParams({ workflow: submitted.kind === "create" ? submitted.id : submitted.workflow });
+      setParams((current) => { const next = new URLSearchParams(current); next.set("workflow", submitted.kind === "create" ? submitted.id : submitted.workflow); return next; });
       write.mutate(submitted);
     } catch (error) { locked.current = false; setLocalError(error); }
   };
@@ -73,18 +81,19 @@ export function AdSmbPage() {
   };
   return <div className="page ad-smb-page">
     <PageHeader title="AD share access" actions={<Button disabled={busy || environments.isFetching || workflow.isFetching} onClick={() => { void refresh(); }}><RefreshCw />Refresh state</Button>} />
+    <ObjectiveContext expected="ad-access" />
     {localError ? <ErrorState title="Retained request needs attention" error={localError} /> : null}
     {pending ? <Callout tone="warning" title={write.isPending ? "Saving reviewed request" : "Original request not yet confirmed"}>
       <p>No replacement operation will be sent on reload.</p>
       <div className="ad-smb-actions"><Button disabled={write.isPending || checkPending.isPending} onClick={() => checkPending.mutate()}><RefreshCw />Check saved request</Button>
         {!write.isPending ? <Button disabled={locked.current || checkPending.isPending || Boolean(localError)} onClick={() => { if (!locked.current) { locked.current = true; write.mutate(pending); } }}><History />Resubmit original request</Button> : null}
-        {owner !== pendingOwner ? <Link to={`/ad-smb?workflow=${pendingOwner}`}>Open original exercise</Link> : null}
+        {owner !== pendingOwner ? <Link to={adSmbPath({ workflow: pendingOwner })}>Open original exercise</Link> : null}
       </div>
     </Callout> : null}
     {[write.error, checkPending.error, loadReview.error, control.error].filter(Boolean).map((error, index) => <ErrorState key={index} error={error} />)}
     <div className="ad-smb-layout">
-      <aside className="ad-smb-saved" aria-label="Saved AD exercises"><div className="ad-smb-section-heading"><h2>Saved exercises</h2><Link to="/ad-smb" aria-label="Environment selection"><Plus size={18} /></Link></div>
-        {saved.isPending ? <LoadingState label="Opening saved AD exercises" /> : saved.error ? <ErrorState error={saved.error} /> : <ul>{saved.data?.map(entry => <li key={entry.id}><Link aria-current={owner === entry.id ? "page" : undefined} to={`/ad-smb?workflow=${entry.id}`}><strong>{entry.environment.member}</strong><span>{entry.stopped ? "New work stopped" : sentence(entry.policy)} / revision {entry.revision}</span><small>{entry.environment.provenance === "synthetic_fixture" ? "Synthetic fixture" : "Runner-reported evidence"}</small></Link></li>)}</ul>}
+      <aside className="ad-smb-saved" aria-label="Saved AD exercises"><div className="ad-smb-section-heading"><h2>Saved exercises</h2><Link to={adSmbPath({}, ["workflow"])} aria-label="Environment selection"><Plus size={18} /></Link></div>
+        {saved.isPending ? <LoadingState label="Opening saved AD exercises" /> : saved.error ? <ErrorState error={saved.error} /> : <ul>{saved.data?.map(entry => <li key={entry.id}><Link aria-current={owner === entry.id ? "page" : undefined} to={adSmbPath({ workflow: entry.id })}><strong>{entry.environment.member}</strong><span>{entry.stopped ? "New work stopped" : sentence(entry.policy)} / revision {entry.revision}</span><small>{entry.environment.provenance === "synthetic_fixture" ? "Synthetic fixture" : "Runner-reported evidence"}</small></Link></li>)}</ul>}
         {saved.data?.length === 0 ? <p>No saved exercises.</p> : null}
       </aside>
       <div className="ad-smb-workspace">

@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { expect, it, vi } from "vitest";
 import { ProductProvider } from "../src/state/ProductContext";
 import { ReceiverTestProgress } from "../src/components/ReceiverTestProgress";
@@ -11,6 +11,9 @@ import { readReceiverPending, storeReceiverPending, type ReceiverPending } from 
 import type { ReceiverDefenseEnvelope } from "../src/lib/receiver-defense-types";
 import { nativeReceiverFixture } from "./receiver-inline-run-fixture";
 import { receiverFixture, receiverFixtureId } from "./receiver-defense-fixture";
+import { retainedReceiverFixture } from "./receiver-retained-fixture";
+
+function CurrentLocation() { const location = useLocation(); return <output data-testid="current-location">{location.pathname}{location.search}</output>; }
 
 function mountProgress(value = receiverFixture()) {
   const onPrepare = vi.fn(), onReview = vi.fn();
@@ -82,10 +85,42 @@ it("shows unavailable observation as unknown, with uncertain cleanup and no prev
 function pendingCreate(): ReceiverPending {
   return { kind: "create", id: receiverFixtureId, body: receiverFixture("baseline", "idle").job.request!.submitted_request as Extract<ReceiverPending, { kind: "create" }>["body"] };
 }
-function mountPage(ownerId = receiverFixtureId) {
+function mountPage(ownerId = receiverFixtureId, path = `/compare?receiver_job=${ownerId}`) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return { client, user: userEvent.setup(), ...render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={[`/compare?receiver_job=${ownerId}`]}><ReceiverDefensePage /></MemoryRouter></ProductProvider></QueryClientProvider>) };
+  return { client, user: userEvent.setup(), ...render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={[path]}><ReceiverDefensePage /></MemoryRouter></ProductProvider></QueryClientProvider>) };
 }
+
+it("retains selected objective context throughout receiver recovery and preserves comparison sources", async () => {
+  vi.spyOn(api, "receiverTest").mockResolvedValue(receiverFixture("restored", "completed"));
+  mountPage(receiverFixtureId, `/compare?receiver_job=${receiverFixtureId}&goal=data-handoff&source=run-source&replay=run-retest`);
+  expect(await screen.findByText("Can a redaction requirement stop unredacted records while allowing legitimate redacted use?")).toBeVisible();
+  const changeObjective = screen.getByRole("link", { name: "Change objective" });
+  const chooser = new URL(changeObjective.getAttribute("href")!, "https://example.test");
+  expect(chooser.searchParams.get("source")).toBe("run-source");
+  expect(chooser.searchParams.get("replay")).toBe("run-retest");
+  expect(chooser.searchParams.get("goal")).toBe("data-handoff");
+  const compareRuns = screen.getByRole("link", { name: /Compare runs/ });
+  const compare = new URL(compareRuns.getAttribute("href")!, "https://example.test");
+  expect(compare.searchParams.get("source")).toBe("run-source");
+  expect(compare.searchParams.get("replay")).toBe("run-retest");
+  expect(compare.searchParams.has("receiver_job")).toBe(false);
+  expect(compare.searchParams.has("goal")).toBe(false);
+});
+
+it("preserves objective and comparison context when opening a retained receiver policy", async () => {
+  const value = retainedReceiverFixture("legitimate", "completed", true);
+  vi.spyOn(api, "receiverTest").mockResolvedValue(value);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={[`/compare?receiver_job=${value.job.job_id}&goal=data-handoff&source=run-source&replay=run-retest`]}><ReceiverDefensePage /><CurrentLocation /></MemoryRouter></ProductProvider></QueryClientProvider>);
+  const link = await screen.findByRole("link", { name: "the retained policy" });
+  await userEvent.click(link);
+  await waitFor(() => expect(screen.getByTestId("current-location")).toHaveTextContent("receiver_job="));
+  const query = new URL(screen.getByTestId("current-location").textContent!, "https://example.test").searchParams;
+  expect(query.get("goal")).toBe("data-handoff");
+  expect(query.get("source")).toBe("run-source");
+  expect(query.get("replay")).toBe("run-retest");
+  expect(query.get("receiver_job")).toBe(value.control!.owner_job_id);
+});
 
 it("retains measured outcomes across a rejected poll and recovers by GET without repeating work", async () => {
   const complete = receiverFixture("restored", "completed");

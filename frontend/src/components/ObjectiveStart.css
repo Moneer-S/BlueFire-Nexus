@@ -14,8 +14,10 @@
 .objective-start-scope { min-width: 0; padding-left: 24px; border-left: 1px solid var(--line); }
 .objective-start-scope .data-list > div { grid-template-columns: minmax(7rem, 1fr) minmax(0, 3fr); }
 .objective-start-scope .data-list dd { min-width: 0; overflow-wrap: anywhere; }
+.objective-start-refresh { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; color: var(--muted); font-size: var(--font-body-sm); }
 @media (max-width: 700px) {
   .objective-start { grid-template-columns: minmax(0, 1fr); gap: 20px; }
   .objective-start-scope { padding-left: 0; border-left: 0; }
   .objective-start-scope .data-list > div { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .objective-start-refresh { align-items: flex-start; flex-direction: column; }
 }
