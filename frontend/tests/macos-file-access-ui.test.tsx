@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { FileAccessPage } from "../src/pages/FileAccess";
 import { MACOS_FILE_ACCESS_PACK } from "../src/lib/composition";
@@ -10,9 +10,11 @@ import { fileAccessControlFixture, fileAccessOperationFixture, fileAccessReviewF
 
 vi.mock("../src/lib/api", () => ({ DEMO_MODE: false, request: vi.fn(), ApiError: class extends Error {} }));
 
-function mount(path = `/file-access?control=${macOSOwner}`) {
+function CurrentLocation() { const location = useLocation(); return <output data-testid="current-location">{location.pathname}{location.search}</output>; }
+
+function mount(path = `/file-access?control=${macOSOwner}`, trackLocation = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><FileAccessPage /></MemoryRouter></QueryClientProvider>);
+  return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><FileAccessPage />{trackLocation ? <CurrentLocation /> : null}</MemoryRouter></QueryClientProvider>);
 }
 
 beforeEach(() => {
@@ -27,6 +29,65 @@ beforeEach(() => {
   vi.spyOn(fileAccessApi, "reconcile").mockRejectedValue(new Error("Reconciliation unavailable"));
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
+it("preserves objective context when opening read-only macOS operation history", async () => {
+  const control = macOSControlFixture("uncertain");
+  vi.mocked(fileAccessApi.status).mockResolvedValue(macOSStatusFixture(false));
+  vi.mocked(fileAccessApi.control).mockResolvedValue(control);
+  mount(`/file-access?goal=file-access&context=retained&source=original&keep=1&control=${macOSOwner}&operation=other-operation`, true);
+
+  await screen.findByText("Workspace custody is unresolved");
+  const link = screen.getByRole("link", { name: /Operation 1: Verify baseline access/ });
+  fireEvent.click(link);
+  await waitFor(() => {
+    const location = new URL(screen.getByTestId("current-location").textContent!, "http://local.test");
+    expect(location.pathname).toBe("/file-access");
+    expect(location.searchParams.get("goal")).toBe("file-access");
+    expect(location.searchParams.get("context")).toBe("retained");
+    expect(location.searchParams.get("source")).toBe("original");
+    expect(location.searchParams.get("keep")).toBe("1");
+    expect(location.searchParams.get("control")).toBe(macOSOwner);
+    expect(location.searchParams.get("operation")).toBe(control.operations[0]!.job_id);
+  });
+  expect(screen.getByRole("complementary", { name: "Selected objective" })).toBeInTheDocument();
+  expect(within(screen.getByRole("region", { name: "Saved macOS workspace control" })).queryByRole("button")).not.toBeInTheDocument();
+  expect(fileAccessApi.review).not.toHaveBeenCalled();
+  expect(fileAccessApi.submit).not.toHaveBeenCalled();
+  expect(fileAccessApi.reconcile).not.toHaveBeenCalled();
+});
+
+it("preserves objective context when opening read-only reconciliation under macOS status", async () => {
+  const operation = fileAccessOperationFixture();
+  operation.job.state = "interrupted";
+  operation.reconciliation = { outcome_digest: macOSDigest(), state: "unknown", available: true };
+  const pending = { operation_job_id: operation.job.job_id, control_owner_id: operation.control!.control_owner_id, body: { submission_id: "44444444-4444-4444-8444-444444444444", expected_outcome_digest: macOSDigest(), reviewed_by: "synthetic-reviewer" } };
+  storeFileAccessReconciliationPending(pending);
+  vi.mocked(fileAccessApi.control).mockResolvedValue(fileAccessControlFixture());
+  vi.mocked(fileAccessApi.operation).mockResolvedValue(operation);
+  const receipt = vi.spyOn(fileAccessApi, "reconciliation");
+  mount(`/file-access?goal=file-access&context=retained&source=original&keep=1&control=${pending.control_owner_id}&operation=other-operation`, true);
+
+  const link = await screen.findByRole("link", { name: "Open original operation" });
+  fireEvent.click(link);
+  await waitFor(() => {
+    const location = new URL(screen.getByTestId("current-location").textContent!, "http://local.test");
+    expect(location.pathname).toBe("/file-access");
+    expect(location.searchParams.get("goal")).toBe("file-access");
+    expect(location.searchParams.get("context")).toBe("retained");
+    expect(location.searchParams.get("source")).toBe("original");
+    expect(location.searchParams.get("keep")).toBe("1");
+    expect(location.searchParams.get("control")).toBe(pending.control_owner_id);
+    expect(location.searchParams.get("operation")).toBe(pending.operation_job_id);
+  });
+  expect(screen.getByRole("complementary", { name: "Selected objective" })).toBeInTheDocument();
+  expect(screen.getByText("Saved evidence request is read-only")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /review original task evidence|resubmit original evidence request|read original task evidence/i })).not.toBeInTheDocument();
+  expect(readFileAccessReconciliationPending()).toEqual(pending);
+  expect(receipt).not.toHaveBeenCalled();
+  expect(fileAccessApi.review).not.toHaveBeenCalled();
+  expect(fileAccessApi.submit).not.toHaveBeenCalled();
+  expect(fileAccessApi.reconcile).not.toHaveBeenCalled();
+});
 
 it("opens the distinct Mac composition workspace only from a settled hardened control", async () => {
   vi.mocked(fileAccessApi.control).mockResolvedValue(macOSControlFixture("hardened"));

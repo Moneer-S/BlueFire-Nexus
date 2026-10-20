@@ -52,6 +52,8 @@ function mount(path: string, initialMode: RunConfiguration["mode"], job?: RunJob
     if (endpoint === "/runs" && (!init?.method || init.method === "GET")) return json({ runs: [] });
     if (endpoint === "/runner") return json({ schema_version: "bluefire.runner-lifecycle-status.v1", state: "unbootstrapped", runner_id: "fixture-runner", profile_id: null, loopback_only: true, enrollment: "absent", process: "absent", runner: null, health: null });
     if (endpoint === "/detections/health") return json({ ready: false });
+    if (endpoint === "/file-access/status") return json({ schema_version: "bluefire.file-access-status.v1", available: false, enrollment: null, allowed_operations: [], problem: { code: "not_enrolled", message: "No current workspace." } });
+    if (endpoint === "/file-access/control-list" && init?.method === "POST" && init.body === "{}") return json({ schema_version: "bluefire.file-access-control-list.v1", controls: [] });
     if (endpoint === "/jobs") return json({ schema_version: "bluefire.active-job-list.v1", jobs: inventory ? await inventory : job ? [job] : [] });
     if (storedLookup && endpoint === `/jobs/${storedLookup.jobId}`) return storedLookup.response;
     if (job && endpoint === `/jobs/${job.job_id}`) return json(job);
@@ -77,7 +79,14 @@ it.each(["data-handoff", "file-access", "ad-access", "s3-access"])("choosing the
   await user.selectOptions(choice, goal);
   expect(config()).toEqual(before);
   expect(JSON.parse(screen.getByLabelText("Current draft graph").textContent!)).toEqual(demoScenario);
-  expect(nonReads()).toEqual([]);
+  const requests = nonReads();
+  if (goal === "file-access") {
+    expect(requests).toHaveLength(1);
+    expect(new URL(String(requests[0]![0]), "http://localhost").pathname).toBe("/api/v1/file-access/control-list");
+    expect(JSON.parse(String(requests[0]![1]?.body))).toEqual({});
+  } else {
+    expect(requests).toEqual([]);
+  }
 });
 
 it.each(["simulate", "execute"] as const)("the Getting Started %s link selects setup without changing the operator's graph, scope, or provider", async (mode) => {

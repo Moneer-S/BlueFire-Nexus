@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { FileAccessPage } from "../src/pages/FileAccess";
 import { fileAccessApi, readFileAccessReconciliationPending, type FileAccessOperationEnvelope, type FileAccessReview, type FileAccessSubmission, type WindowsCorrectionFileAccessControl, type WindowsPairFileAccessStatus } from "../src/lib/file-access";
@@ -118,8 +118,9 @@ function envelope(body: FileAccessSubmission, current: WindowsCorrectionFileAcce
 
 function mount(path = `/file-access?control=${owner}`) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return { ...render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><FileAccessPage /></MemoryRouter></QueryClientProvider>), client };
+  return { ...render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><FileAccessPage /><CurrentLocation /></MemoryRouter></QueryClientProvider>), client };
 }
+function CurrentLocation() { const location = useLocation(); return <output data-testid="current-location">{location.pathname}{location.search}</output>; }
 
 beforeEach(() => {
   localStorage.clear();
@@ -245,6 +246,25 @@ it("keeps baseline reads distinct from hardened denial, owner access, and cleanu
   expect(within(region).getByText("Independent observation").nextElementSibling).toHaveTextContent("No");
   expect(within(region).queryByText(/uid|mode|linux/i)).not.toBeInTheDocument();
   expect(within(region).queryByRole("button", { name: /review|rollback|reset|harden/i })).not.toBeInTheDocument();
+});
+
+it("preserves selected objective and unrelated query context from v3 operation history", async () => {
+  const hardened = control(3);
+  vi.mocked(fileAccessApi.control).mockResolvedValue(hardened);
+  mount(`/file-access?goal=file-access&context=retained&source=setup&control=${owner}&keep=1`);
+
+  fireEvent.click(await screen.findByText("Saved control operations"));
+  const link = await screen.findByRole("link", { name: "Baseline attempt" });
+  fireEvent.click(link);
+  await waitFor(() => {
+    const location = new URL(screen.getByTestId("current-location").textContent!, "http://local.test");
+    expect(location.searchParams.get("goal")).toBe("file-access");
+    expect(location.searchParams.get("context")).toBe("retained");
+    expect(location.searchParams.get("source")).toBe("setup");
+    expect(location.searchParams.get("keep")).toBe("1");
+    expect(location.searchParams.get("control")).toBe(owner);
+    expect(location.searchParams.get("operation")).toBe(job("baseline", "1").job_id);
+  });
 });
 
 it("explicitly reads an unknown correction attempt without replaying it or claiming success", async () => {

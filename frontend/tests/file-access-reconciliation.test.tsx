@@ -36,7 +36,7 @@ it("opens an explicit unchecked evidence review and never reconciles on render o
   const operation = fileAccessOperationFixture(); operation.reconciliation = { outcome_digest: testDigest, state: "unknown", available: true };
   const reconcile = vi.spyOn(fileAccessApi, "reconcile").mockImplementation(async (_id, body) => ({ ...operation, reconciliation_receipt: { submission_id: body.submission_id, submitted_request: body, state: "completed", problem: { code: "still_unknown", message: "The original terminal remains unavailable." } } }));
   const effect = vi.spyOn(fileAccessApi, "submit"); const onPending = vi.fn();
-  mount(<FileAccessReconciliation operation={operation} disabled={false} onPending={onPending} onError={vi.fn()} />);
+  mount(<FileAccessReconciliation operation={operation} disabled={false} fileAccessPath={values => `/file-access?${new URLSearchParams(values)}`} onPending={onPending} onError={vi.fn()} />);
   expect(reconcile).not.toHaveBeenCalled(); expect(effect).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Review original task evidence" }));
   const read = screen.getByRole("button", { name: "Read original task evidence" });
@@ -52,7 +52,7 @@ it("reloads unknown reconciliation without automatically making a new evidence r
   const pending = pendingFixture(); storeFileAccessReconciliationPending(pending);
   vi.spyOn(fileAccessApi, "reconciliation").mockRejectedValue(new Error("Receipt not observed"));
   const reconcile = vi.spyOn(fileAccessApi, "reconcile"); const onPending = vi.fn();
-  mount(<FileAccessReconciliation pending={pending} disabled={false} onPending={onPending} onError={vi.fn()} />);
+  mount(<FileAccessReconciliation pending={pending} disabled={false} fileAccessPath={values => `/file-access?${new URLSearchParams(values)}`} onPending={onPending} onError={vi.fn()} />);
   await screen.findByText("Reconciliation receipt unavailable");
   expect(screen.getByRole("button", { name: "Resubmit original evidence request" })).toBeEnabled();
   expect(reconcile).not.toHaveBeenCalled(); expect(readFileAccessReconciliationPending()).toEqual(pending); expect(onPending).not.toHaveBeenCalled();
@@ -61,7 +61,7 @@ it("clears a recovered request only from its exact completed saved receipt", asy
   const pending = pendingFixture(); storeFileAccessReconciliationPending(pending);
   vi.spyOn(fileAccessApi, "reconciliation").mockResolvedValue({ schema_version: "bluefire.file-access-reconciliation.v1", operation_job_id: proposalId, receipt: receiptFixture() });
   const reconcile = vi.spyOn(fileAccessApi, "reconcile"); const onPending = vi.fn();
-  mount(<FileAccessReconciliation pending={pending} disabled={false} onPending={onPending} onError={vi.fn()} />);
+  mount(<FileAccessReconciliation pending={pending} disabled={false} fileAccessPath={values => `/file-access?${new URLSearchParams(values)}`} onPending={onPending} onError={vi.fn()} />);
   await waitFor(() => expect(onPending).toHaveBeenCalledWith(undefined));
   expect(readFileAccessReconciliationPending()).toBeUndefined(); expect(reconcile).not.toHaveBeenCalled();
 });
@@ -70,7 +70,7 @@ it("does not clear a same-ID receipt carrying another reviewed actor", async () 
   const receipt = receiptFixture(); receipt.submitted_request.reviewed_by = "other";
   vi.spyOn(fileAccessApi, "reconciliation").mockResolvedValue({ schema_version: "bluefire.file-access-reconciliation.v1", operation_job_id: proposalId, receipt });
   const onPending = vi.fn();
-  mount(<FileAccessReconciliation pending={pending} disabled={false} onPending={onPending} onError={vi.fn()} />);
+  mount(<FileAccessReconciliation pending={pending} disabled={false} fileAccessPath={values => `/file-access?${new URLSearchParams(values)}`} onPending={onPending} onError={vi.fn()} />);
   await waitFor(() => expect(fileAccessApi.reconciliation).toHaveBeenCalled());
   expect(readFileAccessReconciliationPending()).toEqual(pending); expect(onPending).not.toHaveBeenCalled();
 });

@@ -15,6 +15,11 @@ from tests_platform.test_service import ROOT as PROJECT_ROOT
 from tests_platform.test_service import ReadyInventoryRunner, RecordingRunnerLifecycle
 
 ROOT = "/api/v1/ad-smb"
+EMPTY_LIST = {
+    "schema_version": "bluefire.ad-smb-workflow-list.v1",
+    "effective_access_claim": False,
+    "workflows": [],
+}
 
 
 class WorkflowService(AdSmbServiceMixin, StubService):
@@ -43,7 +48,7 @@ def test_actual_service_ad_and_s3_startup_restart_never_admit_or_start_runner(tm
                     "native_execution_available": False,
                 }
                 status, _, body = request(server, "GET", ROOT + "/workflows")
-                assert status == 200 and json_body(body) == {"workflows": []}
+                assert status == 200 and json_body(body) == EMPTY_LIST
                 status, _, body = request(
                     server,
                     "POST",
@@ -78,7 +83,7 @@ def test_actual_service_ad_and_s3_startup_restart_never_admit_or_start_runner(tm
                     },
                 )
                 assert status == 409 and json_body(body)["error"]["code"] == "s3_access_refused"
-                assert service.ad_smb_workflows() == {"workflows": []}
+                assert service.ad_smb_workflows() == EMPTY_LIST
                 assert service.s3_access_exercises()["exercises"] == []
             assert server.socket.fileno() == -1
             assert lifecycle.calls == []
@@ -101,7 +106,7 @@ def test_default_unavailable_ad_api_cannot_create_a_workflow(workspace):
         )
         assert status == 409 and json_body(body)["error"]["code"] == "ad_smb_refused"
         status, _, body = request(server, "GET", ROOT + "/workflows")
-        assert status == 200 and json_body(body) == {"workflows": []}
+        assert status == 200 and json_body(body) == EMPTY_LIST
     assert executor.calls == [] and executor.recovered == []
     assert server.socket.fileno() == -1
 
@@ -143,7 +148,21 @@ def test_saved_ad_stages_round_trip_through_authenticated_api(workspace):
         status, _, body = request(server, "POST", path + "/recover", body={})
         assert status == 200 and json_body(body) == state
         status, _, body = request(server, "GET", ROOT + "/workflows")
-        assert status == 200 and json_body(body) == {"workflows": [state]}
+        selected = state["workflow"]["request"]["environment"]
+        assert status == 200 and json_body(body) == {
+            **EMPTY_LIST,
+            "workflows": [
+                {
+                    "workflow_job_id": identifier,
+                    "member": selected["scope"]["hosts"]["member"]["fqdn"],
+                    "provenance": selected["provenance"],
+                    "revision": state["workflow"]["progress"]["revision"],
+                    "stopped": False,
+                    "pending_operation": None,
+                    "policy_state": "baseline",
+                }
+            ],
+        }
         assert executor.calls == calls and executor.recovered == []
     assert server.socket.fileno() == -1
 

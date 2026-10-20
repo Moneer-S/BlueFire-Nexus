@@ -139,6 +139,16 @@ Known denial, unknown write and partial audit results retain their original
 meaning in the minimized workspace projection. Raw audit bytes stay in the
 original receiver record rather than being copied into the public summary.
 
+When Security-event normalization succeeds, the saved summary includes bounded
+event rows with time and outcome, scoped principal and target fields only when
+matched, record IDs, event digests, and capture references. Identical duplicate
+records are omitted. Unsupported XML or event versions and conflicting record
+IDs retain the count-only summary without exposing raw XML or invalidating an
+otherwise valid original receipt. Older saved summaries remain readable.
+Partial capture remains partial; absent events do not establish prevention.
+Digests are references, not source authentication. These rows do not prove
+effective access, file reads, fresh sessions, or log continuity.
+
 The fixed four-MiB transport ceiling includes the saved packet and result
 wrapper. The worker derives a smaller terminal allowance and an audit byte
 allowance that reserves worst-case JSON escaping and event separators. Reaching

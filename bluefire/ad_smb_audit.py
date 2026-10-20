@@ -11,7 +11,7 @@ from typing import Any, NoReturn
 
 from .ad_smb_contract import AdSmbError, AdSmbScope, digest, sid, timestamp
 
-SCHEMA = "bluefire.ad-smb-audit.v1"
+SCHEMA = "bluefire.ad-smb-audit-observation.v2"
 NS = "{http://schemas.microsoft.com/win/2004/08/events/event}"
 PROVIDER = "Microsoft-Windows-Security-Auditing"
 PROVIDER_GUID = "{54849625-5478-4994-a5ba-3e3b0328c30d}"
@@ -229,16 +229,20 @@ def _bind(
         (name for name, entry in scope["principals"].items() if entry["sid"] == principal), None
     )
     logon_id = _uint(data[logon_key], 64, hexadecimal=True)
-    if (
-        role not in ("probe", "legitimate")
-        or _ip(data["IpAddress"]) != scope["hosts"]["client"]["ipv4"]
-        or not logon_id
-    ):
+    if role not in ("probe", "legitimate"):
         return
-    row.update(principal_role=role, principal_sid=principal, logon_id=hex(logon_id))
+    # Windows uses this exact placeholder when no remote client address exists.
+    if data["IpAddress"] == "-":
+        return
+    if _ip(data["IpAddress"]) != scope["hosts"]["client"]["ipv4"] or not logon_id:
+        return
     if event_id == 4624:
         package = data["AuthenticationPackageName"]
         row.update(
+            principal_role=role,
+            principal_sid=principal,
+            logon_id=hex(logon_id),
+            client_ip=scope["hosts"]["client"]["ipv4"],
             logon_type=_uint(data["LogonType"], 32),
             authentication_package=(
                 package if package in ("Kerberos", "NTLM", "Negotiate") else "other"
@@ -271,6 +275,10 @@ def _bind(
     mask = _uint(data["AccessMask"], 32, hexadecimal=True)
     row.update(
         binding="matched",
+        principal_role=role,
+        principal_sid=principal,
+        logon_id=hex(logon_id),
+        client_ip=scope["hosts"]["client"]["ipv4"],
         file_purpose=target["purpose"],
         relative_target=target["name"],
         access_mask=hex(mask),
@@ -287,7 +295,7 @@ def normalize_events(
     *,
     source_host_id: str,
     source_receipt_digest: str,
-    record_epoch_digest: str,
+    capture_batch_digest: str,
     window_start: str,
     window_end: str,
     completeness: str = "unknown",
@@ -296,7 +304,7 @@ def normalize_events(
     scope = AdSmbScope.from_mapping(scope.to_dict())
     value = scope.to_dict()
     digest(source_receipt_digest)
-    digest(record_epoch_digest)
+    digest(capture_batch_digest)
     if source_host_id != value["hosts"]["member"]["host_id"]:
         raise AdSmbError("audit source must identify the exact member host")
     if completeness not in ("complete", "truncated", "incomplete", "unknown"):
@@ -327,7 +335,7 @@ def normalize_events(
             raise AdSmbError("audit event does not identify the exact member computer")
         if row["record_id"] in seen:
             if seen[row["record_id"]] != row["raw_sha256"]:
-                raise AdSmbError("audit record ID conflicts inside the declared source epoch")
+                raise AdSmbError("audit record ID conflicts inside the captured batch")
             duplicates += 1
             continue
         seen[row["record_id"]] = row["raw_sha256"]
@@ -358,16 +366,20 @@ def normalize_events(
                 row["logon_record_id"] = logon["record_id"]
     for row in rows:
         row.pop("time_ticks")
+        row["record_id"] = str(row["record_id"])
+        if "logon_record_id" in row:
+            row["logon_record_id"] = str(row["logon_record_id"])
     return {
         "schema_version": SCHEMA,
         "scope_digest": scope.digest,
         "source_host_id": source_host_id,
         "source_receipt_digest": source_receipt_digest,
-        "record_epoch_digest": record_epoch_digest,
+        "capture_batch_digest": capture_batch_digest,
         "window_start": window_start,
         "window_end": window_end,
         "reported_completeness": completeness,
         "source_authenticity_verified": False,
+        "log_continuity_verified": False,
         "independent_observation": False,
         "effective_access_claim": False,
         "fresh_session_claim": False,

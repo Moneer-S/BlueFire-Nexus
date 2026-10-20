@@ -37,6 +37,15 @@ it("accepts the exact versioned fixture projection without expanding legacy work
   expect(() => checkedReview(s3Review("cleanup"), s3Owner, "cleanup")).toThrow();
 });
 
+it("keeps the selected S3 question on its workspace and returns to the chooser without route state", () => {
+  vi.spyOn(s3Api, "environments").mockResolvedValue({ schema_version: "bluefire.s3-environments.v1", environments: [], problem: null });
+  vi.spyOn(s3Api, "list").mockResolvedValue({ schema_version: "bluefire.s3-exercise-list.v1", exercises: [], truncated: false });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/s3-access?exercise=draft&context=retained&goal=s3-access"]}><S3AccessPage /></MemoryRouter></QueryClientProvider>);
+  expect(screen.getByRole("complementary", { name: "Selected objective" })).toHaveTextContent("Can we remove the probe role's S3 access while preserving legitimate reads?");
+  expect(screen.getByRole("link", { name: "Change objective" })).toHaveAttribute("href", "/getting-started?context=retained&goal=s3-access");
+});
+
 it.each([
   ["missing enrollment", (v: S3Exercise) => { delete v.environment.fixture_lifecycle; }],
   ["missing object", (v: S3Exercise) => { v.fixtures!.pop(); }],

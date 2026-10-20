@@ -119,7 +119,11 @@ class StubService:
 
     def ad_smb_workflows(self):
         self.calls.append(("ad_smb_workflows",))
-        return {"workflows": []}
+        return {
+            "schema_version": "bluefire.ad-smb-workflow-list.v1",
+            "effective_access_claim": False,
+            "workflows": [],
+        }
 
     def create_ad_smb(self, request):
         self.calls.append(("create_ad_smb", request))

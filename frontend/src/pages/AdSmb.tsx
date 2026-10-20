@@ -1,14 +1,22 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { ArrowRight, ClipboardCheck, FileSearch, History, Plus, RefreshCw, Square, Undo2, X } from "lucide-react";
+import { ArrowRight, ChevronLeft, ChevronRight, ClipboardCheck, FileSearch, History, Plus, RefreshCw, Square, Undo2, X } from "lucide-react";
 import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState, PageHeader, formatDate, sentence } from "../components/Primitives";
-import { adConfirmed, adJobId, adJobValid, adPhaseCurrent, adPhaseLabels, adReadinessLabels, adSmbApi, checkedAdEnvironments, checkedAdList, checkedAdReview, checkedAdWorkflow, clearAdPending, readAdPending, storeAdPending, type AdBudget, type AdChange, type AdEnvironment, type AdOperation, type AdPending, type AdPhase, type AdReview, type AdWorkflow } from "../lib/ad-smb";
+import { ObjectiveContext } from "../components/ObjectiveContext";
+import { adConfirmed, adJobId, adJobValid, adPhaseCurrent, adPhaseLabels, adReadinessLabels, adSmbApi, checkedAdEnvironments, checkedAdList, checkedAdReview, checkedAdWorkflow, clearAdPending, readAdPending, storeAdPending, type AdAuditEvent, type AdBudget, type AdChange, type AdEnvironment, type AdNormalizedAudit, type AdOperation, type AdPending, type AdPhase, type AdReview, type AdWorkflow } from "../lib/ad-smb";
 import "./AdSmb.css";
 
 export function AdSmbPage() {
   const client = useQueryClient();
   const [params, setParams] = useSearchParams();
+  const adSmbPath = (values: Record<string, string>, remove: string[] = []) => {
+    const next = new URLSearchParams(params);
+    remove.forEach(key => next.delete(key));
+    Object.entries(values).forEach(([key, value]) => next.set(key, value));
+    const query = next.toString();
+    return "/ad-smb" + (query ? "?" + query : "");
+  };
   const [restored] = useState(() => { try { return { pending: readAdPending(), error: undefined }; } catch (error) { return { pending: undefined, error }; } });
   const [pending, setPending] = useState(restored.pending);
   const [localError, setLocalError] = useState<unknown>(restored.error);
@@ -61,7 +69,7 @@ export function AdSmbPage() {
     if (locked.current || pending || localError) return;
     try {
       storeAdPending(submitted); locked.current = true; setPending(submitted); setReview(undefined);
-      setParams({ workflow: submitted.kind === "create" ? submitted.id : submitted.workflow });
+      setParams((current) => { const next = new URLSearchParams(current); next.set("workflow", submitted.kind === "create" ? submitted.id : submitted.workflow); return next; });
       write.mutate(submitted);
     } catch (error) { locked.current = false; setLocalError(error); }
   };
@@ -73,18 +81,19 @@ export function AdSmbPage() {
   };
   return <div className="page ad-smb-page">
     <PageHeader title="AD share access" actions={<Button disabled={busy || environments.isFetching || workflow.isFetching} onClick={() => { void refresh(); }}><RefreshCw />Refresh state</Button>} />
+    <ObjectiveContext expected="ad-access" />
     {localError ? <ErrorState title="Retained request needs attention" error={localError} /> : null}
     {pending ? <Callout tone="warning" title={write.isPending ? "Saving reviewed request" : "Original request not yet confirmed"}>
       <p>No replacement operation will be sent on reload.</p>
       <div className="ad-smb-actions"><Button disabled={write.isPending || checkPending.isPending} onClick={() => checkPending.mutate()}><RefreshCw />Check saved request</Button>
         {!write.isPending ? <Button disabled={locked.current || checkPending.isPending || Boolean(localError)} onClick={() => { if (!locked.current) { locked.current = true; write.mutate(pending); } }}><History />Resubmit original request</Button> : null}
-        {owner !== pendingOwner ? <Link to={`/ad-smb?workflow=${pendingOwner}`}>Open original exercise</Link> : null}
+        {owner !== pendingOwner ? <Link to={adSmbPath({ workflow: pendingOwner })}>Open original exercise</Link> : null}
       </div>
     </Callout> : null}
     {[write.error, checkPending.error, loadReview.error, control.error].filter(Boolean).map((error, index) => <ErrorState key={index} error={error} />)}
     <div className="ad-smb-layout">
-      <aside className="ad-smb-saved" aria-label="Saved AD exercises"><div className="ad-smb-section-heading"><h2>Saved exercises</h2><Link to="/ad-smb" aria-label="Environment selection"><Plus size={18} /></Link></div>
-        {saved.isPending ? <LoadingState label="Opening saved AD exercises" /> : saved.error ? <ErrorState error={saved.error} /> : <ul>{saved.data?.map(entry => <li key={entry.id}><Link aria-current={owner === entry.id ? "page" : undefined} to={`/ad-smb?workflow=${entry.id}`}><strong>{entry.environment.member}</strong><span>{entry.stopped ? "New work stopped" : sentence(entry.policy)} / revision {entry.revision}</span><small>{entry.environment.provenance === "synthetic_fixture" ? "Synthetic fixture" : "Runner-reported evidence"}</small></Link></li>)}</ul>}
+      <aside className="ad-smb-saved" aria-label="Saved AD exercises"><div className="ad-smb-section-heading"><h2>Saved exercises</h2><Link to={adSmbPath({}, ["workflow"])} aria-label="Environment selection"><Plus size={18} /></Link></div>
+        {saved.isPending ? <LoadingState label="Opening saved AD exercises" /> : saved.error ? <ErrorState error={saved.error} /> : <ul>{saved.data?.map(entry => <li key={entry.id}><Link aria-current={owner === entry.id ? "page" : undefined} to={adSmbPath({ workflow: entry.id })}><strong>{entry.environment.member}</strong><span>{entry.stopped ? "New work stopped" : sentence(entry.policy)} / revision {entry.revision}</span><small>{entry.environment.provenance === "synthetic_fixture" ? "Synthetic fixture" : "Runner-reported evidence"}</small></Link></li>)}</ul>}
         {saved.data?.length === 0 ? <p>No saved exercises.</p> : null}
       </aside>
       <div className="ad-smb-workspace">
@@ -170,9 +179,61 @@ function Evidence({ workflow }: { workflow: AdWorkflow }) {
   const auditObservation = audit?.executions.find(row => row.audit)?.audit;
   return <section className="ad-smb-section" aria-label="Retained AD evidence"><h2>Evidence and settlement</h2>
     {change ? <AclChange change={change} environment={workflow.environment} /> : null}
-    {auditObservation ? <p>Audit retained: {auditObservation.events} events{auditObservation.truncated ? ", truncated" : ""}. Source authentication and independence are not established.</p> : <p>{audit ? "No audit observation retained." : "Audit not collected."} No independent observation is reported.</p>}
+    {auditObservation?.normalized ? <AuditEventTable value={auditObservation.normalized} /> : auditObservation ? <p>Audit retained: {auditObservation.events} source events{auditObservation.truncated ? "; incomplete or truncated capture" : ""}. Normalized event rows are not present in this saved summary. Source authentication and independence are not established.</p> : <p>{audit ? "No audit observation retained." : "Audit not collected."} No independent observation is reported.</p>}
     <ol className="ad-smb-history">{workflow.operations.map(row => <li key={row.id}><div className="ad-smb-section-heading"><h3>{adPhaseLabels[row.phase]}</h3><Badge tone={row.state === "unknown" || row.expectation === "not_met" ? "warning" : "neutral"}>{sentence(row.state)}</Badge></div><DataList items={[{ label: "Cleanup", value: sentence(row.cleanup) }, { label: "Evidence", value: row.executions.every(execution => execution.provenance === "synthetic_fixture") ? "Synthetic fixture" : row.executions.some(execution => execution.provenance === "synthetic_fixture") ? "Mixed synthetic and runner-reported" : "Runner-reported" }]} /><Link to={`/runs/${encodeURIComponent(row.runId)}`}>Open retained run</Link><details><summary>Evidence references</summary><code>{row.digest}</code><ul>{row.executions.filter(execution => execution.read).map((execution, index) => <li key={index}>{execution.read?.reader} / {execution.read?.purpose}: {execution.read?.bytes} returned bytes; local context <code>{execution.read?.localContext ?? "Not recorded"}</code></li>)}</ul></details></li>)}</ol>
     {!workflow.operations.length ? <p>No stage evidence retained.</p> : null}
     <details><summary>Saved workflow reference</summary><code>{workflow.id}</code><p>Revision {workflow.revision}; share state {sentence(workflow.policy)}.</p></details>
   </section>;
+}
+const auditPageSize = 25;
+const captureLabels: Record<AdNormalizedAudit["captureState"], string> = {
+  query_exhausted: "Query exhausted",
+  event_limit: "Event limit reached",
+  byte_limit: "Byte limit reached",
+  event_rejected: "An event could not be projected",
+  deadline: "Capture deadline reached",
+  cancelled: "Capture cancelled",
+  read_failed: "Capture read failed",
+  cleanup_unknown: "Capture cleanup unknown",
+};
+function AuditEventTable({ value }: { value: AdNormalizedAudit }) {
+  const [page, setPage] = useState(0);
+  useEffect(() => setPage(0), [value.captureBatchDigest]);
+  const pageCount = Math.max(1, Math.ceil(value.events.length / auditPageSize));
+  const currentPage = Math.min(page, pageCount - 1);
+  const first = currentPage * auditPageSize;
+  const rows = value.events.slice(first, first + auditPageSize);
+  const completeness = ({ complete: "Complete within requested window", truncated: "Truncated capture", incomplete: "Incomplete capture", unknown: "Capture state unknown" } as const)[value.completeness];
+  return <div className="ad-smb-audit">
+    <div className="ad-smb-section-heading"><h3>Normalized Security events</h3><Badge tone={value.completeness === "complete" ? "neutral" : "warning"}>{completeness}</Badge></div>
+    <DataList items={[{ label: "Capture state", value: captureLabels[value.captureState] }, { label: "Captured source events", value: value.inputEvents }, { label: "Normalized rows", value: value.events.length }, { label: "Duplicate records omitted", value: value.duplicateEvents }, { label: "Requested window", value: <code>{value.windowStart} to {value.windowEnd}</code> }]} />
+    <p className="ad-smb-limits">A 5145 result is a share-level access check, not evidence of an NTFS read. Missing events or a denial do not establish prevention. Source authenticity, log continuity, independent observation, a fresh session, file content reads, and effective access are not verified.</p>
+    <details className="ad-smb-audit-source"><summary>Capture references and limitations</summary>
+      <DataList items={[{ label: "Source host reference", value: <code>{value.sourceHostId}</code> }, { label: "Source receipt digest", value: <code>{value.sourceReceiptDigest}</code> }, { label: "Capture batch reference", value: <code>{value.captureBatchDigest}</code> }, { label: "Scope reference", value: <code>{value.scopeDigest}</code> }]} />
+      <ul>{value.limitations.map(item => <li key={item}>{item}</li>)}</ul>
+    </details>
+    {value.events.length === 0 ? <p>No normalized event rows were retained for this capture.</p> : <>
+      <div className="ad-smb-table-wrap" role="region" aria-label="Normalized Security events table" tabIndex={0}><table className="ad-smb-audit-table"><thead><tr><th>Event time</th><th>Outcome</th><th>Principal</th><th>Target</th><th>Correlation</th><th>References</th></tr></thead><tbody>{rows.map(event => <AuditEventRow key={event.recordId} event={event} />)}</tbody></table></div>
+      <div className="ad-smb-audit-pagination"><span aria-live="polite">Events {first + 1}-{Math.min(first + auditPageSize, value.events.length)} of {value.events.length}</span><div>
+        <Button aria-label="Previous audit events" title="Previous audit events" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}><ChevronLeft /></Button>
+        <Button aria-label="Next audit events" title="Next audit events" disabled={currentPage + 1 >= pageCount} onClick={() => setPage(currentPage + 1)}><ChevronRight /></Button>
+      </div></div>
+    </>}
+  </div>;
+}
+function AuditEventRow({ event }: { event: AdAuditEvent }) {
+  const outcome = event.eventId === 5145
+    ? event.binding === "matched" ? `Share check ${event.shareCheck}` : `Share event ${event.binding.replaceAll("_", " ")}`
+    : `Logon event ${event.outcome}`;
+  const correlation = event.eventId === 5145 && event.binding === "matched"
+    ? ({ missing: "No matching logon record", ambiguous: "No unique qualifying logon record", kerberos_network: "Kerberos network logon correlated", not_verified_kerberos: "Logon correlated; Kerberos not verified" } as const)[event.serverLogon!]
+    : event.binding === "matched" ? "Scoped identity matched" : `Identity ${event.binding.replaceAll("_", " ")}`;
+  return <tr>
+    <td><time dateTime={event.observedAt}>{event.observedAt}</time></td>
+    <td>{outcome}<small className="ad-smb-audit-kind">{event.eventId} / {event.outcome}</small></td>
+    <td>{event.binding === "matched" ? <>{sentence(event.principalRole!)}<small className="ad-smb-audit-kind"><code>{event.principalSid}</code></small></> : "Not matched to a scoped principal"}</td>
+    <td>{event.eventId === 5145 && event.binding === "matched" ? <>{event.relativeTarget}<small className="ad-smb-audit-kind">{sentence(event.filePurpose!)} file; mask {event.accessMask}</small></> : "No scoped file target"}</td>
+    <td>{correlation}</td>
+    <td><details><summary>Source refs</summary><DataList items={[{ label: "Event", value: `${event.eventId} version ${event.version}` }, { label: "Record ID", value: event.recordId }, { label: "Source event digest", value: <code>{event.rawDigest}</code> }, ...(event.logonId ? [{ label: "Logon ID", value: <code>{event.logonId}</code> }] : []), ...(event.logonRecordId ? [{ label: "Correlated record ID", value: event.logonRecordId }] : []), ...(event.logonType !== undefined ? [{ label: "Logon type", value: event.logonType }] : []), ...(event.authenticationPackage ? [{ label: "Authentication package", value: event.authenticationPackage }] : []), ...(event.kerberosNetworkLogon !== undefined ? [{ label: "Kerberos network logon event", value: event.kerberosNetworkLogon ? "Matched classification only" : "No" }] : []), ...(event.clientIp ? [{ label: "Scoped client address", value: event.clientIp }] : []), ...(event.requestsFileData !== undefined ? [{ label: "Requests file data", value: event.requestsFileData ? "Yes; not proof of bytes read" : "No" }] : [])]} /></details></td>
+  </tr>;
 }

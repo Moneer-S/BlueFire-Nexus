@@ -29,6 +29,9 @@ LIMIT_CEILINGS = {
     "share_changes": 1,
     "rollbacks": 1,
 }
+# Audit rows are capped at 1,000 with fixed-schema bounded fields; reserve 1 MiB
+# beyond the 4 MiB capture ceiling for their serialized projection and envelope.
+MAX_AUDIT_EXECUTION_BYTES = LIMIT_CEILINGS["audit_bytes"] + 1024 * 1024
 _HEX32 = re.compile(r"[0-9a-f]{32}", re.ASCII)
 _VOLUME = re.compile(r"[0-9a-f]{16}", re.ASCII)
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}", re.ASCII)

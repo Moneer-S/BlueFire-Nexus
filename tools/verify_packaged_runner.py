@@ -60,6 +60,22 @@ _FAILURE_TYPES = frozenset(
         "RuntimeError",
         "ValueError",
         "BadZipFile",
+        "WindowsPairCapabilityError",
+    }
+)
+_WINDOWS_PAIR_CAPABILITY_FAILURES = frozenset(
+    {
+        "invalid_request",
+        "invalid_deadline",
+        "deadline_expired",
+        "timeout",
+        "launch_failure",
+        "capture_failure",
+        "nonzero_exit",
+        "stderr_nonempty",
+        "output_oversize",
+        "output_malformed",
+        "contract_mismatch",
     }
 )
 _VERIFICATION_STAGE = "arguments"
@@ -100,6 +116,10 @@ def _failure_diagnostic(
             }.items()
             for value in (bootstrap_status.get(key),)
         }
+    if stage == "windows_pair_capability":
+        category = getattr(error, "diagnostic_category", None)
+        if type(category) is str and category in _WINDOWS_PAIR_CAPABILITY_FAILURES:
+            diagnostic["failure_category"] = category
     return json.dumps(diagnostic, sort_keys=True, separators=(",", ":"))
 
 
