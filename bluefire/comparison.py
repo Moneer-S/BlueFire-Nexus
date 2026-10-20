@@ -12,7 +12,7 @@ from .collectors import CollectorError
 from .comparison_dimensions import cleanup_summary as _cleanup_summary
 from .comparison_dimensions import delta_dimensions, summary_dimensions
 from .comparison_materiality import configuration_changes, material_delta_fields
-from .run_store import RunStore
+from .run_store import RunStore, RunStoreError
 from .util import content_hash
 
 if TYPE_CHECKING:
@@ -101,10 +101,10 @@ def compare_runs(
         raise ComparisonError("comparison run IDs must be unique")
     snapshots = []
     for run_id in run_ids:
-        integrity = store.validate_bundle(run_id)
-        if not integrity.get("valid"):
-            raise ComparisonError(f"run bundle failed integrity validation: {run_id}")
-        snapshots.append(store.get_run(run_id))
+        try:
+            snapshots.append(store.get_run(run_id, require_finalized=True))
+        except RunStoreError as exc:
+            raise ComparisonError(f"run bundle failed integrity validation: {run_id}") from exc
     try:
         summaries = [_summarize(snapshot) for snapshot in snapshots]
     except CollectorError as exc:
