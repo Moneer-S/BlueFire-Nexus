@@ -528,6 +528,7 @@ def test_exception_after_second_dispatch_slot_keeps_cleanup_unknown(app, monkeyp
 
     monkeypatch.setattr(executor, "execute", unknown_second_dispatch)
     job = submit_failed_stage(jobs, owner, "retest")
+    assert job["error"]["exception_type"] == "RuntimeError"
     state = jobs.read(owner)
     assert len(job["progress"]["run_ids"]) == 2
     assert state["active_job"]["job_id"] == job["job_id"]
@@ -538,6 +539,57 @@ def test_exception_after_second_dispatch_slot_keeps_cleanup_unknown(app, monkeyp
     with pytest.raises(S3AccessError, match="sealed result"):
         jobs.recover(owner, {})
     assert len(executor.calls) == calls
+    assert jobs.read(owner) == state
+
+
+@pytest.mark.parametrize("finalization", ["unsealed", "store_unavailable"])
+def test_pre_result_error_stays_primary_without_releasing_unsealed_reservation(
+    app, monkeypatch, finalization
+):
+    jobs, executor = app
+    owner = create(jobs)["workflow_job_id"]
+    primary = S3AccessError("private admission refusal detail")
+    finalization_errors = []
+    original_finish = records.finish
+
+    def refused(*_args, **_kwargs):
+        raise primary
+
+    def finish(*args, **kwargs):
+        try:
+            if finalization == "store_unavailable":
+                raise RuntimeError("private failure-recording detail")
+            return original_finish(*args, **kwargs)
+        except Exception as error:
+            finalization_errors.append(error)
+            raise
+
+    monkeypatch.setattr(executor, "execute", refused)
+    monkeypatch.setattr(records, "finish", finish)
+
+    job = submit_failed_stage(jobs, owner, "inspect")
+
+    assert job["error"] == {
+        "code": "execution_callback_failed",
+        "message": "execution callback failed",
+        "exception_type": "S3AccessError",
+    }
+    assert len(finalization_errors) == 1
+    assert primary.__cause__ is finalization_errors[0]
+    if finalization == "unsealed":
+        assert isinstance(primary.__cause__, ProductStoreError)
+        assert str(primary.__cause__) == "The original S3 operation still has an unsealed result."
+    state = jobs.read(owner)
+    assert state["active_job"]["job_id"] == job["job_id"]
+    assert state["operations"] == []
+    assert state["allowed_phases"] == []
+    assert state["saved_result_recovery_available"] is True
+    assert len(job["progress"]["run_ids"]) == 1
+    assert not jobs.runs.get_run(job["progress"]["run_ids"][0]).get("manifest")
+    assert executor.calls == []
+    with pytest.raises(S3AccessError, match="sealed result"):
+        jobs.recover(owner, {})
+    assert executor.calls == []
     assert jobs.read(owner) == state
 
 

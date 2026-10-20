@@ -526,7 +526,7 @@ fn provider_documents(
         required_capabilities: vec![crate::contract::Capability::NativeExecution],
         safety_tier: crate::contract::SafetyTier::Safe,
         limits: test_limits(),
-        cleanup_action_id: "sandbox.cleanup.v1".to_string(),
+        cleanup_action_id: Some("sandbox.cleanup.v1".to_string()),
         policy_digest: profile.policy_digest.clone(),
         approval: None,
         grant_attempt: None,
@@ -627,7 +627,7 @@ fn alias_documents(
         required_capabilities: descriptor.capabilities.to_vec(),
         safety_tier: descriptor.safety_tier,
         limits: test_limits(),
-        cleanup_action_id: "sandbox.cleanup.v1".to_string(),
+        cleanup_action_id: Some("sandbox.cleanup.v1".to_string()),
         policy_digest: profile.policy_digest.clone(),
         approval: None,
         grant_attempt: None,
@@ -637,6 +637,25 @@ fn alias_documents(
     };
     crate::contract::seal_manifest(&mut manifest);
     (profile, manifest)
+}
+
+#[test]
+fn explicitly_null_cleanup_does_not_bypass_generic_runner_policy() {
+    let binding = alias_binding(
+        "acme.profile.v1",
+        "acme.profile-action.v1",
+        "endpoint.discovery.system.v1",
+    );
+    let (profile, manifest) = alias_documents(Path::new("."), binding, json!({}));
+    assert!(validate_policy(&manifest, &profile).is_ok());
+    let mut document = serde_json::to_value(manifest).unwrap();
+    document["cleanup_action_id"] = Value::Null;
+    let mut manifest: ExecutionManifest = serde_json::from_value(document).unwrap();
+    crate::contract::seal_manifest(&mut manifest);
+    assert_eq!(
+        validate_policy(&manifest, &profile).err().unwrap().code,
+        "cleanup_action_blocked"
+    );
 }
 
 #[test]

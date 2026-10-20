@@ -199,7 +199,7 @@ fn manifest(profile: &RunnerProfile, action_id: &str, params: Value) -> Executio
         required_capabilities: descriptor.capabilities.to_vec(),
         safety_tier: descriptor.safety_tier,
         limits: limits(),
-        cleanup_action_id: "sandbox.cleanup.v1".to_string(),
+        cleanup_action_id: Some("sandbox.cleanup.v1".to_string()),
         policy_digest: profile.policy_digest.clone(),
         approval: None,
         grant_attempt: None,

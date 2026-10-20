@@ -332,3 +332,7 @@ pub(crate) mod tests;
 #[cfg(test)]
 #[path = "s3_reservation_size_tests.rs"]
 mod size_tests;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "s3_audit_connected_tests.rs"]
+mod connected_tests;

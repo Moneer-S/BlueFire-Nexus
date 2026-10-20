@@ -787,6 +787,7 @@
     "s3_worker_secret": "safety",
     "s3_worker_protocol": "execution",
     "s3_worker_protocol_tests": "execution",
+    "s3_audit_connected_tests": "execution",
     "owned_child_identity": "platform",
     "s3_runtime_manifest": "foundation",
     "s3_runtime": "platform",

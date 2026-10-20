@@ -20,6 +20,8 @@ COMMAND_SOURCES = (
     "service_query_process.rs",
     "service_query_process_tests.rs",
     WORKER,
+    "s3_audit_connected_tests.rs",
+    "s3_reservation.rs",
 )
 
 
@@ -89,25 +91,47 @@ def test_fixed_worker_bytes_and_inventory_cannot_be_substituted(tmp_path, change
     assert not _native_command_source_inventory_is_fixed(tmp_path)
 
 
+@pytest.mark.parametrize("change", ["bridge_bytes", "test_gate", "linux_gate", "extra_command"])
+def test_connected_test_command_is_exactly_pinned_and_linux_test_only(tmp_path, change):
+    source = _inventory(tmp_path)
+    if change == "bridge_bytes":
+        bridge = source / "s3_audit_connected_tests.rs"
+        original = bridge.read_bytes()
+        bridge.write_bytes(original.replace(b"connected", b"connectEd", 1))
+    elif change in {"test_gate", "linux_gate"}:
+        reservation = source / "s3_reservation.rs"
+        original = reservation.read_bytes()
+        if change == "test_gate":
+            before, after = b"all(test, target_os = ", b"all(target_os = "
+        else:
+            before, after = b"all(test, target_os = ", b"all(test, os = "
+        assert original.count(before) == 1
+        reservation.write_bytes(original.replace(before, after, 1))
+    else:
+        (source / "unexpected.rs").write_bytes(b'fn launch() { Command::new("caller"); }')
+    assert not _native_command_source_inventory_is_fixed(tmp_path)
+
+
 @pytest.mark.parametrize("source", [b"", b"\xff", "not bytes", None])
 def test_invalid_worker_source_is_refused(source):
     assert not reviewed_s3_worker_source(source)
 
 
 @pytest.mark.parametrize("with_worker_rule", [True, False])
-def test_autocrlf_checkout_preserves_only_the_exact_reviewed_worker(tmp_path, with_worker_rule):
+@pytest.mark.parametrize("name", [WORKER, "s3_audit_connected_tests.rs", "s3_reservation.rs"])
+def test_autocrlf_checkout_preserves_reviewed_source(tmp_path, with_worker_rule, name):
     git = shutil.which("git")
     assert git is not None
-    rule = b"/runner/src/s3_worker_process.rs text eol=lf"
+    rule = f"/runner/src/{name} text eol=lf".encode()
     attributes = (ROOT / ".gitattributes").read_bytes().replace(b"\r\n", b"\n")
     if not with_worker_rule:
         attributes = b"\n".join(line for line in attributes.split(b"\n") if line != rule)
     source = tmp_path / "source"
-    worker = source / "runner/src" / WORKER
+    worker = source / "runner/src" / name
     worker.parent.mkdir(parents=True)
     (source / ".gitattributes").write_bytes(attributes)
-    original = _source(WORKER)
-    assert reviewed_s3_worker_source(original) and b"\r" not in original
+    original = _source(name)
+    assert b"\r" not in original
     worker.write_bytes(original)
     (source / "control.txt").write_bytes(b"synthetic checkout control\n")
     environment = {
@@ -147,12 +171,13 @@ def test_autocrlf_checkout_preserves_only_the_exact_reviewed_worker(tmp_path, wi
         ).stdout
 
     command("init", "-q")
-    command("add", "--", ".gitattributes", "control.txt", "runner/src/" + WORKER)
+    command("add", "--", ".gitattributes", "control.txt", "runner/src/" + name)
     output = tmp_path / "materialized"
     output.mkdir()
     command("checkout-index", "--all", "--prefix=" + output.as_posix() + "/")
     assert (output / "control.txt").read_bytes() == b"synthetic checkout control\r\n"
-    actual = (output / "runner/src" / WORKER).read_bytes()
+    actual = (output / "runner/src" / name).read_bytes()
     expected = original if with_worker_rule else original.replace(b"\n", b"\r\n")
     assert actual == expected
-    assert reviewed_s3_worker_source(actual) is with_worker_rule
+    if name == WORKER:
+        assert reviewed_s3_worker_source(actual) is with_worker_rule
