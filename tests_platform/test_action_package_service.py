@@ -19,6 +19,7 @@ from bluefire.action_packages import (
 from bluefire.api import APIError
 from bluefire.config import RunnerProfile
 from bluefire.contracts import ExecutionMode
+from bluefire.job_runtime import JobState
 from bluefire.orchestrator import Orchestrator
 from bluefire.runner_client import (
     RunnerReadinessError,
@@ -412,6 +413,10 @@ def test_catalog_change_refuses_reviewed_job_before_native_dispatch(
         }
     )
     job_id = str(submission["job"]["job_id"])
+    reviewed_job = service.job_controller.wait_for_state(
+        job_id, {JobState.AWAITING_APPROVAL}, timeout=5
+    )
+    assert reviewed_job["state"] == "awaiting_approval", reviewed_job
 
     _install(service, key, "1.2.4")
     upgraded = _activate(service, "1.2.4")
