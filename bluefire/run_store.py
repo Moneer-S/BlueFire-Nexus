@@ -338,11 +338,11 @@ class RunStore:
             "items": items,
         }
 
-    def get_run(self, run_id: str) -> Mapping[str, Any]:
+    def get_run(self, run_id: str, *, require_finalized: bool = False) -> Mapping[str, Any]:
         run_path = self._run_path(run_id, must_exist=True)
         manifest_path = self._contained_child(run_path, "manifest.json")
         manifest: Mapping[str, Any] | None = None
-        if manifest_path.exists():
+        if require_finalized or manifest_path.exists():
             integrity = self.validate_bundle(run_id)
             if not integrity.get("valid"):
                 mismatches = ", ".join(str(name) for name in integrity.get("mismatches", []))
