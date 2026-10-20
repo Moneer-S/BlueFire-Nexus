@@ -344,7 +344,10 @@ def test_connected_bridge_is_opt_in_and_production_collection_remains_closed():
     registration = (Path(__file__).parents[1] / "runner/src/s3_reservation.rs").read_text(
         encoding="utf-8"
     )
-    assert '#[cfg(test)]\n#[path = "s3_audit_connected_tests.rs"]' in registration
+    assert (
+        '#[cfg(all(test, target_os = "linux"))]\n#[path = "s3_audit_connected_tests.rs"]'
+        in registration
+    )
     native = (Path(__file__).parents[1] / "runner/src/s3_audit_connected_tests.rs").read_text(
         encoding="utf-8"
     )

@@ -26,6 +26,15 @@ _REVIEWED_QUERY_FIXTURE_SOURCE = (
     13_948,
     "sha256:1618215891cb404d5b419051013b404f6081d15cb55c51ea43dfaebd4643c721",
 )
+_REVIEWED_S3_CONNECTED_TEST_SOURCE = (
+    23_246,
+    "sha256:f1b2586b4f2f913612e0f7bcd0779a569e1afa244e602a72b4800c5e233b5522",
+)
+_S3_CONNECTED_TEST_REGISTRATION = (
+    b'#[cfg(all(test, target_os = "linux"))]\n'
+    b'#[path = "s3_audit_connected_tests.rs"]\n'
+    b"mod connected_tests;"
+)
 
 
 def _reviewed_service_query_sources(process: bytes, fixture: bytes) -> bool:
@@ -166,7 +175,20 @@ def _native_command_source_inventory_is_fixed(repository: Path) -> bool:
         "service_query_process.rs",
         "service_query_process_tests.rs",
         "s3_worker_process.rs",
+        "s3_audit_connected_tests.rs",
     }:
+        return False
+    bridge = command_sources["s3_audit_connected_tests.rs"]
+    if (
+        len(bridge) != _REVIEWED_S3_CONNECTED_TEST_SOURCE[0]
+        or _sha256_bytes(bridge) != _REVIEWED_S3_CONNECTED_TEST_SOURCE[1]
+    ):
+        return False
+    try:
+        registration = (source_root / "s3_reservation.rs").read_bytes()
+    except OSError:
+        return False
+    if registration.count(_S3_CONNECTED_TEST_REGISTRATION) != 1:
         return False
     if not _reviewed_service_query_sources(
         command_sources["service_query_process.rs"],

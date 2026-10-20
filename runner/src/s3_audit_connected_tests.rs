@@ -467,7 +467,6 @@ fn application_worker_bridge() {
     .unwrap();
     let end = Instant::now() + Duration::from_secs(20);
     let deadline = end - Duration::from_secs(2);
-    let execution;
     let mut process = Process::start(
         &tools,
         &tools_path,
@@ -476,17 +475,17 @@ fn application_worker_bridge() {
         now,
         fault == "lost_ack",
     );
-    if admission.binding().audit().is_none() {
+    let execution = if admission.binding().audit().is_none() {
         let store = S3ReservationStore::open(&admission).unwrap();
         let reservation = store.reserve(&admission, now).unwrap();
-        execution = crate::s3_worker_protocol::supervise(
+        crate::s3_worker_protocol::supervise(
             &mut process,
             reservation,
             secret,
             deadline,
             end,
             &AtomicBool::new(false),
-        );
+        )
     } else {
         assert!(S3ReservationStore::open(&admission).is_err());
         let raw = audited(&admission);
@@ -573,15 +572,15 @@ fn application_worker_bridge() {
             admission: &admission,
             reservation_digest,
         };
-        execution = crate::s3_worker_protocol::supervise(
+        crate::s3_worker_protocol::supervise(
             &mut process,
             reservation,
             secret,
             deadline,
             end,
             &AtomicBool::new(false),
-        );
-    }
+        )
+    };
     assert!(process.reaped && process.signalled && process.group_absent());
     assert_eq!(process.lost_ack_seen, fault == "lost_ack");
     let storage = Storage::open(

@@ -1987,6 +1987,10 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
     )
     worker_source = (REPOSITORY / "runner" / "src" / "s3_worker_process.rs").read_bytes()
     (command_inventory / "runner" / "src" / "s3_worker_process.rs").write_bytes(worker_source)
+    for name in ("s3_audit_connected_tests.rs", "s3_reservation.rs"):
+        (command_inventory / "runner" / "src" / name).write_bytes(
+            (REPOSITORY / "runner" / "src" / name).read_bytes()
+        )
     assert provider_gate_source_audit._native_command_source_inventory_is_fixed(command_inventory)
     chmod_copy.write_bytes(
         chmod_source + b'\nfn unreviewed() { let _ = std::process::Command::new("unreviewed"); }\n'

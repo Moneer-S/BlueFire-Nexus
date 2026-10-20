@@ -20,6 +20,8 @@ REVIEWED_FILES = (
     PROCESS,
     FIXTURE,
     "s3_worker_process.rs",
+    "s3_audit_connected_tests.rs",
+    "s3_reservation.rs",
 )
 
 
