@@ -3,6 +3,7 @@ import { ArrowLeft, Check, Cloud, FileSearch, Pause, Play, Plus, RefreshCw, Rota
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState, PageHeader, sentence } from "../components/Primitives";
+import { ObjectiveContext } from "../components/ObjectiveContext";
 import { clearS3Pending, clearS3Stop, confirmsS3Pending, phaseName, readS3Pending, readS3Stops, s3Api, s3JobId, s3ReviewCurrent, s3StageAvailable, storeS3Pending, storeS3Stop, validS3Job, type S3Exercise, type S3Operation, type S3Pending, type S3Phase, type S3Review } from "../lib/s3-access";
 import { auditBudgetKeys, type AuditStageReview, type AuditWorkspace } from "../lib/s3-audit-workspace";
 import { writeComparisonContext } from "../lib/comparison-context";
@@ -31,7 +32,17 @@ export function S3AccessPage() {
   const environment = useQuery({ queryKey: ["s3-environments"], queryFn: s3Api.environments, retry: false });
   const list = useQuery({ queryKey: ["s3-exercises"], queryFn: s3Api.list, retry: false });
   const exercise = useQuery({ queryKey: ["s3-exercise", owner], queryFn: () => s3Api.read(owner), enabled: validS3Job(owner), retry: false, refetchInterval: query => query.state.data?.active_job && !query.state.data.saved_result_recovery_available ? 2000 : false });
-  const navigate = (next: string) => { setReview(null); setConfirmed(false); setParams(next ? { exercise: next } : {}); };
+  const exerciseParams = (next: string) => {
+    const value = new URLSearchParams(params);
+    if (next) value.set("exercise", next);
+    else value.delete("exercise");
+    return value;
+  };
+  const exerciseHref = (next: string) => {
+    const query = exerciseParams(next).toString();
+    return query ? `/s3-access?${query}` : "/s3-access";
+  };
+  const navigate = (next: string) => { setReview(null); setConfirmed(false); setParams(exerciseParams(next)); };
   const save = useMutation({ mutationFn: s3Api.send, onSuccess: value => { client.setQueryData(["s3-exercise", value.workflow_job_id], value); void list.refetch(); setReview(null); }, onSettled: () => { lock.current = false; } });
   const inspect = useMutation({ mutationFn: (phase: S3Phase) => s3Api.review(owner, phase), onSuccess: value => { if (value.workflow_job_id === owner) { setReview(value); setConfirmed(false); setReviewer(""); } } });
   const control = useMutation({ mutationFn: (command: { identifier: string; action: "stop" | "recover"; finalizedRecheck?: boolean }) => s3Api.control(command.identifier, command.action), onMutate: command => { if (command.finalizedRecheck) setRecheckNotice(current => current === command.identifier ? null : current); }, onSuccess: (value, command) => { if (value.workflow_job_id === command.identifier) client.setQueryData(["s3-exercise", value.workflow_job_id], value); if (ownerRef.current === command.identifier) { setReview(null); if (command.finalizedRecheck) setRecheckNotice(finalizedAuditRecheckOperations(value).length > 0 ? command.identifier : null); } void list.refetch(); } });
@@ -53,6 +64,7 @@ export function S3AccessPage() {
   const finalizedRecheckOperations = finalizedAuditRecheckOperations(value);
   return <div className="page s3-access-page">
     <PageHeader title={value ? value.environment.display_name : "S3 access"} eyebrow="Cloud access review" actions={<><Button disabled={environment.isFetching || exercise.isFetching} onClick={() => { void environment.refetch(); void list.refetch(); if (owner) void exercise.refetch(); }}><RefreshCw />Refresh</Button>{validS3Job(owner) ? <Button variant="danger" disabled={control.isPending || Boolean(value?.stopped && !value.active_job)} onClick={stop}><Pause />{stops.includes(owner) ? "Retry stop" : value?.active_job ? "Stop current operation" : value?.stopped ? "Stopped" : "Stop new work"}</Button> : null}</>} />
+    <ObjectiveContext expected="s3-access" />
     {localError ? <ErrorState title="Saved request needs attention" error={localError} /> : null}
     {pending ? <Callout tone="warning" title="Submission confirmation pending"><p>The original request may already be saved. No automatic retry has been sent.</p><div className="s3-actions"><Button disabled={save.isPending} onClick={() => { navigate(pending.owner); void client.invalidateQueries({ queryKey: ["s3-exercise", pending.owner] }); }}><FileSearch />Check saved status</Button><Button disabled={save.isPending || Boolean(localError) || stops.includes(pending.owner)} onClick={() => send(pending)}><RefreshCw />Retry exact submission</Button></div></Callout> : null}
     {save.error ? <ErrorState title="Submission not confirmed" error={save.error} /> : null}
@@ -62,9 +74,9 @@ export function S3AccessPage() {
     {setupOpen ? <S3Setup onClose={() => showSetup(false)} /> : null}
     {!owner ? <>
       <section className="s3-band" aria-label="Enrolled environments"><h2>Enrolled environments</h2>{environment.isPending ? <LoadingState label="Checking S3 enrollment" /> : environment.error ? <ErrorState error={environment.error} /> : !environment.data?.environments.length ? <Callout tone="warning" title="Unavailable"><p>{environment.data?.problem}</p><Button onClick={() => showSetup(true)}><Settings2 />Set up connection</Button></Callout> : <div className="s3-environments">{environment.data.environments.map(row => <article key={row.environment.environment_id} className="s3-environment"><Cloud aria-hidden="true" /><div><h3>{row.environment.display_name}</h3><p>{row.environment.scope.bucket} · {row.environment.scope.region}</p>{row.problem ? <p>{row.problem}</p> : null}</div><Badge tone={row.available ? "info" : "warning"}>{row.available ? "Ready for review" : "Unavailable"}</Badge><Button disabled={blocked || !row.available} onClick={() => { const submission_id = crypto.randomUUID(); send({ kind: "create", owner: s3JobId(submission_id), request: { submission_id, environment_id: row.environment.environment_id, context_digest: row.context_digest } }); }}><Play />Open exercise</Button></article>)}</div>}</section>
-      <section className="s3-band" aria-label="Saved S3 exercises"><h2>Saved exercises</h2>{list.error ? <ErrorState error={list.error} /> : list.isPending ? <LoadingState label="Opening saved work" /> : <div className="s3-saved">{list.data?.exercises.map(row => validS3Job(row.workflow_job_id) ? <Link key={row.workflow_job_id} to={`/s3-access?exercise=${row.workflow_job_id}`}><span><strong>{row.name}</strong><small>{row.bucket}</small></span><Badge>{sentence(row.policy_state)}</Badge></Link> : null)}{!list.data?.exercises.length ? <p>No saved exercises.</p> : null}{list.data?.truncated ? <p>Showing the most recent 100 exercises.</p> : null}</div>}</section>
+      <section className="s3-band" aria-label="Saved S3 exercises"><h2>Saved exercises</h2>{list.error ? <ErrorState error={list.error} /> : list.isPending ? <LoadingState label="Opening saved work" /> : <div className="s3-saved">{list.data?.exercises.map(row => validS3Job(row.workflow_job_id) ? <Link key={row.workflow_job_id} to={exerciseHref(row.workflow_job_id)}><span><strong>{row.name}</strong><small>{row.bucket}</small></span><Badge>{sentence(row.policy_state)}</Badge></Link> : null)}{!list.data?.exercises.length ? <p>No saved exercises.</p> : null}{list.data?.truncated ? <p>Showing the most recent 100 exercises.</p> : null}</div>}</section>
     </> : <>
-      <Link to="/s3-access"><ArrowLeft size={16} />Saved exercises</Link>
+      <Link to={exerciseHref("")}><ArrowLeft size={16} />Saved exercises</Link>
       {exercise.error ? <ErrorState title="Saved status unavailable" error={exercise.error} retry={() => { void exercise.refetch(); }} /> : null}
       {!validS3Job(owner) ? <ErrorState error={new Error("This saved exercise link is invalid.")} /> : !value ? exercise.error ? null : <LoadingState label="Opening S3 exercise" /> : <>
         <section className="s3-objective" aria-label="Access objective"><div><h2>Remove unintended read access</h2><p>{value.environment.scope.bucket} · {value.environment.scope.region}</p></div><Badge tone={value.policy_state === "uncertain" || value.policy_state === "drift" ? "warning" : "neutral"}>{sentence(value.policy_state)} policy</Badge></section>

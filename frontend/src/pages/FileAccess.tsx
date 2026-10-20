@@ -6,6 +6,7 @@ import { compositionJobId, compositionJobValid, FILE_ACCESS_PACK, MACOS_FILE_ACC
 import { checkedFileAccessControl, checkedFileAccessList, checkedFileAccessOperation, checkedFileAccessStatus, clearFileAccessPending, fileAccessApi, fileAccessCompositionPack, fileAccessConfirmed, fileAccessControlIdValid, fileAccessJobActive, fileAccessOperationLabels, macOSFileAccessControlIdValid, readFileAccessPending, readFileAccessReconciliationPending, storeFileAccessPending, type FileAccessObservation, type FileAccessPending, type FileAccessReviewRequest, type FileAccessSubmission, type LinuxFileAccessControl, type MacOSFileAccessControl, type WindowsFileAccessControl, type WindowsPairedFileAccessControl, type WindowsSetupFileAccessControl } from "../lib/file-access";
 import { FileAccessReview } from "../components/FileAccessReview";
 import { FileAccessReconciliation } from "../components/FileAccessReconciliation";
+import { ObjectiveContext } from "../components/ObjectiveContext";
 import { WindowsFileAccessCorrection } from "../components/WindowsFileAccessCorrection";
 import { Badge, Button, Callout, DataList, ErrorState, LoadingState, PageHeader, sentence } from "../components/Primitives";
 import "./FileAccess.css";
@@ -22,6 +23,13 @@ export function FileAccessPage() {
   const locked = useRef(false);
   const restoredNavigation = useRef(false);
   const pendingOwner = pending ? pending.body.review.control_owner_id ?? pending.id : reconciliation?.control_owner_id ?? "";
+  const fileAccessPath = (values: Record<string, string>, remove: string[] = ["operation"]) => {
+    const next = new URLSearchParams(params);
+    remove.forEach(key => next.delete(key));
+    Object.entries(values).forEach(([key, value]) => next.set(key, value));
+    const query = next.toString();
+    return "/file-access" + (query ? "?" + query : "");
+  };
   const owner = params.get("control") ?? pendingOwner;
   const operationId = params.get("operation") ?? (owner === pendingOwner ? pending?.id ?? reconciliation?.operation_job_id : "") ?? "";
   const status = useQuery({ queryKey: ["file-access-status"], queryFn: async () => checkedFileAccessStatus(await fileAccessApi.status()), retry: false });
@@ -34,7 +42,12 @@ export function FileAccessPage() {
     if (restoredNavigation.current) return;
     restoredNavigation.current = true;
     if ((!pending && !reconciliation) || params.get("operation") || params.get("control")) return;
-    setParams({ control: pendingOwner, operation: operationId }, { replace: true });
+    setParams(current => {
+      const next = new URLSearchParams(current);
+      next.set("control", pendingOwner);
+      next.set("operation", operationId);
+      return next;
+    }, { replace: true });
   }, [pending, reconciliation, pendingOwner, operationId, params, setParams]);
   useEffect(() => {
     if (!pending || !operation.data || !fileAccessConfirmed(operation.data, pending)) return;
@@ -75,7 +88,12 @@ export function FileAccessPage() {
       client.setQueryData(["file-access-control", saved.control_owner_id], saved);
       void client.invalidateQueries({ queryKey: ["file-access-list"] });
       void client.invalidateQueries({ queryKey: ["file-access-status"] });
-      setParams({ control: saved.control_owner_id });
+      setParams(current => {
+        const next = new URLSearchParams(current);
+        next.delete("operation");
+        next.set("control", saved.control_owner_id);
+        return next;
+      });
     },
   });
   const send = (body: FileAccessSubmission) => {
@@ -84,7 +102,12 @@ export function FileAccessPage() {
     const value = { id: compositionJobId(body.submission_id), body };
     try {
       storeFileAccessPending(value); locked.current = true; setPending(value); setReview(undefined);
-      setParams({ control: body.review.control_owner_id ?? value.id, operation: value.id });
+      setParams(current => {
+        const next = new URLSearchParams(current);
+        next.set("control", body.review.control_owner_id ?? value.id);
+        next.set("operation", value.id);
+        return next;
+      });
       write.mutate(value);
     } catch (error) { locked.current = false; setLocalError(error); }
   };
@@ -115,6 +138,7 @@ export function FileAccessPage() {
   const refresh = () => { void status.refetch(); void list.refetch(); if (owner) void control.refetch(); if (operationId) void operation.refetch(); };
   return <div className="page file-access-page">
     <PageHeader title="Effective file access" actions={<Button disabled={status.isFetching || control.isFetching || operation.isFetching} onClick={refresh}><RefreshCw />Refresh state</Button>} />
+    <ObjectiveContext expected="file-access" />
     {localError ? <ErrorState title="Saved operation needs attention" error={localError} /> : null}
     <section className="file-access-section" aria-label="File-access enrollment">
       {status.isPending ? <LoadingState label="Checking protected file-access setup" /> : status.error ? <ErrorState error={status.error} /> : null}
@@ -136,15 +160,15 @@ export function FileAccessPage() {
       {!owner && canCreate ? <Button disabled={!ready || blocked} onClick={() => setReview({ operation: "create", control_owner_id: null })}><FileLock2 />Review generated resource</Button> : null}
     </section>
     <section className="file-access-section" aria-label="Saved file-access controls"><h2>Saved controls</h2>
-      {list.error ? <ErrorState error={list.error} /> : list.isPending ? <LoadingState label="Opening saved controls" /> : <div className="file-access-list">{list.data?.controls.map(item => { const label = item.platform === "windows" ? "Windows protected setup" : item.platform === "macos" ? "macOS workspace control" : "Generated file access"; return <div key={item.control_owner_id}><Link aria-label={`Open ${item.platform ? label : "generated file access"}, ${sentence(item.status)}, revision ${item.revision}, reference ${item.control_owner_id.slice(-8)}`} aria-current={owner === item.control_owner_id ? "page" : undefined} to={`/file-access?control=${encodeURIComponent(item.control_owner_id)}`}><strong>{label}</strong><span>{sentence(item.status)} / revision {item.revision}</span></Link><details><summary>Control reference</summary><code>{item.control_owner_id}</code></details></div>; })}{!list.data?.controls.length ? <p>No saved controls.</p> : null}</div>}
-      {owner ? <Link to="/file-access">Enrollment and resource review</Link> : null}
+      {list.error ? <ErrorState error={list.error} /> : list.isPending ? <LoadingState label="Opening saved controls" /> : <div className="file-access-list">{list.data?.controls.map(item => { const label = item.platform === "windows" ? "Windows protected setup" : item.platform === "macos" ? "macOS workspace control" : "Generated file access"; return <div key={item.control_owner_id}><Link aria-label={`Open ${item.platform ? label : "generated file access"}, ${sentence(item.status)}, revision ${item.revision}, reference ${item.control_owner_id.slice(-8)}`} aria-current={owner === item.control_owner_id ? "page" : undefined} to={fileAccessPath({ control: item.control_owner_id })}><strong>{label}</strong><span>{sentence(item.status)} / revision {item.revision}</span></Link><details><summary>Control reference</summary><code>{item.control_owner_id}</code></details></div>; })}{!list.data?.controls.length ? <p>No saved controls.</p> : null}</div>}
+      {owner ? <Link to={fileAccessPath({}, ["control", "operation"])}>Enrollment and resource review</Link> : null}
     </section>
     {pending ? <Callout title="Operation confirmation pending"><p>{macOSStatus || macOSFileAccessControlIdValid(pending.body.review.control_owner_id) ? "The original request is retained for status checks only in this workspace. No operation is replayed." : "The original request is retained. Resubmission uses its unchanged identity, not a new operation. No automatic effect retry is performed."}</p><details><summary>Original submission reference</summary><code>{pending.id}</code></details>
-      {operationId !== pending.id ? <Link to={`/file-access?${new URLSearchParams({ control: pending.body.review.control_owner_id ?? pending.id, operation: pending.id })}`}>Open pending operation</Link> : <div className="file-access-actions"><Button disabled={operation.isFetching || write.isPending} onClick={() => { void operation.refetch(); }}><RefreshCw />Check saved operation</Button>{statusCurrent && !macOSStatus && !macOSFileAccessControlIdValid(pending.body.review.control_owner_id) ? <Button disabled={write.isPending || locked.current} onClick={() => { if (!locked.current) { locked.current = true; write.mutate(pending); } }}>Resubmit original request</Button> : null}</div>}
+      {operationId !== pending.id ? <Link to={fileAccessPath({ control: pending.body.review.control_owner_id ?? pending.id, operation: pending.id })}>Open pending operation</Link> : <div className="file-access-actions"><Button disabled={operation.isFetching || write.isPending} onClick={() => { void operation.refetch(); }}><RefreshCw />Check saved operation</Button>{statusCurrent && !macOSStatus && !macOSFileAccessControlIdValid(pending.body.review.control_owner_id) ? <Button disabled={write.isPending || locked.current} onClick={() => { if (!locked.current) { locked.current = true; write.mutate(pending); } }}>Resubmit original request</Button> : null}</div>}
     </Callout> : null}
     {write.error ? <ErrorState title="Operation not confirmed" error={write.error} /> : null}
-    {statusCurrent && !macOSStatus && !macOSFileAccessControlIdValid(owner) ? <FileAccessReconciliation operation={operation.error ? undefined : operation.data} pending={reconciliation} disabled={Boolean(pending) || Boolean(localError) || write.isPending} onPending={setReconciliation} onError={setLocalError} /> : null}
-    {macOSStatus && reconciliation ? <Callout title="Saved evidence request is read-only"><p>This request belongs to another prepared platform. It cannot be resubmitted or reconciled in this macOS workspace.</p><Link to={`/file-access?${new URLSearchParams({ control: reconciliation.control_owner_id, operation: reconciliation.operation_job_id })}`}>Open original operation</Link></Callout> : null}
+    {statusCurrent && !macOSStatus && !macOSFileAccessControlIdValid(owner) ? <FileAccessReconciliation operation={operation.error ? undefined : operation.data} pending={reconciliation} disabled={Boolean(pending) || Boolean(localError) || write.isPending} fileAccessPath={fileAccessPath} onPending={setReconciliation} onError={setLocalError} /> : null}
+    {macOSStatus && reconciliation ? <Callout title="Saved evidence request is read-only"><p>This request belongs to another prepared platform. It cannot be resubmitted or reconciled in this macOS workspace.</p><Link to={fileAccessPath({ control: reconciliation.control_owner_id, operation: reconciliation.operation_job_id })}>Open original operation</Link></Callout> : null}
     {operationId ? !compositionJobValid(operationId) ? <ErrorState error={new Error("This operation link is incomplete.")} /> : operation.error ? <ErrorState title="Saved operation unavailable" error={operation.error} retry={() => { void operation.refetch(); }} /> : operation.data ? <section className="file-access-section" aria-label="Saved operation"><h2>{fileAccessOperationLabels[(operation.data.job.progress.submitted_request as FileAccessSubmission).review.operation]}</h2><DataList items={[{ label: "Job state", value: sentence(operation.data.job.state) }, { label: "Operation", value: <code>{operation.data.job.job_id}</code> }]} />{activeOperation ? <Callout title="Operation unsettled">New control operations remain unavailable.</Callout> : null}{operation.data.job.error ? <ErrorState error={operation.data.job.error} /> : null}</section> : <LoadingState label="Opening exact operation" /> : null}
     {operation.data?.reconciliation?.state === "settled_partial" && !operation.error ? <Callout title="Partial operation settled">The original operation did not complete.</Callout> : null}
     {observation && !operation.error ? <section className="file-access-section" aria-label="Verified operation reads"><h2>{recoveredObservation ? observation.operation === "rollback" ? "Recovered restored-access evidence" : "Recovered baseline-read evidence" : observation.operation === "rollback" ? "Verified restored access" : "Verified baseline reads"}</h2><DataList items={[
@@ -154,12 +178,14 @@ export function FileAccessPage() {
       { label: "Observed content", value: <code>{observation.sha256}</code> }, { label: "Source binding", value: <code>{observation.source_digest}</code> },
     ]} /></section> : null}
     {macOSStatus && control.data && control.data.platform !== "macos" ? <Callout title="Saved control is read-only">This control belongs to another prepared platform. Its history remains available, but its operations are unavailable in this macOS workspace.</Callout> : null}
-    {owner ? !fileAccessControlIdValid(owner) ? <ErrorState error={new Error("This control link is incomplete.")} /> : control.error ? <ErrorState title="Retained control unavailable" error={control.error} retry={() => { void control.refetch(); }} /> : control.data?.platform === "windows" ? <SavedWindowsSetup control={control.data} disabled={blocked || control.isFetching || !statusCurrent || Boolean(macOSStatus)} baselineReviewAvailable={statusCurrent && currentWindowsSetup && status.data?.available === true && status.data.setup?.enrollment_id === control.data.provenance.enrollment_id && status.data.setup?.enrollment_digest === control.data.provenance.enrollment_digest} onReview={setReview} /> : control.data?.platform === "macos" ? <SavedMacOSControl control={control.data} disabled={blocked || control.isFetching || !macOSReady} onReview={setReview} /> : control.data ? <RetainedFileAccess control={control.data} disabled={blocked || control.isFetching || !statusCurrent} readOnly={Boolean(macOSStatus) || !statusCurrent} ready={ready} onReview={setReview} /> : <LoadingState label="Opening retained file-access control" /> : null}
+    {owner ? !fileAccessControlIdValid(owner) ? <ErrorState error={new Error("This control link is incomplete.")} /> : control.error ? <ErrorState title="Retained control unavailable" error={control.error} retry={() => { void control.refetch(); }} /> : control.data?.platform === "windows" ? <SavedWindowsSetup control={control.data} disabled={blocked || control.isFetching || !statusCurrent || Boolean(macOSStatus)} baselineReviewAvailable={statusCurrent && currentWindowsSetup && status.data?.available === true && status.data.setup?.enrollment_id === control.data.provenance.enrollment_id && status.data.setup?.enrollment_digest === control.data.provenance.enrollment_digest} fileAccessPath={fileAccessPath} onReview={setReview} /> : control.data?.platform === "macos" ? <SavedMacOSControl control={control.data} disabled={blocked || control.isFetching || !macOSReady} fileAccessPath={fileAccessPath} onReview={setReview} /> : control.data ? <RetainedFileAccess control={control.data} disabled={blocked || control.isFetching || !statusCurrent} readOnly={Boolean(macOSStatus) || !statusCurrent} ready={ready} fileAccessPath={fileAccessPath} onReview={setReview} /> : <LoadingState label="Opening retained file-access control" /> : null}
     {displayedReview ? <FileAccessReview key={`${displayedReview.control_owner_id}:${displayedReview.operation}`} request={displayedReview} expectedControlDigest={control.data?.platform === "macos" || control.data?.schema_version === "bluefire.windows-file-access-control.v3" ? control.data.control_digest : undefined} expectedEnrollmentDigest={control.data?.platform === "macos" ? macOSEnrollment?.enrollment_digest : undefined} disabled={blocked || !reviewAvailable} onSubmit={send} onClose={() => setReview(undefined)} /> : null}
   </div>;
 }
 
-function SavedMacOSControl({ control, disabled, onReview }: { control: MacOSFileAccessControl; disabled: boolean; onReview: (request: FileAccessReviewRequest) => void }) {
+type FileAccessPath = (values: Record<string, string>, remove?: string[]) => string;
+
+function SavedMacOSControl({ control, disabled, fileAccessPath, onReview }: { control: MacOSFileAccessControl; disabled: boolean; fileAccessPath: FileAccessPath; onReview: (request: FileAccessReviewRequest) => void }) {
   const unsettled = control.usage_state !== "settled" || control.status === "uncertain";
   const running = control.operations.some(fileAccessJobActive);
   const canCompose = !disabled && !running && fileAccessCompositionPack(control) === MACOS_FILE_ACCESS_PACK;
@@ -182,13 +208,13 @@ function SavedMacOSControl({ control, disabled, onReview }: { control: MacOSFile
       : !control.allowed_operations.length ? <Callout title="Original workspace unavailable">Saved evidence remains available. New operations require the original live protected workspace.</Callout> : null}
     {!unsettled ? <div className="file-access-actions">{control.allowed_operations.map(operation => <Button key={operation} disabled={disabled || running} onClick={() => onReview({ operation, control_owner_id: control.control_owner_id })}><FileLock2 />Review {fileAccessOperationLabels[operation].toLowerCase()}</Button>)}</div> : null}
     {canCompose ? <Link className="button button-secondary button-medium" to={`/composition?${new URLSearchParams({ control: control.control_owner_id, pack: MACOS_FILE_ACCESS_PACK })}`}>Open composition workspace</Link> : null}
-    {control.operations.length ? <details><summary>Saved macOS control operations</summary><ol className="file-access-history">{control.operations.map((job, index) => { const submitted = job.progress.submitted_request as FileAccessSubmission; return <li key={job.job_id}><div><Link to={`/file-access?${new URLSearchParams({ control: control.control_owner_id, operation: job.job_id })}`}>Operation {index + 1}: {fileAccessOperationLabels[submitted.review.operation]}</Link><span>{sentence(job.state)}</span></div><details><summary>Operation reference</summary><code>{job.job_id}</code></details></li>; })}</ol></details> : null}
+    {control.operations.length ? <details><summary>Saved macOS control operations</summary><ol className="file-access-history">{control.operations.map((job, index) => { const submitted = job.progress.submitted_request as FileAccessSubmission; return <li key={job.job_id}><div><Link to={fileAccessPath({ control: control.control_owner_id, operation: job.job_id })}>Operation {index + 1}: {fileAccessOperationLabels[submitted.review.operation]}</Link><span>{sentence(job.state)}</span></div><details><summary>Operation reference</summary><code>{job.job_id}</code></details></li>; })}</ol></details> : null}
   </section>;
 }
 
-function SavedWindowsSetup({ control, disabled, baselineReviewAvailable, onReview }: { control: WindowsFileAccessControl; disabled: boolean; baselineReviewAvailable: boolean; onReview: (request: FileAccessReviewRequest) => void }) {
-  if (control.schema_version === "bluefire.windows-file-access-control.v3") return <WindowsFileAccessCorrection control={control} disabled={disabled} reviewAvailable={baselineReviewAvailable} onReview={onReview} />;
-  if (control.schema_version === "bluefire.windows-file-access-control.v2") return <SavedWindowsPairControl control={control} disabled={disabled} baselineReviewAvailable={baselineReviewAvailable} onReview={onReview} />;
+function SavedWindowsSetup({ control, disabled, baselineReviewAvailable, fileAccessPath, onReview }: { control: WindowsFileAccessControl; disabled: boolean; baselineReviewAvailable: boolean; fileAccessPath: FileAccessPath; onReview: (request: FileAccessReviewRequest) => void }) {
+  if (control.schema_version === "bluefire.windows-file-access-control.v3") return <WindowsFileAccessCorrection control={control} disabled={disabled} reviewAvailable={baselineReviewAvailable} fileAccessPath={fileAccessPath} onReview={onReview} />;
+  if (control.schema_version === "bluefire.windows-file-access-control.v2") return <SavedWindowsPairControl control={control} disabled={disabled} baselineReviewAvailable={baselineReviewAvailable} fileAccessPath={fileAccessPath} onReview={onReview} />;
   const setup = control as WindowsSetupFileAccessControl;
   const expired = setup.expires_at_ms <= Date.now();
   return <section className="file-access-section" aria-label="Saved Windows protected setup">
@@ -208,7 +234,7 @@ function SavedWindowsSetup({ control, disabled, baselineReviewAvailable, onRevie
   </section>;
 }
 
-function SavedWindowsPairControl({ control, disabled, baselineReviewAvailable, onReview }: { control: WindowsPairedFileAccessControl; disabled: boolean; baselineReviewAvailable: boolean; onReview: (request: FileAccessReviewRequest) => void }) {
+function SavedWindowsPairControl({ control, disabled, baselineReviewAvailable, fileAccessPath, onReview }: { control: WindowsPairedFileAccessControl; disabled: boolean; baselineReviewAvailable: boolean; fileAccessPath: FileAccessPath; onReview: (request: FileAccessReviewRequest) => void }) {
   const expired = control.expires_at_ms <= Date.now();
   const baseline = control.baseline;
   return <section className="file-access-section" aria-label="Saved Windows paired control">
@@ -238,11 +264,11 @@ function SavedWindowsPairControl({ control, disabled, baselineReviewAvailable, o
       : control.operations.length ? <Callout title="Baseline not established">The saved attempt did not establish a baseline. This one-shot control cannot be submitted again.</Callout>
         : <Callout title="Baseline not established">No paired baseline is recorded for this saved setup.</Callout>}
     {control.allowed_operations.includes("baseline") && !expired ? <div className="file-access-actions"><Button disabled={disabled || !baselineReviewAvailable} onClick={() => onReview({ operation: "baseline", control_owner_id: control.control_owner_id })}><FileLock2 />Review paired baseline</Button></div> : null}
-    {control.operations.length ? <details><summary>Saved baseline operations</summary><ol className="file-access-history">{control.operations.map((job, index) => <li key={job.job_id}><div><Link to={`/file-access?${new URLSearchParams({ control: control.control_owner_id, operation: job.job_id })}`}>Baseline operation {index + 1}</Link><span>{sentence(job.state)}</span></div><details><summary>Operation reference</summary><code>{job.job_id}</code></details></li>)}</ol></details> : null}
+    {control.operations.length ? <details><summary>Saved baseline operations</summary><ol className="file-access-history">{control.operations.map((job, index) => <li key={job.job_id}><div><Link to={fileAccessPath({ control: control.control_owner_id, operation: job.job_id })}>Baseline operation {index + 1}</Link><span>{sentence(job.state)}</span></div><details><summary>Operation reference</summary><code>{job.job_id}</code></details></li>)}</ol></details> : null}
   </section>;
 }
 
-function RetainedFileAccess({ control, disabled, ready, readOnly, onReview }: { control: LinuxFileAccessControl; disabled: boolean; ready: boolean; readOnly: boolean; onReview: (request: FileAccessReviewRequest) => void }) {
+function RetainedFileAccess({ control, disabled, ready, readOnly, fileAccessPath, onReview }: { control: LinuxFileAccessControl; disabled: boolean; ready: boolean; readOnly: boolean; fileAccessPath: FileAccessPath; onReview: (request: FileAccessReviewRequest) => void }) {
   const running = control.operations.some(fileAccessJobActive);
   const canCompose = control.status === "hardened" && control.usage_state === "settled" && control.resource?.mode === "0600" && control.baseline && !running;
   return <section className="file-access-section" aria-label="Retained file-access control">
@@ -258,6 +284,6 @@ function RetainedFileAccess({ control, disabled, ready, readOnly, onReview }: { 
     {!readOnly ? <div className="file-access-actions">{control.allowed_operations.map(operation => <Button key={operation} disabled={disabled || running || ((operation === "baseline" || operation === "harden") && !ready)} onClick={() => onReview({ operation, control_owner_id: control.control_owner_id })}><FileLock2 />Review {fileAccessOperationLabels[operation].toLowerCase()}</Button>)}
       {control.baseline ? <Link className="button button-secondary button-medium" to={`/composition?${new URLSearchParams({ control: control.control_owner_id, pack: FILE_ACCESS_PACK })}`}>{canCompose && !disabled && ready ? "Open composition workspace" : "Inspect composition history"}</Link> : null}
     </div> : null}
-    {control.operations.length ? <details><summary>Saved control operations</summary><ol className="file-access-history">{control.operations.map((job, index) => { const submitted = job.progress.submitted_request as FileAccessSubmission | undefined; return <li key={job.job_id}><div><Link to={`/file-access?${new URLSearchParams({ control: control.control_owner_id, operation: job.job_id })}`}>Operation {index + 1}: {submitted?.review?.operation ? fileAccessOperationLabels[submitted.review.operation] : "Control operation"}</Link><span>{sentence(job.state)}</span></div><details><summary>Operation reference</summary><code>{job.job_id}</code></details></li>; })}</ol></details> : null}
+    {control.operations.length ? <details><summary>Saved control operations</summary><ol className="file-access-history">{control.operations.map((job, index) => { const submitted = job.progress.submitted_request as FileAccessSubmission | undefined; return <li key={job.job_id}><div><Link to={fileAccessPath({ control: control.control_owner_id, operation: job.job_id })}>Operation {index + 1}: {submitted?.review?.operation ? fileAccessOperationLabels[submitted.review.operation] : "Control operation"}</Link><span>{sentence(job.state)}</span></div><details><summary>Operation reference</summary><code>{job.job_id}</code></details></li>; })}</ol></details> : null}
   </section>;
 }

@@ -39,5 +39,26 @@
 .ad-smb-history { list-style: none; padding: 0; }
 .ad-smb-history > li { padding-block: 18px; border-bottom: 1px solid var(--line); }
 .ad-smb-acl { margin-block: 16px; }
+.ad-smb-audit { margin-block: 20px; }
+.ad-smb-audit > .ad-smb-section-heading { align-items: center; margin-bottom: 12px; }
+.ad-smb-audit h3 { scroll-margin-top: 72px; }
+.ad-smb-audit .ad-smb-limits { max-width: 88ch; }
+.ad-smb-audit-source { padding-block: 10px; border-block: 1px solid var(--line); }
+.ad-smb-audit-source ul { padding-left: 20px; }
+.ad-smb-audit .ad-smb-table-wrap { overflow-x: auto; }
+.ad-smb-audit .ad-smb-table-wrap:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.ad-smb-audit-table { min-width: 900px; }
+.ad-smb-audit-table th:first-child { width: 18%; }
+.ad-smb-audit-table th:nth-child(2) { width: 16%; }
+.ad-smb-audit-table th:nth-child(3) { width: 17%; }
+.ad-smb-audit-table th:nth-child(4) { width: 17%; }
+.ad-smb-audit-table th:nth-child(5) { width: 18%; }
+.ad-smb-audit-table th:nth-child(6) { width: 14%; }
+.ad-smb-audit-table time { display: inline-block; min-width: 145px; }
+.ad-smb-audit-kind { display: block; margin-top: 4px; color: var(--muted-strong); font-size: .76rem; }
+.ad-smb-audit-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; }
+.ad-smb-audit-pagination > div { display: flex; gap: 6px; }
+.ad-smb-audit-pagination .button { min-width: 38px; min-height: 38px; justify-content: center; }
+.ad-smb-audit-pagination .button svg { flex: 0 0 18px; width: 18px; height: 18px; }
 @media (max-width: 850px) { .ad-smb-layout { grid-template-columns: minmax(0, 1fr); gap: 0; } .ad-smb-saved ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; } }
 @media (max-width: 520px) { .ad-smb-page h1 { font-size: 1.35rem; } .ad-smb-saved ul { grid-template-columns: minmax(0, 1fr); } .ad-smb-budget { grid-template-columns: repeat(2, minmax(0, 1fr)); } .ad-smb-page th, .ad-smb-page td { padding: 9px 5px; font-size: .78rem; } .ad-smb-actions > .button { flex: 1 1 170px; } }

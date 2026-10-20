@@ -17,7 +17,7 @@ Open the exact one-use URL printed after the listener is ready. Its fragment cap
 | Area | Use it for |
 |---|---|
 | Overview | Readiness, recent runs, evidence mix, and next actions |
-| Getting Started | Follow live readiness checks from scenario selection through durable review |
+| Getting Started | Choose an objective, review its environment, or follow a scenario through durable review |
 | Scenarios | Browse the eight seeded versioned graphs and open the authoritative active definition for editing/running |
 | Builder | Edit typed nodes, parameters, bindings, outcomes, alternates, and route-depth layout; use focus mode and commands |
 | Runs | Configure, preflight, start, and open durable run history or deep links |
@@ -35,7 +35,11 @@ Management resources and saved scenario versions are durable local backend recor
 
 ## Getting started
 
-Open **Getting Started** from the navigation or the Overview empty state. It reads live service, scenario, run-history, and Detection Lab readiness rather than presenting a static success checklist. Follow its four links in order:
+Open **Getting Started** from the navigation or the Overview empty state. Choose a question about controlled data handoff, file access, domain access, or S3 access, then select **Review environment**. The selected question stays visible in that workspace and survives saved-work navigation and reload. **Change objective** returns to the chooser without deleting saved work.
+
+Selecting file access reads its existing workspace status and saved controls. A recognized workspace or saved setup receipt does not establish effective access; that remains **Not tested** until an actual test provides evidence. Selecting another objective does not probe its environment or start preparation. Review the prerequisites and supported operations in the destination workspace before authorizing effects.
+
+The scenario walkthrough remains available below the objective chooser. It reads service, scenario, run-history, and Detection Lab readiness rather than presenting a static success checklist. Follow its four links in order:
 
 1. choose a scenario and read its purpose, limitations, and provenance;
 2. open Builder and validate typed nodes, routes, artifact bindings, and cleanup;

@@ -10,6 +10,8 @@ from bluefire.ad_smb_contract import AdSmbError, AdSmbScope
 from bluefire.ad_smb_receiver_results import native_generation, result_record, stored_result
 from bluefire.ad_smb_worker_wire import RECEIVER_RESULT_MAX, prepare_packet
 from bluefire.ad_smb_workspace_results import project_original
+from bluefire.util import content_hash
+from tests_platform.test_ad_smb_audit import event as audit_event
 from tests_platform.test_ad_smb_contract import NOW
 from tests_platform.test_ad_smb_native_member_results import (
     audit_fixture,
@@ -231,13 +233,393 @@ def test_read_keeps_expected_remote_and_actual_local_identities_separate(denial)
 def test_audit_summary_does_not_self_certify_raw_xml(partial):
     value, channel = original("audit")
     _, raw = audit_fixture()
-    raw.update(state="byte_limit" if partial else "query_exhausted", utf8_bytes=24)
+    event_xml = audit_event(when="2026-10-09T00:00:00.5000000Z")
+    raw.update(
+        state="byte_limit" if partial else "query_exhausted",
+        raw_events=[event_xml.decode("utf-8")],
+        utf8_bytes=len(event_xml),
+    )
     saved = timed_record(value, channel, raw)
     result = project(value, channel, saved)
     assert result["observation"]["truncated"] is partial
     assert result["observation"]["events"] == 1
     assert "raw_events" not in str(result)
     assert result["observation"]["authenticated_source"] is False
+    normalized = result["observation"]["normalized_observation"]
+    assert normalized["schema_version"] == "bluefire.ad-smb-audit-observation.v2"
+    assert normalized["reported_completeness"] == ("truncated" if partial else "complete")
+    assert normalized["capture_batch_digest"].startswith("sha256:")
+    assert normalized["source_receipt_digest"] == content_hash(saved)
+    assert "record_epoch_digest" not in normalized
+    assert normalized["events"][0]["client_ip"] == "10.44.0.3"
+    assert normalized["events"][0]["record_id"] == "20"
+
+
+def test_legacy_audit_summary_remains_valid_without_replay_payload():
+    from bluefire.ad_smb_results import validate_execution
+
+    value, _ = original("audit")
+    request = deepcopy(value["manifest"]["params"]["ad_smb_request"])
+    request["scope"]["limits"]["returned_payload_bytes"] = 1
+    summary = {
+        "source_digest": "sha256:" + "a" * 64,
+        "events": 2,
+        "truncated": False,
+        "authenticated_source": False,
+        "independent_observation": False,
+        "effective_access_claim": False,
+    }
+    result = validate_execution(
+        request,
+        {
+            "schema_version": "bluefire.ad-smb-execution.v1",
+            "request_digest": content_hash(request),
+            "provenance": "runner_reported",
+            "dispatch": "attempted",
+            "cleanup": "verified",
+            "observation": summary,
+        },
+    )
+    assert result["observation"] == summary
+
+
+def test_audit_projection_is_repeatable_and_does_not_replay_or_mutate_source():
+    value, channel = original("audit")
+    _, raw = audit_fixture()
+    raw["raw_events"] = [audit_event(when="2026-10-09T00:00:00.5000000Z").decode("utf-8")]
+    raw["utf8_bytes"] = len(raw["raw_events"][0].encode("utf-8"))
+    saved = timed_record(value, channel, raw)
+    before = deepcopy((value, saved))
+    first = project(value, channel, saved)
+    second = project(value, channel, saved)
+    assert first == second
+    assert (value, saved) == before
+    assert "raw_events" not in str(first)
+
+
+def test_audit_projection_preserves_ambiguous_logon_correlation():
+    value, channel = original("audit")
+    _, raw = audit_fixture()
+    raw["raw_events"] = [
+        audit_event(4624, when="2026-10-09T00:00:00.4000000Z").decode("utf-8"),
+        audit_event(4624, record_id=11, when="2026-10-09T00:00:00.4000000Z").decode("utf-8"),
+        audit_event(when="2026-10-09T00:00:00.5000000Z").decode("utf-8"),
+    ]
+    raw["utf8_bytes"] = sum(len(event.encode("utf-8")) for event in raw["raw_events"])
+    saved = timed_record(value, channel, raw)
+    result = project(value, channel, saved)
+    share_event = result["observation"]["normalized_observation"]["events"][-1]
+    assert share_event["server_logon"] == "ambiguous"
+    assert "logon_record_id" not in share_event
+
+
+def test_audit_projection_keeps_batch_when_scoped_logon_has_no_client_address():
+    value, channel = original("audit")
+    _, raw = audit_fixture()
+    raw["raw_events"] = [
+        audit_event(4624, when="2026-10-09T00:00:00.4000000Z", fields={"IpAddress": "-"}).decode(
+            "utf-8"
+        ),
+        audit_event(when="2026-10-09T00:00:00.5000000Z").decode("utf-8"),
+    ]
+    raw["utf8_bytes"] = sum(len(event.encode("utf-8")) for event in raw["raw_events"])
+
+    result = project(value, channel, timed_record(value, channel, raw))
+
+    normalized = result["observation"]["normalized_observation"]
+    logon, share = normalized["events"]
+    assert logon["binding"] == "outside_scope"
+    assert share["binding"] == "matched"
+    assert share["server_logon"] == "ambiguous"
+    assert "logon_record_id" not in share
+
+
+def test_audit_metadata_uses_its_own_finite_envelope_not_artifact_payload_limit():
+    from bluefire.ad_smb_results import MAX_AUDIT_EXECUTION_BYTES, validate_execution
+
+    workflow, channel = original("audit")
+    _, raw = audit_fixture()
+    raw["raw_events"] = [audit_event(when="2026-10-09T00:00:00.5000000Z").decode("utf-8")]
+    raw["utf8_bytes"] = len(raw["raw_events"][0].encode("utf-8"))
+    execution = project(workflow, channel, timed_record(workflow, channel, raw))
+    request = deepcopy(workflow["manifest"]["params"]["ad_smb_request"])
+    request["scope"]["limits"]["returned_payload_bytes"] = 1
+    scope = AdSmbScope.from_mapping(request["scope"])
+    request["scope_digest"] = scope.digest
+    execution["request_digest"] = content_hash(request)
+    execution["observation"]["normalized_observation"]["scope_digest"] = scope.digest
+
+    checked = validate_execution(request, execution)
+    assert checked["observation"]["normalized_observation"]["events"]
+    assert MAX_AUDIT_EXECUTION_BYTES == 5 * 1024 * 1024
+
+    oversized = deepcopy(execution)
+    oversized["padding"] = "x" * MAX_AUDIT_EXECUTION_BYTES
+    with pytest.raises(AdSmbError, match="^document is not supported bounded JSON$"):
+        validate_execution(request, oversized)
+
+
+@pytest.mark.parametrize("event_id", [4624, 5145])
+@pytest.mark.parametrize(
+    "when",
+    ["2026-10-08T23:59:59.9999999Z", "2026-10-09T00:00:01.0000001Z"],
+    ids=["before", "after"],
+)
+def test_audit_projection_retains_out_of_window_events_only_as_outside_scope(event_id, when):
+    workflow, channel = original("audit")
+    _, raw = audit_fixture()
+    raw["raw_events"] = [audit_event(event_id, when=when).decode("utf-8")]
+    raw["utf8_bytes"] = len(raw["raw_events"][0].encode("utf-8"))
+
+    result = project(workflow, channel, timed_record(workflow, channel, raw))
+    row = result["observation"]["normalized_observation"]["events"][0]
+    assert row["binding"] == "outside_scope"
+    assert row["observed_at"] == when
+
+
+@pytest.mark.parametrize(
+    "event_id,fields,binding",
+    [
+        (4624, {}, "matched"),
+        (5145, {}, "matched"),
+        (4624, {"TargetUserSid": None}, "incomplete"),
+        (5145, {"SubjectUserSid": None}, "incomplete"),
+    ],
+)
+@pytest.mark.parametrize(
+    "when",
+    ["2026-10-08T23:59:59.9999999Z", "2026-10-09T00:00:01.0000001Z"],
+    ids=["before", "after"],
+)
+def test_audit_projection_rejects_tampered_matched_or_incomplete_out_of_window_rows(
+    event_id, fields, binding, when
+):
+    from bluefire.ad_smb_results import validate_execution
+
+    workflow, channel = original("audit")
+    _, raw = audit_fixture()
+    raw["raw_events"] = [
+        audit_event(event_id, when="2026-10-09T00:00:00.5000000Z", fields=fields).decode("utf-8")
+    ]
+    raw["utf8_bytes"] = len(raw["raw_events"][0].encode("utf-8"))
+    request = workflow["manifest"]["params"]["ad_smb_request"]
+    result = project(workflow, channel, timed_record(workflow, channel, raw))
+    row = result["observation"]["normalized_observation"]["events"][0]
+    assert row["binding"] == binding
+    row["observed_at"] = when
+
+    with pytest.raises(AdSmbError, match="outside the captured window"):
+        validate_execution(request, result)
+
+
+@pytest.mark.parametrize(
+    "event_id,logon_field", [(4624, "TargetLogonId"), (5145, "SubjectLogonId")]
+)
+def test_zero_logon_id_is_valid_outside_scope_in_original_projection(event_id, logon_field):
+    from bluefire.ad_smb_results import validate_execution
+
+    workflow, channel = original("audit")
+    _, raw = audit_fixture()
+    event_xml = audit_event(
+        event_id,
+        when="2026-10-09T00:00:00.5000000Z",
+        fields={logon_field: "0x0"},
+    ).decode("utf-8")
+    raw["raw_events"] = [event_xml]
+    raw["utf8_bytes"] = len(event_xml.encode("utf-8"))
+    request = workflow["manifest"]["params"]["ad_smb_request"]
+
+    result = project(workflow, channel, timed_record(workflow, channel, raw))
+
+    row = result["observation"]["normalized_observation"]["events"][0]
+    assert row["binding"] == "outside_scope"
+    assert row["logon_id"] == "0x0"
+    assert "principal_sid" not in row
+    validate_execution(request, result)
+
+
+@pytest.mark.parametrize(
+    "event_id,sid_field,logon_field",
+    [(4624, "TargetUserSid", "TargetLogonId"), (5145, "SubjectUserSid", "SubjectLogonId")],
+)
+def test_zero_logon_id_is_valid_for_incomplete_original_projection(
+    event_id, sid_field, logon_field
+):
+    from bluefire.ad_smb_results import validate_execution
+
+    workflow, channel = original("audit")
+    _, raw = audit_fixture()
+    event_xml = audit_event(
+        event_id,
+        when="2026-10-09T00:00:00.5000000Z",
+        fields={sid_field: None, logon_field: "0x0"},
+    ).decode("utf-8")
+    raw["raw_events"] = [event_xml]
+    raw["utf8_bytes"] = len(event_xml.encode("utf-8"))
+    request = workflow["manifest"]["params"]["ad_smb_request"]
+
+    result = project(workflow, channel, timed_record(workflow, channel, raw))
+
+    row = result["observation"]["normalized_observation"]["events"][0]
+    assert row["binding"] == "incomplete"
+    assert row["logon_id"] == "0x0"
+    assert "principal_sid" not in row
+    validate_execution(request, result)
+
+
+@pytest.mark.parametrize("event_id", [4624, 5145])
+def test_zero_logon_id_remains_forbidden_for_matched_saved_rows(event_id):
+    from bluefire.ad_smb_results import validate_execution
+
+    workflow, channel = original("audit")
+    _, raw = audit_fixture()
+    event_xml = audit_event(event_id, when="2026-10-09T00:00:00.5000000Z").decode("utf-8")
+    raw["raw_events"] = [event_xml]
+    raw["utf8_bytes"] = len(event_xml.encode("utf-8"))
+    request = workflow["manifest"]["params"]["ad_smb_request"]
+    result = project(workflow, channel, timed_record(workflow, channel, raw))
+    row = result["observation"]["normalized_observation"]["events"][0]
+    assert row["binding"] == "matched"
+    row["logon_id"] = "0x0"
+
+    with pytest.raises(AdSmbError, match="logon identity"):
+        validate_execution(request, result)
+
+
+@pytest.mark.parametrize(
+    "raw_events",
+    [
+        ["<Event />"],
+        [
+            audit_event(when="2026-10-09T00:00:00.5000000Z").decode("utf-8"),
+            audit_event(outcome="failure", when="2026-10-09T00:00:00.5000000Z").decode("utf-8"),
+        ],
+        [audit_event(4624, version=9, when="2026-10-09T00:00:00.5000000Z").decode("utf-8")],
+    ],
+    ids=["unsupported-xml", "conflicting-record", "unsupported-version"],
+)
+def test_unsupported_audit_event_content_settles_legacy_summary_without_replay(raw_events):
+    value, channel = original("audit")
+    _, raw = audit_fixture()
+    raw["raw_events"] = raw_events
+    raw["utf8_bytes"] = sum(len(event.encode("utf-8")) for event in raw_events)
+    saved = timed_record(value, channel, raw)
+    before = deepcopy((value, saved))
+
+    result = project(value, channel, saved)
+
+    observation = result["observation"]
+    assert set(observation) == {
+        "source_digest",
+        "events",
+        "truncated",
+        "authenticated_source",
+        "independent_observation",
+        "effective_access_claim",
+    }
+    assert observation["events"] == len(raw_events)
+    assert observation["truncated"] is False
+    assert observation["authenticated_source"] is False
+    assert "normalized_observation" not in observation
+    assert "raw_events" not in str(result)
+    assert all(event not in str(result) for event in raw_events)
+    assert (value, saved) == before
+
+
+def test_invalid_native_audit_capture_still_rejects_before_legacy_fallback():
+    value, channel = original("audit")
+    _, raw = audit_fixture()
+    raw["raw_events"] = [""]
+    raw["utf8_bytes"] = 0
+    saved = timed_record(value, channel, raw)
+    before = deepcopy((value, saved))
+
+    with pytest.raises(AdSmbError):
+        project(value, channel, saved)
+
+    assert (value, saved) == before
+
+
+@pytest.mark.parametrize(
+    "path,replacement",
+    [
+        (("normalized_observation", "log_continuity_verified"), True),
+        (("normalized_observation", "events", 0, "client_ip"), "10.44.0.99"),
+        (("normalized_observation", "record_epoch_digest"), "sha256:" + "f" * 64),
+        (("normalized_observation", "events", 0, "observed_at"), "2026-10-09T00:00:01.0000001Z"),
+        (("normalized_observation", "input_bytes"), 0),
+    ],
+)
+def test_audit_projection_rejects_claim_or_identity_drift(path, replacement):
+    from bluefire.ad_smb_results import validate_execution
+
+    value, channel = original("audit")
+    _, raw = audit_fixture()
+    raw["raw_events"] = [audit_event(when="2026-10-09T00:00:00.5000000Z").decode("utf-8")]
+    raw["utf8_bytes"] = len(raw["raw_events"][0].encode("utf-8"))
+    request = value["manifest"]["params"]["ad_smb_request"]
+    saved = timed_record(value, channel, raw)
+    result = project(value, channel, saved)
+    target = result["observation"]
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = replacement
+    with pytest.raises(AdSmbError):
+        validate_execution(request, result)
+
+
+@pytest.mark.parametrize(
+    "value", [0, 1, "0", "00", "01", "+1", " 1", "18446744073709551616", 2**53]
+)
+def test_saved_normalized_record_ids_require_canonical_uint64_decimal_strings(value):
+    from bluefire.ad_smb_results import validate_execution
+
+    workflow, channel = original("audit")
+    _, raw = audit_fixture()
+    raw["raw_events"] = [audit_event(when="2026-10-09T00:00:00.5000000Z").decode("utf-8")]
+    raw["utf8_bytes"] = len(raw["raw_events"][0].encode("utf-8"))
+    request = workflow["manifest"]["params"]["ad_smb_request"]
+    result = project(workflow, channel, timed_record(workflow, channel, raw))
+    result["observation"]["normalized_observation"]["events"][0]["record_id"] = value
+    with pytest.raises(AdSmbError):
+        validate_execution(request, result)
+
+
+def test_saved_normalized_record_ids_accept_uint64_max_and_correlated_decimal_reference():
+    from bluefire.ad_smb_results import validate_execution
+
+    workflow, channel = original("audit")
+    _, raw = audit_fixture()
+    raw["raw_events"] = [
+        audit_event(4624, record_id=2**64 - 2, when="2026-10-09T00:00:00.4000000Z").decode("utf-8"),
+        audit_event(record_id=2**64 - 1, when="2026-10-09T00:00:00.5000000Z").decode("utf-8"),
+    ]
+    raw["utf8_bytes"] = sum(len(event.encode("utf-8")) for event in raw["raw_events"])
+    request = workflow["manifest"]["params"]["ad_smb_request"]
+    result = project(workflow, channel, timed_record(workflow, channel, raw))
+    normalized = result["observation"]["normalized_observation"]
+    assert normalized["events"][0]["record_id"] == str(2**64 - 2)
+    assert normalized["events"][1]["record_id"] == str(2**64 - 1)
+    assert normalized["events"][1]["logon_record_id"] == str(2**64 - 2)
+    validate_execution(request, result)
+
+
+@pytest.mark.parametrize("value", [0, 1, "0", "01", "+1", "18446744073709551616"])
+def test_saved_correlated_record_reference_requires_canonical_uint64_decimal_string(value):
+    from bluefire.ad_smb_results import validate_execution
+
+    workflow, channel = original("audit")
+    _, raw = audit_fixture()
+    raw["raw_events"] = [
+        audit_event(4624, when="2026-10-09T00:00:00.4000000Z").decode("utf-8"),
+        audit_event(when="2026-10-09T00:00:00.5000000Z").decode("utf-8"),
+    ]
+    raw["utf8_bytes"] = sum(len(event.encode("utf-8")) for event in raw["raw_events"])
+    request = workflow["manifest"]["params"]["ad_smb_request"]
+    result = project(workflow, channel, timed_record(workflow, channel, raw))
+    result["observation"]["normalized_observation"]["events"][1]["logon_record_id"] = value
+    with pytest.raises(AdSmbError):
+        validate_execution(request, result)
 
 
 @pytest.mark.parametrize("possible_effects", [False, True])

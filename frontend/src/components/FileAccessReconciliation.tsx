@@ -6,8 +6,9 @@ import { checkedFileAccessOperation, checkedFileAccessReconciliation, clearFileA
 import { Button, Callout, ErrorState, Field } from "./Primitives";
 import { sameJson } from "../lib/replay-review";
 
-export function FileAccessReconciliation({ operation, pending, disabled, onPending, onError }: {
+export function FileAccessReconciliation({ operation, pending, disabled, fileAccessPath, onPending, onError }: {
   operation?: FileAccessOperationEnvelope; pending?: FileAccessReconciliationPending; disabled: boolean;
+  fileAccessPath: (values: Record<string, string>, remove?: string[]) => string;
   onPending: (value: FileAccessReconciliationPending | undefined) => void; onError: (error: unknown) => void;
 }) {
   const client = useQueryClient();
@@ -40,7 +41,7 @@ export function FileAccessReconciliation({ operation, pending, disabled, onPendi
   const digest = operation?.reconciliation?.outcome_digest;
   const identity = operation && digest ? `${operation.job.job_id}:${digest}` : "";
   return <>
-    {pending ? <Callout title="Evidence request confirmation pending"><p>The original task is not redispatched. The saved request identity is unchanged.</p><Link to={`/file-access?${new URLSearchParams({ control: pending.control_owner_id, operation: pending.operation_job_id })}`}>Open original operation</Link><div className="file-access-actions"><Button disabled={receipt.isFetching || write.isPending} onClick={() => { void receipt.refetch(); }}><RefreshCw />Check saved reconciliation</Button><Button disabled={write.isPending || disabled} onClick={() => send(pending)}>Resubmit original evidence request</Button></div></Callout> : null}
+    {pending ? <Callout title="Evidence request confirmation pending"><p>The original task is not redispatched. The saved request identity is unchanged.</p><Link to={fileAccessPath({ control: pending.control_owner_id, operation: pending.operation_job_id })}>Open original operation</Link><div className="file-access-actions"><Button disabled={receipt.isFetching || write.isPending} onClick={() => { void receipt.refetch(); }}><RefreshCw />Check saved reconciliation</Button><Button disabled={write.isPending || disabled} onClick={() => send(pending)}>Resubmit original evidence request</Button></div></Callout> : null}
     {receipt.error ? <ErrorState title="Reconciliation receipt unavailable" error={receipt.error} /> : null}
     {write.error ? <ErrorState title="Evidence request not confirmed" error={write.error} /> : null}
     {operation?.reconciliation_receipt?.problem ? <Callout title="Reconciliation outcome">{operation.reconciliation_receipt.problem.message}</Callout> : null}

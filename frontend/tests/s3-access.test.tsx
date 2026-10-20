@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import { S3AccessPage } from "../src/pages/S3Access";
 import { readS3Pending, readS3Stops, s3Api, storeS3Pending, storeS3Stop, type S3Exercise, type S3Pending, type S3Review } from "../src/lib/s3-access";
@@ -17,9 +17,14 @@ beforeEach(() => {
   vi.spyOn(s3Api, "control").mockRejectedValue(new Error("Control not confirmed"));
 });
 
-function mount(owner = s3Owner) {
+function CurrentLocation() {
+  const location = useLocation();
+  return <output aria-label="Current location">{location.pathname}{location.search}</output>;
+}
+
+function mount(owner = s3Owner, initialEntry?: string, showLocation = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return { client, user: userEvent.setup(), ...render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[owner ? `/s3-access?exercise=${owner}` : "/s3-access"]}><S3AccessPage /></MemoryRouter></QueryClientProvider>) };
+  return { client, user: userEvent.setup(), ...render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[initialEntry ?? (owner ? `/s3-access?exercise=${owner}` : "/s3-access")]}>{showLocation ? <CurrentLocation /> : null}<S3AccessPage /></MemoryRouter></QueryClientProvider>) };
 }
 
 it("shows actual missing enrollment without offering cloud dispatch", async () => {
@@ -27,6 +32,32 @@ it("shows actual missing enrollment without offering cloud dispatch", async () =
   expect(await screen.findByText("No S3 environment is enrolled.")).toBeVisible();
   expect(screen.queryByRole("button", { name: "Open exercise" })).not.toBeInTheDocument();
   expect(s3Api.send).not.toHaveBeenCalled();
+});
+
+it("preserves objective and unrelated query context through saved S3 exercise links", async () => {
+  vi.mocked(s3Api.list).mockResolvedValue({ schema_version: "bluefire.s3-exercise-list.v1", exercises: [
+    { workflow_job_id: s3Owner, name: "Retained exercise", bucket: s3Environment.scope.bucket, policy_state: "uncertain", updated_at: "2026-01-01T00:00:00Z" },
+  ], truncated: false });
+  const { user } = mount("", "/s3-access?goal=s3-access&context=retained&setup_profile=profile-preserved&extra=kept", true);
+  const paramsAt = () => new URLSearchParams(screen.getByLabelText("Current location").textContent!.split("?")[1]);
+
+  await user.click(await screen.findByRole("link", { name: /Retained exercise/ }));
+  await screen.findByRole("heading", { name: "Remove unintended read access" });
+  expect(screen.getByRole("complementary", { name: "Selected objective" })).toBeVisible();
+  expect(paramsAt().get("exercise")).toBe(s3Owner);
+  expect(paramsAt().get("goal")).toBe("s3-access");
+  expect(paramsAt().get("context")).toBe("retained");
+  expect(paramsAt().get("setup_profile")).toBe("profile-preserved");
+  expect(paramsAt().get("extra")).toBe("kept");
+
+  await user.click(screen.getByRole("link", { name: "Saved exercises" }));
+  expect(await screen.findByRole("heading", { name: "Saved exercises" })).toBeVisible();
+  expect(screen.getByRole("complementary", { name: "Selected objective" })).toBeVisible();
+  expect(paramsAt().has("exercise")).toBe(false);
+  expect(paramsAt().get("goal")).toBe("s3-access");
+  expect(paramsAt().get("context")).toBe("retained");
+  expect(paramsAt().get("setup_profile")).toBe("profile-preserved");
+  expect(paramsAt().get("extra")).toBe("kept");
 });
 
 it.each(["Temporary access has not been imported on the enrolled host.", "Temporary access has expired on the enrolled host."])("keeps an unavailable environment visible: %s", async problem => {

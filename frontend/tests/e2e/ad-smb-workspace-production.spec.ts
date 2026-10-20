@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
-import { adHash, adOwner, rawAdEnvironments, rawAdOperation, rawAdReview, rawAdWorkflow } from "../ad-smb-browser-fixture";
+import { adHash, adOwner, rawAdEnvironments, rawAdList, rawAdNormalizedObservation, rawAdOperation, rawAdReview, rawAdWorkflow } from "../ad-smb-browser-fixture";
 import type { AdPhase } from "../../src/lib/ad-smb";
 
 const output = process.env.BLUEFIRE_S3_BROWSER_OUTPUT!;
@@ -41,7 +41,7 @@ async function fixture(page: Page, initial: FixtureWorkflow | null, loseAcknowle
     if (method === "GET" && url.pathname === "/api/v1/catalog") { await json({ behaviors: [], actions: [], runner_profiles: [], runners: [], ai: { providers: [] } }); return; }
     if (method === "GET" && url.pathname === "/api/v1/scenarios") { await json({ scenarios: [] }); return; }
     if (method === "GET" && url.pathname === "/api/v1/ad-smb/environments") { environmentChecks += 1; await json(environmentOverride ?? (value ? rawAdEnvironments() : { environments: [], native_execution_available: false })); return; }
-    if (method === "GET" && url.pathname === "/api/v1/ad-smb/workflows") { await json({ workflows: value ? [value] : [] }); return; }
+    if (method === "GET" && url.pathname === "/api/v1/ad-smb/workflows") { await json(rawAdList(value ? [value] : [])); return; }
     const root = `/api/v1/ad-smb/workflows/${adOwner}`;
     if (method === "GET" && url.pathname === root && value) { await json(value); return; }
     if (method === "GET" && acknowledgement && url.pathname === `/api/v1/jobs/${acknowledgementId}`) { counts.saved += 1; await json(acknowledgement); return; }
@@ -130,6 +130,11 @@ async function capture(page: Page, name: string, viewport: { width: number; heig
     const rect = main.getBoundingClientRect();
     const outside = [...main.querySelectorAll<HTMLElement>("h1,h2,h3,p,button,input,summary,a,article")].filter(node => {
       const child = node.getBoundingClientRect();
+      const scroller = node.closest<HTMLElement>(".ad-smb-audit .ad-smb-table-wrap");
+      if (scroller && getComputedStyle(scroller).overflowX === "auto") {
+        const clip = scroller.getBoundingClientRect();
+        return clip.left < rect.left - 1 || clip.right > rect.right + 1;
+      }
       return child.width > 0 && child.height > 0 && (child.left < rect.left - 1 || child.right > rect.right + 1);
     }).map(node => node.tagName);
     return { document: { client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }, main: { client: main.clientWidth, scroll: main.scrollWidth }, outside };
@@ -273,11 +278,54 @@ test("synthetic production bundle: absent audit and observed zero are distinct",
   Object.assign(observed.workflow.progress.operations[0]!.executions[0]!.observation!, { events: 0, truncated: false });
   state.set(observed);
   await page.getByRole("button", { name: "Refresh state", exact: true }).click();
-  await expect(page.getByText("Audit retained: 0 events. Source authentication and independence are not established.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Audit retained: 0 source events. Normalized event rows are not present in this saved summary. Source authentication and independence are not established.", { exact: true })).toBeVisible();
   const zero = await capture(page, "audit-observed-zero", viewports[2]!);
   assertVerticalCapture(zero);
   assertNoUnexpected(state.counts);
   report("audit", { absent, zero, counts: state.counts });
+});
+
+test("synthetic production bundle: normalized audit references stay read-only across widths and reload", async ({ page }) => {
+  const value = rawAdWorkflow({ phases: ["audit"], allowed: [] });
+  const createdAt = value.workflow.request.environment.scope.created_at;
+  const execution = value.workflow.progress.operations[0]!.executions[0]!;
+  Object.assign(execution, { observation: {
+    events: 26, truncated: false, source_digest: adHash, authenticated_source: false,
+    independent_observation: false, effective_access_claim: false,
+    normalized_observation: rawAdNormalizedObservation(createdAt),
+  } });
+  const state = await fixture(page, value);
+  await expect(page.getByRole("heading", { name: "Normalized Security events", exact: true })).toBeVisible();
+  await expect(page.getByText("Events 1-25 of 26", { exact: true })).toBeVisible();
+  const captures = [];
+  for (const viewport of viewports) {
+    await page.setViewportSize(viewport);
+    await page.getByRole("heading", { name: "Normalized Security events", exact: true }).evaluate(node => node.scrollIntoView({ behavior: "instant", block: "start" }));
+    captures.push(await capture(page, "audit-normalized", viewport, ".ad-smb-audit h3"));
+  }
+  captures.forEach(result => assertVerticalCapture(result, true));
+
+  const tableRegion = page.getByRole("region", { name: "Normalized Security events table", exact: true });
+  await tableRegion.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect.poll(() => tableRegion.evaluate(node => node.scrollLeft)).toBeGreaterThan(0);
+  for (let index = 0; index < 4; index += 1) await page.keyboard.press("ArrowLeft");
+  await expect.poll(() => tableRegion.evaluate(node => node.scrollLeft)).toBe(0);
+
+  const firstRefs = page.locator("tbody details").first();
+  await firstRefs.locator("summary").click();
+  await expect(firstRefs.getByText("Source event digest", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Next audit events", exact: true }).click();
+  await expect(page.getByText("Events 26-26 of 26", { exact: true })).toBeVisible();
+  const lastRefs = page.locator("tbody details").first();
+  await lastRefs.locator("summary").click();
+  await expect(lastRefs.getByText("Source event digest", { exact: true })).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Normalized Security events", exact: true })).toBeVisible();
+  await expect(page.getByText("Events 1-25 of 26", { exact: true })).toBeVisible();
+  expect(state.counts).toEqual({ review: 0, stage: 0, stop: 0, recover: 0, saved: 0, unexpected: 0, pageErrors: 0, websocket: 0 });
+  report("audit-normalized", { captures, counts: state.counts, source_references_opened: true, pagination: "26 rows across 2 pages", reload_restored_first_page: true });
 });
 
 test("synthetic production bundle: original acknowledgement and retained result recovery never replay", async ({ page }) => {

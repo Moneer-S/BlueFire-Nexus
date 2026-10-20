@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AdSmbPage } from "../src/pages/AdSmb";
 import { ObjectiveStart } from "../src/components/ObjectiveStart";
 import { adSmbApi, readAdPending, storeAdPending } from "../src/lib/ad-smb";
-import { adChild, adOwner, adPendingFixture, adSubmission, rawAdAcknowledgement, rawAdEnvironments, rawAdReview, rawAdWorkflow } from "./ad-smb-fixture";
+import { adChild, adOwner, adPendingFixture, adSubmission, auditWindowStartForFixture, rawAdAcknowledgement, rawAdEnvironments, rawAdList, rawAdNormalizedObservation, rawAdReview, rawAdWorkflow } from "./ad-smb-fixture";
 
 vi.mock("../src/lib/api", () => ({ DEMO_MODE: false, request: vi.fn(), ApiError: class extends Error {} }));
 function mount(path = `/ad-smb?workflow=${adOwner}`) { const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); return { ...render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><AdSmbPage /></MemoryRouter></QueryClientProvider>), client }; }
@@ -13,7 +13,7 @@ beforeEach(() => {
   localStorage.clear();
   vi.spyOn(crypto, "randomUUID").mockReturnValue(adSubmission);
   vi.spyOn(adSmbApi, "environments").mockResolvedValue(rawAdEnvironments());
-  vi.spyOn(adSmbApi, "list").mockResolvedValue({ workflows: [rawAdWorkflow()] });
+  vi.spyOn(adSmbApi, "list").mockResolvedValue(rawAdList());
   vi.spyOn(adSmbApi, "workflow").mockResolvedValue(rawAdWorkflow());
   vi.spyOn(adSmbApi, "review").mockResolvedValue(rawAdReview());
   vi.spyOn(adSmbApi, "submit").mockResolvedValue(rawAdAcknowledgement());
@@ -25,18 +25,20 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 it("opens AD readiness from the objective chooser without creating or authorizing work", async () => {
   vi.mocked(adSmbApi.environments).mockResolvedValue({ environments: [], native_execution_available: false });
-  vi.mocked(adSmbApi.list).mockResolvedValue({ workflows: [] });
+  vi.mocked(adSmbApi.list).mockResolvedValue(rawAdList([]));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/getting-started"]}><Routes>
     <Route path="/getting-started" element={<ObjectiveStart />} />
     <Route path="/ad-smb" element={<AdSmbPage />} />
   </Routes></MemoryRouter></QueryClientProvider>);
   fireEvent.change(screen.getByRole("combobox", { name: "Objective" }), { target: { value: "ad-access" } });
-  expect(screen.getByText("Not checked")).toBeVisible();
+  expect(screen.getByText("Not checked here")).toBeVisible();
   expect(adSmbApi.environments).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("link", { name: "Review environment" }));
   expect(await screen.findByText("Live AD execution unavailable")).toBeVisible();
   expect(screen.getByRole("heading", { name: "AD share access" })).toBeVisible();
+  expect(screen.getByText("Can we remove the probe identity's share access while preserving legitimate domain reads?")).toBeVisible();
+  expect(screen.getByRole("link", { name: "Change objective" })).toHaveAttribute("href", "/getting-started?goal=ad-access");
   expect(adSmbApi.create).not.toHaveBeenCalled();
   expect(adSmbApi.review).not.toHaveBeenCalled();
   expect(adSmbApi.submit).not.toHaveBeenCalled();
@@ -58,6 +60,26 @@ it("loads saved work read-only and hides opaque credentials and binary descripto
   expect(document.body.textContent).not.toMatch(/credential-|PRIVATE_DESCRIPTOR_BYTES|binary_b64/);
   expect(screen.getByText(/Effective access not established/)).toBeInTheDocument();
   expect(adSmbApi.review).not.toHaveBeenCalled(); expect(adSmbApi.submit).not.toHaveBeenCalled(); expect(adSmbApi.recover).not.toHaveBeenCalled();
+});
+it.each(["/ad-smb", "/ad-smb?goal=ad-access"])("opens a saved summary through the separate detail request from %s", async path => {
+  vi.mocked(adSmbApi.workflow).mockRejectedValue(new Error("Detail unavailable"));
+  mount(path);
+  const saved = await within(screen.getByRole("complementary", { name: "Saved AD exercises" })).findByRole("link", { name: /member\.lab\.example\.test/ });
+  if (path.includes("goal=")) expect(saved).toHaveAttribute("href", `/ad-smb?goal=ad-access&workflow=${adOwner}`);
+  expect(adSmbApi.workflow).not.toHaveBeenCalled();
+  fireEvent.click(saved);
+  expect(await screen.findByText("Saved AD exercise unavailable")).toBeVisible();
+  expect(adSmbApi.workflow).toHaveBeenCalledWith(adOwner);
+  if (path.includes("goal=")) {
+    expect(screen.getByRole("link", { name: "Environment selection" })).toHaveAttribute("href", "/ad-smb?goal=ad-access");
+    expect(screen.getByRole("link", { name: "Change objective" })).toHaveAttribute("href", "/getting-started?goal=ad-access");
+  }
+  expect(screen.queryByRole("button", { name: "Review inspect share" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Retained AD evidence" })).not.toBeInTheDocument();
+  expect(adSmbApi.review).not.toHaveBeenCalled();
+  expect(adSmbApi.submit).not.toHaveBeenCalled();
+  expect(adSmbApi.stop).not.toHaveBeenCalled();
+  expect(adSmbApi.recover).not.toHaveBeenCalled();
 });
 it("refreshes from missing enrollment through partial channels without authorizing work", async () => {
   const partial = rawAdEnvironments();
@@ -187,7 +209,48 @@ it("distinguishes observed zero audit events from an absent observation", async 
   const raw = rawAdWorkflow({ phases: ["audit"] }); const observation = raw.workflow.progress.operations[0]!.executions[0]!.observation;
   if (!("events" in observation)) throw new Error("Expected audit fixture"); observation.events = 0; observation.truncated = false;
   vi.mocked(adSmbApi.workflow).mockResolvedValue(raw); mount();
-  expect(await screen.findByText("Audit retained: 0 events. Source authentication and independence are not established.")).toBeInTheDocument();
+  expect(await screen.findByText("Audit retained: 0 source events. Normalized event rows are not present in this saved summary. Source authentication and independence are not established.")).toBeInTheDocument();
+});
+it("does not label a truncated legacy audit summary as a capture-limit result", async () => {
+  const raw = rawAdWorkflow({ phases: ["audit"] });
+  const observation = raw.workflow.progress.operations[0]!.executions[0]!.observation;
+  if (!("events" in observation)) throw new Error("Expected audit fixture");
+  observation.truncated = true;
+  vi.mocked(adSmbApi.workflow).mockResolvedValue(raw); mount();
+  expect(await screen.findByText(/incomplete or truncated capture/)).toBeInTheDocument();
+  expect(screen.queryByText(/capture limit reached/)).not.toBeInTheDocument();
+});
+function normalizedAuditWorkflow(count: number) {
+  const raw = rawAdWorkflow({ phases: ["audit"] });
+  const observation = raw.workflow.progress.operations[0]!.executions[0]!.observation;
+  if (!("events" in observation)) throw new Error("Expected audit fixture");
+  const payload = observation as unknown as Record<string, any>;
+  payload.events = count;
+  payload.truncated = false;
+  payload.normalized_observation = rawAdNormalizedObservation(count, auditWindowStartForFixture(raw.workflow.request.environment.scope.created_at));
+  return raw;
+}
+it.each([2, 3])("renders %i normalized rows without inferring multiple logon candidates", async (count) => {
+  vi.mocked(adSmbApi.workflow).mockResolvedValue(normalizedAuditWorkflow(count)); mount();
+  expect(await screen.findByRole("heading", { name: "Normalized Security events" })).toBeVisible();
+  expect(screen.getByText("Share check denied")).toBeVisible();
+  expect(screen.getByText("No unique qualifying logon record")).toBeVisible();
+  expect(screen.queryByText("Multiple possible logon records")).not.toBeInTheDocument();
+  expect(screen.getByText(/A 5145 result is a share-level access check/)).toBeVisible();
+  const sourceRefs = screen.getAllByText("Source refs", { selector: "summary" })[0]!;
+  fireEvent.click(sourceRefs);
+  expect(within(sourceRefs.closest("details")!).getByText("Source event digest")).toBeVisible();
+  expect(document.body.textContent).not.toMatch(/<Event|EventData|TargetUserName|probe-user|raw_xml/);
+  expect(adSmbApi.submit).not.toHaveBeenCalled();
+});
+it("paginates a bounded large capture without changing its saved workflow", async () => {
+  vi.mocked(adSmbApi.workflow).mockResolvedValue(normalizedAuditWorkflow(26)); mount();
+  expect(await screen.findByText("Events 1-25 of 26")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Next audit events" }));
+  expect(await screen.findByText("Events 26-26 of 26")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Next audit events" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Previous audit events" })).toBeEnabled();
+  expect(adSmbApi.submit).not.toHaveBeenCalled();
 });
 it("shows settled legitimate read breakage alongside the probe outcome", async () => {
   const raw = rawAdWorkflow({ phases: ["baseline", "harden", "retest"], allowed: ["rollback"], expectation: "not_met" });
