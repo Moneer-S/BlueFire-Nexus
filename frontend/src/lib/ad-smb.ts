@@ -45,6 +45,7 @@ export interface AdNormalizedAudit {
 export interface AdExecution { provenance: "synthetic_fixture" | "runner_reported"; dispatch: "not_started" | "attempted" | "unknown"; cleanup: "verified" | "unknown"; read: AdRead | null; audit: { events: number; truncated: boolean; digest: string; normalized?: AdNormalizedAudit } | null; change: AdChange | null }
 export interface AdOperation { id: string; phase: AdPhase; runId: string; state: "complete" | "partial" | "not_started" | "unknown"; expectation: "matched" | "not_met" | "incomplete" | null; distinctContexts: boolean | null; cleanup: "verified" | "unknown"; digest: string; executions: AdExecution[] }
 export interface AdWorkflow { id: string; environment: AdEnvironment; revision: number; stopped: boolean; pending: string | null; policy: "baseline" | "hardened" | "unknown"; operations: AdOperation[]; allowed: AdPhase[]; remaining: AdBudget; integration: "unavailable" | "injected_adapter" | "configured_admission" }
+export interface AdWorkflowSummary extends Pick<AdWorkflow, "id" | "revision" | "stopped" | "pending" | "policy"> { environment: Pick<AdEnvironment, "member" | "provenance"> }
 export interface AdReview { workflow: string; revision: number; phase: AdPhase; digest: string; steps: string[]; budget: AdBudget; change: AdChange | null; policy: string }
 export interface AdSubmission { submission_id: string; phase: AdPhase; review_digest: string; reviewed_by: string }
 export type AdPending = { kind: "create"; id: string; body: { submission_id: string; environment_id: string } } | { kind: "submit"; id: string; workflow: string; body: AdSubmission };
@@ -240,7 +241,17 @@ export function checkedAdWorkflow(value: unknown, expected?: string): AdWorkflow
   }))) throw bad();
   return { id, environment: selected, revision: integer(progress.revision, 1000), stopped: bool(progress.stopped), pending, policy: oneOf(progress.policy_state, ["baseline", "hardened", "unknown"]), operations, allowed, remaining: budget(envelope.remaining), integration: oneOf(envelope.execution_integration, ["unavailable", "injected_adapter", "configured_admission"]) };
 }
-export function checkedAdList(value: unknown): AdWorkflow[] { const rows = list(object(value).workflows, 4096).map(value => checkedAdWorkflow(value)); if (new Set(rows.map(row => row.id)).size !== rows.length) throw bad(); return rows; }
+export function checkedAdList(value: unknown): AdWorkflowSummary[] {
+  const envelope = object(value);
+  if (Object.keys(envelope).sort().join() !== "effective_access_claim,schema_version,workflows" || envelope.schema_version !== "bluefire.ad-smb-workflow-list.v1" || envelope.effective_access_claim !== false) throw bad();
+  const rows = list(envelope.workflows, 4096).map((value): AdWorkflowSummary => {
+    const row = object(value);
+    if (Object.keys(row).sort().join() !== "member,pending_operation,policy_state,provenance,revision,stopped,workflow_job_id") throw bad();
+    return { id: job(row.workflow_job_id), environment: { member: text(row.member, 253), provenance: oneOf(row.provenance, ["synthetic_fixture", "runner_reported"]) }, revision: integer(row.revision, 1000), stopped: bool(row.stopped), pending: row.pending_operation === null ? null : job(row.pending_operation), policy: oneOf(row.policy_state, ["baseline", "hardened", "unknown"]) };
+  });
+  if (new Set(rows.map(row => row.id)).size !== rows.length) throw bad();
+  return rows;
+}
 export function checkedAdReview(value: unknown, workflow: AdWorkflow, phase: AdPhase): AdReview {
   const row = object(value);
   if (row.schema_version !== "bluefire.ad-smb-review.v1" || row.workflow_job_id !== workflow.id || row.revision !== workflow.revision || row.phase !== phase || !workflow.allowed.includes(phase) || row.policy_state !== workflow.policy || JSON.stringify(row.steps) !== JSON.stringify(adSteps[phase])) throw bad();
@@ -277,7 +288,7 @@ function live<T>(callback: () => Promise<T>): Promise<T> { return DEMO_MODE ? Pr
 const post = (path: string, body: unknown) => live(() => request<unknown>(`/ad-smb/${path}`, { method: "POST", body: JSON.stringify(body) }));
 export const adSmbApi = {
   environments: () => DEMO_MODE ? Promise.resolve({ environments: [], native_execution_available: false }) : request<unknown>("/ad-smb/environments"),
-  list: () => DEMO_MODE ? Promise.resolve({ workflows: [] }) : request<unknown>("/ad-smb/workflows"),
+  list: () => DEMO_MODE ? Promise.resolve({ schema_version: "bluefire.ad-smb-workflow-list.v1", effective_access_claim: false, workflows: [] }) : request<unknown>("/ad-smb/workflows"),
   workflow: (id: string) => live(() => request<unknown>(`/ad-smb/workflows/${encodeURIComponent(id)}`)),
   job: (id: string) => live(() => request<unknown>(`/jobs/${encodeURIComponent(id)}`)),
   create: (body: { submission_id: string; environment_id: string }) => post("workflows", body),

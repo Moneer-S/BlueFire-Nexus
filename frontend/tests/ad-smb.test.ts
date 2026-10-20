@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { adConfirmed, adPhaseCurrent, adSmbApi, checkedAdEnvironments, checkedAdList, checkedAdReview, checkedAdWorkflow, clearAdPending, readAdPending, storeAdPending } from "../src/lib/ad-smb";
 import { request } from "../src/lib/api";
-import { adChild, adOwner, adPendingFixture, adSids, auditWindowStartForFixture, rawAdAcknowledgement, rawAdEnvironments, rawAdNormalizedObservation, rawAdReview, rawAdWorkflow } from "./ad-smb-fixture";
+import { adChild, adOwner, adPendingFixture, adSids, auditWindowStartForFixture, rawAdAcknowledgement, rawAdEnvironments, rawAdList, rawAdNormalizedObservation, rawAdReview, rawAdWorkflow } from "./ad-smb-fixture";
 
 vi.mock("../src/lib/api", () => ({ DEMO_MODE: false, request: vi.fn() }));
 beforeEach(() => localStorage.clear());
@@ -176,7 +176,36 @@ it("refuses a different owner, unsafe run link, or truncated complete stage", ()
   const raw = rawAdWorkflow({ phases: ["baseline"] }); raw.workflow.progress.operations[0]!.run_id = "https://external.example/test"; expect(() => checkedAdWorkflow(raw)).toThrow();
   raw.workflow.progress.operations[0]!.run_id = "run-original"; raw.workflow.progress.operations[0]!.executions.pop(); expect(() => checkedAdWorkflow(raw)).toThrow();
 });
-it("rejects duplicate saved exercises and pending work offered as executable", () => { const raw = rawAdWorkflow(); expect(() => checkedAdList({ workflows: [raw, raw] })).toThrow(); expect(() => checkedAdWorkflow(rawAdWorkflow({ pending: adChild, allowed: ["inspect"] }))).toThrow(); });
+it("checks summary lists separately from full workflow evidence", () => {
+  const raw = rawAdList([rawAdWorkflow({ pending: adChild, stopped: true })]);
+  const rows = checkedAdList(raw);
+  expect(rows).toEqual([{ id: adOwner, environment: { member: "member.lab.example.test", provenance: "synthetic_fixture" }, revision: 0, stopped: true, pending: adChild, policy: "baseline" }]);
+  expect(rows[0]).not.toHaveProperty("operations");
+  expect(rows[0]).not.toHaveProperty("allowed");
+  expect(() => checkedAdWorkflow(raw.workflows[0])).toThrow();
+  expect(() => checkedAdList({ ...raw, workflows: [rawAdWorkflow()] })).toThrow();
+  expect(checkedAdList(rawAdList([]))).toEqual([]);
+});
+it("rejects duplicate saved summaries and pending detail offered as executable", () => { const raw = rawAdWorkflow(); expect(() => checkedAdList(rawAdList([raw, raw]))).toThrow(); expect(() => checkedAdWorkflow(rawAdWorkflow({ pending: adChild, allowed: ["inspect"] }))).toThrow(); });
+it.each([
+  ["workflow_job_id", "invalid"], ["member", "member\n.example.test"], ["member", "x".repeat(254)],
+  ["provenance", "authenticated"], ["revision", -1], ["revision", 1001], ["revision", true],
+  ["stopped", 1], ["pending_operation", "invalid"], ["pending_operation", false], ["policy_state", "verified"],
+])("rejects invalid summary %s", (field, value) => {
+  const raw = rawAdList();
+  Object.assign(raw.workflows[0]!, { [field as string]: value });
+  expect(() => checkedAdList(raw)).toThrow();
+});
+it("requires exact versioned summary shape and no effective-access claim", () => {
+  const raw = rawAdList();
+  expect(() => checkedAdList({ workflows: [] })).toThrow();
+  expect(() => checkedAdList({ ...raw, schema_version: "bluefire.ad-smb-workflow-list.v2" })).toThrow();
+  expect(() => checkedAdList({ ...raw, effective_access_claim: true })).toThrow();
+  expect(() => checkedAdList({ ...raw, independent_observation: true })).toThrow();
+  expect(() => checkedAdList({ ...raw, workflows: [{ ...raw.workflows[0], operations: [] }] })).toThrow();
+  expect(() => checkedAdList({ ...raw, workflows: [{ ...raw.workflows[0], member: undefined }] })).toThrow();
+  expect(() => checkedAdList({ ...raw, workflows: Array.from({ length: 4097 }, () => raw.workflows[0]) })).toThrow();
+});
 it("keeps a known counterexample distinct from unknown execution", () => { const value = checkedAdWorkflow(rawAdWorkflow({ phases: ["retest"], expectation: "not_met" })); expect(value.operations[0]).toMatchObject({ state: "complete", expectation: "not_met", cleanup: "verified" }); });
 it("requires exact selected review identity, revision, phase and steps", () => { const value = checkedAdWorkflow(rawAdWorkflow()); expect(checkedAdReview(rawAdReview(), value, "inspect").revision).toBe(0); for (const delta of [{ workflow_job_id: adChild }, { revision: 1 }, { phase: "harden" }, { steps: ["other"] }]) expect(() => checkedAdReview({ ...rawAdReview(), ...delta }, value, "inspect")).toThrow(); });
 it("rejects an altered displayed reservation rather than understate its cost", () => { const value = checkedAdWorkflow(rawAdWorkflow({ allowed: ["baseline"] })); const review = rawAdReview("baseline"); review.budget.sessions = 0; expect(() => checkedAdReview(review, value, "baseline")).toThrow(); });

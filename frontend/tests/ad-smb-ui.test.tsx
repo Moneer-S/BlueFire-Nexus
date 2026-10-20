@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AdSmbPage } from "../src/pages/AdSmb";
 import { ObjectiveStart } from "../src/components/ObjectiveStart";
 import { adSmbApi, readAdPending, storeAdPending } from "../src/lib/ad-smb";
-import { adChild, adOwner, adPendingFixture, adSubmission, auditWindowStartForFixture, rawAdAcknowledgement, rawAdEnvironments, rawAdNormalizedObservation, rawAdReview, rawAdWorkflow } from "./ad-smb-fixture";
+import { adChild, adOwner, adPendingFixture, adSubmission, auditWindowStartForFixture, rawAdAcknowledgement, rawAdEnvironments, rawAdList, rawAdNormalizedObservation, rawAdReview, rawAdWorkflow } from "./ad-smb-fixture";
 
 vi.mock("../src/lib/api", () => ({ DEMO_MODE: false, request: vi.fn(), ApiError: class extends Error {} }));
 function mount(path = `/ad-smb?workflow=${adOwner}`) { const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); return { ...render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><AdSmbPage /></MemoryRouter></QueryClientProvider>), client }; }
@@ -13,7 +13,7 @@ beforeEach(() => {
   localStorage.clear();
   vi.spyOn(crypto, "randomUUID").mockReturnValue(adSubmission);
   vi.spyOn(adSmbApi, "environments").mockResolvedValue(rawAdEnvironments());
-  vi.spyOn(adSmbApi, "list").mockResolvedValue({ workflows: [rawAdWorkflow()] });
+  vi.spyOn(adSmbApi, "list").mockResolvedValue(rawAdList());
   vi.spyOn(adSmbApi, "workflow").mockResolvedValue(rawAdWorkflow());
   vi.spyOn(adSmbApi, "review").mockResolvedValue(rawAdReview());
   vi.spyOn(adSmbApi, "submit").mockResolvedValue(rawAdAcknowledgement());
@@ -25,7 +25,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 it("opens AD readiness from the objective chooser without creating or authorizing work", async () => {
   vi.mocked(adSmbApi.environments).mockResolvedValue({ environments: [], native_execution_available: false });
-  vi.mocked(adSmbApi.list).mockResolvedValue({ workflows: [] });
+  vi.mocked(adSmbApi.list).mockResolvedValue(rawAdList([]));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/getting-started"]}><Routes>
     <Route path="/getting-started" element={<ObjectiveStart />} />
@@ -58,6 +58,21 @@ it("loads saved work read-only and hides opaque credentials and binary descripto
   expect(document.body.textContent).not.toMatch(/credential-|PRIVATE_DESCRIPTOR_BYTES|binary_b64/);
   expect(screen.getByText(/Effective access not established/)).toBeInTheDocument();
   expect(adSmbApi.review).not.toHaveBeenCalled(); expect(adSmbApi.submit).not.toHaveBeenCalled(); expect(adSmbApi.recover).not.toHaveBeenCalled();
+});
+it("opens a saved summary through the separate detail request before offering work", async () => {
+  vi.mocked(adSmbApi.workflow).mockRejectedValue(new Error("Detail unavailable"));
+  mount("/ad-smb");
+  const saved = await within(screen.getByRole("complementary", { name: "Saved AD exercises" })).findByRole("link", { name: /member\.lab\.example\.test/ });
+  expect(adSmbApi.workflow).not.toHaveBeenCalled();
+  fireEvent.click(saved);
+  expect(await screen.findByText("Saved AD exercise unavailable")).toBeVisible();
+  expect(adSmbApi.workflow).toHaveBeenCalledWith(adOwner);
+  expect(screen.queryByRole("button", { name: "Review inspect share" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Retained AD evidence" })).not.toBeInTheDocument();
+  expect(adSmbApi.review).not.toHaveBeenCalled();
+  expect(adSmbApi.submit).not.toHaveBeenCalled();
+  expect(adSmbApi.stop).not.toHaveBeenCalled();
+  expect(adSmbApi.recover).not.toHaveBeenCalled();
 });
 it("refreshes from missing enrollment through partial channels without authorizing work", async () => {
   const partial = rawAdEnvironments();

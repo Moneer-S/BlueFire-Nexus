@@ -364,6 +364,84 @@ def large_audit_observation(request):
     }
 
 
+def test_summary_list_omits_large_audit_without_changing_detail_or_saved_evidence(
+    workspace, monkeypatch
+):
+    jobs, executor, service = workspace
+    identifier = create(jobs)
+    assert submit(jobs, identifier, "inspect")[0]["state"] == "completed"
+    jobs.clock = lambda: NOW + timedelta(seconds=2)
+    terminal = executor.terminal
+
+    def audit_terminal(request):
+        execution = terminal(request)
+        execution["observation"] = large_audit_observation(request)
+        return execution
+
+    executor.terminal = audit_terminal
+    assert submit(jobs, identifier, "audit")[0]["state"] == "completed"
+    detail = jobs.read(identifier)
+    stored = service.product_store.get_job(identifier)
+    assert len(canonical_json_bytes(detail)) > MAX_DOCUMENT_BYTES
+    observation = detail["workflow"]["progress"]["operations"][-1]["executions"][0]["observation"]
+    assert len(observation["normalized_observation"]["events"]) == 600
+    read = jobs.read
+
+    def no_detail_or_host_work(*_args, **_kwargs):
+        pytest.fail("Summary listing must not read detail, discover hosts or dispatch work")
+
+    monkeypatch.setattr(jobs, "read", no_detail_or_host_work)
+    for method in ("environments", "readiness", "execute", "recover_original"):
+        monkeypatch.setattr(executor, method, no_detail_or_host_work)
+
+    listed = jobs.list()
+
+    selected = detail["workflow"]["request"]["environment"]
+    progress = detail["workflow"]["progress"]
+    assert listed == {
+        "schema_version": "bluefire.ad-smb-workflow-list.v1",
+        "effective_access_claim": False,
+        "workflows": [
+            {
+                "workflow_job_id": identifier,
+                "member": selected["scope"]["hosts"]["member"]["fqdn"],
+                "provenance": selected["provenance"],
+                "revision": progress["revision"],
+                "stopped": progress["stopped"],
+                "pending_operation": progress["pending_operation"],
+                "policy_state": progress["policy_state"],
+            }
+        ],
+    }
+    assert len(canonical_json_bytes(listed)) < 1024
+    assert canonical_json_bytes(read(identifier)) == canonical_json_bytes(detail)
+    assert service.product_store.get_job(identifier) == stored
+
+
+def test_summary_list_preserves_owner_order_and_pending_stopped_state(workspace):
+    jobs, executor, _service = workspace
+    first = create(jobs)
+    second = create(jobs)
+    jobs.stop(first)
+    executor.crash = True
+    child, _ = submit(jobs, second, "inspect")
+    assert child["state"] == "failed"
+    expected = records.list_owners(jobs.store)
+
+    listed = jobs.list()["workflows"]
+
+    assert [row["workflow_job_id"] for row in listed] == [row["job_id"] for row in expected]
+    assert next(row for row in listed if row["workflow_job_id"] == first)["stopped"] is True
+    assert next(row for row in listed if row["workflow_job_id"] == second)["stopped"] is False
+    assert (
+        next(row for row in listed if row["workflow_job_id"] == first)["pending_operation"] is None
+    )
+    assert (
+        next(row for row in listed if row["workflow_job_id"] == second)["pending_operation"]
+        == child["job_id"]
+    )
+
+
 def test_large_normalized_audit_recovery_after_restart_stays_read_only(workspace):
     jobs, executor, service = workspace
     identifier = create(jobs)

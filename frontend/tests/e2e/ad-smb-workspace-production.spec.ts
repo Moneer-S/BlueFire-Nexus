@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
-import { adHash, adOwner, rawAdEnvironments, rawAdNormalizedObservation, rawAdOperation, rawAdReview, rawAdWorkflow } from "../ad-smb-browser-fixture";
+import { adHash, adOwner, rawAdEnvironments, rawAdList, rawAdNormalizedObservation, rawAdOperation, rawAdReview, rawAdWorkflow } from "../ad-smb-browser-fixture";
 import type { AdPhase } from "../../src/lib/ad-smb";
 
 const output = process.env.BLUEFIRE_S3_BROWSER_OUTPUT!;
@@ -41,7 +41,7 @@ async function fixture(page: Page, initial: FixtureWorkflow | null, loseAcknowle
     if (method === "GET" && url.pathname === "/api/v1/catalog") { await json({ behaviors: [], actions: [], runner_profiles: [], runners: [], ai: { providers: [] } }); return; }
     if (method === "GET" && url.pathname === "/api/v1/scenarios") { await json({ scenarios: [] }); return; }
     if (method === "GET" && url.pathname === "/api/v1/ad-smb/environments") { environmentChecks += 1; await json(environmentOverride ?? (value ? rawAdEnvironments() : { environments: [], native_execution_available: false })); return; }
-    if (method === "GET" && url.pathname === "/api/v1/ad-smb/workflows") { await json({ workflows: value ? [value] : [] }); return; }
+    if (method === "GET" && url.pathname === "/api/v1/ad-smb/workflows") { await json(rawAdList(value ? [value] : [])); return; }
     const root = `/api/v1/ad-smb/workflows/${adOwner}`;
     if (method === "GET" && url.pathname === root && value) { await json(value); return; }
     if (method === "GET" && acknowledgement && url.pathname === `/api/v1/jobs/${acknowledgementId}`) { counts.saved += 1; await json(acknowledgement); return; }

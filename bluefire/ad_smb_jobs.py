@@ -141,7 +141,27 @@ class AdSmbJobs:
         }
 
     def list(self) -> dict[str, Any]:
-        return {"workflows": [self.read(row["job_id"]) for row in records.list_owners(self.store)]}
+        workflows = []
+        for owner in records.list_owners(self.store):
+            selected = results.environment(owner["request"]["environment"])
+            results.readiness(owner["request"]["readiness"])
+            progress = owner["progress"]
+            workflows.append(
+                {
+                    "workflow_job_id": results.job_id(owner["job_id"]),
+                    "member": selected["scope"]["hosts"]["member"]["fqdn"],
+                    "provenance": selected["provenance"],
+                    "revision": progress["revision"],
+                    "stopped": progress["stopped"],
+                    "pending_operation": progress["pending_operation"],
+                    "policy_state": progress["policy_state"],
+                }
+            )
+        return {
+            "schema_version": "bluefire.ad-smb-workflow-list.v1",
+            "effective_access_claim": False,
+            "workflows": workflows,
+        }
 
     def review(self, identifier, phase) -> dict[str, Any]:
         owner = self._owner(identifier)
