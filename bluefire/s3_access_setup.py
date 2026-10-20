@@ -132,11 +132,11 @@ def import_temporary_material(
         raise S3AccessError("S3 temporary material has no exact environment")
     entry = matches[0]
     scope = S3AccessScope.from_mapping(entry["scope"])
-    scope.assert_current(clock=clock)
     now = aware_now(clock)
+    scope.assert_current(clock=lambda: now)
     raw = document(payload, limit=16 * 1024)
     credentials = S3Credentials.from_mapping(
-        raw, clock=clock, deadline=now + timedelta(microseconds=1)
+        raw, clock=lambda: now, deadline=now + timedelta(microseconds=1)
     )
     if credentials.expires_at > timestamp(entry["scope"]["expires_at"]):
         raise S3AccessError("S3 temporary material outlives its scope")

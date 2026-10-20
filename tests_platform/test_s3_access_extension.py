@@ -221,6 +221,29 @@ def test_secret_refresh_is_exact_scope_bound_non_refunding_append(local):
     assert second["revision_digest"] == content_hash(current)
 
 
+def test_secret_import_uses_one_instant_with_advancing_clock(local):
+    enrollment, _, _ = local
+    configured = publish(local)
+    calls = 0
+
+    def clock():
+        nonlocal calls
+        instant = NOW + timedelta(microseconds=calls)
+        calls += 1
+        return instant
+
+    imported = setup.import_temporary_material(
+        enrollment,
+        "test-environment",
+        canonical_json_bytes(credential_row()),
+        expected_revision=configured["revision_digest"],
+        clock=clock,
+    )
+    assert imported["status"] == "reference_imported"
+    assert calls == 1
+    assert S3ExtensionStore(enrollment).read()["sequence"] == 2
+
+
 @pytest.mark.parametrize("kind", ["missing_environment", "expired", "too_long", "not_bytes"])
 def test_secret_import_refuses_invalid_inputs_before_publication(local, kind):
     enrollment, _, _ = local
