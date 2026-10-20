@@ -11,7 +11,15 @@ from typing import Any, Mapping
 
 from . import ad_smb_results as results
 from . import product_store_ad_smb as records
-from .ad_smb_contract import AdSmbError, AdSmbScope, document, exact, timestamp
+from .ad_smb_contract import (
+    MAX_AUDIT_EXECUTION_BYTES,
+    MAX_DOCUMENT_BYTES,
+    AdSmbError,
+    AdSmbScope,
+    document,
+    exact,
+    timestamp,
+)
 from .ad_smb_execution import (
     AdSmbExecutor,
     InstalledAdSmbExecutor,
@@ -304,7 +312,13 @@ class AdSmbJobs:
                 continue
             request = child["request"]["requests"][index]
             original = results.original_context(request, task["context"])
-            recovered = document(self.executor.recover_original(request, original))
+            # The canonical terminal wrapper adds 34 bytes beyond its execution.
+            limit = (
+                MAX_AUDIT_EXECUTION_BYTES + 64
+                if request["step"] == "collect_audit"
+                else MAX_DOCUMENT_BYTES
+            )
+            recovered = document(self.executor.recover_original(request, original), limit=limit)
             exact(recovered, {"status", "execution"}, "AD original result recovery")
             if recovered["status"] != "terminal" or recovered["execution"] is None:
                 raise AdSmbError(
