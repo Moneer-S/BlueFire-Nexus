@@ -20,6 +20,7 @@ import pytest
 import yaml
 
 from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_IDS
+from bluefire.s3_access_runtime import WORKER_FILES
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 
@@ -280,6 +281,58 @@ def test_actual_committed_archives_distinguish_backend_changes_with_identical_ui
     assert first_info["source_provenance"] == second_info["source_provenance"] == "git_archive"
     assert first_info["ui_digest"] == second_info["ui_digest"]
     assert first_digest != second_digest
+
+
+def test_worker_sources_stay_lf_in_windows_policy_git_archive(tmp_path):
+    git = shutil.which("git")
+    assert git is not None
+    attributes = (REPOSITORY / ".gitattributes").read_text(encoding="ascii").splitlines()
+    assert len(WORKER_FILES) == 20
+    assert all(attributes.count(f"/bluefire/{name} text eol=lf") == 1 for name in WORKER_FILES)
+
+    source = tmp_path / "source"
+    package = source / "bluefire"
+    package.mkdir(parents=True)
+    (source / ".gitattributes").write_bytes((REPOSITORY / ".gitattributes").read_bytes())
+    expected = {name: f"# {name}\n".encode("ascii") for name in WORKER_FILES}
+    for name, raw in expected.items():
+        (package / name).write_bytes(raw)
+
+    def command(*args):
+        return subprocess.run(
+            [git, "-c", "core.autocrlf=true", *args],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            timeout=15,
+        ).stdout
+
+    command("init")
+    command("add", ".")
+    command(
+        "-c",
+        "user.name=Archive fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "-m",
+        "worker LF",
+    )
+    revision = command("rev-parse", "HEAD").decode("ascii").strip()
+    archive_path = tmp_path / "worker-source.tar"
+    command("archive", "--format=tar", "--output=" + str(archive_path), revision)
+    with tarfile.open(archive_path, "r:") as archive:
+        members = {
+            entry.name for entry in archive if entry.isfile() and entry.name.startswith("bluefire/")
+        }
+        assert members == {f"bluefire/{name}" for name in WORKER_FILES}
+        for name, raw in expected.items():
+            member = archive.extractfile(f"bluefire/{name}")
+            assert member is not None
+            with member:
+                archived = member.read()
+            assert archived == raw
+            assert b"\r\n" not in archived
 
 
 @pytest.mark.parametrize("layout", ["root", "purelib", "platlib", "duplicate", "unrelated"])
