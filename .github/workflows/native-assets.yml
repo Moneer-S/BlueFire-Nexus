@@ -135,7 +135,7 @@ jobs:
                   "rustc": subprocess.check_output(["rustc", "--version"], cwd=root, text=True).strip(),
                   "cargo": subprocess.check_output(["cargo", "--version"], cwd=root, text=True).strip(),
               },
-              "cargo_lock_sha256": hashlib.sha256((root / "Cargo.lock").read_bytes()).hexdigest(),
+              "cargo_lock_sha256": hashlib.sha256((root / "runner/Cargo.lock").read_bytes()).hexdigest(),
               "binary": {"filename": binary.name, "bytes": binary.stat().st_size, "sha256": digest},
           }
           (output / "receipt.json").write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n", encoding="utf-8")
@@ -187,7 +187,7 @@ jobs:
                   "rustc": subprocess.check_output(["rustc", "--version"], cwd=root, text=True).strip(),
                   "cargo": subprocess.check_output(["cargo", "--version"], cwd=root, text=True).strip(),
               },
-              "cargo_lock_sha256": hashlib.sha256((root / "Cargo.lock").read_bytes()).hexdigest(),
+              "cargo_lock_sha256": hashlib.sha256((root / "runner/Cargo.lock").read_bytes()).hexdigest(),
               "binary": {"filename": binary.name, "bytes": binary.stat().st_size, "sha256": digest},
           }
           (output / "receipt.json").write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n", encoding="utf-8")

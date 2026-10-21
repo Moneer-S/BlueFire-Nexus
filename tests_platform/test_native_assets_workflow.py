@@ -117,3 +117,6 @@ def test_native_asset_receipt_is_versioned_and_allowlisted() -> None:
         assert {ast.literal_eval(key) for key in image.keys} == {"name", "version"}
         assert '["rustc", "--version"]' in script
         assert '["cargo", "--version"]' in script
+        assert 'root / "runner/Cargo.lock"' in script
+        assert 'root / "Cargo.lock"' not in script
+    assert (WORKFLOW.parents[2] / "runner" / "Cargo.lock").is_file()

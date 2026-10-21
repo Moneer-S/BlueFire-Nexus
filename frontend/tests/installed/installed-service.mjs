@@ -20,8 +20,8 @@ assert.match(capability ?? "", /^[A-Za-z0-9_-]{64}$/);
 const secrets = [capability];
 const { chromium } = await import(pathToFileURL(modulePath).href);
 const origin = `http://127.0.0.1:${port}`;
-const ownedScenarioId = "scenario.installed-browser.collection.v1";
 const title = "Installed browser collection comparison";
+const objectiveQuestion = "Does the collection plan retain the requested generated records in an AI-off simulation?";
 const responsiveViewports = [
   { width: 1366, height: 768 },
   { width: 1440, height: 900 },
@@ -65,7 +65,8 @@ let preflightPosts = 0, simulationRunPosts = 0, comparisonPosts = 0;
 let detectionFromRunPosts = 0, detectionParsePosts = 0, detectionFixturePosts = 0, detectionBenignPosts = 0;
 let readOnlyCapturePhase = false;
 let ownedRunIds = [];
-let generatedScenario, savedScenarioDocument, reviewedScenarioDocument, ownedScenarioVersion;
+let ownedScenarioId = "", generatedScenario, savedScenarioDocument, reviewedScenarioDocument, ownedScenarioVersion;
+const runPlanFingerprints = [];
 let sourceDetectionId, ownedDetectionId, expectedMaliciousFixtures, expectedBenignFixtures;
 
 function hasOwnedLayout(layout) {
@@ -429,15 +430,60 @@ try {
   report.checks.push("normal_ephemeral_browser_session");
 
   stage = "saved-experiment";
+  await page.getByRole("heading", { name: "Overview", exact: true }).waitFor();
+  await page.getByRole("link", { name: "Open experiments", exact: true }).click();
+  await page.getByRole("heading", { name: "Experiments", exact: true }).waitFor();
   const catalog = await api("/scenarios");
   const source = catalog.scenarios.find(item => item.id === "scenario.endpoint.lab-collection-methods.v1");
   assert.ok(source);
-  const scenario = { ...source, id: ownedScenarioId, title };
-  generatedScenario = scenario;
-  const saved = (await api("/scenario-versions", { scenario })).scenario;
+  const sourceRow = page.locator(".experiment-row").filter({ has: page.getByRole("button", { name: source.title, exact: true }) });
+  assert.equal(await sourceRow.count(), 1);
+  await sourceRow.getByRole("button", { name: "Duplicate", exact: true }).click();
+  const duplicateDraft = await page.evaluate(() => JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")));
+  assert.ok(duplicateDraft?.id?.startsWith(`${source.id.replace(/\.v\d+$/, "")}.copy.`));
+  assert.ok(duplicateDraft.id.endsWith(".v1"));
+  assert.notEqual(duplicateDraft.id, source.id);
+  ownedScenarioId = duplicateDraft.id;
+  const duplicateRow = page.locator(".experiment-row").filter({ has: page.getByRole("button", { name: `${source.title} copy`, exact: true }) });
+  await duplicateRow.getByRole("button", { name: "Continue editing", exact: true }).click();
+  await page.getByLabel("Experiment name", { exact: true }).fill(title);
+  const purposeField = page.getByLabel("Experiment question", { exact: true });
+  if (!await purposeField.isVisible()) {
+    await page.locator("details").filter({ has: purposeField }).getByText("Experiment purpose", { exact: true }).click();
+  }
+  await purposeField.fill(objectiveQuestion);
+  await page.waitForFunction(({ title, purpose }) => {
+    try {
+      const draft = JSON.parse(localStorage.getItem("bluefire.local.scenario.v1") ?? "null");
+      return draft?.title === title && draft?.purpose === purpose;
+    } catch { return false; }
+  }, { title, purpose: objectiveQuestion });
+  const objectiveDraft = await page.evaluate(() => JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")));
+  generatedScenario = withoutLayout(objectiveDraft);
+  assert.equal(generatedScenario.id, ownedScenarioId);
+  assert.equal(generatedScenario.title, title);
+  assert.equal(generatedScenario.purpose, objectiveQuestion);
+  assert.deepEqual(generatedScenario.steps, source.steps);
+  assert.deepEqual(generatedScenario.edges, source.edges);
+  const firstSaveResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/scenario-versions" && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Save version", exact: true }).click();
+  const saved = (await (await firstSaveResponse).json()).scenario;
   assert.equal(saved.scenario_id, ownedScenarioId);
+  assert.equal(saved.version, 1);
+  assert.equal(saved.document.purpose, objectiveQuestion);
+  assert.deepEqual(saved.document.steps, source.steps);
+  assert.deepEqual(saved.document.edges, source.edges);
   savedScenarioDocument = saved.document;
   reviewedScenarioDocument = { ...savedScenarioDocument, title: `${title} reviewed` };
+  report.objective_continuity = {
+    claim: "scenario-purpose objective continuity through owned AI-off simulation only",
+    objective: objectiveQuestion,
+    scenario_id: ownedScenarioId,
+    source_scenario_id: source.id,
+    saved_version: saved.version,
+    saved_digest: saved.digest,
+  };
+  report.checks.push("overview_to_experiments_duplicate_and_scenario_purpose_authored_in_builder");
   const savedRoute = `${origin}/#/builder?${new URLSearchParams({ saved_scenario: saved.scenario_id, version: String(saved.version), digest: saved.digest })}`;
   await page.goto(savedRoute);
   await page.getByRole("button", { name: "Open this version for editing", exact: true }).click();
@@ -452,11 +498,14 @@ try {
   ownedScenarioVersion = { scenario_id: updated.scenario_id, version: updated.version, digest: updated.digest };
   assert.equal(updated.scenario_id, ownedScenarioId);
   assert.equal(updated.document.title, `${title} reviewed`);
+  assert.equal(updated.document.purpose, objectiveQuestion);
   assert.equal(updated.version, saved.version + 1);
   assert.ok(sameStructure(updated.document, reviewedScenarioDocument));
   reviewedScenarioDocument = updated.document;
   assert.deepEqual(updated.document.steps, source.steps);
   assert.deepEqual(updated.document.edges, source.edges);
+  report.objective_continuity.reviewed_version = updated.version;
+  report.objective_continuity.reviewed_digest = updated.digest;
   report.checks.push("saved_graph_rename_layout_undo_redo_without_semantic_change");
 
   stage = "graph-export";
@@ -558,7 +607,59 @@ try {
     assert.ok(selectedTitle[0].fitsCard && selectedTitle[0].fitsWidth, "Long behavior title must fit the focused card");
     await capture(`graph-focused-${viewport.width}x${viewport.height}`);
   }
+  async function reachableGraphElement(locator, description, checkText = true) {
+    await locator.evaluate(element => element.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }));
+    const geometry = await locator.evaluate(element => {
+      const box = element.getBoundingClientRect();
+      const main = document.getElementById("main-content")?.getBoundingClientRect();
+      return { left: box.left, right: box.right, top: box.top, bottom: box.bottom,
+        width: box.width, height: box.height, clipTop: Math.max(0, main?.top ?? 0),
+        clipBottom: Math.min(innerHeight, main?.bottom ?? innerHeight), viewportWidth: innerWidth,
+        textFits: element.scrollWidth <= element.clientWidth + 1 };
+    });
+    report.layout_probe = { surface: "constrained-graph", element: description, geometry };
+    assert.ok(geometry.width > 0 && geometry.height > 0 && (!checkText || geometry.textFits), `${description} must remain readable`);
+    assert.ok(geometry.left >= -1 && geometry.right <= geometry.viewportWidth + 1
+      && geometry.top >= geometry.clipTop - 1 && geometry.bottom <= geometry.clipBottom + 1,
+    `${description} must be reachable within the desktop work area`);
+    delete report.layout_probe;
+  }
+  for (const viewport of [{ width: 1024, height: 768 }, { width: 910, height: 512 }]) {
+    stage = `graph-constrained-${viewport.width}x${viewport.height}`;
+    await page.setViewportSize(viewport);
+    for (const name of ["Fit visible graph", "Steps", "Canvas", "Focus selected step", "Hide node inspector"]) {
+      await reachableGraphElement(page.getByRole("button", { name, exact: true }), name);
+    }
+    await page.getByRole("button", { name: "Hide node inspector", exact: true }).click();
+    const showInspector = page.getByRole("button", { name: "Show node inspector", exact: true });
+    await reachableGraphElement(showInspector, "Show node inspector");
+    await showInspector.click();
+    await page.locator(".inspector-panel:not([hidden])").waitFor();
+    await page.getByRole("button", { name: "Fit visible graph", exact: true }).click();
+    await waitForGraphFrame(false);
+    await page.getByRole("button", { name: "Steps", exact: true }).click();
+    const selectedStep = page.locator('.ordered-steps button[aria-pressed="true"]');
+    assert.match(await selectedStep.innerText(), /Collect selected records \(native JSONL\)/);
+    await page.getByRole("button", { name: "Canvas", exact: true }).click();
+    await page.getByRole("button", { name: "Focus selected step", exact: true }).click();
+    await waitForGraphFrame(true);
+    const zoom = Number.parseInt(await page.getByLabel("Graph zoom", { exact: true }).textContent() ?? "0", 10);
+    assert.ok(zoom >= 80, "Selected step must retain a readable focused scale");
+    const selectedNode = page.locator(".react-flow__node:visible:has(.flow-node.selected)");
+    assert.equal(await selectedNode.count(), 1);
+    // Port handles extend outside the node; title fit is checked separately.
+    await reachableGraphElement(selectedNode, "Focused step", false);
+    const selectedTitles = await visibleGraphTitles(true);
+    assert.ok(selectedTitles.every(title => title.fitsCard && title.fitsWidth));
+    await capture(`graph-constrained-focus-${viewport.width}x${viewport.height}`);
+    const inspectorHeading = page.locator(".inspector-panel:not([hidden])").getByRole("heading", { name: "Collect selected records (native JSONL)", exact: true });
+    await reachableGraphElement(inspectorHeading, "Selected step inspector");
+    await reachableGraphElement(page.getByRole("button", { name: "Close step details", exact: true }), "Close step details");
+    await capture(`graph-constrained-inspector-${viewport.width}x${viewport.height}`);
+    report.checks.push(`graph_selection_fit_ordered_view_and_inspector_reachable_at_${viewport.width}x${viewport.height}`);
+  }
   await page.setViewportSize({ width: 1440, height: 900 });
+  await page.locator(".graph-topbar").evaluate(element => element.scrollIntoView({ block: "start", behavior: "instant" }));
   await page.getByRole("button", { name: "Assistant", exact: true }).click();
   await page.locator("#experiment-assistant").waitFor();
   await waitForGraphFrame(true);
@@ -582,7 +683,11 @@ try {
     stage = "simulate-preflight";
     const preflightResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/runs/preflight" && response.request().method() === "POST");
     await page.getByRole("button", { name: "Run preflight", exact: true }).click();
-    assert.equal((await (await preflightResponse).json()).ready, true);
+    const preflight = await (await preflightResponse).json();
+    assert.equal(preflight.ready, true);
+    assert.equal(preflight.plan?.scenario_id, ownedScenarioId);
+    assert.equal(preflight.plan?.scenario_digest, ownedScenarioVersion.digest);
+    assert.equal(preflight.plan?.objective, objectiveQuestion);
     stage = "simulate-submit";
     await page.getByRole("button", { name: "Submit Simulate job", exact: true }).click();
     stage = "simulate-wait-for-review";
@@ -595,6 +700,17 @@ try {
     const id = new URL(page.url()).hash.match(/^#\/runs\/(run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16})$/)?.[1];
     assert.ok(id);
     ownedRunIds.push(id);
+    const run = await api(`/runs/${id}`);
+    assert.equal(run.run_id, id);
+    assert.equal(run.scenario_id, ownedScenarioId);
+    assert.equal(run.scenario?.title, reviewedScenarioDocument.title);
+    assert.equal(run.objective, objectiveQuestion);
+    assert.equal(run.mode, "simulate");
+    assert.equal(run.autonomy ?? run.autonomy_level, "off");
+    assert.ok(sameStructure(withoutLayout(run.scenario), reviewedScenarioDocument));
+    assert.ok(sameStructure(run.plan, preflight.plan), "Finalized run must retain its reviewed preflight plan");
+    const planFingerprint = createHash("sha256").update(JSON.stringify(stableValue(run.plan))).digest("hex");
+    runPlanFingerprints.push({ run_id: id, plan_fingerprint: planFingerprint });
     await capture(screenshotName);
     return id;
   }
@@ -610,8 +726,12 @@ try {
   await page.getByRole("button", { name: "Open this version for editing", exact: true }).waitFor();
   const reopened = (await api(`/scenario-versions/${updated.scenario_id}/versions/${updated.version}`)).scenario;
   assert.equal(reopened.digest, updated.digest);
+  assert.equal(reopened.document.id, ownedScenarioId);
+  assert.equal(reopened.document.purpose, objectiveQuestion);
   const original = (await api(`/scenario-versions/${saved.scenario_id}/versions/${saved.version}`)).scenario;
   assert.equal(original.digest, saved.digest);
+  assert.equal(original.document.id, ownedScenarioId);
+  assert.equal(original.document.purpose, objectiveQuestion);
   report.checks.push("same_tab_reload_saved_reopen_and_prior_version_preserved");
 
   stage = "second-saved-simulation";
@@ -773,9 +893,26 @@ try {
   assert.deepEqual(comparison.summaries?.map(run => run.run_id), ownedRunIds);
   assert.equal(comparison.baseline_run_id, ownedRunIds[0]);
   report.comparison_snapshot_id = comparison.saved_snapshot.snapshot_id;
+  const savedComparison = await api(`/comparison-snapshots/${report.comparison_snapshot_id}`);
+  assert.equal(savedComparison.snapshot_id, report.comparison_snapshot_id);
+  assert.deepEqual(savedComparison.comparison.run_ids, ownedRunIds);
+  assert.deepEqual(savedComparison.source_bindings.map(binding => binding.run_id), ownedRunIds);
+  assert.equal(savedComparison.source_integrity?.status, "verified");
+  assert.ok(savedComparison.comparison.deltas?.every(delta => delta.objective_changed === false));
   await page.getByRole("region", { name: "Comparison results", exact: true }).waitFor();
   await capture("saved-two-run-comparison");
-  report.checks.push("one_saved_comparison_of_exact_owned_runs");
+  report.objective_continuity.runs = runPlanFingerprints;
+  report.objective_continuity.comparison_snapshot_id = report.comparison_snapshot_id;
+  report.objective_continuity.comparison_run_ids = [...savedComparison.comparison.run_ids];
+  await page.goto(`${origin}/#/compare`);
+  await page.getByRole("button", { name: `Open saved comparison ${report.comparison_snapshot_id}`, exact: true }).click();
+  await page.getByRole("region", { name: "Comparison results", exact: true }).waitFor();
+  assert.match(new URL(page.url()).hash, new RegExp(`snapshot=${report.comparison_snapshot_id}`));
+  const reopenedComparison = await api(`/comparison-snapshots/${report.comparison_snapshot_id}`);
+  assert.deepEqual(reopenedComparison.comparison.run_ids, ownedRunIds);
+  assert.deepEqual(reopenedComparison.source_bindings.map(binding => binding.run_id), ownedRunIds);
+  report.checks.push("saved_comparison_reopened_with_exact_scenario_objective_and_plan_run_lineage");
+  await capture("reopened-saved-comparison");
   await captureResponsiveSurface({
     name: "comparison",
     heading: "Compare runs",
