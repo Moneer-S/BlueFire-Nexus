@@ -10,15 +10,30 @@ async function viewport(page: Page) {
 async function finishLayout(page: Page) {
   await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 }
+async function selectedInsideCanvas(page: Page) {
+  return page.locator(".flow-node.selected").evaluate((node) => {
+    const box = node.getBoundingClientRect();
+    const boundary = node.closest(".graph-canvas")!.getBoundingClientRect();
+    return box.left >= boundary.left && box.right <= boundary.right && box.top >= boundary.top && box.bottom <= boundary.bottom;
+  });
+}
 
-test("initially frames the complete visible demo path and preserves the operator viewport through metadata and layout changes", async ({ page }) => {
+test("opens at readable focus, keeps an explicit whole-path overview, and preserves the operator viewport", async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.goto("./#/builder");
   const canvas = page.getByLabel("Scenario graph canvas");
   await expect(page.getByRole("heading", { name: "Endpoint control validation", level: 1 })).toBeVisible();
+  await expect(page.locator(".react-flow__node:visible")).toHaveCount(4);
+  await expect(page.getByText(/4 of 7 steps shown/)).toBeVisible();
+  const initial = await viewport(page);
+  expect(initial.zoom).toBeGreaterThanOrEqual(0.8);
+  const initiallySelected = canvas.locator(".flow-node.selected");
+  await expect(initiallySelected).toBeVisible();
+  await expect.poll(() => selectedInsideCanvas(page), { message: "Initial selected step remains readable and inside the canvas" }).toBe(true);
+
+  await page.getByRole("combobox", { name: "Step group" }).selectOption("all");
   await expect(page.locator(".react-flow__node:visible")).toHaveCount(6);
-  await expect(page.getByText(/6 of 7 steps shown/)).toBeVisible();
-  // No Fit graph click: every measured node on the normal initial path must fit.
+  await page.getByRole("button", { name: "Fit visible graph" }).click();
   await expect.poll(() => canvas.evaluate((element) => {
     const boundary = element.getBoundingClientRect();
     return Array.from(element.querySelectorAll<HTMLElement>(".react-flow__node"))
@@ -27,11 +42,16 @@ test("initially frames the complete visible demo path and preserves the operator
         const box = node.getBoundingClientRect();
         return box.width <= 0 || box.height <= 0 || box.left < boundary.left - 1 || box.top < boundary.top - 1 || box.right > boundary.right + 1 || box.bottom > boundary.bottom + 1;
       }).map((node) => node.dataset.id);
-  }), { message: "All six initially visible steps fit inside the canvas after measurement" }).toEqual([]);
+  }), { message: "Explicit overview contains every step on the visible path" }).toEqual([]);
+  const overview = await viewport(page);
+  expect(overview.zoom).toBeLessThan(initial.zoom);
+  await page.getByRole("button", { name: "Focus selected step" }).click();
+  await expect.poll(async () => (await viewport(page)).zoom).toBeGreaterThan(overview.zoom);
+  await expect.poll(() => selectedInsideCanvas(page)).toBe(true);
 
-  const initial = await viewport(page);
+  const focused = await viewport(page);
   await page.getByRole("button", { name: /^Zoom in$/i }).click();
-  await expect.poll(async () => (await viewport(page)).zoom).toBeGreaterThan(initial.zoom);
+  await expect.poll(async () => (await viewport(page)).zoom).toBeGreaterThan(focused.zoom);
   await finishLayout(page);
   const zoomed = await viewport(page);
   const boundary = await canvas.boundingBox();
@@ -54,12 +74,14 @@ test("initially frames the complete visible demo path and preserves the operator
   await page.getByRole("button", { name: "Show node inspector" }).click();
   await expect(page.locator(".inspector-panel")).toBeVisible();
   await finishLayout(page);
-  expect(await viewport(page)).toEqual(chosen);
+  expect((await viewport(page)).zoom).toBeCloseTo(chosen.zoom, 5);
+  await expect.poll(() => selectedInsideCanvas(page)).toBe(true);
 
   await page.setViewportSize({ width: 1180, height: 820 });
   await expect.poll(async () => (await canvas.boundingBox())!.width).toBeLessThan(boundary!.width);
   await finishLayout(page);
-  expect(await viewport(page)).toEqual(chosen);
+  expect((await viewport(page)).zoom).toBeCloseTo(chosen.zoom, 5);
+  await expect.poll(() => selectedInsideCanvas(page)).toBe(true);
   await expect(name).toHaveValue("My manually framed experiment");
 });
 
@@ -67,7 +89,7 @@ test("selecting a rightmost step keeps it visible beside its details without cha
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.goto("./#/builder");
   const canvas = page.getByLabel("Scenario graph canvas");
-  await expect(page.locator(".react-flow__node:visible")).toHaveCount(6);
+  await expect(page.locator(".react-flow__node:visible")).toHaveCount(4);
   await finishLayout(page);
   const before = await viewport(page);
   const rightmost = await canvas.locator(".react-flow__node:visible").evaluateAll(elements => elements

@@ -162,7 +162,7 @@ def test_native_wheel_build_and_verification_use_the_exact_archive():
         "linux",
         "macos",
     }
-    smoke = steps["Bootstrap and Execute from installed wheel outside checkout"]
+    smoke = steps["Smoke installed wheel outside checkout"]
     assert smoke["working-directory"] == "${{ runner.temp }}"
     assert "'--forbid-root', os.environ['GITHUB_WORKSPACE']" in smoke["run"]
     upload = steps["Upload wheel and verification reports"]["with"]["path"].splitlines()

@@ -62,11 +62,16 @@ function mount(readOnly = false, experiment = scenario) {
 }
 const cached = (): Scenario => JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!);
 const routeButtons = () => within(screen.getByRole("list", { name: "Visible routes" })).getAllByRole("button");
+async function showFullRouteGraph(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  const groups = screen.queryByRole("combobox", { name: "Step group" });
+  if (groups) await user.selectOptions(groups, "all");
+}
 
 it("renders all 17 separate routes with compact source labels and complete keyboard inspection", async () => {
   const user = userEvent.setup();
   const view = mount(true);
-  await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  await showFullRouteGraph(user);
   expect(routeButtons()).toHaveLength(17);
   await waitFor(() => expect(view.container.querySelectorAll(".react-flow__edge-path")).toHaveLength(17));
   const labels = Array.from(view.container.querySelectorAll(".react-flow__edge-text")).map((label) => label.textContent);
@@ -87,7 +92,7 @@ it("deletes only the selected route after confirmation and Undo restores every r
   const user = userEvent.setup();
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
   mount();
-  await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  await showFullRouteGraph(user);
   await user.click(routeButtons()[6]!);
   const selectedButton = routeButtons()[6]!;
   await user.keyboard("{Delete}");
@@ -112,7 +117,7 @@ it("deletes only the selected route after confirmation and Undo restores every r
 it("keeps disclosure explicit and returns focus when the route list is closed", async () => {
   const user = userEvent.setup();
   mount();
-  await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  await showFullRouteGraph(user);
   await user.click(routeButtons()[7]!);
   await user.click(screen.getByRole("button", { name: "Focus on success path" }));
   expect(routeButtons()).toHaveLength(5);
@@ -128,7 +133,7 @@ it("keeps disclosure explicit and returns focus when the route list is closed", 
 it("keeps keyboard node deletion on its replacement when the route list is open", async () => {
   const user = userEvent.setup();
   mount();
-  await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  await showFullRouteGraph(user);
   await user.click(screen.getByRole("button", { name: "Show node inspector" }));
   expect(screen.getByText("View options", { selector: "summary" }).closest("details")).not.toHaveAttribute("open");
   const node = screen.getByTestId("rf__node-stage_records");
@@ -187,7 +192,7 @@ it("never labels an unvalidated saved view ready, and shows validation only afte
 it("opens complete route inspection from the canvas keyboard without stealing its focus", async () => {
   const user = userEvent.setup();
   mount(true);
-  await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  await showFullRouteGraph(user);
   await user.click(screen.getByRole("button", { name: "Close route list" }));
   const edge = screen.getByTestId("rf__edge-route-inspect_fixture_metadata-failed-cleanup_workspace-10");
   edge.focus();
@@ -203,7 +208,7 @@ it("opens complete route inspection from the canvas keyboard without stealing it
 it("keeps saved route inspection read-only and returns between the route list and source details", async () => {
   const user = userEvent.setup();
   const view = mount(true);
-  await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  await showFullRouteGraph(user);
   await user.click(routeButtons()[6]!);
   expect(screen.getByRole("button", { name: "Delete route" })).toBeDisabled();
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -224,7 +229,7 @@ it("keeps saved route inspection read-only and returns between the route list an
 it.each(["click", "keyboard"])("reopens a retained selected route after closing its list using %s", async (method) => {
   const user = userEvent.setup();
   mount(true);
-  await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  await showFullRouteGraph(user);
   await user.click(routeButtons()[6]!);
   await user.click(screen.getByRole("button", { name: "Close route list" }));
   const edge = screen.getByTestId("rf__edge-route-transform_fixture-blocked-cleanup_workspace-6");

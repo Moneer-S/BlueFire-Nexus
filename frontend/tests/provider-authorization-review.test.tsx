@@ -83,6 +83,18 @@ describe("in-product data and usage authorization", () => {
     expect(screen.getByText(/covers a different configuration/)).toBeVisible();
     expect(api.authorizeAI).not.toHaveBeenCalled();
   });
+  it("summarizes budget units without rounding away exact edited limits", async () => {
+    const user = await mount();
+    const summary = screen.getByLabelText("Authorization budget summary");
+    expect(summary).toHaveTextContent("12 request attempts · 4 MiB request data · 16,384 reserved output tokens · 15 minutes maximum");
+    await user.clear(screen.getByLabelText("Total request bytes", { exact: false }));
+    await user.type(screen.getByLabelText("Total request bytes", { exact: false }), "1025");
+    await user.clear(screen.getByLabelText("Authorization duration in seconds", { exact: false }));
+    await user.type(screen.getByLabelText("Authorization duration in seconds", { exact: false }), "61");
+    expect(summary).toHaveTextContent("1,025 bytes request data");
+    expect(summary).toHaveTextContent("61 seconds maximum");
+    expect(api.authorizeAI).not.toHaveBeenCalled(); expect(api.checkAIProvider).not.toHaveBeenCalled();
+  });
   it("locks an enrolled broker connection and grants only that exact configuration", async () => {
     const initial = snapshot(); initial.context = { ...initial.context, kind: "broker", provider, expires_at_ms: Date.now() + 900000 };
     const user = await mount(provider, initial);

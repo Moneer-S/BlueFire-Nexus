@@ -3,7 +3,7 @@ import type { Outcome, Scenario, ScenarioStep } from "../types";
 
 export type ScenarioGraph = Pick<Scenario, "steps" | "edges" | "start" | "layout">;
 
-export const GRAPH_SECTION_SIZE = 8;
+export const GRAPH_SECTION_SIZE = 4;
 export const GRAPH_NODE_WIDTH = 252;
 export const GRAPH_NODE_HEIGHT = 180;
 
@@ -36,7 +36,7 @@ export function revealGraphNode(viewport: GraphViewport, node: GraphNodeBounds, 
 
 /** Reading-order groups are a view, never scenario nodes or execution phases. */
 export function graphSections(steps: readonly ScenarioStep[]) {
-  if (steps.length <= 12) return [{ title: "All steps", steps: [...steps] }];
+  if (steps.length <= GRAPH_SECTION_SIZE) return [{ title: "All steps", steps: [...steps] }];
   return Array.from({ length: Math.ceil(steps.length / GRAPH_SECTION_SIZE) }, (_, index) => ({
     title: `Steps ${index * GRAPH_SECTION_SIZE + 1}–${Math.min((index + 1) * GRAPH_SECTION_SIZE, steps.length)}`,
     steps: steps.slice(index * GRAPH_SECTION_SIZE, (index + 1) * GRAPH_SECTION_SIZE),

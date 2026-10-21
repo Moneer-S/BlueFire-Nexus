@@ -1,20 +1,28 @@
 import { expect, test } from "@playwright/test";
+import { demoScenario } from "../../src/lib/demo";
 
 test("builder supports add, undo, redo, filtering, and keyboard shortcuts", async ({ page }) => {
   const consoleErrors: string[] = [];
   page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()); });
+  await page.addInitScript(draft => localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(draft)), demoScenario);
   await page.goto("./#/builder");
   await expect(page.getByRole("heading", { name: "Endpoint control validation", level: 1 })).toBeVisible();
   await page.getByRole("button", { name: "Show all branches", exact: true }).click();
+  await page.getByRole("combobox", { name: "Step group" }).selectOption("all");
   const nodes = page.locator(".react-flow__node");
   const initial = await nodes.count();
+  expect(initial).toBe(7);
+  const savedBeforeAdd = await page.evaluate(() => window.localStorage.getItem("bluefire.local.scenario.v1"));
   await page.getByRole("button", { name: "Add step", exact: true }).click();
   await page.locator(".palette-list > button").first().click();
   await expect(nodes).toHaveCount(initial + 1);
+  await expect.poll(() => page.evaluate(() => JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!).steps.length)).toBe(initial + 1);
   await page.getByRole("button", { name: "Undo" }).click();
   await expect(nodes).toHaveCount(initial);
+  expect(await page.evaluate(() => window.localStorage.getItem("bluefire.local.scenario.v1"))).toBe(savedBeforeAdd);
   await page.getByRole("button", { name: "Redo" }).click();
   await expect(nodes).toHaveCount(initial + 1);
+  await expect.poll(() => page.evaluate(() => JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!).steps.length)).toBe(initial + 1);
 
   await page.getByRole("button", { name: "Add step", exact: true }).click();
   const search = page.getByRole("textbox", { name: "Search palette" });
@@ -35,6 +43,7 @@ test("builder workspace exposes commands, layout, focus, legend, panels, and con
   await expect(page.getByText(/Review run includes the whole experiment/)).toBeVisible();
   const draftBefore = await page.evaluate(() => window.localStorage.getItem("bluefire.local.scenario.v1"));
   await page.getByRole("button", { name: "Show all branches", exact: true }).click();
+  await page.getByRole("combobox", { name: "Step group" }).selectOption("all");
   await page.getByText("View options", { exact: true }).click();
   await page.getByLabel("Show input connections", { exact: true }).check();
   await page.getByText("View options", { exact: true }).click();
@@ -49,8 +58,8 @@ test("builder workspace exposes commands, layout, focus, legend, panels, and con
 
   await page.getByRole("button", { name: "Auto-layout" }).click();
   await expect(page.getByText("Steps arranged by their connections. Use Undo to restore your positions.")).toBeVisible();
-  await page.getByRole("button", { name: "Fit graph" }).click();
-  await page.getByRole("button", { name: "Fit selection" }).click();
+  await page.getByRole("button", { name: "Fit visible graph" }).click();
+  await page.getByRole("button", { name: "Focus selected step" }).click();
   await expect(page.getByRole("button", { name: "Commands", exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Enter graph focus mode" }).click();
@@ -60,7 +69,7 @@ test("builder workspace exposes commands, layout, focus, legend, panels, and con
   const commandDialog = page.getByRole("dialog", { name: "Builder commands" });
   await expect(commandDialog).toBeVisible();
   await expect(commandDialog.locator(".builder-command-list > button")).toHaveCount(9);
-  for (const action of ["Auto-layout", "Fit graph", "Fit selection", "Show behavior palette", "Show node inspector", "Exit graph focus mode", "Validate graph", "Undo", "Redo"]) await expect(commandDialog.getByRole("button", { name: new RegExp(`^${action}`) })).toBeVisible();
+  for (const action of ["Auto-layout", "Fit visible graph", "Focus selected step", "Show behavior palette", "Show node inspector", "Exit graph focus mode", "Validate graph", "Undo", "Redo"]) await expect(commandDialog.getByRole("button", { name: new RegExp(`^${action}`) })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(commandDialog).toBeHidden();
   await expect(page.locator(".builder-page")).toHaveClass(/builder-focus/);
@@ -68,6 +77,7 @@ test("builder workspace exposes commands, layout, focus, legend, panels, and con
   await expect(page.locator(".builder-page")).not.toHaveClass(/builder-focus/);
 
   const nodes = page.locator(".react-flow__node"); const initial = await nodes.count();
+  expect(initial).toBe(7);
   const deleteDialog = page.getByRole("dialog", { name: "Delete from experiment?" });
   await page.getByText("View options", { exact: true }).click();
   await expect(page.getByRole("group", { name: "Selection tools" })).toBeVisible();
@@ -188,17 +198,17 @@ test("large branched experiments keep complete data while focusing readable sect
     await page.getByRole("button", { name: "Add step", exact: true }).click();
     await page.locator(".palette-list > button").first().click();
   }
-  const section = page.getByRole("combobox", { name: "Path section", exact: true });
+  const section = page.getByRole("combobox", { name: "Step group", exact: true });
   await expect(section).toBeVisible();
   const serialized = await page.evaluate(() => localStorage.getItem("bluefire.local.scenario.v1"));
   const complete = JSON.parse(serialized!);
   expect(complete.steps.length).toBeGreaterThanOrEqual(25);
   expect(complete.edges.some((edge: { outcome: string }) => edge.outcome === "blocked")).toBe(true);
   await section.selectOption("0");
-  await expect(page.locator(".react-flow__node")).toHaveCount(8);
-  await page.getByRole("button", { name: "Next section", exact: true }).click();
+  await expect(page.locator(".react-flow__node")).toHaveCount(4);
+  await page.getByRole("button", { name: "Next group", exact: true }).click();
   await expect(section).toHaveValue("1");
-  await expect(page.locator(".react-flow__node")).toHaveCount(8);
+  await expect(page.locator(".react-flow__node")).toHaveCount(4);
   await section.selectOption("all");
   await expect(page.locator(".react-flow__node")).toHaveCount(complete.steps.length);
   await page.getByRole("button", { name: "Steps", exact: true }).click();
@@ -214,7 +224,7 @@ test("large branched experiments keep complete data while focusing readable sect
   await page.reload();
   await expect(section).toHaveValue("0");
   expect(await page.evaluate(() => localStorage.getItem("bluefire.local.scenario.v1"))).toBe(serialized);
-  await expect(page.locator(".react-flow__node")).toHaveCount(8);
+  await expect(page.locator(".react-flow__node")).toHaveCount(4);
 });
 
 test("Execute approval cannot bypass canonical review and legacy authority is scrubbed after reload", async ({ page }) => {

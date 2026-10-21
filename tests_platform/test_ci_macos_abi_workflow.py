@@ -44,8 +44,7 @@ def test_macos_arm64_runs_and_uploads_installed_wheel_smoke():
     upload = next(
         step
         for step in steps
-        if step["name"]
-        == "Upload macOS 26 arm64 SDK, protocol, and installed-wheel evidence"
+        if step["name"] == "Upload macOS 26 arm64 SDK, protocol, and installed-wheel evidence"
     )
 
     assert "if" not in smoke

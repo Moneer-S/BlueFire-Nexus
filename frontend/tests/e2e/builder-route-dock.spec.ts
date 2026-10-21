@@ -17,24 +17,37 @@ async function settle(page: Page) {
 async function viewport(page: Page) {
   return page.locator(".react-flow__viewport").evaluate((element) => getComputedStyle(element).transform);
 }
+async function zoom(page: Page) {
+  return page.locator(".react-flow__viewport").evaluate((element) => new DOMMatrixReadOnly(getComputedStyle(element).transform).m11);
+}
+async function selectedStepIsInCanvas(page: Page) {
+  return page.locator(".flow-node.selected").evaluate((node) => {
+    const box = node.getBoundingClientRect();
+    const boundary = node.closest(".graph-canvas")!.getBoundingClientRect();
+    return box.left >= boundary.left && box.right <= boundary.right && box.top >= boundary.top && box.bottom <= boundary.bottom;
+  });
+}
 
 for (const width of [1100, 640]) {
-  test(`bounds the route dock and fits every step without changing arranged positions at ${width}px`, async ({ page }) => {
+  test(`bounds the route dock, retains zoom, and keeps the selected step visible at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 791 });
     await page.addInitScript((draft) => localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(draft)), scenario);
     await page.goto("./#/builder");
     await page.getByRole("button", { name: "Canvas", exact: true }).click();
     const canvas = page.getByLabel("Scenario graph canvas");
+    await expect(page.locator(".react-flow__node:visible")).toHaveCount(4);
+    await page.getByRole("combobox", { name: "Step group" }).selectOption("all");
     await expect(page.locator(".react-flow__node:visible")).toHaveCount(6);
     await frame(page);
     await page.getByRole("button", { name: /^Zoom in$/i }).click();
     await settle(page);
-    const chosen = await viewport(page);
+    const zoomBeforeDock = await zoom(page);
     await page.getByRole("button", { name: "Show all branches", exact: true }).click();
     const routes = page.getByRole("complementary", { name: "Route inspection" });
     await expect(routes.getByRole("list", { name: "Visible routes" }).getByRole("button")).toHaveCount(17);
-    await frame(page);
-    expect(await viewport(page)).toBe(chosen);
+    await settle(page);
+    expect(await zoom(page)).toBeCloseTo(zoomBeforeDock, 5);
+    await expect.poll(() => selectedStepIsInCanvas(page)).toBe(true);
     // The route list must scroll in a bounded dock, never expand the canvas to its full contents.
     const dock = await routes.boundingBox();
     const before = await canvas.boundingBox();
@@ -42,7 +55,7 @@ for (const width of [1100, 640]) {
     expect(before!.height).toBeLessThanOrEqual(560);
     if (width > 760) expect(before!.x + before!.width).toBeLessThanOrEqual(dock!.x + 1);
     else expect(before!.y + before!.height).toBeLessThanOrEqual(dock!.y + 1);
-    await page.getByRole("button", { name: "Fit graph", exact: true }).click();
+    await page.getByRole("button", { name: "Fit visible graph", exact: true }).click();
     await expect.poll(() => canvas.evaluate((element) => {
       const boundary = element.getBoundingClientRect();
       return [...element.querySelectorAll<HTMLElement>(".react-flow__node")].filter((node) => {
@@ -50,13 +63,19 @@ for (const width of [1100, 640]) {
         return box.width <= 0 || box.left < boundary.left - 1 || box.right > boundary.right + 1 || box.top < boundary.top - 1 || box.bottom > boundary.bottom + 1;
       }).map((node) => node.dataset.id);
     }), { message: "Explicit Fit contains every measured step inside the reserved visible canvas" }).toEqual([]);
-    await page.getByRole("list", { name: "Visible routes" }).getByRole("button").last().focus();
-    await expect(page.getByRole("list", { name: "Visible routes" }).getByRole("button").last()).toBeInViewport();
+    const lastRoute = page.getByRole("list", { name: "Visible routes" }).getByRole("button").last();
+    await lastRoute.focus();
+    await expect(lastRoute).toBeInViewport();
+    await expect(lastRoute).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: "Focus selected step" })).toBeDisabled();
+    await expect(canvas.locator(".flow-node.selected")).toHaveCount(0);
     await settle(page);
-    const fitted = await viewport(page);
+    const overviewZoom = await zoom(page);
     await page.getByRole("button", { name: "Close route list" }).click();
-    await frame(page);
-    expect(await viewport(page)).toBe(fitted);
+    await settle(page);
+    expect(await zoom(page)).toBeCloseTo(overviewZoom, 5);
+    await expect(page.getByRole("button", { name: "Focus selected step" })).toBeDisabled();
+    await expect(canvas.locator(".flow-node.selected")).toHaveCount(0);
     expect(await page.evaluate(() => JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!))).toEqual(scenario);
   });
 }

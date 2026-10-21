@@ -4,8 +4,14 @@ test("Assistant stays reachable on laptop and narrow screens and returns keyboar
   await page.goto("./#/detection-lab");
   for (const width of [1280, 390, 320]) {
     await page.setViewportSize({ width, height: 844 });
+    await expect(page.locator(".workspace-topbar")).toBeVisible();
     const trigger = page.getByRole("button", { name: /^Assistant$/ });
     await expect(trigger).toBeVisible();
+    const bounds = await trigger.boundingBox();
+    expect(bounds).not.toBeNull();
+    if (!bounds) throw new Error("Assistant trigger is not rendered.");
+    expect(bounds.x).toBeGreaterThanOrEqual(0);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
     await trigger.click();
     const dialog = page.getByRole("complementary", { name: "Experiment assistant" });
     await expect(dialog).toBeVisible();

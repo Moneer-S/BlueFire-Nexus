@@ -157,25 +157,25 @@ describe("Builder selection and navigation", () => {
     scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success", to_step: step.id }));
     const user = userEvent.setup();
     renderBuilder(scenario);
-    await user.click(await screen.findByRole("button", { name: "Next section" }));
-    expect(screen.getByRole("combobox", { name: "Path section" })).toHaveValue("1");
+    await user.click(await screen.findByRole("button", { name: "Next group" }));
+    expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue("1");
     await builderOptions(user);
     expect(screen.getByRole("button", { name: "Copy selected node" })).toBeEnabled();
     await builderOptions(user, false);
     await user.click(screen.getByRole("button", { name: "Steps" }));
     const list = within(screen.getByRole("list", { name: "Experiment steps" }));
-    expect(list.getByRole("button", { pressed: true })).toHaveAccessibleName(/^9 /);
+    expect(list.getByRole("button", { pressed: true })).toHaveAccessibleName(/^5 /);
     await user.click(list.getAllByRole("button").at(-1)!);
     await user.click(screen.getByRole("button", { name: "Canvas" }));
-    expect(screen.getByRole("combobox", { name: "Path section" })).toHaveValue("2");
+    expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue("4");
     await builderOptions(user);
     expect(screen.getByRole("button", { name: "Copy selected node" })).toBeEnabled();
   }, 15000);
 
   it.each([
-    { count: 17, section: "1", deleted: "step_9", replacement: "step_10", remainingSection: "1" },
-    { count: 17, section: "2", deleted: "step_17", replacement: "step_9", remainingSection: "1" },
-    { count: 13, section: "1", deleted: "step_13", replacement: "step_9", remainingSection: null },
+    { count: 17, section: "2", deleted: "step_9", replacement: "step_10", remainingSection: "2" },
+    { count: 17, section: "4", deleted: "step_17", replacement: "step_13", remainingSection: "3" },
+    { count: 13, section: "3", deleted: "step_13", replacement: "step_9", remainingSection: "2" },
   ])("keeps a visible selection after deleting $deleted from section $section", async ({ count, section, deleted, replacement, remainingSection }) => {
     const scenario: typeof demoScenario = { ...structuredClone(demoScenario), start: "step_1", steps: Array.from({ length: count }, (_, index) => ({ ...structuredClone(demoScenario.steps[0]!), id: `step_${index + 1}` })), edges: [], layout: undefined };
     scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success", to_step: step.id }));
@@ -183,11 +183,11 @@ describe("Builder selection and navigation", () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     renderBuilder(scenario);
     await user.click(await screen.findByRole("button", { name: "Show all branches" }));
-    await user.selectOptions(screen.getByRole("combobox", { name: "Path section" }), section);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Step group" }), section);
     await user.click(screen.getByRole("button", { name: "Steps" }));
     await user.click(within(screen.getByRole("list", { name: "Experiment steps" })).getAllByRole("button")[scenario.steps.findIndex((step) => step.id === deleted)]!);
     await user.click(screen.getByRole("button", { name: "Canvas" }));
-    expect(screen.getByRole("combobox", { name: "Path section" })).toHaveValue(section);
+    expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue(section);
     expect(screen.getByTestId(`rf__node-${deleted}`)).toHaveClass("selected");
     await builderOptions(user);
     await user.click(screen.getByRole("button", { name: "Delete selected node" }));
@@ -198,8 +198,8 @@ describe("Builder selection and navigation", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Delete selected node" })).toBeEnabled());
     expect(screen.getByTestId(`rf__node-${replacement}`)).toHaveClass("selected");
     expect(screen.getByLabelText(/^Step ID/)).toHaveValue(replacement);
-    if (remainingSection === null) expect(screen.queryByRole("combobox", { name: "Path section" })).not.toBeInTheDocument();
-    else expect(screen.getByRole("combobox", { name: "Path section" })).toHaveValue(remainingSection);
+    if (remainingSection === null) expect(screen.queryByRole("combobox", { name: "Step group" })).not.toBeInTheDocument();
+    else expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue(remainingSection);
     const saved = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!);
     expect(saved.steps).toHaveLength(count - 1);
     expect(saved.steps.some((step: { id: string }) => step.id === deleted)).toBe(false);

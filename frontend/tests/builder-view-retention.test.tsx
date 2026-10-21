@@ -117,11 +117,11 @@ it("restores the selected section on the actual canvas after remount", async () 
   const scenario: Scenario = { ...structuredClone(demoScenario), start: "step_1", steps: Array.from({ length: 17 }, (_, index) => ({ ...structuredClone(demoScenario.steps[0]!), id: `step_${index + 1}` })), edges: [], layout: undefined };
   scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success", to_step: step.id }));
   const { user, remount } = setup(scenario);
-  await user.click(within(screen.getByLabelText("Experiment sections")).getByRole("button", { name: "Next section" }));
-  expect(screen.getByRole("combobox", { name: "Path section" })).toHaveValue("1");
+  await user.click(within(screen.getByLabelText("Experiment step groups")).getByRole("button", { name: "Next group" }));
+  expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue("1");
   remount();
-  expect(screen.getByRole("combobox", { name: "Path section" })).toHaveValue("1");
-  expect(document.querySelector('.react-flow__node[data-id="step_9"]')).toBeInTheDocument();
+  expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue("1");
+  expect(document.querySelector('.react-flow__node[data-id="step_5"]')).toBeInTheDocument();
   await builderOptions(user);
   expect(labelButton("Copy selected node")).toBeEnabled();
   expect(JSON.parse(localStorage.getItem(graphKey)!)).toEqual(scenario);

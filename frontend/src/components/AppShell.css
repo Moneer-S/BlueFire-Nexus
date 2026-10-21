@@ -75,7 +75,7 @@
   .workbench-shell.nav-collapsed .nav-link, .workbench-shell.nav-collapsed .nav-disclosure { justify-content: flex-start; }
   .workbench-shell.nav-collapsed .nav-disclosure span, .workbench-shell.nav-collapsed .nav-disclosure > svg:last-child { display: block; }
   .workbench-shell .mobile-header > button, .workbench-shell .mobile-close { min-width: 44px; min-height: 44px; }
-  .workbench-shell .workspace-topbar { gap: 12px; padding: 10px 18px; height: auto; min-height: 58px; }
+  .workbench-shell .workspace-topbar { display: flex; gap: 12px; padding: 10px 18px; height: auto; min-height: 58px; }
   .workbench-shell .topbar-actions { gap: 10px; }
   .workbench-shell .topbar-actions > span { display: none; }
 }

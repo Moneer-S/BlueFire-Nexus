@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProviderSetup } from "../src/components/ProviderSetup";
@@ -9,10 +9,17 @@ import { publicProvider } from "../src/lib/provider-authorization";
 import type { AIProviderCheck } from "../src/types";
 import { authorization, provider, snapshot } from "./provider-authorization-fixtures";
 
-vi.mock("../src/lib/api", () => ({ api: { resources: vi.fn(), checkAIProvider: vi.fn(), saveResource: vi.fn(), activateResource: vi.fn(), deactivateResource: vi.fn(), aiAuthorizations: vi.fn(), authorizeAI: vi.fn(), revokeAIAuthorization: vi.fn() } }));
+vi.mock("../src/lib/api", async importOriginal => {
+  const actual = await importOriginal<typeof import("../src/lib/api")>();
+  return { ...actual, api: { resources: vi.fn(), checkAIProvider: vi.fn(), saveResource: vi.fn(), activateResource: vi.fn(), deactivateResource: vi.fn(), aiAuthorizations: vi.fn(), authorizeAI: vi.fn(), revokeAIAuthorization: vi.fn() } };
+});
 vi.mock("../src/lib/download", () => ({ downloadArtifact: vi.fn() }));
 const checked: AIProviderCheck = { schema_version: "bluefire.ai-provider-check.v1", provider_id: "provider.local.v1", api_style: "chat_completions", model: "my-model", credential_state: "ready", connectivity: "not_tested", structured_output: "not_tested", attempts: 0, used_fallback: false, code: "configuration_ready", message: "Configuration checked; no network request was made." };
-function mount() { render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}><ProviderSetup/></QueryClientProvider>); }
+function mount() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  render(<QueryClientProvider client={client}><ProviderSetup/></QueryClientProvider>);
+  return client;
+}
 function blobText(blob: Blob): Promise<string> { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsText(blob); }); }
 
 describe("explicit provider setup", () => {
@@ -114,9 +121,10 @@ describe("explicit provider setup", () => {
     ];
     vi.mocked(api.resources).mockResolvedValue({ schema_version: "bluefire.resource-list.v1", kind: "model_provider", resources: configs.map(config => ({ kind: "model_provider", id: config.id, status: "active", document: { config }, digest: "test-digest", created_at: "", updated_at: "" })) });
     mount();
-    expect(await screen.findByText("Offline deterministic planner")).toBeVisible();
-    expect(screen.getByText("Responses API · configured-model")).toBeVisible();
-    for (const config of configs) expect(screen.getByText(config.id)).not.toBeVisible();
+    const saved = await screen.findByRole("region", { name: "Saved model connections" });
+    expect(within(saved).getByText("Offline deterministic planner")).toBeVisible();
+    expect(within(saved).getByText("Responses API · configured-model")).toBeVisible();
+    for (const config of configs) expect(within(saved).getByText(config.id)).not.toBeVisible();
     expect(api.saveResource).not.toHaveBeenCalled();
     expect(api.activateResource).not.toHaveBeenCalled();
     expect(api.authorizeAI).not.toHaveBeenCalled();
@@ -129,6 +137,92 @@ describe("explicit provider setup", () => {
     expect(screen.queryByRole("button", { name: "Send live connection test" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Secret environment reference", { exact: false })).not.toBeInTheDocument();
     expect(screen.queryByText("Prepare a disposable lab connection")).not.toBeInTheDocument();
+    expect(screen.getByText("No model calls")).toBeVisible();
+    expect(screen.getByText(/no API key or model usage authorization is needed/)).toBeVisible();
+    expect(screen.queryByText(/Provide the credential through the named environment variable/)).not.toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Selected connection summary" })).getByText("No network destination")).toBeVisible();
     expect(downloadArtifact).not.toHaveBeenCalled();
+  });
+  it("applies optional endpoint presets without inventing models or replacing identity and request limits", async () => {
+    const user = userEvent.setup(); mount();
+    await waitFor(() => expect(screen.getByLabelText("Connection preset", { exact: false })).toBeEnabled());
+    await user.selectOptions(screen.getByLabelText("Connection preset", { exact: false }), "openai");
+    expect(screen.getByLabelText("Request endpoint", { exact: false })).toHaveValue("https://api.openai.com/v1/responses");
+    expect(screen.getByLabelText("Secret environment reference", { exact: false })).toHaveValue("OPENAI_API_KEY");
+    expect(screen.getByLabelText("Model ID", { exact: false })).toHaveValue("");
+    await user.type(screen.getByLabelText("Model ID", { exact: false }), "operator-selected-model");
+    await user.click(screen.getByText("Request limits"));
+    await user.clear(screen.getByLabelText("Output token limit", { exact: false }));
+    await user.type(screen.getByLabelText("Output token limit", { exact: false }), "2048");
+    await user.selectOptions(screen.getByLabelText("Connection preset", { exact: false }), "loopback");
+    expect(screen.getByLabelText("Model ID", { exact: false })).toHaveValue("operator-selected-model");
+    expect(screen.getByLabelText("Provider ID", { exact: false })).toHaveValue("provider.local.v1");
+    expect(screen.getByLabelText("Output token limit", { exact: false })).toHaveValue(2048);
+    expect(screen.getByLabelText("Request endpoint", { exact: false })).toHaveValue("http://127.0.0.1:8080/v1/chat/completions");
+    expect(screen.getByText(/A loopback address does not identify a test provider/)).toBeVisible();
+    expect(api.checkAIProvider).not.toHaveBeenCalled(); expect(api.saveResource).not.toHaveBeenCalled(); expect(api.activateResource).not.toHaveBeenCalled(); expect(api.authorizeAI).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Send live connection test" })).toBeDisabled();
+  });
+  it("summarizes exact bound usage reservations and the earlier session expiry", async () => {
+    const sessionExpiry = Date.now() + 60_000;
+    const initial = snapshot([authorization({ context: { kind: "broker", binding_digest: snapshot().context.binding_digest! }, usage: { requests: 2, request_bytes: 1024, reserved_output_tokens: 800 } })]);
+    initial.context = { ...initial.context, kind: "broker", provider, expires_at_ms: sessionExpiry };
+    vi.mocked(api.aiAuthorizations).mockResolvedValue(initial);
+    mount();
+    const summary = screen.getByRole("region", { name: "Selected connection summary" });
+    expect(await within(summary).findByText("my-model")).toBeVisible();
+    expect(within(summary).getByText("https://model.example")).toBeVisible();
+    expect(within(summary).getByText("Enrolled connection")).toBeVisible();
+    expect(within(summary).getByText("Authorized for 1 purpose")).toBeVisible();
+    const limits = within(summary).getByLabelText("Current authorization remaining limits");
+    expect(within(limits).getByText("10")).toBeVisible();
+    expect(within(limits).getByText("4,193,280")).toBeVisible();
+    expect(within(limits).getByText("15,584")).toBeVisible();
+    expect(limits.querySelector("time")).toHaveAttribute("datetime", new Date(sessionExpiry).toISOString());
+    expect(screen.queryByLabelText("Connection preset", { exact: false })).not.toBeInTheDocument();
+    expect(api.authorizeAI).not.toHaveBeenCalled(); expect(api.checkAIProvider).not.toHaveBeenCalled();
+  });
+  it("does not describe an expired broker session as currently authorized", async () => {
+    const initial = snapshot([authorization({ context: { kind: "broker", binding_digest: snapshot().context.binding_digest! } })]);
+    initial.context = { ...initial.context, kind: "broker", provider, expires_at_ms: Date.now() - 1 };
+    vi.mocked(api.aiAuthorizations).mockResolvedValue(initial);
+    mount();
+    const summary = screen.getByRole("region", { name: "Selected connection summary" });
+    expect(await within(summary).findByText("Enrolled session expired")).toBeVisible();
+    expect(within(summary).getByText("No current authorization")).toBeVisible();
+    expect(within(summary).queryByLabelText("Current authorization remaining limits")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send live connection test" })).toBeDisabled();
+  });
+  it("retains cached authorization history without reporting active authority after refresh fails", async () => {
+    const initial = snapshot([authorization({ context: { kind: "broker", binding_digest: snapshot().context.binding_digest! } })]);
+    initial.context = { ...initial.context, kind: "broker", provider, expires_at_ms: Date.now() + 60_000 };
+    vi.mocked(api.aiAuthorizations).mockResolvedValue(initial);
+    const client = mount();
+    const row = await screen.findByRole("article", { name: "Model authorization for my-model" });
+    expect(within(row).getByText("Active")).toHaveClass("badge-success");
+    vi.mocked(api.aiAuthorizations).mockRejectedValue(new Error("Authorization status is offline"));
+    await act(async () => { await client.invalidateQueries({ queryKey: ["ai-authorizations"] }); });
+    expect(await within(row).findByText("Last reported")).toHaveClass("badge-neutral");
+    expect(within(row).queryByText("Active")).not.toBeInTheDocument();
+    expect(within(row).getByText("Last reported status: Active. Current authority is unavailable.")).toBeVisible();
+    expect(within(row).getByRole("button", { name: "Revoke model usage for my-model" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Authorize reviewed model usage" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send live connection test" })).toBeDisabled();
+    expect(screen.queryByLabelText("Current authorization remaining limits")).not.toBeInTheDocument();
+    expect(api.authorizeAI).not.toHaveBeenCalled(); expect(api.revokeAIAuthorization).not.toHaveBeenCalled(); expect(api.checkAIProvider).not.toHaveBeenCalled();
+  });
+  it("retains cached connection records without presenting their active status as current after refresh fails", async () => {
+    vi.mocked(api.resources).mockResolvedValue({ schema_version: "bluefire.resource-list.v1", kind: "model_provider", resources: [{ kind: "model_provider", id: provider.id, status: "active", document: { ...provider }, digest: "test-digest", created_at: "", updated_at: "" }] });
+    const client = mount();
+    const saved = await screen.findByRole("region", { name: "Saved model connections" });
+    expect(within(saved).getByText("Active")).toBeVisible();
+    vi.mocked(api.resources).mockRejectedValue(new Error("Saved provider inventory is offline"));
+    await act(async () => { await client.invalidateQueries({ queryKey: ["resources", "model-providers"] }); });
+    expect(await within(saved).findByText("Last reported")).toHaveClass("badge-neutral");
+    expect(within(saved).queryByText("Active")).not.toBeInTheDocument();
+    expect(within(saved).getByText("Last reported status: Active. Current saved state is unavailable.")).toBeVisible();
+    expect(within(saved).getByRole("button", { name: "Edit Chat Completions API · my-model" })).toBeDisabled();
+    expect(within(saved).getByRole("button", { name: "Deactivate" })).toBeDisabled();
+    expect(api.saveResource).not.toHaveBeenCalled(); expect(api.activateResource).not.toHaveBeenCalled(); expect(api.deactivateResource).not.toHaveBeenCalled();
   });
 });

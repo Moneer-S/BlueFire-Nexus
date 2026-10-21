@@ -45,6 +45,7 @@ from bluefire.runner_lifecycle import RunnerLifecycleError
 from bluefire.service import BlueFireService
 from bluefire.util import content_hash
 from tests_platform.test_ai_live_authorization import request as authorization_request
+from tests_platform.job_wait_diagnostics import diagnose_job_wait
 
 ROOT = Path(__file__).resolve().parents[1]
 EXECUTE_PROFILE_ACTIONS = {
@@ -1012,45 +1013,48 @@ def test_execute_job_requires_separate_exact_approval_before_callback(
         runs_dir=tmp_path / "runs",
         runner_factory=unavailable_after_gate,
     )
-    profile = next(
-        item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
-    )
-    submission = service.submit_run(
-        {
-            "scenario_id": "scenario.sandbox.research.chain.v1",
-            "mode": "execute",
-            "runner_profile_id": profile.id,
-            "autonomy": "off",
-            "target_scope": {"scope_refs": list(profile.scope)},
-            "approval": {"confirmed": True, "approved_by": "must-not-auto-apply"},
-        }
-    )
-    job_id = str(submission["job"]["job_id"])
-    awaiting = service.job_controller.wait_for_state(
-        job_id,
-        {JobState.AWAITING_APPROVAL},
-        timeout=3,
-    )
+    try:
+        profile = next(
+            item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+        )
+        submission = service.submit_run(
+            {
+                "scenario_id": "scenario.sandbox.research.chain.v1",
+                "mode": "execute",
+                "runner_profile_id": profile.id,
+                "autonomy": "off",
+                "target_scope": {"scope_refs": list(profile.scope)},
+                "approval": {"confirmed": True, "approved_by": "must-not-auto-apply"},
+            }
+        )
+        job_id = str(submission["job"]["job_id"])
+        awaiting = service.job_controller.wait_for_state(
+            job_id,
+            {JobState.AWAITING_APPROVAL},
+            timeout=3,
+        )
 
-    assert awaiting["state"] == "awaiting_approval"
-    assert submission["approval_request"]["status"] == "pending"
-    assert submission["approval_request"]["approved_by"] is None
-    assert "nonce" not in submission["approval_request"]
-    reloaded = service.job(job_id)
-    assert reloaded["approval_request"] == submission["approval_request"]
-    assert "nonce" not in reloaded["approval_request"]
+        assert awaiting["state"] == "awaiting_approval"
+        assert submission["approval_request"]["status"] == "pending"
+        assert submission["approval_request"]["approved_by"] is None
+        assert "nonce" not in submission["approval_request"]
+        reloaded = service.job(job_id)
+        assert reloaded["approval_request"] == submission["approval_request"]
+        assert "nonce" not in reloaded["approval_request"]
 
-    approved = service.approve_job(job_id, {"approved_by": "local-reviewer"})
-    assert approved["job"]["state"] == "running"
-    assert approved["approval_request"]["status"] == "consumed"
-    assert "nonce" not in approved["approval_request"]
+        approved = service.approve_job(job_id, {"approved_by": "local-reviewer"})
+        assert approved["job"]["state"] == "running"
+        assert approved["approval_request"]["status"] == "consumed"
+        assert "nonce" not in approved["approval_request"]
 
-    settled = service.job_controller.wait(job_id, timeout=3)
-    assert settled["state"] == "completed"
-    assert runner.execute_calls > 0
-    approval_id = str(submission["approval_request"]["approval_id"])
-    assert service.product_store.get_approval_request(approval_id)["status"] == "claimed"
-    service.close()
+        with diagnose_job_wait("service_terminal"):
+            settled = service.job_controller.wait(job_id, timeout=3)
+        assert settled["state"] == "completed"
+        assert runner.execute_calls > 0
+        approval_id = str(submission["approval_request"]["approval_id"])
+        assert service.product_store.get_approval_request(approval_id)["status"] == "claimed"
+    finally:
+        service.close()
 
 
 def test_managed_runner_lifecycle_is_inert_and_actions_are_explicit(tmp_path: Path) -> None:

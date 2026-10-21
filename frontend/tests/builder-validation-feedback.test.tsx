@@ -53,7 +53,7 @@ it.each(["Validate", "Save version"] as const)("shows an actionable %s refusal a
   await waitFor(() => expect(screen.getByTestId("rf__node-step_13")).toHaveClass("selected"));
   expect(screen.getByTestId("rf__node-step_13").querySelector(".flow-node")).toHaveClass("invalid");
   expect(screen.getByLabelText(/^Step ID/)).toHaveValue("step_13");
-  expect(screen.getByRole("combobox", { name: "Path section" })).toHaveValue("all");
+  expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue("all");
   expect(graph()).toEqual(JSON.parse(JSON.stringify(before)));
 }, 15000);
 

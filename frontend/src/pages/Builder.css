@@ -17,6 +17,7 @@
 .workbench-builder .experiment-summary .field { margin-top: 8px; }
 .workbench-builder .experiment-summary textarea { resize: vertical; min-height: 56px; max-height: 140px; width: 100%; }
 .workbench-builder .builder-assistance-actions { display: flex; flex-wrap: wrap; gap: 6px; align-self: flex-start; }
+.workbench-builder > .compatibility-banner { padding: 7px 12px; min-height: 34px; }
 .workbench-builder .graph-empty-overlay .button { pointer-events: auto; margin-top: 12px; }
 .workbench-builder .experiment-summary summary { cursor: pointer; }
 .workbench-builder .experiment-summary p { max-width: 88ch; margin: 8px 0 0; line-height: 1.5; }
@@ -39,15 +40,16 @@
 .workbench-builder .graph-validation-state { margin-left: 3px; }
 .workbench-builder .graph-validation-state .badge { font-size: .625rem; padding: 3px 6px; }
 .workbench-builder .graph-view-actions > .icon-button:first-child { display: none; }
-.workbench-builder .graph-view-actions .view-toggle { margin-right: auto; }
+.workbench-builder .graph-utility-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 5px; margin-left: auto; white-space: nowrap; }
 .workbench-builder .view-toggle button { display: flex; align-items: center; gap: 5px; font-size: .72rem; }
 .workbench-builder .view-toggle { display: flex; }
 .workbench-builder .view-toggle svg { width: 15px; height: 15px; }
 .workbench-builder .graph-disclosure { display: flex; align-items: center; flex-wrap: wrap; gap: 3px 12px; padding: 6px 12px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: .6875rem; line-height: 1.4; }
 .workbench-builder .graph-disclosure button { padding: 3px 0; border: 0; background: none; color: var(--blue-soft); cursor: pointer; font: inherit; text-decoration: underline; text-underline-offset: 3px; }
-.workbench-builder .graph-sections { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; padding: 7px 14px; border-bottom: 1px solid var(--line); }
+.workbench-builder .graph-sections { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 3px 12px; border-bottom: 1px solid var(--line); }
 .workbench-builder .graph-sections label { display: flex; align-items: center; gap: 8px; font-size: .72rem; }
-.workbench-builder .graph-sections select { min-height: 30px; font-size: .74rem; }
+.workbench-builder .graph-sections select { min-height: 30px; min-width: 128px; font-size: .74rem; }
+.workbench-builder .graph-group-count { color: var(--muted); font-size: .72rem; margin-left: auto; }
 .workbench-builder .graph-sections small { color: var(--muted); font-size: .68rem; }
 .workbench-builder .graph-canvas { flex: 1; height: auto; min-height: 220px; }
 .workbench-builder .graph-canvas[hidden] { display: none; }
@@ -75,7 +77,7 @@
 .workbench-builder .builder-routes footer .button { margin: 5px 5px 0 0; }
 .workbench-builder .react-flow__edge:focus-visible { outline: none; }
 .workbench-builder .react-flow__edge:focus-visible .react-flow__edge-path { stroke-width: 4; }
-.workbench-builder .graph-options { position: relative; margin-left: auto; font-size: .7rem; }
+.workbench-builder .graph-options { position: relative; margin-left: 0; font-size: .7rem; }
 .workbench-builder .graph-options > summary { padding: 8px; cursor: pointer; border-radius: 6px; }
 .workbench-builder .graph-options[open] > div { position: absolute; z-index: 12; right: 0; top: 100%; width: 310px; max-width: 80vw; padding: 16px; display: grid; gap: 14px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--ink-900); box-shadow: var(--shadow-soft); }
 .workbench-builder .graph-options .check-row { font-size: .73rem; }
