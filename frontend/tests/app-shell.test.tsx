@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppShell } from "../src/components/AppShell";
 import { api } from "../src/lib/api";
@@ -11,7 +11,7 @@ import { ProductProvider } from "../src/state/ProductContext";
 vi.mock("../src/lib/api", () => ({ DEMO_MODE: true, api: { catalog: vi.fn(), scenarios: vi.fn(), runs: vi.fn() } }));
 
 function Destination() {
-  return <p>Destination: {useLocation().pathname}</p>;
+  return <><p>Destination: {useLocation().pathname}</p><Link to="/runs/run-123">Open run review</Link></>;
 }
 
 function renderShell(path = "/builder") {
@@ -40,9 +40,10 @@ describe("workbench navigation", () => {
   it("keeps Overview and the existing work destinations directly reachable", () => {
     renderShell();
     const navigation = within(screen.getByRole("navigation", { name: "Primary navigation" }));
-    expect(navigation.getAllByRole("link").map((link) => link.textContent)).toEqual(["Overview", "Build", "Runs", "Detection Lab", "Compare", "Experiments", "Settings"]);
+    expect(navigation.getAllByRole("link").map((link) => link.textContent)).toEqual(["Overview", "Build", "Runs", "Detection Lab", "Compare", "Experiments", "Environments", "Settings"]);
     expect(navigation.getByRole("link", { name: "Build" })).toHaveAttribute("href", "/builder");
     expect(navigation.getByRole("link", { name: "Experiments" })).toHaveAttribute("href", "/scenarios");
+    expect(navigation.getByRole("link", { name: "Environments" })).toHaveAttribute("href", "/environments");
     expect(navigation.queryByRole("link", { name: "Runner Profiles" })).not.toBeInTheDocument();
   });
 
@@ -114,6 +115,24 @@ describe("workbench navigation", () => {
     expect(screen.getByRole("link", { name: "Runs" })).toHaveAttribute("aria-current", "page");
     await user.click(screen.getByRole("link", { name: "Skip to content" }));
     expect(document.getElementById("main-content")).toHaveFocus();
+    expect(screen.getByText("Destination: /runs/run-123")).toBeVisible();
+  });
+
+  it("resets both scroll containers instantly on pathname changes", async () => {
+    const user = userEvent.setup();
+    const windowScroll = vi.fn();
+    vi.stubGlobal("scrollTo", windowScroll);
+    renderShell("/builder");
+    const main = document.getElementById("main-content")!;
+    const mainScroll = vi.fn();
+    main.scrollTo = mainScroll;
+    windowScroll.mockClear();
+
+    await user.click(screen.getByRole("link", { name: "Open run review" }));
+
+    const expected = { top: 0, left: 0, behavior: "instant" };
+    expect(windowScroll).toHaveBeenCalledWith(expected);
+    expect(mainScroll).toHaveBeenCalledWith(expected);
     expect(screen.getByText("Destination: /runs/run-123")).toBeVisible();
   });
 

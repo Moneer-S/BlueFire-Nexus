@@ -14,6 +14,7 @@ export interface AssistanceSelection {
 }
 interface SelectionContext {
   selection?: WorkspaceSelection;
+  selectionIsCurrent: boolean;
   publish: (owner: symbol, value?: WorkspaceSelection) => void;
   requestedJobId?: string;
   requestedReceiverJobId?: string;
@@ -63,7 +64,7 @@ export function AssistanceProvider({ children }: PropsWithChildren) {
   const publish = useCallback((owner: symbol, value?: WorkspaceSelection) => {
     setCurrent((previous) => value ? { owner, value } : previous?.owner === owner ? { value: previous.value } : previous);
   }, []);
-  const value = useMemo(() => ({ selection: current?.value, publish, open, setOpen, requestedJobId, requestedReceiverJobId, openJob, finishOpenJob }), [current, publish, open, requestedJobId, requestedReceiverJobId, openJob, finishOpenJob]);
+  const value = useMemo(() => ({ selection: current?.value, selectionIsCurrent: Boolean(current?.owner), publish, open, setOpen, requestedJobId, requestedReceiverJobId, openJob, finishOpenJob }), [current, publish, open, requestedJobId, requestedReceiverJobId, openJob, finishOpenJob]);
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
 

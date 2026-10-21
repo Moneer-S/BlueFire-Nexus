@@ -6,24 +6,21 @@ const changeLabel = { changed: "Changed", unchanged: "Unchanged", unknown: "Unkn
 
 export function S3AccessComparisonResults({ result }: { result: S3AccessComparison }) {
   if (result.state === "unavailable") {
-    return <section className="comparison-detail" aria-label="S3 access comparison">
-      <h2>S3 access outcomes</h2>
-      <p role="status">S3 comparison unavailable: {sentence(result.reason)}. No S3 outcomes are inferred.</p>
+    return <section className="comparison-detail s3-comparison" aria-label="S3 access comparison">
+      <header className="s3-comparison-heading"><div><p className="eyebrow">Structured defensive workflow</p><h2>S3 access outcomes</h2></div><Badge tone="warning">Unavailable</Badge></header>
+      <p role="status">Saved S3 comparison is unavailable: {sentence(result.reason)}. No S3 outcomes are inferred.</p>
     </section>;
   }
   return <AvailableResults result={result} />;
 }
 
 function AvailableResults({ result }: { result: S3AccessComparisonAvailable }) {
-  return <section className="comparison-detail" aria-label="S3 access comparison">
-    <header className="panel-header"><div><h2>S3 access outcomes</h2><p>Saved read results only. This comparison does not establish defensive effectiveness.</p></div>
+  return <section className="comparison-detail s3-comparison" aria-label="S3 access comparison">
+    <header className="s3-comparison-heading"><div><p className="eyebrow">Structured defensive workflow</p><h2>S3 access outcomes</h2><p>Saved reads are separate from any declared defense note on a replay. This comparison does not establish defensive effectiveness or effective access.</p></div>
       <div><Badge>{sentence(result.state)}</Badge><Badge tone={result.change_state === "unknown" ? "warning" : result.change_state === "changed" ? "info" : "neutral"}>{changeLabel[result.change_state]}</Badge></div>
     </header>
-    <DataList items={[
-      { label: "Baseline", value: phaseLabel(result.baseline) },
-      { label: "Retest", value: phaseLabel(result.retest) },
-      { label: "Workflow", value: <Link to={`/s3-access?exercise=${encodeURIComponent(result.workflow_job_id)}`}>Open saved S3 exercise</Link> },
-    ]} />
+    <div className="s3-phase-context"><div><small>Baseline phase</small><strong>{phaseLabel(result.baseline)}</strong></div><div><small>Retest phase</small><strong>{phaseLabel(result.retest)}</strong></div><Link to={`/s3-access?exercise=${encodeURIComponent(result.workflow_job_id)}`}>Open saved S3 exercise <span aria-hidden="true">→</span></Link></div>
+    <p className="s3-legitimate-note">Legitimate-use checks stay visible alongside probe results. A read or denial is a recorded outcome for that purpose, not a general access guarantee.</p>
     <div className="table-scroll" role="region" aria-label="S3 baseline and retest outcomes" tabIndex={0}>
       <table className="comparison-outcomes"><caption>Read results by purpose; unknown values remain unknown.</caption><thead><tr>
         <th scope="col">Reader / purpose</th><th scope="col">Baseline</th><th scope="col">Retest</th><th scope="col">Reported change</th>

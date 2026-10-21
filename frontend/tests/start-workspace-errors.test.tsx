@@ -27,9 +27,11 @@ it.each(["runs", "scenarios"] as const)("keeps a failed %s request unavailable a
   expect(await screen.findByText(source === "runs" ? "Run history could not be loaded" : "Experiments could not be loaded")).toBeVisible();
   expect(screen.queryByText("From a question to a result")).not.toBeInTheDocument();
   expect(screen.queryByText("Empty")).not.toBeInTheDocument();
+  expect(screen.getByRole("combobox", { name: "Objective" })).toBeVisible();
+  expect(screen.getByRole("link", { name: "Configure Simulate" })).toHaveAttribute("href", "/runs?setup=simulate");
   await userEvent.click(screen.getByRole("button", { name: "Try again" }));
-  expect(await screen.findByRole("heading", { name: "Start an experiment" })).toBeVisible();
-  expect(screen.getByText("Continue your work")).toBeVisible();
+  expect(screen.getByRole("heading", { name: "Start an objective" })).toBeVisible();
+  expect(await screen.findByText("Continue your work")).toBeVisible();
   expect(document.querySelector("a button, button a")).toBeNull();
 });
 
@@ -59,6 +61,21 @@ it("does not present unreadable run records as a first-time empty workspace", as
   expect(screen.getByRole("link", { name: "Run history" })).toHaveAttribute("href", "/runs");
   await userEvent.click(screen.getByText("Workspace availability"));
   expect(screen.getByText("Checking installed tools.")).toBeVisible();
+});
+
+it("keeps objectives and saved work reachable while the environment catalog is unavailable", async () => {
+  vi.spyOn(api, "catalog").mockRejectedValue(new ApiError("Catalog unavailable.", "storage_unavailable", undefined, 503));
+  vi.spyOn(api, "scenarios").mockResolvedValue({ scenarios: [demoScenario] });
+  vi.spyOn(api, "runs").mockResolvedValue({ runs: demoRuns, unavailable_run_count: 0 });
+  vi.spyOn(api, "detectionHealth").mockImplementation(() => new Promise(() => {}));
+  start();
+  expect(screen.getByRole("combobox", { name: "Objective" })).toBeVisible();
+  expect(await screen.findByText("Continue your work")).toBeVisible();
+  expect(screen.getByRole("link", { name: "Continue working draft" })).toHaveAttribute("href", "/builder");
+  await userEvent.click(screen.getByText("Workspace availability"));
+  expect(await screen.findByText("Environment catalog unavailable")).toBeVisible();
+  expect(screen.queryByText("Connected")).not.toBeInTheDocument();
+  expect(screen.getByText("Configuration could not be checked. Compatibility and access are checked for the selected run.")).toBeVisible();
 });
 
 it("keeps error details inspectable and runs only the supplied retry", async () => {

@@ -30,15 +30,15 @@ function envelope(body = request(), status: AssistanceEnvelope["turn"]["status"]
       active_child: { job_id: "job-rule", kind: "detection.ai.propose", state: "completed", step_id: "revise", native_path: "/detection-lab?candidate=saved-rule&run=run-observed&ai_job=job-rule" },
       next_action: { kind: "review_detection", label: "Review rule revision", native_path: "/detection-lab?candidate=saved-rule&run=run-observed&ai_job=job-rule" }, results: [], continuation: null, limitations: ["Execute requires fresh approval."] } };
 }
-function Selection({ value = selection }: { value?: AssistanceSelection }) {
-  usePublishAssistanceSelection(value);
+function Selection({ value = selection, published = true }: { value?: AssistanceSelection; published?: boolean }) {
+  usePublishAssistanceSelection(published ? value : undefined);
   const location = useLocation();
   return <output data-testid="location">{location.pathname}{location.search}</output>;
 }
 function mount(value = selection, client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }), model: AssistantProvider = provider) {
-  const tree = (next: AssistanceSelection) => <QueryClientProvider client={client}><MemoryRouter initialEntries={["/detection-lab"]}><ProductProvider><AssistanceProvider><Selection value={next} /><ExperimentAssistant providers={[model]} /></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>;
+  const tree = (next: AssistanceSelection, published = true) => <QueryClientProvider client={client}><MemoryRouter initialEntries={["/detection-lab"]}><ProductProvider><AssistanceProvider><Selection value={next} published={published} /><ExperimentAssistant providers={[model]} /></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>;
   const view = render(tree(value));
-  return { ...view, client, changeSelection: (next: AssistanceSelection) => view.rerender(tree(next)), changeProvider: (next: AssistantProvider) => { model = next; view.rerender(tree(value)); } };
+  return { ...view, client, changeSelection: (next: AssistanceSelection) => view.rerender(tree(next)), setPublished: (published: boolean) => view.rerender(tree(value, published)), changeProvider: (next: AssistantProvider) => { model = next; view.rerender(tree(value)); } };
 }
 async function open() { const trigger = screen.getByRole("button", { name: /^Assistant/ }); if (trigger.getAttribute("aria-expanded") !== "true") await userEvent.setup().click(trigger); }
 async function compose() {
@@ -101,10 +101,14 @@ it("restores a saved graph result while another native selection is active witho
   saved.turn.results = [{ kind: "graph_saved", step_id: "graph", proposal_job_id: "job-proposal", scenario_id: "experiment", version: 2, digest, operator_modified: true, native_path: "/builder?graph_job=job-proposal", execution_state: "not_run" }];
   vi.spyOn(api, "assistanceTurn").mockResolvedValue(saved);
   const submit = vi.spyOn(api, "submitAssistance");
-  mount(); await open();
+  const view = mount(); await open();
   await screen.findByText("Experiment saved");
   expect(screen.getByText(/Version 2 · Includes your edits · Not run/)).toBeInTheDocument();
   expect(screen.queryByText("Source rule and evidence")).not.toBeInTheDocument();
+  expect(submit).not.toHaveBeenCalled();
+  view.setPublished(false);
+  expect(await screen.findByText("Experiment saved")).toBeInTheDocument();
+  expect(readAssistanceReceipt()).toEqual(body);
   expect(submit).not.toHaveBeenCalled();
 });
 
@@ -153,6 +157,34 @@ it("keeps Off silent, retrieves context only on opening, and submits one exact b
   expect(submit).toHaveBeenCalledTimes(1);
   expect(submit.mock.calls[0]![0]).toEqual({ ...request(), submission_id: expect.any(String) });
   expect(readAssistanceReceipt()).toEqual(submit.mock.calls[0]![0]);
+});
+
+it("retains an unowned selection and draft without fetching or submitting until a live publisher returns", async () => {
+  const getContext = vi.spyOn(api, "assistanceContext").mockResolvedValue(context);
+  const submit = vi.spyOn(api, "submitAssistance");
+  const view = mount();
+  await open();
+  await screen.findByText(selection.title);
+  const user = userEvent.setup();
+  await user.selectOptions(screen.getByLabelText("AI mode"), "assist");
+  await user.selectOptions(screen.getByLabelText("Provider"), provider.provider_id);
+  const draft = "Keep this draft while I inspect another page.";
+  await user.type(screen.getByLabelText("What would you like to do?"), draft);
+  const callsBeforeLeaving = getContext.mock.calls.length;
+
+  view.setPublished(false);
+  expect(screen.getByRole("region", { name: "Previous selection" })).toHaveTextContent("This selection is from another view. Reopen its source before starting new work. Your draft is preserved.");
+  expect(screen.getByRole("link", { name: "Reopen source" })).toHaveAttribute("href", `/detection-lab?${new URLSearchParams({ run: selection.runId, candidate: selection.candidateId, candidate_scope: "registry" })}`);
+  expect(screen.getByLabelText("What would you like to do?")).toHaveValue(draft);
+  expect(screen.getByRole("button", { name: "Start work" })).toBeDisabled();
+  expect(getContext).toHaveBeenCalledTimes(callsBeforeLeaving);
+  await user.click(screen.getByRole("button", { name: "Start work" }));
+  expect(submit).not.toHaveBeenCalled();
+  expect(readAssistanceReceipt()).toBeUndefined();
+
+  view.setPublished(true);
+  expect(screen.getByRole("region", { name: "Current selection" })).toHaveTextContent(selection.title);
+  expect(screen.getByLabelText("What would you like to do?")).toHaveValue(draft);
 });
 
 it.each(["manual edits", "stale resource"])("prevents a new request with %s", async (change) => {

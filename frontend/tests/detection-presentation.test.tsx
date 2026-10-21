@@ -4,9 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { expect, it, vi } from "vitest";
 import { api } from "../src/lib/api";
-import { demoCatalog } from "../src/lib/demo";
+import { demoCatalog, demoRuns } from "../src/lib/demo";
 import { DetectionLabPage } from "../src/pages/DetectionLab";
-import type { DetectionResource } from "../src/types";
+import type { DetectionResource, RunRecord } from "../src/types";
 
 const id = `detection-${"a".repeat(20)}`;
 const childId = `detection-${"b".repeat(20)}`;
@@ -18,9 +18,10 @@ const original: DetectionResource = { kind: "detections", id, status: "parsed", 
   parser_backend: { name: "SQLite bounded executor", version: "3.46" }, validation: { query_sha256: query, converted_query: source, source_rule_executed: true, execution_backend: "SQLite", execution_backend_version: "3.46", last_execution: { fixture_ids: ["observed-one", "observed-two"], matched_fixture_ids: ["observed-two"] }, unsupported_fields: [] },
 } };
 function Location() { return <output data-testid="location">{useLocation().search}</output>; }
-function setup(candidates = [structuredClone(original)], ready = true) {
+function setup(candidates = [structuredClone(original)], ready = true, sourceRun?: RunRecord) {
   vi.spyOn(api, "catalog").mockResolvedValue(demoCatalog);
-  vi.spyOn(api, "runs").mockResolvedValue({ schema_version: "v1", unavailable_run_count: 0, runs: [] });
+  vi.spyOn(api, "runs").mockResolvedValue({ schema_version: "v1", unavailable_run_count: 0, runs: sourceRun ? [sourceRun] : [] });
+  if (sourceRun) vi.spyOn(api, "runDetail").mockResolvedValue(sourceRun);
   vi.spyOn(api, "detections").mockResolvedValue({ schema_version: "v1", candidates });
   vi.spyOn(api, "resources").mockResolvedValue({ schema_version: "v1", kind: "research-sources", resources: [] });
   vi.spyOn(api, "detectionHealth").mockResolvedValue({ schema_version: "v1", ready, persistence_ready: true, candidate_resources: candidates.length, invalid_candidate_resources: 0, languages: { sqlite: { ready, authoritative: true, backend: "SQLite bounded executor" }, sigma: { ready, authoritative: true, backend: "pySigma" } }, limits: { source_bytes: 262144, fixture_bytes: 1048576, fixtures_per_action: 128, evidence_per_action: 256, notes_per_action: 64 } });
@@ -29,13 +30,16 @@ function setup(candidates = [structuredClone(original)], ready = true) {
   const revise = vi.spyOn(api, "reviseDetectionSource");
   const evaluate = vi.spyOn(api, "evaluateDetectionRun");
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  const rendered = render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/detection-lab?candidate=${id}&candidate_scope=registry`]}><DetectionLabPage/><Location/></MemoryRouter></QueryClientProvider>);
+  const route = sourceRun ? `/detection-lab?run=${encodeURIComponent(sourceRun.run_id)}` : `/detection-lab?candidate=${id}&candidate_scope=registry`;
+  const rendered = render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[route]}><DetectionLabPage/><Location/></MemoryRouter></QueryClientProvider>);
   return { ...rendered, user: userEvent.setup(), action, revise, evaluate };
 }
 
 it("names SQLite consistently and discloses identities without hiding query execution or results", async () => {
   const { user, action, revise, evaluate } = setup();
   expect(await screen.findByRole("textbox", { name: /^SQLite source/ })).toHaveValue(source);
+  expect(screen.getByRole("complementary", { name: "Selected detector context" })).toHaveTextContent("No source run selected");
+  expect(screen.getByText(/Available evidence does not mean this detector has been evaluated/)).toBeVisible();
   expect(within(screen.getByRole("textbox", { name: /^SQLite source/ }).closest(".candidate-workspace") as HTMLElement).getByText("Evaluator: SQLite", { exact: true })).toBeVisible();
   expect(screen.getByText("Source query executed")).toBeVisible();
   expect(screen.getByText("Matched records")).toBeVisible();
@@ -48,6 +52,19 @@ it("names SQLite consistently and discloses identities without hiding query exec
   expect(screen.getAllByText(id, { exact: true, selector: "code" }).every(element => element.closest("details")?.open)).toBe(true);
   await user.click(screen.getByText("Query source and identity"));
   expect(screen.getByText(query)).toBeVisible();
+  expect(action).not.toHaveBeenCalled(); expect(revise).not.toHaveBeenCalled(); expect(evaluate).not.toHaveBeenCalled();
+});
+
+it("keeps source context separate and routes rail actions through the existing review tabs", async () => {
+  const { user, action, revise, evaluate } = setup();
+  await screen.findByRole("textbox", { name: /^SQLite source/ });
+  const rail = screen.getByRole("complementary", { name: "Selected detector context" });
+  expect(within(rail).getByText("Parser and fixture checks are lifecycle evidence. Retained run evaluations show their own engine execution and measured result.")).toBeVisible();
+  await user.click(within(rail).getByRole("button", { name: "Open run evaluations" }));
+  expect(screen.getByRole("tab", { name: "Run evaluations" })).toHaveAttribute("aria-selected", "true");
+  expect(await screen.findByText("No retained run evaluations")).toBeVisible();
+  await user.click(within(rail).getByRole("button", { name: "Review rule revisions" }));
+  expect(screen.getByRole("heading", { name: "Compare two revisions" })).toBeVisible();
   expect(action).not.toHaveBeenCalled(); expect(revise).not.toHaveBeenCalled(); expect(evaluate).not.toHaveBeenCalled();
 });
 
@@ -85,5 +102,27 @@ it("distinguishes same-title immutable revisions without grouping away older sel
   expect(new URLSearchParams(screen.getByTestId("location").textContent!).get("candidate")).toBe(id);
   await user.click(screen.getByRole("tab", { name: "Rule" }));
   expect(screen.getByRole("textbox", { name: /^SQLite source/ })).toHaveValue(original.document.rule_source);
+  expect(action).not.toHaveBeenCalled(); expect(revise).not.toHaveBeenCalled(); expect(evaluate).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["simulate", undefined, "Synthetic simulation"],
+  ["simulate", false, "Synthetic simulation"],
+  ["simulate", true, "Synthetic demo"],
+  ["execute", false, "Execution record"],
+  ["execute", undefined, "Execution record"],
+  [undefined, false, "Source type unknown"],
+  [undefined, undefined, "Source type unknown"],
+] as const)("uses recorded mode %s and demo %s without claiming native proof", async (mode, demo, expected) => {
+  const sourceRun = { ...structuredClone(demoRuns[0]!), run_id: "run-20261021T000000Z-aaaaaaaaaaaaaaaa", mode, is_demo: demo, detections: { candidates: [structuredClone(original.document)] } } as RunRecord;
+  const { container, action, revise, evaluate } = setup([], true, sourceRun);
+  const rail = await screen.findByRole("complementary", { name: "Selected detector context" });
+  expect(within(rail).getByText(expected)).toBeVisible();
+  const candidateList = within(container.querySelector(".candidate-list") as HTMLElement);
+  expect(candidateList.getByText(expected)).toBeVisible();
+  expect(screen.queryByText("Native run")).not.toBeInTheDocument();
+  const save = screen.getByRole("button", { name: "Save hypothesis from run" });
+  if (demo === true) expect(save).toBeDisabled();
+  else expect(save).toBeEnabled();
   expect(action).not.toHaveBeenCalled(); expect(revise).not.toHaveBeenCalled(); expect(evaluate).not.toHaveBeenCalled();
 });

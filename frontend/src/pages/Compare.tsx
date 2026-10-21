@@ -19,6 +19,7 @@ import { S3AccessComparisonResults } from "../components/S3AccessComparison";
 import { ReceiverDefensePage } from "./ReceiverDefense";
 import type { AutonomyLevel, ComparisonResponse, PreflightReport, RunConfiguration, RunRecord, SavedComparisonSnapshot, Scenario } from "../types";
 import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, IconButton, LoadingState, PageHeader, Panel, PanelHeader, formatDate, sentence } from "../components/Primitives";
+import "./Compare.css";
 
 type ReplayStrategy = "exact" | "from_node" | "swap" | "parameters" | "setup";
 const defaultParameterJson = "{}";
@@ -376,15 +377,21 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {} }: { c
   }, [reportContent]);
   return <div className="comparison-results">
     <Panel className="comparison-outcomes">
-      <PanelHeader title="Run outcomes" detail="Objective, observation, and cleanup are separate results. A stopped step alone does not establish target prevention." actions={reportUrl ? <a className="button button-secondary button-medium" href={reportUrl} download="bluefire-comparison.md">Download report</a> : null} />
-      <div className="comparison-context"><span>{comparison.run_ids.length} runs</span><span className="comparison-changes">{hasS3Projection ? "Task-level changes reported" : "Runs with meaningful changes"} <strong>{changed}</strong></span><span>{hasS3Projection ? "Generic run-level comparison; S3 access outcomes are reported separately below." : changed ? "Compared with the baseline; inspect the recorded differences below." : "No meaningful change reported against the baseline."}</span></div>
+      <PanelHeader eyebrow="Recorded comparison" title="Baseline and compared runs" detail="Review objective, observations, path, and cleanup separately. A stopped step alone does not establish target prevention." actions={reportUrl ? <a className="button button-secondary button-medium" href={reportUrl} download="bluefire-comparison.md">Download report</a> : null} />
+      {baseline ? <div className="compare-story" role="group" aria-label="Comparison run order">
+        <div className="compare-story-run"><Badge tone="info">Baseline</Badge><Link to={runReviewPath(baseline.run_id)}>{names[baseline.run_id] ?? "Run"}</Link><small>{baseline.mode ? sentence(baseline.mode) : "Mode not reported"}</small></div>
+        <span className="compare-story-arrow" aria-hidden="true">→</span>
+        <div className="compare-story-variants">{comparison.summaries.filter((item) => item.run_id !== baseline.run_id).map((item, index) => <div className="compare-story-run" key={item.run_id}><Badge>Compared run {index + 1}</Badge><Link to={runReviewPath(item.run_id)}>{names[item.run_id] ?? "Run"}</Link><small>{item.mode ? sentence(item.mode) : "Mode not reported"}</small></div>)}</div>
+      </div> : null}
+      <div className="comparison-context"><span><strong>{comparison.run_ids.length}</strong> runs reviewed</span><span><strong>{changed}</strong> with meaningful recorded changes</span><span>{hasS3Projection ? "S3 saved read results are shown separately below." : changed ? "Recorded differences appear below." : "No meaningful change reported against the baseline."}</span></div>
       <div className="table-scroll" role="region" aria-label="Compared run outcomes" tabIndex={0}>
-        <table><thead><tr><th scope="col">Run</th><th scope="col">Mode</th><th scope="col">Objective</th><th scope="col">Independent evidence</th><th scope="col">First stopped step</th><th scope="col">Cleanup</th></tr></thead>
+        <table><caption>Recorded outcomes for the selected runs. Missing values remain unreported.</caption><thead><tr><th scope="col">Run</th><th scope="col">Mode</th><th scope="col">Objective</th><th scope="col">Observed artifacts</th><th scope="col">Evidence gaps</th><th scope="col">First stopped step</th><th scope="col">Cleanup</th></tr></thead>
           <tbody>{comparison.summaries.map((summary, index) => <tr key={summary.run_id}>
-            <th scope="row"><Link to={runReviewPath(summary.run_id)} aria-label={summary.run_id === comparison.baseline_run_id ? "Review baseline run summary" : `Review variant ${index} run summary`}>{names[summary.run_id] ?? "Run"}</Link><small>{summary.run_id === comparison.baseline_run_id ? "Comparison baseline" : `Comparison variant ${index}`}</small>{createdAt[summary.run_id] ? <small><time dateTime={createdAt[summary.run_id]}>{formatDate(createdAt[summary.run_id]!)}</time></small> : null}</th>
+            <th scope="row"><Link to={runReviewPath(summary.run_id)} aria-label={summary.run_id === comparison.baseline_run_id ? "Review baseline run summary" : `Review compared run ${index} summary`}>{names[summary.run_id] ?? "Run"}</Link><small>{summary.run_id === comparison.baseline_run_id ? "Comparison baseline" : `Compared run ${index}`}</small>{createdAt[summary.run_id] ? <small><time dateTime={createdAt[summary.run_id]}>{formatDate(createdAt[summary.run_id]!)}</time></small> : null}</th>
             <td>{sentence(summary.mode ?? "not_reported")}</td>
             <td>{objectiveLabel(summary.objective_reached, summary.mode)}</td>
-            <td>{Array.isArray(summary.evidence_details?.observed_artifacts) ? <>{summary.evidence_details.observed_artifacts.length} observed items<small>{Array.isArray(summary.evidence_details.evidence_gaps) ? `${summary.evidence_details.evidence_gaps.length} recorded evidence gaps` : "Evidence gaps not reported"}</small></> : "Not reported"}</td>
+            <td>{reportedArrayCount(summary.evidence_details?.observed_artifacts, "artifact")}</td>
+            <td>{reportedArrayCount(summary.evidence_details?.evidence_gaps, "gap")}</td>
             <td>{summary.first_blocked_step ? <span title={summary.first_blocked_step}>{sentence(summary.first_blocked_step)}</span> : "None recorded"}</td>
             <td>{summary.cleanup_success === false ? "Needs attention" : summary.cleanup_success === true ? (summary.mode === "simulate" ? "No real effects" : "Complete") : "Not reported"}</td>
           </tr>)}</tbody>
@@ -393,14 +400,15 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {} }: { c
       <details className="comparison-identity"><summary>Comparison record</summary><code>{comparison.comparison_id}</code><p>Baseline: {baseline?.run_id ?? comparison.baseline_run_id}</p></details>
     </Panel>
     {comparison.s3_access ? <S3AccessComparisonResults result={comparison.s3_access} /> : null}
-    <details className="comparison-detail"><summary>Step-by-step results and run details</summary>
-    <Panel><PanelHeader eyebrow="Path overlay" title="Side-by-side execution lanes" detail="Human-readable outcomes come first; each run links back to its canonical review."/><div className="compare-lanes">{comparison.summaries.map((summary, laneIndex) => <article key={summary.run_id}>
-      <header><Badge tone={laneIndex === 0 ? "info" : "neutral"}>{laneIndex === 0 ? "Baseline" : `Variant ${laneIndex}`}</Badge><Link to={runReviewPath(summary.run_id)} aria-label={`Review ${laneIndex === 0 ? "baseline" : `variant ${laneIndex}`} execution lane`}>{names[summary.run_id] ?? "Run"}</Link></header>
-      <ol>{summary.path.map((step, index) => <li key={`${step}-${index}`} data-status={summary.outcomes[step] === "success" ? "succeeded" : summary.outcomes[step]}><span>{String(index + 1).padStart(2, "0")}</span><strong title={step}>{sentence(step)}</strong><small>{sentence(summary.outcomes[step] ?? "unknown")}</small></li>)}</ol>
-      <DataList items={[
+    <section className="comparison-paths" aria-label="Recorded run paths"><header><div><p className="eyebrow">Actual recorded sequence</p><h2>Paths taken</h2></div><p>Selection order does not establish a fresh retest or a changed environment. Review each run's recorded lineage and observations.</p></header>
+    <div className="compare-lanes">{comparison.summaries.map((summary, laneIndex) => <article key={summary.run_id}>
+      <header><Badge tone={laneIndex === 0 ? "info" : "neutral"}>{laneIndex === 0 ? "Baseline" : `Compared run ${laneIndex}`}</Badge><Link to={runReviewPath(summary.run_id)} aria-label={`Review ${laneIndex === 0 ? "baseline" : `compared run ${laneIndex}`} execution lane`}>{names[summary.run_id] ?? "Run"}</Link></header>
+      {summary.path.length ? <ol>{summary.path.map((step, index) => <li key={`${step}-${index}`} data-status={summary.outcomes[step] === "success" ? "succeeded" : summary.outcomes[step]}><span>{String(index + 1).padStart(2, "0")}</span><strong title={step}>{sentence(step)}</strong><small>{sentence(summary.outcomes[step] ?? "unknown")}</small></li>)}</ol> : <p className="comparison-no-path">No path steps were reported.</p>}
+      {summary.replay_lineage?.defense_change_declared ? <p className="comparison-change-note">Defense change declared; not independently verified.</p> : null}
+      <details className="comparison-run-details"><summary>Run context and technical details</summary><DataList items={[
         { label: "Mode / profile", value: `${sentence(summary.mode ?? "not_reported")} / ${summary.profile_id ?? "Not reported"}` },
         { label: "Target scope", value: formatTargetScope(summary.target_scope) },
-        { label: "Replay Variant", value: formatReplayLineage(summary.replay_lineage) },
+        { label: "Recorded run change", value: formatReplayLineage(summary.replay_lineage) },
         { label: "Objective", value: objectiveLabel(summary.objective_reached, summary.mode) },
         { label: "First block", value: summary.first_blocked_step ? sentence(summary.first_blocked_step) : "None recorded" },
         { label: "Cleanup", value: summary.cleanup_success === false ? "Outstanding" : summary.cleanup_success === true ? (summary.mode === "simulate" ? "No real effects (Simulate)" : "Reconciled") : "Not reported" },
@@ -419,9 +427,8 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {} }: { c
         { label: "AI proposals", value: `${formatReportedCount(summary.ai_proposal_count)} · ${formatCountMap(summary.ai_applications, "No applications reported")}` },
         { label: "Remaining budgets", value: formatCountMap(summary.remaining_budgets, "None reported") },
         { label: "Counterfactual path", value: formatList(summary.counterfactual_steps, "None recorded") },
-      ]} />
-    </article>)}</div></Panel>
-    </details>
+      ]} /></details>
+    </article>)}</div></section>
     <details className="comparison-detail"><summary>Detailed changes in evidence, policy, and runtime</summary>
     <div className="delta-grid">{comparison.deltas.map((delta) => {
       const assessment = delta.assessment ?? (hasMaterialDelta(delta) ? "material_change" : "no_material_change");
@@ -479,13 +486,13 @@ function formatReplayLineage(value?: ComparisonResponse["summaries"][number]["re
   if (!value || value.state !== "replay") return "Original run";
   const variants = formatList(value.variant_types, "exact replay");
   const source = value.source_run_id ? ` from ${shortId(value.source_run_id)}` : "";
-  const defense = value.defense_change_declared ? ` · defense note ${shortDigest(value.defense_change_digest)}` : "";
+  const defense = value.defense_change_declared ? ` · defense change declared; digest ${shortDigest(value.defense_change_digest)} (not independently verified)` : "";
   return `${variants}${source}${defense}`;
 }
 function formatReplayDelta(value?: ComparisonDeltaItem["replay_lineage_delta"]) {
   if (!value || !value.changed) return "Stable";
   const variants = formatList(value.to_variant_types, "No Variant labels");
-  const defense = value.defense_change_declared ? ` · defense note ${shortDigest(value.defense_change_digest)}` : "";
+  const defense = value.defense_change_declared ? ` · defense change declared; digest ${shortDigest(value.defense_change_digest)} (not independently verified)` : "";
   return `${variants}${defense}`;
 }
 function formatEvidenceDetails(value?: { producer_counts?: Record<string, number>; observed_artifacts?: Array<Record<string, unknown>>; evidence_gaps?: Array<Record<string, unknown>> }) {
@@ -516,5 +523,9 @@ function shortDigest(value?: string | null) { return value && value.length > 18 
 function formatDuration(value?: number | null) { if (value === undefined || value === null) return "Not reported"; return formatMilliseconds(value); }
 function formatDurationDelta(value?: number | null) { if (value === undefined || value === null) return "Not comparable"; return value === 0 ? "No delta" : `${value > 0 ? "+" : "−"}${formatMilliseconds(Math.abs(value))}`; }
 function formatMilliseconds(value: number) { return Math.abs(value) < 1_000 ? `${new Intl.NumberFormat().format(value)} ms` : `${(value / 1_000).toLocaleString(undefined, { maximumFractionDigits: 2 })} s`; }
+function reportedArrayCount(value: unknown, noun: string) {
+  if (!Array.isArray(value)) return "Not reported";
+  return `${new Intl.NumberFormat().format(value.length)} ${noun}${value.length === 1 ? "" : "s"}`;
+}
 function runReviewPath(runId: string) { return `/runs/${encodeURIComponent(runId)}`; }
 function shortId(value: string) { return value.length > 22 ? `${value.slice(0, 10)}…${value.slice(-8)}` : value; }

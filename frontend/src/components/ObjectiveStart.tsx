@@ -45,7 +45,7 @@ export function ObjectiveStart() {
     return next;
   }, { replace: true });
 
-  return <section className="objective-start" aria-labelledby="objective-start-title">
+  return <section className={`objective-start${selected ? "" : " is-empty"}`} aria-labelledby="objective-start-title">
     <div className="objective-start-choice">
       <h2 id="objective-start-title">Choose an objective</h2>
       <Field label="Objective">

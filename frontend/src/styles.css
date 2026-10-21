@@ -734,19 +734,6 @@ pre { max-width: 100%; margin: 0; overflow: auto; color: var(--muted-strong); fo
 .lifecycle-strip strong { font-size: 0.57rem; }
 .lifecycle-strip em { color: var(--muted); font: 0.58rem ui-monospace, SFMono-Regular, Consolas, monospace; font-style: normal; }
 .lifecycle-strip .rejected > span { background: rgba(255, 110, 121, 0.1); color: var(--red); }
-.detection-layout { min-height: 650px; display: grid; grid-template-columns: minmax(330px, 0.78fr) minmax(500px, 1.22fr); gap: 14px; }
-.candidate-list > div:nth-child(2) { max-height: 565px; padding: 4px 8px; overflow: auto; }
-.candidate-list button { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; padding: 10px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: inherit; text-align: left; }
-.candidate-list button:hover { background: var(--surface-soft); }
-.candidate-list button.selected { border-color: rgba(56, 168, 255, 0.32); background: rgba(56, 168, 255, 0.08); }
-.candidate-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; background: rgba(168, 146, 255, 0.1); color: var(--violet); }
-.candidate-icon svg { width: 16px; }
-.candidate-list strong, .candidate-list code, .candidate-list small { display: block; }
-.candidate-list strong { font-size: 0.66rem; }
-.candidate-list code { margin-top: 3px; font-size: 0.52rem; }
-.candidate-list small { margin-top: 5px; color: var(--muted); font-size: 0.56rem; line-height: 1.35; }
-.candidate-list button > span:last-child { display: grid; justify-items: end; gap: 4px; }
-.candidate-workspace { min-height: 650px; }
 .editor-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .editor-header > span { display: flex; align-items: center; gap: 7px; font-size: 0.66rem; font-weight: 700; }
 .editor-header svg { width: 15px; color: var(--cyan); }
@@ -890,7 +877,7 @@ pre { max-width: 100%; margin: 0; overflow: auto; color: var(--muted-strong); fo
 
 @media (max-width: 1120px) {
   .scenario-grid, .profile-grid, .runner-grid, .source-grid { grid-template-columns: repeat(2, minmax(250px, 1fr)); }
-  .catalog-layout, .run-layout, .compare-top-grid, .detection-layout, .ai-hero-grid { grid-template-columns: 1fr; }
+  .catalog-layout, .run-layout, .compare-top-grid, .ai-hero-grid { grid-template-columns: 1fr; }
   .catalog-list-panel, .detail-panel { min-height: auto; }
   .behavior-table { max-height: 430px; }
   .plan-preview { position: static; }
@@ -970,8 +957,6 @@ pre { max-width: 100%; margin: 0; overflow: auto; color: var(--muted-strong); fo
   .run-action-bar .button { width: 100%; }
   .delta-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .lifecycle-strip { grid-template-columns: repeat(6, 125px); }
-  .candidate-list button { grid-template-columns: auto minmax(0, 1fr); }
-  .candidate-list button > span:last-child { grid-column: 2; display: flex; justify-items: start; }
   .theme-picker, .quick-links { grid-template-columns: 1fr; }
   .help-grid { grid-template-columns: 1fr; }
   .mission-panel > footer { align-items: flex-start; flex-direction: column; }
@@ -1207,41 +1192,6 @@ pre,
 .detection-assistance details pre { max-height: 400px; overflow: auto; }
 @media (max-width: 1100px) { .detection-source-comparison { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 700px) { .detection-ai-setup { grid-template-columns: minmax(0, 1fr); } .detection-assistance-heading { align-items: flex-start; flex-direction: column; } }
-
-.detection-page > .page-header { min-height: 64px; }
-.detection-page > .page-header h1 { font-size: 1.65rem; }
-.detection-page .candidate-body > p { margin: 0; font-size: var(--font-body-sm); line-height: 1.55; }
-.detection-context { border-block: 1px solid var(--line); padding: 12px 0; }
-.detection-context-controls { display: flex; align-items: flex-end; gap: 16px; }
-.detection-context-controls .field { flex: 1; min-width: 0; margin: 0; }
-.detection-source-details { margin-top: 12px; }
-.detection-source-details > summary { color: var(--muted-strong); cursor: pointer; }
-.detection-source-details[open] > summary { margin-bottom: 16px; }
-.detection-tools { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px 28px; margin: 0; }
-.detection-tools > details > summary { padding: 8px 0; cursor: pointer; font-weight: 600; font-size: .85rem; }
-.detection-tools > details[open] { flex: 1 0 100%; }
-.detection-tools > details > .panel { margin-top: 8px; }
-.detection-tools > details .detail-body { max-width: 920px; }
-.detection-page .candidate-list strong { font-size: .875rem; line-height: 1.45; }
-.detection-page .candidate-list small { font-size: .8125rem; line-height: 1.45; }
-.detection-page .candidate-list code { display: none; }
-.detection-page .candidate-list .candidate-icon { display: none; }
-.detection-page .candidate-list button { grid-template-columns: minmax(0, 1fr); padding: 12px; }
-.detection-page .candidate-list button > span:last-child { justify-items: start; }
-.detection-page .candidate-list, .detection-page .candidate-workspace { border: 0; border-radius: 0; background: transparent; box-shadow: none; }
-.detection-page .candidate-list .history-search { padding: 0 0 12px; }
-.detection-page .candidate-list > div:nth-child(2) { padding: 0; }
-.detection-page .candidate-workspace > .panel-header { padding: 0 0 16px; align-items: flex-start; }
-.detection-page .candidate-workspace > .panel-header h2 { font-size: 1.05rem; line-height: 1.4; }
-.detection-page .candidate-workspace > .workspace-tabs { padding-inline: 0; }
-.detection-page .candidate-body { padding: 16px 0; }
-.detection-page .candidate-body textarea { font-size: .8125rem; line-height: 1.6; }
-.detection-page .editor-header > span { font-size: .8125rem; }
-.detection-page .candidate-actions { justify-content: flex-start; flex-wrap: wrap; gap: 8px; }
-.candidate-draft-tools { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
-@media (min-width: 1121px) { .detection-page .detection-layout { grid-template-columns: minmax(230px, .3fr) minmax(0, 1fr); gap: 24px; } }
-@media (max-width: 1120px) { .detection-page .candidate-list > div:nth-child(2) { max-height: 210px; } }
-@media (max-width: 700px) { .detection-context-controls { flex-direction: column; align-items: stretch; } }
 
 .method-comparison { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); min-width: 0; }
 .method-comparison > header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 24px; }

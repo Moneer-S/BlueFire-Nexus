@@ -2,7 +2,7 @@ import * as Tooltip from "@radix-ui/react-tooltip";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity, Bot, Braces, BookOpen, ChevronDown, PanelLeftClose, PanelLeftOpen, FlaskConical, GitCompareArrows, HelpCircle,
-  Cloud, FileLock2, Home, ListChecks, Menu, MoreHorizontal, Network, PackageCheck, PlaySquare, Puzzle, ScrollText, Settings, SlidersHorizontal, X,
+  Cloud, FileLock2, Home, ListChecks, Menu, MoreHorizontal, Network, PackageCheck, PlaySquare, Puzzle, ScrollText, Server, Settings, SlidersHorizontal, X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
@@ -24,6 +24,7 @@ const workItems = [
   { to: "/detection-lab", label: "Detection Lab", icon: FlaskConical },
   { to: "/compare", label: "Compare", icon: GitCompareArrows },
   { to: "/scenarios", label: "Experiments", icon: ScrollText },
+  { to: "/environments", label: "Environments", icon: Server },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 const settingsItems = [
@@ -94,8 +95,8 @@ function WorkspaceShell() {
     setMobileOpen(false);
     if (location.pathname === "/settings" || settingsItems.some((item) => item.to.split("?")[0] === location.pathname)) setSettingsOpen(true);
     if (moreItems.some((item) => item.to !== "/" && item.to.split("?")[0] === location.pathname)) setMoreOpen(true);
-    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-    document.getElementById("main-content")?.scrollTo?.({ top: 0, left: 0, behavior: "auto" });
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+    document.getElementById("main-content")?.scrollTo?.({ top: 0, left: 0, behavior: "instant" });
   }, [location.pathname]);
   useEffect(() => {
     if (!mobileOpen) return;

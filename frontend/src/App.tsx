@@ -15,6 +15,7 @@ import { ComparePage } from "./pages/Compare";
 import { CompositionPage } from "./pages/Composition";
 import { FileAccessPage } from "./pages/FileAccess";
 import { DetectionLabPage } from "./pages/DetectionLab";
+import { EnvironmentsPage } from "./pages/Environments";
 import { GettingStartedPage } from "./pages/GettingStarted";
 import { OverviewPage } from "./pages/Overview";
 import { RunsPage } from "./pages/Runs";
@@ -34,6 +35,7 @@ export default function App() {
         <Route path="runs/:runId" element={<RunsPage />} />
         <Route path="compare" element={<ComparePage />} />
         <Route path="composition" element={<CompositionPage />} />
+        <Route path="environments" element={<EnvironmentsPage />} />
         <Route path="s3-access" element={<S3AccessPage />} />
         <Route path="file-access" element={<FileAccessPage />} />
         <Route path="ad-smb" element={<AdSmbPage />} />

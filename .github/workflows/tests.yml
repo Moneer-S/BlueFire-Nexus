@@ -354,8 +354,7 @@ jobs:
         run: >-
           python -c "import os, shutil; shutil.copyfile('tools/verify_macos_file_access_protocol.py', os.path.join(r'${{ runner.temp }}', 'verify_macos_file_access_protocol.py'))"
 
-      - name: Bootstrap and Execute from installed wheel outside checkout
-        if: matrix.platform != 'macos' || matrix.architecture != 'aarch64'
+      - name: Smoke installed wheel outside checkout
         working-directory: ${{ runner.temp }}
         run: >-
           python -c "import os, subprocess; executable = os.path.join(r'${{ runner.temp }}', 'bluefire-wheel-smoke', r'${{ matrix.venv-python }}'); subprocess.run([executable, '-I', os.path.join(r'${{ runner.temp }}', 'verify_packaged_runner.py'), 'smoke', '--work-root', os.path.join(r'${{ runner.temp }}', 'bluefire-wheel-smoke-state'), '--forbid-root', os.environ['GITHUB_WORKSPACE'], '--report', os.path.join(r'${{ runner.temp }}', 'installed-wheel-smoke.json')], check=True)"
@@ -427,7 +426,7 @@ jobs:
             ${{ runner.temp }}/installed-wheel-smoke.json
           if-no-files-found: error
 
-      - name: Upload macOS 26 arm64 SDK and protocol evidence
+      - name: Upload macOS 26 arm64 SDK, protocol, and installed-wheel evidence
         if: always() && matrix.platform == 'macos' && matrix.architecture == 'aarch64'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -438,6 +437,7 @@ jobs:
             ${{ runner.temp }}/macos-arm64-build-evidence/toolchain.txt
             ${{ runner.temp }}/macos-arm64-build-evidence/native-abi.json
             ${{ runner.temp }}/macos-file-access-capability.json
+            ${{ runner.temp }}/installed-wheel-smoke.json
           if-no-files-found: warn
 
   rust:

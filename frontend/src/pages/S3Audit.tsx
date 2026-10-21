@@ -90,9 +90,15 @@ function AuditDetail({ value }: { value: SavedAuditReview }) {
 
 function ImportedAuditDetail({ value }: { value: AuditImportReview }) {
   const audit = value.correlation.audit;
-  const assistant = useAssistancePanel();
-  const explain = () => { if (!assistant) return; assistant.publish(Symbol("audit-review"), { kind: "audit", selected: { kind: "s3_audit_review", workflow_job_id: value.workflow_job_id, review_id: value.review_id, review_digest: value.review_digest }, title: `${phaseName[value.source.phase]} audit review`, manualEdits: false }); assistant.setOpen(true); };
-  return <div className="s3-audit-detail" aria-label="Saved audit review detail"><div className="s3-setup-heading"><h3>{phaseName[value.source.phase]} · {sentence(value.source.reader)}</h3>{assistant ? <Button onClick={explain}><MessageSquareText />Explain review</Button> : null}</div><div className="s3-actions"><Link to={`/runs/${value.source.run_id}`}>Original run evidence</Link><Badge>{value.source.provenance === "synthetic" ? "Synthetic runner source" : "Runner reported source"}</Badge><Badge tone="warning">Collection not independently verified</Badge></div><div className="s3-audit-results">{value.correlation.reads.map(row => <article key={row.purpose}><h3>{row.purpose === "health" ? "Canary object" : "Primary object"}</h3><Badge tone={row.status === "matched" ? "info" : "warning"}>{sentence(row.status)}</Badge><DataList items={[{ label: "Runner", value: sentence(row.worker_outcome) }, { label: "Imported events", value: row.audit_event_ids.length }, { label: "Full object bytes", value: "Not proven" }]} /></article>)}</div><DataList items={[{ label: "Reported delivery", value: sentence(audit.reported_delivery_state) }, { label: "Imported records", value: audit.source_event_count }, { label: "Excluded", value: audit.counts.excluded }, { label: "Unknown", value: audit.counts.unknown }, { label: "Duplicates", value: audit.counts.duplicates }]} /><p>Operator-supplied records do not verify collection completeness or defensive effectiveness.</p><details><summary>Source bindings and minimized evidence</summary><pre>{JSON.stringify(value, null, 2)}</pre></details></div>;
+  const { publish, setOpen } = useAssistancePanel() ?? {};
+  useEffect(() => {
+    if (!publish) return;
+    const owner = Symbol("audit-review");
+    publish(owner, { kind: "audit", selected: { kind: "s3_audit_review", workflow_job_id: value.workflow_job_id, review_id: value.review_id, review_digest: value.review_digest }, title: `${phaseName[value.source.phase]} audit review`, manualEdits: false });
+    return () => publish(owner);
+  }, [publish, value.workflow_job_id, value.review_id, value.review_digest, value.source.phase]);
+  const explain = () => setOpen?.(true);
+  return <div className="s3-audit-detail" aria-label="Saved audit review detail"><div className="s3-setup-heading"><h3>{phaseName[value.source.phase]} · {sentence(value.source.reader)}</h3>{publish ? <Button onClick={explain}><MessageSquareText />Explain review</Button> : null}</div><div className="s3-actions"><Link to={`/runs/${value.source.run_id}`}>Original run evidence</Link><Badge>{value.source.provenance === "synthetic" ? "Synthetic runner source" : "Runner reported source"}</Badge><Badge tone="warning">Collection not independently verified</Badge></div><div className="s3-audit-results">{value.correlation.reads.map(row => <article key={row.purpose}><h3>{row.purpose === "health" ? "Canary object" : "Primary object"}</h3><Badge tone={row.status === "matched" ? "info" : "warning"}>{sentence(row.status)}</Badge><DataList items={[{ label: "Runner", value: sentence(row.worker_outcome) }, { label: "Imported events", value: row.audit_event_ids.length }, { label: "Full object bytes", value: "Not proven" }]} /></article>)}</div><DataList items={[{ label: "Reported delivery", value: sentence(audit.reported_delivery_state) }, { label: "Imported records", value: audit.source_event_count }, { label: "Excluded", value: audit.counts.excluded }, { label: "Unknown", value: audit.counts.unknown }, { label: "Duplicates", value: audit.counts.duplicates }]} /><p>Operator-supplied records do not verify collection completeness or defensive effectiveness.</p><details><summary>Source bindings and minimized evidence</summary><pre>{JSON.stringify(value, null, 2)}</pre></details></div>;
 }
 
 function collectionDeliveryLabel(state: Exclude<AuditDelivery, "complete">) {
@@ -103,15 +109,21 @@ function collectionDeliveryLabel(state: Exclude<AuditDelivery, "complete">) {
 
 function CollectedAuditDetail({ value }: { value: AuditCollectedReview }) {
   const data = value.receipt.result.data;
-  const assistant = useAssistancePanel();
-  const explain = () => { if (!assistant) return; assistant.publish(Symbol("collected-audit-review"), { kind: "audit", selected: { kind: "s3_audit_review", workflow_job_id: value.workflow_job_id, review_id: value.review_id, review_digest: value.review_digest }, title: `${phaseName[value.phase]} collected audit review`, manualEdits: false }); assistant.setOpen(true); };
+  const { publish, setOpen } = useAssistancePanel() ?? {};
+  useEffect(() => {
+    if (!publish) return;
+    const owner = Symbol("collected-audit-review");
+    publish(owner, { kind: "audit", selected: { kind: "s3_audit_review", workflow_job_id: value.workflow_job_id, review_id: value.review_id, review_digest: value.review_digest }, title: `${phaseName[value.phase]} collected audit review`, manualEdits: false });
+    return () => publish(owner);
+  }, [publish, value.workflow_job_id, value.review_id, value.review_digest, value.phase]);
+  const explain = () => setOpen?.(true);
   const correlationRows = [
     ...data.correlations.probe.reads,
     ...data.correlations.legitimate.reads,
   ];
   const usage = Object.entries(data.usage).map(([key, amount]) => ({ label: sentence(key), value: amount.toLocaleString() }));
   return <div className="s3-audit-detail" aria-label="Saved audit review detail">
-    <div className="s3-setup-heading"><h3>{phaseName[value.phase]} · Collected audit</h3>{assistant ? <Button onClick={explain}><MessageSquareText />Explain review</Button> : null}</div>
+    <div className="s3-setup-heading"><h3>{phaseName[value.phase]} · Collected audit</h3>{publish ? <Button onClick={explain}><MessageSquareText />Explain review</Button> : null}</div>
     <div className="s3-actions"><Badge>Authenticated source retrieval</Badge><Badge tone="warning">Integrity unverified</Badge><Badge tone="warning">{collectionDeliveryLabel(data.delivery_state)}</Badge></div>
     <div className="s3-actions" aria-label="Original read evidence">
       {value.original_pair.reads.map(read => <Link key={read.run_id} to={`/runs/${read.run_id}`}>{sentence(read.reader)} original run evidence</Link>)}
