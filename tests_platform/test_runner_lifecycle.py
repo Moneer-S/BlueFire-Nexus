@@ -1481,16 +1481,22 @@ def test_bootstrap_start_barrier_serializes_storage_and_launch(
         if independent_instance
         else first
     )
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        bootstrapped = pool.submit(_bootstrap, first)
-        assert entered.wait(timeout=10)
-        started = pool.submit(second.start, profile_id=PROFILE_ID)
-        time.sleep(0.1)
-        assert not started.done()
-        release.set()
-        assert bootstrapped.result(timeout=120)["state"] == "stopped"
-        assert started.result(timeout=120)["state"] == "ready"
-    first.stop(profile_id=PROFILE_ID)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            bootstrapped = pool.submit(_bootstrap, first)
+            try:
+                assert entered.wait(timeout=10)
+                started = pool.submit(second.start, profile_id=PROFILE_ID)
+                time.sleep(0.1)
+                assert not started.done()
+                release.set()
+                assert bootstrapped.result(timeout=120)["state"] == "stopped"
+                started_result = started.result(timeout=120)
+                assert started_result["state"] == "ready"
+            finally:
+                release.set()
+    finally:
+        second.stop(profile_id=PROFILE_ID)
 
 
 def test_failed_start_terminates_the_exact_host_process_tree(
