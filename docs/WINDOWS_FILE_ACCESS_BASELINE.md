@@ -1,6 +1,6 @@
 # Windows Paired Readable Baseline
 
-This development workflow creates a disposable local Windows reader and generated file, then records one reviewed comparison of reads by the owner and non-owner. It is create-only: setup and baseline do not delete the local account or generated resource. Arrange authorized cleanup before starting.
+This development workflow creates a disposable local Windows reader and generated file, records a reviewed paired-read baseline, and can then perform one separately reviewed metadata-only access correction with a fresh paired retest. It is local file-access work, not an Active Directory, SMB, cloud, or production-host workflow. Setup does not delete the local account or generated resource; arrange authorized cleanup before starting.
 
 ## Before you begin
 
@@ -31,16 +31,22 @@ In the same owner's non-elevated session, start BlueFire normally and connect us
 
 Choose **Review paired baseline** only when the current control allows it. Review the exact operation and authorize it once. A fresh review is short-lived; if it expires, refresh and review the current record rather than reusing an old approval.
 
-A completed result is a recorded paired baseline for the generated file. It reports the two bounded reads and whether their content matched, along with native and owned-job cleanup observations. The record explicitly says it is not independent telemetry. It is not general filesystem authorization, a hardening test, or evidence about other files or hosts. Other file-access operations remain unavailable in this phase.
+A completed baseline requires both the owner and non-owner to read the generated file successfully with matching content. It records those bounded reads and native and owned-job cleanup observations. The record is runner-reported evidence, not independent telemetry or general filesystem authorization, and says nothing about other files or hosts.
+
+## Review the access correction
+
+After a settled paired baseline, continue only if the saved Windows control offers **Review Windows access change**. Review that exact operation separately. It changes only the enrolled generated file's protected DACL to metadata-only access for the non-owner, then performs a fresh paired retest: non-owner data access must be denied while the owner can still read unchanged content. The correction is bound to the original setup, baseline, resource generation, and descriptor preimage; it does not renew setup or operation expiry.
+
+The correction is source-integrated, but installed Windows operation and live native proof remain pending. A successful local or synthetic check is not evidence that this change is ready or effective on a live host. Do not broaden the target, change other ACLs, or treat process closure as proof of access policy.
 
 ## If the result is uncertain
 
-Do not submit another baseline for the same setup. Use **Review original task evidence** for the original saved operation and inspect or reconcile that operation. Reconciliation reads the original task record; it does not dispatch another baseline. If the outcome or cleanup remains unresolved, leave it unresolved and retain the original host and protected state for authorized follow-up.
+Do not resubmit a baseline or correction to recover an uncertain attempt. Use **Review original task evidence** for that exact saved operation and inspect or reconcile its original result. Recovery does not repeat the read, correction, or retest, and does not extend the original deadline. If the outcome or cleanup remains unresolved, preserve the original host and protected state for authorized follow-up; do not infer success or start a replacement operation.
 
 ## Cleanup remains required
 
-This phase provides no account or resource deletion action. The generated local reader and file remain a cleanup obligation even after a successful comparison. Arrange cleanup through a separately reviewed, authorized procedure. Do not infer cleanup from a closed child process, a closed UI session, a successful baseline, or an imported setup record.
+The workflow provides no general rollback or account/resource deletion action. The generated local reader and file remain a cleanup obligation after baseline, correction, or retest. Arrange a separately reviewed and authorized cleanup procedure before setup. Do not claim the correction was reversed or resources removed; do not infer cleanup from a closed child process, a closed UI session, a successful result, or an imported setup record.
 
 ## Evidence boundary
 
-The protected setup receipt records setup provenance; it does not claim that paired reads occurred. A baseline operation records the runner-reported read result and closure observations; it does not claim independent observation or broad security effectiveness. Synthetic tests and browser fixtures verify software behavior only. Installed Windows operation and native live proof remain pending; this guide does not claim a completed live validation or supported-release workflow.
+The protected setup receipt records setup provenance; it does not claim that paired reads occurred. Baseline, correction, and retest records are runner-reported and their closure observations are not independent telemetry or broad security-effectiveness evidence. Synthetic tests and browser fixtures verify software behavior only. Installed Windows operation and native live proof remain pending; this guide does not claim a completed live validation or supported-release workflow.
