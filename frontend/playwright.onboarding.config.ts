@@ -21,7 +21,7 @@ if (existsSync(join(output, "playwright.json"))) throw new Error("The synthetic 
 
 export default defineConfig({
   testDir: "./tests/e2e",
-  testMatch: ["onboarding-production.spec.ts", "guided-runner-retry-production.spec.ts"],
+  testMatch: ["onboarding-production.spec.ts", "guided-runner-retry-production.spec.ts", "graph-scale-production.spec.ts"],
   globalSetup: "./tests/ad-smb-browser-setup.ts",
   timeout: 90_000,
   globalTimeout: 240_000,

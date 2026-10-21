@@ -7,8 +7,10 @@ import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { api } from "../src/lib/api";
 import { demoCatalog, demoScenario } from "../src/lib/demo";
+import * as graphView from "../src/lib/graph-view";
 import { BuilderPage } from "../src/pages/Builder";
 import { ProductProvider, useProduct } from "../src/state/ProductContext";
+import type { Scenario, ScenarioEdge } from "../src/types";
 
 const nodeRenders = vi.hoisted(() => [] as string[]);
 const renderedGraphs = vi.hoisted(() => [] as Pick<ReactFlowProps, "nodes" | "edges">[]);
@@ -47,15 +49,85 @@ function ContextControls() {
   </>;
 }
 
-function renderBuilder() {
-  window.localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(demoScenario));
+function renderBuilder(scenario: Scenario = demoScenario) {
+  window.localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(scenario));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(["catalog"], demoCatalog);
   vi.spyOn(api, "catalog").mockResolvedValue(demoCatalog);
   return render(<QueryClientProvider client={client}><Tooltip.Provider><MemoryRouter><ProductProvider><ContextControls /><BuilderPage /></ProductProvider></MemoryRouter></Tooltip.Provider></QueryClientProvider>);
 }
 
+function largeLayoutScenario(mode: "absent" | "partial" | "complete"): Scenario {
+  const steps = Array.from({ length: 128 }, (_, index) => ({
+    ...structuredClone(demoScenario.steps[0]!),
+    id: `layout-step-${index}`,
+    inputs: {},
+  }));
+  const edges: ScenarioEdge[] = steps.slice(0, -1).map((step, index) => ({
+    from_step: step.id,
+    outcome: "success" as const,
+    to_step: steps[index + 1]!.id,
+  }));
+  const branchOutcomes = ["partial", "blocked", "failed"] as const;
+  for (let index = 0; index < 43; index += 1) {
+    branchOutcomes.forEach((outcome, offset) => {
+      edges.push({ from_step: steps[index]!.id, outcome, to_step: steps[index + offset + 2]!.id });
+    });
+  }
+  const layout = mode === "absent"
+    ? undefined
+    : Object.fromEntries(steps.flatMap((step, index) => mode === "partial" && index > 0
+      ? []
+      : [[step.id, mode === "partial" ? { x: 902, y: 301 } : { x: 17 + index * 13, y: 29 + index * 7 }] as const]));
+  return {
+    ...structuredClone(demoScenario),
+    id: `builder-layout-${mode}`,
+    start: steps[0]!.id,
+    steps,
+    edges,
+    layout,
+  };
+}
+
 describe("Builder metadata and graph updates", () => {
+  it.each(["absent", "partial", "complete"] as const)(
+    "builds fallback positions once for a %s saved layout and keeps them presentation-only",
+    async (mode) => {
+      const scenario = largeLayoutScenario(mode);
+      const originalLayout = structuredClone(scenario.layout);
+      const layout = vi.spyOn(graphView, "initialGraphLayout");
+      const { unmount } = renderBuilder(scenario);
+      try {
+        await screen.findByRole("textbox", { name: "Experiment name" });
+        await waitFor(() => expect(renderedGraphs.at(-1)?.nodes).toHaveLength(128));
+
+        expect(layout).toHaveBeenCalledTimes(mode === "complete" ? 0 : 1);
+        const nodes = renderedGraphs.at(-1)!.nodes!;
+        for (const [index, node] of nodes.entries()) {
+          const saved = scenario.layout?.[node.id];
+          expect(node.position).toEqual(saved ?? {
+            x: 48 + (index % 4) * 294,
+            y: 48 + Math.floor(index / 4) * 190,
+          });
+        }
+        const originalCoordinates = nodes.map(({ id, position }) => [id, { ...position }] as const);
+        expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).layout).toEqual(originalLayout);
+
+        fireEvent.change(screen.getByRole("textbox", { name: "Experiment name" }), {
+          target: { value: `${scenario.title} edited` },
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Steps" }));
+        fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
+        expect(layout).toHaveBeenCalledTimes(mode === "complete" ? 0 : 1);
+        expect(renderedGraphs.at(-1)!.nodes!.map(({ id, position }) => [id, { ...position }])).toEqual(originalCoordinates);
+        expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).layout).toEqual(originalLayout);
+      } finally {
+        unmount();
+        layout.mockRestore();
+      }
+    },
+  );
+
   it("keeps graph objects stable through typed name edits while immediately invalidating approval", async () => {
     const user = userEvent.setup();
     renderBuilder();

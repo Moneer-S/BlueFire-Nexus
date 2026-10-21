@@ -124,6 +124,40 @@ browsers.
 
 Before accepting UI changes, test keyboard navigation, focus/dialog behavior, loading/error/empty/refusal states, graph editing, preflight, run review, approval, replay/compare, settings import/export, axe checks, responsive layouts, and no console errors.
 
+### Opt-in graph-scale qualification
+
+`graph-scale-production.spec.ts` exercises the production bundle with a synthetic graph of
+128 nodes, 256 outcome edges and at most 65,536 canonical JSON bytes, matching the
+[selected-step assistance boundary](contextual-graph-assistance.md#selected-step-parameter-context).
+This is not a universal saved-graph limit. The check uses synthetic session/catalog/scenario
+responses and refuses effect requests; it does not run a real service, model or experiment.
+It is opt-in, not part of the default `pnpm test:e2e` run.
+
+After the production build above, run from `frontend/`. All four `BLUEFIRE_S3_BROWSER_*`
+variables are required: `OUTPUT` must name a fresh, empty, existing absolute directory;
+`BUNDLE` the absolute built `bluefire/ui` directory; `EXECUTABLE` an absolute path to an
+already installed Chromium executable; and `PORT` an unused loopback TCP port. This Bash
+example creates the output directory and requires the browser and port to be selected:
+
+```bash
+export BLUEFIRE_S3_BROWSER_OUTPUT="$(cd "$(mktemp -d)" && pwd)"
+export BLUEFIRE_S3_BROWSER_BUNDLE="$(cd ../bluefire/ui && pwd)"
+export BLUEFIRE_S3_BROWSER_EXECUTABLE="${BLUEFIRE_S3_BROWSER_EXECUTABLE:?Set an absolute installed Chromium executable path}"
+export BLUEFIRE_S3_BROWSER_PORT="${BLUEFIRE_S3_BROWSER_PORT:?Set an unused loopback TCP port}"
+VITE_DEMO_MODE=false PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+  pnpm exec playwright test --config playwright.onboarding.config.ts graph-scale-production.spec.ts
+```
+
+The 1440x900 and 390x844 viewports cover focused/full graph and ordered-step transitions,
+retained full-graph reload and an unchanged serialized draft. Each timing series retains
+one warmup and five measured samples; p50/p95 use nearest rank, so p95 is the maximum of
+five samples. Transition timings include Playwright actions and assertions through two
+animation frames; remount timings include document navigation, application/session/data
+startup and assertion overhead, not isolated React render time. There is no SLO or latency
+pass threshold. Retain both per-viewport JSON reports, all six screenshots and the Playwright
+result, and record the exact source candidate and production-bundle identity with them.
+Measurements apply only to that workload, browser and machine, not live or installed acceptance.
+
 ## Product-level tests
 
 The opt-in real-runner E2E harness requires a freshly built binary:
