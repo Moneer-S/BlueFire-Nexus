@@ -6,10 +6,11 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { OverviewPage } from "../src/pages/Overview";
 import { ProductProvider } from "../src/state/ProductContext";
 import { api } from "../src/lib/api";
-import { demoRuns, demoScenario } from "../src/lib/demo";
+import { demoCatalog, demoRuns, demoScenario } from "../src/lib/demo";
 
 let clients: QueryClient[] = [];
 beforeEach(() => {
+  vi.spyOn(api, "catalog").mockResolvedValue(demoCatalog);
   vi.spyOn(api, "receiverTests").mockResolvedValue({ schema_version: "bluefire.receiver-defense-list.v1", jobs: [], truncated: false, next_cursor: null });
   vi.spyOn(api, "runs").mockResolvedValue({ runs: [], unavailable_run_count: 0 });
   vi.spyOn(api, "scenarios").mockResolvedValue({ scenarios: [demoScenario] });

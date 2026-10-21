@@ -4,6 +4,14 @@ export interface GraphDeletionSummary { steps: string[]; connections: string[]; 
 interface Elements<N, E> { nodes: N[]; edges: E[]; }
 interface Context { revision: unknown; scope: string; readOnly: boolean; }
 type FocusTarget = HTMLElement | SVGElement;
+function hiddenByClosedDetails(element: FocusTarget): boolean {
+  for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+    if (parent.tagName !== "DETAILS" || parent.hasAttribute("open")) continue;
+    const summary = Array.from(parent.children).find(child => child.tagName === "SUMMARY");
+    if (!summary?.contains(element)) return true;
+  }
+  return false;
+}
 interface Request<N, E> extends Context {
   elements: Elements<N, E>;
   resolve: (result: Elements<N, E> | false) => void;
@@ -43,7 +51,7 @@ export function useGraphDeletion<N extends { id: string }, E extends { id: strin
     focusObserver.current = null;
     returnFocus.current = null;
     const origin = returning.element;
-    const available = origin?.isConnected && origin !== document.body && origin !== document.documentElement && !origin.closest("[hidden], [inert]") && !("disabled" in origin && origin.disabled);
+    const available = origin?.isConnected && origin !== document.body && origin !== document.documentElement && !origin.closest("[hidden], [inert]") && !hiddenByClosedDetails(origin) && !("disabled" in origin && origin.disabled);
     (available ? origin : latest.current.focusFallback(returning.elements))?.focus({ preventScroll: true });
   }, []);
   const cancel = useCallback(() => {

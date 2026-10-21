@@ -54,7 +54,7 @@ function renderBuilder(scenario: Scenario = demoScenario) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(["catalog"], demoCatalog);
   vi.spyOn(api, "catalog").mockResolvedValue(demoCatalog);
-  return render(<QueryClientProvider client={client}><Tooltip.Provider><MemoryRouter><ProductProvider><ContextControls /><BuilderPage /></ProductProvider></MemoryRouter></Tooltip.Provider></QueryClientProvider>);
+  return { ...render(<QueryClientProvider client={client}><Tooltip.Provider><MemoryRouter><ProductProvider><ContextControls /><BuilderPage /></ProductProvider></MemoryRouter></Tooltip.Provider></QueryClientProvider>), client };
 }
 
 function largeLayoutScenario(mode: "absent" | "partial" | "complete"): Scenario {
@@ -90,6 +90,26 @@ function largeLayoutScenario(mode: "absent" | "partial" | "complete"): Scenario 
 }
 
 describe("Builder metadata and graph updates", () => {
+  it("refreshes saved work listings after saving a renamed experiment", async () => {
+    const { client } = renderBuilder();
+    client.setQueryData(["scenarios"], { scenarios: [demoScenario] });
+    client.setQueryData(["scenario-versions"], { scenarios: [] });
+    client.setQueryData(["scenario-versions", "history", demoScenario.id], []);
+    const save = vi.spyOn(api, "saveScenarioVersion").mockImplementation(async (document) => ({
+      schema_version: "bluefire.scenario-versions.v1",
+      scenario: { scenario_id: document.id, title: document.title, version: 2, digest: "a".repeat(64), created_at: "2026-10-21T00:00:00Z", document },
+    }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "Experiment name" }), { target: { value: "A useful saved experiment name" } });
+    expect(screen.getAllByRole("textbox", { name: "Experiment name" })).toHaveLength(1);
+    expect(screen.getByRole("heading", { level: 1, name: "A useful saved experiment name" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save version" }));
+    await screen.findByText("Version 2 saved.");
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ title: "A useful saved experiment name" }));
+    expect(client.getQueryState(["scenarios"])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(["scenario-versions"])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(["scenario-versions", "history", demoScenario.id])?.isInvalidated).toBe(true);
+  });
+
   it.each(["absent", "partial", "complete"] as const)(
     "builds fallback positions once for a %s saved layout and keeps them presentation-only",
     async (mode) => {
@@ -103,12 +123,19 @@ describe("Builder metadata and graph updates", () => {
 
         expect(layout).toHaveBeenCalledTimes(mode === "complete" ? 0 : 1);
         const nodes = renderedGraphs.at(-1)!.nodes!;
-        for (const [index, node] of nodes.entries()) {
+        for (const node of nodes) {
           const saved = scenario.layout?.[node.id];
-          expect(node.position).toEqual(saved ?? {
-            x: 48 + (index % 4) * 294,
-            y: 48 + Math.floor(index / 4) * 190,
-          });
+          if (saved) expect(node.position).toEqual(saved);
+          expect(Number.isFinite(node.position.x) && Number.isFinite(node.position.y)).toBe(true);
+        }
+        if (mode !== "complete") {
+          for (const [index, node] of nodes.entries()) for (const other of nodes.slice(index + 1)) {
+            const a = node.position, b = other.position;
+            expect(a.x + graphView.GRAPH_NODE_WIDTH <= b.x || b.x + graphView.GRAPH_NODE_WIDTH <= a.x || a.y + graphView.GRAPH_NODE_HEIGHT <= b.y || b.y + graphView.GRAPH_NODE_HEIGHT <= a.y).toBe(true);
+          }
+          for (const edge of scenario.edges) if (!scenario.layout?.[edge.from_step] && !scenario.layout?.[edge.to_step]) {
+            expect(nodes.find(node => node.id === edge.to_step)!.position.y).toBeGreaterThan(nodes.find(node => node.id === edge.from_step)!.position.y);
+          }
         }
         const originalCoordinates = nodes.map(({ id, position }) => [id, { ...position }] as const);
         expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).layout).toEqual(originalLayout);

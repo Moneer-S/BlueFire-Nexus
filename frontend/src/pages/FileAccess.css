@@ -1,23 +1,80 @@
-.file-access-page { max-width: 1200px; grid-template-columns: minmax(0, 1fr); }
+.file-access-page { max-width: 1440px; grid-template-columns: minmax(0, 1fr); }
 .file-access-page > *, .file-access-section { min-width: 0; }
 .file-access-page h1 { font-size: 1.65rem; overflow-wrap: anywhere; }
-.file-access-page h2 { font-size: 1.15rem; margin: 0 0 16px; }
+.file-access-page h2 { font-size: 1.15rem; margin: 0 0 12px; }
 .file-access-page h3 { font-size: 1rem; }
 .file-access-page p { max-width: 85ch; line-height: 1.55; }
 .file-access-page code, .file-access-page li, .file-access-page dd { overflow-wrap: anywhere; }
 .file-access-page code { font-size: .78rem; }
-.file-access-section { border-top: 1px solid var(--line); padding-block: 24px; }
+.file-access-section { border-top: 1px solid var(--line); padding-block: 22px; }
 .file-access-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.file-access-heading h2 { margin-bottom: 0; }
+.file-access-heading p, .file-access-section-lead { margin: 6px 0 16px; color: var(--muted-strong); font-size: .85rem; }
 .file-access-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-block: 16px; }
+.file-access-actions:empty { display: none; }
+.file-access-saved { border-top: 0; padding-top: 8px; }
 .file-access-page .button { max-width: 100%; white-space: normal; text-align: left; }
 .file-access-page .button svg { width: 16px; height: 16px; flex: 0 0 16px; }
 .file-access-page .field { margin-block: 16px; }
-.file-access-list > div, .file-access-history li { padding-block: 12px; border-bottom: 1px solid var(--line); }
-.file-access-list a, .file-access-history li > div { display: flex; justify-content: space-between; gap: 16px; padding-block: 4px; }
-.file-access-list details, .file-access-history details { margin-top: 8px; color: var(--muted-strong); font-size: .8rem; }
-.file-access-list a[aria-current] { color: var(--blue-soft); }
+.file-access-readiness { padding: 24px 0; border-block: 1px solid var(--line-strong); background: linear-gradient(115deg, color-mix(in srgb, var(--blue) 8%, transparent), transparent 70%); }
+.file-access-readiness-heading { display: grid; grid-template-columns: 54px minmax(0, 1fr) auto; gap: 18px; align-items: start; }
+.file-access-readiness-heading h2 { margin: 4px 0 8px; font-size: 1.35rem; }
+.file-access-readiness-heading p { margin: 0; color: var(--muted-strong); font-size: .88rem; }
+.file-access-readiness-heading .file-access-kicker { color: var(--blue-soft); font-size: .78rem; font-weight: 650; }
+.file-access-readiness-heading > .badge { margin-top: 4px; }
+.file-access-symbol { display: grid; place-items: center; width: 54px; height: 54px; border: 1px solid color-mix(in srgb, var(--blue) 40%, var(--line)); border-radius: 8px; background: color-mix(in srgb, var(--blue) 10%, var(--surface)); color: var(--blue-soft); }
+.file-access-symbol svg { width: 26px; height: 26px; }
+.file-access-readiness-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 22px 0 0; padding: 16px 0; border-block: 1px solid var(--line); gap: 24px; }
+.file-access-readiness-facts > div { display: grid; grid-template-columns: 20px minmax(0, 1fr); column-gap: 10px; align-content: start; }
+.file-access-readiness-facts svg { grid-row: 1 / 3; width: 18px; height: 18px; color: var(--blue-soft); margin-top: 2px; }
+.file-access-readiness-facts dt { color: var(--muted-strong); font-size: .76rem; }
+.file-access-readiness-facts dd { margin: 4px 0 0; font-size: .92rem; font-weight: 650; }
+.file-access-setup-guides { display: flex; flex-wrap: wrap; gap: 12px 24px; }
+.file-access-setup-guides a { display: inline-flex; align-items: center; gap: 8px; color: var(--blue-soft); font-size: .85rem; padding: 8px 0; text-decoration: none; }
+.file-access-setup-guides a:hover { text-decoration: underline; }
+.file-access-setup-guides svg { width: 16px; height: 16px; }
+.file-access-retention-note { margin: 16px 0 0; color: var(--muted); font-size: .78rem; }
+.file-access-details { margin-top: 16px; border-top: 1px solid var(--line); }
+.file-access-details > summary { width: fit-content; max-width: 100%; padding-block: 12px; color: var(--muted-strong); font-size: .8rem; font-weight: 600; cursor: pointer; }
+.file-access-details > summary:hover { color: var(--blue-soft); }
+.file-access-details > div { padding: 4px 0 12px; }
+.file-access-details .data-list { margin: 0; }
+.file-access-details .data-list > div { background: none; }
+.file-access-count { color: var(--muted); font-size: .8rem; }
+.file-access-list { margin-block: 8px 16px; }
+.file-access-list > div { border-bottom: 1px solid var(--line); padding: 10px 12px; transition: background 130ms ease; }
+.file-access-list > div.is-selected { border-left: 2px solid var(--blue); padding-left: 10px; background: color-mix(in srgb, var(--blue) 8%, transparent); }
+.file-access-list a { display: flex; align-items: center; gap: 14px; padding-block: 6px; text-decoration: none; color: var(--text); }
+.file-access-list a:hover strong, .file-access-list a[aria-current] strong { color: var(--blue-soft); }
+.file-access-list a > svg { width: 22px; height: 22px; flex: 0 0 22px; color: var(--blue-soft); }
+.file-access-list a > span:first-of-type { display: grid; gap: 5px; flex: 1; min-width: 0; }
+.file-access-list strong { font-size: .88rem; overflow-wrap: anywhere; }
+.file-access-list small { color: var(--muted); font-size: .75rem; }
+.file-access-saved-state { display: flex; align-items: center; gap: 12px; color: var(--muted-strong); font-size: .78rem; }
+.file-access-saved-state svg { width: 16px; height: 16px; flex: 0 0 16px; }
+.file-access-list details { margin: 4px 0 0 36px; color: var(--muted); font-size: .73rem; }
+.file-access-list summary, .file-access-history summary { cursor: pointer; }
+.file-access-empty { display: flex; align-items: center; gap: 16px; color: var(--muted-strong); }
+.file-access-empty > svg { flex: 0 0 24px; color: var(--muted); }
+.file-access-empty h3 { margin: 6px 0; color: var(--text); }
+.file-access-empty p { margin: 0 0 8px; font-size: .83rem; }
 .file-access-history { padding-left: 0; list-style: none; }
+.file-access-history li { padding-block: 12px; border-bottom: 1px solid var(--line); }
+.file-access-history li > div { display: flex; justify-content: space-between; gap: 16px; padding-block: 4px; }
+.file-access-history details { margin-top: 8px; color: var(--muted-strong); font-size: .8rem; }
+@media (max-width: 1050px) {
+  .file-access-readiness-heading { grid-template-columns: 42px minmax(0, 1fr); gap: 12px; }
+  .file-access-symbol { width: 42px; height: 42px; }
+  .file-access-readiness-heading > .badge { grid-column: 2; justify-self: start; }
+  .file-access-readiness-facts { gap: 12px; }
+}
 @media (max-width: 680px) {
-  .file-access-page h1 { font-size: 1.35rem; }
-  .file-access-list a, .file-access-history li > div { flex-direction: column; gap: 4px; }
+  .file-access-readiness-facts { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .file-access-readiness-heading h2 { font-size: 1.15rem; }
+  .file-access-list a { flex-wrap: wrap; }
+  .file-access-saved-state { margin-left: 36px; }
+  .file-access-history li > div { flex-direction: column; gap: 4px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .file-access-list > div { transition: none; }
 }

@@ -203,7 +203,7 @@ it.each(["unavailable", "expired"] as const)("keeps saved evidence read-only whe
   vi.mocked(fileAccessApi.control).mockResolvedValue({ ...macOSControlFixture("hardened"), allowed_operations: [] });
   mount();
   expect(await screen.findByText("Original workspace unavailable")).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "macOS protected workspace" })).toBeInTheDocument();
+  expect(screen.getByText("macOS protected workspace")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /save original|review restore|review generated|reset/i })).not.toBeInTheDocument();
   expect(screen.queryByRole("link", { name: /composition/i })).not.toBeInTheDocument();
 });
@@ -274,7 +274,7 @@ it.each([true, false])("retains an old Linux pending request without resubmissio
   vi.mocked(fileAccessApi.status).mockResolvedValue(macOSStatusFixture(available));
   vi.mocked(fileAccessApi.control).mockResolvedValue(control);
   mount(`/file-access?control=${control.control_owner_id}`);
-  await screen.findByRole("heading", { name: "macOS protected workspace" });
+  await screen.findByText("macOS protected workspace");
   expect(screen.getByRole("button", { name: "Check saved operation" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Resubmit original request" })).not.toBeInTheDocument();
   expect(readFileAccessPending()).toEqual(pending);

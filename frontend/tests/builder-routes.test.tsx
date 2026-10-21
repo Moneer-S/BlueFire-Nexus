@@ -9,6 +9,7 @@ import { demoCatalog, demoScenario } from "../src/lib/demo";
 import { BuilderPage } from "../src/pages/Builder";
 import { ProductProvider } from "../src/state/ProductContext";
 import type { Outcome, Scenario } from "../src/types";
+import { builderOptions } from "./helpers/builder-options";
 
 // Same six-step/17-route topology as the public receiver experiment, with registered demo methods; no runtime effects.
 const names = ["create_fixture", "transform_fixture", "inspect_fixture_metadata", "stage_records", "authorized_peer_handoff", "cleanup_workspace"];
@@ -129,6 +130,7 @@ it("keeps keyboard node deletion on its replacement when the route list is open"
   mount();
   await user.click(await screen.findByRole("button", { name: "Show all branches" }));
   await user.click(screen.getByRole("button", { name: "Show node inspector" }));
+  expect(screen.getByText("View options", { selector: "summary" }).closest("details")).not.toHaveAttribute("open");
   const node = screen.getByTestId("rf__node-stage_records");
   node.focus();
   await user.keyboard("{Enter}");
@@ -139,8 +141,10 @@ it("keeps keyboard node deletion on its replacement when the route list is open"
   await waitFor(() => expect(screen.queryByTestId("rf__node-stage_records")).not.toBeInTheDocument());
   const replacement = screen.getByTestId("rf__node-create_fixture");
   await waitFor(() => expect(replacement).toHaveFocus());
+  expect(screen.getByText("View options", { selector: "summary" }).closest("details")).not.toHaveAttribute("open");
   expect(replacement).toHaveClass("selected");
   expect(screen.getByLabelText(/^Step ID/)).toHaveValue("create_fixture");
+  await builderOptions(user);
   expect(screen.getByRole("button", { name: "Delete selected node" })).toBeEnabled();
   expect(routeButtons().every(button => button.getAttribute("aria-pressed") === "false")).toBe(true);
   expect(cached().steps).toEqual(scenario.steps.filter(step => step.id !== "stage_records"));
@@ -150,7 +154,9 @@ it("keeps deleted input-connection focus on the canvas instead of selecting an u
   const user = userEvent.setup();
   mount(false, demoScenario);
   await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  await builderOptions(user);
   await user.click(screen.getByRole("checkbox", { name: "Show input connections" }));
+  await builderOptions(user, false);
   const edge = screen.getByTestId("rf__edge-artifact-place_fixture-workspace-run_fixture-workspace");
   edge.focus();
   await user.keyboard("{Enter}");

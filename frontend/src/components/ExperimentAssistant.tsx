@@ -56,6 +56,15 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
   const submissionLock = useRef(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const close = () => { setOpen(false); triggerRef.current?.focus(); };
+  useEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(() => {
+      const workspace = document.getElementById("experiment-assistant");
+      workspace?.focus({ preventScroll: true });
+      if (window.matchMedia?.("(max-width: 1050px)").matches) workspace?.scrollIntoView?.({ block: "start", behavior: "auto" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open]);
   const requestedJobId = panel?.requestedJobId, requestedReceiverJobId = panel?.requestedReceiverJobId, finishOpenJob = panel?.finishOpenJob;
   useEffect(() => {
     if (!requestedJobId || !finishOpenJob) return;
@@ -214,7 +223,7 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
   };
   return <>
     <button ref={triggerRef} aria-expanded={open} aria-controls="experiment-assistant" onClick={() => setOpen(!open)} className="assistant-trigger" aria-label={triggerStatus ? `Assistant: ${triggerStatus}` : "Assistant"}><MessageSquareText aria-hidden="true" /><span>Assistant</span>{triggerStatus ? <span className="assistant-trigger-status">{triggerStatus}</span> : null}</button>
-    {open ? createPortal(<aside id="experiment-assistant" className="experiment-assistant" aria-labelledby="assistant-title" onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); close(); } }}>
+    {open ? createPortal(<aside id="experiment-assistant" className="experiment-assistant" tabIndex={-1} aria-labelledby="assistant-title" onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); close(); } }}>
       <header className="assistant-header"><div><h2 id="assistant-title">Experiment assistant</h2><p>Review changes beside your experiment and results.</p></div><button onClick={close} className="assistant-close" aria-label="Close assistant"><X /></button></header>
       <div className={`assistant-body${!receipt && graphSelection ? " assistant-graph-composer" : !receipt && auditSelection ? " assistant-audit-composer" : ""}`}>
         {ownedReceipt || history.length ? <nav className="assistant-work-switcher" aria-label="Assistant workspace">

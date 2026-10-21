@@ -8,7 +8,7 @@ import { api } from "../src/lib/api";
 import { demoCatalog, demoScenario } from "../src/lib/demo";
 import { ProductProvider } from "../src/state/ProductContext";
 
-vi.mock("../src/lib/api", () => ({ DEMO_MODE: true, api: { catalog: vi.fn(), scenarios: vi.fn() } }));
+vi.mock("../src/lib/api", () => ({ DEMO_MODE: true, api: { catalog: vi.fn(), scenarios: vi.fn(), runs: vi.fn() } }));
 
 function Destination() {
   return <p>Destination: {useLocation().pathname}</p>;
@@ -24,6 +24,7 @@ describe("workbench navigation", () => {
     vi.stubGlobal("scrollTo", vi.fn());
     vi.mocked(api.catalog).mockResolvedValue(demoCatalog);
     vi.mocked(api.scenarios).mockResolvedValue({ scenarios: [demoScenario] });
+    vi.mocked(api.runs).mockResolvedValue({ runs: [], unavailable_run_count: 0 });
   });
 
   it("labels demo state without claiming a live connection or making a health request", () => {
@@ -36,10 +37,10 @@ describe("workbench navigation", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it("keeps the default navigation focused on six work destinations", () => {
+  it("keeps Overview and the existing work destinations directly reachable", () => {
     renderShell();
     const navigation = within(screen.getByRole("navigation", { name: "Primary navigation" }));
-    expect(navigation.getAllByRole("link").map((link) => link.textContent)).toEqual(["Build", "Runs", "Detection Lab", "Compare", "Experiments", "Settings"]);
+    expect(navigation.getAllByRole("link").map((link) => link.textContent)).toEqual(["Overview", "Build", "Runs", "Detection Lab", "Compare", "Experiments", "Settings"]);
     expect(navigation.getByRole("link", { name: "Build" })).toHaveAttribute("href", "/builder");
     expect(navigation.getByRole("link", { name: "Experiments" })).toHaveAttribute("href", "/scenarios");
     expect(navigation.queryByRole("link", { name: "Runner Profiles" })).not.toBeInTheDocument();
@@ -114,6 +115,31 @@ describe("workbench navigation", () => {
     await user.click(screen.getByRole("link", { name: "Skip to content" }));
     expect(document.getElementById("main-content")).toHaveFocus();
     expect(screen.getByText("Destination: /runs/run-123")).toBeVisible();
+  });
+
+  it("opens real workspace search with keyboard, navigates a result and preserves the draft", async () => {
+    const user = userEvent.setup();
+    renderShell("/");
+    const draft = localStorage.getItem("bluefire.local.scenario.v1");
+    await user.keyboard("{Control>}k{/Control}");
+    const dialog = within(await screen.findByRole("dialog", { name: "Search workspace" }));
+    await user.type(dialog.getByRole("textbox"), "File access");
+    await user.click(dialog.getByRole("link", { name: /File access/ }));
+    expect(screen.getByText("Destination: /file-access")).toBeVisible();
+    expect(screen.queryByRole("dialog", { name: "Search workspace" })).not.toBeInTheDocument();
+    expect(localStorage.getItem("bluefire.local.scenario.v1")).toBe(draft);
+  });
+
+  it("searches saved experiments and restores focus when dismissed", async () => {
+    const user = userEvent.setup();
+    renderShell();
+    const trigger = screen.getByRole("button", { name: "Search experiments, runs, and tools" });
+    await user.click(trigger);
+    const dialog = within(screen.getByRole("dialog", { name: "Search workspace" }));
+    await user.type(dialog.getByRole("textbox"), demoScenario.title.slice(0, 15));
+    expect(await dialog.findByRole("link", { name: new RegExp(demoScenario.title.slice(0, 15)) })).toHaveAttribute("href", `/scenarios?selected=${encodeURIComponent(demoScenario.id)}`);
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveFocus();
   });
 });
 

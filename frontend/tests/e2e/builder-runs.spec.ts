@@ -48,10 +48,10 @@ test("builder workspace exposes commands, layout, focus, legend, panels, and con
   await expect(page.locator(".inspector-panel")).toBeHidden();
 
   await page.getByRole("button", { name: "Auto-layout" }).click();
-  await expect(page.getByText("Steps arranged in reading order. Use Undo to restore your positions.")).toBeVisible();
+  await expect(page.getByText("Steps arranged by their connections. Use Undo to restore your positions.")).toBeVisible();
   await page.getByRole("button", { name: "Fit graph" }).click();
   await page.getByRole("button", { name: "Fit selection" }).click();
-  await expect(page.getByRole("button", { name: /Commands Ctrl\/Cmd K/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Commands", exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Enter graph focus mode" }).click();
   await expect(page.locator(".builder-page")).toHaveClass(/builder-focus/);
@@ -69,12 +69,16 @@ test("builder workspace exposes commands, layout, focus, legend, panels, and con
 
   const nodes = page.locator(".react-flow__node"); const initial = await nodes.count();
   const deleteDialog = page.getByRole("dialog", { name: "Delete from experiment?" });
+  await page.getByText("View options", { exact: true }).click();
+  await expect(page.getByRole("group", { name: "Selection tools" })).toBeVisible();
   await page.getByRole("button", { name: "Delete selected node" }).click();
   await expect(deleteDialog).toBeVisible();
   await expect(deleteDialog.getByText("Place deterministic fixture", { exact: true })).toBeVisible();
   await expect(deleteDialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
   await deleteDialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(deleteDialog).toBeHidden();
+  await expect(page.getByRole("button", { name: "Delete selected node" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Delete selected node" })).toBeVisible();
   await expect(nodes).toHaveCount(initial);
 
   await page.getByRole("button", { name: "Delete selected node" }).click();
@@ -112,6 +116,7 @@ test("keyboard selection, copy and deletion follow the focused step", async ({ p
   await expect(first).not.toHaveClass(/selected/);
   await page.keyboard.press("Control+c");
   await expect(page.locator(".compatibility-banner")).toContainText("Run reviewed fixture program copied.");
+  await expect(page.locator("details.graph-options")).toHaveJSProperty("open", false);
   await second.focus();
   await page.keyboard.press("Delete");
   const deleteDialog = page.getByRole("dialog", { name: "Delete from experiment?" });
@@ -122,7 +127,10 @@ test("keyboard selection, copy and deletion follow the focused step", async ({ p
   await expect(first).toHaveCount(1);
   await expect(first).toHaveClass(/selected/);
   await expect(first).toBeFocused();
+  await page.getByText("View options", { exact: true }).click();
+  await expect(page.getByRole("group", { name: "Selection tools" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Delete selected node" })).toBeEnabled();
+  await page.getByText("View options", { exact: true }).click();
   await page.getByRole("button", { name: "Undo", exact: true }).click();
   await expect(second).toHaveCount(1);
   await expect(first).toHaveCount(1);

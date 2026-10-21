@@ -10,8 +10,9 @@ type Deletion = ReturnType<typeof useGraphDeletion<Item, Item>>;
 const elements = { nodes: [{ id: "selected-step" }], edges: [{ id: "selected-route" }] };
 const description = { steps: ["Collect bounded system facts"], connections: ["On success → Stage selected records"] };
 
-function Harness({ revision, scope = "visible-selection", readOnly = false, showOrigin = true, current, resolved, liveRevision }: {
+function Harness({ revision, scope = "visible-selection", readOnly = false, showOrigin = true, originDetails, current, resolved, liveRevision }: {
   revision: object; scope?: string; readOnly?: boolean; showOrigin?: boolean;
+  originDetails?: "open" | "closed";
   current: RefObject<Deletion | null>;
   resolved: (result: typeof elements | false) => void;
   liveRevision?: RefObject<object>;
@@ -21,8 +22,10 @@ function Harness({ revision, scope = "visible-selection", readOnly = false, show
     currentRevision: () => liveRevision?.current ?? revision, focusFallback: () => fallback.current,
     focusContainer: () => fallback.current?.parentElement ?? null, removalCommitted: () => !showOrigin });
   current.current = deletion;
+  const request = () => { void deletion.request(elements, description).then(resolved); };
+  const origin = <button onClick={request}>Delete selection</button>;
   return <>
-    {showOrigin ? <button onClick={() => { void deletion.request(elements, description).then(resolved); }}>Delete selection</button> : null}
+    {showOrigin ? originDetails ? <details open={originDetails === "open"}><summary onKeyDown={event => { if (event.key === "Delete") { event.preventDefault(); request(); } }}>Selection tools</summary>{origin}</details> : origin : null}
     <button ref={fallback}>Graph fallback</button>
     <GraphDeleteDialog summary={deletion.summary} confirm={deletion.confirm} cancel={deletion.cancel} restoreFocus={deletion.restoreFocus} />
   </>;
@@ -47,6 +50,36 @@ it("settles an Escape cancellation, restores the trigger, and refuses duplicate 
   await waitFor(() => expect(props.resolved).toHaveBeenCalledExactlyOnceWith(false));
   await waitFor(() => expect(trigger).toHaveFocus());
   expect(props.current.current!.consume(elements)).toBe(false);
+});
+
+it("restores a visible fallback when its selection tool closes behind the confirmation", async () => {
+  const user = userEvent.setup();
+  const view = setup({ originDetails: "open" });
+  const trigger = screen.getByRole("button", { name: "Delete selection" });
+  expect(trigger).toBeVisible();
+  await user.click(trigger);
+  await screen.findByRole("dialog", { name: "Delete from experiment?" });
+  view.rerender(<Harness {...view.props} originDetails="closed" />);
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(view.props.resolved).toHaveBeenCalledExactlyOnceWith(false));
+  expect(trigger).not.toBeVisible();
+  const fallback = screen.getByRole("button", { name: "Graph fallback" });
+  await waitFor(() => expect(fallback).toHaveFocus());
+  expect(fallback).toBeVisible();
+});
+
+it("still restores the directly visible summary of closed selection tools", async () => {
+  const user = userEvent.setup();
+  const view = setup({ originDetails: "closed" });
+  const summary = screen.getByText("Selection tools", { selector: "summary" });
+  summary.focus();
+  expect(summary).toBeVisible();
+  await user.keyboard("{Delete}");
+  await screen.findByRole("dialog", { name: "Delete from experiment?" });
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(view.props.resolved).toHaveBeenCalledExactlyOnceWith(false));
+  await waitFor(() => expect(summary).toHaveFocus());
+  expect(summary).toBeVisible();
 });
 
 it("confirms only the reviewed elements once, and restores a fallback after its trigger disappears", async () => {

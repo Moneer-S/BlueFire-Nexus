@@ -16,7 +16,7 @@ export type WorkingGraphView = {
 };
 
 export function defaultGraphView(scenario: Scenario): WorkingGraphView {
-  const step = scenario.steps[0];
+  const step = scenario.steps.find(item => item.id === scenario.start) ?? scenario.steps[0];
   return { selected: step ? { id: step.id, behavior: step.behavior_id } : null,
     mode: window.matchMedia?.("(max-width: 760px)")?.matches ? "steps" : "graph",
     allBranches: false, expanded: [], section: 0, inspector: false, routes: false, inputs: false };

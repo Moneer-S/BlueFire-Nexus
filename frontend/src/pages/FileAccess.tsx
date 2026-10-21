@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { FileLock2, RefreshCw } from "lucide-react";
+import { ArrowRight, CheckCircle2, CircleDashed, FileLock2, FolderLock, RefreshCw, ShieldCheck } from "lucide-react";
 import { compositionJobId, compositionJobValid, FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK } from "../lib/composition";
 import { checkedFileAccessControl, checkedFileAccessList, checkedFileAccessOperation, checkedFileAccessStatus, clearFileAccessPending, fileAccessApi, fileAccessCompositionPack, fileAccessConfirmed, fileAccessControlIdValid, fileAccessJobActive, fileAccessOperationLabels, macOSFileAccessControlIdValid, readFileAccessPending, readFileAccessReconciliationPending, storeFileAccessPending, type FileAccessObservation, type FileAccessPending, type FileAccessReviewRequest, type FileAccessSubmission, type LinuxFileAccessControl, type MacOSFileAccessControl, type WindowsFileAccessControl, type WindowsPairedFileAccessControl, type WindowsSetupFileAccessControl } from "../lib/file-access";
 import { FileAccessReview } from "../components/FileAccessReview";
@@ -136,31 +136,64 @@ export function FileAccessPage() {
   const observation = operation.data?.job.progress.verified_observation as FileAccessObservation | undefined;
   const recoveredObservation = Boolean(observation && operation.data?.job.state !== "completed" && operation.data?.reconciliation?.state === "complete");
   const refresh = () => { void status.refetch(); void list.refetch(); if (owner) void control.refetch(); if (operationId) void operation.refetch(); };
+  const setupCurrent = statusCurrent && (currentWindowsSetup || ready);
+  const taskAccess = setupCurrent && status.data?.available === true;
+  const availabilityTitle = !statusCurrent ? "Checking current task access" : windowsSetup ? currentWindowsSetup ? taskAccess ? "Paired setup is ready for review" : "Windows task access is unavailable" : "Setup needs fresh verification"
+    : taskAccess ? "Prepared for reviewed operations" : "Live setup is not ready";
+  const availabilityDetail = windowsSetup ? currentWindowsSetup ? taskAccess ? "Save the verified setup or open its saved control to review the next allowed operation." : "The protected setup can be saved, but baseline reads and other file-access operations cannot run. Saving setup does not enable task access."
+    : "The last setup observation is no longer current. Existing controls and evidence remain available."
+    : taskAccess ? "The prepared session is current. Review the next allowed operation before it runs; saved controls retain its results." : status.data?.problem?.message ?? "No current verified enrollment is available. Saved work is retained.";
   return <div className="page file-access-page">
-    <PageHeader title="Effective file access" actions={<Button disabled={status.isFetching || control.isFetching || operation.isFetching} onClick={refresh}><RefreshCw />Refresh state</Button>} />
+    <PageHeader title="Effective file access" description="Test identity access, preserve application access, and compare fresh results." actions={<Button disabled={status.isFetching || control.isFetching || operation.isFetching} onClick={refresh}><RefreshCw />Refresh state</Button>} />
     <ObjectiveContext expected="file-access" />
     {localError ? <ErrorState title="Saved operation needs attention" error={localError} /> : null}
-    <section className="file-access-section" aria-label="File-access enrollment">
-      {status.isPending ? <LoadingState label="Checking protected file-access setup" /> : status.error ? <ErrorState error={status.error} /> : null}
-      <div className="file-access-heading"><h2>{windowsSetup ? "Windows protected setup" : macOSStatus ? "macOS protected workspace" : "Prepared session"}</h2><Badge tone={currentWindowsSetup || ready ? "info" : "warning"}>{currentWindowsSetup ? "Setup verified" : ready ? "Enrolled" : "Unavailable"}</Badge></div>
-      {windowsSetup ? <DataList items={[
+    <section className="file-access-readiness" aria-label="File-access enrollment">
+      {status.isPending ? <LoadingState label="Checking protected file-access setup" /> : status.error ? <ErrorState title={windowsSetup ? "Setup needs fresh verification" : "Task access could not be checked"} error={status.error} /> : null}
+      {status.data && !status.error ? <>
+        <div className="file-access-readiness-heading">
+          <span className="file-access-symbol"><FolderLock aria-hidden="true" /></span>
+          <div><p className="file-access-kicker">{windowsSetup ? "Windows protected setup" : macOSStatus ? "macOS protected workspace" : "Prepared session"}</p><h2>{availabilityTitle}</h2><p>{availabilityDetail}</p></div>
+          <Badge tone={!statusCurrent ? "neutral" : taskAccess ? "info" : "warning"}>{!statusCurrent ? "Checking access" : taskAccess ? "Review required" : "Execution unavailable"}</Badge>
+        </div>
+        <dl className="file-access-readiness-facts" aria-label="Setup and task readiness">
+          <div><ShieldCheck aria-hidden="true" /><dt>Protected setup</dt><dd>{!statusCurrent ? "Checking" : setupCurrent ? "Verified" : "Not current"}</dd></div>
+          <div>{taskAccess ? <CheckCircle2 aria-hidden="true" /> : <CircleDashed aria-hidden="true" />}<dt>Task access</dt><dd>{!statusCurrent ? "Checking" : taskAccess ? "Available for review" : "Unavailable"}</dd></div>
+          <div><FileLock2 aria-hidden="true" /><dt>Saved work</dt><dd>{list.isPending ? "Loading" : list.error ? "Check history" : `${list.data?.controls.length ?? 0} ${list.data?.controls.length === 1 ? "control" : "controls"}`}</dd></div>
+        </dl>
+        <div className="file-access-actions">
+          {windowsSetup && currentWindowsSetup ? <Button variant="primary" disabled={setupImport.isPending || blocked || status.isFetching} onClick={() => setupImport.mutate({ enrollment_id: windowsSetup.enrollment_id, enrollment_digest: windowsSetup.enrollment_digest, platform: "windows" })}><FileLock2 />Save verified setup</Button> : null}
+          {macOSEnrollment && macOSReady ? <Button variant="primary" disabled={setupImport.isPending || blocked} onClick={() => setupImport.mutate({ enrollment_id: macOSEnrollment.enrollment_id, enrollment_digest: macOSEnrollment.enrollment_digest, platform: "macos" })}><FileLock2 />Save original workspace setup</Button> : null}
+          {!owner && canCreate ? <Button variant="primary" disabled={!ready || blocked} onClick={() => setReview({ operation: "create", control_owner_id: null })}><FileLock2 />Review generated resource</Button> : null}
+        </div>
+        {!taskAccess ? <>
+          <p className="file-access-retention-note">Rechecking setup does not replace saved controls, replay operations, or discard evidence.</p>
+          <FileAccessDetails title="Task access requirements">
+            <p>{windowsSetup ? "Task access requires the original disposable Windows host, its matching packaged runner, a current protected setup, and the original owner's non-elevated session. Saving a receipt cannot supply missing native task access."
+              : macOSStatus ? "Task access requires the original protected macOS workspace, prepared owner and reader identities, and its live private channel. A saved control cannot recreate that workspace."
+              : "Task access requires an explicitly prepared disposable environment with separate owner and test identities, a generated resource, and a current protected session. This page does not provision that environment."}</p>
+            <p>Do not repeat setup to recover an uncertain operation. Preserve the original environment and inspect its saved operation and cleanup state.</p>
+            <div className="file-access-setup-guides">
+              {!macOSStatus ? <a href="https://github.com/Moneer-S/BlueFire-Nexus/blob/main/docs/WINDOWS_FILE_ACCESS_BASELINE.md" target="_blank" rel="noreferrer">Windows setup guide <ArrowRight aria-hidden="true" /></a> : null}
+              {!windowsSetup ? <a href="https://github.com/Moneer-S/BlueFire-Nexus/blob/main/docs/MACOS_FILE_ACCESS.md" target="_blank" rel="noreferrer">macOS workspace requirements <ArrowRight aria-hidden="true" /></a> : null}
+              {!windowsSetup && !macOSStatus ? <a href="https://github.com/Moneer-S/BlueFire-Nexus/blob/main/docs/PREPARED_LINUX_LAB.md" target="_blank" rel="noreferrer">Prepared Linux lab guide <ArrowRight aria-hidden="true" /></a> : null}
+            </div>
+          </FileAccessDetails>
+        </> : null}
+      </> : null}
+      {windowsSetup ? <FileAccessDetails title="Protected setup details"><DataList items={[
         { label: "Setup reference", value: <code>{windowsSetup.enrollment_id}</code> },
         { label: "Setup digest", value: <code>{windowsSetup.enrollment_digest}</code> },
         { label: "Original expiry", value: new Date(windowsSetup.expires_at_ms).toLocaleString() },
-      ]} /> : null}
-      {status.data?.enrollment ? <DataList items={[
+      ]} /></FileAccessDetails> : null}
+      {status.data?.enrollment ? <FileAccessDetails title="Prepared session details"><DataList items={[
         { label: "Enrollment", value: <code>{status.data.enrollment.enrollment_id}</code> },
         { label: "Product owner UID", value: status.data.enrollment.owner_uid }, { label: "Non-owner probe UID", value: status.data.enrollment.probe_uid },
         { label: "Enrollment expires", value: new Date(status.data.enrollment.expires_at_ms).toLocaleString() },
-      ]} /> : null}
-      {windowsSetup ? <Callout title={currentWindowsSetup ? status.data?.available ? "Paired setup is ready for review" : "Windows task access is unavailable" : "Setup needs fresh verification"}>{currentWindowsSetup ? status.data?.available ? "The original protected setup is verified." : "Baseline reads and other file-access operations are not available." : "The last setup observation is no longer current."}</Callout> : !ready && status.data ? <Callout title="Live setup is not ready">{status.data.problem?.message ?? "No current verified enrollment is available."}</Callout> : null}
-      {windowsSetup && currentWindowsSetup ? <Button disabled={setupImport.isPending || blocked || status.isFetching} onClick={() => setupImport.mutate({ enrollment_id: windowsSetup.enrollment_id, enrollment_digest: windowsSetup.enrollment_digest, platform: "windows" })}><FileLock2 />Save verified setup</Button> : null}
-      {macOSEnrollment && macOSReady ? <Button disabled={setupImport.isPending || blocked} onClick={() => setupImport.mutate({ enrollment_id: macOSEnrollment.enrollment_id, enrollment_digest: macOSEnrollment.enrollment_digest, platform: "macos" })}><FileLock2 />Save original workspace setup</Button> : null}
+      ]} /></FileAccessDetails> : null}
       {setupImport.error ? <ErrorState title="Setup save was not confirmed" error={setupImport.error} /> : null}
-      {!owner && canCreate ? <Button disabled={!ready || blocked} onClick={() => setReview({ operation: "create", control_owner_id: null })}><FileLock2 />Review generated resource</Button> : null}
     </section>
-    <section className="file-access-section" aria-label="Saved file-access controls"><h2>Saved controls</h2>
-      {list.error ? <ErrorState error={list.error} /> : list.isPending ? <LoadingState label="Opening saved controls" /> : <div className="file-access-list">{list.data?.controls.map(item => { const label = item.platform === "windows" ? "Windows protected setup" : item.platform === "macos" ? "macOS workspace control" : "Generated file access"; return <div key={item.control_owner_id}><Link aria-label={`Open ${item.platform ? label : "generated file access"}, ${sentence(item.status)}, revision ${item.revision}, reference ${item.control_owner_id.slice(-8)}`} aria-current={owner === item.control_owner_id ? "page" : undefined} to={fileAccessPath({ control: item.control_owner_id })}><strong>{label}</strong><span>{sentence(item.status)} / revision {item.revision}</span></Link><details><summary>Control reference</summary><code>{item.control_owner_id}</code></details></div>; })}{!list.data?.controls.length ? <p>No saved controls.</p> : null}</div>}
+    <section className="file-access-section file-access-saved" aria-label="Saved file-access controls"><div className="file-access-heading"><div><h2>Saved access work</h2><p>Reopen the original control and its recorded operations.</p></div>{list.data && !list.error ? <span className="file-access-count">{list.data.controls.length} saved</span> : null}</div>
+      {list.error ? <ErrorState error={list.error} /> : list.isPending ? <LoadingState label="Opening saved controls" /> : <div className="file-access-list">{list.data?.controls.map(item => { const label = item.platform === "windows" ? "Windows" : item.platform === "macos" ? "macOS" : "Generated records"; const purpose = savedAccessPurpose(item.status, item.platform); return <div key={item.control_owner_id} className={owner === item.control_owner_id ? "is-selected" : undefined}><Link aria-label={`${purpose}, ${label}, ${sentence(item.status)}, revision ${item.revision}, reference ${item.control_owner_id.slice(-8)}`} aria-current={owner === item.control_owner_id ? "page" : undefined} to={fileAccessPath({ control: item.control_owner_id })}><FileLock2 aria-hidden="true" /><span><strong>{purpose}</strong><small>{label} / revision {item.revision}</small></span><span className="file-access-saved-state">{sentence(item.status)}<ArrowRight aria-hidden="true" /></span></Link><details><summary>Control reference</summary><code>{item.control_owner_id}</code></details></div>; })}{!list.data?.controls.length ? <div className="file-access-empty"><FolderLock aria-hidden="true" /><div><h3>No saved control is available yet</h3><p>Saved setups and retained generated resources appear here.</p></div></div> : null}</div>}
       {owner ? <Link to={fileAccessPath({}, ["control", "operation"])}>Enrollment and resource review</Link> : null}
     </section>
     {pending ? <Callout title="Operation confirmation pending"><p>{macOSStatus || macOSFileAccessControlIdValid(pending.body.review.control_owner_id) ? "The original request is retained for status checks only in this workspace. No operation is replayed." : "The original request is retained. Resubmission uses its unchanged identity, not a new operation. No automatic effect retry is performed."}</p><details><summary>Original submission reference</summary><code>{pending.id}</code></details>
@@ -169,14 +202,16 @@ export function FileAccessPage() {
     {write.error ? <ErrorState title="Operation not confirmed" error={write.error} /> : null}
     {statusCurrent && !macOSStatus && !macOSFileAccessControlIdValid(owner) ? <FileAccessReconciliation operation={operation.error ? undefined : operation.data} pending={reconciliation} disabled={Boolean(pending) || Boolean(localError) || write.isPending} fileAccessPath={fileAccessPath} onPending={setReconciliation} onError={setLocalError} /> : null}
     {macOSStatus && reconciliation ? <Callout title="Saved evidence request is read-only"><p>This request belongs to another prepared platform. It cannot be resubmitted or reconciled in this macOS workspace.</p><Link to={fileAccessPath({ control: reconciliation.control_owner_id, operation: reconciliation.operation_job_id })}>Open original operation</Link></Callout> : null}
-    {operationId ? !compositionJobValid(operationId) ? <ErrorState error={new Error("This operation link is incomplete.")} /> : operation.error ? <ErrorState title="Saved operation unavailable" error={operation.error} retry={() => { void operation.refetch(); }} /> : operation.data ? <section className="file-access-section" aria-label="Saved operation"><h2>{fileAccessOperationLabels[(operation.data.job.progress.submitted_request as FileAccessSubmission).review.operation]}</h2><DataList items={[{ label: "Job state", value: sentence(operation.data.job.state) }, { label: "Operation", value: <code>{operation.data.job.job_id}</code> }]} />{activeOperation ? <Callout title="Operation unsettled">New control operations remain unavailable.</Callout> : null}{operation.data.job.error ? <ErrorState error={operation.data.job.error} /> : null}</section> : <LoadingState label="Opening exact operation" /> : null}
+    {operationId ? !compositionJobValid(operationId) ? <ErrorState error={new Error("This operation link is incomplete.")} /> : operation.error ? <ErrorState title="Saved operation unavailable" error={operation.error} retry={() => { void operation.refetch(); }} /> : operation.data ? <section className="file-access-section" aria-label="Saved operation"><h2>{fileAccessOperationLabels[(operation.data.job.progress.submitted_request as FileAccessSubmission).review.operation]}</h2><DataList items={[{ label: "Job state", value: sentence(operation.data.job.state) }]} /><FileAccessDetails title="Operation reference"><code>{operation.data.job.job_id}</code></FileAccessDetails>{activeOperation ? <Callout title="Operation unsettled">New control operations remain unavailable.</Callout> : null}{operation.data.job.error ? <ErrorState error={operation.data.job.error} /> : null}</section> : <LoadingState label="Opening exact operation" /> : null}
     {operation.data?.reconciliation?.state === "settled_partial" && !operation.error ? <Callout title="Partial operation settled">The original operation did not complete.</Callout> : null}
     {observation && !operation.error ? <section className="file-access-section" aria-label="Verified operation reads"><h2>{recoveredObservation ? observation.operation === "rollback" ? "Recovered restored-access evidence" : "Recovered baseline-read evidence" : observation.operation === "rollback" ? "Verified restored access" : "Verified baseline reads"}</h2><DataList items={[
       { label: recoveredObservation ? "Recovered non-owner read" : "Fresh non-owner read", value: "Allowed" }, { label: recoveredObservation ? "Recovered owner read" : "Fresh owner read", value: "Allowed" },
       { label: "Observed at", value: new Date(observation.observed_at_ms).toLocaleString() }, { label: "Observed mode", value: <code>{observation.mode}</code> },
-      { label: "Resource generation", value: <code>{observation.resource_generation}</code> }, { label: "Verified records", value: observation.record_count },
+      { label: "Verified records", value: observation.record_count },
+    ]} /><FileAccessDetails title="Observation provenance"><DataList items={[
+      { label: "Resource generation", value: <code>{observation.resource_generation}</code> },
       { label: "Observed content", value: <code>{observation.sha256}</code> }, { label: "Source binding", value: <code>{observation.source_digest}</code> },
-    ]} /></section> : null}
+    ]} /></FileAccessDetails></section> : null}
     {macOSStatus && control.data && control.data.platform !== "macos" ? <Callout title="Saved control is read-only">This control belongs to another prepared platform. Its history remains available, but its operations are unavailable in this macOS workspace.</Callout> : null}
     {owner ? !fileAccessControlIdValid(owner) ? <ErrorState error={new Error("This control link is incomplete.")} /> : control.error ? <ErrorState title="Retained control unavailable" error={control.error} retry={() => { void control.refetch(); }} /> : control.data?.platform === "windows" ? <SavedWindowsSetup control={control.data} disabled={blocked || control.isFetching || !statusCurrent || Boolean(macOSStatus)} baselineReviewAvailable={statusCurrent && currentWindowsSetup && status.data?.available === true && status.data.setup?.enrollment_id === control.data.provenance.enrollment_id && status.data.setup?.enrollment_digest === control.data.provenance.enrollment_digest} fileAccessPath={fileAccessPath} onReview={setReview} /> : control.data?.platform === "macos" ? <SavedMacOSControl control={control.data} disabled={blocked || control.isFetching || !macOSReady} fileAccessPath={fileAccessPath} onReview={setReview} /> : control.data ? <RetainedFileAccess control={control.data} disabled={blocked || control.isFetching || !statusCurrent} readOnly={Boolean(macOSStatus) || !statusCurrent} ready={ready} fileAccessPath={fileAccessPath} onReview={setReview} /> : <LoadingState label="Opening retained file-access control" /> : null}
     {displayedReview ? <FileAccessReview key={`${displayedReview.control_owner_id}:${displayedReview.operation}`} request={displayedReview} expectedControlDigest={control.data?.platform === "macos" || control.data?.schema_version === "bluefire.windows-file-access-control.v3" ? control.data.control_digest : undefined} expectedEnrollmentDigest={control.data?.platform === "macos" ? macOSEnrollment?.enrollment_digest : undefined} disabled={blocked || !reviewAvailable} onSubmit={send} onClose={() => setReview(undefined)} /> : null}
@@ -184,6 +219,20 @@ export function FileAccessPage() {
 }
 
 type FileAccessPath = (values: Record<string, string>, remove?: string[]) => string;
+
+function FileAccessDetails({ title, children }: { title: string; children: ReactNode }) {
+  return <details className="file-access-details"><summary>{title}</summary><div>{children}</div></details>;
+}
+
+function savedAccessPurpose(status: string, platform?: string) {
+  if (status === "uncertain" || status === "recovery_required") return "Recover the original access test";
+  if (status === "hardened") return "Retest retained permission changes";
+  if (status === "rolled_back") return "Review restored application records";
+  if (status === "baseline_verified") return "Compare the recorded access baseline";
+  if (status === "setup_verified") return "Establish the Windows access baseline";
+  if (status === "reset") return "Review completed resource cleanup";
+  return platform === "macos" ? "Validate application workspace access" : "Validate generated-record access";
+}
 
 function SavedMacOSControl({ control, disabled, fileAccessPath, onReview }: { control: MacOSFileAccessControl; disabled: boolean; fileAccessPath: FileAccessPath; onReview: (request: FileAccessReviewRequest) => void }) {
   const unsettled = control.usage_state !== "settled" || control.status === "uncertain";
@@ -193,17 +242,21 @@ function SavedMacOSControl({ control, disabled, fileAccessPath, onReview }: { co
     <div className="file-access-heading"><h2>Saved macOS workspace control</h2><Badge tone={unsettled ? "warning" : "neutral"}>{sentence(control.status)}</Badge></div>
     <DataList items={[
       { label: "Revision", value: control.revision }, { label: "Usage settlement", value: sentence(control.usage_state) },
+      { label: "Generated records", value: control.resource.record_count }, { label: "Bytes", value: control.resource.size },
+    ]} />
+    <FileAccessDetails title="Workspace resource and provenance"><DataList items={[
       { label: "Control binding", value: <code>{control.control_digest}</code> },
       { label: "Resource generation", value: <code>{control.resource.resource_generation}</code> },
       { label: "Recorded mode", value: <code>{control.resource.mode}</code> },
-      { label: "Generated records", value: control.resource.record_count }, { label: "Bytes", value: control.resource.size },
       { label: "Content digest", value: <code>{control.resource.sha256}</code> },
-    ]} />
+    ]} /></FileAccessDetails>
     {control.baseline ? <><h3>Recorded baseline</h3><DataList items={[
       { label: "Non-owner read", value: "Allowed" }, { label: "Owner read", value: "Allowed" },
-      { label: "Records", value: control.baseline.record_count }, { label: "Baseline content", value: <code>{control.baseline.sha256}</code> },
+      { label: "Records", value: control.baseline.record_count },
+    ]} /><FileAccessDetails title="Baseline provenance"><DataList items={[
+      { label: "Baseline content", value: <code>{control.baseline.sha256}</code> },
       { label: "Baseline record digest", value: <code>{control.baseline.baseline_digest}</code> },
-    ]} /><p>Baseline reads are historical. The recorded mode does not establish a fresh access outcome.</p></> : <Callout title="Baseline not established">No verified baseline is recorded for this workspace.</Callout>}
+    ]} /></FileAccessDetails><p>Baseline reads are historical. The recorded mode does not establish a fresh access outcome.</p></> : <Callout title="Baseline not established">No verified baseline is recorded for this workspace.</Callout>}
     {unsettled ? <Callout title="Workspace custody is unresolved">This control is read-only. The original operation cannot be replayed or reconciled here.</Callout>
       : !control.allowed_operations.length ? <Callout title="Original workspace unavailable">Saved evidence remains available. New operations require the original live protected workspace.</Callout> : null}
     {!unsettled ? <div className="file-access-actions">{control.allowed_operations.map(operation => <Button key={operation} disabled={disabled || running} onClick={() => onReview({ operation, control_owner_id: control.control_owner_id })}><FileLock2 />Review {fileAccessOperationLabels[operation].toLowerCase()}</Button>)}</div> : null}
@@ -218,19 +271,22 @@ function SavedWindowsSetup({ control, disabled, baselineReviewAvailable, fileAcc
   const setup = control as WindowsSetupFileAccessControl;
   const expired = setup.expires_at_ms <= Date.now();
   return <section className="file-access-section" aria-label="Saved Windows protected setup">
-    <div className="file-access-heading"><h2>Saved Windows setup</h2><Badge tone={expired ? "warning" : "info"}>{expired ? "Historical" : "Setup verified"}</Badge></div>
+    <div className="file-access-heading"><h2>Saved Windows setup</h2><Badge tone="neutral">{expired ? "Historical" : "Setup only"}</Badge></div>
+    <p className="file-access-section-lead">The protected setup is retained. It does not establish baseline access or authorize a task.</p>
     <DataList items={[
-      { label: "Setup reference", value: <code>{setup.provenance.enrollment_id}</code> },
       { label: "Original expiry", value: new Date(setup.expires_at_ms).toLocaleString() },
-      { label: "Setup receipt", value: <code>{setup.provenance.setup_receipt_digest}</code> },
-      { label: "Resource generation", value: <code>{setup.resource.resource_generation}</code> },
-      { label: "Expected setup digest", value: <code>{setup.resource.expected_sha256}</code> },
       { label: "Resource size", value: setup.resource.size_bytes },
       { label: "Declared access", value: "Reader-readable" },
       { label: "Task usage", value: "None" },
       { label: "Account and object cleanup", value: "Required" },
     ]} />
     <Callout title="Baseline not established">No baseline read has been verified. This saved setup does not enable a task or prove resource contents.</Callout>
+    <FileAccessDetails title="Saved setup provenance"><DataList items={[
+      { label: "Setup reference", value: <code>{setup.provenance.enrollment_id}</code> },
+      { label: "Setup receipt", value: <code>{setup.provenance.setup_receipt_digest}</code> },
+      { label: "Resource generation", value: <code>{setup.resource.resource_generation}</code> },
+      { label: "Expected setup digest", value: <code>{setup.resource.expected_sha256}</code> },
+    ]} /></FileAccessDetails>
   </section>;
 }
 
@@ -240,26 +296,32 @@ function SavedWindowsPairControl({ control, disabled, baselineReviewAvailable, f
   return <section className="file-access-section" aria-label="Saved Windows paired control">
     <div className="file-access-heading"><h2>Saved Windows paired control</h2><Badge tone={control.status === "uncertain" || expired ? "warning" : "info"}>{expired ? "Historical" : sentence(control.status)}</Badge></div>
     <DataList items={[
-      { label: "Setup reference", value: <code>{control.provenance.enrollment_id}</code> },
       { label: "Original expiry", value: new Date(control.expires_at_ms).toLocaleString() },
       { label: "Control revision", value: control.revision },
       { label: "Task usage", value: sentence(control.task_usage_state) },
       { label: "Account and object cleanup", value: "Required" },
-      { label: "Resource generation", value: <code>{control.resource.resource_generation}</code> },
-      { label: "Expected resource digest", value: <code>{control.resource.expected_sha256}</code> },
       { label: "Resource size", value: control.resource.size_bytes },
     ]} />
+    <FileAccessDetails title="Saved setup provenance"><DataList items={[
+      { label: "Setup reference", value: <code>{control.provenance.enrollment_id}</code> },
+      { label: "Resource generation", value: <code>{control.resource.resource_generation}</code> },
+      { label: "Expected resource digest", value: <code>{control.resource.expected_sha256}</code> },
+    ]} /></FileAccessDetails>
     {baseline ? <>
       <h3>Recorded paired baseline</h3>
       <DataList items={[
         { label: "Non-owner read", value: "Allowed" }, { label: "Owner read", value: "Allowed" },
         { label: "Observed at", value: new Date(baseline.observed_at).toLocaleString() },
-        { label: "Observed bytes", value: baseline.size_bytes }, { label: "Observed content digest", value: <code>{baseline.sha256}</code> },
-        { label: "Observed resource generation", value: <code>{baseline.resource_generation}</code> },
+        { label: "Observed bytes", value: baseline.size_bytes },
         { label: "Native cleanup", value: sentence(baseline.native_cleanup) }, { label: "Owned-job cleanup", value: sentence(baseline.owned_job_cleanup) },
-        { label: "Independent observation", value: "No" }, { label: "Baseline record digest", value: <code>{baseline.baseline_digest}</code> },
+        { label: "Independent observation", value: "No" },
       ]} />
       <Callout title="Saved baseline evidence">This is the recorded paired baseline for this control, not independent telemetry. Other file-access operations remain unavailable.</Callout>
+      <FileAccessDetails title="Baseline provenance"><DataList items={[
+        { label: "Observed content digest", value: <code>{baseline.sha256}</code> },
+        { label: "Observed resource generation", value: <code>{baseline.resource_generation}</code> },
+        { label: "Baseline record digest", value: <code>{baseline.baseline_digest}</code> },
+      ]} /></FileAccessDetails>
     </> : control.status === "uncertain" ? <Callout title="Original baseline attempt is unresolved">The saved operation and its cleanup remain unresolved. Review only the original operation; a new baseline is unavailable.</Callout>
       : control.operations.length ? <Callout title="Baseline not established">The saved attempt did not establish a baseline. This one-shot control cannot be submitted again.</Callout>
         : <Callout title="Baseline not established">No paired baseline is recorded for this saved setup.</Callout>}
@@ -273,12 +335,16 @@ function RetainedFileAccess({ control, disabled, ready, readOnly, fileAccessPath
   const canCompose = control.status === "hardened" && control.usage_state === "settled" && control.resource?.mode === "0600" && control.baseline && !running;
   return <section className="file-access-section" aria-label="Retained file-access control">
     <div className="file-access-heading"><h2>Retained control</h2><Badge tone={control.status === "uncertain" || control.status === "recovery_required" ? "warning" : "neutral"}>{sentence(control.status)}</Badge></div>
-    <DataList items={[{ label: "Revision", value: control.revision }, { label: "Usage settlement", value: sentence(control.usage_state) }, { label: "Control binding", value: <code>{control.control_digest}</code> }]} />
+    <DataList items={[{ label: "Revision", value: control.revision }, { label: "Usage settlement", value: sentence(control.usage_state) }]} />
     {control.resource ? <DataList items={[
-      { label: "Resource generation", value: <code>{control.resource.resource_generation}</code> }, { label: "Observed mode", value: <code>{control.resource.mode}</code> },
-      { label: "Generated records", value: control.resource.record_count }, { label: "Bytes", value: control.resource.size }, { label: "Content digest", value: <code>{control.resource.sha256}</code> },
+      { label: "Observed mode", value: <code>{control.resource.mode}</code> },
+      { label: "Generated records", value: control.resource.record_count }, { label: "Bytes", value: control.resource.size },
     ]} /> : <p>{control.status === "recovery_required" ? "No completed generated resource is reported." : "No current retained resource is reported."}</p>}
-    {control.baseline ? <><h3>Verified baseline</h3><DataList items={[{ label: "Non-owner read", value: "Allowed" }, { label: "Owner read", value: "Allowed" }, { label: "Records", value: control.baseline.record_count }, { label: "Baseline content", value: <code>{control.baseline.sha256}</code> }]} /><p>Baseline reads are historical. Mode inspection alone does not establish a fresh access outcome.</p></> : <Callout title="Baseline not established">Fresh non-owner and owner reads have not both been verified.</Callout>}
+    <FileAccessDetails title="Retained resource provenance"><DataList items={[
+      { label: "Control binding", value: <code>{control.control_digest}</code> },
+      ...(control.resource ? [{ label: "Resource generation", value: <code>{control.resource.resource_generation}</code> }, { label: "Content digest", value: <code>{control.resource.sha256}</code> }] : []),
+    ]} /></FileAccessDetails>
+    {control.baseline ? <><h3>Verified baseline</h3><DataList items={[{ label: "Non-owner read", value: "Allowed" }, { label: "Owner read", value: "Allowed" }, { label: "Records", value: control.baseline.record_count }]} /><p>Baseline reads are historical. Mode inspection alone does not establish a fresh access outcome.</p><FileAccessDetails title="Baseline provenance"><DataList items={[{ label: "Baseline content", value: <code>{control.baseline.sha256}</code> }]} /></FileAccessDetails></> : <Callout title="Baseline not established">Fresh non-owner and owner reads have not both been verified.</Callout>}
     {!readOnly && (control.status === "uncertain" || control.usage_state !== "settled") ? <Callout title="Unsettled control or usage">Rollback and reset require independently reconciled resource and cleanup evidence.</Callout> : null}
     {!readOnly && control.status === "recovery_required" ? <Callout title="Reset required">Only a reviewed reset is available for this retained control.</Callout> : null}
     {!readOnly ? <div className="file-access-actions">{control.allowed_operations.map(operation => <Button key={operation} disabled={disabled || running || ((operation === "baseline" || operation === "harden") && !ready)} onClick={() => onReview({ operation, control_owner_id: control.control_owner_id })}><FileLock2 />Review {fileAccessOperationLabels[operation].toLowerCase()}</Button>)}

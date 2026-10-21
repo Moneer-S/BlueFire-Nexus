@@ -5,7 +5,7 @@ import {
   Cloud, FileLock2, Home, ListChecks, Menu, MoreHorizontal, Network, PackageCheck, PlaySquare, Puzzle, ScrollText, Settings, SlidersHorizontal, X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { api, DEMO_MODE } from "../lib/api";
 import { demoScenario } from "../lib/demo";
 import { useProduct } from "../state/ProductContext";
@@ -13,10 +13,12 @@ import { useServiceConnection } from "../state/useServiceConnection";
 import { AssistanceProvider, useAssistancePanel } from "../state/AssistanceContext";
 import { ExperimentAssistant } from "./ExperimentAssistant";
 import { LabSessionNotice } from "./LabSessionNotice";
+import { WorkspaceSearch } from "./WorkspaceSearch";
 import { Badge, IconButton } from "./Primitives";
 import "./AppShell.css";
 
 const workItems = [
+  { to: "/", label: "Overview", icon: Home },
   { to: "/builder", label: "Build", icon: Network },
   { to: "/runs", label: "Runs", icon: PlaySquare },
   { to: "/detection-lab", label: "Detection Lab", icon: FlaskConical },
@@ -31,7 +33,6 @@ const settingsItems = [
   { to: "/action-packages", label: "Action Packages", icon: PackageCheck },
 ];
 const moreItems = [
-  { to: "/", label: "Overview", icon: Home },
   { to: "/getting-started", label: "Getting Started", icon: ListChecks },
   { to: "/s3-access", label: "S3 access", icon: Cloud },
   { to: "/file-access", label: "File access", icon: FileLock2 },
@@ -136,12 +137,12 @@ function WorkspaceShell() {
     <div className={`app-shell workbench-shell ${collapsed ? "nav-collapsed" : ""}`}>
       <header className="mobile-header" inert={mobileOpen}>
         <button ref={menuButtonRef} aria-label="Open navigation" aria-expanded={mobileOpen} aria-controls="workspace-navigation" onClick={() => setMobileOpen(true)}><Menu /></button>
-        <a className="brand" href="#/" aria-label="BlueFire Nexus home"><FlameMark/><span><strong>BlueFire Nexus</strong><small>Research workspace</small></span></a>
+        <Link className="brand" to="/" aria-label="BlueFire Nexus home"><FlameMark/><span><strong>BlueFire Nexus</strong></span></Link>
         <span role="img" className={`service-light ${connection.light}`} aria-label={connection.title} title={connection.detail} />
       </header>
       <div className={`mobile-scrim ${mobileOpen ? "visible" : ""}`} onClick={() => setMobileOpen(false)} aria-hidden="true" />
       <aside ref={sidebarRef} id="workspace-navigation" className={`sidebar ${mobileOpen ? "mobile-open" : ""}`} role={mobileOpen ? "dialog" : undefined} aria-modal={mobileOpen || undefined} aria-label="Workspace navigation">
-        <div className="sidebar-brand-row"><a className="brand" href="#/" aria-label="BlueFire Nexus home" onClick={() => setMobileOpen(false)}><FlameMark/><span><strong>BlueFire Nexus</strong></span></a><IconButton label={collapsed ? "Expand navigation" : "Collapse navigation"} className="sidebar-collapse" aria-expanded={!collapsed} aria-controls="workspace-navigation" onClick={() => setCollapsed((value) => !value)}>{collapsed ? <PanelLeftOpen/> : <PanelLeftClose/>}</IconButton><button className="mobile-close" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X /></button></div>
+        <div className="sidebar-brand-row"><Link className="brand" to="/" aria-label="BlueFire Nexus home" onClick={() => setMobileOpen(false)}><FlameMark/><span><strong>BlueFire Nexus</strong></span></Link><IconButton label={collapsed ? "Expand navigation" : "Collapse navigation"} className="sidebar-collapse" aria-expanded={!collapsed} aria-controls="workspace-navigation" onClick={() => setCollapsed((value) => !value)}>{collapsed ? <PanelLeftOpen/> : <PanelLeftClose/>}</IconButton><button className="mobile-close" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X /></button></div>
         <nav aria-label="Primary navigation">
           <div className="nav-group work-nav">{workItems.map(renderLink)}</div>
           <button className="nav-disclosure" aria-label={settingsOpen ? "Hide settings tools" : "Show settings tools"} aria-expanded={settingsOpen} aria-controls="settings-navigation" onClick={() => setSettingsOpen((value) => !value)}><SlidersHorizontal aria-hidden="true"/><span>Settings tools</span><ChevronDown aria-hidden="true"/></button>
@@ -154,7 +155,7 @@ function WorkspaceShell() {
         </div>
       </aside>
       <div className="workspace-shell" inert={mobileOpen}>
-        <header className="workspace-topbar"><div><strong>{current}</strong></div><div className="topbar-actions"><ExperimentAssistant providers={catalog.data?.ai.providers ?? []} /><span title={connection.detail}><Badge tone={connection.tone} dot>{connection.label}</Badge></span></div></header>
+        <header className="workspace-topbar"><WorkspaceSearch destinations={allItems} scenarios={scenarios.data?.scenarios ?? []} current={current} /><div className="topbar-actions"><span title={connection.detail}><Badge tone={connection.tone} dot>{connection.label}</Badge></span><ExperimentAssistant providers={catalog.data?.ai.providers ?? []} /></div></header>
         <div className={`workspace-content ${assistantOpen ? "assistant-open" : ""}`}><main id="main-content" tabIndex={-1}><LabSessionNotice providers={catalog.data?.ai.providers} /><Outlet /></main><div id="assistant-dock" /></div>
       </div>
     </div>
