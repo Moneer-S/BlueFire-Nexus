@@ -1,10 +1,10 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { NodeProps, ReactFlowProps } from "@xyflow/react";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../src/lib/api";
 import { demoCatalog, demoScenario } from "../src/lib/demo";
 import * as graphView from "../src/lib/graph-view";
@@ -14,6 +14,7 @@ import type { Scenario, ScenarioEdge } from "../src/types";
 
 const nodeRenders = vi.hoisted(() => [] as string[]);
 const renderedGraphs = vi.hoisted(() => [] as Pick<ReactFlowProps, "nodes" | "edges">[]);
+beforeEach(() => { nodeRenders.length = 0; renderedGraphs.length = 0; });
 vi.mock("@xyflow/react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@xyflow/react")>();
   const measuredTypes = new WeakMap<object, ReactFlowProps["nodeTypes"]>();
@@ -118,33 +119,42 @@ describe("Builder metadata and graph updates", () => {
       const layout = vi.spyOn(graphView, "initialGraphLayout");
       const { unmount } = renderBuilder(scenario);
       try {
-        await screen.findByRole("textbox", { name: "Experiment name" });
+        const name = await screen.findByRole("textbox", { name: "Experiment name" });
+        const viewControls = within(screen.getByLabelText("Experiment view"));
         await waitFor(() => expect(renderedGraphs.at(-1)?.nodes).toHaveLength(128));
 
         expect(layout).toHaveBeenCalledTimes(mode === "complete" ? 0 : 1);
         const nodes = renderedGraphs.at(-1)!.nodes!;
+        const positions = new Map(nodes.map(node => [node.id, node.position]));
         for (const node of nodes) {
           const saved = scenario.layout?.[node.id];
           if (saved) expect(node.position).toEqual(saved);
           expect(Number.isFinite(node.position.x) && Number.isFinite(node.position.y)).toBe(true);
         }
         if (mode !== "complete") {
-          for (const [index, node] of nodes.entries()) for (const other of nodes.slice(index + 1)) {
+          // Check every pair, but report offending identities in one assertion
+          // instead of constructing thousands of independent matcher contexts.
+          const collisions: [string, string][] = [];
+          for (let index = 0; index < nodes.length; index += 1) for (let otherIndex = index + 1; otherIndex < nodes.length; otherIndex += 1) {
+            const node = nodes[index]!, other = nodes[otherIndex]!;
             const a = node.position, b = other.position;
-            expect(a.x + graphView.GRAPH_NODE_WIDTH <= b.x || b.x + graphView.GRAPH_NODE_WIDTH <= a.x || a.y + graphView.GRAPH_NODE_HEIGHT <= b.y || b.y + graphView.GRAPH_NODE_HEIGHT <= a.y).toBe(true);
+            if (!(a.x + graphView.GRAPH_NODE_WIDTH <= b.x || b.x + graphView.GRAPH_NODE_WIDTH <= a.x || a.y + graphView.GRAPH_NODE_HEIGHT <= b.y || b.y + graphView.GRAPH_NODE_HEIGHT <= a.y)) collisions.push([node.id, other.id]);
           }
-          for (const edge of scenario.edges) if (!scenario.layout?.[edge.from_step] && !scenario.layout?.[edge.to_step]) {
-            expect(nodes.find(node => node.id === edge.to_step)!.position.y).toBeGreaterThan(nodes.find(node => node.id === edge.from_step)!.position.y);
-          }
+          expect(collisions).toEqual([]);
+          const backwardEdges = scenario.edges.filter(edge => !scenario.layout?.[edge.from_step] && !scenario.layout?.[edge.to_step]
+            && positions.get(edge.to_step)!.y <= positions.get(edge.from_step)!.y);
+          expect(backwardEdges).toEqual([]);
         }
         const originalCoordinates = nodes.map(({ id, position }) => [id, { ...position }] as const);
         expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).layout).toEqual(originalLayout);
 
-        fireEvent.change(screen.getByRole("textbox", { name: "Experiment name" }), {
+        fireEvent.change(name, {
           target: { value: `${scenario.title} edited` },
         });
-        fireEvent.click(screen.getByRole("button", { name: "Steps" }));
-        fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
+        fireEvent.click(viewControls.getByRole("button", { name: "Steps" }));
+        expect(viewControls.getByRole("button", { name: "Steps" })).toHaveAttribute("aria-pressed", "true");
+        fireEvent.click(viewControls.getByRole("button", { name: "Canvas" }));
+        expect(viewControls.getByRole("button", { name: "Canvas" })).toHaveAttribute("aria-pressed", "true");
         expect(layout).toHaveBeenCalledTimes(mode === "complete" ? 0 : 1);
         expect(renderedGraphs.at(-1)!.nodes!.map(({ id, position }) => [id, { ...position }])).toEqual(originalCoordinates);
         expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).layout).toEqual(originalLayout);

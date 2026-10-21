@@ -118,6 +118,21 @@ it("names the live selected evidence without making model requests while Off", a
   expect(submit).not.toHaveBeenCalled();
 });
 
+it("opens and restores focus when the host cannot report a media query result", async () => {
+  vi.spyOn(window, "matchMedia").mockReturnValue(undefined as unknown as MediaQueryList);
+  vi.spyOn(api, "runDetail").mockResolvedValue(run(selection.runId));
+  vi.spyOn(api, "assistanceContext").mockRejectedValue(new Error("Context temporarily unavailable"));
+  const submit = vi.spyOn(api, "submitAssistance");
+  mountAssistant();
+  const user = userEvent.setup();
+  const trigger = screen.getByRole("button", { name: "Assistant" });
+  await user.click(trigger);
+  await waitFor(() => expect(document.getElementById("experiment-assistant")).toHaveFocus());
+  await user.click(screen.getByRole("button", { name: "Close assistant" }));
+  expect(trigger).toHaveFocus();
+  expect(submit).not.toHaveBeenCalled();
+});
+
 it("keeps contextual connection and usage recovery reachable when a configured model is unavailable", async () => {
   vi.spyOn(api, "runDetail").mockResolvedValue(run(selection.runId, "Selected observation run"));
   vi.spyOn(api, "assistanceContext").mockRejectedValue(new Error("Context temporarily unavailable"));

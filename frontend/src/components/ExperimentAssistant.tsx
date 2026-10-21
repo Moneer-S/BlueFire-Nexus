@@ -61,7 +61,7 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
     const frame = window.requestAnimationFrame(() => {
       const workspace = document.getElementById("experiment-assistant");
       workspace?.focus({ preventScroll: true });
-      if (window.matchMedia?.("(max-width: 1050px)").matches) workspace?.scrollIntoView?.({ block: "start", behavior: "auto" });
+      if (window.matchMedia?.("(max-width: 1050px)")?.matches) workspace?.scrollIntoView?.({ block: "start", behavior: "auto" });
     });
     return () => window.cancelAnimationFrame(frame);
   }, [open]);
