@@ -670,7 +670,7 @@ def _receiver(value: Mapping[str, Any]) -> Mapping[str, Any]:
 def _status_document(value: Any, windows_runner: Mapping[str, Any]) -> Mapping[str, Any]:
     status = _exact(
         value,
-        frozenset(
+        set(
             "schema_version state runner_id profile_id loopback_only enrollment "
             "process runner health".split()
         ),
@@ -678,7 +678,7 @@ def _status_document(value: Any, windows_runner: Mapping[str, Any]) -> Mapping[s
     )
     runner = _exact(
         status.get("runner"),
-        frozenset(
+        set(
             "id source product_version runner_version platform architecture binary_digest "
             "managed_binary managed_sandbox inventory_schema action_sdk_version receipt_protocol".split()
         ),
@@ -689,8 +689,13 @@ def _status_document(value: Any, windows_runner: Mapping[str, Any]) -> Mapping[s
         {"transport", "tls", "runner_binary_digest", "inventory_digest", "accepting_execute"},
         "persisted readiness health",
     )
+    product_version = runner.get("product_version")
+    if not isinstance(product_version, str):
+        raise CrossPlatformGateValidationError(
+            "persisted runner readiness product version is invalid"
+        )
     try:
-        expected_runner_version = native_runner_version(runner.get("product_version"))
+        expected_runner_version = native_runner_version(product_version)
     except ValueError as exc:
         raise CrossPlatformGateValidationError(
             "persisted runner readiness product version is invalid"

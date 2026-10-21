@@ -554,11 +554,16 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   const drop = (event: DragEvent<HTMLDivElement>) => { event.preventDefault(); const id = event.dataTransfer.getData("application/x-bluefire-behavior"); const behavior = behaviorMap.get(id); if (!behavior) return; addBehavior(behavior, flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })); };
   const fitGraph = () => { fitNodes(shownSteps.map(step => step.id), 250); };
   const showSection = (value: string) => {
+    const targetSection = value === "all" ? undefined : sections[Number(value)];
     setFocusedSection(value === "all" ? null : Number(value));
-    const first = value === "all" ? undefined : sections[Number(value)]?.steps[0];
-    if (first) { setSelectedId(first.id); setNodes((items) => items.map((node) => ({ ...node, selected: node.id === first.id }))); }
+    const selectionIsVisible = targetSection?.steps.some(step => step.id === selectedId) ?? value === "all";
+    const nextSelection = selectionIsVisible ? undefined : targetSection?.steps[0];
+    if (nextSelection) {
+      setSelectedId(nextSelection.id);
+      setNodes((items) => items.map((node) => ({ ...node, selected: node.id === nextSelection.id })));
+    }
     setInspectorOpen(false); setPaletteOpen(false);
-    window.requestAnimationFrame(() => { fitNodes(first ? sections[Number(value)]?.steps.map(step => step.id) ?? [] : visibleGraph.ordered.map(step => step.id), 180); });
+    window.requestAnimationFrame(() => { fitNodes(targetSection?.steps.map(step => step.id) ?? visibleGraph.ordered.map(step => step.id), 180); });
   };
   const fitSelection = () => { if (selectedId) frameStep(selectedId, "readable", 180); };
   const autoLayoutLabel = focusedGroup ? "Arrange visible group" : "Auto-layout";

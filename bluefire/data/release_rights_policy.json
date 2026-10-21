@@ -388,6 +388,7 @@
         "bluefire/data/release_rights_policy.json",
         "bluefire/data/python_runtime_backports.json",
         "bluefire/data/research_sources.yaml",
+        "bluefire/data/receiver_defense_validation.yaml",
         "bluefire/data/restricted_persistence_canary.yaml",
         "bluefire/data/sandbox_research_chain.yaml",
         "bluefire/data/windows_endpoint_validation.yaml",

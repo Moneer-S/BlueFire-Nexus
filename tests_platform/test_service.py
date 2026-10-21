@@ -2040,6 +2040,7 @@ def test_service_enumerates_all_checkout_and_packaged_scenarios_in_stable_order(
         "scenario.endpoint.lab-selective-collection.v1",
         "scenario.linux-container.validation.v1",
         "scenario.operator.representative-validation.v1",
+        "scenario.receiver-defense.redaction-validation.v1",
         "scenario.restricted.persistence-canary.v1",
         "scenario.sandbox.research.chain.v1",
         "scenario.windows.endpoint.validation.v1",

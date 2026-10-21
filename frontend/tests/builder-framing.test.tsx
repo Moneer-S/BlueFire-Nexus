@@ -161,6 +161,26 @@ describe("Builder viewport controls", () => {
 
     fireEvent.change(group, { target: { value: "all" } });
     await waitFor(() => expect(screen.getAllByRole("button", { name: /^Select focus_step_/ })).toHaveLength(9));
+    fireEvent.click(screen.getByRole("button", { name: "Steps" }));
+    const selectedOrder = () => screen.getByRole("list", { name: "Experiment steps" })
+      .querySelector('button[aria-pressed="true"] .step-number')?.textContent;
+    expect(selectedOrder()).toBe("4");
+    const stepEight = [...screen.getByRole("list", { name: "Experiment steps" }).querySelectorAll("button")]
+      .find(button => button.querySelector(".step-number")?.textContent === "8");
+    expect(stepEight).toBeDefined();
+    fireEvent.click(stepEight!);
+    fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Step group" }), { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Steps" }));
+    expect(selectedOrder()).toBe("8");
+    fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Step group" }), { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: "Steps" }));
+    expect(selectedOrder()).toBe("1");
+    fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Step group" }), { target: { value: "all" } });
+    fireEvent.click(screen.getByRole("button", { name: "Steps" }));
+    expect(selectedOrder()).toBe("1");
     expect(state.props.edges?.filter(edge => edge.data?.kind === "route").map(edge => edge.id)).toEqual(scenario.edges.map((edge, index) => `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`));
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).edges).toEqual(scenario.edges);
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).steps).toEqual(scenario.steps);

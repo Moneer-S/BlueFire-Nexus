@@ -167,12 +167,21 @@ def test_wheel_build_hook_requires_the_exact_pep440_to_semver_pair(
     manifest["runner"]["version"] = "3.0.0-rc2"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    assert namespace["_verified_platform_tag"]("3.0.0rc2") == expected_tag
+    assert (
+        namespace["_verified_platform_tag"](
+            "3.0.0rc2",
+            explicit_platform_tag=expected_tag,
+        )
+        == expected_tag
+    )
 
     manifest["runner"]["version"] = "3.0.0rc2"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(RuntimeError, match="incompatible with this wheel"):
-        namespace["_verified_platform_tag"]("3.0.0rc2")
+        namespace["_verified_platform_tag"](
+            "3.0.0rc2",
+            explicit_platform_tag=expected_tag,
+        )
 
 
 def test_wheel_command_defers_target_verification_until_artifact_build(

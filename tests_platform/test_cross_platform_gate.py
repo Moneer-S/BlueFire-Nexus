@@ -108,6 +108,10 @@ def test_readiness_joins_product_prerelease_to_native_semver() -> None:
     status["runner"]["product_version"] = "3.0.0-rc2"
     with pytest.raises(CrossPlatformGateValidationError, match="product version is invalid"):
         validation_module._status_document(status, windows_runner)
+    for product_version in (None, 3):
+        status["runner"]["product_version"] = product_version
+        with pytest.raises(CrossPlatformGateValidationError, match="product version is invalid"):
+            validation_module._status_document(status, windows_runner)
 
 
 def test_windows_wheel_filename_accepts_only_normalized_pep440_rc() -> None:
