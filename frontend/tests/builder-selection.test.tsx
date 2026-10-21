@@ -164,18 +164,18 @@ describe("Builder selection and navigation", () => {
     await builderOptions(user, false);
     await user.click(screen.getByRole("button", { name: "Steps" }));
     const list = within(screen.getByRole("list", { name: "Experiment steps" }));
-    expect(list.getByRole("button", { pressed: true })).toHaveAccessibleName(/^5 /);
+    expect(list.getByRole("button", { pressed: true })).toHaveAccessibleName(/^4 /);
     await user.click(list.getAllByRole("button").at(-1)!);
     await user.click(screen.getByRole("button", { name: "Canvas" }));
-    expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue("4");
+    expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue("5");
     await builderOptions(user);
     expect(screen.getByRole("button", { name: "Copy selected node" })).toBeEnabled();
   }, 15000);
 
   it.each([
-    { count: 17, section: "2", deleted: "step_9", replacement: "step_10", remainingSection: "2" },
-    { count: 17, section: "4", deleted: "step_17", replacement: "step_13", remainingSection: "3" },
-    { count: 13, section: "3", deleted: "step_13", replacement: "step_9", remainingSection: "2" },
+    { count: 17, section: "2", deleted: "step_9", replacement: "step_7", remainingSection: "2" },
+    { count: 17, section: "5", deleted: "step_17", replacement: "step_16", remainingSection: "5" },
+    { count: 13, section: "4", deleted: "step_13", replacement: "step_10", remainingSection: "3" },
   ])("keeps a visible selection after deleting $deleted from section $section", async ({ count, section, deleted, replacement, remainingSection }) => {
     const scenario: typeof demoScenario = { ...structuredClone(demoScenario), start: "step_1", steps: Array.from({ length: count }, (_, index) => ({ ...structuredClone(demoScenario.steps[0]!), id: `step_${index + 1}` })), edges: [], layout: undefined };
     scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success", to_step: step.id }));

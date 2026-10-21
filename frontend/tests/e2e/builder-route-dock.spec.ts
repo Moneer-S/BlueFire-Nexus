@@ -35,7 +35,7 @@ for (const width of [1100, 640]) {
     await page.goto("./#/builder");
     await page.getByRole("button", { name: "Canvas", exact: true }).click();
     const canvas = page.getByLabel("Scenario graph canvas");
-    await expect(page.locator(".react-flow__node:visible")).toHaveCount(4);
+    await expect(page.locator(".react-flow__node:visible")).toHaveCount(3);
     await page.getByRole("combobox", { name: "Step group" }).selectOption("all");
     await expect(page.locator(".react-flow__node:visible")).toHaveCount(6);
     await frame(page);

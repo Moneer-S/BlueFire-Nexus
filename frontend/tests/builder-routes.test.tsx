@@ -34,16 +34,16 @@ function measurements() {
     return observer;
   });
   Object.defineProperty(SVGElement.prototype, "getBBox", { configurable: true, value: () => ({ x: 0, y: 0, width: 24, height: 12 }) });
-  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) { return this.classList.contains("react-flow__handle") ? 10 : this.classList.contains("react-flow__node") ? 252 : 1000; });
-  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) { return this.classList.contains("react-flow__handle") ? 10 : this.classList.contains("react-flow__node") ? 160 : 600; });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) { return this.classList.contains("react-flow__handle") ? 10 : this.classList.contains("react-flow__node") ? 220 : 1000; });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) { return this.classList.contains("react-flow__handle") ? 10 : this.classList.contains("react-flow__node") ? 150 : 600; });
   vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
     const element = this as HTMLElement;
     const handle = element.classList.contains("react-flow__handle"), node = element.classList.contains("react-flow__node");
     const viewport = element.closest(".react-flow__viewport");
     const scale = viewport && (handle || node) ? new window.DOMMatrixReadOnly(getComputedStyle(viewport).transform).m22 : 1;
-    const x = handle ? (element.style.left.endsWith("%") ? Number.parseFloat(element.style.left) * 2.52 : 126) * scale : 0;
-    const y = handle && element.getAttribute("data-handlepos") === "bottom" ? 160 * scale : 0;
-    const width = (handle ? 10 : node ? 252 : 1000) * scale, height = (handle ? 10 : node ? 160 : 600) * scale;
+    const x = handle ? (element.style.left.endsWith("%") ? Number.parseFloat(element.style.left) * 2.2 : element.getAttribute("data-handlepos") === "right" ? 220 : 0) * scale : 0;
+    const y = handle ? (element.getAttribute("data-handlepos") === "bottom" ? 150 : element.getAttribute("data-handlepos") === "right" || element.getAttribute("data-handlepos") === "left" ? Number.parseFloat(element.style.top) * 1.5 || 75 : 0) * scale : 0;
+    const width = (handle ? 10 : node ? 220 : 1000) * scale, height = (handle ? 10 : node ? 150 : 600) * scale;
     return { x, y, width, height, left: x, top: y, right: x + width, bottom: y + height, toJSON: () => ({}) };
   });
 }

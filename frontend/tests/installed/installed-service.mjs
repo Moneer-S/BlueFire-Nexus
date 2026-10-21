@@ -265,6 +265,19 @@ try {
   assert.deepEqual(updated.document.edges, source.edges);
   report.checks.push("saved_graph_rename_layout_undo_redo_without_semantic_change");
 
+  stage = "graph-default-group";
+  assert.equal(await page.getByRole("combobox", { name: "Step group", exact: true }).inputValue(), "0");
+  for (const viewport of [{ width: 1366, height: 768 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
+    await page.setViewportSize(viewport);
+    await page.getByRole("button", { name: "Fit visible graph", exact: true }).click();
+    await waitForGraphFrame(false);
+    const visibleNodes = await page.locator(".react-flow__node:visible").count();
+    assert.equal(visibleNodes, 3);
+    await capture(`graph-default-group-${viewport.width}x${viewport.height}`);
+  }
+  report.checks.push("readable_default_group_desktop_framing");
+  await page.setViewportSize({ width: 1440, height: 900 });
+
   stage = "graph-interaction";
   await page.getByRole("button", { name: "Add step", exact: true }).click();
   await page.getByRole("textbox", { name: "Search palette", exact: true }).fill("collect");
@@ -433,6 +446,25 @@ try {
 } catch {
   report.status = "failed_or_incomplete";
   report.errors.push({ stage, kind: "journey-failed" });
+  if (connected && stage.startsWith("graph-")) {
+    report.graph_failure_geometry = await page.evaluate(() => {
+      const geometry = element => {
+        if (!element) return null;
+        const box = element.getBoundingClientRect(), style = getComputedStyle(element);
+        return { x: box.x, y: box.y, width: box.width, height: box.height,
+          client_width: element.clientWidth, client_height: element.clientHeight,
+          min_height: style.minHeight, flex_basis: style.flexBasis, transform: style.transform };
+      };
+      return {
+        canvas: geometry(document.querySelector(".graph-canvas")),
+        stage: geometry(document.querySelector(".graph-stage")),
+        viewport: geometry(document.querySelector(".react-flow__viewport")),
+        nodes: [...document.querySelectorAll(".react-flow__node")].slice(0, 128)
+          .filter(node => getComputedStyle(node).display !== "none" && getComputedStyle(node).visibility !== "hidden")
+          .map(geometry),
+      };
+    }).catch(() => null);
+  }
   if (connected) await capture("failure-state").catch(() => {});
   process.exitCode = 1;
 } finally {

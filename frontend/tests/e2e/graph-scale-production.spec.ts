@@ -221,8 +221,8 @@ async function qualifyViewport(page: Page, browser: Browser, viewport: { width: 
 
   await page.getByLabel("Step group").selectOption("0");
   await page.getByRole("button", { name: "Focus on success path", exact: true }).click();
-  await expect(page.locator(".react-flow__node:visible")).toHaveCount(4);
-  await expect(page.locator(".react-flow__edge:visible")).toHaveCount(3);
+  await expect(page.locator(".react-flow__node:visible")).toHaveCount(3);
+  await expect(page.locator(".react-flow__edge:visible")).toHaveCount(2);
   await stableFrames(page);
   const focusedGeometry = await capture(page, `graph-scale-focused-${viewport.width}`);
   const expectedDraft = scenarioJson;
@@ -257,8 +257,8 @@ async function qualifyViewport(page: Page, browser: Browser, viewport: { width: 
   await beginMeasure(page, "warmup-full-to-focus-start");
   await page.getByRole("button", { name: "Focus on success path", exact: true }).click();
   await page.getByLabel("Step group").selectOption("0");
-  await expect(page.locator(".react-flow__node:visible")).toHaveCount(4);
-  await expect(page.locator(".react-flow__edge:visible")).toHaveCount(3);
+  await expect(page.locator(".react-flow__node:visible")).toHaveCount(3);
+  await expect(page.locator(".react-flow__edge:visible")).toHaveCount(2);
   measures.full_graph_to_focused_section.push(await finishMeasure(page, "warmup-full-to-focus-start", "warmup-full-to-focus-end"));
 
   await page.getByRole("button", { name: "Show all branches", exact: true }).click();
@@ -274,8 +274,8 @@ async function qualifyViewport(page: Page, browser: Browser, viewport: { width: 
     await beginMeasure(page, `full-to-focus-${iteration}-start`);
     await page.getByRole("button", { name: "Focus on success path", exact: true }).click();
     await page.getByLabel("Step group").selectOption("0");
-    await expect(page.locator(".react-flow__node:visible")).toHaveCount(4);
-    await expect(page.locator(".react-flow__edge:visible")).toHaveCount(3);
+    await expect(page.locator(".react-flow__node:visible")).toHaveCount(3);
+    await expect(page.locator(".react-flow__edge:visible")).toHaveCount(2);
     measures.full_graph_to_focused_section.push(await finishMeasure(page, `full-to-focus-${iteration}-start`, `full-to-focus-${iteration}-end`));
     expect(await readDraft()).toBe(expectedDraft);
 

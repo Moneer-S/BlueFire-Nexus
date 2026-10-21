@@ -22,25 +22,25 @@ function expectClear(options: RouteGeometry) {
 }
 
 describe("topology layout", () => {
-  it("keeps a long chain in one top-to-bottom flow instead of wrapping every fourth card", () => {
+  it("keeps a long chain in one left-to-right flow instead of wrapping every third card", () => {
     const graph = chain(15), serialized = JSON.stringify(graph), positions = initialGraphLayout(graph);
-    expect(new Set(Object.values(positions).map(point => point.x)).size).toBe(1);
-    for (let index = 1; index < 15; index += 1) expect(positions[`step-${index}`]!.y).toBeGreaterThan(positions[`step-${index - 1}`]!.y + GRAPH_NODE_HEIGHT);
+    expect(new Set(Object.values(positions).map(point => point.y)).size).toBe(1);
+    for (let index = 1; index < 15; index += 1) expect(positions[`step-${index}`]!.x).toBeGreaterThan(positions[`step-${index - 1}`]!.x + GRAPH_NODE_WIDTH);
     expect(JSON.stringify(graph)).toBe(serialized);
   });
 
-  it("places alternatives beside the continuation and joins below every predecessor", () => {
+  it("places alternatives below the continuation and joins after every predecessor", () => {
     const graph: ScenarioGraph = { start: "prepare", steps: ["prepare", "primary", "fallback", "join"].map(step), edges: [
       { from_step: "prepare", to_step: "primary", outcome: "success" }, { from_step: "prepare", to_step: "fallback", outcome: "blocked" },
       { from_step: "primary", to_step: "join", outcome: "success" }, { from_step: "fallback", to_step: "join", outcome: "success" },
     ] };
     const positions = initialGraphLayout(graph);
-    expect(positions.primary!.y).toBe(positions.fallback!.y);
-    expect(Math.abs(positions.primary!.x - positions.fallback!.x)).toBeGreaterThan(GRAPH_NODE_WIDTH);
-    expect(positions.join!.y).toBeGreaterThan(positions.primary!.y + GRAPH_NODE_HEIGHT);
+    expect(positions.primary!.x).toBe(positions.fallback!.x);
+    expect(Math.abs(positions.primary!.y - positions.fallback!.y)).toBeGreaterThan(GRAPH_NODE_HEIGHT);
+    expect(positions.join!.x).toBeGreaterThan(positions.primary!.x + GRAPH_NODE_WIDTH);
     for (const edge of graph.edges) {
       const source = positions[edge.from_step]!, target = positions[edge.to_step]!;
-      expectClear({ source: { x: source.x + 45, y: source.y + GRAPH_NODE_HEIGHT }, target: { x: target.x + 126, y: target.y }, sourceId: edge.from_step, targetId: edge.to_step, obstacles: bounds(graph) });
+      expectClear({ source: { x: source.x + GRAPH_NODE_WIDTH, y: source.y + GRAPH_NODE_HEIGHT / 2 }, target: { x: target.x, y: target.y + GRAPH_NODE_HEIGHT / 2 }, sourceId: edge.from_step, targetId: edge.to_step, sourceSide: "right", targetSide: "left", obstacles: bounds(graph) });
     }
   });
 
@@ -51,20 +51,23 @@ describe("topology layout", () => {
     graph.layout = { "step-0": { x: -300, y: 1200 } };
     const serialized = JSON.stringify(graph), positions = initialGraphLayout(graph);
     expect(Object.keys(positions)).toHaveLength(7);
-    expect(positions.consumer!.y).toBeGreaterThan(positions["step-3"]!.y);
+    expect(positions.consumer!.x).toBeGreaterThan(positions["step-3"]!.x);
     expect(initialGraphLayout(graph)).toEqual(positions);
     expect(JSON.stringify(graph)).toBe(serialized);
   });
 
   it("fills partial layouts around pinned operator cards and keeps explicit auto-layout independent", () => {
     const graph = chain(3);
-    graph.layout = { "step-0": { x: 48, y: 324 }, "step-2": { x: 48, y: 600 } };
+    const generated = initialGraphLayout(graph);
+    graph.layout = { "step-0": { ...generated["step-1"]! }, "step-2": { x: 48, y: 600 } };
     const serialized = JSON.stringify(graph);
     const filled = initialGraphLayout(graph, true);
     expect(filled["step-0"]).toEqual(graph.layout["step-0"]);
     expect(filled["step-2"]).toEqual(graph.layout["step-2"]);
-    expect(filled["step-1"]!.y).toBeGreaterThan(600 + GRAPH_NODE_HEIGHT);
-    expect(initialGraphLayout(graph)["step-0"]).toEqual({ x: 48, y: 48 });
+    expect(filled["step-1"]!.x).toBe(generated["step-1"]!.x);
+    expect(filled["step-1"]!.y).toBeGreaterThanOrEqual(graph.layout["step-0"]!.y + GRAPH_NODE_HEIGHT);
+    expect(filled["step-1"]!.x + GRAPH_NODE_WIDTH).toBeLessThanOrEqual(generated["step-2"]!.x);
+    expect(initialGraphLayout(graph)["step-0"]).toEqual({ x: 32, y: 32 });
     expect(JSON.stringify(graph)).toBe(serialized);
   });
 
@@ -95,16 +98,18 @@ describe("topology layout", () => {
 
 describe("card-aware routing", () => {
   const cards: RouteObstacle[] = [
-    { id: "start", x: 100, y: 40, width: 252, height: 180 },
-    { id: "middle", x: 100, y: 320, width: 252, height: 180 },
-    { id: "end", x: 100, y: 600, width: 252, height: 180 },
+    { id: "start", x: 100, y: 40, width: GRAPH_NODE_WIDTH, height: GRAPH_NODE_HEIGHT },
+    { id: "middle", x: 100, y: 320, width: GRAPH_NODE_WIDTH, height: GRAPH_NODE_HEIGHT },
+    { id: "end", x: 100, y: 600, width: GRAPH_NODE_WIDTH, height: GRAPH_NODE_HEIGHT },
   ];
   it.each([[0, 0], [0, 1], [1, 0]])("separates opposing branch exit lanes with incoming indices %s and %s", (rightLane, leftLane) => {
     const graph: ScenarioGraph = { start: "prepare", steps: ["prepare", "primary", "fallback", "join"].map(step), edges: [
       { from_step: "prepare", to_step: "primary", outcome: "success" }, { from_step: "prepare", to_step: "fallback", outcome: "blocked" },
       { from_step: "primary", to_step: "join", outcome: "success" }, { from_step: "fallback", to_step: "join", outcome: "success" },
     ] };
-    const obstacles = bounds(graph);
+    // The router also supports vertical geometry with bottom and top ports.
+    const positions = { prepare: { x: 200, y: 32 }, primary: { x: 32, y: 300 }, fallback: { x: 368, y: 300 }, join: { x: 200, y: 568 } };
+    const obstacles = graph.steps.map(step => ({ id: step.id, ...positions[step.id as keyof typeof positions], width: GRAPH_NODE_WIDTH, height: GRAPH_NODE_HEIGHT }));
     const source = obstacles.find(card => card.id === "prepare")!;
     const destinations = obstacles.filter(card => card.id === "primary" || card.id === "fallback").sort((a, b) => a.x - b.x);
     const left = destinations[0]!, right = destinations[1]!;
@@ -120,6 +125,20 @@ describe("card-aware routing", () => {
     expect(rightSegments.some(a => leftSegments.some(b => Math.min(a.right, b.right) > Math.max(a.left, b.left)))).toBe(true);
     for (const a of rightSegments) for (const b of leftSegments) {
       if (Math.min(a.right, b.right) > Math.max(a.left, b.left)) expect(Math.abs(a.y - b.y)).toBeGreaterThanOrEqual(16);
+    }
+  });
+  it("routes compact left-to-right alternatives from their actual side ports", () => {
+    const graph: ScenarioGraph = { start: "prepare", steps: ["prepare", "primary", "fallback", "join"].map(step), edges: [
+      { from_step: "prepare", to_step: "primary", outcome: "success" }, { from_step: "prepare", to_step: "fallback", outcome: "blocked" },
+      { from_step: "primary", to_step: "join", outcome: "success" }, { from_step: "fallback", to_step: "join", outcome: "success" },
+    ] };
+    const obstacles = bounds(graph);
+    for (const edge of graph.edges) {
+      const source = obstacles.find(card => card.id === edge.from_step)!;
+      const target = obstacles.find(card => card.id === edge.to_step)!;
+      const port = edge.outcome === "blocked" ? .6 : .2;
+      const route = expectClear({ source: { x: source.x + source.width, y: source.y + source.height * port }, target: { x: target.x, y: target.y + target.height / 2 }, sourceSide: "right", targetSide: "left", sourceId: source.id, targetId: target.id, obstacles });
+      for (const [index, point] of route.points.slice(1).entries()) for (const card of obstacles) expect(segmentCrossesObstacle(route.points[index]!, point, card)).toBe(false);
     }
   });
   it("takes a clear side channel past an unrelated card", () => {

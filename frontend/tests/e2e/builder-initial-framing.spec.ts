@@ -17,19 +17,32 @@ async function selectedInsideCanvas(page: Page) {
     return box.left >= boundary.left && box.right <= boundary.right && box.top >= boundary.top && box.bottom <= boundary.bottom;
   });
 }
+async function visibleNodesInsideCanvas(page: Page) {
+  return page.getByLabel("Scenario graph canvas").evaluate((canvas) => {
+    const boundary = canvas.getBoundingClientRect();
+    return Array.from(canvas.querySelectorAll<HTMLElement>(".react-flow__node"))
+      .filter((node) => getComputedStyle(node).display !== "none" && getComputedStyle(node).visibility !== "hidden")
+      .every((node) => {
+        const box = node.getBoundingClientRect();
+        return box.left >= boundary.left - 1 && box.top >= boundary.top - 1 && box.right <= boundary.right + 1 && box.bottom <= boundary.bottom + 1;
+      });
+  });
+}
 
 test("opens at readable focus, keeps an explicit whole-path overview, and preserves the operator viewport", async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.goto("./#/builder");
   const canvas = page.getByLabel("Scenario graph canvas");
   await expect(page.getByRole("heading", { name: "Endpoint control validation", level: 1 })).toBeVisible();
-  await expect(page.locator(".react-flow__node:visible")).toHaveCount(4);
-  await expect(page.getByText(/4 of 7 steps shown/)).toBeVisible();
+  await expect(page.locator(".react-flow__node:visible")).toHaveCount(3);
+  await expect(page.getByText(/3 of 7 steps shown/)).toBeVisible();
+  await expect(page.getByText(/To: .*On success/)).toBeVisible();
   const initial = await viewport(page);
   expect(initial.zoom).toBeGreaterThanOrEqual(0.8);
   const initiallySelected = canvas.locator(".flow-node.selected");
   await expect(initiallySelected).toBeVisible();
   await expect.poll(() => selectedInsideCanvas(page), { message: "Initial selected step remains readable and inside the canvas" }).toBe(true);
+  await expect.poll(() => visibleNodesInsideCanvas(page), { message: "Every node in the initial group stays inside the canvas" }).toBe(true);
 
   await page.getByRole("combobox", { name: "Step group" }).selectOption("all");
   await expect(page.locator(".react-flow__node:visible")).toHaveCount(6);
@@ -89,7 +102,7 @@ test("selecting a rightmost step keeps it visible beside its details without cha
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.goto("./#/builder");
   const canvas = page.getByLabel("Scenario graph canvas");
-  await expect(page.locator(".react-flow__node:visible")).toHaveCount(4);
+  await expect(page.locator(".react-flow__node:visible")).toHaveCount(3);
   await finishLayout(page);
   const before = await viewport(page);
   const rightmost = await canvas.locator(".react-flow__node:visible").evaluateAll(elements => elements

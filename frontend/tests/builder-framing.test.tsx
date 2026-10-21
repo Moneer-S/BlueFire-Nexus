@@ -73,14 +73,17 @@ describe("Builder viewport controls", () => {
   it("opens at a readable start and only fits the whole graph on an explicit request", async () => {
     const scenario = renderBuilder();
     await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
-    expect(state.viewport).toEqual({ x: 326, y: -24, zoom: 1 });
+    expect(state.viewport.zoom).toBeLessThanOrEqual(1);
+    expect(state.viewport.zoom).toBeGreaterThan(0.5);
+    const initialViewport = { ...state.viewport };
     expect(state.props.fitView).toBeUndefined();
     expect(flow.fitView).not.toHaveBeenCalled();
     fireEvent.change(screen.getByRole("textbox", { name: "Experiment name" }), { target: { value: "Renamed graph" } });
-    expect(state.viewport.zoom).toBe(1);
+    expect(state.viewport).toEqual(initialViewport);
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).layout).toEqual(scenario.layout);
+    flow.setViewport.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Fit visible graph" }));
-    expect(flow.fitView).toHaveBeenCalledOnce();
+    expect(flow.setViewport).toHaveBeenCalledOnce();
   });
 
   it("keeps user zoom across panel and window resizes, moving only an obscured selection", async () => {
@@ -95,8 +98,8 @@ describe("Builder viewport controls", () => {
     resizeCanvas(400, 300);
     await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
     expect(state.viewport.zoom).toBe(1.2);
-    expect(state.viewport.x).toBeCloseTo(16);
-    expect(state.viewport.y).toBeCloseTo(2.4);
+    expect(state.viewport.x).toBeCloseTo(54.4);
+    expect(state.viewport.y).toBeCloseTo(38.4);
     const adjusted = { ...state.viewport };
     flow.setViewport.mockClear();
     resizeCanvas(1000, 480);
@@ -113,36 +116,68 @@ describe("Builder viewport controls", () => {
     const target = scenario.steps[1]!;
     fireEvent.click(screen.getByRole("button", { name: `Select ${target.id}` }));
     await waitFor(() => expect(state.viewport.zoom).toBe(1));
-    expect(state.viewport).toEqual({ x: 151, y: -224, zoom: 1 });
+    expect(state.viewport).toEqual({ x: 167, y: -209, zoom: 1 });
     state.viewport = { x: 2, y: 3, zoom: 0.4 };
     fireEvent.click(screen.getByRole("button", { name: "Focus selected step" }));
-    expect(state.viewport).toEqual({ x: 151, y: -224, zoom: 1 });
+    expect(state.viewport).toEqual({ x: 167, y: -209, zoom: 1 });
   });
 
   it("frames long graphs in display-only groups without changing saved positions or execution edges", async () => {
     const scenario = structuredClone(demoScenario);
     const template = structuredClone(scenario.steps[0]!);
     scenario.steps = Array.from({ length: 9 }, (_, index) => ({ ...structuredClone(template), id: `focus_step_${index + 1}`, inputs: {} }));
+    scenario.steps[3]!.inputs = { archived: { from_step: "focus_step_1", artifact: "records" } };
+    scenario.steps[7]!.inputs = { report: { from_step: "focus_step_2", artifact: "bundle" } };
     scenario.start = scenario.steps[0]!.id;
     scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success" as Outcome, to_step: step.id }));
     delete scenario.adaptive_execution;
+    sessionStorage.removeItem(`bluefire.working-graph-view.v1:${scenario.id}`);
     const rendered = renderBuilder(scenario);
     await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
     expect(screen.getByRole("navigation", { name: "Experiment step groups" })).toBeVisible();
     const group = screen.getByRole("combobox", { name: "Step group" });
     expect(group.querySelectorAll("option")).toHaveLength(4);
-    expect(screen.getAllByRole("button", { name: /^Select focus_step_/ })).toHaveLength(4);
+    expect(screen.getAllByRole("button", { name: /^Select focus_step_/ })).toHaveLength(3);
+    expect(screen.getByText(/To: .*On success/)).toBeVisible();
+    const dependencies = screen.getByText("Data dependencies (2)").closest("details")!;
+    expect(dependencies.querySelector("summary")).toBeVisible();
+    fireEvent.click(dependencies.querySelector("summary")!);
+    expect(screen.getByText("Place deterministic fixture · Step 1 · records → Place deterministic fixture · Step 4 · Archived")).toBeVisible();
+    expect(screen.getByText("Place deterministic fixture · Step 2 · bundle → Place deterministic fixture · Step 8 · Report")).toBeVisible();
 
     fireEvent.change(group, { target: { value: "1" } });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Select focus_step_5" })).toBeVisible());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Select focus_step_4" })).toBeVisible());
     expect(screen.queryByRole("button", { name: "Select focus_step_1" })).not.toBeInTheDocument();
-    expect(state.props.edges).toHaveLength(scenario.edges.length);
+    expect(screen.getByText("Data dependencies (1)")).toBeVisible();
+    expect(screen.getByText("Place deterministic fixture · Step 1 · records → Place deterministic fixture · Step 4 · Archived")).toBeVisible();
+    expect(state.props.edges?.filter(edge => edge.data?.kind === "route")).toHaveLength(scenario.edges.length);
+    expect(state.props.edges?.filter(edge => edge.data?.kind === "artifact")).toHaveLength(2);
     expect(state.props.nodes?.map(node => [node.id, node.position])).toEqual(rendered.steps.map(step => [step.id, rendered.layout![step.id]]));
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).layout).toEqual(rendered.layout);
 
     fireEvent.change(group, { target: { value: "all" } });
     await waitFor(() => expect(screen.getAllByRole("button", { name: /^Select focus_step_/ })).toHaveLength(9));
-    expect(state.props.edges?.map(edge => edge.id)).toEqual(scenario.edges.map((edge, index) => `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`));
+    expect(state.props.edges?.filter(edge => edge.data?.kind === "route").map(edge => edge.id)).toEqual(scenario.edges.map((edge, index) => `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`));
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).edges).toEqual(scenario.edges);
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).steps).toEqual(scenario.steps);
+  });
+
+  it("retains separate cross-group data bindings when step titles repeat", async () => {
+    const scenario = structuredClone(demoScenario);
+    const template = structuredClone(scenario.steps[0]!);
+    scenario.steps = Array.from({ length: 6 }, (_, index) => ({ ...structuredClone(template), id: `duplicate_step_${index + 1}`, inputs: {} }));
+    scenario.steps[3]!.inputs = { archived: { from_step: "duplicate_step_1", artifact: "records" } };
+    scenario.steps[4]!.inputs = { archived: { from_step: "duplicate_step_2", artifact: "records" } };
+    scenario.start = scenario.steps[0]!.id;
+    scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success" as Outcome, to_step: step.id }));
+    delete scenario.adaptive_execution;
+    renderBuilder(scenario);
+
+    const group = screen.getByRole("combobox", { name: "Step group" });
+    fireEvent.change(group, { target: { value: "1" } });
+    const dependencies = screen.getByText("Data dependencies (2)").closest("details")!;
+    fireEvent.click(dependencies.querySelector("summary")!);
+    expect(screen.getByText("Place deterministic fixture · Step 1 · records → Place deterministic fixture · Step 4 · Archived")).toBeVisible();
+    expect(screen.getByText("Place deterministic fixture · Step 2 · records → Place deterministic fixture · Step 5 · Archived")).toBeVisible();
   });
 });

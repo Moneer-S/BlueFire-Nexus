@@ -50,6 +50,12 @@
 .workbench-builder .graph-sections label { display: flex; align-items: center; gap: 8px; font-size: .72rem; }
 .workbench-builder .graph-sections select { min-height: 30px; min-width: 128px; font-size: .74rem; }
 .workbench-builder .graph-group-count { color: var(--muted); font-size: .72rem; margin-left: auto; }
+.workbench-builder .graph-group-boundaries { flex: 1 1 100%; min-width: 0; padding: 2px 0 3px 32px; color: var(--muted-strong); font-size: .68rem; line-height: 1.35; overflow-wrap: anywhere; }
+.workbench-builder .graph-data-boundaries { flex: 1 1 100%; min-width: 0; margin: 0 12px 4px 32px; color: var(--muted-strong); font-size: .68rem; line-height: 1.35; }
+.workbench-builder .graph-data-boundaries summary { width: fit-content; cursor: pointer; }
+.workbench-builder .graph-data-boundaries > div { display: flex; flex-wrap: wrap; gap: 8px 24px; padding: 4px 0; }
+.workbench-builder .graph-data-boundaries section { min-width: min(100%, 300px); }
+.workbench-builder .graph-data-boundaries ul { margin: 2px 0 0; padding-left: 18px; overflow-wrap: anywhere; }
 .workbench-builder .graph-sections small { color: var(--muted); font-size: .68rem; }
 .workbench-builder .graph-canvas { flex: 1; height: auto; min-height: 220px; }
 .workbench-builder .graph-canvas[hidden] { display: none; }
@@ -93,9 +99,9 @@
 .workbench-builder .inspector-body input, .workbench-builder .inspector-body select { font-size: .76rem; }
 .workbench-builder .step-technical-details { padding-top: 16px; color: var(--muted); font-size: .72rem; }
 .workbench-builder .step-technical-details summary { cursor: pointer; margin-bottom: 10px; }
-.workbench-builder .flow-node { width: 252px; height: 180px; padding: 14px 16px; border-radius: 8px; background: linear-gradient(145deg, var(--surface-strong), var(--surface)); box-shadow: 0 5px 16px #0003; }
-.workbench-builder .flow-node > strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; font-size: .92rem; line-height: 1.35; margin: 10px 0 6px; }
-.workbench-builder .flow-node .node-context { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; overflow-wrap: anywhere; margin: 3px 0 0; font-size: .75rem; line-height: 1.4; color: var(--muted); }
+.workbench-builder .flow-node { box-sizing: border-box; width: 220px; height: 150px; padding: 10px 12px; border-radius: 8px; background: linear-gradient(145deg, var(--surface-strong), var(--surface)); box-shadow: 0 5px 16px #0003; }
+.workbench-builder .flow-node > strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; font-size: .84rem; line-height: 1.28; margin: 7px 0 4px; }
+.workbench-builder .flow-node .node-context { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; overflow-wrap: anywhere; margin: 2px 0 0; font-size: .68rem; line-height: 1.3; color: var(--muted); }
 .workbench-builder .flow-node.selected { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue), 0 0 24px #148eff25; }
 .workbench-builder .flow-node > footer { font-size: .67rem; margin-top: 10px; }
 .workbench-builder.graph-summary-zoom .flow-node .node-context, .workbench-builder.graph-summary-zoom .flow-node > footer { display: none; }

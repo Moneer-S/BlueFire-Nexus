@@ -16,7 +16,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import "./Builder.css";
 import { guaranteedInputSources, stepParameterSummary } from "../lib/graph-authoring";
 import { ParameterField } from "../components/ParameterField";
-import { branchLabels, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, GRAPH_SECTION_SIZE, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, readableGraphViewport, revealGraphNode, type ScenarioGraph } from "../lib/graph-view";
+import { branchLabels, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, GRAPH_SECTION_SIZE, graphBoundsViewport, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, readableGraphViewport, revealGraphNode, type ScenarioGraph } from "../lib/graph-view";
 import { api } from "../lib/api";
 import { defaultGraphView, readWorkingGraphView, writeWorkingGraphView } from "../lib/graph-view-retention";
 import { initialParameterValue, shouldInitializeParameter } from "../lib/parameters";
@@ -89,20 +89,20 @@ const BehaviorNode = memo(function BehaviorNode({ id, data, selected }: NodeProp
     updateNodeInternals(id);
   }, [id, handleSignature, updateNodeInternals]);
   return <article className={`flow-node tier-${behavior?.safety_tier ?? "safe"} ${selected ? "selected" : ""} ${data.invalid ? "invalid" : ""}`}>
-    <Handle type="target" position={Position.Top} id="route:in" className="route-handle route-in" title="Continue from another step" />
-    {(behavior?.inputs ?? []).slice(0, 4).map((input, index) => <Handle key={input.name} type="target" position={Position.Left} id={`in:${input.name}`} className="typed-handle input-handle" style={{ top: 55 + index * 18 }} title={`Requires ${inputTypeLabel(input.type)}: ${inputLabel(input.name)}`} />)}
+    <Handle type="target" position={Position.Left} id="route:in" className="route-handle route-in" title="Continue from another step" />
+    {(behavior?.inputs ?? []).slice(0, 4).map((input, index, items) => <Handle key={input.name} type="target" position={Position.Top} id={`in:${input.name}`} className="typed-handle input-handle" style={{ left: `${((index + 1) / (items.length + 1)) * 100}%` }} title={`Requires ${inputTypeLabel(input.type)}: ${inputLabel(input.name)}`} />)}
     <header><span>{data.invalid ? "Needs attention" : behavior?.execution_state === "metadata_only" ? "Research only" : behavior?.execution_state === "simulation" ? "Simulation step" : "Executable step"}</span></header>
     <strong title={displayTitle(behavior?.title ?? "Unavailable step")}>{displayTitle(behavior?.title ?? "Unavailable step")}</strong>
     {data.method ? <p className="node-context" title={`Run override: ${displayTitle(data.method)}`}>Run override: {displayTitle(data.method)}</p> : null}
     {stepParameterSummary(data.step, behavior) ? <p className="node-context" title={stepParameterSummary(data.step, behavior)}>{stepParameterSummary(data.step, behavior)}</p> : null}
-    {(behavior?.outputs ?? []).slice(0, 4).map((output, index) => <Handle key={output.name} type="source" position={Position.Right} id={`out:${output.name}`} className="typed-handle output-handle" style={{ top: 55 + index * 18 }} title={`Produces ${inputTypeLabel(output.type)}: ${inputLabel(output.name)}`} />)}
-    <div className="route-handles">{outcomes.map((outcome, index) => <Handle key={outcome} type="source" position={Position.Bottom} id={`route:${outcome}`} className={`route-handle route-${outcome}`} style={{ left: `${18 + index * 22}%` }} title={branchLabels[outcome]} />)}</div>
+    {(behavior?.outputs ?? []).slice(0, 4).map((output, index, items) => <Handle key={output.name} type="source" position={Position.Bottom} id={`out:${output.name}`} className="typed-handle output-handle" style={{ left: `${((index + 1) / (items.length + 1)) * 100}%` }} title={`Produces ${inputTypeLabel(output.type)}: ${inputLabel(output.name)}`} />)}
+    <div className="route-handles">{outcomes.map((outcome, index) => <Handle key={outcome} type="source" position={Position.Right} id={`route:${outcome}`} className={`route-handle route-${outcome}`} style={{ top: `${20 + index * 20}%` }} title={branchLabels[outcome]} />)}</div>
   </article>;
 });
 
 const nodeTypes = { behavior: BehaviorNode };
 const edgeTypes = { outcomeRoute: BuilderRouteEdge };
-const minimumGraphZoom = 0.1;
+const minimumGraphZoom = 0.005;
 const deleteKeys = ["Backspace", "Delete"];
 const connectionLineStyle = { stroke: "#38a8ff", strokeWidth: 2 };
 const proOptions = { hideAttribution: true };
@@ -218,6 +218,41 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   useEffect(() => { if (selectedRouteId) setRoutesOpen(true); }, [selectedRouteId]);
   const routesToggleId = useId();
   const hiddenBranches = displayEdges.filter((edge) => edge.hidden && edge.data?.kind === "route").length;
+  const groupBoundaries = useMemo(() => {
+    if (focusedSection === null || sections.length <= 1) return undefined;
+    const incoming = scenario.edges.filter(edge => !shownIds.has(edge.from_step) && shownIds.has(edge.to_step));
+    const outgoing = scenario.edges.filter(edge => shownIds.has(edge.from_step) && !shownIds.has(edge.to_step));
+    const stepsById = new Map(scenario.steps.map(step => [step.id, step]));
+    const stepOrdinals = new Map(scenario.steps.map((step, index) => [step.id, index + 1]));
+    const titleCounts = new Map<string, number>();
+    for (const step of scenario.steps) {
+      const title = displayTitle(behaviorMap.get(step.behavior_id)?.title ?? step.id);
+      titleCounts.set(title, (titleCounts.get(title) ?? 0) + 1);
+    }
+    const stepTitle = (id: string) => {
+      const title = displayTitle(behaviorMap.get(stepsById.get(id)?.behavior_id ?? "")?.title ?? id);
+      return titleCounts.get(title)! > 1 ? `${title} · Step ${stepOrdinals.get(id)}` : title;
+    };
+    const format = (edges: ScenarioGraph["edges"], side: "from_step" | "to_step") => {
+      const values = [...new Map(edges.map(edge => [`${edge.from_step}:${edge.outcome}:${edge.to_step}`, `${stepTitle(edge[side])} · ${branchLabels[edge.outcome]}`])).values()];
+      return values.length > 2 ? [...values.slice(0, 2), `+${values.length - 2} more`] : values;
+    };
+    const incomingArtifacts = scenario.steps.flatMap(consumer => shownIds.has(consumer.id) ? Object.entries(consumer.inputs)
+      .filter(([, binding]) => !shownIds.has(binding.from_step) && stepsById.has(binding.from_step))
+      .map(([input, binding]) => ({ identity: JSON.stringify([binding.from_step, consumer.id, input, binding.artifact]), label: `${stepTitle(binding.from_step)} · ${binding.artifact} → ${stepTitle(consumer.id)} · ${inputLabel(input)}` })) : []);
+    const outgoingArtifacts = scenario.steps.flatMap(consumer => !shownIds.has(consumer.id) ? Object.entries(consumer.inputs)
+      .filter(([, binding]) => shownIds.has(binding.from_step))
+      .map(([input, binding]) => ({ identity: JSON.stringify([binding.from_step, consumer.id, input, binding.artifact]), label: `${stepTitle(binding.from_step)} · ${binding.artifact} → ${stepTitle(consumer.id)} · ${inputLabel(input)}` })) : []);
+    const uniqueBindings = (items: typeof incomingArtifacts) => [...new Map(items.map(item => [item.identity, item])).values()];
+    const limited = (items: typeof incomingArtifacts) => items.length > 5 ? [...items.slice(0, 5), { identity: `overflow:${items.length}`, label: `+${items.length - 5} more` }] : items;
+    const incomingBindings = uniqueBindings(incomingArtifacts);
+    const outgoingBindings = uniqueBindings(outgoingArtifacts);
+    return {
+      incoming: format(incoming, "from_step"), outgoing: format(outgoing, "to_step"), first: sectionIndex === 0,
+      incomingArtifacts: limited(incomingBindings), outgoingArtifacts: limited(outgoingBindings),
+      artifactCount: incomingBindings.length + outgoingBindings.length,
+    };
+  }, [behaviorMap, focusedSection, scenario.edges, scenario.steps, sectionIndex, sections.length, shownIds]);
   useEffect(() => {
     const index = visibleGraph.ordered.findIndex((step) => step.id === selectedId);
     if (focusedSection !== null && sections.length > 1 && index >= 0) setFocusedSection(Math.floor(index / GRAPH_SECTION_SIZE));
@@ -248,11 +283,22 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     if (next !== current) void flow.setViewport(next, { duration: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? 0 : duration });
     return true;
   }, [flow]);
+  const fitNodes = useCallback((ids: readonly string[], duration = 0) => {
+    const canvas = graphCanvas.current;
+    if (!canvas || !canvas.clientWidth || !canvas.clientHeight) return false;
+    const bounds = ids.flatMap(id => {
+      const node = flow.getNode(id);
+      return node && !node.hidden ? [{ ...node.position, width: node.measured?.width ?? GRAPH_NODE_WIDTH, height: node.measured?.height ?? GRAPH_NODE_HEIGHT }] : [];
+    });
+    const viewport = graphBoundsViewport(bounds, { width: canvas.clientWidth, height: canvas.clientHeight }, 24, 1);
+    if (!viewport) return false;
+    void flow.setViewport(viewport, { duration: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? 0 : duration });
+    return true;
+  }, [flow]);
   useEffect(() => {
     if (initialFrameDone.current || !nodesInitialized || viewMode !== "graph" || !nodes.length) return;
-    const anchor = shownIds.has(selectedId) ? selectedId : shownIds.has(graph.start) ? graph.start : shownSteps[0]?.id;
-    if (anchor) initialFrameDone.current = frameStep(anchor, anchor === graph.start && !inspectorOpen ? "start" : "readable");
-  }, [frameStep, graph.start, inspectorOpen, nodesInitialized, nodes.length, selectedId, shownIds, shownSteps, viewMode]);
+    initialFrameDone.current = fitNodes(shownSteps.map(step => step.id));
+  }, [fitNodes, nodesInitialized, nodes.length, shownSteps, viewMode]);
 
   useEffect(() => {
     if (!selectionToReveal || selectionToReveal !== selectedId || !inspectorOpen || !nodesInitialized || viewMode !== "graph") return;
@@ -499,13 +545,13 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   const platforms = [...new Set(behaviors.flatMap((item) => item.platforms))].sort();
 
   const drop = (event: DragEvent<HTMLDivElement>) => { event.preventDefault(); const id = event.dataTransfer.getData("application/x-bluefire-behavior"); const behavior = behaviorMap.get(id); if (!behavior) return; addBehavior(behavior, flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })); };
-  const fitGraph = () => { void flow.fitView({ padding: 0.18, duration: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? 0 : 250, maxZoom: 1.05, minZoom: minimumGraphZoom }); };
+  const fitGraph = () => { fitNodes(shownSteps.map(step => step.id), 250); };
   const showSection = (value: string) => {
     setFocusedSection(value === "all" ? null : Number(value));
     const first = value === "all" ? undefined : sections[Number(value)]?.steps[0];
     if (first) { setSelectedId(first.id); setNodes((items) => items.map((node) => ({ ...node, selected: node.id === first.id }))); }
     setInspectorOpen(false); setPaletteOpen(false);
-    window.setTimeout(() => { if (first) frameStep(first.id, "start"); else fitGraph(); }, 0);
+    window.requestAnimationFrame(() => { fitNodes(first ? sections[Number(value)]?.steps.map(step => step.id) ?? [] : visibleGraph.ordered.map(step => step.id), 180); });
   };
   const fitSelection = () => { if (selectedId) frameStep(selectedId, "readable", 180); };
   const autoLayout = () => {
@@ -561,7 +607,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
             {focusMode ? <span className="focus-hint">Esc to exit</span> : null}
           </div>
         </div>
-        {viewMode === "graph" && sections.length > 1 ? <nav className="graph-sections" aria-label="Experiment step groups"><IconButton label="Previous group" disabled={focusedSection === null || sectionIndex === 0} onClick={() => showSection(String(sectionIndex - 1))}><ChevronLeft/></IconButton><label><span className="sr-only">Display group</span><select aria-label="Step group" value={focusedSection === null ? "all" : sectionIndex} onChange={(event) => showSection(event.target.value)}>{sections.map((section, index) => <option key={index} value={index}>{section.title}</option>)}<option value="all">All steps</option></select></label><IconButton label="Next group" disabled={focusedSection === null || sectionIndex === sections.length - 1} onClick={() => showSection(String(sectionIndex + 1))}><ChevronRight/></IconButton><span className="graph-group-count">{shownIds.size} of {scenario.steps.length} steps</span></nav> : null}
+        {viewMode === "graph" && sections.length > 1 ? <nav className="graph-sections" aria-label="Experiment step groups"><IconButton label="Previous group" disabled={focusedSection === null || sectionIndex === 0} onClick={() => showSection(String(sectionIndex - 1))}><ChevronLeft/></IconButton><label><span className="sr-only">Display group</span><select aria-label="Step group" value={focusedSection === null ? "all" : sectionIndex} onChange={(event) => showSection(event.target.value)}>{sections.map((section, index) => <option key={index} value={index}>{section.title}</option>)}<option value="all">All steps</option></select></label><IconButton label="Next group" disabled={focusedSection === null || sectionIndex === sections.length - 1} onClick={() => showSection(String(sectionIndex + 1))}><ChevronRight/></IconButton><span className="graph-group-count">{shownIds.size} of {scenario.steps.length} steps</span>{groupBoundaries ? <><span className="graph-group-boundaries" aria-label="Conditional execution routes">{groupBoundaries.incoming.length ? `From: ${groupBoundaries.incoming.join(", ")}` : groupBoundaries.first ? "Entry group" : "No incoming route"}{groupBoundaries.outgoing.length ? ` · To: ${groupBoundaries.outgoing.join(", ")}` : ""}</span>{groupBoundaries.artifactCount ? <details className="graph-data-boundaries"><summary>Data dependencies ({groupBoundaries.artifactCount})</summary><div>{groupBoundaries.incomingArtifacts.length ? <section><strong>Inputs from other groups</strong><ul>{groupBoundaries.incomingArtifacts.map(item => <li key={`in-${item.identity}`}>{item.label}</li>)}</ul></section> : null}{groupBoundaries.outgoingArtifacts.length ? <section><strong>Outputs used by other groups</strong><ul>{groupBoundaries.outgoingArtifacts.map(item => <li key={`out-${item.identity}`}>{item.label}</li>)}</ul></section> : null}</div></details> : null}</> : null}</nav> : null}
         <div className="graph-disclosure" role="status"><span>{shownIds.size} of {scenario.steps.length} steps shown{scenario.steps.length - shownIds.size ? ` · ${scenario.steps.length - shownIds.size} hidden` : ""} · {hiddenBranches} branches hidden. Review run includes the whole experiment.</span><button onClick={() => { setAllBranches((value) => !value); if (!allBranches) { setRoutesOpen(true); setInspectorOpen(false); setPaletteOpen(false); } }}>{allBranches ? "Focus on success path" : "Show all branches"}</button>{viewMode === "graph" ? <button id={routesToggleId} aria-expanded={routesOpen} onClick={() => { setRoutesOpen((value) => !value); if (!routesOpen) { setInspectorOpen(false); setPaletteOpen(false); } }}>{routesOpen ? "Hide route list" : "Show route list"}</button> : null}{selected && scenario.edges.some((edge) => edge.from_step === selected.id && edge.outcome !== "success") && !allBranches ? <button onClick={() => setExpandedBranches((previous) => { const next = new Set(previous); if (next.has(selected.id)) next.delete(selected.id); else next.add(selected.id); return next; })}>{expandedBranches.has(selected.id) ? "Collapse selected branches" : "Expand selected branches"}</button> : null}</div>
         {viewMode === "steps" ? <ol className="ordered-steps" aria-label="Experiment steps">{visibleGraph.ordered.map((step, index) => { const behavior = behaviorMap.get(step.behavior_id); return <li key={step.id}><button aria-pressed={selectedId === step.id} onClick={() => selectStep(step.id)}><span className="step-number">{index + 1}</span><span><strong>{displayTitle(behavior?.title ?? "Unavailable step")}</strong><small>{behavior?.purpose}</small><span className="step-routes">{scenario.edges.filter((edge) => edge.from_step === step.id).map((edge) => <em key={edge.outcome}>{branchLabels[edge.outcome]} → {behaviorMap.get(scenario.steps.find((item) => item.id === edge.to_step)?.behavior_id ?? "")?.title ? displayTitle(behaviorMap.get(scenario.steps.find((item) => item.id === edge.to_step)?.behavior_id ?? "")!.title) : edge.to_step}</em>)}</span></span><Badge>{behavior?.execution_state === "action" ? "Executable" : behavior?.execution_state === "simulation" ? "Simulated" : "Research"}</Badge></button></li>; })}</ol> : null}
         <div className={`graph-stage ${routesOpen ? "routes-open" : ""}`} hidden={viewMode !== "graph"}>

@@ -3,9 +3,9 @@ import type { Outcome, Scenario, ScenarioStep } from "../types";
 
 export type ScenarioGraph = Pick<Scenario, "steps" | "edges" | "start" | "layout">;
 
-export const GRAPH_SECTION_SIZE = 4;
-export const GRAPH_NODE_WIDTH = 252;
-export const GRAPH_NODE_HEIGHT = 180;
+export const GRAPH_SECTION_SIZE = 3;
+export const GRAPH_NODE_WIDTH = 220;
+export const GRAPH_NODE_HEIGHT = 150;
 
 export type GraphViewport = { x: number; y: number; zoom: number };
 export type GraphFrame = { width: number; height: number };
@@ -18,6 +18,24 @@ export function readableGraphViewport(node: GraphNodeBounds, frame: GraphFrame, 
   return {
     x: frame.width / 2 - (node.x + node.width / 2) * zoom,
     y: atStart ? margin - node.y * zoom : frame.height / 2 - (node.y + node.height / 2) * zoom,
+    zoom,
+  };
+}
+
+/** Fit a visible topology or step group without allowing a zoom floor to clip it. */
+export function graphBoundsViewport(nodes: readonly GraphNodeBounds[], frame: GraphFrame, padding = 24, maxZoom = 1): GraphViewport | undefined {
+  if (!nodes.length || frame.width <= 0 || frame.height <= 0) return undefined;
+  const left = Math.min(...nodes.map(node => node.x));
+  const top = Math.min(...nodes.map(node => node.y));
+  const right = Math.max(...nodes.map(node => node.x + node.width));
+  const bottom = Math.max(...nodes.map(node => node.y + node.height));
+  const width = right - left;
+  const height = bottom - top;
+  const zoom = Math.min(maxZoom, (frame.width - padding * 2) / width, (frame.height - padding * 2) / height);
+  if (!Number.isFinite(zoom) || zoom <= 0) return undefined;
+  return {
+    x: frame.width / 2 - (left + width / 2) * zoom,
+    y: frame.height / 2 - (top + height / 2) * zoom,
     zoom,
   };
 }
@@ -80,7 +98,7 @@ export function initialGraphLayout(scenario: ScenarioGraph, preserveSaved = fals
   const placed = new Set(ordered.map((step) => step.id));
   ordered.push(...scenario.steps.filter((step) => !placed.has(step.id)));
   const topology = new dagre.graphlib.Graph();
-  topology.setGraph({ rankdir: "TB", nodesep: 80, ranksep: 96, edgesep: 18, marginx: 48, marginy: 48, acyclicer: "greedy" });
+  topology.setGraph({ rankdir: "LR", nodesep: 48, ranksep: 56, edgesep: 18, marginx: 32, marginy: 32, acyclicer: "greedy" });
   topology.setDefaultEdgeLabel(() => ({}));
   for (const step of ordered) topology.setNode(step.id, { width: GRAPH_NODE_WIDTH, height: GRAPH_NODE_HEIGHT });
   // Placement needs one relation per node pair, not one constraint per outcome.
@@ -110,7 +128,7 @@ export function initialGraphLayout(scenario: ScenarioGraph, preserveSaved = fals
     // fixed cards without using a partial layout as permission to move them.
     let collision;
     while ((collision = occupied.find(rect => position.x < rect.x + GRAPH_NODE_WIDTH + 24 && position.x + GRAPH_NODE_WIDTH + 24 > rect.x && position.y < rect.y + GRAPH_NODE_HEIGHT + 24 && position.y + GRAPH_NODE_HEIGHT + 24 > rect.y))) {
-      position.y = collision.y + GRAPH_NODE_HEIGHT + 96;
+      position.y = collision.y + GRAPH_NODE_HEIGHT + 48;
     }
     occupied.push(position);
   }

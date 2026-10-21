@@ -205,10 +205,10 @@ test("large branched experiments keep complete data while focusing readable sect
   expect(complete.steps.length).toBeGreaterThanOrEqual(25);
   expect(complete.edges.some((edge: { outcome: string }) => edge.outcome === "blocked")).toBe(true);
   await section.selectOption("0");
-  await expect(page.locator(".react-flow__node")).toHaveCount(4);
+  await expect(page.locator(".react-flow__node")).toHaveCount(3);
   await page.getByRole("button", { name: "Next group", exact: true }).click();
   await expect(section).toHaveValue("1");
-  await expect(page.locator(".react-flow__node")).toHaveCount(4);
+  await expect(page.locator(".react-flow__node")).toHaveCount(3);
   await section.selectOption("all");
   await expect(page.locator(".react-flow__node")).toHaveCount(complete.steps.length);
   await page.getByRole("button", { name: "Steps", exact: true }).click();
@@ -224,7 +224,7 @@ test("large branched experiments keep complete data while focusing readable sect
   await page.reload();
   await expect(section).toHaveValue("0");
   expect(await page.evaluate(() => localStorage.getItem("bluefire.local.scenario.v1"))).toBe(serialized);
-  await expect(page.locator(".react-flow__node")).toHaveCount(4);
+  await expect(page.locator(".react-flow__node")).toHaveCount(3);
 });
 
 test("Execute approval cannot bypass canonical review and legacy authority is scrubbed after reload", async ({ page }) => {

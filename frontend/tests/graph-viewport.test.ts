@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readableGraphViewport, revealGraphNode } from "../src/lib/graph-view";
+import { graphBoundsViewport, readableGraphViewport, revealGraphNode } from "../src/lib/graph-view";
 import { defaultGraphView } from "../src/lib/graph-view-retention";
 import { demoScenario } from "../src/lib/demo";
 
@@ -9,6 +9,7 @@ describe("readable graph framing", () => {
   it("starts at the graph entry point even when the saved step array has another order", () => {
     const scenario = { ...demoScenario, steps: [...demoScenario.steps].reverse() };
     expect(defaultGraphView(scenario).selected?.id).toBe(scenario.start);
+    expect(defaultGraphView(scenario).section).toBe(0);
   });
 
   it.each([{ width: 710, height: 380 }, { width: 1040, height: 480 }, { width: 1640, height: 780 }])("opens a long path at readable scale in a $width by $height canvas", (frame) => {
@@ -25,6 +26,29 @@ describe("readable graph framing", () => {
     expect(viewport.zoom).toBeLessThanOrEqual(1);
     expect(viewport.x + (node.x + node.width / 2) * viewport.zoom).toBe(frame.width / 2);
     expect(viewport.y + (node.y + node.height / 2) * viewport.zoom).toBe(frame.height / 2);
+  });
+
+  it("fits a compact visible group at readable scale without a zoom floor hiding cards", () => {
+    const frame = { width: 740, height: 300 };
+    const group = [0, 1, 2].map(index => ({ x: index * 276, y: 0, width: 220, height: 150 }));
+    const viewport = graphBoundsViewport(group, frame);
+    expect(viewport?.zoom).toBeGreaterThan(0.8);
+    expect(viewport?.zoom).toBeLessThanOrEqual(1);
+    for (const item of group) {
+      expect(viewport!.x + item.x * viewport!.zoom).toBeGreaterThanOrEqual(24);
+      expect(viewport!.x + (item.x + item.width) * viewport!.zoom).toBeLessThanOrEqual(frame.width - 24);
+      expect(viewport!.y + item.y * viewport!.zoom).toBeGreaterThanOrEqual(24);
+      expect(viewport!.y + (item.y + item.height) * viewport!.zoom).toBeLessThanOrEqual(frame.height - 24);
+    }
+  });
+
+  it("uses the exact overview scale required by the whole graph instead of clipping at a floor", () => {
+    const frame = { width: 740, height: 300 };
+    const allSteps = Array.from({ length: 9 }, (_, index) => ({ x: index * 276, y: 0, width: 220, height: 150 }));
+    const viewport = graphBoundsViewport(allSteps, frame);
+    expect(viewport?.zoom).toBeCloseTo((frame.width - 48) / (allSteps.at(-1)!.x + 220));
+    expect(viewport!.zoom).toBeGreaterThan(0.1);
+    expect(viewport!.x + (allSteps.at(-1)!.x + 220) * viewport!.zoom).toBeLessThanOrEqual(frame.width - 24);
   });
 
   it("keeps the exact viewport object when the selected node is still visible", () => {

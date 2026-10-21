@@ -141,8 +141,8 @@ describe("Builder metadata and graph updates", () => {
             if (!(a.x + graphView.GRAPH_NODE_WIDTH <= b.x || b.x + graphView.GRAPH_NODE_WIDTH <= a.x || a.y + graphView.GRAPH_NODE_HEIGHT <= b.y || b.y + graphView.GRAPH_NODE_HEIGHT <= a.y)) collisions.push([node.id, other.id]);
           }
           expect(collisions).toEqual([]);
-          const backwardEdges = scenario.edges.filter(edge => !scenario.layout?.[edge.from_step] && !scenario.layout?.[edge.to_step]
-            && positions.get(edge.to_step)!.y <= positions.get(edge.from_step)!.y);
+          const backwardEdges = scenario.edges.filter(edge => edge.outcome === "success" && !scenario.layout?.[edge.from_step] && !scenario.layout?.[edge.to_step]
+            && positions.get(edge.to_step)!.x <= positions.get(edge.from_step)!.x);
           expect(backwardEdges).toEqual([]);
         }
         const originalCoordinates = nodes.map(({ id, position }) => [id, { ...position }] as const);

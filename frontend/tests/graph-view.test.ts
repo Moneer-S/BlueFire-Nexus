@@ -19,13 +19,13 @@ describe("experiment presentation", () => {
     const steps = Array.from({ length: 25 }, (_, index): ScenarioStep => ({ ...structuredClone(demoScenario.steps[0]!), id: `step_${index}`, inputs: index ? { files: { from_step: `step_${index - 1}`, artifact: "files" } } : {} }));
     const serialized = JSON.stringify(steps);
     const sections = graphSections(steps);
-    expect(sections.map((section) => section.title)).toEqual(["Steps 1–4", "Steps 5–8", "Steps 9–12", "Steps 13–16", "Steps 17–20", "Steps 21–24", "Steps 25–25"]);
+    expect(sections.map((section) => section.title)).toEqual(["Steps 1–3", "Steps 4–6", "Steps 7–9", "Steps 10–12", "Steps 13–15", "Steps 16–18", "Steps 19–21", "Steps 22–24", "Steps 25–25"]);
     expect(sections.flatMap((section) => section.steps)).toEqual(steps);
-    expect(sections[1]?.steps[0]).toBe(steps[4]);
-    expect(sections[1]?.steps[0]?.inputs.files).toEqual({ from_step: "step_3", artifact: "files" });
+    expect(sections[1]?.steps[0]).toBe(steps[3]);
+    expect(sections[1]?.steps[0]?.inputs.files).toEqual({ from_step: "step_2", artifact: "files" });
     expect(JSON.stringify(steps)).toBe(serialized);
-    expect(graphSections(steps.slice(0, 4))).toHaveLength(1);
-    expect(graphSections(steps.slice(0, 12))).toHaveLength(3);
+    expect(graphSections(steps.slice(0, 3))).toHaveLength(1);
+    expect(graphSections(steps.slice(0, 12))).toHaveLength(4);
   });
   it("focuses the success path while retaining hidden inputs, branches, and saved positions", () => {
     const scenario = branchedScenario(); const serialized = JSON.stringify(scenario);

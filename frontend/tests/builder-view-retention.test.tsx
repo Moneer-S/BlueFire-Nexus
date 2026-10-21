@@ -121,7 +121,7 @@ it("restores the selected section on the actual canvas after remount", async () 
   expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue("1");
   remount();
   expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue("1");
-  expect(document.querySelector('.react-flow__node[data-id="step_5"]')).toBeInTheDocument();
+  expect(document.querySelector('.react-flow__node[data-id="step_4"]')).toBeInTheDocument();
   await builderOptions(user);
   expect(labelButton("Copy selected node")).toBeEnabled();
   expect(JSON.parse(localStorage.getItem(graphKey)!)).toEqual(scenario);

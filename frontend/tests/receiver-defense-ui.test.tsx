@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { HashRouter, MemoryRouter, useLocation } from "react-router-dom";
 import { expect, it, vi } from "vitest";
 import { ProductProvider } from "../src/state/ProductContext";
 import { ReceiverTestProgress } from "../src/components/ReceiverTestProgress";
@@ -13,7 +13,7 @@ import { nativeReceiverFixture } from "./receiver-inline-run-fixture";
 import { receiverFixture, receiverFixtureId } from "./receiver-defense-fixture";
 import { retainedReceiverFixture } from "./receiver-retained-fixture";
 
-function CurrentLocation() { const location = useLocation(); return <output data-testid="current-location">{location.pathname}{location.search}</output>; }
+function CurrentLocation() { const location = useLocation(); return <output data-testid="current-location">{location.pathname}{location.search}{location.hash}</output>; }
 
 function mountProgress(value = receiverFixture()) {
   const onPrepare = vi.fn(), onReview = vi.fn();
@@ -89,6 +89,61 @@ function mountPage(ownerId = receiverFixtureId, path = `/compare?receiver_job=${
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return { client, user: userEvent.setup(), ...render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={[path]}><ReceiverDefensePage /></MemoryRouter></ProductProvider></QueryClientProvider>) };
 }
+
+it("surfaces named phase outcomes before actions and keeps exact provenance available", async () => {
+  const value = receiverFixture("restored", "completed");
+  vi.spyOn(api, "receiverTest").mockResolvedValue(value);
+  const path = `/compare?receiver_job=${value.job.job_id}&goal=data-handoff&source=run-source&replay=run-retest`;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const user = userEvent.setup();
+  const originalAddress = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  window.history.replaceState(null, "", `/#${path}`);
+  try {
+    render(<QueryClientProvider client={client}><ProductProvider><HashRouter><ReceiverDefensePage /><CurrentLocation /></HashRouter></ProductProvider></QueryClientProvider>);
+    const matchMediaDescriptor = Object.getOwnPropertyDescriptor(window, "matchMedia");
+    Object.defineProperty(window, "matchMedia", { configurable: true, value: () => undefined });
+    try {
+      const overview = await screen.findByRole("region", { name: "Control test overview" });
+      expect(within(overview).getByRole("heading", { name: "Compare baseline and restored policy" })).toBeVisible();
+      expect(within(overview).getByText("Baseline")).toBeVisible();
+      expect(within(overview).getAllByText("Accepted by the receiver").length).toBe(2);
+      expect(within(overview).getByText("Redaction required")).toBeVisible();
+      expect(within(overview).getByText("Prevented by the receiver")).toBeVisible();
+      expect(screen.getByRole("navigation", { name: "Control test sections" })).toBeVisible();
+      await user.click(screen.getByRole("button", { name: "Phase workflow" }));
+      expect(screen.getByTestId("current-location")).toHaveTextContent(path);
+      expect(window.location.hash).toBe(`#${path}`);
+      expect(document.getElementById("receiver-workflow")).toHaveFocus();
+      await user.click(screen.getByRole("button", { name: "Exact provenance" }));
+      const provenance = screen.getByText("Exact experiment, policy, and source provenance");
+      const provenanceDetails = provenance.closest("details")!;
+      expect(provenanceDetails).toHaveProperty("open", true);
+      expect(provenance).toHaveFocus();
+      expect(screen.getByTestId("current-location")).toHaveTextContent(path);
+      expect(window.location.hash).toBe(`#${path}`);
+      expect(screen.getByText(value.job.job_id)).toBeVisible();
+      const contextField = within(provenanceDetails).getByText("Context digest").closest("div")!;
+      expect(within(contextField).getByText(value.context!.context_digest)).toBeVisible();
+    } finally {
+      if (matchMediaDescriptor) Object.defineProperty(window, "matchMedia", matchMediaDescriptor);
+      else Reflect.deleteProperty(window, "matchMedia");
+    }
+  } finally {
+    window.history.replaceState(null, "", originalAddress || "/");
+  }
+});
+
+it("labels linked retained-policy work as a fresh retest with separate policy navigation", async () => {
+  const value = retainedReceiverFixture("legitimate", "completed", true);
+  vi.spyOn(api, "receiverTest").mockResolvedValue(value);
+  mountPage(value.job.job_id);
+  const overview = await screen.findByRole("region", { name: "Control test overview" });
+  expect(within(overview).getByRole("heading", { name: "Fresh retest of retained redaction" })).toBeVisible();
+  expect(within(overview).getByText("Legitimate redacted use")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Retained policy" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Review fresh retest" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Review policy rollback" })).toBeEnabled();
+});
 
 it("retains selected objective context throughout receiver recovery and preserves comparison sources", async () => {
   vi.spyOn(api, "receiverTest").mockResolvedValue(receiverFixture("restored", "completed"));
