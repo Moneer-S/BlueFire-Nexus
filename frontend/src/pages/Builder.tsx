@@ -52,8 +52,8 @@ function renameAdaptiveExecutionStep(policy: AdaptiveExecution, previousId: stri
   return { ...policy, steps: policy.steps.map(item => item.step_id === previousId ? { ...item, step_id: nextId } : item) };
 }
 
-function behaviorNode(step: ScenarioStep, behavior: Behavior | undefined, index: number, scenario: ScenarioGraph, invalid = false): BehaviorFlowNode {
-  return { id: step.id, type: "behavior", position: scenario.layout?.[step.id] ?? initialGraphLayout(scenario)[step.id] ?? { x: 48 + (index % 3) * 320, y: 48 + Math.floor(index / 3) * 210 }, data: { step, behavior, invalid } };
+function behaviorNode(step: ScenarioStep, behavior: Behavior | undefined, index: number, scenario: ScenarioGraph, fallbackLayout: NonNullable<Scenario["layout"]>, invalid = false): BehaviorFlowNode {
+  return { id: step.id, type: "behavior", position: scenario.layout?.[step.id] ?? fallbackLayout[step.id] ?? { x: 48 + (index % 3) * 320, y: 48 + Math.floor(index / 3) * 210 }, data: { step, behavior, invalid } };
 }
 
 function flowEdges(scenario: ScenarioGraph, behaviors: Map<string, Behavior>): FlowEdge[] {
@@ -80,9 +80,14 @@ const BehaviorNode = memo(function BehaviorNode({ id, data, selected }: NodeProp
     behavior?.inputs.slice(0, 4).map((input) => input.name) ?? [],
     behavior?.outputs.slice(0, 4).map((output) => output.name) ?? [],
   ]);
-  // A new method can change handles without changing the node's dimensions.
-  // Refresh their bounds after rendering while preserving selection focus.
-  useEffect(() => { updateNodeInternals(id); }, [id, handleSignature, updateNodeInternals]);
+  const measuredHandles = useRef({ id, signature: handleSignature });
+  // React Flow measures new nodes. Only changed handles need an explicit refresh
+  // when a same-size method replacement would not notify its ResizeObserver.
+  useEffect(() => {
+    if (measuredHandles.current.id === id && measuredHandles.current.signature === handleSignature) return;
+    measuredHandles.current = { id, signature: handleSignature };
+    updateNodeInternals(id);
+  }, [id, handleSignature, updateNodeInternals]);
   return <article className={`flow-node tier-${behavior?.safety_tier ?? "safe"} ${selected ? "selected" : ""} ${data.invalid ? "invalid" : ""}`}>
     <Handle type="target" position={Position.Top} id="route:in" className="route-handle route-in" title="Continue from another step" />
     {(behavior?.inputs ?? []).slice(0, 4).map((input, index) => <Handle key={input.name} type="target" position={Position.Left} id={`in:${input.name}`} className="typed-handle input-handle" style={{ top: 55 + index * 18 }} title={`Requires ${inputTypeLabel(input.type)}: ${inputLabel(input.name)}`} />)}
@@ -124,14 +129,15 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   // Naming and other metadata edits keep the graph's presentation inputs stable.
   // The complete scenario still updates immediately for history, saves, and review.
   const graph = useMemo(() => ({ steps: scenario.steps, edges: scenario.edges, start: scenario.start, layout: scenario.layout }), [scenario.steps, scenario.edges, scenario.start, scenario.layout]);
+  const fallbackLayout = useMemo<NonNullable<Scenario["layout"]>>(() => graph.steps.some(step => !graph.layout?.[step.id]) ? initialGraphLayout(graph) : {}, [graph]);
   const behaviorMap = useMemo(() => new Map(behaviors.map((item) => [item.id, item])), [behaviors]);
   const actionMap = useMemo(() => new Map(actions.map((item) => [item.id, item])), [actions]);
   const [invalidNodes, setInvalidNodes] = useState<Set<string>>(new Set());
   const methodOverrides = review ? undefined : product.runConfig.actionImplementations;
   const makeNodes = useCallback((value: ScenarioGraph) => value.steps.map((step, index) => {
-    const node = behaviorNode(step, behaviorMap.get(step.behavior_id), index, value, invalidNodes.has(step.id));
+    const node = behaviorNode(step, behaviorMap.get(step.behavior_id), index, value, fallbackLayout, invalidNodes.has(step.id));
     return { ...node, data: { ...node.data, method: actionMap.get(methodOverrides?.[step.id] ?? "")?.title } };
-  }), [actionMap, behaviorMap, invalidNodes, methodOverrides]);
+  }), [actionMap, behaviorMap, fallbackLayout, invalidNodes, methodOverrides]);
   const [initialView] = useState(() => review ? defaultGraphView(scenario) : readWorkingGraphView(scenario));
   const [nodes, setNodes] = useState<BehaviorFlowNode[]>(() => makeNodes(graph).map((node) => ({ ...node, selected: node.id === initialView.selected?.id })));
   const [edges, setEdges] = useState<FlowEdge[]>(() => flowEdges(graph, behaviorMap));
