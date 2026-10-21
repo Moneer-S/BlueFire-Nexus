@@ -105,6 +105,49 @@ it("distinguishes same-title immutable revisions without grouping away older sel
   expect(action).not.toHaveBeenCalled(); expect(revise).not.toHaveBeenCalled(); expect(evaluate).not.toHaveBeenCalled();
 });
 
+it("labels the benign-fixture lifecycle stage without implying observed validation", async () => {
+  const candidate = structuredClone(original);
+  candidate.status = "benign_evaluated";
+  candidate.document.state = "benign_evaluated";
+  const { container } = setup([candidate]);
+  await screen.findByRole("textbox", { name: /^SQLite source/ });
+
+  const list = within(container.querySelector(".candidate-list") as HTMLElement);
+  const stateBadge = list.getByText("Benign fixtures evaluated");
+  expect(stateBadge).toBeVisible();
+  expect(stateBadge).toHaveClass("badge-info");
+  expect(screen.queryByText("Benign evaluated", { exact: true })).not.toBeInTheDocument();
+  expect(screen.getAllByText("Benign fixtures evaluated").length).toBeGreaterThan(1);
+});
+
+it.each([
+  ["simulate", "synthetic", 0, "Synthetic simulation", "0 independent observations"],
+  ["execute", "observed", 1, "Execution record", "1 independent observation"],
+] as const)("shows source name, provenance and exact observed count by the run-authoring action", async (mode, provenance, count, sourceType, observationLabel) => {
+  const sourceRun: RunRecord = {
+    ...structuredClone(demoRuns[0]!),
+    run_id: "run-20261021T000000Z-1234567812345678",
+    scenario: undefined,
+    scenario_title: "Selected source run by name",
+    mode,
+    is_demo: false,
+    manifest: {},
+    evidence: { records: Array.from({ length: count }, (_, index) => ({ evidence_id: `evidence-${index}`, run_id: "run-20261021T000000Z-1234567812345678", provenance })) },
+    detections: { candidates: [] },
+  };
+  setup([], true, sourceRun);
+  const create = await screen.findByRole("link", { name: "Create from run evidence" });
+  const sourceSummary = await screen.findByLabelText("Selected source eligibility");
+  expect(await within(sourceSummary).findByText(observationLabel)).toBeVisible();
+  expect(sourceSummary).toHaveTextContent("Selected source run by name");
+  expect(sourceSummary).toHaveTextContent(sourceRun.run_id.slice(-8));
+  expect(sourceSummary).toHaveTextContent(sourceType);
+  expect(sourceSummary).toHaveTextContent(observationLabel);
+  expect(create).toHaveAttribute("href", expect.stringContaining("create=1"));
+  if (count === 0) expect(sourceSummary).toHaveTextContent("cannot support observed exercise");
+  else expect(sourceSummary).not.toHaveTextContent("cannot support observed exercise");
+});
+
 it.each([
   ["simulate", undefined, "Synthetic simulation"],
   ["simulate", false, "Synthetic simulation"],

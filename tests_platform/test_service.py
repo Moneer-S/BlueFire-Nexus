@@ -44,8 +44,8 @@ from bluefire.runner_inventory import (
 from bluefire.runner_lifecycle import RunnerLifecycleError
 from bluefire.service import BlueFireService
 from bluefire.util import content_hash
-from tests_platform.test_ai_live_authorization import request as authorization_request
 from tests_platform.job_wait_diagnostics import diagnose_job_wait
+from tests_platform.test_ai_live_authorization import request as authorization_request
 
 ROOT = Path(__file__).resolve().parents[1]
 EXECUTE_PROFILE_ACTIONS = {
@@ -499,7 +499,7 @@ def test_service_seeds_durable_product_state_and_indexes_completed_runs(
     )
 
     assert service.product_store.path == database.resolve()
-    assert service.seed_counts["scenario"] == 13
+    assert service.seed_counts["scenario"] == 14
     assert service.seed_counts["action"] == 29
     assert len(service.product_store.list_resources("collector")) == 11
 

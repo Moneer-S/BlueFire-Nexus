@@ -10,6 +10,8 @@
 .compare-page .compare-story-run .badge { grid-row: span 2; justify-self: start; }
 .compare-page .compare-story-run > a { min-width: 0; color: var(--text); font-weight: 650; overflow-wrap: anywhere; }
 .compare-page .compare-story-run > small { color: var(--muted); font-size: .78rem; }
+.compare-page .comparison-run-reference { grid-column: 2; overflow-wrap: anywhere; }
+.compare-page .comparison-run-reference code { color: inherit; font-size: .95em; }
 .compare-page .compare-story-arrow { display: grid; place-items: center; color: var(--blue-soft); font-size: 1.35rem; }
 .compare-page .compare-story-variants { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 24px; }
 .compare-page .comparison-context { display: flex; align-items: baseline; gap: 9px 26px; padding: 13px 24px; font-size: .82rem; }

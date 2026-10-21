@@ -134,3 +134,40 @@ export function initialGraphLayout(scenario: ScenarioGraph, preserveSaved = fals
   }
   return positions;
 }
+
+/** Compact only an isolated view group; saved operator coordinates remain authoritative unless explicitly replaced. */
+export function focusedGraphLayout(scenario: ScenarioGraph, stepIds: readonly string[], replaceSaved = false): NonNullable<Scenario["layout"]> {
+  const selected = new Set(stepIds);
+  const steps = scenario.steps.filter(step => selected.has(step.id));
+  if (!steps.length) return {};
+  const ids = new Set(steps.map(step => step.id));
+  const edges = scenario.edges.filter(edge => ids.has(edge.from_step) && ids.has(edge.to_step));
+  const graph: ScenarioGraph = {
+    steps,
+    edges,
+    start: ids.has(scenario.start) ? scenario.start : steps[0]!.id,
+  };
+  const positions = initialGraphLayout(graph);
+  const pinned = replaceSaved ? [] : steps.filter(step => scenario.layout?.[step.id]);
+  for (const step of pinned) positions[step.id] = { ...scenario.layout![step.id]! };
+  const overlaps = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+    a.x < b.x + GRAPH_NODE_WIDTH + 24 && a.x + GRAPH_NODE_WIDTH + 24 > b.x
+    && a.y < b.y + GRAPH_NODE_HEIGHT + 24 && a.y + GRAPH_NODE_HEIGHT + 24 > b.y;
+  const generated = steps.filter(step => !pinned.some(pin => pin.id === step.id));
+  const generatedCards = generated.map(step => positions[step.id]!);
+  const hasOverlap = generatedCards.some((card, index) => generatedCards.slice(index + 1).some(other => overlaps(card, other)));
+  if (!pinned.length && hasOverlap) {
+    // Fully disconnected nodes can share a Dagre rank position. Preserve order
+    // and guarantee usable cards instead of letting them cover one another.
+    steps.forEach((step, index) => { positions[step.id] = { x: 32 + index * (GRAPH_NODE_WIDTH + 56), y: 32 }; });
+  } else {
+    const occupied = pinned.map(step => positions[step.id]!);
+    for (const step of generated) {
+      const position = positions[step.id]!;
+      let collision;
+      while ((collision = occupied.find(rect => overlaps(position, rect)))) position.y = collision.y + GRAPH_NODE_HEIGHT + 48;
+      occupied.push(position);
+    }
+  }
+  return positions;
+}

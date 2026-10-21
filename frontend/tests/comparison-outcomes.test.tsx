@@ -57,6 +57,25 @@ it("shows comparison order without labeling unrelated selected runs as retests",
   expect(screen.getByRole("columnheader", { name: "Evidence gaps" })).toBeVisible();
 });
 
+it("keeps identical run titles distinguishable with timestamps and secondary short IDs", () => {
+  const comparison = compareDemoRuns(demoRuns.map((run) => run.run_id));
+  const baselineId = `run-${"a".repeat(32)}`;
+  const comparedId = `run-${"b".repeat(32)}`;
+  comparison.baseline_run_id = baselineId;
+  comparison.run_ids = [baselineId, comparedId];
+  comparison.summaries[0]!.run_id = baselineId;
+  comparison.summaries[1]!.run_id = comparedId;
+  const createdAt = { [baselineId]: "2026-10-21T05:03:01Z", [comparedId]: "2026-10-21T05:03:02Z" };
+  render(<MemoryRouter><ComparisonResult comparison={comparison} names={{ [baselineId]: "Same experiment", [comparedId]: "Same experiment" }} createdAt={createdAt} /></MemoryRouter>);
+
+  const order = within(screen.getByRole("group", { name: "Comparison run order" }));
+  expect(order.getByText("run-aaaaaa…aaaaaaaa", { selector: "code" })).toBeVisible();
+  expect(order.getByText("run-bbbbbb…bbbbbbbb", { selector: "code" })).toBeVisible();
+  expect(order.getAllByText("Same experiment")).toHaveLength(2);
+  expect(document.querySelector('time[datetime="2026-10-21T05:03:01Z"]')).toBeInTheDocument();
+  expect(document.querySelector('time[datetime="2026-10-21T05:03:02Z"]')).toBeInTheDocument();
+});
+
 it("labels a defense note as declared and not independently verified", () => {
   const comparison = compareDemoRuns(demoRuns.map((run) => run.run_id));
   const retest = comparison.summaries[1]!;

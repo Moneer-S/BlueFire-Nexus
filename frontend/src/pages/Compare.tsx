@@ -368,6 +368,7 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {} }: { c
   const changed = comparison.deltas.filter(hasMaterialDelta).length;
   const hasS3Projection = comparison.s3_access !== undefined;
   const comparedRunLabel = (runId: string) => `${runId === comparison.baseline_run_id ? "Baseline" : `Variant ${comparison.summaries.findIndex(item => item.run_id === runId)}`} · ${names[runId] ?? "Run"}`;
+  const runReference = (runId: string) => <small className="comparison-run-reference">{createdAt[runId] ? <time dateTime={createdAt[runId]}>{formatRunTimestamp(createdAt[runId]!)}</time> : "Timestamp not reported"} · <code title={runId}>{shortId(runId)}</code></small>;
   const [reportUrl, setReportUrl] = useState<string>();
   const reportContent = useMemo(() => comparisonReport(comparison, names, createdAt), [comparison, names, createdAt]);
   useEffect(() => {
@@ -379,15 +380,15 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {} }: { c
     <Panel className="comparison-outcomes">
       <PanelHeader eyebrow="Recorded comparison" title="Baseline and compared runs" detail="Review objective, observations, path, and cleanup separately. A stopped step alone does not establish target prevention." actions={reportUrl ? <a className="button button-secondary button-medium" href={reportUrl} download="bluefire-comparison.md">Download report</a> : null} />
       {baseline ? <div className="compare-story" role="group" aria-label="Comparison run order">
-        <div className="compare-story-run"><Badge tone="info">Baseline</Badge><Link to={runReviewPath(baseline.run_id)}>{names[baseline.run_id] ?? "Run"}</Link><small>{baseline.mode ? sentence(baseline.mode) : "Mode not reported"}</small></div>
+        <div className="compare-story-run"><Badge tone="info">Baseline</Badge><Link to={runReviewPath(baseline.run_id)}>{names[baseline.run_id] ?? "Run"}</Link><small>{baseline.mode ? sentence(baseline.mode) : "Mode not reported"}</small>{runReference(baseline.run_id)}</div>
         <span className="compare-story-arrow" aria-hidden="true">→</span>
-        <div className="compare-story-variants">{comparison.summaries.filter((item) => item.run_id !== baseline.run_id).map((item, index) => <div className="compare-story-run" key={item.run_id}><Badge>Compared run {index + 1}</Badge><Link to={runReviewPath(item.run_id)}>{names[item.run_id] ?? "Run"}</Link><small>{item.mode ? sentence(item.mode) : "Mode not reported"}</small></div>)}</div>
+        <div className="compare-story-variants">{comparison.summaries.filter((item) => item.run_id !== baseline.run_id).map((item, index) => <div className="compare-story-run" key={item.run_id}><Badge>Compared run {index + 1}</Badge><Link to={runReviewPath(item.run_id)}>{names[item.run_id] ?? "Run"}</Link><small>{item.mode ? sentence(item.mode) : "Mode not reported"}</small>{runReference(item.run_id)}</div>)}</div>
       </div> : null}
       <div className="comparison-context"><span><strong>{comparison.run_ids.length}</strong> runs reviewed</span><span><strong>{changed}</strong> with meaningful recorded changes</span><span>{hasS3Projection ? "S3 saved read results are shown separately below." : changed ? "Recorded differences appear below." : "No meaningful change reported against the baseline."}</span></div>
       <div className="table-scroll" role="region" aria-label="Compared run outcomes" tabIndex={0}>
         <table><caption>Recorded outcomes for the selected runs. Missing values remain unreported.</caption><thead><tr><th scope="col">Run</th><th scope="col">Mode</th><th scope="col">Objective</th><th scope="col">Observed artifacts</th><th scope="col">Evidence gaps</th><th scope="col">First stopped step</th><th scope="col">Cleanup</th></tr></thead>
           <tbody>{comparison.summaries.map((summary, index) => <tr key={summary.run_id}>
-            <th scope="row"><Link to={runReviewPath(summary.run_id)} aria-label={summary.run_id === comparison.baseline_run_id ? "Review baseline run summary" : `Review compared run ${index} summary`}>{names[summary.run_id] ?? "Run"}</Link><small>{summary.run_id === comparison.baseline_run_id ? "Comparison baseline" : `Compared run ${index}`}</small>{createdAt[summary.run_id] ? <small><time dateTime={createdAt[summary.run_id]}>{formatDate(createdAt[summary.run_id]!)}</time></small> : null}</th>
+            <th scope="row"><Link to={runReviewPath(summary.run_id)} aria-label={summary.run_id === comparison.baseline_run_id ? "Review baseline run summary" : `Review compared run ${index} summary`}>{names[summary.run_id] ?? "Run"}</Link><small>{summary.run_id === comparison.baseline_run_id ? "Comparison baseline" : `Compared run ${index}`}</small>{runReference(summary.run_id)}</th>
             <td>{sentence(summary.mode ?? "not_reported")}</td>
             <td>{objectiveLabel(summary.objective_reached, summary.mode)}</td>
             <td>{reportedArrayCount(summary.evidence_details?.observed_artifacts, "artifact")}</td>
@@ -529,3 +530,8 @@ function reportedArrayCount(value: unknown, noun: string) {
 }
 function runReviewPath(runId: string) { return `/runs/${encodeURIComponent(runId)}`; }
 function shortId(value: string) { return value.length > 22 ? `${value.slice(0, 10)}…${value.slice(-8)}` : value; }
+function formatRunTimestamp(value: string) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "Timestamp not reported";
+  return new Intl.DateTimeFormat(undefined, { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short" }).format(date);
+}

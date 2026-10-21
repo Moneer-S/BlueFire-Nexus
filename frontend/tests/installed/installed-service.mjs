@@ -1,6 +1,7 @@
 // The copied driver talks only to a real, freshly installed loopback service.
-/* global process, URL, document, requestAnimationFrame, sessionStorage, fetch, innerWidth, innerHeight, getComputedStyle */
+/* global process, URL, document, requestAnimationFrame, localStorage, sessionStorage, fetch, innerWidth, innerHeight, getComputedStyle */
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -16,6 +17,7 @@ for await (const chunk of process.stdin) {
 let { capability } = JSON.parse(input);
 input = "";
 assert.match(capability ?? "", /^[A-Za-z0-9_-]{64}$/);
+const secrets = [capability];
 const { chromium } = await import(pathToFileURL(modulePath).href);
 const origin = `http://127.0.0.1:${port}`;
 const ownedScenarioId = "scenario.installed-browser.collection.v1";
@@ -63,8 +65,9 @@ function hasOwnedScenarioLayout(scenario) {
   const nodeIds = reviewedScenarioDocument?.steps?.map(step => step.id);
   const layout = scenario.layout;
   if (!Array.isArray(nodeIds) || !layout || typeof layout !== "object" || Array.isArray(layout)) return false;
-  const expectedIds = [...nodeIds].sort();
-  if (!sameStructure(Object.keys(layout).sort(), expectedIds)) return false;
+  const expectedIds = new Set(nodeIds);
+  const positionedIds = Object.keys(layout);
+  if (positionedIds.length > nodeIds.length || positionedIds.some(id => !expectedIds.has(id))) return false;
   return Object.values(layout).every(position => exactKeys(position, ["x", "y"])
     && Number.isFinite(position.x) && Math.abs(position.x) <= 100000
     && Number.isFinite(position.y) && Math.abs(position.y) <= 100000);
@@ -92,6 +95,39 @@ async function capture(name) {
   const screenshot = await page.screenshot({ fullPage: false, animations: "disabled", mask: [page.locator('input[type="password"]')] });
   writeFileSync(join(output, `${name}.png`), screenshot, { flag: "wx" });
   report.screenshots.push({ name, sha256: createHash("sha256").update(screenshot).digest("hex"), geometry });
+}
+
+async function visibleGraphTitles(selectedOnly = false) {
+  const selector = selectedOnly ? ".react-flow__node:visible:has(.flow-node.selected)" : ".react-flow__node:visible";
+  return page.locator(selector).evaluateAll(nodes => nodes.map(node => {
+    const card = node.querySelector(".flow-node");
+    const title = card?.querySelector(":scope > strong");
+    if (!card || !title) return { title: "", fitsCard: false, fitsWidth: false };
+    const cardBox = card.getBoundingClientRect();
+    const titleBox = title.getBoundingClientRect();
+    return {
+      title: title.textContent?.trim() ?? "",
+      fitsCard: titleBox.left >= cardBox.left - 1 && titleBox.right <= cardBox.right + 1
+        && titleBox.top >= cardBox.top - 1 && titleBox.bottom <= cardBox.bottom + 1,
+      fitsWidth: title.scrollWidth <= title.clientWidth + 1,
+    };
+  }));
+}
+
+function expectedCrossGroupBindings(visibleIds) {
+  const steps = reviewedScenarioDocument.steps;
+  const identities = new Set();
+  const labels = [];
+  for (const consumer of steps) {
+    for (const [input, binding] of Object.entries(consumer.inputs ?? {})) {
+      if (visibleIds.has(consumer.id) === visibleIds.has(binding.from_step)) continue;
+      const identity = JSON.stringify([binding.from_step, consumer.id, input, binding.artifact]);
+      if (identities.has(identity)) continue;
+      identities.add(identity);
+      labels.push({ artifact: binding.artifact, input: input.replaceAll("_", " ").replace(/^./, value => value.toUpperCase()) });
+    }
+  }
+  return labels;
 }
 
 async function waitForGraphFrame(selectedOnly) {
@@ -230,6 +266,7 @@ try {
   await page.getByRole("button", { name: "Connect", exact: true }).click();
   capability = "";
   await page.waitForFunction(() => sessionStorage.getItem("bluefire.browser-session.v1") !== null);
+  secrets.push(await page.evaluate(() => sessionStorage.getItem("bluefire.browser-session.v1")));
   connected = true;
   await page.getByRole("link", { name: "Build", exact: true }).waitFor();
   report.checks.push("normal_ephemeral_browser_session");
@@ -249,7 +286,7 @@ try {
   await page.getByRole("button", { name: "Open this version for editing", exact: true }).click();
   await page.locator(".react-flow__node").first().waitFor();
   await page.getByLabel("Experiment name", { exact: true }).fill(`${title} reviewed`);
-  await page.getByRole("button", { name: "Auto-layout", exact: true }).click();
+  await page.getByRole("button", { name: "Arrange visible group", exact: true }).click();
   await page.getByRole("button", { name: "Undo", exact: true }).click();
   await page.getByRole("button", { name: "Redo", exact: true }).click();
   const saveResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/scenario-versions" && response.request().method() === "POST");
@@ -265,6 +302,34 @@ try {
   assert.deepEqual(updated.document.edges, source.edges);
   report.checks.push("saved_graph_rename_layout_undo_redo_without_semantic_change");
 
+  stage = "graph-export";
+  await page.waitForFunction(title => {
+    try { return JSON.parse(localStorage.getItem("bluefire.local.scenario.v1") ?? "null")?.title === title; }
+    catch { return false; }
+  }, reviewedScenarioDocument.title);
+  const workingScenario = await page.evaluate(() => JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")));
+  assert.ok(sameStructure(withoutLayout(workingScenario), reviewedScenarioDocument), "Working export must match the saved canonical document");
+  assert.ok(hasOwnedScenarioLayout(workingScenario), "Working export must retain only owned finite layout positions");
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export", exact: true }).click();
+  const download = await downloadPromise;
+  assert.equal(download.suggestedFilename(), `${ownedScenarioId}.json`);
+  const stream = await download.createReadStream();
+  assert.ok(stream, "Scenario export must be readable in memory");
+  const chunks = [];
+  let byteLength = 0;
+  for await (const chunk of stream) {
+    byteLength += chunk.length;
+    assert.ok(byteLength <= 256 * 1024, "Scenario export exceeded the 256 KiB test bound");
+    chunks.push(chunk);
+  }
+  const exportText = Buffer.concat(chunks).toString("utf8");
+  const exportedScenario = JSON.parse(exportText);
+  assert.ok(sameStructure(exportedScenario, workingScenario), "Export must match the complete working graph including layout");
+  for (const secret of secrets) assert.ok(typeof secret === "string" && secret.length > 0 && !exportText.includes(secret), "Export must not contain browser connection credentials");
+  secrets.fill("");
+  report.checks.push("working_graph_json_export_preserves_canonical_document_and_layout_without_credentials");
+
   stage = "graph-default-group";
   assert.equal(await page.getByRole("combobox", { name: "Step group", exact: true }).inputValue(), "0");
   for (const viewport of [{ width: 1366, height: 768 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
@@ -273,6 +338,32 @@ try {
     await waitForGraphFrame(false);
     const visibleNodes = await page.locator(".react-flow__node:visible").count();
     assert.equal(visibleNodes, 3);
+    const zoom = Number.parseInt(await page.getByLabel("Graph zoom", { exact: true }).textContent() ?? "0", 10);
+    assert.ok(zoom >= 80, `Default three-step group is too small at ${viewport.width}px (${zoom}%)`);
+    const titles = await visibleGraphTitles();
+    assert.equal(titles.length, 3);
+    assert.ok(titles.every(title => title.title && title.fitsCard && title.fitsWidth), "Default group titles must fit their cards");
+    const visibleNodeIds = await page.locator(".react-flow__node:visible").evaluateAll(nodes => nodes.map(node => node.getAttribute("data-id")));
+    assert.ok(visibleNodeIds.every(id => id && reviewedScenarioDocument.steps.some(step => step.id === id)), "Visible graph nodes must map to saved step IDs");
+    const visibleIds = new Set(visibleNodeIds);
+    const crossingRoutes = reviewedScenarioDocument.edges.filter(edge => visibleIds.has(edge.from_step) !== visibleIds.has(edge.to_step));
+    assert.ok(crossingRoutes.length > 0, "Fixture must retain a conditional route across the visible group boundary");
+    const boundaryText = await page.locator('.graph-group-boundaries[aria-label="Conditional execution routes"]').innerText();
+    for (const outcome of new Set(crossingRoutes.map(edge => edge.outcome))) {
+      const label = { success: "On success", partial: "When partly complete", blocked: "When blocked", failed: "On failure" }[outcome];
+      assert.ok(label && boundaryText.includes(label), `Conditional route boundary is missing ${outcome}`);
+    }
+    const bindings = expectedCrossGroupBindings(visibleIds);
+    assert.ok(bindings.length > 0, "Fixture must retain an artifact binding across the visible group boundary");
+    const dependencyDetails = page.locator(".graph-data-boundaries");
+    assert.equal(await dependencyDetails.locator("summary").innerText(), `Data dependencies (${bindings.length})`);
+    await dependencyDetails.locator("summary").click();
+    const dependencyText = await dependencyDetails.innerText();
+    for (const binding of bindings) {
+      assert.ok(dependencyText.includes(binding.artifact), `Artifact boundary is missing ${binding.artifact}`);
+      assert.ok(dependencyText.includes(binding.input), `Artifact boundary is missing input ${binding.input}`);
+    }
+    await dependencyDetails.locator("summary").click();
     await capture(`graph-default-group-${viewport.width}x${viewport.height}`);
   }
   report.checks.push("readable_default_group_desktop_framing");
@@ -300,6 +391,10 @@ try {
     await page.getByRole("button", { name: "Focus selected step", exact: true }).click();
     await page.waitForFunction(() => Number.parseInt(document.querySelector('[aria-label="Graph zoom"]')?.textContent ?? "0", 10) >= 80);
     await waitForGraphFrame(true);
+    const selectedTitle = await visibleGraphTitles(true);
+    assert.equal(selectedTitle.length, 1);
+    assert.equal(selectedTitle[0].title, "Collect selected records (native JSONL)");
+    assert.ok(selectedTitle[0].fitsCard && selectedTitle[0].fitsWidth, "Long behavior title must fit the focused card");
     await capture(`graph-focused-${viewport.width}x${viewport.height}`);
   }
   await page.setViewportSize({ width: 1440, height: 900 });

@@ -25,6 +25,9 @@ _ROOT = Path(__file__).resolve().parent
 _NATIVE = _ROOT / "bluefire" / "native"
 _MANIFEST = _NATIVE / "runner-manifest.json"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_PRODUCT_VERSION = re.compile(
+    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:rc(0|[1-9][0-9]*))?$"
+)
 _PLATFORMS = {
     ("windows", "x86_64"): ("bluefire-runner.exe", "win_amd64"),
     ("windows", "aarch64"): ("bluefire-runner.exe", "win_arm64"),
@@ -109,6 +112,13 @@ def _verified_platform_tag(
     explicit_platform_tag: str | None = None,
 ) -> str:
     try:
+        version_match = _PRODUCT_VERSION.fullmatch(product_version)
+        if version_match is None:
+            raise RuntimeError("product version is not normalized stable or RC")
+        major, minor, patch, rc = version_match.groups()
+        runner_version = f"{major}.{minor}.{patch}"
+        if rc is not None:
+            runner_version += f"-rc{rc}"
         payload = _MANIFEST.read_bytes()
         if not payload or len(payload) > 64 * 1024:
             raise RuntimeError("native runner manifest is missing or oversized")
@@ -149,7 +159,7 @@ def _verified_platform_tag(
             "product_name": "bluefire-nexus",
             "product_version": product_version,
             "runner_id": "bluefire-rust-runner.v1",
-            "runner_version": product_version,
+            "runner_version": runner_version,
             "inventory_schema": "bluefire.runner-inventory.v1",
             "action_sdk_version": "bluefire.runner-action-sdk.v1",
             "receipt_protocol": "bluefire.runner-receipt-wal.v2",

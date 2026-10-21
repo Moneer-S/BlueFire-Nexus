@@ -38,6 +38,7 @@ import type {
 import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, LoadingState, PageHeader, Panel, PanelHeader, sentence } from "../components/Primitives";
 
 const lifecycle = ["hypothesis", "parsed", "fixture_exercised", "observed_exercised", "benign_evaluated", "rejected"];
+function lifecycleLabel(state: string) { return state === "benign_evaluated" ? "Benign fixtures evaluated" : sentence(state); }
 const emptyAIProviders: NonNullable<CatalogResponse["ai"]["providers"]> = [];
 const manualRuleDefaults = { title: "", behaviorId: "sandbox.collection.stage.v1", language: "sqlite", permissionCondition: "staged" as PermissionCondition, internalConditions: "" };
 function matchesManualFields(value: unknown, expected: Record<string, unknown>) {
@@ -438,6 +439,7 @@ function DetectionRegistryPage() {
     resourceId: resource.id,
   }));
   const sourceRun = evaluationHandoff && sourceQuery.data?.run_id !== evaluationHandoff.runId ? undefined : sourceQuery.data;
+  const independentObservationCount = sourceRun ? sourceObservedRecords(sourceRun).length : undefined;
   const linked: CandidateView[] = sourceRun ? (sourceRun.detections?.candidates ?? []).map((candidate, index) => ({
     ...candidate,
     resolvedId: runCandidateKey(sourceRun.run_id, candidate.candidate_id ?? candidate.id ?? String(index)),
@@ -470,7 +472,17 @@ function DetectionRegistryPage() {
   const manualCanSave = Boolean(title.trim()) && title.length <= 200 && manualBehaviorAvailable && manualLanguageAvailable && manualDefinition !== null && !retainedInternalPending;
 
   return <div className="page detection-page">
-    <PageHeader title="Detection Lab" actions={<Link className="button button-secondary button-medium" to={detectionCreationPath(sourceRunId)}>Create from run evidence</Link>} />
+    <PageHeader title="Detection Lab" actions={<div className="detection-create-action">
+      <div className="detection-create-source" aria-live="polite" aria-label="Selected source eligibility">
+        {sourceRun ? <>
+          <strong>{runLabel(sourceRun)}</strong>
+          <span>{sourceTypeLabel(sourceRun.mode, sourceRun.is_demo)} · {sourceRun.run_id.slice(-8)}</span>
+          <span>{independentObservationCount} independent observation{independentObservationCount === 1 ? "" : "s"}</span>
+          {independentObservationCount === 0 ? <small>Run-linked records may inform a hypothesis, but cannot support observed exercise.</small> : null}
+        </> : sourceRunId ? <span>{sourceQuery.isError ? "Source eligibility unavailable" : "Loading selected source eligibility"}</span> : <span>No source run selected</span>}
+      </div>
+      <Link className="button button-secondary button-medium" to={detectionCreationPath(sourceRunId)}>Create from run evidence</Link>
+    </div>} />
     {handoffRequested && candidatesQuery.isError ? <ErrorState title="Detection registry unavailable" error={candidatesQuery.error} retry={() => { void candidatesQuery.refetch(); }} /> : null}
     {notice ? <Callout title="Detection update">{notice}</Callout> : null}
     <section className="detection-context" aria-label="Source run and evidence">
@@ -528,14 +540,14 @@ function DetectionRegistryPage() {
       <details>
         <summary>Validation stages</summary>
         <Callout title="What validation establishes">Rendered text is not validation. Sigma is converted through pySigma and SQLite is inspected locally; neither advances beyond parsed until its bounded query really executes. SPL structural success remains a hypothesis. Observed exercise accepts only verified, immutable, independently observed evidence records. Clone and tune preserve their parent.</Callout>
-        <div className="lifecycle-strip" aria-label="Detection lifecycle counts">{lifecycle.map((state, index) => <div key={state} className={state === "rejected" ? "rejected" : ""}><span>{index + 1}</span><strong>{sentence(state)}</strong><em>{counts[state]}</em></div>)}</div>
+        <div className="lifecycle-strip" aria-label="Detection lifecycle counts">{lifecycle.map((state, index) => <div key={state} className={state === "rejected" ? "rejected" : ""}><span>{index + 1}</span><strong>{lifecycleLabel(state)}</strong><em>{counts[state]}</em></div>)}</div>
       </details>
     </div>
     <div className="detection-layout">
       <Panel className="candidate-list">
         <div className="candidate-list-heading"><strong>Detectors</strong><span>{filtered.length} shown</span></div>
         <div className="history-search"><Search /><input aria-label="Search detection candidates" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search candidate, behavior, language" /></div>
-        <div>{filtered.map((item) => <button key={item.resolvedId} aria-label={`${item.title ? displayTitle(item.title) : item.resolvedId} · ${revisionLabel(item)} · ${languageLabel(item.target_language ?? item.language ?? "unknown")} · ${sentence(item.state)}`} aria-pressed={selected?.resolvedId === item.resolvedId} className={selected?.resolvedId === item.resolvedId ? "selected" : ""} onClick={() => { setSearchParams(old => { const next = new URLSearchParams(old); next.delete("view"); next.set("candidate", item.candidate_id ?? item.id ?? item.resolvedId); if (item.resourceId) next.set("candidate_scope", "registry"); else { next.delete("candidate_scope"); if (item.runId) next.set("run", item.runId); } return next; }); comparisonMutation.reset(); }}><span className="candidate-icon"><ShieldQuestion /></span><span><strong>{item.title ? displayTitle(item.title) : item.resolvedId}</strong><small>{revisionLabel(item)} · {languageLabel(item.target_language ?? item.language ?? "unknown")}</small><small>{displayTitle(catalogQuery.data.behaviors.find(behavior => behavior.id === item.behavior_id)?.title ?? "Behavior not recorded")}</small></span><span><Badge tone={item.state === "rejected" ? "danger" : item.state === "hypothesis" ? "neutral" : "success"}>{sentence(item.state)}</Badge>{item.runId ? <Badge tone={item.demo === true || item.sourceMode === "simulate" ? "violet" : "info"}>{sourceTypeLabel(item.sourceMode, item.demo)}</Badge> : null}</span></button>)}</div>
+        <div>{filtered.map((item) => <button key={item.resolvedId} aria-label={`${item.title ? displayTitle(item.title) : item.resolvedId} · ${revisionLabel(item)} · ${languageLabel(item.target_language ?? item.language ?? "unknown")} · ${lifecycleLabel(item.state)}`} aria-pressed={selected?.resolvedId === item.resolvedId} className={selected?.resolvedId === item.resolvedId ? "selected" : ""} onClick={() => { setSearchParams(old => { const next = new URLSearchParams(old); next.delete("view"); next.set("candidate", item.candidate_id ?? item.id ?? item.resolvedId); if (item.resourceId) next.set("candidate_scope", "registry"); else { next.delete("candidate_scope"); if (item.runId) next.set("run", item.runId); } return next; }); comparisonMutation.reset(); }}><span className="candidate-icon"><ShieldQuestion /></span><span><strong>{item.title ? displayTitle(item.title) : item.resolvedId}</strong><small>{revisionLabel(item)} · {languageLabel(item.target_language ?? item.language ?? "unknown")}</small><small>{displayTitle(catalogQuery.data.behaviors.find(behavior => behavior.id === item.behavior_id)?.title ?? "Behavior not recorded")}</small></span><span><Badge tone={item.state === "rejected" ? "danger" : item.state === "hypothesis" ? "neutral" : item.state === "benign_evaluated" ? "info" : "success"}>{lifecycleLabel(item.state)}</Badge>{item.runId ? <Badge tone={item.demo === true || item.sourceMode === "simulate" ? "violet" : "info"}>{sourceTypeLabel(item.sourceMode, item.demo)}</Badge> : null}</span></button>)}</div>
         {!filtered.length ? <EmptyState title="No candidates" description="Create a hypothesis or complete a run that generates detection research records." /> : null}
       </Panel>
       {handoffRequested && !handoffIdentityMatches ? <Panel>{candidatesQuery.isFetching ? <LoadingState label="Checking requested saved revision" /> : <Callout tone="warning" title="Requested saved revision unavailable">The comparison link must identify one available saved revision. It may be missing, ambiguous or unsupported; no other candidate has been substituted.</Callout>}<Button onClick={cancelEvaluationHandoff}>Leave comparison setup</Button></Panel> : selected ? <CandidateWorkspace
@@ -762,7 +774,7 @@ function CandidateWorkspace({
   };
 
   return <Panel className="candidate-workspace" data-active-tab={tab}>
-    <PanelHeader title={candidate.title ? displayTitle(candidate.title) : candidate.resolvedId} detail={`${languageLabel(language)} · ${revisionLabel(candidate)}`} actions={<Badge tone={candidate.state === "rejected" ? "danger" : candidate.state === "hypothesis" ? "neutral" : "success"}>{sentence(candidate.state)}</Badge>} />
+    <PanelHeader title={candidate.title ? displayTitle(candidate.title) : candidate.resolvedId} detail={`${languageLabel(language)} · ${revisionLabel(candidate)}`} actions={<Badge tone={candidate.state === "rejected" ? "danger" : candidate.state === "hypothesis" ? "neutral" : candidate.state === "benign_evaluated" ? "info" : "success"}>{lifecycleLabel(candidate.state)}</Badge>} />
     <div className="workspace-tabs" role="tablist" aria-label="Detection candidate details">{(["candidate", "evaluations", "revisions", "fixtures", "observed", "history"] as const).map((item) => <button role="tab" aria-selected={tab === item} onClick={() => setTab(item)} key={item}>{item === "evaluations" ? "Run evaluations" : item === "candidate" && querySource ? "Rule" : sentence(item)}</button>)}</div>
     <div className="candidate-body">
       <div className="candidate-main">
@@ -875,7 +887,7 @@ function CandidateWorkspace({
         <Button size="small" onClick={() => onAction("exercise-observed", { run_id: runId, ...(evidenceIds.trim() ? { evidence_ids: evidenceIds.split(",").map((item) => item.trim()).filter(Boolean) } : {}) })} disabled={!canObserved || lifecyclePending || !runId || !observedRunQuery.isSuccess || !observedRecords.length}><FileCheck2 />Exercise observed evidence</Button>
         <DataList items={[{ label: "Observed evidence IDs", value: candidate.observed_evidence_ids?.join(", ") || "None" }, { label: "Predicted fields", value: candidate.predicted_fields?.join(", ") || "None" }, { label: "Observed fields", value: candidate.observed_fields?.join(", ") || "None" }, { label: "Field drift", value: candidate.field_drift ? driftText(candidate.field_drift) : "Not measured" }]} />
         {candidate.field_drift ? <details><summary>Show raw field drift</summary><pre>{JSON.stringify(candidate.field_drift, null, 2)}</pre></details> : null}
-      </> : <div className="structured-list">{candidate.lifecycle_history?.length ? candidate.lifecycle_history.map((item, index) => <article key={item.sequence ?? index}><strong>{item.sequence ?? index + 1}. {sentence(item.action ?? "transition")}</strong><span>{sentence(item.from_state ?? item.prior_state ?? "new")} → {sentence(item.to_state ?? item.current_state ?? candidate.state)} · {sentence(item.outcome ?? "recorded")}</span><small>{item.recorded_at ?? item.timestamp ?? "Timestamp not reported"}{item.run_id ? ` · ${item.run_id}` : ""}</small></article>) : <EmptyState title="No lifecycle history" description="Run-linked legacy candidates may not include explicit durable lifecycle rows." />}</div>}
+      </> : <div className="structured-list">{candidate.lifecycle_history?.length ? candidate.lifecycle_history.map((item, index) => <article key={item.sequence ?? index}><strong>{item.sequence ?? index + 1}. {sentence(item.action ?? "transition")}</strong><span>{lifecycleLabel(item.from_state ?? item.prior_state ?? "new")} → {lifecycleLabel(item.to_state ?? item.current_state ?? candidate.state)} · {sentence(item.outcome ?? "recorded")}</span><small>{item.recorded_at ?? item.timestamp ?? "Timestamp not reported"}{item.run_id ? ` · ${item.run_id}` : ""}</small></article>) : <EmptyState title="No lifecycle history" description="Run-linked legacy candidates may not include explicit durable lifecycle rows." />}</div>}
       </div>
       <aside className="detection-context-rail" aria-label="Selected detector context">
         <section className="context-rail-section">

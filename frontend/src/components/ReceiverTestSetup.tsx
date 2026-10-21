@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { ArrowRight } from "lucide-react";
 import { api, DEMO_MODE } from "../lib/api";
 import { checkedReceiverContext } from "../lib/receiver-defense";
 import { runIntent } from "../lib/run-assistance";
@@ -17,6 +18,8 @@ import { savedExperimentPath } from "../lib/receiver-navigation";
 import { Button, Callout, ErrorState, Field, LoadingState } from "./Primitives";
 
 type StartRequest = ReceiverContextRequest & { submission_id: string; context_digest: string };
+const receiverStarterId = "scenario.receiver-defense.redaction-validation.v1";
+const receiverStarterTitle = "Validate receiver redaction and legitimate use";
 export function ReceiverTestSetup({ disabled, onStart }: { disabled: boolean; onStart: (body: StartRequest) => void }) {
   const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
   const versions = useQuery({ queryKey: ["scenario-versions"], queryFn: api.scenarioVersions });
@@ -31,6 +34,7 @@ export function ReceiverTestSetup({ disabled, onStart }: { disabled: boolean; on
     <h2>New control test</h2>
     <fieldset className="receiver-workflow"><legend>Policy outcome</legend><label><input type="radio" name="receiver-workflow" value="comparison" checked={workflow === "comparison"} disabled={disabled} onChange={() => setWorkflow("comparison")} /> Compare and restore prior policy</label><label><input type="radio" name="receiver-workflow" value="retained_redaction" checked={workflow === "retained_redaction"} disabled={disabled} onChange={() => setWorkflow("retained_redaction")} /> Retain redaction and verify legitimate use</label></fieldset>
     <Field label="Saved experiment" hint="Choose an immutable version with a JSONL staging step connected to a peer handoff."><select value={selected} onChange={(event) => { setSelected(event.target.value); try { rememberReceiverSelection(event.target.value); setStorageError(undefined); } catch (error) { setStorageError(error); } }}><option value="">Choose a saved experiment</option>{versions.data.scenarios.map((item) => <option key={`${item.scenario_id}:${item.version}:${item.digest}`} value={`${item.scenario_id}:${item.version}:${item.digest}`}>{item.title} · version {item.version}</option>)}</select></Field>
+    <Link className="button button-secondary button-small receiver-starter-link" to={`/scenarios?${new URLSearchParams({ selected: receiverStarterId, view: "packaged" })}`}><ArrowRight aria-hidden="true"/> Open “{receiverStarterTitle}”</Link>
     {storageError ? <ErrorState title="Selection is only available on this page" error={storageError} /> : null}
     {selected && !saved ? <p>The previously selected version is no longer in this list. Choose an available saved version to check its current eligibility.</p> : null}
     {!versions.data.scenarios.length ? <p>Save an experiment in <Link to="/builder">Build</Link> to select it here.</p> : null}

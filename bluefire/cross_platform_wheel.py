@@ -27,7 +27,8 @@ _MAX_WHEEL_BYTES = 256 * 1024 * 1024
 _MAX_MEMBER_BYTES = 128 * 1024 * 1024
 _MAX_MEMBER_COUNT = 8192
 _WHEEL_NAME = re.compile(
-    r"^bluefire_nexus-(?P<version>[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.]+)?)-"
+    r"^bluefire_nexus-(?P<version>(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\."
+    r"(?:0|[1-9][0-9]*)(?:rc(?:0|[1-9][0-9]*))?)-"
     r"py3-none-win_amd64\.whl$"
 )
 

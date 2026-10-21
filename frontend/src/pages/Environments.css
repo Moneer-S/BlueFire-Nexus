@@ -1,5 +1,6 @@
 .environments-page { max-width: 1240px; container: environments-workspace / inline-size; }
 .environment-band { padding: 22px 0 18px; border-top: 1px solid var(--line); }
+.environment-band-empty { padding-top: 12px; padding-bottom: 10px; }
 .environment-band-header { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 12px; margin-bottom: 10px; }
 .environment-band-icon { display: grid; place-items: center; width: 32px; aspect-ratio: 1; color: var(--blue); }
 .environment-band-icon svg { width: 20px; height: 20px; }
@@ -9,11 +10,14 @@
 .environment-band-header a svg { width: 15px; height: 15px; }
 .environment-rows { display: grid; }
 .environment-row { display: grid; grid-template-columns: minmax(180px, 0.85fr) minmax(240px, 1.7fr) auto; align-items: center; gap: 18px; min-height: 62px; padding: 11px 8px; border-bottom: 1px solid var(--line); }
+.environment-row-compact { min-height: 40px; padding-top: 5px; padding-bottom: 5px; }
 .environment-row > div { display: grid; gap: 4px; min-width: 0; }
 .environment-row strong { overflow-wrap: anywhere; font-size: 14px; }
 .environment-row small { color: var(--muted); overflow-wrap: anywhere; }
 .environment-row p { margin: 0; color: var(--muted-strong); font-size: 13px; overflow-wrap: anywhere; }
 .environment-note, .environment-empty, .environment-demo-note { margin: 10px 8px 0; color: var(--muted); font-size: 13px; }
+.environment-empty-compact { margin-top: 3px; }
+.environment-note-compact { margin-top: 5px; }
 .environment-provider-list { display: grid; margin: 8px 8px 0 52px; border-top: 1px solid var(--line); }
 .environment-provider-row { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(120px, 1fr) auto; align-items: center; gap: 14px; min-height: 42px; border-bottom: 1px solid var(--line); font-size: 13px; }
 .environment-provider-row strong, .environment-provider-row span { min-width: 0; overflow-wrap: anywhere; }

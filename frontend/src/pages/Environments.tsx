@@ -66,25 +66,25 @@ export function EnvironmentsPage() {
   return <div className="page environments-page">
     <PageHeader eyebrow="Workspace configuration" title="Environments" description="Review saved environment setup and current access readiness. Open each workspace for its full setup and operation history." />
 
-    <section className="environment-band" aria-labelledby="cloud-access-heading">
+    <section className={`environment-band${s3.data && !s3.data.environments.length ? " environment-band-empty" : ""}`} aria-labelledby="cloud-access-heading">
       <BandHeader id="cloud-access-heading" title="Cloud access" icon={Cloud} to="/s3-access" linkLabel="Open S3 access" />
       <QueryState pending={s3.isPending} error={s3.error} label="S3 enrollment" retry={() => { void s3.refetch(); }} />
       {s3.data ? s3.data.environments.length ? <div className="environment-rows">{s3.data.environments.map(row => <article className="environment-row" key={row.environment.environment_id}>
         <div><strong>{row.environment.display_name}</strong><small>{row.environment.scope.bucket} · {row.environment.scope.region}</small></div>
         <p>{s3.isError ? "Last reported environment; current status could not be refreshed." : row.problem ?? (Date.parse(row.environment.scope.expires_at) <= now ? "The enrolled environment scope has expired." : row.available ? "Enrolled environment is available for review." : "Enrolled environment is currently unavailable.")}</p>
         <StateBadge tone={s3.isError || !row.available || Date.parse(row.environment.scope.expires_at) <= now ? "warning" : "info"}>{s3.isError ? "Last reported" : Date.parse(row.environment.scope.expires_at) <= now ? "Expired" : row.available ? "Ready for review" : "Unavailable"}</StateBadge>
-      </article>)}</div> : <p className="environment-empty">No enrolled S3 environments are reported.</p> : null}
-      {s3.data?.problem ? <p className="environment-note">{s3.data.problem}</p> : null}
+      </article>)}</div> : <p className="environment-empty environment-empty-compact">{s3.data.problem ?? (s3.isError ? "No enrolled S3 environments were last reported." : "No enrolled S3 environments are reported.")}</p> : null}
+      {s3.data?.problem && s3.data.environments.length ? <p className="environment-note">{s3.data.problem}</p> : null}
     </section>
 
-    <section className="environment-band" aria-labelledby="file-access-heading">
+    <section className={`environment-band${fileControls.data && !fileControls.data.controls.length ? " environment-band-empty" : ""}`} aria-labelledby="file-access-heading">
       <BandHeader id="file-access-heading" title="File access" icon={FileLock2} to="/file-access" linkLabel="Open file access" />
       <QueryState pending={fileStatus.isPending} error={fileStatus.error} label="File-access setup" retry={() => { void fileStatus.refetch(); }} />
       {fileStatus.data ? <div className="environment-rows"><article className="environment-row">
         <div><strong>{fileStatus.data.platform === "macos" ? "macOS workspace" : fileSetup ? "Protected Windows setup" : "Prepared file-access session"}</strong><small>{fileSetup ? `Setup expires ${formatDate(new Date(fileSetup.expires_at_ms).toISOString())}` : fileStatus.data.enrollment ? `Enrollment expires ${formatDate(new Date(fileStatus.data.enrollment.expires_at_ms).toISOString())}` : "No current enrollment"}</small></div>
         <p>{fileStatus.isError ? "Last reported setup; current status could not be refreshed." : !fileCurrent ? fileSetup ? "Protected setup is recorded but expired." : "No current task-access setup is available." : fileStatus.data.available ? "Current setup is available for reviewed operations." : fileStatus.data.problem?.message ?? "Protected setup is recorded; task access is unavailable."}</p>
         {fileStatus.isError ? <StateBadge tone="warning">Last reported</StateBadge> : fileReadiness ? <StateBadge tone={fileReadiness.tone}>{fileReadiness.label}</StateBadge> : <StateBadge tone="neutral">Status unknown</StateBadge>}
-      </article><article className="environment-row">
+      </article><article className={`environment-row${fileControls.data?.controls.length === 0 ? " environment-row-compact" : ""}`}>
         <div><strong>Saved controls</strong><small>File-access work history</small></div>
         <p>{fileControls.error ? "History unavailable; see the notice below." : fileControls.isPending ? "Loading saved-control history." : `${fileControls.data?.controls.length} saved ${fileControls.data?.controls.length === 1 ? "control" : "controls"}.`}</p>
         <StateBadge tone={fileControls.error ? "warning" : fileControls.isPending ? "neutral" : "info"}>{fileControls.error ? "Unavailable" : fileControls.isPending ? "Loading" : "History"}</StateBadge>
@@ -92,7 +92,7 @@ export function EnvironmentsPage() {
       {fileControls.error ? <ErrorState title="Saved file-access history unavailable" error={fileControls.error} retry={() => { void fileControls.refetch(); }} /> : null}
     </section>
 
-    <section className="environment-band" aria-labelledby="directory-access-heading">
+    <section className={`environment-band${adEnvironments.data && !adEnvironments.data.environments.length && adWorkflows.data && !adWorkflows.data.length ? " environment-band-empty" : ""}`} aria-labelledby="directory-access-heading">
       <BandHeader id="directory-access-heading" title="Directory access" icon={Network} to="/ad-smb" linkLabel="Open AD share access" />
       <QueryState pending={adEnvironments.isPending} error={adEnvironments.error} label="AD environment readiness" retry={() => { void adEnvironments.refetch(); }} />
       {adEnvironments.data ? <>
@@ -100,11 +100,11 @@ export function EnvironmentsPage() {
           <div><strong>{row.environment.domain} · {row.environment.share}</strong><small>{sentence(row.environment.provenance)} environment · expires {formatDate(row.environment.expiresAt)}</small></div>
           <p>{adEnvironments.isError ? "Last reported environment; current status could not be refreshed." : row.readiness.problem ? (row.readiness.problem === "native_admission_unavailable" ? "Native admission is unavailable." : sentence(row.readiness.problem)) : row.available && Date.parse(row.environment.expiresAt) > now ? "Member and client channels are ready for review." : Date.parse(row.environment.expiresAt) <= now ? "The enrolled environment scope has expired." : "Environment is not ready for review."}</p>
           <StateBadge tone={adEnvironments.isError || !row.available || Date.parse(row.environment.expiresAt) <= now ? "warning" : "info"}>{adEnvironments.isError ? "Last reported" : Date.parse(row.environment.expiresAt) <= now ? "Expired" : row.available ? "Ready for review" : "Unavailable"}</StateBadge>
-        </article>)}{!adEnvironments.data.environments.length ? <p className="environment-empty">No enrolled AD environments are reported.</p> : null}</div>
-        <p className="environment-note">Native execution: {adEnvironments.isError ? "last reported status could not be refreshed" : nativeCurrentlyAvailable ? "reported available for an enrolled environment" : "not reported available"}. Environment review readiness and workflow dispatch are separate.</p>
+        </article>)}{!adEnvironments.data.environments.length ? <p className="environment-empty environment-empty-compact">{adEnvironments.isError ? "No enrolled AD environments were last reported. Native availability could not be refreshed." : `No enrolled AD environments are reported. Native execution: ${nativeCurrentlyAvailable ? "reported available for an enrolled environment" : "not reported available"}.`} Environment review readiness and workflow dispatch are separate.</p> : null}</div>
+        {adEnvironments.data.environments.length ? <p className="environment-note">Native execution: {adEnvironments.isError ? "last reported status could not be refreshed" : nativeCurrentlyAvailable ? "reported available for an enrolled environment" : "not reported available"}. Environment review readiness and workflow dispatch are separate.</p> : null}
       </> : null}
       <QueryState pending={adWorkflows.isPending} error={adWorkflows.error} label="AD workflow history" retry={() => { void adWorkflows.refetch(); }} />
-      {adWorkflows.data ? <p className="environment-note">{adWorkflows.isError ? "Last reported" : "Saved"} workflows: {adWorkflows.data.length}; pending operations: {adWorkflows.data.filter(row => row.pending !== null).length}. Workflow history is reported separately from environment readiness.</p> : null}
+      {adWorkflows.data ? <p className={`environment-note${!adWorkflows.data.length && !adEnvironments.data?.environments.length ? " environment-note-compact" : ""}`}>{adWorkflows.isError ? "Last reported" : "Saved"} workflows: {adWorkflows.data.length}; pending operations: {adWorkflows.data.filter(row => row.pending !== null).length}. Workflow history is reported separately from environment readiness.</p> : null}
     </section>
 
     <section className="environment-band" aria-labelledby="execution-heading">

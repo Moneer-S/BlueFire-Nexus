@@ -16,7 +16,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import "./Builder.css";
 import { guaranteedInputSources, stepParameterSummary } from "../lib/graph-authoring";
 import { ParameterField } from "../components/ParameterField";
-import { branchLabels, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, GRAPH_SECTION_SIZE, graphBoundsViewport, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, readableGraphViewport, revealGraphNode, type ScenarioGraph } from "../lib/graph-view";
+import { branchLabels, focusedGraphLayout, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, GRAPH_SECTION_SIZE, graphBoundsViewport, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, readableGraphViewport, revealGraphNode, type ScenarioGraph } from "../lib/graph-view";
 import { api } from "../lib/api";
 import { defaultGraphView, readWorkingGraphView, writeWorkingGraphView } from "../lib/graph-view-retention";
 import { initialParameterValue, shouldInitializeParameter } from "../lib/parameters";
@@ -200,7 +200,14 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   const sectionIndex = Math.min(focusedSection ?? 0, sections.length - 1);
   const shownSteps = viewMode === "graph" && focusedSection !== null ? sections[sectionIndex]!.steps : visibleGraph.ordered;
   const shownIds = useMemo(() => new Set(shownSteps.map((step) => step.id)), [shownSteps]);
-  const displayNodes = useMemo(() => nodes.map((node) => ({ ...node, hidden: !shownIds.has(node.id), selected: node.selected && shownIds.has(node.id) })), [nodes, shownIds]);
+  const focusedGroup = viewMode === "graph" && focusedSection !== null && sections.length > 1;
+  const focusedLayout = useMemo(() => focusedGroup ? focusedGraphLayout(graph, shownSteps.map(step => step.id)) : undefined, [focusedGroup, graph, shownSteps]);
+  const displayNodes = useMemo(() => nodes.map((node) => {
+    const generated = fallbackLayout[node.id];
+    const projected = focusedLayout?.[node.id];
+    const usesFallback = generated && node.position.x === generated.x && node.position.y === generated.y;
+    return { ...node, position: projected && usesFallback ? projected : node.position, hidden: !shownIds.has(node.id), selected: node.selected && shownIds.has(node.id) };
+  }), [fallbackLayout, focusedLayout, nodes, shownIds]);
   // Selection updates React Flow's node records, but does not invalidate routes.
   const routeGeometry = useMemo(() => JSON.stringify(displayNodes.filter(node => !node.hidden).map(node => ({ id: node.id, ...node.position, width: node.measured?.width ?? GRAPH_NODE_WIDTH, height: node.measured?.height ?? GRAPH_NODE_HEIGHT }))), [displayNodes]);
   const routeObstacles = useMemo<RouteObstacle[]>(() => JSON.parse(routeGeometry) as RouteObstacle[], [routeGeometry]);
@@ -554,10 +561,18 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     window.requestAnimationFrame(() => { fitNodes(first ? sections[Number(value)]?.steps.map(step => step.id) ?? [] : visibleGraph.ordered.map(step => step.id), 180); });
   };
   const fitSelection = () => { if (selectedId) frameStep(selectedId, "readable", 180); };
+  const autoLayoutLabel = focusedGroup ? "Arrange visible group" : "Auto-layout";
   const autoLayout = () => {
     if (review?.readOnly || !scenario.steps.length) return;
-    applyScenario({ ...scenario, layout: initialGraphLayout(scenario) }); setCompatibility("Steps arranged by their connections. Use Undo to restore your positions.");
-    window.setTimeout(() => { frameStep(selectedId || scenario.start, "readable", 180); }, 0);
+    if (focusedGroup) {
+      const groupLayout = focusedGraphLayout(graph, shownSteps.map(step => step.id), true) ?? {};
+      applyScenario({ ...scenario, layout: { ...scenario.layout, ...groupLayout } });
+      setCompatibility("Visible group arranged by its connections. Use Undo to restore its positions.");
+      window.setTimeout(() => { fitNodes(shownSteps.map(step => step.id), 180); }, 0);
+    } else {
+      applyScenario({ ...scenario, layout: initialGraphLayout(scenario) }); setCompatibility("Steps arranged by their connections. Use Undo to restore your positions.");
+      window.setTimeout(() => { frameStep(selectedId || scenario.start, "readable", 180); }, 0);
+    }
   };
   const runCommand = (action: () => void) => { setCommandPaletteOpen(false); action(); };
 
@@ -588,7 +603,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
         <div className="graph-topbar">
           <div className="graph-view-actions" aria-label="Graph workspace controls">
             <IconButton label={paletteOpen ? "Hide behavior palette" : "Show behavior palette"} aria-pressed={paletteOpen} onClick={togglePalette}>{paletteOpen ? <PanelLeftClose/> : <PanelLeftOpen/>}</IconButton><IconButton label="Add step" aria-pressed={paletteOpen} onClick={togglePalette}><Plus/></IconButton><div className="view-toggle" aria-label="Experiment view"><button aria-pressed={viewMode === "graph"} onClick={() => setViewMode("graph")}><Network/>Canvas</button><button aria-pressed={viewMode === "steps"} onClick={() => setViewMode("steps")}><ListOrdered/>Steps</button></div>
-            <IconButton label="Auto-layout" onClick={autoLayout} disabled={review?.readOnly || !nodes.length}><LayoutGrid/></IconButton>
+            <IconButton label={autoLayoutLabel} onClick={autoLayout} disabled={review?.readOnly || !nodes.length}><LayoutGrid/></IconButton>
             <IconButton label="Fit visible graph" onClick={fitGraph} disabled={!nodes.length}><ScanSearch/></IconButton>
             <IconButton label="Focus selected step" onClick={fitSelection} disabled={!selected}><Maximize2/></IconButton>
             <output className="graph-scale" aria-label="Graph zoom">{Math.round(graphZoom * 100)}%{summaryZoom ? " · Overview" : ""}</output>
@@ -634,7 +649,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
           <div><Dialog.Title>Builder commands</Dialog.Title><Dialog.Description>Run an existing graph-editor action. Commands never authorize or start execution.</Dialog.Description></div>
           <Dialog.Close asChild><button className="dialog-close" aria-label="Close Builder commands"><X/></button></Dialog.Close>
           <div className="builder-command-list">
-            <button onClick={() => runCommand(autoLayout)} disabled={review?.readOnly || !nodes.length}><LayoutGrid/><span><strong>Auto-layout</strong><small>Arrange steps by their connections.</small></span></button>
+            <button onClick={() => runCommand(autoLayout)} disabled={review?.readOnly || !nodes.length}><LayoutGrid/><span><strong>{autoLayoutLabel}</strong><small>{focusedGroup ? "Arrange only the visible group by its connections." : "Arrange steps by their connections."}</small></span></button>
             <button onClick={() => runCommand(fitGraph)} disabled={!nodes.length}><ScanSearch/><span><strong>Fit visible graph</strong><small>Show an overview of the visible path.</small></span></button>
             <button onClick={() => runCommand(fitSelection)} disabled={!selected}><ScanSearch/><span><strong>Focus selected step</strong><small>Frame the selected node at a readable scale.</small></span></button>
             <button onClick={() => runCommand(togglePalette)}>{paletteOpen ? <PanelLeftClose/> : <PanelLeftOpen/>}<span><strong>{paletteOpen ? "Hide behavior palette" : "Show behavior palette"}</strong><small>Toggle the registered behavior catalog.</small></span></button>

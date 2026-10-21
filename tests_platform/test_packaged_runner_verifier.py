@@ -6,9 +6,33 @@ from types import SimpleNamespace
 
 import pytest
 
+from bluefire.action_package_metadata import PackageCompatibility, SemVer
 from bluefire.cross_platform_wheel import _write_member
 from tools import verify_packaged_runner as verifier
-from tools.verify_packaged_runner import _disposable_workspace_proof, _native_runner_members
+from tools.verify_packaged_runner import (
+    _SMOKE_ALIAS_MIN_BLUEFIRE_VERSION,
+    _disposable_workspace_proof,
+    _native_runner_members,
+)
+
+
+def test_prerelease_floor_is_explicit_and_stable_release_still_qualifies():
+    stable_floor = PackageCompatibility.from_mapping(
+        {
+            "minimum_bluefire_version": "3.0.0",
+            "maximum_bluefire_version_exclusive": "4.0.0",
+        }
+    )
+    rc_floor = PackageCompatibility.from_mapping(
+        {
+            "minimum_bluefire_version": _SMOKE_ALIAS_MIN_BLUEFIRE_VERSION,
+            "maximum_bluefire_version_exclusive": "4.0.0",
+        }
+    )
+
+    assert not stable_floor.supports(SemVer.parse("3.0.0-rc2"))
+    assert rc_floor.supports(SemVer.parse("3.0.0-rc2"))
+    assert rc_floor.supports(SemVer.parse("3.0.0"))
 
 
 def test_failure_diagnostic_is_bounded_and_never_emits_unapproved_values():

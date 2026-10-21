@@ -71,6 +71,25 @@ it("keeps independent sections visible when one local status source fails", asyn
   expect(await screen.findByText("AD environment readiness unavailable")).toBeVisible();
 });
 
+it("keeps the all-empty overview compact, truthful, and actionable", async () => {
+  const cloudProblem = "No S3 environment is enrolled. Account, roles, generated objects, protected runtime and finite spending authority are required.";
+  vi.mocked(s3Api.environments).mockResolvedValue({ schema_version: "bluefire.s3-environments.v1", environments: [], problem: cloudProblem });
+  vi.mocked(fileAccessApi.list).mockResolvedValue({ schema_version: "bluefire.file-access-control-list.v1", controls: [] });
+  vi.mocked(adSmbApi.environments).mockResolvedValue({ native_execution_available: false, environments: [] });
+  vi.mocked(adSmbApi.list).mockResolvedValue(rawAdList([]));
+
+  mount();
+
+  expect(await screen.findByText(cloudProblem, { exact: true })).toBeVisible();
+  expect(screen.getAllByText(cloudProblem, { exact: true })).toHaveLength(1);
+  expect(await screen.findByText(/Native execution: not reported available/)).toBeVisible();
+  expect(screen.getByText("0 saved controls.")).toBeVisible();
+  expect(screen.getByText("History")).toBeVisible();
+  expect(screen.getByRole("link", { name: "Open S3 access" })).toHaveAttribute("href", "/s3-access");
+  expect(screen.getByRole("link", { name: "Open file access" })).toHaveAttribute("href", "/file-access");
+  expect(screen.getByRole("link", { name: "Open AD share access" })).toHaveAttribute("href", "/ad-smb");
+});
+
 it("uses read APIs only and does not treat synthetic AD setup as native availability", async () => {
   mount();
   expect(await screen.findByText(/Native execution: not reported available/)).toBeVisible();

@@ -11,6 +11,7 @@ import pytest
 from setuptools.dist import Distribution
 
 from bluefire import __version__
+from bluefire.version import native_runner_version
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 PRODUCT_VERSION = __version__
@@ -66,7 +67,7 @@ def _stage_manifest(
         "product": {"name": "bluefire-nexus", "version": PRODUCT_VERSION},
         "runner": {
             "id": "bluefire-rust-runner.v1",
-            "version": PRODUCT_VERSION,
+            "version": native_runner_version(PRODUCT_VERSION),
             "inventory_schema": "bluefire.runner-inventory.v1",
             "action_sdk_version": "bluefire.runner-action-sdk.v1",
             "receipt_protocol": "bluefire.runner-receipt-wal.v2",
@@ -152,6 +153,26 @@ def test_cross_build_requires_the_exact_explicit_wheel_target(
             PRODUCT_VERSION,
             explicit_platform_tag="linux_x86_64",
         )
+
+
+def test_wheel_build_hook_requires_the_exact_pep440_to_semver_pair(
+    tmp_path: Path,
+) -> None:
+    namespace = _load_build_hook()
+    native, expected_tag = _stage_manifest(tmp_path, platform_name="windows")
+    _bind_native_root(namespace, native)
+    manifest_path = native / "runner-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["product"]["version"] = "3.0.0rc2"
+    manifest["runner"]["version"] = "3.0.0-rc2"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert namespace["_verified_platform_tag"]("3.0.0rc2") == expected_tag
+
+    manifest["runner"]["version"] = "3.0.0rc2"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="incompatible with this wheel"):
+        namespace["_verified_platform_tag"]("3.0.0rc2")
 
 
 def test_wheel_command_defers_target_verification_until_artifact_build(

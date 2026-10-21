@@ -12,6 +12,7 @@ from typing import Any, Mapping
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+import bluefire.version as version_module
 from bluefire.action_packages import (
     ACTION_PACKAGE_PAYLOAD_SCHEMA,
     ACTION_PROGRAM_ADAPTER,
@@ -879,6 +880,35 @@ def test_activation_upgrade_removal_and_exact_historical_recovery(tmp_path: Path
         assert connection.execute(
             "SELECT COUNT(*) FROM action_package_versions WHERE package_id = ?", (PACKAGE_ID,)
         ).fetchone() == (2,)
+
+
+def test_activation_uses_native_semver_projection_for_product_release_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ProductStore(tmp_path / "activation-rc.sqlite3")
+    key = Ed25519PrivateKey.generate()
+    _enroll(store, key)
+    store.install_action_package(_verified(store, key), installed_by="operator")
+    monkeypatch.setattr(version_module, "__version__", "3.0.0rc2")
+
+    activation = store.prepare_action_package_activation(
+        PACKAGE_ID,
+        "1.2.3",
+        runner_inventory=_runner_inventory(),
+        runner_identity_digest="sha256:" + "1" * 64,
+    )
+
+    assert activation.bluefire_version == "3.0.0-rc2"
+    result = store.activate_action_package(
+        activation, activated_by="operator", reason="activate release candidate"
+    )
+    assert result["active"] is True
+    assert (
+        store.get_action_package_catalog_snapshot()["packages"][0][
+            "verified_activation"
+        ].bluefire_version
+        == "3.0.0-rc2"
+    )
 
 
 def test_activation_preflight_is_stale_after_installed_head_changes(tmp_path: Path) -> None:

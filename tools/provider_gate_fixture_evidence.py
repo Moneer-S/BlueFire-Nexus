@@ -6,11 +6,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from bluefire import __version__
 from bluefire.action_packages import VerifiedActionPackage, verify_action_package
 from bluefire.action_provider_packages import WasmProviderProgram
 from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_IDS
 from bluefire.util import canonical_json_bytes
+from bluefire.version import __version__, native_runner_version
 from tools.provider_gate_common import (
     ACTION_ID,
     ALL_VERSIONS,
@@ -21,6 +21,7 @@ from tools.provider_gate_common import (
     EXPECTED_LICENSE,
     EXPECTED_OUTPUTS,
     EXPECTED_PARAMETERS,
+    EXPECTED_RC2_COMPATIBILITY,
     FIXTURE_SCHEMA,
     FIXTURE_SOURCE,
     FORBIDDEN_PACKAGE_EXECUTION_FIELDS,
@@ -28,6 +29,8 @@ from tools.provider_gate_common import (
     PACKAGE_ID,
     PROVIDER_ID,
     PUBLISHER_ID,
+    RC2_FIXTURE_DIRECTORY,
+    RC2_RUNNER_VERSION,
     STRUCTURAL_SCHEMA,
     ProviderGateError,
     _contained_file,
@@ -41,11 +44,30 @@ from tools.provider_gate_common import (
 from tools.provider_gate_source_audit import _source_audit
 
 
+def _fixture_root(repository: Path) -> Path:
+    root = repository / "tests_platform" / "fixtures" / "provider_upgrade"
+    runner_version = native_runner_version(__version__)
+    if runner_version == RC2_RUNNER_VERSION:
+        root = root / RC2_FIXTURE_DIRECTORY
+    elif "-" in runner_version:
+        raise ProviderGateError("provider fixture set is unavailable for this prerelease")
+    return root.resolve(strict=True)
+
+
+def _expected_compatibility() -> Mapping[str, str]:
+    runner_version = native_runner_version(__version__)
+    if runner_version == RC2_RUNNER_VERSION:
+        return EXPECTED_RC2_COMPATIBILITY
+    if "-" in runner_version:
+        raise ProviderGateError("provider fixture set is unavailable for this prerelease")
+    return EXPECTED_COMPATIBILITY
+
+
 def _fixture_set(
     repository: Path,
 ) -> tuple[Mapping[str, Any], dict[str, Mapping[str, Any]], dict[str, VerifiedActionPackage]]:
-    root = repository / "tests_platform" / "fixtures" / "provider_upgrade"
-    root = root.resolve(strict=True)
+    root = _fixture_root(repository)
+    expected_compatibility = _expected_compatibility()
     index = _exact_mapping(
         _load_document(root / "fixture-index.json"),
         {
@@ -132,7 +154,7 @@ def _fixture_set(
                     (str(trust["publisher_id"]), str(trust["key_id"]))
                 ]
             },
-            bluefire_version=__version__,
+            bluefire_version=native_runner_version(__version__),
             platform="windows",
         )
         provider = package.provider
@@ -145,6 +167,7 @@ def _fixture_set(
             or provider.provider_id != PROVIDER_ID
             or package.package_digest != raw_row["package_digest"]
             or package.content_digest != raw_row["content_digest"]
+            or package.manifest.compatibility.to_dict() != expected_compatibility
             or provider.artifact_sha256 != raw_row["artifact_sha256"]
             or provider.artifact_size != raw_row["artifact_size"]
             or package.provider_artifact_bytes is None
@@ -216,7 +239,11 @@ def _expected_provider_limits(version: str) -> dict[str, int]:
     }
 
 
-def _safe_contract_row(package: VerifiedActionPackage, version: str) -> dict[str, Any]:
+def _safe_contract_row(
+    package: VerifiedActionPackage,
+    version: str,
+    expected_compatibility: Mapping[str, str],
+) -> dict[str, Any]:
     if len(package.actions) != 1 or len(package.behaviors) != 1:
         return {"version": version, "passed": False}
     packaged_action = package.actions[0]
@@ -237,7 +264,7 @@ def _safe_contract_row(package: VerifiedActionPackage, version: str) -> dict[str
         and provider.abi_version == "bluefire.provider-abi.v1"
         and provider.artifact_size == 725
         and provider.limits.to_dict() == _expected_provider_limits(version)
-        and package.manifest.compatibility.to_dict() == EXPECTED_COMPATIBILITY
+        and package.manifest.compatibility.to_dict() == expected_compatibility
         and package.manifest.license.to_dict() == EXPECTED_LICENSE
         and package.manifest.provenance.to_dict()
         == _expected_package_provenance(version, artifact_sha256)
@@ -298,6 +325,7 @@ def _structural_report(
     trusts: Mapping[str, Mapping[str, Any]],
     packages: Mapping[str, VerifiedActionPackage],
 ) -> dict[str, Any]:
+    expected_compatibility = packages[ALL_VERSIONS[0]].manifest.compatibility.to_dict()
     signatures = {package.signature_b64u for package in packages.values()}
     artifacts = {
         package.provider_artifact_bytes
@@ -320,7 +348,10 @@ def _structural_report(
         for action in package.actions
         if isinstance(action.program, WasmProviderProgram)
     }
-    contract_rows = [_safe_contract_row(package, version) for version, package in packages.items()]
+    contract_rows = [
+        _safe_contract_row(package, version, expected_compatibility)
+        for version, package in packages.items()
+    ]
     safe_contract = all(row["passed"] is True for row in contract_rows)
     manifest_integrity = (
         len(signatures) == 3
@@ -329,14 +360,14 @@ def _structural_report(
         and len({package.content_digest for package in packages.values()}) == 3
         and all(
             package.manifest.version == version
-            and package.manifest.compatibility.to_dict() == EXPECTED_COMPATIBILITY
+            and package.manifest.compatibility.to_dict() == expected_compatibility
             and package.provider is not None
             and package.provider.artifact_sha256
             == _sha256_bytes(package.provider_artifact_bytes or b"")
             for version, package in packages.items()
         )
     )
-    fixture_root = repository / "tests_platform" / "fixtures" / "provider_upgrade"
+    fixture_root = _fixture_root(repository)
     fixture_documents = [
         index,
         *trusts.values(),
@@ -362,7 +393,7 @@ def _structural_report(
             "distinct_content_digests": len(
                 {package.content_digest for package in packages.values()}
             ),
-            "compatibility": dict(EXPECTED_COMPATIBILITY),
+            "compatibility": dict(expected_compatibility),
             "package_digests": {
                 version: package.package_digest for version, package in packages.items()
             },

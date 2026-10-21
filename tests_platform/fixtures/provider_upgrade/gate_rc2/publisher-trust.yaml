@@ -1,0 +1,7 @@
+key_id: fixture-gate-rc2-2026
+provenance:
+  purpose: Verify prerelease provider-upgrade fixtures under the explicit RC2 floor
+  source: Ephemeral Ed25519 fixture key generated for this fixture set and discarded after signing
+public_key: 2eUoBZa4haxYLIZxXJxHmi3XT0xI4AMtsSH-UlEqZO4  # pragma: allowlist secret -- public signed fixture material
+publisher_id: bluefire.fixture.provider-upgrade
+trusted_by: provider-fixture-reviewer

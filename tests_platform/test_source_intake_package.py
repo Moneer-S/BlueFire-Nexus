@@ -9,7 +9,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from bluefire import __version__, source_intake_run_validation
-from bluefire.action_packages import verify_action_package
+from bluefire.action_packages import ActionPackageError, verify_action_package
 from bluefire.source_intake import perform_source_intake
 from bluefire.source_intake_package import (
     ACTION_ID,
@@ -35,6 +35,7 @@ from bluefire.source_intake_package import (
     validate_gate09_intake_envelope,
 )
 from bluefire.util import content_hash
+from bluefire.version import native_runner_version
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "bluefire" / "data"
@@ -62,7 +63,7 @@ def test_pinned_assets_transform_and_build_one_verified_package(tmp_path: Path) 
     verified = verify_action_package(
         package,
         trusted_signers={(PUBLISHER_ID, KEY_ID): key.public_key()},
-        bluefire_version=__version__,
+        bluefire_version=native_runner_version(__version__),
         platform="windows",
     )
 
@@ -95,6 +96,37 @@ def test_package_recipe_is_deterministic_for_one_key_and_intake(tmp_path: Path) 
 
     assert first == second
     assert json.loads(first)["integrity"]["content_digest"].startswith("sha256:")
+
+
+@pytest.mark.parametrize("runtime", ["3.0.0-rc2", "3.0.0", "3.1.0"])
+def test_new_recipe_declares_its_prerelease_compatibility(tmp_path: Path, runtime: str) -> None:
+    intake = _intake(tmp_path)
+    key = Ed25519PrivateKey.generate()
+    package = build_gate09_action_package(intake.envelope, private_key=key)
+    verified = verify_action_package(
+        package,
+        trusted_signers={(PUBLISHER_ID, KEY_ID): key.public_key()},
+        bluefire_version=runtime,
+        platform="windows",
+    )
+    assert verified.manifest.version == "19.2.1"
+    assert verified.manifest.compatibility.minimum_bluefire_version == "3.0.0-rc2"
+
+
+@pytest.mark.parametrize("runtime", ["3.0.0-rc1", "2.8.0", "4.0.0"])
+def test_new_recipe_still_refuses_versions_outside_its_contract(
+    tmp_path: Path, runtime: str
+) -> None:
+    intake = _intake(tmp_path)
+    key = Ed25519PrivateKey.generate()
+    package = build_gate09_action_package(intake.envelope, private_key=key)
+    with pytest.raises(ActionPackageError, match="incompatible"):
+        verify_action_package(
+            package,
+            trusted_signers={(PUBLISHER_ID, KEY_ID): key.public_key()},
+            bluefire_version=runtime,
+            platform="windows",
+        )
 
 
 def test_self_consistent_unreviewed_projection_cannot_expand_catalog(tmp_path: Path) -> None:

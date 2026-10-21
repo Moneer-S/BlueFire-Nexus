@@ -43,7 +43,7 @@ it("keeps a saved canvas inspectable while preventing deletion and mutation affo
   expect(confirm).not.toHaveBeenCalled();
   expect(view.container.querySelectorAll(".react-flow__node")).toHaveLength(before);
   await builderOptions(userEvent);
-  for (const name of ["Delete selected node", "Duplicate selected node", "Paste node", "Auto-layout"]) expect(screen.getByRole("button", { name })).toBeDisabled();
+  for (const name of ["Delete selected node", "Duplicate selected node", "Paste node", "Arrange visible group"]) expect(screen.getByRole("button", { name })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Copy selected node" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Fit visible graph" })).toBeEnabled();
   await builderOptions(userEvent, false);
@@ -68,7 +68,7 @@ it("vetoes keyboard Undo and native deletion when an edited proposal becomes sto
   await screen.findByRole("textbox", { name: "Experiment name" });
   const first = () => view.container.querySelector(`.react-flow__node[data-id="${document.start}"]`) as HTMLElement;
   const originalPosition = first().style.transform;
-  await userEvent.click(screen.getByRole("button", { name: "Auto-layout" }));
+  await userEvent.click(screen.getByRole("button", { name: "Arrange visible group" }));
   const arrangedPosition = first().style.transform;
   expect(arrangedPosition).not.toBe(originalPosition);
   expect(screen.getByRole("button", { name: "Undo" })).toBeEnabled();

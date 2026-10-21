@@ -58,7 +58,8 @@ TRANSFORMER_VERSION = "1.0.0"
 PUBLISHER_ID = "bluefire.source-intake"
 KEY_ID = "local-reviewed-t1082-v1"
 PACKAGE_ID = "bluefire-research.attack-system-information"
-PACKAGE_VERSION = "19.2.0"
+PACKAGE_VERSION = "19.2.1"
+MINIMUM_RUNNER_VERSION = "3.0.0-rc2"
 BEHAVIOR_ID = "research.attack.system-information-discovery.v1"
 ACTION_ID = "research.attack.system-information-discovery-action.v1"
 REVIEWED_OPCODE = "endpoint.discovery.windows-version.v1"
@@ -415,7 +416,7 @@ def gate09_package_components(intake_envelope: Any) -> tuple[dict[str, Any], dic
         "package_id": PACKAGE_ID,
         "version": PACKAGE_VERSION,
         "compatibility": {
-            "minimum_bluefire_version": "3.0.0",
+            "minimum_bluefire_version": MINIMUM_RUNNER_VERSION,
             "maximum_bluefire_version_exclusive": "4.0.0",
         },
         "license": {

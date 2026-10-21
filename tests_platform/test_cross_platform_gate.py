@@ -19,6 +19,9 @@ import bluefire.product_gates as product_gates
 import tools.run_cross_platform_source_intake_posix_probe as source_intake_posix_probe
 from bluefire.approvals import execution_intent_id
 from bluefire.cross_platform_artifact_validation import (
+    _WHEEL as ARTIFACT_WHEEL_NAME,
+)
+from bluefire.cross_platform_artifact_validation import (
     CrossPlatformArtifactValidationError,
     validate_transport_recovery_report,
 )
@@ -53,9 +56,69 @@ from bluefire.cross_platform_run_validation import (
     _event_payloads,
     _nested_evidence,
 )
+from bluefire.cross_platform_wheel import _WHEEL_NAME as BUILD_WHEEL_NAME
 from bluefire.evidence import EvidenceProvenance, EvidenceRecord
 from bluefire.product_acceptance import load_release_contract
 from bluefire.util import content_hash
+
+
+def test_readiness_joins_product_prerelease_to_native_semver() -> None:
+    digest = "sha256:" + "a" * 64
+    windows_runner = {
+        "runner_id": "bluefire-rust-runner.v1",
+        "runner_version": "3.0.0-rc2",
+        "binary_sha256": digest,
+    }
+    status = {
+        "schema_version": "bluefire.runner-lifecycle-status.v1",
+        "state": "ready",
+        "runner_id": "bluefire-rust-runner.v1",
+        "profile_id": "sandbox-endpoint-deep-lab.v1",
+        "loopback_only": True,
+        "enrollment": "active",
+        "process": "authenticated",
+        "runner": {
+            "id": "bluefire-rust-runner.v1",
+            "source": "packaged",
+            "product_version": "3.0.0rc2",
+            "runner_version": "3.0.0-rc2",
+            "platform": "windows",
+            "architecture": "x86_64",
+            "binary_digest": digest,
+            "managed_binary": True,
+            "managed_sandbox": True,
+            "inventory_schema": "bluefire.runner-inventory.v1",
+            "action_sdk_version": "bluefire.runner-action-sdk.v1",
+            "receipt_protocol": "bluefire.runner-receipt-wal.v2",
+        },
+        "health": {
+            "transport": "mutual-tls-loopback",
+            "tls": "TLSv1.3",
+            "runner_binary_digest": digest,
+            "inventory_digest": "sha256:" + "b" * 64,
+            "accepting_execute": True,
+        },
+    }
+
+    assert validation_module._status_document(status, windows_runner) == status
+    status["runner"]["runner_version"] = "3.0.0"
+    with pytest.raises(CrossPlatformGateValidationError, match="not product-authored"):
+        validation_module._status_document(status, windows_runner)
+    status["runner"]["runner_version"] = "3.0.0-rc2"
+    status["runner"]["product_version"] = "3.0.0-rc2"
+    with pytest.raises(CrossPlatformGateValidationError, match="product version is invalid"):
+        validation_module._status_document(status, windows_runner)
+
+
+def test_windows_wheel_filename_accepts_only_normalized_pep440_rc() -> None:
+    for version in ("3.0.0", "3.0.0rc0", "3.0.0rc2"):
+        filename = f"bluefire_nexus-{version}-py3-none-win_amd64.whl"
+        assert BUILD_WHEEL_NAME.fullmatch(filename) is not None
+        assert ARTIFACT_WHEEL_NAME.fullmatch(filename) is not None
+    for version in ("3.0.0-rc2", "3.0.0rc02", "03.0.0rc2", "3.0.0+local"):
+        filename = f"bluefire_nexus-{version}-py3-none-win_amd64.whl"
+        assert BUILD_WHEEL_NAME.fullmatch(filename) is None
+        assert ARTIFACT_WHEEL_NAME.fullmatch(filename) is None
 
 
 def _wsl_facts(state: str) -> Mapping[str, Any]:

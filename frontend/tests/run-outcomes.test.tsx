@@ -188,6 +188,9 @@ it("opens review sections and moves keyboard focus without replacing the saved r
   expect(screen.getByText("Generated records were independently read")).toBeVisible();
   await user.click(navigation.getByRole("button", { name: "Detection work" }));
   expect(screen.getByText("Inspect detection candidates (1)")).toHaveFocus();
+  await user.click(within(screen.getByRole("region", { name: "Evidence and detection summary" })).getByRole("button", { name: "Review candidates" }));
+  expect(screen.getByText("Inspect detection candidates (1)").closest("details")).toHaveAttribute("open");
+  expect(screen.getByText("Inspect detection candidates (1)")).toHaveFocus();
   await user.click(navigation.getByRole("button", { name: "Path & steps" }));
   expect(screen.getByRole("heading", { name: "Path taken" })).toHaveFocus();
   await user.click(navigation.getByRole("button", { name: "Cleanup" }));

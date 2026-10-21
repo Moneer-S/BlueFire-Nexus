@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { initialGraphLayout, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, type ScenarioGraph } from "../src/lib/graph-view";
+import { focusedGraphLayout, graphBoundsViewport, initialGraphLayout, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, type ScenarioGraph } from "../src/lib/graph-view";
 import { routePath, segmentCrossesObstacle, type RouteGeometry, type RouteObstacle } from "../src/lib/graph-routes";
 import type { ScenarioStep } from "../src/types";
 
@@ -41,6 +41,24 @@ describe("topology layout", () => {
     for (const edge of graph.edges) {
       const source = positions[edge.from_step]!, target = positions[edge.to_step]!;
       expectClear({ source: { x: source.x + GRAPH_NODE_WIDTH, y: source.y + GRAPH_NODE_HEIGHT / 2 }, target: { x: target.x, y: target.y + GRAPH_NODE_HEIGHT / 2 }, sourceId: edge.from_step, targetId: edge.to_step, sourceSide: "right", targetSide: "left", obstacles: bounds(graph) });
+    }
+  });
+
+  it("keeps focused branch and join relationships routable after projection", () => {
+    const graph: ScenarioGraph = { start: "prepare", steps: ["prepare", "primary", "fallback", "join"].map(step), edges: [
+      { from_step: "prepare", to_step: "primary", outcome: "success" }, { from_step: "prepare", to_step: "fallback", outcome: "blocked" },
+      { from_step: "primary", to_step: "join", outcome: "success" }, { from_step: "fallback", to_step: "join", outcome: "success" },
+    ] };
+    const ids = ["primary", "fallback", "join"];
+    const positions = focusedGraphLayout(graph, ids)!;
+    expect(positions.primary!.x).toBe(positions.fallback!.x);
+    expect(Math.abs(positions.primary!.y - positions.fallback!.y)).toBeGreaterThan(GRAPH_NODE_HEIGHT);
+    expect(positions.join!.x).toBeGreaterThan(positions.primary!.x + GRAPH_NODE_WIDTH);
+    const obstacles = ids.map(id => ({ id, ...positions[id]!, width: GRAPH_NODE_WIDTH, height: GRAPH_NODE_HEIGHT }));
+    for (const edge of graph.edges.filter(edge => ids.includes(edge.from_step) && ids.includes(edge.to_step))) {
+      const source = obstacles.find(card => card.id === edge.from_step)!;
+      const target = obstacles.find(card => card.id === edge.to_step)!;
+      expectClear({ source: { x: source.x + source.width, y: source.y + source.height / 2 }, target: { x: target.x, y: target.y + target.height / 2 }, sourceSide: "right", targetSide: "left", sourceId: source.id, targetId: target.id, obstacles });
     }
   });
 
@@ -93,6 +111,43 @@ describe("topology layout", () => {
       const card = cards[index]!;
       expect(card.x + card.width <= other.x || other.x + other.width <= card.x || card.y + card.height <= other.y || other.y + other.height <= card.y).toBe(true);
     }
+  });
+
+  it("keeps every three-step group readable in the 128-node/256-route topology", () => {
+    const graph = chain(128);
+    for (let index = 0; index < 43; index += 1) {
+      for (const [offset, outcome] of (["partial", "blocked", "failed"] as const).entries()) {
+        graph.edges.push({ from_step: `step-${index}`, to_step: `step-${index + offset + 2}`, outcome });
+      }
+    }
+    expect(graph.edges).toHaveLength(256);
+    const serialized = JSON.stringify(graph);
+    for (let start = 0; start < graph.steps.length; start += 3) {
+      const ids = graph.steps.slice(start, start + 3).map(step => step.id);
+      const positions = focusedGraphLayout(graph, ids)!;
+      const cards = ids.map(id => ({ ...positions[id]!, width: GRAPH_NODE_WIDTH, height: GRAPH_NODE_HEIGHT }));
+      expect(graphBoundsViewport(cards, { width: 1080, height: 330 })?.zoom, `group starting at step ${start}`).toBeGreaterThanOrEqual(0.8);
+      expect(cards.every((card, index) => cards.slice(index + 1).every(other =>
+        card.x + card.width <= other.x || other.x + other.width <= card.x || card.y + card.height <= other.y || other.y + other.height <= card.y))).toBe(true);
+    }
+    expect(JSON.stringify(graph)).toBe(serialized);
+  });
+
+  it("keeps generated group positions separate from saved coordinates until explicit group layout", () => {
+    const graph = chain(6);
+    graph.layout = { "step-4": { x: 840, y: 520 } };
+    const serialized = JSON.stringify(graph);
+    const projected = focusedGraphLayout(graph, ["step-3", "step-4", "step-5"]);
+    expect(projected["step-4"]).toEqual(graph.layout["step-4"]);
+    const projectedCards = ["step-3", "step-4", "step-5"].map(id => ({ ...projected[id]!, width: GRAPH_NODE_WIDTH, height: GRAPH_NODE_HEIGHT }));
+    for (let index = 0; index < projectedCards.length; index += 1) for (const other of projectedCards.slice(index + 1)) {
+      const card = projectedCards[index]!;
+      expect(card.x + card.width <= other.x || other.x + other.width <= card.x || card.y + card.height <= other.y || other.y + other.height <= card.y).toBe(true);
+    }
+    const arranged = focusedGraphLayout(graph, ["step-3", "step-4", "step-5"], true)!;
+    expect(arranged["step-4"]).not.toEqual(graph.layout["step-4"]);
+    expect(graph.layout["step-4"]).toEqual({ x: 840, y: 520 });
+    expect(JSON.stringify(graph)).toBe(serialized);
   });
 });
 

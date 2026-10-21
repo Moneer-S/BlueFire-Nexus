@@ -33,7 +33,8 @@ from .runner_inventory import BUILTIN_RUNNER_ACTION_VERSIONS
 from .util import canonical_json_bytes, content_hash, parse_iso8601_datetime
 
 _WHEEL = re.compile(
-    r"^bluefire_nexus-(?P<version>[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.]+)?)-"
+    r"^bluefire_nexus-(?P<version>(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\."
+    r"(?:0|[1-9][0-9]*)(?:rc(?:0|[1-9][0-9]*))?)-"
     r"py3-none-win_amd64\.whl$"
 )
 _REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)

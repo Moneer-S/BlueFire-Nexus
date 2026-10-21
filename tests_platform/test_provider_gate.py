@@ -13,10 +13,13 @@ import pytest
 
 import bluefire.product_gates as product_gates
 import bluefire.provider_gate as provider_gate
+import bluefire.provider_gate_structural_validation as provider_gate_structural_validation
 import bluefire.provider_gate_validation as provider_gate_validation
+import tools.provider_gate_fixture_evidence as provider_gate_fixture_evidence
 import tools.run_provider_gate_journey as provider_gate_helper
 from bluefire.product_acceptance import load_release_contract
 from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_IDS, BUILTIN_RUNNER_ACTION_VERSIONS
+from bluefire.version import native_runner_version
 from tools import (
     provider_boundary_inventory,
     provider_gate_runtime_evidence,
@@ -78,8 +81,10 @@ def _structural_report() -> dict[str, Any]:
         "3.0.0": "sha256:" + "2" * 64,
     }
     contract_digest = "sha256:" + "3" * 64
+    runner_version = native_runner_version(provider_gate_validation.__version__)
+    minimum_version = "3.0.0-rc2" if runner_version == "3.0.0-rc2" else "3.0.0"
     compatibility = {
-        "minimum_bluefire_version": "3.0.0",
+        "minimum_bluefire_version": minimum_version,
         "maximum_bluefire_version_exclusive": "4.0.0",
     }
     required_sources = (
@@ -1138,7 +1143,7 @@ def _journey_report() -> dict[str, Any]:
             "binary_sha256": "sha256:" + "b" * 64,
             "binary_size": 1,
             "runner_id": "bluefire-rust-runner.v1",
-            "runner_version": "3.0.0",
+            "runner_version": native_runner_version(provider_gate_validation.__version__),
             "platform": "windows",
             "architecture": "x86_64",
             "inventory_digest": inventory_digest,
@@ -1146,7 +1151,7 @@ def _journey_report() -> dict[str, Any]:
                 "schema_version": "bluefire.runner-inventory.v1",
                 "runner": "bluefire-rust-runner",
                 "runner_id": "bluefire-rust-runner.v1",
-                "runner_version": "3.0.0",
+                "runner_version": native_runner_version(provider_gate_validation.__version__),
                 "action_sdk_version": "bluefire.runner-action-sdk.v1",
                 "receipt_protocol": "bluefire.runner-receipt-wal.v2",
                 "platform": "windows",
@@ -1353,6 +1358,61 @@ def test_provider_gate_counts_the_actual_reserved_descriptor_shape() -> None:
     ):
         with pytest.raises(provider_gate_runtime_evidence.ProviderGateError):
             provider_gate_runtime_evidence._advertised_core_action_count({"actions": rows})
+
+
+def test_provider_runner_validation_projects_pep440_prerelease_to_native_semver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(provider_gate_validation, "__version__", "3.0.0rc2")
+    report = _journey_report()["packaged_runner"]
+
+    validated = provider_gate_validation._validate_packaged_runner(report)
+    assert validated["runner_version"] == "3.0.0-rc2"
+    assert validated["inventory_contract"]["runner_version"] == "3.0.0-rc2"
+
+    report["inventory_contract"]["runner_version"] = "3.0.0"
+    with pytest.raises(ValueError, match="inventory contract is invalid"):
+        provider_gate_validation._validate_packaged_runner(report)
+
+
+def test_committed_provider_fixture_keeps_its_stable_minimum_for_prerelease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(provider_gate_fixture_evidence, "__version__", "3.0.0rc2")
+    rc_index, _rc_trusts, rc_packages = _fixture_set(REPOSITORY)
+    assert tuple(rc_packages) == ("1.0.0", "2.0.0", "3.0.0")
+    assert all(
+        package.manifest.compatibility.minimum_bluefire_version == "3.0.0-rc2"
+        for package in rc_packages.values()
+    )
+
+    monkeypatch.setattr(provider_gate_fixture_evidence, "__version__", "3.0.0")
+    stable_index, _stable_trusts, stable_packages = _fixture_set(REPOSITORY)
+    assert all(
+        package.manifest.compatibility.minimum_bluefire_version == "3.0.0"
+        for package in stable_packages.values()
+    )
+    assert (
+        rc_index["packages"][0]["package_digest"] != stable_index["packages"][0]["package_digest"]
+    )
+
+    monkeypatch.setattr(provider_gate_fixture_evidence, "__version__", "3.0.0rc3")
+    with pytest.raises(provider_gate_fixture_evidence.ProviderGateError, match="unavailable"):
+        _fixture_set(REPOSITORY)
+
+
+def test_historical_structural_report_is_readable_but_not_current_rc2_qualification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(provider_gate_validation, "__version__", "3.0.0")
+    report = _structural_report()
+    provider_gate_structural_validation._validate_structural(report)
+
+    monkeypatch.setattr(provider_gate_validation, "__version__", "3.0.0rc2")
+    with pytest.raises(ValueError, match="manifest-integrity evidence is invalid"):
+        provider_gate_validation._validate_structural(report)
+    current_rc2_report = _structural_report()
+    provider_gate_validation._validate_structural(current_rc2_report)
 
 
 def test_gate_02_emits_exact_unique_proofs_and_bundle_attachments(
