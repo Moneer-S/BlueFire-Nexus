@@ -305,6 +305,16 @@
   min-width: 0;
 }
 
+.detection-page .run-linked-description {
+  margin: 0;
+}
+
+.detection-page .run-linked-action {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 8px;
+}
+
 .detection-page .candidate-body > .candidate-main > p {
   margin: 0;
   font-size: .75rem;

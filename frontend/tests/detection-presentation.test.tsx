@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { expect, it, vi } from "vitest";
 import { api } from "../src/lib/api";
 import { demoCatalog, demoRuns } from "../src/lib/demo";
+import { detectionDraftIdentity } from "../src/state/useDetectionDraft";
 import { DetectionLabPage } from "../src/pages/DetectionLab";
 import type { DetectionResource, RunRecord } from "../src/types";
 
@@ -13,6 +14,7 @@ const childId = `detection-${"b".repeat(20)}`;
 const definition = `sha256:${"c".repeat(64)}`;
 const query = `sha256:${"d".repeat(64)}`;
 const source = "SELECT fixture_id FROM logs WHERE observation_kind = 'filesystem'";
+const workspaceTabKey = `bluefire.detection-draft.v1:${detectionDraftIdentity({ namespace: "registry-tab", id })}`;
 const original: DetectionResource = { kind: "detections", id, status: "parsed", digest: "sha256:resource", created_at: "2026-09-09", updated_at: "2026-09-09", document: {
   candidate_id: id, revision_root_id: id, revision: 1, revision_kind: "origin", title: "Collection rule", behavior_id: "sandbox.collection.stage.v1", target_language: "sqlite", state: "parsed", rule_source: source, selection: {}, logsource: {}, definition_digest: definition,
   parser_backend: { name: "SQLite bounded executor", version: "3.46" }, validation: { query_sha256: query, converted_query: source, source_rule_executed: true, execution_backend: "SQLite", execution_backend_version: "3.46", last_execution: { fixture_ids: ["observed-one", "observed-two"], matched_fixture_ids: ["observed-two"] }, unsupported_fields: [] },
@@ -22,7 +24,7 @@ function setup(candidates = [structuredClone(original)], ready = true, sourceRun
   vi.spyOn(api, "catalog").mockResolvedValue(demoCatalog);
   vi.spyOn(api, "runs").mockResolvedValue({ schema_version: "v1", unavailable_run_count: 0, runs: sourceRun ? [sourceRun] : [] });
   if (sourceRun) vi.spyOn(api, "runDetail").mockResolvedValue(sourceRun);
-  vi.spyOn(api, "detections").mockResolvedValue({ schema_version: "v1", candidates });
+  const detectionList = vi.spyOn(api, "detections").mockResolvedValue({ schema_version: "v1", candidates });
   vi.spyOn(api, "resources").mockResolvedValue({ schema_version: "v1", kind: "research-sources", resources: [] });
   vi.spyOn(api, "detectionHealth").mockResolvedValue({ schema_version: "v1", ready, persistence_ready: true, candidate_resources: candidates.length, invalid_candidate_resources: 0, languages: { sqlite: { ready, authoritative: true, backend: "SQLite bounded executor" }, sigma: { ready, authoritative: true, backend: "pySigma" } }, limits: { source_bytes: 262144, fixture_bytes: 1048576, fixtures_per_action: 128, evidence_per_action: 256, notes_per_action: 64 } });
   vi.spyOn(api, "detectionRunEvaluations").mockResolvedValue({ evaluations: [] });
@@ -32,7 +34,7 @@ function setup(candidates = [structuredClone(original)], ready = true, sourceRun
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const route = sourceRun ? `/detection-lab?run=${encodeURIComponent(sourceRun.run_id)}` : `/detection-lab?candidate=${id}&candidate_scope=registry`;
   const rendered = render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[route]}><DetectionLabPage/><Location/></MemoryRouter></QueryClientProvider>);
-  return { ...rendered, user: userEvent.setup(), action, revise, evaluate };
+  return { ...rendered, user: userEvent.setup(), action, revise, evaluate, detectionList, client };
 }
 
 it("names SQLite consistently and discloses identities without hiding query execution or results", async () => {
@@ -120,6 +122,79 @@ it("labels the benign-fixture lifecycle stage without implying observed validati
   expect(screen.getAllByText("Benign fixtures evaluated").length).toBeGreaterThan(1);
 });
 
+it("keeps the active workspace tab across lifecycle refreshes without carrying old definition inputs", async () => {
+  const candidate = structuredClone(original);
+  candidate.document.target_language = "internal";
+  candidate.document.selection = { artifact_type: "file_observation" };
+  const advanced = structuredClone(candidate);
+  advanced.status = "fixture_exercised";
+  advanced.digest = "sha256:advanced-resource";
+  advanced.document.state = "fixture_exercised";
+  advanced.document.definition_digest = `sha256:${"e".repeat(64)}`;
+  advanced.document.malicious_fixtures = [{ fixture_id: "custom-example", artifact_type: "operator value" }];
+  const { user, action, detectionList } = setup([candidate]);
+
+  await screen.findByRole("tab", { name: "Fixtures" });
+  await user.click(screen.getByRole("tab", { name: "Fixtures" }));
+  const malicious = screen.getByRole("textbox", { name: /^Malicious fixtures JSON/ });
+  const authoredFixture = [{ fixture_id: "operator-example", artifact_type: "operator value" }];
+  fireEvent.change(malicious, { target: { value: JSON.stringify(authoredFixture) } });
+  detectionList.mockResolvedValueOnce({ schema_version: "v1", candidates: [advanced] });
+  action.mockResolvedValue({ schema_version: "v1", candidate: advanced });
+
+  await user.click(screen.getByRole("button", { name: "Exercise malicious fixtures" }));
+  await screen.findAllByText("Fixture exercised", { exact: true });
+  const refreshedDefault = JSON.stringify([{ fixture_id: "synthetic-selection-example", artifact_type: "file_observation" }], null, 2);
+  await waitFor(() => {
+    expect(document.querySelector(".candidate-workspace")?.getAttribute("data-active-tab")).toBe("fixtures");
+    expect(screen.getByRole("textbox", { name: /^Malicious fixtures JSON/ })).toHaveValue(refreshedDefault);
+  });
+
+  expect(screen.getByRole("tab", { name: "Fixtures" })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("textbox", { name: /^Malicious fixtures JSON/ })).toHaveValue(refreshedDefault);
+  expect(action).toHaveBeenCalledWith(id, "exercise-fixtures", { fixtures: authoredFixture });
+});
+
+it("migrates the selected tab from a retained definition-bound draft", async () => {
+  const first = setup();
+  await screen.findByRole("tab", { name: "Fixtures" });
+  await first.user.click(screen.getByRole("tab", { name: "Fixtures" }));
+  const legacyEntry = Object.keys(sessionStorage).find((key) => {
+    if (!key.startsWith("bluefire.detection-draft.v1:") || key === workspaceTabKey) return false;
+    try {
+      const value = JSON.parse(sessionStorage.getItem(key)!).value;
+      return value && typeof value === "object" && value.tab === "fixtures" && "fixtures" in value;
+    } catch { return false; }
+  });
+  expect(legacyEntry).toBeDefined();
+  expect(JSON.parse(sessionStorage.getItem(legacyEntry!)!).value.tab).toBe("fixtures");
+  sessionStorage.removeItem(workspaceTabKey);
+  first.unmount();
+  first.client.clear();
+
+  const reopened = setup();
+  await screen.findByRole("tab", { name: "Fixtures" });
+  await waitFor(() => expect(screen.getByRole("tab", { name: "Fixtures" })).toHaveAttribute("aria-selected", "true"));
+  expect(JSON.parse(sessionStorage.getItem(workspaceTabKey)!).value.tab).toBe("fixtures");
+  reopened.unmount();
+  reopened.client.clear();
+});
+
+it("surfaces and clears a malformed stable tab record through explicit draft discard", async () => {
+  sessionStorage.setItem(workspaceTabKey, "{malformed");
+  const { user } = setup();
+  await screen.findByRole("tab", { name: "Rule" });
+  expect(await screen.findByRole("alert")).toHaveTextContent("retained draft could not be read");
+
+  await user.click(screen.getByRole("button", { name: "Discard local inputs" }));
+  await user.click(screen.getByRole("button", { name: "Discard these inputs" }));
+
+  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  expect(screen.getByRole("tab", { name: "Rule" })).toHaveAttribute("aria-selected", "true");
+  const repaired = JSON.parse(sessionStorage.getItem(workspaceTabKey)!);
+  expect(repaired.value).toEqual({ tab: "candidate" });
+});
+
 it.each([
   ["simulate", "synthetic", 0, "Synthetic simulation", "0 independent observations"],
   ["execute", "observed", 1, "Execution record", "1 independent observation"],
@@ -165,6 +240,8 @@ it.each([
   expect(candidateList.getByText(expected)).toBeVisible();
   expect(screen.queryByText("Native run")).not.toBeInTheDocument();
   const save = screen.getByRole("button", { name: "Save hypothesis from run" });
+  expect(save.closest(".run-linked-action")).not.toBeNull();
+  expect(screen.getByText(/This candidate is part of an immutable run\./)).toHaveClass("run-linked-description");
   if (demo === true) expect(save).toBeDisabled();
   else expect(save).toBeEnabled();
   expect(action).not.toHaveBeenCalled(); expect(revise).not.toHaveBeenCalled(); expect(evaluate).not.toHaveBeenCalled();

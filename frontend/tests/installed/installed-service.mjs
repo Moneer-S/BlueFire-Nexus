@@ -1,5 +1,5 @@
 // The copied driver talks only to a real, freshly installed loopback service.
-/* global process, URL, document, requestAnimationFrame, localStorage, sessionStorage, fetch, innerWidth, innerHeight, getComputedStyle */
+/* global process, URL, document, window, requestAnimationFrame, localStorage, sessionStorage, fetch, innerWidth, innerHeight, getComputedStyle */
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
@@ -22,12 +22,36 @@ const { chromium } = await import(pathToFileURL(modulePath).href);
 const origin = `http://127.0.0.1:${port}`;
 const ownedScenarioId = "scenario.installed-browser.collection.v1";
 const title = "Installed browser collection comparison";
+const responsiveViewports = [
+  { width: 1366, height: 768 },
+  { width: 1440, height: 900 },
+  { width: 1024, height: 768 },
+  { width: 910, height: 512 },
+];
+const responsiveReadPaths = new Set([
+  "/api/v1/session", "/api/v1/scenarios", "/api/v1/catalog", "/api/v1/runs",
+  "/api/v1/comparison-snapshots", "/api/v1/detection-lab/health", "/api/v1/detections",
+  "/api/v1/resources/research-sources", "/api/v1/resources/runner-profiles",
+  "/api/v1/resources/runners", "/api/v1/resources/model-providers", "/api/v1/ai/authorizations",
+  "/api/v1/s3-access/environments", "/api/v1/s3-access/exercises",
+  "/api/v1/ad-smb/environments", "/api/v1/ad-smb/workflows",
+  "/api/v1/file-access/status", "/api/v1/assistance/graph-context",
+]);
 const exactKeys = (value, keys) => value && typeof value === "object" && !Array.isArray(value)
   && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
 const stableValue = value => Array.isArray(value) ? value.map(stableValue)
   : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stableValue(value[key])]))
     : value;
 const sameStructure = (left, right) => JSON.stringify(stableValue(left)) === JSON.stringify(stableValue(right));
+function responsiveReadAllowed(path) {
+  if (responsiveReadPaths.has(path)) return true;
+  const run = path.match(/^\/api\/v1\/runs\/(run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16})$/);
+  if (run) return ownedRunIds.includes(run[1]);
+  const detection = path.match(/^\/api\/v1\/detections\/(detection-[0-9a-f]{20})$/);
+  if (detection) return detection[1] === ownedDetectionId;
+  const snapshot = path.match(/^\/api\/v1\/comparison-snapshots\/([A-Za-z0-9_-]+)$/);
+  return Boolean(snapshot && snapshot[1] === report.comparison_snapshot_id);
+}
 const withoutLayout = scenario => {
   if (!scenario || typeof scenario !== "object" || Array.isArray(scenario)) return null;
   const { layout: _layout, ...document } = scenario;
@@ -38,8 +62,11 @@ const report = { schema_version: "bluefire.installed-browser-journey.v1", real_s
 let browser, context, page, connected = false, stage = "launch", bootstrapSession401 = 0;
 let sessionPosts = 0, scenarioVersionPosts = 0, scenarioValidationPosts = 0, graphContextPosts = 0, controlListPosts = 0;
 let preflightPosts = 0, simulationRunPosts = 0, comparisonPosts = 0;
+let detectionFromRunPosts = 0, detectionParsePosts = 0, detectionFixturePosts = 0, detectionBenignPosts = 0;
+let readOnlyCapturePhase = false;
 let ownedRunIds = [];
 let generatedScenario, savedScenarioDocument, reviewedScenarioDocument, ownedScenarioVersion;
+let sourceDetectionId, ownedDetectionId, expectedMaliciousFixtures, expectedBenignFixtures;
 
 function hasOwnedLayout(layout) {
   const nodeIds = reviewedScenarioDocument?.steps?.map(step => step.id);
@@ -87,14 +114,111 @@ async function api(path, body) {
   }, { path, body });
 }
 
-async function capture(name) {
+function syntheticFixture(selection, fixtureId) {
+  assert.ok(selection && typeof selection === "object" && !Array.isArray(selection) && Object.keys(selection).length > 0);
+  const fixture = { fixture_id: fixtureId };
+  for (const [rawField, value] of Object.entries(selection)) {
+    const [field, operator, extra] = rawField.split("|");
+    assert.match(field ?? "", /^[A-Za-z_][A-Za-z0-9_]*$/);
+    assert.equal(extra, undefined);
+    assert.ok(operator === undefined || ["contains", "startswith", "endswith"].includes(operator));
+    assert.ok(["string", "number", "boolean"].includes(typeof value));
+    assert.equal(Object.hasOwn(fixture, field), false);
+    fixture[field] = value;
+  }
+  return fixture;
+}
+
+function benignNonmatchFixture(selection, fixtureId) {
+  const fixture = syntheticFixture(selection, fixtureId);
+  for (const [rawField, value] of Object.entries(selection)) {
+    const [field, operator] = rawField.split("|");
+    if (operator) continue;
+    if (typeof value === "string") fixture[field] = "__bluefire_benign_nonmatch__";
+    else if (typeof value === "number") fixture[field] = value + 1;
+    else fixture[field] = !value;
+    return fixture;
+  }
+  throw new Error("The owned source detector has no exact-match field for a bounded benign nonmatch.");
+}
+
+function detectionDocument(envelope) {
+  assert.ok(envelope?.candidate?.document && typeof envelope.candidate.document === "object");
+  return envelope.candidate.document;
+}
+
+async function capture(name, metadata = {}) {
   assert.ok(connected, "Never capture connection credentials");
   await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
   const geometry = await page.evaluate(() => ({ width: innerWidth, height: innerHeight, document_width: document.documentElement.clientWidth, scroll_width: document.documentElement.scrollWidth, nodes: document.querySelectorAll(".react-flow__node").length, edges: document.querySelectorAll(".react-flow__edge").length }));
   assert.ok(geometry.scroll_width <= geometry.document_width, "Desktop page overflows horizontally");
   const screenshot = await page.screenshot({ fullPage: false, animations: "disabled", mask: [page.locator('input[type="password"]')] });
   writeFileSync(join(output, `${name}.png`), screenshot, { flag: "wx" });
-  report.screenshots.push({ name, sha256: createHash("sha256").update(screenshot).digest("hex"), geometry });
+  report.screenshots.push({ name, sha256: createHash("sha256").update(screenshot).digest("hex"), geometry, ...metadata });
+}
+
+async function captureResponsiveSurface({ name, heading, controls, scrollRoot }) {
+  readOnlyCapturePhase = true;
+  try {
+    for (const viewport of responsiveViewports) {
+      stage = `${name}-${viewport.width}x${viewport.height}`;
+      await page.setViewportSize(viewport);
+      await page.evaluate(selector => {
+        window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+        document.getElementById("main-content")?.scrollTo({ top: 0, left: 0, behavior: "instant" });
+        if (selector) document.querySelector(selector)?.scrollTo({ top: 0, left: 0, behavior: "instant" });
+      }, scrollRoot);
+      await page.evaluate(async () => { await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+      const headingLocator = page.getByRole("heading", { name: heading, exact: true }).first();
+      await headingLocator.waitFor({ state: "visible" });
+      const headingGeometry = await headingLocator.evaluate(element => {
+        const box = element.getBoundingClientRect();
+        return { visible: getComputedStyle(element).visibility !== "hidden" && box.width > 0 && box.height > 0,
+          left: box.left, right: box.right, client_width: element.clientWidth, scroll_width: element.scrollWidth };
+      });
+      report.layout_probe = { surface: name, viewport, element: "heading", geometry: headingGeometry };
+      assert.ok(headingGeometry.visible, `${name} heading must be visible`);
+      assert.ok(headingGeometry.left >= -1 && headingGeometry.right <= viewport.width + 1, `${name} heading must fit the viewport`);
+      assert.ok(headingGeometry.scroll_width <= headingGeometry.client_width + 1, `${name} heading text must not be clipped`);
+
+      const checkedControls = [];
+      for (const control of controls) {
+        if (control.bringIntoView) await control.locator.evaluate(element => element.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }));
+        await control.locator.waitFor({ state: "visible" });
+        const geometry = await control.locator.evaluate((element, selector) => {
+          const box = element.getBoundingClientRect();
+          const clip = selector ? element.closest(selector)?.getBoundingClientRect() : undefined;
+          return { visible: getComputedStyle(element).visibility !== "hidden" && box.width > 0 && box.height > 0,
+            left: box.left, right: box.right, top: box.top, bottom: box.bottom,
+            clip_top: clip?.top, clip_bottom: clip?.bottom,
+            client_width: element.clientWidth, scroll_width: element.scrollWidth };
+        }, control.withinScroll ? scrollRoot : undefined);
+        report.layout_probe = { surface: name, viewport, element: control.label, geometry };
+        assert.ok(geometry.visible, `${name} ${control.label} must be visible`);
+        assert.ok(geometry.left >= -1 && geometry.right <= viewport.width + 1, `${name} ${control.label} must fit the viewport`);
+        assert.ok(geometry.top >= -1 && geometry.bottom <= viewport.height + 1, `${name} ${control.label} must fit the viewport height`);
+        if (control.withinScroll) assert.ok(Number.isFinite(geometry.clip_top) && Number.isFinite(geometry.clip_bottom)
+          && geometry.top >= geometry.clip_top - 1 && geometry.bottom <= geometry.clip_bottom + 1,
+        `${name} ${control.label} must be reachable inside its scroll viewport`);
+        if (control.textFits) assert.ok(geometry.scroll_width <= geometry.client_width + 1, `${name} ${control.label} text must not be clipped`);
+        checkedControls.push(control.label);
+      }
+
+      const documentWidth = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));
+      assert.ok(documentWidth.scroll <= documentWidth.client + 1, `${name} must not overflow horizontally`);
+      if (scrollRoot) await page.locator(scrollRoot).evaluate(element => element.scrollTo({ top: 0, left: 0, behavior: "instant" }));
+      await capture(`${name}-${viewport.width}x${viewport.height}`, {
+        surface: name,
+        readable_heading: heading,
+        readable_controls: checkedControls,
+        layout_checks: ["heading_visible_and_unclipped", "controls_visible_and_in_viewport", "no_horizontal_overflow", ...(scrollRoot ? ["controls_reachable_in_scroll_viewport", "capture_scroll_reset"] : [])],
+      });
+      report.checks.push(`${name}_readable_at_${viewport.width}x${viewport.height}`);
+      delete report.layout_probe;
+    }
+  } finally {
+    readOnlyCapturePhase = false;
+  }
 }
 
 async function visibleGraphTitles(selectedOnly = false) {
@@ -168,6 +292,17 @@ try {
     const request = route.request(), url = new URL(request.url()), method = request.method();
     let allowed = url.origin === origin && ["GET", "HEAD"].includes(method), reason;
     if (url.origin !== origin) reason = "non_loopback";
+    else if (readOnlyCapturePhase) {
+      allowed = false;
+      if (method === "GET" && responsiveReadAllowed(url.pathname)) allowed = true;
+      else if (method === "POST" && url.pathname === "/api/v1/file-access/control-list") {
+        let body;
+        try { body = request.postData() ? request.postDataJSON() : null; }
+        catch { reason = "invalid_json_body"; }
+        allowed = !reason && controlListPosts < 2 && exactKeys(body, []);
+        if (allowed) controlListPosts += 1; else reason ??= "read_only_history_lookup_cap_or_body";
+      } else reason = "responsive_capture_read_only_allowlist";
+    }
     else if (!["GET", "HEAD", "POST"].includes(method)) reason = "method_not_allowed";
     else if (method === "POST") {
       let body;
@@ -212,7 +347,7 @@ try {
             if (allowed) graphContextPosts += 1; else reason = "graph_context_cap_or_owner";
             break;
           case "/api/v1/file-access/control-list":
-            allowed = controlListPosts < 1 && bodyIsEmptyObject;
+            allowed = controlListPosts < 2 && bodyIsEmptyObject;
             if (allowed) controlListPosts += 1; else reason = "control_list_cap_or_body";
             break;
           case "/api/v1/runs/preflight":
@@ -229,7 +364,29 @@ try {
             if (allowed) comparisonPosts += 1; else reason = "comparison_cap_or_run_ids";
             break;
           default:
-            reason = "write_not_allowlisted";
+            if (url.pathname === "/api/v1/detections/from-run") {
+              allowed = detectionFromRunPosts < 1 && exactKeys(body, ["run_id", "candidate_id"])
+                && body.run_id === ownedRunIds[0] && body.candidate_id === sourceDetectionId;
+              if (allowed) detectionFromRunPosts += 1; else reason = "detection_import_cap_or_source";
+            } else {
+              const match = url.pathname.match(/^\/api\/v1\/detections\/(detection-[0-9a-f]{20})\/(parse|exercise-fixtures|evaluate-benign)$/);
+              if (match && match[1] === ownedDetectionId) {
+                const action = match[2];
+                if (action === "parse") {
+                  allowed = detectionParsePosts < 1 && exactKeys(body, []);
+                  if (allowed) detectionParsePosts += 1; else reason = "detection_parse_cap_or_owner";
+                } else if (action === "exercise-fixtures") {
+                  allowed = detectionFixturePosts < 1 && exactKeys(body, ["fixtures"])
+                    && sameStructure(body.fixtures, expectedMaliciousFixtures);
+                  if (allowed) detectionFixturePosts += 1; else reason = "detection_fixture_cap_or_payload";
+                } else {
+                  allowed = detectionBenignPosts < 1 && exactKeys(body, ["fixtures", "notes"])
+                    && sameStructure(body.fixtures, expectedBenignFixtures)
+                    && sameStructure(body.notes, ["Owned synthetic benign nonmatch fixture."]);
+                  if (allowed) detectionBenignPosts += 1; else reason = "detection_benign_cap_or_payload";
+                }
+              } else reason = "write_not_allowlisted";
+            }
         }
       }
     }
@@ -483,9 +640,122 @@ try {
   const sourceCount = Number((await sourceSummary.innerText()).match(/^(\d+) independent observations/)?.[1]);
   assert.equal(sourceCount, 0);
   report.source_observation_count = sourceCount;
+  const sourceRun = await api("/runs/" + firstRunId);
+  assert.equal(sourceRun.run_id, firstRunId);
+  assert.equal(sourceRun.mode, "simulate");
+  assert.notEqual(sourceRun.is_demo, true);
+  const sourceCandidates = sourceRun.detections?.candidates;
+  assert.ok(Array.isArray(sourceCandidates) && sourceCandidates.length > 0);
+  const sourceCandidate = sourceCandidates[0];
+  assert.equal(sourceCandidate.target_language, "internal");
+  sourceDetectionId = sourceCandidate.candidate_id;
+  assert.match(sourceDetectionId ?? "", /^detection-[0-9a-f]{20}$/);
+  expectedMaliciousFixtures = [syntheticFixture(sourceCandidate.selection, "synthetic-selection-example")];
+  expectedBenignFixtures = [benignNonmatchFixture(sourceCandidate.selection, "synthetic-benign-nonmatch")];
+  const selectedSourceCandidate = page.locator(".candidate-list button[aria-pressed='true']");
+  await selectedSourceCandidate.waitFor();
+  assert.ok((await selectedSourceCandidate.innerText()).includes(sourceCandidate.title));
+  await selectedSourceCandidate.click();
+  await page.waitForFunction(({ runId, candidateId }) => {
+    const params = new URLSearchParams(window.location.hash.split("?")[1]);
+    return params.get("run") === runId && params.get("candidate") === candidateId && !params.has("candidate_scope");
+  }, { runId: firstRunId, candidateId: sourceDetectionId });
   await sourceSummary.click();
-  await capture("detection-lab-source-run");
+  await capture("detection-lab-source-run-evidence");
+  await sourceSummary.click();
+  stage = "detection-save-source-hypothesis";
+  const importResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/detections/from-run" && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Save hypothesis from run", exact: true }).click();
+  const imported = await (await importResponse).json();
+  const importedDocument = detectionDocument(imported);
+  ownedDetectionId = imported.candidate.id;
+  assert.match(ownedDetectionId ?? "", /^detection-[0-9a-f]{20}$/);
+  assert.equal(importedDocument.candidate_id, ownedDetectionId);
+  assert.equal(importedDocument.state, "hypothesis");
+  assert.equal(importedDocument.revision, 1);
+  assert.equal(imported.source_run_id, firstRunId);
+  assert.equal(imported.source_candidate_id, sourceDetectionId);
+  assert.deepEqual(importedDocument.selection, sourceCandidate.selection);
+  stage = "detection-validate-owned-hypothesis";
+  const parseResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/detections/" + ownedDetectionId + "/parse" && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Validate source", exact: true }).click();
+  const parsedDocument = detectionDocument(await (await parseResponse).json());
+  assert.equal(parsedDocument.candidate_id, ownedDetectionId);
+  assert.equal(parsedDocument.state, "parsed");
+  stage = "detection-exercise-owned-fixture";
+  await page.getByRole("tab", { name: "Fixtures", exact: true }).click();
+  const maliciousInput = page.getByRole("textbox", { name: /^Malicious fixtures JSON\b/ });
+  const uiMaliciousFixtures = JSON.parse(await maliciousInput.inputValue());
+  assert.deepEqual(uiMaliciousFixtures, expectedMaliciousFixtures);
+  const fixtureResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/detections/" + ownedDetectionId + "/exercise-fixtures" && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Exercise malicious fixtures", exact: true }).click();
+  const exercisedDocument = detectionDocument(await (await fixtureResponse).json());
+  assert.equal(exercisedDocument.state, "fixture_exercised");
+  assert.deepEqual(exercisedDocument.malicious_fixture_ids, ["synthetic-selection-example"]);
+  assert.equal(exercisedDocument.match_count, 1);
+  await page.waitForFunction(() => {
+    const selected = document.querySelector(".candidate-list button[aria-pressed='true']");
+    return selected?.textContent?.includes("Fixture exercised")
+      && document.querySelector(".candidate-workspace")?.getAttribute("data-active-tab") === "fixtures";
+  });
+  stage = "detection-evaluate-benign-fixture";
+  await page.getByRole("tab", { name: "Fixtures", exact: true }).click();
+  await page.getByText("Advanced benign samples JSON", { exact: true }).click();
+  await page.getByRole("textbox", { name: /^Benign fixtures JSON\b/ }).fill(JSON.stringify(expectedBenignFixtures, null, 2));
+  await page.getByRole("textbox", { name: /^Benign evaluation notes\b/ }).fill("Owned synthetic benign nonmatch fixture.");
+  const benignResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/detections/" + ownedDetectionId + "/evaluate-benign" && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Evaluate benign fixtures", exact: true }).click();
+  const benignDocument = detectionDocument(await (await benignResponse).json());
+  assert.equal(benignDocument.state, "benign_evaluated");
+  assert.deepEqual(benignDocument.benign_fixture_ids, ["synthetic-benign-nonmatch"]);
+  assert.equal(benignDocument.benign_match_count, 0);
+  assert.match(benignDocument.definition_digest ?? "", /^sha256:[0-9a-f]{64}$/);
+  report.detection_fixture_evaluation = {
+    source_run_id: firstRunId,
+    source_run_mode: "simulate",
+    source_candidate_id: sourceDetectionId,
+    candidate_id: ownedDetectionId,
+    revision: benignDocument.revision,
+    revision_kind: benignDocument.revision_kind,
+    definition_digest: benignDocument.definition_digest,
+    state: benignDocument.state,
+    matcher: "internal structured fixture matcher",
+    fixture_only: true,
+    evaluation_scope: "Synthetic matcher fixtures only; not a changed-environment retest.",
+    malicious_fixture_ids: benignDocument.malicious_fixture_ids,
+    malicious_match_count: benignDocument.match_count,
+    benign_fixture_ids: benignDocument.benign_fixture_ids,
+    benign_match_count: benignDocument.benign_match_count,
+    independent_observations: 0,
+    changed_environment_retest: false,
+  };
+  report.checks.push("run_linked_definition_saved_validated_and_fixture_evaluated");
+  stage = "detection-reopen-saved-revision";
+  const detectionParams = new URLSearchParams({ run: firstRunId, candidate: ownedDetectionId, candidate_scope: "registry" });
+  await page.goto(origin + "/#/detection-lab?" + detectionParams.toString());
+  await page.getByRole("heading", { name: "Detection Lab", exact: true }).waitFor();
+  const reopenedDetection = page.locator(".candidate-list button[aria-pressed='true']");
+  await reopenedDetection.waitFor();
+  assert.ok((await reopenedDetection.innerText()).includes(sourceCandidate.title));
+  assert.match(await reopenedDetection.innerText(), /Benign fixtures evaluated/);
+  const detectionList = await api("/detections");
+  const reopenedResource = detectionList.candidates.filter(candidate => candidate.id === ownedDetectionId);
+  assert.equal(reopenedResource.length, 1);
+  assert.equal(reopenedResource[0].document.revision, benignDocument.revision);
+  assert.equal(reopenedResource[0].document.state, benignDocument.state);
+  assert.equal(reopenedResource[0].document.definition_digest, benignDocument.definition_digest);
+  report.checks.push("saved_detection_revision_reopened_from_registry");
   report.checks.push("detection_lab_linked_to_owned_simulation_source");
+  report.checks.push("detection_fixture_tab_preserved_across_lifecycle_update");
+  await page.getByRole("tab", { name: "Candidate", exact: true }).click();
+  await captureResponsiveSurface({
+    name: "detection-lab",
+    heading: "Detection Lab",
+    controls: [
+      { label: "Detection source run", locator: page.getByRole("combobox", { name: /^Detection source run\b/ }), textFits: false },
+      { label: "Source evidence", locator: sourceSummary, textFits: true },
+    ],
+  });
 
   stage = "comparison-restore-owned-runs";
   const comparisonParams = new URLSearchParams({ compare_context: "1" });
@@ -506,6 +776,11 @@ try {
   await page.getByRole("region", { name: "Comparison results", exact: true }).waitFor();
   await capture("saved-two-run-comparison");
   report.checks.push("one_saved_comparison_of_exact_owned_runs");
+  await captureResponsiveSurface({
+    name: "comparison",
+    heading: "Compare runs",
+    controls: [{ label: "Refresh history", locator: page.getByRole("button", { name: "Refresh history", exact: true }), textFits: true }],
+  });
 
   stage = "environments-load-overview";
   await page.goto(`${origin}/#/environments`);
@@ -519,6 +794,29 @@ try {
   await page.getByRole("heading", { name: "Model access", exact: true }).scrollIntoViewIfNeeded();
   await capture("environments-model-access");
   report.checks.push("environments_saved_setup_and_inventory_overview");
+  await page.evaluate(() => window.scrollTo({ top: 0, left: 0, behavior: "instant" }));
+  await captureResponsiveSurface({
+    name: "environments",
+    heading: "Environments",
+    controls: [{ label: "Open S3 access", locator: page.getByRole("link", { name: "Open S3 access", exact: true }), textFits: true }],
+  });
+
+  stage = "file-access-open-unavailable-view";
+  await page.getByRole("button", { name: "Show more tools", exact: true }).click();
+  await page.getByRole("link", { name: "File access", exact: true }).click();
+  await page.getByRole("heading", { name: "Effective file access", exact: true }).waitFor();
+  await page.getByRole("region", { name: "File-access enrollment", exact: true }).waitFor();
+  await page.getByText("Execution unavailable", { exact: true }).waitFor();
+  await capture("file-access-unavailable");
+  report.checks.push("file_access_unavailable_state_opened_without_authorizing_work");
+  await captureResponsiveSurface({
+    name: "file-access-unavailable",
+    heading: "Effective file access",
+    controls: [
+      { label: "Refresh state", locator: page.getByRole("button", { name: "Refresh state", exact: true }), textFits: true },
+      { label: "Execution unavailable", locator: page.getByText("Execution unavailable", { exact: true }), textFits: true },
+    ],
+  });
 
   stage = "assistant-open-detached-selection";
   await page.getByRole("button", { name: "Assistant", exact: true }).click();
@@ -531,14 +829,31 @@ try {
   stage = "assistant-capture-detached";
   await capture("assistant-detached");
   report.checks.push("detached_assistant_keeps_previous_selection_non_actionable");
+  await captureResponsiveSurface({
+    name: "docked-assistant",
+    heading: "Experiment assistant",
+    scrollRoot: ".assistant-body",
+    controls: [
+      { label: "Close assistant", locator: page.getByRole("button", { name: "Close assistant", exact: true }), textFits: false },
+      { label: "Reopen source", locator: page.getByRole("link", { name: "Reopen source", exact: true }), textFits: true, bringIntoView: true, withinScroll: true },
+      { label: "AI mode", locator: mode, textFits: false, bringIntoView: true, withinScroll: true },
+      { label: "Provider", locator: page.getByRole("combobox", { name: /^(Provider|Assistant provider)\b/ }), textFits: false, bringIntoView: true, withinScroll: true },
+      { label: "Message", locator: page.getByRole("textbox", { name: "What would you like to do?", exact: true }), textFits: false, bringIntoView: true, withinScroll: true },
+      { label: "Start work", locator: page.getByRole("button", { name: /^Start work/ }), textFits: true, bringIntoView: true, withinScroll: true },
+    ],
+  });
 
   assert.equal(preflightPosts, 2);
   assert.equal(simulationRunPosts, 2);
   assert.equal(comparisonPosts, 1);
   assert.equal(sessionPosts, 1);
   assert.equal(scenarioVersionPosts, 2);
-  assert.equal(controlListPosts, 1);
-  report.request_caps = { session_posts: sessionPosts, scenario_version_posts: scenarioVersionPosts, scenario_validation_posts: scenarioValidationPosts, graph_context_posts: graphContextPosts, control_list_posts: controlListPosts, preflight_posts: preflightPosts, simulation_run_posts: simulationRunPosts, comparison_posts: comparisonPosts };
+  assert.ok(controlListPosts >= 1 && controlListPosts <= 2);
+  assert.equal(detectionFromRunPosts, 1);
+  assert.equal(detectionParsePosts, 1);
+  assert.equal(detectionFixturePosts, 1);
+  assert.equal(detectionBenignPosts, 1);
+  report.request_caps = { session_posts: sessionPosts, scenario_version_posts: scenarioVersionPosts, scenario_validation_posts: scenarioValidationPosts, graph_context_posts: graphContextPosts, control_list_posts: controlListPosts, preflight_posts: preflightPosts, simulation_run_posts: simulationRunPosts, comparison_posts: comparisonPosts, detection_from_run_posts: detectionFromRunPosts, detection_parse_posts: detectionParsePosts, detection_fixture_posts: detectionFixturePosts, detection_benign_posts: detectionBenignPosts };
   assert.equal(report.errors.length, 0);
   assert.equal(report.blocked_requests.length, 0);
   report.status = "passed";

@@ -68,6 +68,7 @@ const exactKeys = (value, names) => value && typeof value === "object" && !Array
   && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...names].sort());
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const boundedString = (value, max = 128) => typeof value === "string" && value.trim().length > 0 && value.length <= max;
+const safeStatus = (value, allowed) => allowed.includes(value) ? value : value == null ? "missing" : "other";
 const count = (key) => consumeRequestBudget(counts, ROUTE_LIMITS, key);
 let browser, context, page;
 let connected = false;
@@ -618,9 +619,16 @@ try {
     return response.ok && (await response.json()).state === "ready";
   }, { origin: ORIGIN, profile: PROFILE, timeout: remainingMs() }, { timeout: 45_000 });
   const ready = await readRunnerStatus();
+  report.runner_status_diagnostic = {
+    state: safeStatus(ready.state, ["ready", "stopped", "unbootstrapped", "unavailable"]),
+    enrollment: safeStatus(ready.enrollment, ["active", "required", "revoked", "unavailable"]),
+    process: safeStatus(ready.process, ["authenticated", "absent", "stale", "unavailable"]),
+    profile_matches: ready.profile_id === PROFILE,
+  };
+  assert.equal(ready.state, "ready");
   assert.equal(ready.profile_id, PROFILE);
   assert.equal(ready.enrollment, "active");
-  assert.equal(ready.process, "running");
+  assert.equal(ready.process, "authenticated");
   report.checks.push("packaged_runner_enrolled_and_started_through_ui");
 
   stage = "baseline-setup";

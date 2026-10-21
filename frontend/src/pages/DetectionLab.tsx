@@ -114,6 +114,10 @@ function candidateDraftBinding(candidate: CandidateView, resource?: DetectionRes
   return detectionDraftIdentity({ namespace: candidate.resourceId ? "registry" : "run", id: candidate.resolvedId, digest: resource?.digest ?? null, definition: resource?.document ?? candidate });
 }
 
+function candidateWorkspaceTabBinding(candidate: CandidateView) {
+  return detectionDraftIdentity({ namespace: candidate.resourceId ? "registry-tab" : "run-tab", id: candidate.resolvedId });
+}
+
 function sourceRunLabel(run: RunRecord) {
   const date = run.created_at || run.finalized_at;
   return `${runLabel(run)} \u00b7 ${sentence(run.mode ?? "mode_not_reported")} \u00b7 ${date && Number.isFinite(Date.parse(date)) ? new Date(date).toLocaleString() : "Date unavailable"}`;
@@ -660,10 +664,18 @@ function CandidateWorkspace({
     selectedBaselineIds: candidate.public_baselines?.map(item => item.research_source_id) ?? [], compareId: comparisonChoices[0]?.resourceId ?? "",
   }), [candidate, language, comparisonChoices]);
   const draft = useDetectionDraft(binding, defaults, ["structuredSelectionDraft", "structuredBenignDraft"], { structuredSelectionDraft: isStructuredRuleDraftText, structuredBenignDraft: isInternalBenignFixtureDraftText });
+  const workspaceTabBinding = candidateWorkspaceTabBinding(candidate);
+  const { value: workspaceTabValue, update: updateWorkspaceTab, discard: discardWorkspaceTab, retained: workspaceTabRetained, warning: workspaceTabWarning } = useDetectionDraft(workspaceTabBinding, { tab: draft.value.tab });
+  const migratedWorkspaceTabBinding = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (migratedWorkspaceTabBinding.current === workspaceTabBinding) return;
+    migratedWorkspaceTabBinding.current = workspaceTabBinding;
+    if (!workspaceTabRetained && !workspaceTabWarning) updateWorkspaceTab("tab", workspaceTabValue.tab);
+  }, [workspaceTabBinding, workspaceTabRetained, workspaceTabWarning, updateWorkspaceTab, workspaceTabValue.tab]);
   const observed = useDetectionDraft(binding + ":observed:" + sourceRunId, { runId: sourceRunId, evidenceIds: "" });
   const { source, fixtures, benign, notes, reason, revisionKind, revisionReason, revisionTitle, selectionJson, logsourceJson, selectedBaselineIds, compareId } = draft.value;
   // A comparison opens this view without overwriting the retained workspace tab.
-  const tab = evaluationHandoff ? "evaluations" : draft.value.tab;
+  const tab = evaluationHandoff ? "evaluations" : workspaceTabValue.tab;
   const structuredDraft = readStructuredRuleDraft(draft.value.structuredSelectionDraft);
   const setStructuredDraft = (value: StructuredRuleDraft | null) => draft.update("structuredSelectionDraft", value ? JSON.stringify(value) : "");
   const structuredPending = language === "internal" && structuredDraft !== null;
@@ -677,6 +689,7 @@ function CandidateWorkspace({
   const setTab = (value: typeof defaults.tab) => {
     if (evaluationHandoff && value === "evaluations") return;
     if (evaluationHandoff) onCancelEvaluationHandoff();
+    updateWorkspaceTab("tab", value);
     draft.update("tab", value);
   };
   const setSource = (value: typeof defaults.source) => draft.update("source", value);
@@ -700,7 +713,7 @@ function CandidateWorkspace({
   const storedSource = candidate.rule_source ?? source;
   const code = useMemo(() => storedSource || (language === "internal" ? JSON.stringify({ logsource: candidate.logsource ?? {}, selection: candidate.selection ?? {} }, null, 2) : ""), [candidate.logsource, candidate.selection, language, storedSource]);
   const draftChanged = (Object.keys(defaults) as (keyof typeof defaults)[]).some(key => key !== "tab" && key !== "compareId" && (Array.isArray(defaults[key]) ? detectionDraftIdentity(defaults[key]) !== detectionDraftIdentity(draft.value[key]) : defaults[key] !== draft.value[key]));
-  const draftWarning = draft.warning || observed.warning;
+  const draftWarning = draft.warning || observed.warning || workspaceTabWarning;
 
   const authoritativeParsed = Boolean(backend?.authoritative && candidate.parser_backend?.name && candidate.state !== "hypothesis" && !sourceChanged);
   const queryValidation = candidate.validation ?? {};
@@ -784,11 +797,11 @@ function CandidateWorkspace({
         <Dialog.Trigger asChild><Button variant="ghost" size="small" disabled={lifecyclePending || revisionPending}>Discard local inputs</Button></Dialog.Trigger>
         <Dialog.Portal><Dialog.Overlay className="dialog-overlay"/><Dialog.Content className="dialog-content">
           <Dialog.Title>Discard inputs for this revision?</Dialog.Title><Dialog.Description>Reset this candidate's source, research reasons, tuning and fixture inputs to its saved definition. Saved rules and other candidate drafts stay intact.</Dialog.Description>
-          <div className="dialog-actions"><Dialog.Close asChild><Button>Keep editing</Button></Dialog.Close><Button variant="danger" onClick={() => { draft.discard(); observed.discard(); setLocalError(undefined); setDiscardOpen(false); }}>Discard these inputs</Button></div>
+          <div className="dialog-actions"><Dialog.Close asChild><Button>Keep editing</Button></Dialog.Close><Button variant="danger" onClick={() => { draft.discard(); observed.discard(); discardWorkspaceTab(); updateWorkspaceTab("tab", "candidate"); setLocalError(undefined); setDiscardOpen(false); }}>Discard these inputs</Button></div>
         </Dialog.Content></Dialog.Portal>
       </Dialog.Root></div>
       <DetectionAIRevision resource={resource} sourceRun={sourceRun} providers={ai.providers ?? emptyAIProviders} defaultProvider={ai.active_provider} manualEdits={sourceChanged} />
-      {!persisted ? <Callout title="Run-linked record">This candidate is part of an immutable run. Save its definition as a separate hypothesis to use lifecycle or revision actions.<Button size="small" onClick={onSaveLinked} disabled={saveLinkedPending || candidate.demo || !candidate.behavior_id || !candidate.selection || !candidate.logsource}>{saveLinkedPending ? "Saving hypothesis" : "Save hypothesis from run"}</Button></Callout> : null}
+      {!persisted ? <Callout title="Run-linked record"><p className="run-linked-description">This candidate is part of an immutable run. Save its definition as a separate hypothesis to use lifecycle or revision actions.</p><div className="run-linked-action"><Button size="small" onClick={onSaveLinked} disabled={saveLinkedPending || candidate.demo || !candidate.behavior_id || !candidate.selection || !candidate.logsource}>{saveLinkedPending ? "Saving hypothesis" : "Save hypothesis from run"}</Button></div></Callout> : null}
       {localError ? <Callout tone="danger" title="Input refused locally">{localError}</Callout> : null}
       {tab === "candidate" ? <>
         <div className="editor-header"><span><Code2 />Candidate source</span><Badge tone={authoritativeParsed ? "success" : "warning"}>{sourceChanged ? "Draft source not validated" : authoritativeParsed ? "Authoritatively parsed" : "Not authoritative validation"}</Badge></div>

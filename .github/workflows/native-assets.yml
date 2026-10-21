@@ -1,0 +1,202 @@
+name: native asset preparation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-assets-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.platform }} native runner
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            architecture: x86_64
+            target: x86_64-pc-windows-msvc
+            binary: runner/target/release/bluefire-runner.exe
+          - os: ubuntu-latest
+            platform: linux
+            architecture: x86_64
+            target: x86_64-unknown-linux-musl
+            binary: runner/target/x86_64-unknown-linux-musl/release/bluefire-runner
+    steps:
+      - name: Checkout exact dispatch commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+
+      - name: Install isolated pinned Rust toolchain (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $rustupHome = Join-Path $env:RUNNER_TEMP 'bluefire-native-rustup'
+          New-Item -ItemType Directory -Path $rustupHome -Force | Out-Null
+          $env:RUSTUP_HOME = $rustupHome
+          "RUSTUP_HOME=$rustupHome" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $channel = (python -c "import tomllib; print(tomllib.load(open('rust-toolchain.toml', 'rb'))['toolchain']['channel'])").Trim()
+          if (-not $channel) { throw 'Pinned Rust channel is missing' }
+          rustup toolchain install $channel --profile minimal --component cargo --component clippy --component rustfmt --force
+          rustup run $channel rustc -vV
+          rustup run $channel cargo --version
+
+      - name: Install isolated pinned Rust toolchain (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/bluefire-native-rustup"
+          printf 'RUSTUP_HOME=%s\n' "$RUNNER_TEMP/bluefire-native-rustup" >> "$GITHUB_ENV"
+          export RUSTUP_HOME="$RUNNER_TEMP/bluefire-native-rustup"
+          channel="$(python -c "import tomllib; print(tomllib.load(open('rust-toolchain.toml', 'rb'))['toolchain']['channel'])")"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal --component cargo --component clippy --component rustfmt --force
+          rustup run "$channel" rustc -vV
+          rustup run "$channel" cargo --version
+
+      - name: Verify exact source and build Windows MSVC runner
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          NATIVE_TARGET: ${{ matrix.target }}
+        run: |
+          if ((git rev-parse HEAD).Trim() -ne $env:GITHUB_SHA) { throw 'Checkout does not match dispatch commit' }
+          $hostLine = rustc -vV | Select-String '^host: '
+          if (-not $hostLine -or $hostLine.Line.Substring(6).Trim() -ne $env:NATIVE_TARGET) { throw 'Pinned Rust host does not match Windows MSVC target' }
+          python tools/build_native_runner.py
+
+      - name: Verify exact source and build Linux musl runner
+        if: matrix.platform == 'linux'
+        shell: bash
+        env:
+          NATIVE_TARGET: ${{ matrix.target }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          rustup target add "$NATIVE_TARGET"
+          python tools/build_native_runner.py --target "$NATIVE_TARGET"
+
+      - name: Create binary and sanitized build receipt (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          NATIVE_PLATFORM: ${{ matrix.platform }}
+          NATIVE_ARCHITECTURE: ${{ matrix.architecture }}
+          NATIVE_TARGET: ${{ matrix.target }}
+          NATIVE_BINARY: ${{ matrix.binary }}
+        run: |
+          $script = @'
+          import ast, hashlib, json, os, shutil, subprocess, tomllib
+          from pathlib import Path
+
+          root = Path(os.environ["GITHUB_WORKSPACE"])
+          if subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip() != os.environ["GITHUB_SHA"]:
+              raise SystemExit("checkout does not match dispatch commit")
+          version_ast = ast.parse((root / "bluefire/version.py").read_text(encoding="utf-8"))
+          product_version = next(
+              node.value.value for node in version_ast.body
+              if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == "__version__" for target in node.targets)
+              and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
+          )
+          cargo = tomllib.loads((root / "runner/Cargo.toml").read_text(encoding="utf-8"))["package"]
+          source = root / os.environ["NATIVE_BINARY"]
+          output = Path("native-assets")
+          output.mkdir(exist_ok=True)
+          binary = output / source.name
+          shutil.copyfile(source, binary)
+          digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+          tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=root, text=True).strip()
+          receipt = {
+              "schema_version": "bluefire.native-build-receipt.v1",
+              "source": {"commit": os.environ["GITHUB_SHA"], "tree": tree},
+              "runner": {
+                  "os": os.environ["NATIVE_PLATFORM"],
+                  "image": {"name": os.environ.get("ImageOS"), "version": os.environ.get("ImageVersion")},
+                  "architecture": os.environ["NATIVE_ARCHITECTURE"],
+                  "target": os.environ["NATIVE_TARGET"],
+              },
+              "versions": {"product": product_version, "cargo_package": cargo["version"]},
+              "toolchain": {
+                  "rustc": subprocess.check_output(["rustc", "--version"], cwd=root, text=True).strip(),
+                  "cargo": subprocess.check_output(["cargo", "--version"], cwd=root, text=True).strip(),
+              },
+              "cargo_lock_sha256": hashlib.sha256((root / "Cargo.lock").read_bytes()).hexdigest(),
+              "binary": {"filename": binary.name, "bytes": binary.stat().st_size, "sha256": digest},
+          }
+          (output / "receipt.json").write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          '@
+          $script | python -
+
+      - name: Create binary and sanitized build receipt (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        env:
+          NATIVE_PLATFORM: ${{ matrix.platform }}
+          NATIVE_ARCHITECTURE: ${{ matrix.architecture }}
+          NATIVE_TARGET: ${{ matrix.target }}
+          NATIVE_BINARY: ${{ matrix.binary }}
+        run: |
+          python - <<'PY'
+          import ast, hashlib, json, os, shutil, subprocess, tomllib
+          from pathlib import Path
+
+          root = Path(os.environ["GITHUB_WORKSPACE"])
+          if subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip() != os.environ["GITHUB_SHA"]:
+              raise SystemExit("checkout does not match dispatch commit")
+          version_ast = ast.parse((root / "bluefire/version.py").read_text(encoding="utf-8"))
+          product_version = next(
+              node.value.value for node in version_ast.body
+              if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == "__version__" for target in node.targets)
+              and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
+          )
+          cargo = tomllib.loads((root / "runner/Cargo.toml").read_text(encoding="utf-8"))["package"]
+          source = root / os.environ["NATIVE_BINARY"]
+          output = Path("native-assets")
+          output.mkdir(exist_ok=True)
+          binary = output / source.name
+          shutil.copyfile(source, binary)
+          digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+          tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=root, text=True).strip()
+          receipt = {
+              "schema_version": "bluefire.native-build-receipt.v1",
+              "source": {"commit": os.environ["GITHUB_SHA"], "tree": tree},
+              "runner": {
+                  "os": os.environ["NATIVE_PLATFORM"],
+                  "image": {"name": os.environ.get("ImageOS"), "version": os.environ.get("ImageVersion")},
+                  "architecture": os.environ["NATIVE_ARCHITECTURE"],
+                  "target": os.environ["NATIVE_TARGET"],
+              },
+              "versions": {"product": product_version, "cargo_package": cargo["version"]},
+              "toolchain": {
+                  "rustc": subprocess.check_output(["rustc", "--version"], cwd=root, text=True).strip(),
+                  "cargo": subprocess.check_output(["cargo", "--version"], cwd=root, text=True).strip(),
+              },
+              "cargo_lock_sha256": hashlib.sha256((root / "Cargo.lock").read_bytes()).hexdigest(),
+              "binary": {"filename": binary.name, "bytes": binary.stat().st_size, "sha256": digest},
+          }
+          (output / "receipt.json").write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload native runner and receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bluefire-native-runner-${{ matrix.platform }}-${{ matrix.architecture }}
+          path: native-assets/
+          retention-days: 7
+          if-no-files-found: error

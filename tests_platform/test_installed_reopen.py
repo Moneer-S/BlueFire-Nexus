@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import io
+import signal
 from copy import deepcopy
 from pathlib import Path
 from unittest.mock import Mock
+
+import pytest
 
 from tools import verify_installed_reopen as verifier
 from tools.verify_installed_reopen import (
@@ -13,9 +17,12 @@ from tools.verify_installed_reopen import (
     _browser_report_passed,
     _capability_digest,
     _cleanup_accepted,
+    _cli_output_diagnostic,
     _digest,
     _first_stop_precedes_restart,
     _fresh_capability,
+    _installed_cli_command,
+    _read_cli_stream,
     _read_state,
     _restart_order_confirmed,
     _run_driver,
@@ -113,6 +120,111 @@ def test_capability_announcement_parser_accepts_only_exact_loopback_fragment() -
         "http://127.0.0.1:49152/#bluefire-session=" + "A" * 64 + "extra",
     ):
         assert _URL_RE.fullmatch(value) is None
+
+
+def test_installed_command_uses_the_declared_cli_module_entrypoint(tmp_path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    command = _installed_cli_command("/owned/venv/bin/python", tmp_path / "runs")
+
+    assert command == [
+        "/owned/venv/bin/python",
+        "-I",
+        "-B",
+        "-m",
+        "bluefire.cli",
+        "--runs-dir",
+        str(tmp_path / "runs"),
+        "ui",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "0",
+        "--no-browser",
+    ]
+    assert not (root / "bluefire" / "__main__.py").exists()
+    assert '[project.scripts]\nbluefire = "bluefire.cli:main"' in (
+        root / "pyproject.toml"
+    ).read_text(encoding="utf-8")
+    assert 'if __name__ == "__main__":' in (root / "bluefire" / "cli.py").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_signal_number_accepts_the_standard_signal_enum_and_refuses_missing(monkeypatch) -> None:
+    assert verifier._signal_number("SIGINT") == signal.SIGINT
+    monkeypatch.setattr(verifier.signal, "SIGINT", True)
+    with pytest.raises(RuntimeError, match="signals are unavailable"):
+        verifier._signal_number("SIGINT")
+    with pytest.raises(RuntimeError, match="signals are unavailable"):
+        verifier._signal_number("BLUEFIRE_MISSING_SIGNAL")
+
+
+def test_cli_output_diagnostics_match_real_announcement_without_retaining_credentials() -> None:
+    capability = "A" * 64
+    state: dict[str, object] = {"overflow": False}
+    lock = verifier.threading.Lock()
+    stderr = io.BytesIO(
+        (
+            f"BlueFire local console: http://127.0.0.1:49152/#bluefire-session={capability}\n"
+            f"One-time connection code: {capability}\n"
+        ).encode("ascii")
+    )
+
+    _read_cli_stream(stderr, stderr=True, state=state, lock=lock)
+    diagnostic = _cli_output_diagnostic(state, returncode=None)
+
+    assert state["port"] == 49152
+    assert diagnostic == {
+        "stdout_bytes": 0,
+        "stderr_bytes": len(stderr.getvalue()),
+        "stderr_lines": 2,
+        "console_announcement_lines": 1,
+        "valid_console_announcements": 1,
+        "connection_code_lines": 1,
+        "valid_connection_codes": 1,
+        "oversized_stderr_lines": 0,
+        "stream_overflow": False,
+        "announced_fields_match": True,
+        "returncode": None,
+    }
+    assert capability not in repr(diagnostic)
+    assert "url_capability" not in diagnostic
+    assert "code" not in diagnostic
+
+
+def test_cli_output_diagnostics_distinguish_missing_or_malformed_announcement() -> None:
+    capability = "B" * 64
+    state: dict[str, object] = {"overflow": False}
+    lock = verifier.threading.Lock()
+    stderr = io.BytesIO(
+        (
+            "BlueFire local console: http://localhost:49152/#bluefire-session="
+            f"{capability}\n"
+            f"One-time connection code: {capability}\n"
+        ).encode("ascii")
+    )
+
+    _read_cli_stream(stderr, stderr=True, state=state, lock=lock)
+    diagnostic = _cli_output_diagnostic(state, returncode=1)
+
+    assert diagnostic["console_announcement_lines"] == 1
+    assert diagnostic["valid_console_announcements"] == 0
+    assert diagnostic["valid_connection_codes"] == 1
+    assert diagnostic["announced_fields_match"] is False
+    assert diagnostic["returncode"] == 1
+    assert capability not in repr(diagnostic)
+
+
+def test_cli_output_diagnostics_count_an_oversized_unterminated_line() -> None:
+    state: dict[str, object] = {"overflow": False}
+    verifier._read_cli_stream(
+        io.BytesIO(b"x" * 2049), stderr=True, state=state, lock=verifier.threading.Lock()
+    )
+    diagnostic = verifier._cli_output_diagnostic(state, returncode=1)
+    assert diagnostic["stderr_bytes"] == 2049
+    assert diagnostic["stderr_lines"] == 1
+    assert diagnostic["oversized_stderr_lines"] == 1
+    assert diagnostic["announced_fields_match"] is False
 
 
 def test_saved_fixture_contract_requires_two_owned_sequential_digested_versions() -> None:

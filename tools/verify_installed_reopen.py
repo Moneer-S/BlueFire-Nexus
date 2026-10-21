@@ -21,6 +21,7 @@ import sysconfig
 import threading
 import time
 from pathlib import Path
+from typing import cast
 
 _SCENARIO_ID = "scenario.installed-reopen.fixture.v1"
 _DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -55,10 +56,10 @@ def _read_state(path: Path) -> dict[str, object]:
         raw = stream.read(_MAX_STATE_BYTES + 1)
     if len(raw) > _MAX_STATE_BYTES:
         raise RuntimeError("saved fixture metadata exceeded its size limit")
-    value = json.loads(raw)
+    value: object = json.loads(raw)
     if not _valid_state(value):
         raise RuntimeError("saved fixture metadata did not satisfy its contract")
-    return value
+    return cast(dict[str, object], value)
 
 
 def _read_browser_report(path: Path, mode: str) -> dict[str, object]:
@@ -66,15 +67,34 @@ def _read_browser_report(path: Path, mode: str) -> dict[str, object]:
         raw = stream.read(_MAX_REPORT_BYTES + 1)
     if len(raw) > _MAX_REPORT_BYTES:
         raise RuntimeError("browser report exceeded its size limit")
-    value = json.loads(raw)
+    value: object = json.loads(raw)
     if not _browser_report_passed(value, mode):
         raise RuntimeError("browser report did not satisfy its contract")
-    return value
+    return cast(dict[str, object], value)
+
+
+def _installed_cli_command(executable: str, runs: Path) -> list[str]:
+    return [
+        executable,
+        "-I",
+        "-B",
+        "-m",
+        "bluefire.cli",
+        "--runs-dir",
+        str(runs),
+        "ui",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "0",
+        "--no-browser",
+    ]
 
 
 def _browser_report_passed(value: object, mode: str) -> bool:
     if mode not in ("create", "reopen") or not isinstance(value, dict):
         return False
+    report = cast(dict[str, object], value)
     required = {
         "schema_version",
         "mode",
@@ -94,18 +114,18 @@ def _browser_report_passed(value: object, mode: str) -> bool:
         else "both_versions_opened_and_reread_with_current_head_from_fresh_server"
     )
     return (
-        set(value) == required
-        and value.get("schema_version") == "bluefire.installed-reopen.browser-report.v1"
-        and value.get("mode") == mode
-        and value.get("status") == "passed"
-        and value.get("fixture_identity")
+        set(report) == required
+        and report.get("schema_version") == "bluefire.installed-reopen.browser-report.v1"
+        and report.get("mode") == mode
+        and report.get("status") == "passed"
+        and report.get("fixture_identity")
         == "packaged collection example copied to owned fixture scenario"
-        and value.get("native_execution") is False
-        and value.get("live_model_inference") is False
-        and value.get("checks") == [expected_check]
-        and value.get("blocked_requests") == []
-        and value.get("errors") == []
-        and (mode != "reopen" or _valid_state(value.get("verified_state")))
+        and report.get("native_execution") is False
+        and report.get("live_model_inference") is False
+        and report.get("checks") == [expected_check]
+        and report.get("blocked_requests") == []
+        and report.get("errors") == []
+        and (mode != "reopen" or _valid_state(report.get("verified_state")))
     )
 
 
@@ -117,29 +137,38 @@ def _valid_state(value: object) -> bool:
         "source_example_id",
     }:
         return False
-    rows = value.get("versions")
+    state = cast(dict[str, object], value)
+    rows_value = state.get("versions")
     if (
-        value.get("schema_version") != "bluefire.installed-reopen.fixture-state.v1"
-        or value.get("scenario_id") != _SCENARIO_ID
-        or value.get("source_example_id") != "scenario.endpoint.lab-collection-methods.v1"
-        or not isinstance(rows, list)
-        or len(rows) != 2
+        state.get("schema_version") != "bluefire.installed-reopen.fixture-state.v1"
+        or state.get("scenario_id") != _SCENARIO_ID
+        or state.get("source_example_id") != "scenario.endpoint.lab-collection-methods.v1"
+        or not isinstance(rows_value, list)
+        or len(rows_value) != 2
     ):
         return False
+    rows = cast(list[object], rows_value)
     for expected_version, row in enumerate(rows, 1):
+        if not isinstance(row, dict) or set(row) != {"version", "digest", "document"}:
+            return False
+        version_row = cast(dict[str, object], row)
+        document = version_row.get("document")
         if (
-            not isinstance(row, dict)
-            or set(row) != {"version", "digest", "document"}
-            or type(row.get("version")) is not int
-            or row["version"] != expected_version
-            or not isinstance(row.get("digest"), str)
-            or _DIGEST_RE.fullmatch(row["digest"]) is None
-            or not isinstance(row.get("document"), dict)
-            or row["document"].get("id") != _SCENARIO_ID
-            or not isinstance(row["document"].get("title"), str)
+            type(version_row.get("version")) is not int
+            or version_row.get("version") != expected_version
+            or not isinstance(version_row.get("digest"), str)
+            or _DIGEST_RE.fullmatch(cast(str, version_row["digest"])) is None
+            or not isinstance(document, dict)
         ):
             return False
-    return rows[0]["document"] != rows[1]["document"]
+        document_value = cast(dict[str, object], document)
+        if document_value.get("id") != _SCENARIO_ID or not isinstance(
+            document_value.get("title"), str
+        ):
+            return False
+    first_row = cast(dict[str, object], rows[0])
+    second_row = cast(dict[str, object], rows[1])
+    return first_row.get("document") != second_row.get("document")
 
 
 def _restart_order_confirmed(events: object) -> bool:
@@ -208,22 +237,41 @@ def _started_groups_stopped(report: dict[str, object]) -> bool:
     return True
 
 
+def _counter(state: dict[str, object], name: str) -> int:
+    value = state.get(name, 0)
+    return value if type(value) is int and value >= 0 else 0
+
+
+def _signal_number(name: str) -> int:
+    value = getattr(signal, name, None)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise RuntimeError("POSIX process signals are unavailable")
+    return value
+
+
+def _kill_process_group(process_id: int, signum: int) -> None:
+    killpg = getattr(os, "killpg", None)
+    if not callable(killpg):
+        raise RuntimeError("POSIX process-group cleanup is unavailable")
+    killpg(process_id, signum)
+
+
 def _stop_group(process: subprocess.Popen[bytes]) -> bool:
     try:
-        os.killpg(process.pid, signal.SIGINT)
+        _kill_process_group(process.pid, _signal_number("SIGINT"))
     except ProcessLookupError:
         pass
     try:
         process.wait(timeout=8)
     except subprocess.TimeoutExpired:
         pass
-    for sig, grace in ((signal.SIGTERM, 3), (signal.SIGKILL, 5)):
+    for sig, grace in ((_signal_number("SIGTERM"), 3), (_signal_number("SIGKILL"), 5)):
         try:
-            os.killpg(process.pid, 0)
+            _kill_process_group(process.pid, 0)
         except ProcessLookupError:
             break
         try:
-            os.killpg(process.pid, sig)
+            _kill_process_group(process.pid, sig)
         except ProcessLookupError:
             break
         try:
@@ -231,7 +279,7 @@ def _stop_group(process: subprocess.Popen[bytes]) -> bool:
         except subprocess.TimeoutExpired:
             pass
     try:
-        os.killpg(process.pid, 0)
+        _kill_process_group(process.pid, 0)
     except ProcessLookupError:
         if process.poll() is None:
             process.wait(timeout=5)
@@ -246,6 +294,7 @@ def _read_cli_stream(
     pending = bytearray()
     for chunk in iter(lambda: stream.read1(1024), b""):
         total += len(chunk)
+        state["stderr_bytes" if stderr else "stdout_bytes"] = total
         if total > _MAX_STREAM_BYTES:
             state["overflow"] = True
             pending.clear()
@@ -258,27 +307,61 @@ def _read_cli_stream(
         while b"\n" in pending:
             line, _, rest = pending.partition(b"\n")
             pending = bytearray(rest)
-            if len(line) > 2048:
-                continue
-            text = line.decode("utf-8", errors="ignore").strip()
-            if text.startswith("BlueFire local console: "):
-                match = _URL_RE.fullmatch(text.removeprefix("BlueFire local console: "))
-                if match:
-                    with lock:
-                        state["port"] = int(match.group(1))
-                        state["url_capability"] = match.group(2)
-            elif text.startswith("One-time connection code: "):
-                candidate = text.removeprefix("One-time connection code: ")
-                if _CAP_RE.fullmatch(candidate):
-                    with lock:
-                        state["code"] = candidate
-    if stderr and pending and len(pending) <= 2048:
-        text = pending.decode("utf-8", errors="ignore").strip()
-        if text.startswith("One-time connection code: "):
-            candidate = text.removeprefix("One-time connection code: ")
-            if _CAP_RE.fullmatch(candidate):
-                with lock:
-                    state["code"] = candidate
+            _consume_cli_line(line, state, lock)
+    if stderr and pending:
+        _consume_cli_line(pending, state, lock)
+
+
+def _consume_cli_line(line: bytes, state: dict[str, object], lock: threading.Lock) -> None:
+    with lock:
+        state["stderr_lines"] = _counter(state, "stderr_lines") + 1
+    if len(line) > 2048:
+        with lock:
+            state["oversized_stderr_lines"] = _counter(state, "oversized_stderr_lines") + 1
+        return
+    text = line.decode("utf-8", errors="ignore").strip()
+    if text.startswith("BlueFire local console: "):
+        with lock:
+            state["console_announcement_lines"] = _counter(state, "console_announcement_lines") + 1
+        match = _URL_RE.fullmatch(text.removeprefix("BlueFire local console: "))
+        if match:
+            with lock:
+                state["valid_console_announcements"] = (
+                    _counter(state, "valid_console_announcements") + 1
+                )
+                state["port"] = int(match.group(1))
+                state["url_capability"] = match.group(2)
+    elif text.startswith("One-time connection code: "):
+        with lock:
+            state["connection_code_lines"] = _counter(state, "connection_code_lines") + 1
+        candidate = text.removeprefix("One-time connection code: ")
+        if _CAP_RE.fullmatch(candidate):
+            with lock:
+                state["valid_connection_codes"] = _counter(state, "valid_connection_codes") + 1
+                state["code"] = candidate
+
+
+def _cli_output_diagnostic(
+    state: dict[str, object], *, returncode: int | None
+) -> dict[str, object]:
+    """Project only bounded counters and booleans; never persist CLI output or secrets."""
+
+    return {
+        "stdout_bytes": min(_counter(state, "stdout_bytes"), _MAX_STREAM_BYTES + 1),
+        "stderr_bytes": min(_counter(state, "stderr_bytes"), _MAX_STREAM_BYTES + 1),
+        "stderr_lines": _counter(state, "stderr_lines"),
+        "console_announcement_lines": _counter(state, "console_announcement_lines"),
+        "valid_console_announcements": _counter(state, "valid_console_announcements"),
+        "connection_code_lines": _counter(state, "connection_code_lines"),
+        "valid_connection_codes": _counter(state, "valid_connection_codes"),
+        "oversized_stderr_lines": _counter(state, "oversized_stderr_lines"),
+        "stream_overflow": state.get("overflow") is True,
+        "announced_fields_match": (
+            isinstance(state.get("url_capability"), str)
+            and state.get("url_capability") == state.get("code")
+        ),
+        "returncode": returncode if type(returncode) is int else None,
+    }
 
 
 def _wait_ready(
@@ -420,11 +503,21 @@ def main() -> int:
         "first_browser_group_stopped": False,
         "second_browser_group_stopped": False,
         "fresh_capability_confirmed": False,
+        "cli_output_diagnostics": [],
     }
     state_file = output / "fixture-state.json"
     cap_to_clear = ""
     processes: list[subprocess.Popen[bytes]] = []
-    lifecycle = []
+    stream_records: list[
+        tuple[
+            int,
+            dict[str, object],
+            threading.Lock,
+            list[threading.Thread],
+            subprocess.Popen[bytes],
+        ]
+    ] = []
+    lifecycle: list[str] = []
     original_cwd = Path.cwd()
     runtime_created = False
     try:
@@ -468,21 +561,7 @@ def main() -> int:
             ):
                 raise RuntimeError("first CLI process must stop before restart")
             runs = runtime / "runs"
-            command = [
-                sys.executable,
-                "-I",
-                "-B",
-                "-m",
-                "bluefire",
-                "--runs-dir",
-                str(runs),
-                "ui",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                "0",
-                "--no-browser",
-            ]
+            command = _installed_cli_command(sys.executable, runs)
             service = subprocess.Popen(
                 command,
                 env=env,
@@ -513,6 +592,7 @@ def main() -> int:
             ]
             for reader in readers:
                 reader.start()
+            stream_records.append((pass_index, stream_state, lock, readers, service))
             port, cap_to_clear = _wait_ready(service, stream_state, lock)
             current_capability_digest = _capability_digest(cap_to_clear)
             if pass_index == 1:
@@ -560,11 +640,15 @@ def main() -> int:
             if pass_index == 1:
                 _read_browser_report(output / "create-report.json", "create")
                 state = _read_state(state_file)
+                versions = cast(list[object], state["versions"])
                 report["fixture"] = {
                     "scenario_id": state["scenario_id"],
                     "versions": [
-                        {"version": row["version"], "digest": row["digest"]}
-                        for row in state["versions"]
+                        {
+                            "version": cast(dict[str, object], row)["version"],
+                            "digest": cast(dict[str, object], row)["digest"],
+                        }
+                        for row in versions
                     ],
                 }
                 checks.append("fresh_cli_process_saved_two_fixture_versions")
@@ -606,6 +690,18 @@ def main() -> int:
             except OSError:
                 stopped = False
             report[key] = stopped
+        diagnostics = []
+        for pass_index, state, lock, readers, process in stream_records:
+            for reader in readers:
+                reader.join(timeout=3)
+            with lock:
+                diagnostics.append(
+                    {
+                        "pass": pass_index,
+                        **_cli_output_diagnostic(state, returncode=process.poll()),
+                    }
+                )
+        report["cli_output_diagnostics"] = diagnostics
         report["first_cli_process_stopped"] = (
             report.get("pass_1_cli_process_group_started") is True
             and report.get("pass_1_cli_process_group_stopped") is True

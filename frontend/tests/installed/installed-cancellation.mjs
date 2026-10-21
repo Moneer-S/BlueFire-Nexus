@@ -22,7 +22,7 @@ let capability = "", origin, fixtureOrigin, chromium, browser, context, page, pr
 let stage = "bootstrap";
 let sessionPosts = 0, providerPosts = 0, activationPosts = 0, authorizationPosts = 0;
 let graphContextPosts = 0, graphContextGets = 0, assistancePosts = 0, cancelPosts = 0;
-let expectedContext, parentJobId;
+let expectedContext, parentJobId, postedGraphSelection;
 const exactKeys = (value, keys) => value && typeof value === "object" && !Array.isArray(value)
   && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
 const stableValue = value => Array.isArray(value) ? value.map(stableValue)
@@ -123,9 +123,24 @@ async function main() {
             && body.usage_authorized === true && body.local_endpoint_authorized === true;
           if (allowed) authorizationPosts += 1; else reason = "authorization_scope";
         } else if (url.pathname === "/api/v1/assistance/graph-context") {
-          allowed = graphContextPosts === 0 && method === "POST" && exactKeys(body, ["kind", "base_scenario"])
-            && body.kind === "graph" && body.base_scenario === null;
-          if (allowed) graphContextPosts += 1; else reason = "graph_context_scope";
+          const keys = body && typeof body === "object" && !Array.isArray(body) ? Object.keys(body) : [];
+          const selectionShape = exactKeys(body, ["kind", "base_scenario"])
+            || exactKeys(body, ["kind", "base_scenario", "edit_step"]);
+          const editStep = body?.edit_step;
+          const editStepValid = editStep === undefined || (
+            exactKeys(editStep, ["scenario", "step_id", "dirty"])
+            && editStep.scenario && typeof editStep.scenario === "object" && !Array.isArray(editStep.scenario)
+            && typeof editStep.step_id === "string" && editStep.step_id.length > 0 && editStep.step_id.length <= 200
+            && typeof editStep.dirty === "boolean"
+          );
+          const bodySize = request.postDataBuffer()?.byteLength ?? 0;
+          allowed = graphContextPosts === 0 && method === "POST" && selectionShape && body.kind === "graph"
+            && body.base_scenario === null && editStepValid && bodySize > 0 && bodySize <= 1_048_576
+            && keys.every(key => ["kind", "base_scenario", "edit_step"].includes(key));
+          if (allowed) {
+            graphContextPosts += 1;
+            postedGraphSelection = structuredClone(body);
+          } else reason = "graph_context_scope";
         } else if (url.pathname === "/api/v1/assistance/turns") {
           allowed = assistancePosts === 0 && expectedContext && exactKeys(body, ["submission_id", "selection", "context_digest", "message", "autonomy", "provider_id"])
             && /^[0-9a-f-]{36}$/.test(body.submission_id) && validDigest(body.context_digest)
@@ -202,6 +217,8 @@ async function main() {
   await page.getByRole("combobox", { name: "Assistant operation", exact: true }).selectOption("new");
   const graphContextResponse = await contextGet;
   expectedContext = await graphContextResponse.json();
+  assert.equal(postedGraphSelection?.kind, "graph");
+  assert.equal(postedGraphSelection?.base_scenario, null);
   assert.deepEqual(expectedContext.selected, { kind: "graph", base_scenario: null });
   assert.equal(graphContextPosts, 1); assert.equal(graphContextGets, 1);
   const submitResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/assistance/turns" && response.request().method() === "POST");

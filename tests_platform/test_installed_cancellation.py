@@ -6,6 +6,7 @@ import hashlib
 import os
 import signal
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +18,24 @@ from tools.verify_installed_cancellation import (
     stop_group,
     valid_fixture_request,
 )
+
+
+def test_browser_driver_allows_only_bounded_optional_graph_step_context() -> None:
+    driver = (
+        Path(__file__).resolve().parents[1]
+        / "frontend"
+        / "tests"
+        / "installed"
+        / "installed-cancellation.mjs"
+    ).read_text(encoding="utf-8")
+    assert 'exactKeys(body, ["kind", "base_scenario", "edit_step"])' in driver
+    assert 'exactKeys(editStep, ["scenario", "step_id", "dirty"])' in driver
+    assert "bodySize <= 1_048_576" in driver
+    assert "postedGraphSelection = structuredClone(body)" in driver
+    assert (
+        'assert.deepEqual(expectedContext.selected, { kind: "graph", base_scenario: null })'
+        in driver
+    )
 
 
 def fixture_request() -> dict[str, object]:

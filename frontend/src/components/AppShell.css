@@ -64,6 +64,12 @@
 .workspace-search-results > p { margin: 14px 10px; font-size: .8125rem; color: var(--muted-strong); }
 @media (max-width: 1180px) { .workspace-content.assistant-open { grid-template-columns: minmax(0, 1fr) 320px; } .workspace-search-location { display: none; } }
 @media (max-width: 1050px) { .workspace-content.assistant-open { grid-template-columns: minmax(0, 1fr); } #assistant-dock { position: static; height: min(65dvh, 600px); border-top: 1px solid var(--line); } .experiment-assistant { border-left: 0; } }
+@media (min-width: 901px) and (max-width: 1050px) {
+  .workspace-content.assistant-open { height: calc(100dvh - var(--topbar-height)); grid-template-rows: minmax(0, 1fr) minmax(0, 46%); }
+  .workspace-content.assistant-open > main { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+  .workspace-content.assistant-open > #assistant-dock { height: auto; }
+  .workspace-content.assistant-open .assistant-header { flex-shrink: 0; padding: 12px 20px; }
+}
 @media (max-width: 900px) {
   .app-shell.workbench-shell { display: block; }
   .workbench-shell .sidebar, .workbench-shell.nav-collapsed .sidebar { width: min(280px, calc(100vw - 32px)); visibility: hidden; }

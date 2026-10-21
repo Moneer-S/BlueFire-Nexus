@@ -307,6 +307,23 @@ def test_receiver_bearer_fields_are_rejected_before_receipt_projection() -> None
     assert "credential" in str(raised.value)
 
 
+def test_receiver_browser_driver_uses_authenticated_readiness_and_safe_diagnostic() -> None:
+    driver = (
+        Path(__file__).resolve().parents[1]
+        / "frontend"
+        / "tests"
+        / "installed"
+        / "installed-receiver.mjs"
+    ).read_text(encoding="utf-8")
+    assert 'assert.equal(ready.process, "authenticated")' in driver
+    assert 'assert.equal(ready.process, "running")' not in driver
+    assert "report.runner_status_diagnostic" in driver
+    assert "profile_matches: ready.profile_id === PROFILE" in driver
+    assert (
+        'safeStatus(ready.process, ["authenticated", "absent", "stale", "unavailable"])' in driver
+    )
+
+
 @pytest.mark.parametrize("driver_requested", [False, True])
 def test_receiver_driver_paths_require_copied_driver_and_adjacent_modules(
     tmp_path: Path, driver_requested: bool
