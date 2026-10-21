@@ -38,6 +38,32 @@ def test_browser_driver_allows_only_bounded_optional_graph_step_context() -> Non
     )
 
 
+def test_reload_recovery_respects_open_panel_and_rechecks_saved_server_state() -> None:
+    driver = (
+        Path(__file__).resolve().parents[1]
+        / "frontend"
+        / "tests"
+        / "installed"
+        / "installed-cancellation.mjs"
+    ).read_text(encoding="utf-8")
+    panel_stage = driver.index('stage = "reload-recovery-panel";')
+    reload_page = driver.index('await page.reload({ waitUntil: "domcontentloaded" });', panel_stage)
+    conditional_open = driver.index("if (!(await assistant.isVisible()))", reload_page)
+    panel_ready = driver.index('await assistant.waitFor({ state: "visible" });', conditional_open)
+    status_stage = driver.index('stage = "reload-recovery-status";', panel_ready)
+    status_check = driver.index('name: "Work stopped", exact: true', status_stage)
+    server_stage = driver.index('stage = "reload-recovery-server";', status_check)
+    server_read = driver.index("const reread = await api(", server_stage)
+    assert driver.index('assert.equal(reread.job.state, "cancelled");', server_read) > server_read
+    assert driver.index('assert.equal(reread.turn.status, "cancelled");', server_read) > server_read
+    assert not any(
+        line.strip().startswith(
+            'await page.getByRole("button", { name: /^Assistant(?::|$)/ }).click();'
+        )
+        for line in driver[reload_page:server_read].splitlines()
+    )
+
+
 def fixture_request() -> dict[str, object]:
     return {
         "model": "bluefire-local-cancel-fixture-v1",

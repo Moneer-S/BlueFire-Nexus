@@ -30,7 +30,7 @@ function resource(candidateId: string, name: string, state: string): DetectionRe
 function setup(state = "fixture_exercised") {
   const candidates = [resource(id, title, state), resource(otherId, "Other internal", state)];
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  vi.spyOn(api, "detections").mockImplementation(async () => ({ schema_version: "v1", candidates }));
+  const readDetections = vi.spyOn(api, "detections").mockImplementation(async () => ({ schema_version: "v1", candidates }));
   vi.spyOn(api, "runs").mockResolvedValue({ schema_version: "v1", unavailable_run_count: 0, runs: [] });
   const readRun = vi.spyOn(api, "runDetail").mockRejectedValue(new Error("No source run was selected."));
   vi.spyOn(api, "catalog").mockResolvedValue(demoCatalog);
@@ -57,7 +57,7 @@ function setup(state = "fixture_exercised") {
   </MemoryRouter></QueryClientProvider>);
   let view = mount(`/detection-lab?candidate=${id}&candidate_scope=registry`);
   return {
-    user: userEvent.setup(), candidates, client, action,
+    user: userEvent.setup(), candidates, client, action, readDetections,
     remount: () => { view.unmount(); client.clear(); view = mount("/detection-lab"); },
     expectNoOtherActions: () => { otherActions.forEach(spy => expect(spy).not.toHaveBeenCalled()); expect(readRun).not.toHaveBeenCalled(); },
   };
@@ -77,6 +77,16 @@ async function advancedInput(user: User) {
   const summary = screen.getByText("Advanced benign samples JSON", { selector: "summary" });
   if (!summary.closest("details")!.open) await user.click(summary);
   return screen.getByRole("textbox", { name: /^Benign fixtures JSON/ });
+}
+
+function registryDraftKey(candidateId: string) {
+  return Object.keys(sessionStorage).find(key => {
+    if (!key.startsWith("bluefire.detection-draft.v1:")) return false;
+    try {
+      const binding = JSON.parse(key.slice("bluefire.detection-draft.v1:".length));
+      return binding.namespace === "registry" && binding.id === candidateId;
+    } catch { return false; }
+  });
 }
 
 async function addSample(user: User, name = "ordinary") {
@@ -196,8 +206,7 @@ it("isolates authoritative candidate versions while restoring each version's own
   changed[0]!.document.revision = 2;
   changed[0]!.document.selection = { observation_kind: "filesystem" };
   act(() => client.setQueryData(["detections"], { schema_version: "v1", candidates: changed }));
-  await waitFor(() => expect(screen.getByRole("tab", { name: "Candidate" })).toHaveAttribute("aria-selected", "true"));
-  await user.click(screen.getByRole("tab", { name: "Fixtures" }));
+  await waitFor(() => expect(screen.getByRole("tab", { name: "Fixtures" })).toHaveAttribute("aria-selected", "true"));
   expect(screen.queryByLabelText("Sample name 1", { exact: true })).not.toBeInTheDocument();
   expect(notesInput()).toHaveValue("");
   await addSample(user, "version-two");
@@ -248,8 +257,7 @@ it("keeps benign authoring and evaluation gated by the existing lifecycle states
     changed[0]!.document.state = state;
     changed[0]!.digest = `sha256:state-${state}`;
     act(() => client.setQueryData(["detections"], { schema_version: "v1", candidates: changed }));
-    await waitFor(() => expect(screen.getByRole("tab", { name: "Candidate" })).toHaveAttribute("aria-selected", "true"));
-    await user.click(screen.getByRole("tab", { name: "Fixtures" }));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Fixtures" })).toHaveAttribute("aria-selected", "true"));
     expect(screen.getByRole("button", { name: "Add sample" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Apply samples" })).toBeDisabled();
     expect(await advancedInput(user)).toBeDisabled();
@@ -258,6 +266,30 @@ it("keeps benign authoring and evaluation gated by the existing lifecycle states
   }
   expect(action).not.toHaveBeenCalled();
   expectNoOtherActions();
+});
+
+it("shows the exact acknowledged lifecycle resource while registry refresh is pending", async () => {
+  const { user, candidates, action, readDetections } = setup();
+  await openFixtures(user);
+  await applySample(user);
+  fireEvent.change(notesInput(), { target: { value: "Explicit benign evaluation" } });
+
+  const updated = structuredClone(candidates[0]!);
+  updated.status = "benign_evaluated";
+  updated.digest = "sha256:benign-evaluated";
+  updated.document.state = "benign_evaluated";
+  action.mockResolvedValue({ schema_version: "v1", candidate: updated });
+
+  let releaseRefresh!: (value: { schema_version: string; candidates: DetectionResource[] }) => void;
+  readDetections.mockImplementation(() => new Promise(resolve => { releaseRefresh = resolve; }));
+  await user.click(evaluateButton());
+  await waitFor(() => expect(readDetections).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.getByRole("button", { name: /Collection internal.*Benign fixtures evaluated/ })).toBeInTheDocument());
+  expect(screen.getByRole("button", { name: /Other internal.*Fixture exercised/ })).toBeInTheDocument();
+  expect(evaluateButton()).toBeDisabled();
+
+  releaseRefresh({ schema_version: "v1", candidates: [updated, candidates[1]!] });
+  await waitFor(() => expect(readDetections).toHaveBeenCalledTimes(2));
 });
 
 it("clears applied samples, pending edits and notes only after explicit workspace discard confirmation", async () => {
@@ -289,7 +321,7 @@ it("restores legacy applied samples and notes when the optional structured draft
   await openFixtures(user);
   await applySample(user);
   fireEvent.change(notesInput(), { target: { value: "Notes from the existing JSON workflow" } });
-  const key = Object.keys(sessionStorage).find(key => key.startsWith("bluefire.detection-draft.v1:") && key.includes(id) && !key.includes(":observed:"))!;
+  const key = registryDraftKey(id)!;
   expect(key).toBeTruthy();
   const stored = JSON.parse(sessionStorage.getItem(key)!);
   const applied = stored.value.benign;
@@ -314,7 +346,7 @@ it("leaves an unrecognized structured draft's original storage bytes untouched u
   await openFixtures(user);
   await applySample(user);
   fireEvent.change(notesInput(), { target: { value: "Preserve this original retained record" } });
-  const key = Object.keys(sessionStorage).find(key => key.startsWith("bluefire.detection-draft.v1:") && key.includes(id) && !key.includes(":observed:"))!;
+  const key = registryDraftKey(id)!;
   expect(key).toBeTruthy();
   const stored = JSON.parse(sessionStorage.getItem(key)!);
   stored.value.structuredBenignDraft = JSON.stringify({ source: stored.value.benign, samples: [], future_format: "keep these unknown inputs" });

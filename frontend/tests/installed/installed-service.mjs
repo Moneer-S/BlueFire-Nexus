@@ -852,12 +852,17 @@ try {
   report.checks.push("run_linked_definition_saved_validated_and_fixture_evaluated");
   stage = "detection-reopen-saved-revision";
   const detectionParams = new URLSearchParams({ run: firstRunId, candidate: ownedDetectionId, candidate_scope: "registry" });
-  await page.goto(origin + "/#/detection-lab?" + detectionParams.toString());
+  const detectionReopenUrl = origin + "/#/detection-lab?" + detectionParams.toString();
+  if (page.url() === detectionReopenUrl) await page.reload();
+  else await page.goto(detectionReopenUrl);
+  stage = "detection-reopen-selected-candidate";
   await page.getByRole("heading", { name: "Detection Lab", exact: true }).waitFor();
   const reopenedDetection = page.locator(".candidate-list button[aria-pressed='true']");
   await reopenedDetection.waitFor();
+  await reopenedDetection.getByText("Benign fixtures evaluated", { exact: true }).waitFor();
   assert.ok((await reopenedDetection.innerText()).includes(sourceCandidate.title));
   assert.match(await reopenedDetection.innerText(), /Benign fixtures evaluated/);
+  stage = "detection-reopen-server-revision";
   const detectionList = await api("/detections");
   const reopenedResource = detectionList.candidates.filter(candidate => candidate.id === ownedDetectionId);
   assert.equal(reopenedResource.length, 1);
@@ -994,9 +999,9 @@ try {
   assert.equal(report.errors.length, 0);
   assert.equal(report.blocked_requests.length, 0);
   report.status = "passed";
-} catch {
+} catch (error) {
   report.status = "failed_or_incomplete";
-  report.errors.push({ stage, kind: "journey-failed" });
+  report.errors.push({ stage, kind: "journey-failed", error_type: error instanceof Error ? error.name : "unknown" });
   if (connected && stage.startsWith("graph-")) {
     report.graph_failure_geometry = await page.evaluate(() => {
       const geometry = element => {

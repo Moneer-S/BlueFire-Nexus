@@ -390,8 +390,9 @@ jobs:
           $wheels = @(Get-ChildItem -LiteralPath (Join-Path $source 'dist') -Filter '*.whl' -File)
           if ($wheels.Count -ne 1) { throw 'Exactly one candidate wheel is required' }
           $python = Join-Path $env:RUNNER_TEMP 'bluefire-wheel-smoke/Scripts/python.exe'
-          $node = (Get-Command node -CommandType Application).Source
-          & $python -I -B $verifier --forbid-root $env:GITHUB_WORKSPACE --node $node --driver $driver --wheel $wheels[0].FullName --output (Join-Path $env:RUNNER_TEMP 'bluefire-installed-windows-cancellation-evidence')
+          $node = Get-Command node.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+          if (-not $node) { throw 'Node.js application was not found' }
+          & $python -I -B $verifier --forbid-root $env:GITHUB_WORKSPACE --node "$node" --driver "$driver" --wheel "$($wheels[0].FullName)" --output (Join-Path $env:RUNNER_TEMP 'bluefire-installed-windows-cancellation-evidence')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload installed Windows cancellation evidence

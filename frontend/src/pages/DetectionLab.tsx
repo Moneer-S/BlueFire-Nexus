@@ -385,6 +385,10 @@ function DetectionRegistryPage() {
   const actionMutation = useMutation({
     mutationFn: ({ id, action, body }: { id: string; action: LifecycleAction; body: Record<string, unknown> }) => api.detectionAction(id, action, body),
     onSuccess: ({ candidate }) => {
+      client.setQueryData<{ schema_version: string; candidates: DetectionResource[] }>(["detections"], (current) => current ? {
+        ...current,
+        candidates: current.candidates.map((item) => item.id === candidate.id ? candidate : item),
+      } : current);
       setNotice(`${candidateNoticeTitle(candidate)} advanced to ${sentence(candidate.status)}.`);
       refreshDetections();
     },

@@ -258,11 +258,13 @@ async function main() {
   };
   report.checks.push("normal_assistant_stop_reached_durable_cancelled_terminal");
 
-  stage = "reload-recovery";
+  stage = "reload-recovery-panel";
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: /^Assistant(?::|$)/ }).click();
+  if (!(await assistant.isVisible())) await page.getByRole("button", { name: /^Assistant(?::|$)/ }).click();
   await assistant.waitFor({ state: "visible" });
+  stage = "reload-recovery-status";
   await page.getByRole("heading", { name: "Work stopped", exact: true }).waitFor();
+  stage = "reload-recovery-server";
   const reread = await api(`/assistance/turns/${encodeURIComponent(parentJobId)}`);
   assert.equal(reread.job.state, "cancelled");
   assert.equal(reread.turn.status, "cancelled");
