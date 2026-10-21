@@ -50,8 +50,12 @@
 .workbench-builder .graph-sections label { display: flex; align-items: center; gap: 8px; font-size: .72rem; }
 .workbench-builder .graph-sections select { min-height: 30px; min-width: 128px; font-size: .74rem; }
 .workbench-builder .graph-group-count { color: var(--muted); font-size: .72rem; margin-left: auto; }
-.workbench-builder .graph-group-boundaries { flex: 1 1 100%; min-width: 0; padding: 2px 0 3px 32px; color: var(--muted-strong); font-size: .68rem; line-height: 1.35; overflow-wrap: anywhere; }
-.workbench-builder .graph-data-boundaries { flex: 1 1 100%; min-width: 0; margin: 0 12px 4px 32px; color: var(--muted-strong); font-size: .68rem; line-height: 1.35; }
+.workbench-builder .graph-group-connections { margin-left: auto; color: var(--muted-strong); font-size: .68rem; line-height: 1.35; }
+.workbench-builder .graph-group-connections > summary { width: fit-content; cursor: pointer; color: var(--blue-soft); }
+.workbench-builder .graph-group-connections[open] { flex: 1 0 100%; padding: 4px 0 2px; border-top: 1px solid var(--line); }
+.workbench-builder .graph-group-connections > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px 16px; padding: 5px 0; }
+.workbench-builder .graph-group-boundaries { min-width: 0; color: var(--muted-strong); overflow-wrap: anywhere; }
+.workbench-builder .graph-data-boundaries { min-width: 0; margin: 0; color: var(--muted-strong); font-size: .68rem; line-height: 1.35; }
 .workbench-builder .graph-data-boundaries summary { width: fit-content; cursor: pointer; }
 .workbench-builder .graph-data-boundaries > div { display: flex; flex-wrap: wrap; gap: 8px 24px; padding: 4px 0; }
 .workbench-builder .graph-data-boundaries section { min-width: min(100%, 300px); }

@@ -138,6 +138,10 @@ describe("Builder viewport controls", () => {
     const group = screen.getByRole("combobox", { name: "Step group" });
     expect(group.querySelectorAll("option")).toHaveLength(4);
     expect(screen.getAllByRole("button", { name: /^Select focus_step_/ })).toHaveLength(3);
+    const connections = screen.getByText("Group connections").closest("details")!;
+    expect(connections).not.toHaveAttribute("open");
+    expect(connections.querySelector('[aria-label="Conditional execution routes"]')).not.toBeVisible();
+    fireEvent.click(connections.querySelector("summary")!);
     expect(screen.getByText(/To: .*On success/)).toBeVisible();
     const dependencies = screen.getByText("Data dependencies (2)").closest("details")!;
     expect(dependencies.querySelector("summary")).toBeVisible();
@@ -175,6 +179,7 @@ describe("Builder viewport controls", () => {
 
     const group = screen.getByRole("combobox", { name: "Step group" });
     fireEvent.change(group, { target: { value: "1" } });
+    fireEvent.click(screen.getByText("Group connections").closest("details")!.querySelector("summary")!);
     const dependencies = screen.getByText("Data dependencies (2)").closest("details")!;
     fireEvent.click(dependencies.querySelector("summary")!);
     expect(screen.getByText("Place deterministic fixture · Step 1 · records → Place deterministic fixture · Step 4 · Archived")).toBeVisible();

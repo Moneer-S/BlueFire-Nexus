@@ -35,8 +35,14 @@ test("opens at readable focus, keeps an explicit whole-path overview, and preser
   const canvas = page.getByLabel("Scenario graph canvas");
   await expect(page.getByRole("heading", { name: "Endpoint control validation", level: 1 })).toBeVisible();
   await expect(page.locator(".react-flow__node:visible")).toHaveCount(3);
-  await expect(page.getByText(/3 of 7 steps shown/)).toBeVisible();
+  await expect(page.locator(".graph-group-count")).toHaveText("3 of 7 steps");
+  await expect(page.locator(".graph-disclosure")).not.toContainText("steps shown");
+  await expect(page.locator(".graph-disclosure")).toContainText(/branches hidden.*Review run includes the whole experiment/);
+  await expect(page.locator(".graph-group-connections")).not.toHaveAttribute("open");
+  await page.locator(".graph-group-connections > summary").click();
   await expect(page.getByText(/To: .*On success/)).toBeVisible();
+  await page.locator(".graph-group-connections > summary").click();
+  await expect(page.locator(".graph-group-connections")).not.toHaveAttribute("open");
   const initial = await viewport(page);
   expect(initial.zoom).toBeGreaterThanOrEqual(0.8);
   const initiallySelected = canvas.locator(".flow-node.selected");

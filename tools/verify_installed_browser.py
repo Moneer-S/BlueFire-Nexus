@@ -3,8 +3,8 @@
 Run this copied verifier with the wheel-only interpreter, outside the checkout.
 The default Linux browser journey permits saved generated work and AI-Off
 simulation; it does not establish native execution. An optional receiver driver
-can run one scoped installed native baseline, but not live inference or external
-access.
+can run one scoped installed retained-redaction workflow, but not live inference
+or external access.
 """
 
 from __future__ import annotations
@@ -48,24 +48,87 @@ _RECEIVER_COPY_SCENARIO = re.compile(
 )
 
 
+def _contains_receiver_session_token_field(value: object) -> bool:
+    if isinstance(value, dict):
+        return any(
+            key in {"session_id", "receiver_session_id"}
+            or _contains_receiver_session_token_field(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_contains_receiver_session_token_field(item) for item in value)
+    return False
+
+
+def _receiver_report_for_receipt(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ValueError("Receiver driver report has an invalid shape")
+    if _contains_receiver_session_token_field(value):
+        raise ValueError("Receiver driver report contains a forbidden credential field")
+    if not isinstance(value.get("cleanup"), dict):
+        raise ValueError("Receiver driver report has an invalid shape")
+    keys = (
+        "status",
+        "workflow",
+        "runner_profile",
+        "target_scope",
+        "generated_record_count",
+        "unique_receiver_session_count",
+        "source_starter_scenario_id",
+        "saved_scenario_copy",
+        "run_id",
+        "original_owner_job_id",
+        "linked_owner_job_id",
+        "baseline",
+        "original_control",
+        "linked_retest",
+        "phase_evidence",
+        "checks",
+        "request_counts",
+        "blocked_requests",
+        "cleanup",
+        "owner_status",
+    )
+    return {
+        key: value.get(key, [] if key in {"checks", "blocked_requests"} else {}) for key in keys
+    }
+
+
+def _valid_receiver_artifact(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == {"sha256", "size_bytes"}
+        and isinstance(value.get("sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", value["sha256"]) is not None
+        and type(value.get("size_bytes")) is int
+        and value["size_bytes"] > 0
+    )
+
+
 def _receiver_driver_passed(value: object) -> bool:
     if not isinstance(value, dict):
+        return False
+    if _contains_receiver_session_token_field(value):
         return False
     cleanup = value.get("cleanup")
     baseline = value.get("baseline")
     counts = value.get("request_counts")
     copy = value.get("saved_scenario_copy")
+    original_control = value.get("original_control")
+    linked = value.get("linked_retest")
+    evidence = value.get("phase_evidence")
+    linked_phases = linked.get("phases") if isinstance(linked, dict) else None
     terminal = baseline.get("receiver_terminal") if isinstance(baseline, dict) else None
     generated_count = value.get("generated_record_count")
     record_count = terminal.get("record_count") if isinstance(terminal, dict) else None
     redacted_count = terminal.get("redacted_record_count") if isinstance(terminal, dict) else None
     retained_count = terminal.get("retained_record_count") if isinstance(terminal, dict) else None
     return (
-        value.get("schema_version") == "bluefire.installed-receiver-baseline.v1"
+        value.get("schema_version") == "bluefire.installed-receiver-retained-redaction.v1"
         and value.get("status") == "passed"
         and value.get("installed_wheel_service") is True
         and value.get("native_execution_required") is True
-        and value.get("workflow") == "retained_redaction_baseline_only"
+        and value.get("workflow") == "retained_redaction_original_and_linked_retest"
         and value.get("external_credentials") is False
         and value.get("live_model_inference") is False
         and type(generated_count) is int
@@ -78,18 +141,31 @@ def _receiver_driver_passed(value: object) -> bool:
         and isinstance(value.get("errors"), list)
         and not value["errors"]
         and isinstance(cleanup, dict)
-        and cleanup.get("receiver_control_stopped") is True
+        and cleanup.get("original_owner_completed_retained") is True
+        and cleanup.get("linked_owner_completed_retained") is True
         and cleanup.get("runner_stopped") is True
-        and value.get("owner_status") == "stopped"
+        and value.get("owner_status") == "completed"
+        and type(value.get("unique_receiver_session_count")) is int
+        and value["unique_receiver_session_count"] == 5
         and isinstance(counts, dict)
+        and type(counts.get("owner")) is int
+        and counts["owner"] == 2
         and all(
-            type(counts.get(name)) is int and counts.get(name) == 1
-            for name in ("owner", "prepare", "review", "approval", "cancel")
+            type(counts.get(name)) is int and counts[name] == 5
+            for name in ("prepare", "review", "approval")
         )
+        and type(counts.get("cancel")) is int
+        and counts["cancel"] == 0
         and type(counts.get("save_scenario")) is int
         and counts.get("save_scenario") == 1
         and isinstance(value.get("checks"), list)
         and "packaged_starter_duplicated_and_saved_through_ui" in value["checks"]
+        and "original_baseline_protected_and_legitimate_use_completed_with_retained_policy"
+        in value["checks"]
+        and "fresh_retest_created_through_retained_control_ui_with_original_lineage"
+        in value["checks"]
+        and "linked_fresh_protected_refusal_and_legitimate_use_completed_under_retained_policy"
+        in value["checks"]
         and value.get("source_starter_scenario_id") == _RECEIVER_SCENARIO
         and isinstance(copy, dict)
         and set(copy) == {"scenario_id", "version", "digest"}
@@ -116,25 +192,127 @@ def _receiver_driver_passed(value: object) -> bool:
         and redacted_count == 0
         and type(retained_count) is int
         and 0 < retained_count <= record_count
+        and isinstance(value.get("original_owner_job_id"), str)
+        and re.fullmatch(r"job-[0-9a-f]{32}", value["original_owner_job_id"]) is not None
+        and value.get("receiver_job_id") == value.get("original_owner_job_id")
+        and isinstance(value.get("linked_owner_job_id"), str)
+        and re.fullmatch(r"job-[0-9a-f]{32}", value["linked_owner_job_id"]) is not None
+        and value["original_owner_job_id"] != value["linked_owner_job_id"]
+        and isinstance(original_control, dict)
+        and original_control.get("status") == "retained"
+        and original_control.get("receiver_state") == "stopped"
+        and isinstance(original_control.get("control_digest"), str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", original_control["control_digest"]) is not None
+        and original_control.get("source_baseline_run_id") == value.get("run_id")
+        and isinstance(linked, dict)
+        and linked.get("status") == "completed"
+        and linked.get("source_control_job_id") == value.get("original_owner_job_id")
+        and linked.get("source_control_digest") == original_control.get("control_digest")
+        and linked.get("source_baseline_run_id") == value.get("run_id")
+        and linked.get("retained_control_status") == "retained"
+        and linked.get("receiver_state") == "stopped"
+        and isinstance(linked_phases, list)
+        and len(linked_phases) == 2
+        and [
+            (
+                (row.get("phase"), row.get("status"), row.get("decision"))
+                if isinstance(row, dict)
+                else None
+            )
+            for row in linked_phases
+        ]
+        == [("protected", "completed", "policy_refused"), ("legitimate", "completed", "accepted")]
+        and isinstance(evidence, list)
+        and len(evidence) == 5
+        and [row.get("phase") for row in evidence if isinstance(row, dict)]
+        == ["baseline", "protected", "legitimate", "protected", "legitimate"]
+        and [row.get("owner_role") for row in evidence if isinstance(row, dict)]
+        == ["original", "original", "original", "linked", "linked"]
+        and all(
+            isinstance(row, dict)
+            and row.get("owner_job_id")
+            == (
+                value["original_owner_job_id"]
+                if row.get("owner_role") == "original"
+                else value["linked_owner_job_id"]
+            )
+            and row.get("status") == "completed"
+            and row.get("execution_state") == "completed"
+            and row.get("observation_state") == "verified"
+            and row.get("terminal_decision") == row.get("decision")
+            and row.get("terminal_authenticated") is True
+            and type(row.get("terminal_record_count")) is int
+            and row["terminal_record_count"] == generated_count
+            and type(row.get("terminal_redacted_record_count")) is int
+            and 0 <= row["terminal_redacted_record_count"] <= generated_count
+            and type(row.get("terminal_retained_record_count")) is int
+            and 0 <= row["terminal_retained_record_count"] <= generated_count
+            and row["terminal_redacted_record_count"] + row["terminal_retained_record_count"]
+            == generated_count
+            and _valid_receiver_artifact(row.get("artifact"))
+            and isinstance(row.get("execution_job_id"), str)
+            and re.fullmatch(r"job-[0-9a-f]{32}", row["execution_job_id"]) is not None
+            and isinstance(row.get("preparation_digest"), str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", row["preparation_digest"]) is not None
+            and isinstance(row.get("run_id"), str)
+            and re.fullmatch(r"run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}", row["run_id"]) is not None
+            and isinstance(row.get("cleanup"), dict)
+            and row["cleanup"] == {"receiver": "verified_closed", "run": "complete"}
+            for row in evidence
+        )
+        and len({row["execution_job_id"] for row in evidence}) == 5
+        and len({row["run_id"] for row in evidence}) == 5
+        and evidence[0].get("decision") == "accepted"
+        and evidence[0].get("terminal_redacted_record_count") == 0
+        and evidence[0].get("terminal_retained_record_count") == generated_count
+        and evidence[0].get("run_id") == value.get("run_id")
+        and evidence[1].get("decision") == "policy_refused"
+        and evidence[1].get("artifact") == evidence[0].get("artifact")
+        and evidence[2].get("decision") == "accepted"
+        and evidence[2].get("artifact") != evidence[0].get("artifact")
+        and evidence[2].get("legitimate_use")
+        == {"baseline_run_id": value.get("run_id"), "established": True}
+        and evidence[2].get("terminal_redacted_record_count") == generated_count
+        and evidence[2].get("terminal_retained_record_count") == 0
+        and evidence[3].get("decision") == "policy_refused"
+        and evidence[3].get("artifact") == evidence[0].get("artifact")
+        and evidence[4].get("decision") == "accepted"
+        and evidence[4].get("artifact") != evidence[0].get("artifact")
+        and evidence[4].get("legitimate_use")
+        == {"baseline_run_id": value.get("run_id"), "established": True}
+        and evidence[4].get("terminal_redacted_record_count") == generated_count
+        and evidence[4].get("terminal_retained_record_count") == 0
+        and linked_phases[0].get("run_id") == evidence[3].get("run_id")
+        and linked_phases[1].get("run_id") == evidence[4].get("run_id")
+        and evidence[1].get("owner_job_id") == value.get("original_owner_job_id")
+        and evidence[2].get("owner_job_id") == value.get("original_owner_job_id")
+        and evidence[3].get("owner_job_id") == value.get("linked_owner_job_id")
+        and evidence[4].get("owner_job_id") == value.get("linked_owner_job_id")
     )
 
 
 def _resolve_receiver_driver(
     driver_argument: Path | None, forbidden: Path
-) -> tuple[Path | None, Path | None]:
+) -> tuple[Path | None, Path | None, Path | None]:
     if driver_argument is None:
-        return None, None
+        return None, None, None
     driver = driver_argument.resolve(strict=True)
     guards = driver.with_name("receiver-guards.mjs").resolve(strict=True)
+    deadline = driver.with_name("receiver-deadline.mjs").resolve(strict=True)
     if (
         not driver.is_file()
         or not guards.is_file()
+        or not deadline.is_file()
         or driver.is_relative_to(forbidden)
         or guards.is_relative_to(forbidden)
+        or deadline.is_relative_to(forbidden)
         or guards.parent != driver.parent
+        or deadline.parent != driver.parent
     ):
-        raise RuntimeError("Copy the receiver driver and its guard module outside checkout")
-    return driver, guards
+        raise RuntimeError(
+            "Copy the receiver driver and its adjacent guard and deadline modules outside checkout"
+        )
+    return driver, guards, deadline
 
 
 _RUNTIME_PROCESS_CLEANUP_KEYS = (
@@ -160,10 +338,10 @@ def _runtime_cleanup_confirmed(report: dict[str, object]) -> bool:
     )
 
 
-def _receiver_baseline_accepted(report: dict[str, object]) -> bool:
-    return report.get("receiver_baseline_driver_passed") is True and _runtime_cleanup_confirmed(
-        report
-    )
+def _receiver_retained_redaction_accepted(report: dict[str, object]) -> bool:
+    return report.get(
+        "receiver_retained_redaction_driver_passed"
+    ) is True and _runtime_cleanup_confirmed(report)
 
 
 def _fixture_outputs() -> dict[str, dict[str, object]]:
@@ -461,7 +639,9 @@ def main() -> int:
     output = args.output.resolve()
     driver = args.browser_driver.resolve(strict=True)
     assistant_driver = args.assistant_driver.resolve(strict=True) if args.assistant_driver else None
-    receiver_driver, receiver_guards = _resolve_receiver_driver(args.receiver_driver, forbidden)
+    receiver_driver, receiver_guards, receiver_deadline = _resolve_receiver_driver(
+        args.receiver_driver, forbidden
+    )
     wheel = args.wheel.resolve(strict=True)
     node = args.node.resolve(strict=True)
     playwright = args.playwright.resolve(strict=True)
@@ -574,7 +754,7 @@ def main() -> int:
         "status": "failed_or_incomplete",
         "real_installed_service": True,
         "simulation_assistant_native_execution": False,
-        "receiver_native_execution_baseline": False,
+        "receiver_native_retained_redaction": False,
         "receiver_driver_cleanup_confirmed": receiver_driver is None,
         "live_model_inference": False,
         "assistant_process_group_stopped": True,
@@ -685,36 +865,25 @@ def main() -> int:
             receiver_capability = ""
             receiver_report_path = output / "installed-receiver-report.json"
             receiver_driver_report = json.loads(receiver_report_path.read_text(encoding="utf-8"))
-            if not isinstance(receiver_driver_report, dict) or not isinstance(
-                receiver_driver_report.get("cleanup"), dict
-            ):
-                raise ValueError("Receiver driver report has an invalid shape")
+            receiver_receipt = _receiver_report_for_receipt(receiver_driver_report)
             driver_cleanup = receiver_driver_report["cleanup"]
             report["receiver_driver_cleanup_confirmed"] = (
-                driver_cleanup.get("receiver_control_stopped") is True
+                driver_cleanup.get("original_owner_completed_retained") is True
+                and driver_cleanup.get("linked_owner_completed_retained") is True
                 and driver_cleanup.get("runner_stopped") is True
-                and receiver_driver_report.get("owner_status") == "stopped"
+                and receiver_driver_report.get("owner_status") == "completed"
             )
-            report["receiver_baseline"] = {
-                "status": receiver_driver_report.get("status"),
+            report["receiver_retained_redaction"] = {
+                **receiver_receipt,
                 "driver_sha256": digest(receiver_driver),
                 "guard_sha256": digest(receiver_guards),
-                "workflow": receiver_driver_report.get("workflow"),
-                "runner_profile": receiver_driver_report.get("runner_profile"),
-                "target_scope": receiver_driver_report.get("target_scope"),
-                "generated_record_count": receiver_driver_report.get("generated_record_count"),
-                "baseline": receiver_driver_report.get("baseline"),
-                "checks": receiver_driver_report.get("checks", []),
-                "request_counts": receiver_driver_report.get("request_counts", {}),
-                "blocked_requests": receiver_driver_report.get("blocked_requests", []),
-                "cleanup": receiver_driver_report.get("cleanup", {}),
-                "owner_status": receiver_driver_report.get("owner_status"),
+                "deadline_sha256": digest(receiver_deadline),
                 "browser_returncode": receiver_child.returncode,
             }
-            report["receiver_baseline_driver_passed"] = (
+            report["receiver_retained_redaction_driver_passed"] = (
                 receiver_child.returncode == 0 and _receiver_driver_passed(receiver_driver_report)
             )
-            if not report["receiver_baseline_driver_passed"]:
+            if not report["receiver_retained_redaction_driver_passed"]:
                 report["status"] = "failed_or_incomplete"
     except (OSError, subprocess.TimeoutExpired, ValueError, KeyError) as error:
         report["error_type"] = type(error).__name__
@@ -805,7 +974,7 @@ def main() -> int:
             except OSError:
                 cleanup_errors.append("temporary_state")
         report["temporary_state_removed"] = not runtime.exists()
-        report["receiver_native_execution_baseline"] = _receiver_baseline_accepted(report)
+        report["receiver_native_retained_redaction"] = _receiver_retained_redaction_accepted(report)
         report["cleanup_errors"] = cleanup_errors
         if not _runtime_cleanup_confirmed(report):
             report["status"] = "failed_or_incomplete"

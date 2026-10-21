@@ -17,8 +17,10 @@ from email.parser import BytesParser
 from pathlib import Path
 from typing import Any, Sequence
 
-from bluefire.version import native_runner_version
-from tools import verify_packaged_runner as verifier
+if __package__:
+    from . import verify_packaged_runner as verifier
+else:
+    import verify_packaged_runner as verifier
 
 _MAX_WHEEL_BYTES = 1024 * 1024 * 1024
 _MAX_REPORT_BYTES = 64 * 1024
@@ -250,7 +252,7 @@ def _inspect_wheel(
     if wheel.name != expected_name:
         raise ValueError("wheel filename does not match its expected version and platform")
     wheel_sha = _sha256_file(wheel, _MAX_WHEEL_BYTES)
-    expected_runner_version = native_runner_version(version)
+    expected_runner_version = verifier._native_runner_version(version)
 
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()

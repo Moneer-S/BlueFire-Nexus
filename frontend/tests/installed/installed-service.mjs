@@ -348,6 +348,9 @@ try {
     const visibleIds = new Set(visibleNodeIds);
     const crossingRoutes = reviewedScenarioDocument.edges.filter(edge => visibleIds.has(edge.from_step) !== visibleIds.has(edge.to_step));
     assert.ok(crossingRoutes.length > 0, "Fixture must retain a conditional route across the visible group boundary");
+    const groupConnections = page.locator(".graph-group-connections");
+    assert.equal(await groupConnections.getAttribute("open"), null, "Group connections should be collapsed initially");
+    await groupConnections.locator(":scope > summary").click();
     const boundaryText = await page.locator('.graph-group-boundaries[aria-label="Conditional execution routes"]').innerText();
     for (const outcome of new Set(crossingRoutes.map(edge => edge.outcome))) {
       const label = { success: "On success", partial: "When partly complete", blocked: "When blocked", failed: "On failure" }[outcome];
@@ -364,6 +367,7 @@ try {
       assert.ok(dependencyText.includes(binding.input), `Artifact boundary is missing input ${binding.input}`);
     }
     await dependencyDetails.locator("summary").click();
+    await groupConnections.locator(":scope > summary").click();
     await capture(`graph-default-group-${viewport.width}x${viewport.height}`);
   }
   report.checks.push("readable_default_group_desktop_framing");

@@ -344,6 +344,7 @@ jobs:
           --report dist/package-inspection.json
 
       - name: Install wheel into a clean environment
+        id: installed-wheel
         run: |
           python -m venv "${{ runner.temp }}/bluefire-wheel-smoke"
           python -c "import glob, os, subprocess; wheels = glob.glob(os.path.abspath('dist/*.whl')); assert len(wheels) == 1, wheels; executable = os.path.join(r'${{ runner.temp }}', 'bluefire-wheel-smoke', r'${{ matrix.venv-python }}'); subprocess.run([executable, '-m', 'pip', 'install', '--disable-pip-version-check', wheels[0]], check=True)"
@@ -375,6 +376,7 @@ jobs:
           node-version: "22"
 
       - name: Prepare installed Linux browser tooling
+        id: installed-browser-tooling
         if: matrix.platform == 'linux'
         working-directory: ./wheel-source/frontend
         env:
@@ -394,6 +396,7 @@ jobs:
           cp frontend/tests/installed/installed-assistant.mjs "$RUNNER_TEMP/installed-assistant.mjs"
           cp frontend/tests/installed/installed-receiver.mjs "$RUNNER_TEMP/installed-receiver.mjs"
           cp frontend/tests/installed/receiver-guards.mjs "$RUNNER_TEMP/receiver-guards.mjs"
+          cp frontend/tests/installed/receiver-deadline.mjs "$RUNNER_TEMP/receiver-deadline.mjs"
           wheels=("$GITHUB_WORKSPACE"/wheel-source/dist/*.whl)
           test "${#wheels[@]}" = 1
           node_path="$(command -v node)"
@@ -409,6 +412,26 @@ jobs:
             --wheel "${wheels[0]}" \
             --output "$RUNNER_TEMP/bluefire-installed-browser-evidence"
 
+      - name: Verify installed CLI restart and saved versions
+        if: always() && matrix.platform == 'linux' && steps.installed-wheel.outcome == 'success' && steps.installed-browser-tooling.outcome == 'success'
+        timeout-minutes: 9
+        shell: bash
+        run: |
+          cp tools/verify_installed_reopen.py "$RUNNER_TEMP/verify_installed_reopen.py"
+          cp frontend/tests/installed/installed-reopen.mjs "$RUNNER_TEMP/installed-reopen.mjs"
+          wheels=("$GITHUB_WORKSPACE"/wheel-source/dist/*.whl)
+          test "${#wheels[@]}" = 1
+          node_path="$(command -v node)"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/bluefire-wheel-smoke/bin/python" -I -B verify_installed_reopen.py \
+            --forbid-root "$GITHUB_WORKSPACE" \
+            --node "$node_path" \
+            --playwright "$GITHUB_WORKSPACE/wheel-source/frontend/node_modules/@playwright/test/index.mjs" \
+            --browser-driver "$RUNNER_TEMP/installed-reopen.mjs" \
+            --browser-cache "$RUNNER_TEMP/bluefire-installed-browser-cache" \
+            --wheel "${wheels[0]}" \
+            --output "$RUNNER_TEMP/bluefire-installed-reopen-evidence"
+
       - name: Upload installed Linux browser verification evidence
         if: always() && matrix.platform == 'linux'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -417,6 +440,7 @@ jobs:
           path: |
             ${{ runner.temp }}/bluefire-installed-browser-evidence/*.json
             ${{ runner.temp }}/bluefire-installed-browser-evidence/*.png
+            ${{ runner.temp }}/bluefire-installed-reopen-evidence/*.json
           retention-days: 7
           if-no-files-found: warn
 

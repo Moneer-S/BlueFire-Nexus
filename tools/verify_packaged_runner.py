@@ -13,6 +13,7 @@ import email.policy
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import zipfile
@@ -83,6 +84,22 @@ _WINDOWS_PAIR_CAPABILITY_FAILURES = frozenset(
 _VERIFICATION_STAGE = "arguments"
 _BOOTSTRAP_FAILURE_STATUS: Mapping[str, Any] | None = None
 _SMOKE_ALIAS_MIN_BLUEFIRE_VERSION = "3.0.0-rc2"
+_PRODUCT_VERSION = re.compile(
+    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:rc(0|[1-9][0-9]*))?$"
+)
+
+
+def _native_runner_version(product_version: str) -> str:
+    """Project normalized product versions without importing the source package."""
+
+    if not isinstance(product_version, str):
+        raise ValueError("product version must be a normalized stable or RC version")
+    match = _PRODUCT_VERSION.fullmatch(product_version)
+    if match is None:
+        raise ValueError("product version must be a normalized stable or RC version")
+    major, minor, patch, rc = match.groups()
+    stable = f"{major}.{minor}.{patch}"
+    return stable if rc is None else f"{stable}-rc{rc}"
 
 
 def _stage(name: str) -> None:
@@ -230,8 +247,6 @@ def _disposable_workspace_proof(
 
 def inspect_wheel(args: argparse.Namespace) -> int:
     _stage("wheel_inspection")
-    from bluefire.version import native_runner_version
-
     wheel_dir = args.wheel_dir.resolve(strict=True)
     wheels = sorted(wheel_dir.glob("*.whl"))
     if len(wheels) != 1:
@@ -264,7 +279,7 @@ def inspect_wheel(args: argparse.Namespace) -> int:
             raise RuntimeError("wheel package version metadata is invalid")
         product_version = product_versions[0]
         try:
-            expected_runner_version = native_runner_version(product_version)
+            expected_runner_version = _native_runner_version(product_version)
         except ValueError as exc:
             raise RuntimeError("wheel package version is not normalized") from exc
         metadata = archive.read(wheel_metadata[0]).decode("utf-8")

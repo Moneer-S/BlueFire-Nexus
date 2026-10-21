@@ -5,8 +5,12 @@ import csv
 import hashlib
 import io
 import json
+import os
+import subprocess
+import sys
 import zipfile
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
 
@@ -23,6 +27,35 @@ TARGETS = {
     "linux_x86_64": ("linux", "x86_64", "bluefire-runner"),
     "win_amd64": ("windows", "x86_64", "bluefire-runner.exe"),
 }
+
+
+def test_manifest_cli_imports_from_outside_checkout_without_pythonpath(tmp_path):
+    checkout = Path(__file__).resolve().parents[1]
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    environment.pop("PYTHONHOME", None)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-E",
+            "-S",
+            str(checkout / "tools" / "build_release_asset_manifest.py"),
+            "--help",
+        ],
+        cwd=outside,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0
+    assert "--asset-dir" in completed.stdout
+    assert completed.stderr == ""
 
 
 def _write_asset(

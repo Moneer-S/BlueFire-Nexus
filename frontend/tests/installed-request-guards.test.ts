@@ -33,4 +33,21 @@ describe("installed receiver request guards", () => {
     expect(consumeRequestBudget(counts, limits, "stop")).toBe(false);
     expect(counts.stop).toBe(1);
   });
+
+  it("caps the five phase approvals and the two owner creations independently", () => {
+    const limits = { owner: 2, prepare: 5, review: 5, approval: 5 };
+    const counts = { owner: 0, prepare: 0, review: 0, approval: 0 };
+    for (let index = 0; index < 5; index += 1) {
+      expect(consumeRequestBudget(counts, limits, "prepare")).toBe(true);
+      expect(consumeRequestBudget(counts, limits, "review")).toBe(true);
+      expect(consumeRequestBudget(counts, limits, "approval")).toBe(true);
+    }
+    expect(consumeRequestBudget(counts, limits, "prepare")).toBe(false);
+    expect(consumeRequestBudget(counts, limits, "review")).toBe(false);
+    expect(consumeRequestBudget(counts, limits, "approval")).toBe(false);
+    expect(consumeRequestBudget(counts, limits, "owner")).toBe(true);
+    expect(consumeRequestBudget(counts, limits, "owner")).toBe(true);
+    expect(consumeRequestBudget(counts, limits, "owner")).toBe(false);
+    expect(counts).toEqual({ owner: 2, prepare: 5, review: 5, approval: 5 });
+  });
 });
