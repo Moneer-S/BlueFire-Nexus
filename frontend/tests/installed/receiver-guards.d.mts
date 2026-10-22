@@ -1,4 +1,5 @@
 export function sameJson(left: unknown, right: unknown): boolean;
+export const receiverApprovalAcknowledgementName: RegExp;
 
 export interface ReceiverContextExpectation {
   selection: unknown;

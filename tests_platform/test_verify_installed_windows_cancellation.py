@@ -13,6 +13,222 @@ import pytest
 from tools import verify_installed_windows_cancellation as verifier
 
 
+def test_new_record_is_complete_and_closed_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "permit.json"
+    value = {"witness_request_hash": "sha256:" + "a" * 64}
+    real_write, real_link = os.write, os.link
+    descriptors: list[int] = []
+    published: list[dict[str, object]] = []
+
+    def partial_write(descriptor, payload):
+        descriptors.append(descriptor)
+        assert not destination.exists()
+        return real_write(descriptor, payload[:7])
+
+    def publish(source, target, **options):
+        assert Path(source).parent == destination.parent
+        assert json.loads(Path(source).read_bytes()) == value
+        assert not destination.exists()
+        with pytest.raises(OSError):
+            os.fstat(descriptors[-1])
+        real_link(source, target, **options)
+        published.append(verifier._read_object(destination, 4096))
+
+    monkeypatch.setattr(verifier.os, "write", partial_write)
+    monkeypatch.setattr(verifier.os, "link", publish)
+    verifier._write_new(destination, value, maximum=4096)
+
+    assert len(descriptors) > 1 and published == [value]
+    assert list(tmp_path.iterdir()) == [destination]
+
+
+@pytest.mark.parametrize("redirected", [False, True])
+def test_new_record_never_replaces_an_existing_final(tmp_path: Path, redirected: bool) -> None:
+    destination = tmp_path / "permit.json"
+    existing = tmp_path / "existing.json" if redirected else destination
+    existing.write_bytes(b"preexisting")
+    if redirected:
+        try:
+            destination.symlink_to(existing)
+        except OSError as error:
+            pytest.skip(f"file symlinks unavailable: {type(error).__name__}")
+
+    with pytest.raises(FileExistsError):
+        verifier._write_new(destination, {"denied": True})
+
+    assert existing.read_bytes() == b"preexisting"
+    assert destination.is_symlink() is redirected
+    assert not list(tmp_path.glob(".*.pending"))
+
+
+def test_new_record_interrupted_write_never_exposes_final(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "permit.json"
+    real_write = os.write
+
+    def interrupted_write(descriptor, payload):
+        real_write(descriptor, payload[:7])
+        assert not destination.exists()
+        raise OSError("fixture interrupted write")
+
+    monkeypatch.setattr(verifier.os, "write", interrupted_write)
+    with pytest.raises(OSError, match="interrupted write"):
+        verifier._write_new(destination, {"denied": True})
+    assert not list(tmp_path.iterdir())
+
+
+def test_new_record_does_not_cleanup_rebound_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "permit.json"
+    rebound: list[Path] = []
+
+    def replace_staging(source, _target, **_options):
+        staging = Path(source)
+        staging.rename(tmp_path / "retained-owned.pending")
+        staging.write_bytes(b"unowned replacement")
+        rebound.append(staging)
+        raise OSError("fixture rebound staging")
+
+    monkeypatch.setattr(verifier.os, "link", replace_staging)
+    with pytest.raises(OSError, match="rebound staging"):
+        verifier._write_new(destination, {"denied": True})
+    assert not destination.exists()
+    assert rebound[0].read_bytes() == b"unowned replacement"
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "complete",
+        "existing_final",
+        "existing_staging",
+        "interrupted_write",
+        "rebound_staging",
+        "publication_cleanup_failure",
+        "cleanup_only_failure",
+        "write_cleanup_failure",
+        "close_cleanup_failure",
+    ],
+)
+def test_real_driver_atomic_publication_boundaries(tmp_path: Path, boundary: str) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required to exercise the installed cancellation driver")
+    driver = (
+        Path(__file__).resolve().parents[1]
+        / "frontend/tests/installed/installed-windows-cancellation.mjs"
+    )
+    script = r"""
+import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
+const source = fs.readFileSync(process.argv[2], 'utf8');
+const start = source.indexOf('function publishNewJson(');
+const end = source.indexOf('const sleep =', start);
+assert.ok(start >= 0 && end > start);
+const boundary = process.argv[3];
+const directory = process.argv[4];
+const destination = join(directory, 'witness-observed.json');
+const staging = `${destination}.fixture-atomic.pending`;
+const value = {request_hash: `sha256:${'a'.repeat(64)}`, task_id: 'fixture'};
+if (boundary === 'existing_final') fs.writeFileSync(destination, 'preexisting final');
+if (boundary === 'existing_staging') fs.writeFileSync(staging, 'unowned staging');
+let opened;
+let linked = false;
+let closeAttempts = 0;
+let unlinkAttempts = 0;
+const cleanupFailures = new Set([
+  'publication_cleanup_failure', 'cleanup_only_failure', 'write_cleanup_failure', 'close_cleanup_failure',
+]);
+const context = {
+  assert, Buffer, crypto: {randomUUID: () => 'fixture-atomic'},
+  fstatSync: fs.fstatSync, lstatSync: fs.lstatSync,
+  closeSync(descriptor) {
+    closeAttempts += 1;
+    if (boundary === 'close_cleanup_failure') throw new Error('fixture close failure');
+    fs.closeSync(descriptor);
+  },
+  unlinkSync(path) {
+    unlinkAttempts += 1;
+    if (cleanupFailures.has(boundary)) throw new Error('fixture cleanup failure');
+    fs.unlinkSync(path);
+  },
+  openSync(path, flags) {
+    assert.equal(flags, 'wx');
+    opened = fs.openSync(path, flags);
+    return opened;
+  },
+  writeFileSync(descriptor, encoded) {
+    fs.writeFileSync(descriptor, encoded.slice(0, 7));
+    assert.equal(fs.existsSync(destination), boundary === 'existing_final');
+    if (['interrupted_write', 'write_cleanup_failure'].includes(boundary)) throw new Error('fixture interrupted write');
+    fs.writeFileSync(descriptor, encoded.slice(7));
+  },
+  linkSync(path, target) {
+    assert.throws(() => fs.fstatSync(opened), {code: 'EBADF'});
+    assert.deepEqual(JSON.parse(fs.readFileSync(path, 'utf8')), value);
+    if (boundary === 'publication_cleanup_failure') throw new Error('fixture publication failure');
+    if (boundary === 'rebound_staging') {
+      fs.renameSync(path, `${path}.retained-owned`);
+      fs.writeFileSync(path, 'unowned replacement');
+      throw new Error('fixture rebound staging');
+    }
+    fs.linkSync(path, target);
+    linked = true;
+    assert.deepEqual(JSON.parse(fs.readFileSync(target, 'utf8')), value);
+  },
+};
+const publish = runInNewContext(`${source.slice(start, end)}; publishNewJson`, context);
+if (boundary === 'complete') {
+  publish(destination, value);
+  assert.equal(linked, true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(destination, 'utf8')), value);
+  assert.deepEqual(fs.readdirSync(directory), ['witness-observed.json']);
+} else if (cleanupFailures.has(boundary)) {
+  const message = {
+    publication_cleanup_failure: 'fixture publication failure',
+    cleanup_only_failure: 'fixture cleanup failure',
+    write_cleanup_failure: 'fixture interrupted write',
+    close_cleanup_failure: 'fixture close failure',
+  }[boundary];
+  assert.throws(() => publish(destination, value), {message});
+  assert.equal(closeAttempts, boundary === 'close_cleanup_failure' ? 2 : 1);
+  assert.equal(unlinkAttempts, 1);
+  assert.equal(linked, boundary === 'cleanup_only_failure');
+  assert.equal(fs.existsSync(destination), linked);
+  assert.equal(fs.existsSync(staging), true);
+  if (linked) assert.deepEqual(JSON.parse(fs.readFileSync(destination, 'utf8')), value);
+  if (boundary === 'close_cleanup_failure') fs.closeSync(opened);
+} else {
+  assert.throws(() => publish(destination, value));
+  assert.equal(linked, false);
+  if (boundary === 'existing_final') {
+    assert.equal(fs.readFileSync(destination, 'utf8'), 'preexisting final');
+    assert.equal(fs.existsSync(staging), false);
+  } else {
+    assert.equal(fs.existsSync(destination), false);
+    if (boundary === 'existing_staging') assert.equal(fs.readFileSync(staging, 'utf8'), 'unowned staging');
+    if (boundary === 'interrupted_write') assert.deepEqual(fs.readdirSync(directory), []);
+    if (boundary === 'rebound_staging') assert.equal(fs.readFileSync(staging, 'utf8'), 'unowned replacement');
+  }
+}
+"""
+    result = subprocess.run(
+        [node, "--input-type=module", "-", str(driver), boundary, str(tmp_path)],
+        input=script,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def _passed_driver_report() -> dict[str, object]:
     return {
         "schema_version": "bluefire.installed-windows-cancellation.v1",

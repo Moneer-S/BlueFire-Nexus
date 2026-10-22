@@ -13,6 +13,7 @@ import {
   receiverContextRequestIsFinal,
   receiverContextResponseMatchesRequest,
   receiverOwnerContextMatches,
+  receiverApprovalAcknowledgementName,
   sameJson as same,
 } from "./receiver-guards.mjs";
 import { createDeadlineBudget } from "./receiver-deadline.mjs";
@@ -475,7 +476,7 @@ async function executePhase(phaseName, role) {
   const phaseExecutionId = executionJobId;
 
   stage = `${role}-${phaseName}-execute-approval`;
-  await page.getByRole("checkbox", { name: "I approve this exact immutable job envelope once", exact: true }).check();
+  await page.getByRole("checkbox", { name: receiverApprovalAcknowledgementName }).check();
   await page.getByLabel("Operator identity for this job", { exact: true }).fill(`Installed receiver ${role} verifier`);
   await page.getByRole("button", { name: "Approve and release job", exact: true }).click();
   await waitOwner((owner) => owner.phases?.find((item) => item.phase === phaseName)?.status === "completed");
@@ -792,7 +793,7 @@ try {
   report.execution_job_id = executionJobId;
 
   stage = "execute-approval";
-  await page.getByRole("checkbox", { name: "I approve this exact immutable job envelope once", exact: true }).check();
+  await page.getByRole("checkbox", { name: receiverApprovalAcknowledgementName }).check();
   await page.getByLabel("Operator identity for this job", { exact: true }).fill("Installed receiver baseline verifier");
   await page.getByRole("button", { name: "Approve and release job", exact: true }).click();
   await waitOwner((owner) => owner.phases?.[0]?.status === "completed");

@@ -1,6 +1,6 @@
 /* global process, Buffer, fetch, crypto, setTimeout, AbortSignal */
 import assert from "node:assert/strict";
-import { readdirSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, linkSync, openSync, readdirSync, lstatSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const [portText, sandboxText, output] = process.argv.slice(2);
@@ -114,6 +114,49 @@ async function call(method, path, body) {
   if (text) value = JSON.parse(text);
   assert.ok(response.ok, `local service refused ${method} ${path} with ${response.status}`);
   return { status: response.status, value };
+}
+
+function publishNewJson(path, value) {
+  const encoded = `${JSON.stringify(value)}\n`;
+  assert.ok(Buffer.byteLength(encoded, "utf8") <= 4096);
+  const staging = `${path}.${crypto.randomUUID()}.pending`;
+  let descriptor;
+  let identity;
+  const errors = [];
+  try {
+    descriptor = openSync(staging, "wx");
+    identity = fstatSync(descriptor, { bigint: true });
+    assert.ok(identity.isFile());
+    writeFileSync(descriptor, encoded);
+    closeSync(descriptor);
+    descriptor = undefined;
+    const staged = lstatSync(staging, { bigint: true });
+    assert.ok(staged.isFile() && !staged.isSymbolicLink()
+      && staged.dev === identity.dev && staged.ino === identity.ino);
+    // Publish only after close, without replacing a preexisting final name.
+    linkSync(staging, path);
+    const published = lstatSync(path, { bigint: true });
+    assert.ok(published.dev === identity.dev && published.ino === identity.ino);
+  } catch (error) {
+    errors.push(error);
+  }
+  if (descriptor !== undefined) {
+    try {
+      closeSync(descriptor);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (identity) {
+    try {
+      const remaining = lstatSync(staging, { bigint: true });
+      if (remaining.isFile() && !remaining.isSymbolicLink()
+        && remaining.dev === identity.dev && remaining.ino === identity.ino) unlinkSync(staging);
+    } catch (error) {
+      if (error?.code !== "ENOENT") errors.push(error);
+    }
+  }
+  if (errors.length) throw errors[0];
 }
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -264,9 +307,9 @@ async function main() {
   }
   assert.ok(ready, "fresh witness ready record appeared in the isolated approval workspace");
   const { task_id, request_hash, parent_process_id, descendant_process_id } = ready.value;
-  writeFileSync(join(output, "witness-observed.json"), `${JSON.stringify({
+  publishNewJson(join(output, "witness-observed.json"), {
     task_id, request_hash, parent_process_id, descendant_process_id,
-  })}\n`, { flag: "wx" });
+  });
   witnessCheck = "process_pin_permit";
   await waitForPermit(ready.value.request_hash);
   report.checks.push("exact_execute_preflight_and_fresh_approval_consumed");

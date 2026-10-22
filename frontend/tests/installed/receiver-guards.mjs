@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 
 // Saved JSON objects may be canonicalized; array order and exact values still matter.
 export const sameJson = isDeepStrictEqual;
+export const receiverApprovalAcknowledgementName = /^I approve this exact immutable job envelope once\s*Unchecked by default and never stored in browser persistence$/;
 
 export function receiverContextRequestAllowed(body, expected) {
   const linked = expected.sourceControl !== null;

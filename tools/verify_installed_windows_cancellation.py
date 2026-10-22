@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import tempfile
 import threading
 import time
 import zipfile
@@ -145,8 +146,45 @@ def _write_new(path: Path, value: object, *, maximum: int = _MAX_STATE_BYTES) ->
     encoded = json.dumps(value, indent=2, sort_keys=True, allow_nan=False).encode("utf-8") + b"\n"
     if len(encoded) > maximum:
         raise RuntimeError("bounded verifier record exceeded its limit")
-    with path.open("xb") as stream:
-        stream.write(encoded)
+    descriptor: int | None
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".pending", dir=path.parent)
+    staging = Path(name)
+    identity: tuple[int, int] | None = None
+    try:
+        details = os.fstat(descriptor)
+        identity = (details.st_dev, details.st_ino)
+        offset = 0
+        while offset < len(encoded):
+            written = os.write(descriptor, encoded[offset:])
+            if written <= 0:
+                raise OSError("bounded verifier publication write made no progress")
+            offset += written
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        staged = staging.lstat()
+        if not _safe_regular_file(staging, maximum) or (staged.st_dev, staged.st_ino) != identity:
+            raise OSError("bounded verifier staging identity changed")
+        # Link only the complete, closed file; an existing final name is never replaced.
+        os.link(staging, path, follow_symlinks=False)
+        published = path.lstat()
+        if (published.st_dev, published.st_ino) != identity:
+            raise OSError("bounded verifier published identity changed")
+    finally:
+        try:
+            if descriptor is not None:
+                os.close(descriptor)
+        finally:
+            if identity is not None:
+                try:
+                    remaining = staging.lstat()
+                    if (
+                        _safe_regular_file(staging, maximum)
+                        and (remaining.st_dev, remaining.st_ino) == identity
+                    ):
+                        staging.unlink()
+                except FileNotFoundError:
+                    pass
 
 
 def _read_object(path: Path, maximum: int) -> dict[str, Any]:
