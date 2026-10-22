@@ -22,6 +22,10 @@ function CurrentLocation() {
   return <output aria-label="Current location">{location.pathname}{location.search}</output>;
 }
 
+function currentParams() {
+  return new URLSearchParams(screen.getByLabelText("Current location").textContent!.split("?")[1]);
+}
+
 function mount(owner = s3Owner, initialEntry?: string, showLocation = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return { client, user: userEvent.setup(), ...render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[initialEntry ?? (owner ? `/s3-access?exercise=${owner}` : "/s3-access")]}>{showLocation ? <CurrentLocation /> : null}<S3AccessPage /></MemoryRouter></QueryClientProvider>) };
@@ -58,6 +62,71 @@ it("preserves objective and unrelated query context through saved S3 exercise li
   expect(paramsAt().get("context")).toBe("retained");
   expect(paramsAt().get("setup_profile")).toBe("profile-preserved");
   expect(paramsAt().get("extra")).toBe("kept");
+});
+
+it("clears the exact audit source when leaving an exercise and opening another saved owner", async () => {
+  const otherOwner = `job-${"7".repeat(32)}`;
+  vi.mocked(s3Api.list).mockResolvedValue({ schema_version: "bluefire.s3-exercise-list.v1", exercises: [
+    { workflow_job_id: otherOwner, name: "Other saved exercise", bucket: s3Environment.scope.bucket, policy_state: "uncertain", updated_at: "2026-01-01T00:00:00Z" },
+  ], truncated: false });
+  vi.mocked(s3Api.read).mockImplementation(async identifier => ({ ...s3Exercise(), workflow_job_id: identifier }));
+  const { user } = mount(s3Owner, `/s3-access?exercise=${s3Owner}&audit_review=${s3Operation}&audit_digest=${s3Hash}&goal=s3-access&extra=kept&extra=also-kept`, true);
+  await user.click(await screen.findByRole("link", { name: "Saved exercises" }));
+  expect(currentParams().has("exercise")).toBe(false);
+  expect(currentParams().has("audit_review")).toBe(false);
+  expect(currentParams().has("audit_digest")).toBe(false);
+  expect(currentParams().get("goal")).toBe("s3-access");
+  expect(currentParams().getAll("extra")).toEqual(["kept", "also-kept"]);
+
+  await user.click(await screen.findByRole("link", { name: /Other saved exercise/ }));
+  expect(currentParams().get("exercise")).toBe(otherOwner);
+  expect(currentParams().has("audit_review")).toBe(false);
+  expect(currentParams().has("audit_digest")).toBe(false);
+  expect(currentParams().getAll("extra")).toEqual(["kept", "also-kept"]);
+  expect(s3Api.send).not.toHaveBeenCalled();
+  expect(s3Api.review).not.toHaveBeenCalled();
+  expect(s3Api.control).not.toHaveBeenCalled();
+});
+
+it("does not attach orphaned audit source fields to a saved exercise", async () => {
+  vi.mocked(s3Api.list).mockResolvedValue({ schema_version: "bluefire.s3-exercise-list.v1", exercises: [
+    { workflow_job_id: s3Owner, name: "Saved owner", bucket: s3Environment.scope.bucket, policy_state: "uncertain", updated_at: "2026-01-01T00:00:00Z" },
+  ], truncated: false });
+  const { user } = mount("", `/s3-access?audit_review=${s3Operation}&audit_digest=${s3Hash}&context=retained`, true);
+  await user.click(await screen.findByRole("link", { name: /Saved owner/ }));
+  expect(currentParams().get("exercise")).toBe(s3Owner);
+  expect(currentParams().has("audit_review")).toBe(false);
+  expect(currentParams().has("audit_digest")).toBe(false);
+  expect(currentParams().get("context")).toBe("retained");
+  expect(s3Api.send).not.toHaveBeenCalled();
+});
+
+it("clears orphaned audit source fields when deliberately creating a new exercise", async () => {
+  vi.mocked(s3Api.environments).mockResolvedValue({ schema_version: "bluefire.s3-environments.v1", environments: [{ environment: s3Environment, available: true, problem: null, context_digest: s3Hash }], problem: null });
+  const { user } = mount("", `/s3-access?audit_review=${s3Operation}&audit_digest=${s3Hash}&setup_profile=preserved&extra=kept`, true);
+  await user.click(await screen.findByRole("button", { name: "Open exercise" }));
+  await waitFor(() => expect(s3Api.send).toHaveBeenCalledOnce());
+  const submission = vi.mocked(s3Api.send).mock.calls[0]![0];
+  expect(submission.kind).toBe("create");
+  expect(currentParams().get("exercise")).toBe(submission.owner);
+  expect(currentParams().has("audit_review")).toBe(false);
+  expect(currentParams().has("audit_digest")).toBe(false);
+  expect(currentParams().get("setup_profile")).toBe("preserved");
+  expect(currentParams().get("extra")).toBe("kept");
+});
+
+it.each([s3Owner, `job-${"7".repeat(32)}`])("retains exact audit source only when checking the same pending owner: %s", async nextOwner => {
+  storeS3Pending({ kind: "stage", owner: nextOwner, operation: s3Operation, request: { submission_id: "22222222-2222-2222-2222-222222222222", phase: "inspect", review_digest: s3Hash, reviewed_by: "operator" } });
+  vi.mocked(s3Api.read).mockImplementation(async identifier => ({ ...s3Exercise(), workflow_job_id: identifier }));
+  const { user } = mount(s3Owner, `/s3-access?exercise=${s3Owner}&audit_review=${s3Operation}&audit_digest=${s3Hash}&extra=kept`, true);
+  await user.click(await screen.findByRole("button", { name: "Check saved status" }));
+  expect(currentParams().get("exercise")).toBe(nextOwner);
+  expect(currentParams().get("audit_review")).toBe(nextOwner === s3Owner ? s3Operation : null);
+  expect(currentParams().get("audit_digest")).toBe(nextOwner === s3Owner ? s3Hash : null);
+  expect(currentParams().get("extra")).toBe("kept");
+  expect(s3Api.send).not.toHaveBeenCalled();
+  expect(s3Api.review).not.toHaveBeenCalled();
+  expect(s3Api.control).not.toHaveBeenCalled();
 });
 
 it.each(["Temporary access has not been imported on the enrolled host.", "Temporary access has expired on the enrolled host."])("keeps an unavailable environment visible: %s", async problem => {

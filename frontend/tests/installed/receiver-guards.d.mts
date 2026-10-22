@@ -1,5 +1,28 @@
 export function sameJson(left: unknown, right: unknown): boolean;
 
+export interface ReceiverContextExpectation {
+  selection: unknown;
+  workflow: string;
+  sourceControl: unknown | null;
+  profileIdsByMode: Record<string, string[]>;
+  scopeRefs: string[];
+  collectors: string[];
+  finalRunIntent: unknown;
+}
+
+export function receiverContextRequestAllowed(body: unknown, expected: ReceiverContextExpectation): boolean;
+export function receiverContextRequestIsFinal(body: unknown, expected: ReceiverContextExpectation): boolean;
+export function receiverContextResponseMatchesRequest(
+  requestBody: unknown,
+  finalRequest: unknown,
+  responseBody: unknown,
+): boolean;
+export function receiverOwnerContextMatches(
+  ownerBody: unknown,
+  finalRequest: unknown,
+  finalResponse: unknown,
+): boolean;
+
 export function consumeRequestBudget(
   counts: Record<string, number>,
   limits: Record<string, number>,

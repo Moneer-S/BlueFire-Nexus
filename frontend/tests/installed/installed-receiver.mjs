@@ -6,7 +6,15 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import { classifyRequest, consumeRequestBudget, sameJson as same } from "./receiver-guards.mjs";
+import {
+  classifyRequest,
+  consumeRequestBudget,
+  receiverContextRequestAllowed,
+  receiverContextRequestIsFinal,
+  receiverContextResponseMatchesRequest,
+  receiverOwnerContextMatches,
+  sameJson as same,
+} from "./receiver-guards.mjs";
 import { createDeadlineBudget } from "./receiver-deadline.mjs";
 
 const [modulePath, output, port] = process.argv.slice(2);
@@ -86,9 +94,9 @@ let savedSelection;
 let packagedStarter;
 let expectedScenarioCopy;
 let latestContext;
+let latestFinalContextRequest;
 let latestOwner;
 let latestPreparationDigest;
-let latestContextSourceControl;
 let originalControlDigest;
 let originalEnvelope;
 let linkedEnvelope;
@@ -222,21 +230,31 @@ function allowedRead(url) {
   return false;
 }
 
-function validateContext(body) {
+function contextExpectation(body) {
   const linked = body?.source_control !== undefined;
-  const keys = linked ? ["selection", "run_intent", "workflow", "source_control"] : ["selection", "run_intent", "workflow"];
-  if (!exactKeys(body, keys) || body.workflow !== "retained_redaction"
-    || !same(body.selection, savedSelection)
-    || !exactKeys(body.run_intent, ["mode", "autonomy", "ai_provider_id", "runner_profile_id", "target_scope", "collectors"])
-    || body.run_intent.mode !== "execute" || body.run_intent.autonomy !== "off"
-    || body.run_intent.ai_provider_id !== null || body.run_intent.runner_profile_id !== PROFILE
-    || !exactKeys(body.run_intent.target_scope, ["scope_refs"])
-    || !Array.isArray(body.run_intent.target_scope.scope_refs)
-    || !same([...body.run_intent.target_scope.scope_refs].sort(), ["network.loopback", "sandbox.workspace"])
-    || !same(body.run_intent.collectors, [FILESYSTEM_COLLECTOR])) return false;
-  if (linked && (!originalOwnerId || !originalControlDigest
-    || !same(body.source_control, { job_id: originalOwnerId, control_digest: originalControlDigest }))) return false;
-  return true;
+  return {
+    selection: savedSelection,
+    workflow: "retained_redaction",
+    sourceControl: linked ? { job_id: originalOwnerId, control_digest: originalControlDigest } : null,
+    profileIdsByMode: {
+      simulate: ["sandbox-simulate.v1"],
+      execute: ["sandbox-execute.v1", PROFILE],
+    },
+    scopeRefs: ["sandbox.workspace", "network.loopback"],
+    collectors: [FILESYSTEM_COLLECTOR],
+    finalRunIntent: {
+      mode: "execute",
+      autonomy: "off",
+      ai_provider_id: null,
+      runner_profile_id: PROFILE,
+      target_scope: { scope_refs: ["sandbox.workspace", "network.loopback"] },
+      collectors: [FILESYSTEM_COLLECTOR],
+    },
+  };
+}
+
+function validateFinalContext(body) {
+  return receiverContextRequestIsFinal(body, contextExpectation(body));
 }
 
 function validateScenarioCopy(value) {
@@ -270,8 +288,11 @@ function authorizePost(url, body) {
     return count("save_scenario") && exactKeys(body, ["scenario"]) && validateScenarioCopy(body.scenario);
   }
   if (path === "/api/v1/receiver-defense/context") {
-    const ok = count("context") && validateContext(body);
-    if (ok) latestContextSourceControl = body.source_control ?? null;
+    latestContext = undefined;
+    latestFinalContextRequest = undefined;
+    const expected = contextExpectation(body);
+    const ok = count("context") && receiverContextRequestAllowed(body, expected);
+    if (ok && receiverContextRequestIsFinal(body, expected)) latestFinalContextRequest = structuredClone(body);
     return ok;
   }
   if (path === "/api/v1/receiver-defense/jobs") {
@@ -283,12 +304,12 @@ function authorizePost(url, body) {
       ? Boolean(originalEnvelope?.status === "completed" && originalEnvelope?.control?.status === "retained"
         && originalEnvelope.control.receiver_state === "stopped" && phaseIndexes.original === 3
         && same(body.source_control, { job_id: originalOwnerId, control_digest: originalControlDigest }))
-      : !originalOwnerId && latestContextSourceControl === null;
+      : !originalOwnerId && latestFinalContextRequest?.source_control === undefined;
     const ok = count("owner") && roleReady && exactKeys(body, keys)
-      && validateContext({ selection: body.selection, run_intent: body.run_intent, workflow: body.workflow,
+      && validateFinalContext({ selection: body.selection, run_intent: body.run_intent, workflow: body.workflow,
         ...(linked ? { source_control: body.source_control } : {}) })
       && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(body.submission_id)
-      && body.context_digest === latestContext?.context_digest;
+      && receiverOwnerContextMatches(body, latestFinalContextRequest, latestContext);
     return ok;
   }
   const currentPhases = phaseOrders[activeOwnerRole];
@@ -571,8 +592,12 @@ try {
     if (request.method() === "GET" && path === "/api/v1/session" && response.status() === 401) expected401 += 1;
     if (request.method() !== "POST") return;
     try {
+      const contextRequestBody = path === "/api/v1/receiver-defense/context"
+        ? request.postDataJSON()
+        : undefined;
       const data = await response.json();
-      if (path === "/api/v1/receiver-defense/context" && response.ok()) latestContext = data;
+      if (path === "/api/v1/receiver-defense/context" && response.ok()
+        && receiverContextResponseMatchesRequest(contextRequestBody, latestFinalContextRequest, data)) latestContext = data;
       else if (path === "/api/v1/receiver-defense/jobs" && response.ok()) {
         const createdId = data.job?.job_id;
         const role = data.context?.source_control ? "linked" : "original";

@@ -34,6 +34,10 @@ export function S3AccessPage() {
   const exercise = useQuery({ queryKey: ["s3-exercise", owner], queryFn: () => s3Api.read(owner), enabled: validS3Job(owner), retry: false, refetchInterval: query => query.state.data?.active_job && !query.state.data.saved_result_recovery_available ? 2000 : false });
   const exerciseParams = (next: string) => {
     const value = new URLSearchParams(params);
+    if (next !== owner) {
+      value.delete("audit_review");
+      value.delete("audit_digest");
+    }
     if (next) value.set("exercise", next);
     else value.delete("exercise");
     return value;

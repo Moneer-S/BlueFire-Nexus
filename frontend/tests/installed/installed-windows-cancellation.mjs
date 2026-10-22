@@ -117,19 +117,25 @@ async function call(method, path, body) {
 }
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+let witnessCheck = "workspace";
 
 async function witnessReady() {
+  witnessCheck = "workspace";
   const executions = join(sandbox, ".bluefire-executions");
   const ownerNames = readdirSync(executions);
+  if (ownerNames.length === 0) return null;
   assert.equal(ownerNames.length, 1, "one fresh approval workspace expected");
   const owner = join(executions, ownerNames[0]);
   assert.ok(lstatSync(owner).isDirectory() && !lstatSync(owner).isSymbolicLink());
+  witnessCheck = "task";
   const controls = join(owner, ".bluefire-cancellation-witness-v1");
   const names = readdirSync(controls);
+  if (names.length === 0) return null;
   assert.equal(names.length, 1, "one fresh cancellation task expected");
   const task = join(controls, names[0]);
   const stat = lstatSync(task);
   assert.ok(stat.isDirectory() && !stat.isSymbolicLink());
+  witnessCheck = "ready_record";
   const readyPath = join(task, "ready.json");
   const readyStat = lstatSync(readyPath);
   assert.ok(readyStat.isFile() && !readyStat.isSymbolicLink() && readyStat.size <= 4096);
@@ -253,14 +259,15 @@ async function main() {
     try { ready = await witnessReady(); }
     catch (error) {
       if (error?.code !== "ENOENT") throw error;
-      await sleep(50);
     }
+    if (!ready) await sleep(50);
   }
   assert.ok(ready, "fresh witness ready record appeared in the isolated approval workspace");
   const { task_id, request_hash, parent_process_id, descendant_process_id } = ready.value;
   writeFileSync(join(output, "witness-observed.json"), `${JSON.stringify({
     task_id, request_hash, parent_process_id, descendant_process_id,
   })}\n`, { flag: "wx" });
+  witnessCheck = "process_pin_permit";
   await waitForPermit(ready.value.request_hash);
   report.checks.push("exact_execute_preflight_and_fresh_approval_consumed");
   report.checks.push("cancel_requested_only_after_fresh_witness_processes_were_pinned");
@@ -333,9 +340,27 @@ try {
   await main();
 } catch (error) {
   report.error = { stage, error_type: error instanceof Error ? error.name : "unknown" };
-  if (jobId && counts.approval === 0 && counts.cancel === 0) {
+  if (stage === "independent-witness-handshake") report.error.witness_check = witnessCheck;
+  if (jobId && counts.cancel === 0) {
+    report.failure_cleanup = {
+      cancel_attempted: true,
+      approval_request_attempted: counts.approval > 0,
+    };
     try {
-      await call("POST", `/api/v1/jobs/${jobId}/cancel`, {});
+      const cleanup = await call("POST", `/api/v1/jobs/${jobId}/cancel`, {});
+      report.failure_cleanup.cancel_accepted = cleanup.status === 202;
+      if (cleanup.status === 202) {
+        try {
+          const settled = await waitForJobState(
+            new Set(["cancelled", "completed", "failed", "interrupted"]),
+          );
+          report.failure_cleanup.terminal_state = settled.state;
+        } catch (settlementError) {
+          report.failure_cleanup.settlement_error_type = (
+            settlementError instanceof Error ? settlementError.name : "unknown"
+          );
+        }
+      }
     } catch (cleanupError) {
       report.error.cleanup_error_type = cleanupError instanceof Error ? cleanupError.name : "unknown";
     }

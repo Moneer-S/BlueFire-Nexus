@@ -178,6 +178,92 @@ def test_witness_observer_rejects_ambiguous_approval_workspaces(tmp_path: Path) 
     assert json.loads(permit.read_text(encoding="utf-8")) == {"denied": True}
 
 
+@pytest.mark.parametrize(
+    "snapshot",
+    ["staged", "multiple_owners", "multiple_tasks", "redirected_owner", "invalid_ready"],
+)
+def test_real_driver_ready_reader_waits_only_for_empty_construction_snapshots(
+    snapshot: str,
+) -> None:
+    """Run the shipped reader against deterministic filesystem snapshots, without processes."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required to exercise the installed cancellation driver")
+    driver = (
+        Path(__file__).resolve().parents[1]
+        / "frontend/tests/installed/installed-windows-cancellation.mjs"
+    )
+    script = r"""
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
+const source = readFileSync(process.argv[2], 'utf8');
+const start = source.indexOf('async function witnessReady() {');
+const end = source.indexOf('async function waitForPermit(', start);
+assert.ok(start >= 0 && end > start);
+const snapshot = process.argv[3];
+const digest = 'e'.repeat(64);
+const ready = {
+  schema_version: 'bluefire.process-tree-cancellation-ready.v1',
+  task_id: `execute-${digest}`, request_hash: `sha256:${digest}`,
+  parent_process_id: 101, descendant_process_id: 202,
+};
+let phase = 0;
+const sandbox = 'fixture-sandbox';
+const executions = join(sandbox, '.bluefire-executions');
+const owner = join(executions, 'approval-fixture');
+const controls = join(owner, '.bluefire-cancellation-witness-v1');
+const context = {
+  assert, join, sandbox, witnessCheck: 'workspace',
+  readdirSync(path) {
+    if (path === executions) {
+      if (snapshot === 'multiple_owners') return ['approval-one', 'approval-two'];
+      if (snapshot === 'staged' && phase === 0) return [];
+      return ['approval-fixture'];
+    }
+    assert.equal(path, controls);
+    if (snapshot === 'multiple_tasks') return [digest, 'f'.repeat(64)];
+    return snapshot === 'staged' && phase === 1 ? [] : [digest];
+  },
+  lstatSync(path) {
+    return {
+      isDirectory: () => !path.endsWith('ready.json'),
+      isFile: () => path.endsWith('ready.json'),
+      isSymbolicLink: () => snapshot === 'redirected_owner' && path === owner,
+      size: 256,
+    };
+  },
+  readFileSync() {
+    return JSON.stringify(snapshot === 'invalid_ready' ? {...ready, unreviewed: true} : ready);
+  },
+};
+const readReady = runInNewContext(`${source.slice(start, end)}; witnessReady`, context);
+if (snapshot === 'staged') {
+  assert.equal(await readReady(), null);
+  assert.equal(context.witnessCheck, 'workspace');
+  phase = 1;
+  assert.equal(await readReady(), null);
+  assert.equal(context.witnessCheck, 'task');
+  phase = 2;
+  const result = await readReady();
+  assert.deepEqual(JSON.parse(JSON.stringify(result.value)), ready);
+  assert.equal(result.task, join(controls, digest));
+} else {
+  await assert.rejects(readReady(), {name: 'AssertionError'});
+}
+"""
+    result = subprocess.run(
+        [node, "--input-type=module", "-", str(driver), snapshot],
+        input=script,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_wheel_identity_requires_installed_package_bytes_to_match(tmp_path: Path) -> None:
     wheel = tmp_path / "bluefire_nexus-1.2.3-py3-none-any.whl"
     package = tmp_path / "site-packages" / "bluefire"
@@ -416,6 +502,11 @@ def test_private_environment_rejects_unreviewed_architecture_values(machine: str
         (True, "ready"),
         (False, "ready"),
         (True, "delayed"),
+        (True, "construction_snapshots"),
+        (True, "ambiguous_workspace"),
+        (False, "delayed_cleanup"),
+        (False, "cancel_uncertain"),
+        (True, "approval_rejected"),
         (True, "unexpected"),
         (True, "wrong_receipt"),
         (True, "wrong_identity"),
@@ -470,6 +561,7 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
         saved = None
         approval_calls = 0
         cancel_calls = 0
+        cleanup_status_reads = 0
 
         def catalog(self):
             return {
@@ -546,6 +638,11 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
 
         def job(self, requested_id):
             assert requested_id == job_id
+            if approval_gate == "delayed_cleanup" and self.state == "cancelling":
+                self.cleanup_status_reads += 1
+                if self.cleanup_status_reads >= 3:
+                    self.state = "cancelled"
+                    shutil.rmtree(task)
             result = {
                 "job_id": "job-" + "d" * 32 if approval_gate == "wrong_identity" else job_id,
                 "state": self.state,
@@ -565,17 +662,38 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
         def approve_job(self, requested_id, request):
             assert request == {"approved_by": "installed-windows-cancellation-reviewer"}
             assert self.state == "awaiting_approval"
+            if approval_gate == "approval_rejected":
+                raise RuntimeError("fixture approval refusal")
             self.approval_calls += 1
             task.mkdir(parents=True)
             (task / "ready.json").write_text(json.dumps(ready), encoding="utf-8")
+            if approval_gate == "ambiguous_workspace":
+                (sandbox / ".bluefire-executions" / "approval-unexpected").mkdir()
             self.state = "running"
             return {"job": self.job(requested_id)}
 
         def cancel_job(self, requested_id):
             assert requested_id == job_id
             self.cancel_calls += 1
-            if approval_gate in {"unexpected", "wrong_receipt", "wrong_identity"}:
+            if approval_gate in {
+                "unexpected",
+                "wrong_receipt",
+                "wrong_identity",
+                "approval_rejected",
+            }:
                 assert self.approval_calls == 0 and not pins and not task.exists()
+                self.state = "cancelled"
+                return self.job(requested_id)
+            if not permit_pin or approval_gate == "ambiguous_workspace":
+                assert self.approval_calls == 1 and not pins
+                assert not (output / "witness-observed.json").exists() or not permit_pin
+                if approval_gate == "cancel_uncertain":
+                    self.state = "cancelling"
+                    raise RuntimeError("fixture cancellation response uncertain")
+                if approval_gate == "delayed_cleanup":
+                    self.state = "cancelling"
+                    return self.job(requested_id)
+                shutil.rmtree(task)
                 self.state = "cancelled"
                 return self.job(requested_id)
             assert pins == [ready]
@@ -626,9 +744,32 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
         Path(__file__).resolve().parents[1]
         / "frontend/tests/installed/installed-windows-cancellation.mjs"
     )
+    node_options = []
+    snapshots = output / "construction-snapshots.json"
+    if approval_gate == "construction_snapshots":
+        preload = tmp_path / "construction-snapshots.mjs"
+        preload.write_text(
+            "import fs from 'node:fs';\n"
+            "import { syncBuiltinESMExports } from 'node:module';\n"
+            "import { join } from 'node:path';\n"
+            f"const executions = {json.dumps(str(sandbox / '.bluefire-executions'))};\n"
+            f"const controls = {json.dumps(str(task.parent))};\n"
+            f"const record = {json.dumps(str(snapshots))};\n"
+            "const original = fs.readdirSync;\n"
+            "const seen = [];\n"
+            "fs.readdirSync = function(path, ...args) {\n"
+            "  if ([executions, controls].includes(path) && !seen.includes(path)) {\n"
+            "    seen.push(path); fs.writeFileSync(record, JSON.stringify(seen)); return [];\n"
+            "  }\n"
+            "  return original.call(this, path, ...args);\n"
+            "};\n"
+            "syncBuiltinESMExports();\n",
+            encoding="utf-8",
+        )
+        node_options = ["--import", preload.as_uri()]
     try:
         result = subprocess.run(
-            [node, str(driver), str(server.server_port), str(sandbox), str(output)],
+            [node, *node_options, str(driver), str(server.server_port), str(sandbox), str(output)],
             input=json.dumps({"capability": capability}),
             text=True,
             capture_output=True,
@@ -644,29 +785,88 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
     assert not observer.is_alive() and not server_thread.is_alive()
     report = json.loads((output / "driver-report.json").read_text(encoding="utf-8"))
     assert capability not in json.dumps(report)
-    expected_pass = permit_pin and approval_gate in {"ready", "delayed"}
+    expected_pass = permit_pin and approval_gate in {"ready", "delayed", "construction_snapshots"}
     assert result.returncode == (0 if expected_pass else 1), result.stderr
     if expected_pass:
         assert not observer_errors and observed[0]["control_path"] == task
         assert verifier._driver_passed(report)
         assert report["request_counts"]["job_status"] == (4 if approval_gate == "delayed" else 3)
         assert service.approval_calls == 1 and service.cancel_calls == 1
-    elif not permit_pin:
+        assert "failure_cleanup" not in report
+        if approval_gate == "construction_snapshots":
+            assert json.loads(snapshots.read_text(encoding="utf-8")) == [
+                str(sandbox / ".bluefire-executions"),
+                str(task.parent),
+            ]
+    elif not permit_pin or approval_gate == "ambiguous_workspace":
         assert observer_errors == ["RuntimeError"] and not observed and not pins
         assert report["status"] == "failed_or_incomplete"
         assert report["error"]["stage"] == "independent-witness-handshake"
         assert report["request_counts"]["approval"] == 1
-        assert report["request_counts"]["cancel"] == 0
+        assert report["request_counts"]["cancel"] == 1
         assert report["request_counts"]["runner_stop"] == 0
+        assert report["request_counts"]["job_status"] == (
+            4
+            if approval_gate == "delayed_cleanup"
+            else (2 if approval_gate == "cancel_uncertain" else 3)
+        )
+        assert report["error"]["witness_check"] == (
+            "process_pin_permit" if not permit_pin else "workspace"
+        )
+        assert service.approval_calls == 1 and service.cancel_calls == 1
+        if approval_gate == "cancel_uncertain":
+            assert report["error"]["cleanup_error_type"] == "AssertionError"
+            assert report["failure_cleanup"] == {
+                "cancel_attempted": True,
+                "approval_request_attempted": True,
+            }
+            assert service.state == "cancelling" and task.exists()
+        else:
+            assert report["failure_cleanup"] == {
+                "cancel_attempted": True,
+                "approval_request_attempted": True,
+                "cancel_accepted": True,
+                "terminal_state": "cancelled",
+            }
+            assert service.state == "cancelled" and not task.exists()
+        assert report["checks"] == _passed_driver_report()["checks"][:3]
+        assert not verifier._driver_passed(report)
+    elif approval_gate == "approval_rejected":
+        assert report["status"] == "failed_or_incomplete"
+        assert report["error"]["stage"] == "normal-submit-and-approval"
+        assert report["request_counts"]["job_status"] == 2
+        assert report["request_counts"]["approval"] == 1
+        assert report["request_counts"]["cancel"] == 1
+        assert report["failure_cleanup"] == {
+            "cancel_attempted": True,
+            "approval_request_attempted": True,
+            "cancel_accepted": True,
+            "terminal_state": "cancelled",
+        }
+        assert service.approval_calls == 0 and service.cancel_calls == 1
+        assert service.state == "cancelled" and not task.exists() and not pins
         assert not verifier._driver_passed(report)
     else:
         assert report["status"] == "failed_or_incomplete"
         assert report["error"]["stage"] == "normal-submit-and-approval"
         assert set(report["error"]) == {"stage", "error_type"}
         assert report["job_id"] == job_id
-        assert report["request_counts"]["job_status"] == (0 if approval_gate == "unexpected" else 1)
+        assert (
+            report["request_counts"]["job_status"]
+            == {"unexpected": 1, "wrong_receipt": 2, "wrong_identity": 2}[approval_gate]
+        )
         assert report["request_counts"]["approval"] == 0
         assert report["request_counts"]["cancel"] == 1
         assert service.approval_calls == 0 and service.cancel_calls == 1
         assert service.state == "cancelled" and not task.exists() and not pins
+        expected_cleanup = {
+            "cancel_attempted": True,
+            "approval_request_attempted": False,
+            "cancel_accepted": True,
+        }
+        if approval_gate == "wrong_identity":
+            expected_cleanup["settlement_error_type"] = "AssertionError"
+        else:
+            expected_cleanup["terminal_state"] = "cancelled"
+        assert report["failure_cleanup"] == expected_cleanup
         assert not verifier._driver_passed(report)
