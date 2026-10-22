@@ -1,24 +1,22 @@
-/* global process, Buffer, fetch, crypto, setTimeout, AbortSignal */
+/* global process, Buffer, fetch, crypto, setTimeout, clearTimeout, AbortSignal */
 import assert from "node:assert/strict";
-import { closeSync, fstatSync, linkSync, openSync, readdirSync, lstatSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { readdirSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const [portText, sandboxText, output] = process.argv.slice(2);
 assert.match(portText ?? "", /^\d{1,5}$/);
 const port = Number(portText);
 assert.ok(port > 0 && port <= 65535);
-let input = "";
-for await (const chunk of process.stdin) {
-  input += chunk;
-  assert.ok(Buffer.byteLength(input, "utf8") <= 256);
-}
-let { capability } = JSON.parse(input);
-input = "";
-assert.match(capability ?? "", /^[A-Za-z0-9_-]{64}$/);
+const stdinReader = process.stdin[Symbol.asyncIterator]();
+let stdinBuffer = Buffer.alloc(0);
+let stdinDone = false;
+let stdinBytesRead = 0;
+let capability = "";
 
 const PROFILE = "gate11-windows-cancellation-witness.v1";
 const ACTION = "sandbox.execution.process-tree-cancellation-witness.v1";
 const MAX_RESPONSE_BYTES = 1_048_576;
+const MAX_INPUT_BYTES = 2050;
 const origin = `http://127.0.0.1:${port}`;
 const sandbox = sandboxText;
 const counts = {
@@ -40,6 +38,59 @@ let runId = "";
 let ready = null;
 let approvalStatusBefore = "";
 let approvalStatusAfter = "";
+let expectedRunSource;
+let terminalOwnedJob;
+let failureRunId = "";
+let witnessFailureCode = "";
+
+async function readInputLine(maxBytes, deadline) {
+  while (true) {
+    const newline = stdinBuffer.indexOf(0x0a);
+    if (newline >= 0) {
+      const line = stdinBuffer.subarray(0, newline);
+      stdinBuffer = stdinBuffer.subarray(newline + 1);
+      assert.ok(line.length > 0 && line.length <= maxBytes, "input frame size was invalid");
+      for (const byte of line) assert.ok(byte <= 0x7f, "input frame was not ASCII");
+      return JSON.parse(line.toString("ascii"));
+    }
+    assert.ok(stdinBuffer.length <= maxBytes, "input frame exceeded its byte limit");
+    if (stdinDone) throw new Error("input frame was truncated");
+    const remaining = deadline - Date.now();
+    assert.ok(remaining > 0, "input frame deadline expired");
+    let timer;
+    const next = await Promise.race([
+      stdinReader.next(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("input frame deadline expired")), remaining);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    if (next.done) {
+      stdinDone = true;
+      continue;
+    }
+    const chunk = Buffer.from(next.value);
+    stdinBytesRead += chunk.length;
+    assert.ok(stdinBytesRead <= MAX_INPUT_BYTES, "input exceeded its total byte limit");
+    assert.ok(stdinBuffer.length + chunk.length <= MAX_INPUT_BYTES, "input buffer exceeded its byte limit");
+    stdinBuffer = Buffer.concat([stdinBuffer, chunk]);
+  }
+}
+
+async function requireInputEnd(deadline) {
+  assert.equal(stdinBuffer.length, 0, "unexpected extra input frame");
+  if (stdinDone) return;
+  const remaining = deadline - Date.now();
+  assert.ok(remaining > 0, "input end deadline expired");
+  let timer;
+  const next = await Promise.race([
+    stdinReader.next(),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("input end deadline expired")), remaining);
+    }),
+  ]).finally(() => clearTimeout(timer));
+  assert.equal(next.done, true, "unexpected extra input frame");
+  stdinDone = true;
+}
 
 async function readBoundedResponse(response) {
   const reader = response.body?.getReader();
@@ -81,6 +132,7 @@ async function call(method, path, body) {
     permitted.add(`POST /api/v1/jobs/${jobId}/cancel`);
   }
   if (runId) permitted.add(`GET /api/v1/runs/${runId}/retained-observations`);
+  if (failureRunId) permitted.add(`GET /api/v1/runs/${failureRunId}`);
   const key = `${method} ${path}`;
   assert.ok(permitted.has(key), `unexpected local service route: ${method} ${path}`);
   const counter = {
@@ -97,8 +149,10 @@ async function call(method, path, body) {
     [`POST /api/v1/jobs/${jobId}/approval`]: "approval",
     [`POST /api/v1/jobs/${jobId}/cancel`]: "cancel",
     [`GET /api/v1/runs/${runId}/retained-observations`]: "retained_observations",
+    [`GET /api/v1/runs/${failureRunId}`]: "failure_run_detail",
   }[key];
-  if (counter) counts[counter] += 1;
+  if (counter === "failure_run_detail") assert.equal(counts[counter] ?? 0, 0);
+  if (counter) counts[counter] = (counts[counter] ?? 0) + 1;
   const headers = { Accept: "application/json", Origin: origin };
   if (method === "POST" && path !== "/api/v1/session") headers["Content-Type"] = "application/json";
   if (path !== "/api/v1/session") headers["X-BlueFire-Session"] = session;
@@ -114,49 +168,6 @@ async function call(method, path, body) {
   if (text) value = JSON.parse(text);
   assert.ok(response.ok, `local service refused ${method} ${path} with ${response.status}`);
   return { status: response.status, value };
-}
-
-function publishNewJson(path, value) {
-  const encoded = `${JSON.stringify(value)}\n`;
-  assert.ok(Buffer.byteLength(encoded, "utf8") <= 4096);
-  const staging = `${path}.${crypto.randomUUID()}.pending`;
-  let descriptor;
-  let identity;
-  const errors = [];
-  try {
-    descriptor = openSync(staging, "wx");
-    identity = fstatSync(descriptor, { bigint: true });
-    assert.ok(identity.isFile());
-    writeFileSync(descriptor, encoded);
-    closeSync(descriptor);
-    descriptor = undefined;
-    const staged = lstatSync(staging, { bigint: true });
-    assert.ok(staged.isFile() && !staged.isSymbolicLink()
-      && staged.dev === identity.dev && staged.ino === identity.ino);
-    // Publish only after close, without replacing a preexisting final name.
-    linkSync(staging, path);
-    const published = lstatSync(path, { bigint: true });
-    assert.ok(published.dev === identity.dev && published.ino === identity.ino);
-  } catch (error) {
-    errors.push(error);
-  }
-  if (descriptor !== undefined) {
-    try {
-      closeSync(descriptor);
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-  if (identity) {
-    try {
-      const remaining = lstatSync(staging, { bigint: true });
-      if (remaining.isFile() && !remaining.isSymbolicLink()
-        && remaining.dev === identity.dev && remaining.ino === identity.ino) unlinkSync(staging);
-    } catch (error) {
-      if (error?.code !== "ENOENT") errors.push(error);
-    }
-  }
-  if (errors.length) throw errors[0];
 }
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -196,22 +207,85 @@ async function witnessReady() {
   return { value, task };
 }
 
-async function waitForPermit(expectedHash) {
-  const path = join(output, "witness-permit.json");
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    try {
-      const stat = lstatSync(path);
-      assert.ok(stat.isFile() && !stat.isSymbolicLink() && stat.size <= 4096);
-      const permit = JSON.parse(readFileSync(path, "utf8"));
-      assert.deepEqual(permit, { witness_request_hash: expectedHash });
-      return;
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+async function waitForWitnessReady() {
+  const deadline = Date.now() + 45_000;
+  while (!ready && Date.now() < deadline) {
+    try { ready = await witnessReady(); }
+    catch (error) {
+      if (error?.code !== "ENOENT") {
+        witnessFailureCode = error?.code === "ERR_ASSERTION"
+          ? "witness_ready_assertion" : "witness_ready_read_failed";
+        throw error;
+      }
     }
-    await sleep(50);
+    if (!ready) await sleep(50);
   }
-  throw new Error("independent witness process pin was not confirmed");
+  if (!ready) witnessFailureCode = "witness_ready_deadline";
+  assert.ok(ready, "fresh witness ready record appeared in the isolated approval workspace");
+  return ready;
+}
+
+async function waitForPermit(expectedReady) {
+  const deadline = Date.now() + 15_000;
+  const permit = await readInputLine(1024, deadline);
+  if (permit?.type === "witness_denied") {
+    assert.deepEqual(Object.keys(permit).sort(), ["type"]);
+    witnessFailureCode = "independent_witness_denied";
+    throw new Error("independent witness process pin was denied");
+  }
+  assert.deepEqual(Object.keys(permit ?? {}).sort(), ["ready", "type"]);
+  assert.equal(permit.type, "witness_permit");
+  assert.deepEqual(permit.ready, expectedReady);
+  await requireInputEnd(deadline);
+}
+
+function projectFailureRunDetail(value, ownedRunId, source) {
+  const isWitness = step => step?.step_id === "witness"
+    && step.behavior_id === ACTION && step.action_id === ACTION;
+  if (!source || value?.run_id !== ownedRunId || value.scenario?.id !== source.scenario_id
+    || value.plan?.scenario_id !== source.scenario_id || value.plan?.scenario_digest !== source.digest
+    || value.plan?.mode !== "execute" || value.plan?.runner_profile_id !== PROFILE
+    || value.profile?.id !== PROFILE || !Array.isArray(value.steps) || value.steps.length !== 1
+    || !isWitness(value.steps[0]) || !Array.isArray(value.plan?.steps)
+    || value.plan.steps.length !== 1 || !isWitness(value.plan.steps[0])) {
+    return { status: "unavailable", reason: "source_binding_mismatch" };
+  }
+  const category = (candidate, allowed) => candidate == null ? "absent"
+    : allowed.includes(candidate) ? candidate : "other";
+  const step = value.steps[0];
+  return {
+    status: "available",
+    run_status: category(value.status, ["completed", "cancelled", "failed", "interrupted", "paused"]),
+    step_status: category(step.status, ["success", "partial", "blocked", "failed"]),
+    execution_disposition: category(step.execution_disposition, ["execute", "simulate", "counterfactual"]),
+    runner_status: category(step.runner_status, ["success", "partial", "refused", "control_blocked", "failed", "timed_out", "cancelled"]),
+    error_code: category(step.error?.code, [
+      "adapter_refused", "runner_transport_failed", "cancellation_witness_blocked",
+      "cancellation_witness_failed", "cancellation_witness_timeout",
+    ]),
+  };
+}
+
+async function diagnoseTerminalRun(job) {
+  const refs = [job.progress?.run_id, job.result_ref].filter(value => value != null);
+  if (!refs.length) {
+    report.failure_run_diagnostic = { status: "unavailable", reason: "owned_run_link_absent" };
+    return;
+  }
+  if (job.job_id !== jobId || !["cancelled", "completed", "failed", "interrupted"].includes(job.state)
+    || refs.some(value => typeof value !== "string"
+      || !/^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$/.test(value) || value !== refs[0])
+    || !expectedRunSource) {
+    report.failure_run_diagnostic = { status: "unavailable", reason: "owned_run_link_invalid" };
+    return;
+  }
+  failureRunId = refs[0];
+  try {
+    const detail = (await call("GET", `/api/v1/runs/${failureRunId}`)).value;
+    report.failure_run_diagnostic = projectFailureRunDetail(detail, failureRunId, expectedRunSource);
+  } catch {
+    report.failure_run_diagnostic = { status: "unavailable", reason: "detail_unavailable" };
+  }
 }
 
 async function main() {
@@ -263,6 +337,7 @@ async function main() {
   assert.equal(saved.scenario_id, scenarioId);
   assert.equal(saved.version, 1);
   assert.match(saved.digest, /^sha256:[0-9a-f]{64}$/);
+  expectedRunSource = { scenario_id: scenarioId, digest: saved.digest };
 
   stage = "normal-execute-preflight";
   const payload = {
@@ -297,21 +372,9 @@ async function main() {
   assert.equal(approved.state, "running", "witness Execute must still be running before cancellation");
 
   stage = "independent-witness-handshake";
-  const deadline = Date.now() + 45_000;
-  while (!ready && Date.now() < deadline) {
-    try { ready = await witnessReady(); }
-    catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-    if (!ready) await sleep(50);
-  }
-  assert.ok(ready, "fresh witness ready record appeared in the isolated approval workspace");
-  const { task_id, request_hash, parent_process_id, descendant_process_id } = ready.value;
-  publishNewJson(join(output, "witness-observed.json"), {
-    task_id, request_hash, parent_process_id, descendant_process_id,
-  });
+  ready = await waitForWitnessReady();
   witnessCheck = "process_pin_permit";
-  await waitForPermit(ready.value.request_hash);
+  await waitForPermit(ready.value);
   report.checks.push("exact_execute_preflight_and_fresh_approval_consumed");
   report.checks.push("cancel_requested_only_after_fresh_witness_processes_were_pinned");
 
@@ -372,7 +435,10 @@ async function waitForJobState(terminal, transient = null) {
   while (Date.now() < deadline && counts.job_status < 100) {
     const job = (await call("GET", `/api/v1/jobs/${jobId}`)).value;
     assert.equal(job.job_id, jobId);
-    if (terminal.has(job.state)) return job;
+    if (terminal.has(job.state)) {
+      if (["cancelled", "completed", "failed", "interrupted"].includes(job.state)) terminalOwnedJob = job;
+      return job;
+    }
     assert.ok(transient === null || transient.has(job.state), "job left its expected approval planning states");
     await sleep(1000);
   }
@@ -380,10 +446,17 @@ async function waitForJobState(terminal, transient = null) {
 }
 
 try {
+  stage = "input-capability";
+  const bootstrap = await readInputLine(1024, Date.now() + 360_000);
+  assert.deepEqual(Object.keys(bootstrap ?? {}).sort(), ["capability", "type"]);
+  assert.equal(bootstrap.type, "capability");
+  capability = bootstrap.capability;
+  assert.match(capability ?? "", /^[A-Za-z0-9_-]{64}$/);
   await main();
 } catch (error) {
   report.error = { stage, error_type: error instanceof Error ? error.name : "unknown" };
   if (stage === "independent-witness-handshake") report.error.witness_check = witnessCheck;
+  if (witnessFailureCode) report.error.code = witnessFailureCode;
   if (jobId && counts.cancel === 0) {
     report.failure_cleanup = {
       cancel_attempted: true,
@@ -408,9 +481,11 @@ try {
       report.error.cleanup_error_type = cleanupError instanceof Error ? cleanupError.name : "unknown";
     }
   }
+  if (terminalOwnedJob) await diagnoseTerminalRun(terminalOwnedJob);
 } finally {
   capability = "";
   session = "";
+  process.stdin.destroy();
   writeFileSync(join(output, "driver-report.json"), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx" });
 }
 process.exitCode = report.status === "passed" ? 0 : 1;

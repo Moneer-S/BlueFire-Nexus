@@ -737,7 +737,7 @@ try {
   stage = "baseline-control-execution-mode";
   await page.getByRole("radio", { name: /^Execute / }).check();
   stage = "baseline-control-environment-profile";
-  await page.getByLabel("Environment profile", { exact: true }).selectOption(PROFILE);
+  await page.getByRole("combobox", { name: "Environment profile", exact: true }).selectOption(PROFILE);
   stage = "baseline-control-target-scopes";
   for (const label of ["Files in the selected workspace", "Connections to the local lab receiver"]) {
     const scope = page.getByRole("checkbox", { name: label, exact: true });

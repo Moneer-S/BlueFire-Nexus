@@ -59,9 +59,10 @@ it("keeps each real retained-redaction UI context request within the finite driv
   const executeMode = screen.getByRole("radio", { name: /Execute/ });
   fireEvent.click(executeMode);
   await waitFor(() => expect(requests.length).toBeGreaterThanOrEqual(2));
-  const profile = screen.getByLabelText("Environment profile", { exact: true });
+  const profile = screen.getByRole("combobox", { name: /^Environment profile$/ });
   fireEvent.change(profile, { target: { value: "sandbox-endpoint-deep-lab.v1" } });
   await waitFor(() => expect(requests.length).toBeGreaterThanOrEqual(3));
+  expect(profile).toHaveValue("sandbox-endpoint-deep-lab.v1");
   fireEvent.click(screen.getByRole("checkbox", { name: "Connections to the local lab receiver" }));
   await waitFor(() => expect(requests.length).toBeGreaterThanOrEqual(4));
 

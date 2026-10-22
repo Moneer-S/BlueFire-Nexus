@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import subprocess
 import threading
+import time
 import zipfile
 from pathlib import Path
 
@@ -13,108 +15,83 @@ import pytest
 from tools import verify_installed_windows_cancellation as verifier
 
 
-def test_new_record_is_complete_and_closed_before_publication(
+def test_receipt_is_written_directly_and_exclusively(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    destination = tmp_path / "permit.json"
-    value = {"witness_request_hash": "sha256:" + "a" * 64}
-    real_write, real_link = os.write, os.link
+    destination = tmp_path / "receipt.json"
+    value = {"status": "failed_or_incomplete"}
+    real_write = os.write
     descriptors: list[int] = []
-    published: list[dict[str, object]] = []
 
-    def partial_write(descriptor, payload):
+    def short_write(descriptor, payload):
         descriptors.append(descriptor)
-        assert not destination.exists()
         return real_write(descriptor, payload[:7])
 
-    def publish(source, target, **options):
-        assert Path(source).parent == destination.parent
-        assert json.loads(Path(source).read_bytes()) == value
-        assert not destination.exists()
-        with pytest.raises(OSError):
-            os.fstat(descriptors[-1])
-        real_link(source, target, **options)
-        published.append(verifier._read_object(destination, 4096))
-
-    monkeypatch.setattr(verifier.os, "write", partial_write)
-    monkeypatch.setattr(verifier.os, "link", publish)
-    verifier._write_new(destination, value, maximum=4096)
-
-    assert len(descriptors) > 1 and published == [value]
-    assert list(tmp_path.iterdir()) == [destination]
+    monkeypatch.setattr(verifier.os, "write", short_write)
+    verifier._write_receipt(destination, value, maximum=4096)
+    assert len(descriptors) > 1
+    with pytest.raises(OSError):
+        os.fstat(descriptors[-1])
+    assert json.loads(destination.read_text(encoding="utf-8")) == value
 
 
-@pytest.mark.parametrize("redirected", [False, True])
-def test_new_record_never_replaces_an_existing_final(tmp_path: Path, redirected: bool) -> None:
-    destination = tmp_path / "permit.json"
-    existing = tmp_path / "existing.json" if redirected else destination
+def test_receipt_never_replaces_existing_file_or_link(tmp_path: Path) -> None:
+    destination = tmp_path / "receipt.json"
+    existing = tmp_path / "existing.json"
     existing.write_bytes(b"preexisting")
-    if redirected:
-        try:
-            destination.symlink_to(existing)
-        except OSError as error:
-            pytest.skip(f"file symlinks unavailable: {type(error).__name__}")
-
+    for candidate in (destination,):
+        candidate.write_bytes(b"prior receipt")
+        with pytest.raises(FileExistsError):
+            verifier._write_receipt(candidate, {"status": "failed"})
+        assert candidate.read_bytes() == b"prior receipt"
+        candidate.unlink()
+    try:
+        destination.symlink_to(existing)
+    except OSError as error:
+        pytest.skip(f"file symlinks unavailable: {type(error).__name__}")
     with pytest.raises(FileExistsError):
-        verifier._write_new(destination, {"denied": True})
-
+        verifier._write_receipt(destination, {"status": "failed"})
     assert existing.read_bytes() == b"preexisting"
-    assert destination.is_symlink() is redirected
-    assert not list(tmp_path.glob(".*.pending"))
 
 
-def test_new_record_interrupted_write_never_exposes_final(
+def test_interrupted_receipt_remains_invalid_and_is_not_cleaned_up(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    destination = tmp_path / "permit.json"
+    destination = tmp_path / "receipt.json"
     real_write = os.write
 
     def interrupted_write(descriptor, payload):
         real_write(descriptor, payload[:7])
-        assert not destination.exists()
         raise OSError("fixture interrupted write")
 
     monkeypatch.setattr(verifier.os, "write", interrupted_write)
     with pytest.raises(OSError, match="interrupted write"):
-        verifier._write_new(destination, {"denied": True})
-    assert not list(tmp_path.iterdir())
-
-
-def test_new_record_does_not_cleanup_rebound_staging(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    destination = tmp_path / "permit.json"
-    rebound: list[Path] = []
-
-    def replace_staging(source, _target, **_options):
-        staging = Path(source)
-        staging.rename(tmp_path / "retained-owned.pending")
-        staging.write_bytes(b"unowned replacement")
-        rebound.append(staging)
-        raise OSError("fixture rebound staging")
-
-    monkeypatch.setattr(verifier.os, "link", replace_staging)
-    with pytest.raises(OSError, match="rebound staging"):
-        verifier._write_new(destination, {"denied": True})
-    assert not destination.exists()
-    assert rebound[0].read_bytes() == b"unowned replacement"
+        verifier._write_receipt(destination, {"status": "failed"})
+    assert destination.exists()
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(destination.read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize(
-    "boundary",
+    ("scenario", "valid"),
     [
-        "complete",
-        "existing_final",
-        "existing_staging",
-        "interrupted_write",
-        "rebound_staging",
-        "publication_cleanup_failure",
-        "cleanup_only_failure",
-        "write_cleanup_failure",
-        "close_cleanup_failure",
+        ("valid", True),
+        ("mismatched_pids", False),
+        ("malformed_capability", False),
+        ("oversized_capability", False),
+        ("oversized_tail", False),
+        ("oversized_tail_coalesced", False),
+        ("malformed_permit", False),
+        ("oversized_permit", False),
+        ("extra_frame", False),
+        ("truncated_capability", False),
+        ("truncated_permit", False),
+        ("denied", False),
     ],
 )
-def test_real_driver_atomic_publication_boundaries(tmp_path: Path, boundary: str) -> None:
+def test_real_driver_stdin_frames_are_bounded_and_bind_full_ready_record(
+    scenario: str, valid: bool
+) -> None:
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required to exercise the installed cancellation driver")
@@ -124,102 +101,214 @@ def test_real_driver_atomic_publication_boundaries(tmp_path: Path, boundary: str
     )
     script = r"""
 import assert from 'node:assert/strict';
-import * as fs from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-const source = fs.readFileSync(process.argv[2], 'utf8');
-const start = source.indexOf('function publishNewJson(');
-const end = source.indexOf('const sleep =', start);
-assert.ok(start >= 0 && end > start);
-const boundary = process.argv[3];
-const directory = process.argv[4];
-const destination = join(directory, 'witness-observed.json');
-const staging = `${destination}.fixture-atomic.pending`;
-const value = {request_hash: `sha256:${'a'.repeat(64)}`, task_id: 'fixture'};
-if (boundary === 'existing_final') fs.writeFileSync(destination, 'preexisting final');
-if (boundary === 'existing_staging') fs.writeFileSync(staging, 'unowned staging');
-let opened;
-let linked = false;
-let closeAttempts = 0;
-let unlinkAttempts = 0;
-const cleanupFailures = new Set([
-  'publication_cleanup_failure', 'cleanup_only_failure', 'write_cleanup_failure', 'close_cleanup_failure',
-]);
-const context = {
-  assert, Buffer, crypto: {randomUUID: () => 'fixture-atomic'},
-  fstatSync: fs.fstatSync, lstatSync: fs.lstatSync,
-  closeSync(descriptor) {
-    closeAttempts += 1;
-    if (boundary === 'close_cleanup_failure') throw new Error('fixture close failure');
-    fs.closeSync(descriptor);
-  },
-  unlinkSync(path) {
-    unlinkAttempts += 1;
-    if (cleanupFailures.has(boundary)) throw new Error('fixture cleanup failure');
-    fs.unlinkSync(path);
-  },
-  openSync(path, flags) {
-    assert.equal(flags, 'wx');
-    opened = fs.openSync(path, flags);
-    return opened;
-  },
-  writeFileSync(descriptor, encoded) {
-    fs.writeFileSync(descriptor, encoded.slice(0, 7));
-    assert.equal(fs.existsSync(destination), boundary === 'existing_final');
-    if (['interrupted_write', 'write_cleanup_failure'].includes(boundary)) throw new Error('fixture interrupted write');
-    fs.writeFileSync(descriptor, encoded.slice(7));
-  },
-  linkSync(path, target) {
-    assert.throws(() => fs.fstatSync(opened), {code: 'EBADF'});
-    assert.deepEqual(JSON.parse(fs.readFileSync(path, 'utf8')), value);
-    if (boundary === 'publication_cleanup_failure') throw new Error('fixture publication failure');
-    if (boundary === 'rebound_staging') {
-      fs.renameSync(path, `${path}.retained-owned`);
-      fs.writeFileSync(path, 'unowned replacement');
-      throw new Error('fixture rebound staging');
-    }
-    fs.linkSync(path, target);
-    linked = true;
-    assert.deepEqual(JSON.parse(fs.readFileSync(target, 'utf8')), value);
-  },
+const source = readFileSync(process.argv[2], 'utf8');
+const scenario = process.argv[3];
+const readStart = source.indexOf('async function readInputLine(');
+const readEnd = source.indexOf('async function readBoundedResponse(', readStart);
+const permitStart = source.indexOf('async function waitForPermit(', readEnd);
+const permitEnd = source.indexOf('\nfunction projectFailureRunDetail', permitStart);
+assert.ok(readStart >= 0 && readEnd > readStart && permitStart > readEnd && permitEnd > permitStart);
+const ready = {
+  schema_version: 'bluefire.process-tree-cancellation-ready.v1',
+  task_id: `execute-${'a'.repeat(64)}`,
+  request_hash: `sha256:${'a'.repeat(64)}`,
+  parent_process_id: 101,
+  descendant_process_id: 202,
 };
-const publish = runInNewContext(`${source.slice(start, end)}; publishNewJson`, context);
-if (boundary === 'complete') {
-  publish(destination, value);
-  assert.equal(linked, true);
-  assert.deepEqual(JSON.parse(fs.readFileSync(destination, 'utf8')), value);
-  assert.deepEqual(fs.readdirSync(directory), ['witness-observed.json']);
-} else if (cleanupFailures.has(boundary)) {
-  const message = {
-    publication_cleanup_failure: 'fixture publication failure',
-    cleanup_only_failure: 'fixture cleanup failure',
-    write_cleanup_failure: 'fixture interrupted write',
-    close_cleanup_failure: 'fixture close failure',
-  }[boundary];
-  assert.throws(() => publish(destination, value), {message});
-  assert.equal(closeAttempts, boundary === 'close_cleanup_failure' ? 2 : 1);
-  assert.equal(unlinkAttempts, 1);
-  assert.equal(linked, boundary === 'cleanup_only_failure');
-  assert.equal(fs.existsSync(destination), linked);
-  assert.equal(fs.existsSync(staging), true);
-  if (linked) assert.deepEqual(JSON.parse(fs.readFileSync(destination, 'utf8')), value);
-  if (boundary === 'close_cleanup_failure') fs.closeSync(opened);
+const capability = JSON.stringify({type: 'capability', capability: 'c'.repeat(64)});
+let permit = JSON.stringify({type: 'witness_permit', ready});
+if (scenario === 'mismatched_pids') {
+  permit = JSON.stringify({type: 'witness_permit', ready: {...ready, descendant_process_id: 303}});
+}
+if (scenario === 'malformed_permit') permit = '{broken';
+if (scenario === 'oversized_permit') permit = 'x'.repeat(1025);
+if (scenario === 'denied') permit = JSON.stringify({type: 'witness_denied'});
+if (scenario === 'extra_frame') permit += `\n${JSON.stringify({type: 'extra'})}`;
+let payload;
+if (scenario === 'malformed_capability') payload = '{broken\n';
+else if (scenario === 'oversized_capability') payload = `${'x'.repeat(1025)}\n`;
+else if (scenario === 'oversized_tail' || scenario === 'oversized_tail_coalesced') payload = `${capability}\n${'x'.repeat(2051)}`;
+else if (scenario === 'truncated_capability') payload = capability;
+else if (scenario === 'truncated_permit') payload = `${capability}\n${permit}`;
+else payload = `${capability}\n${permit}\n`;
+const chunks = [];
+if (scenario === 'oversized_tail_coalesced') {
+  chunks.push(Buffer.from(payload));
 } else {
-  assert.throws(() => publish(destination, value));
-  assert.equal(linked, false);
-  if (boundary === 'existing_final') {
-    assert.equal(fs.readFileSync(destination, 'utf8'), 'preexisting final');
-    assert.equal(fs.existsSync(staging), false);
-  } else {
-    assert.equal(fs.existsSync(destination), false);
-    if (boundary === 'existing_staging') assert.equal(fs.readFileSync(staging, 'utf8'), 'unowned staging');
-    if (boundary === 'interrupted_write') assert.deepEqual(fs.readdirSync(directory), []);
-    if (boundary === 'rebound_staging') assert.equal(fs.readFileSync(staging, 'utf8'), 'unowned replacement');
+  for (let offset = 0; offset < payload.length; offset += 13) {
+    chunks.push(Buffer.from(payload.slice(offset, offset + 13)));
   }
 }
+let index = 0;
+const context = {
+  assert, Buffer, Date, setTimeout, clearTimeout, MAX_INPUT_BYTES: 2050, witnessFailureCode: '', scenario,
+  ready_json: JSON.stringify(ready),
+  stdinBuffer: Buffer.alloc(0), stdinDone: false, stdinBytesRead: 0,
+  stdinReader: {async next() {
+    return index < chunks.length ? {done: false, value: chunks[index++]} : {done: true};
+  }},
+};
+const helpers = source.slice(readStart, readEnd) + source.slice(permitStart, permitEnd);
+const run = runInNewContext(`${helpers}; (async () => {
+  const expectedReady = JSON.parse(ready_json);
+  const initialFailures = ['malformed_capability', 'oversized_capability', 'oversized_tail_coalesced', 'truncated_capability'];
+  if (initialFailures.includes(scenario)) {
+    await assert.rejects(readInputLine(1024, Date.now() + 1000));
+    return;
+  }
+  const initial = await readInputLine(1024, Date.now() + 1000);
+  assert.equal(initial.type, 'capability');
+  assert.equal(initial.capability, 'c'.repeat(64));
+  if (scenario === 'valid') {
+    await waitForPermit(expectedReady);
+    return;
+  }
+  await assert.rejects(waitForPermit(expectedReady));
+})()`, context);
+await run;
 """
     result = subprocess.run(
-        [node, "--input-type=module", "-", str(driver), boundary, str(tmp_path)],
+        [node, "--input-type=module", "-", str(driver), scenario],
+        input=script,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert valid is (scenario == "valid")
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "snapshot", ["missing_controls", "empty_controls", "ambiguous", "redirected"]
+)
+def test_real_driver_labels_ready_deadline_separately_from_assertions(snapshot: str) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required to exercise the installed cancellation driver")
+    driver = (
+        Path(__file__).resolve().parents[1]
+        / "frontend/tests/installed/installed-windows-cancellation.mjs"
+    )
+    script = r"""
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+const source = readFileSync(process.argv[2], 'utf8');
+const start = source.indexOf('async function waitForWitnessReady()');
+const end = source.indexOf('async function waitForPermit(', start);
+assert.ok(start >= 0 && end > start);
+const snapshot = process.argv[3];
+let now = 0;
+let sleeps = 0;
+let reads = 0;
+const context = {
+  assert, ready: null, witnessCheck: 'workspace', witnessFailureCode: '', Date: {now: () => now},
+  async sleep(milliseconds) { assert.equal(milliseconds, 50); sleeps += 1; now = 45_000; },
+};
+context.witnessReady = async () => {
+  reads += 1;
+  context.witnessCheck = 'task';
+  if (snapshot === 'missing_controls') throw Object.assign(new Error('fixture missing'), {code: 'ENOENT'});
+  if (snapshot === 'ambiguous') assert.equal(2, 1);
+  if (snapshot === 'redirected') assert.ok(false);
+  return null;
+};
+const wait = runInNewContext(`${source.slice(start, end)}; waitForWitnessReady`, context);
+await assert.rejects(wait(), {name: 'AssertionError'});
+const deadline = ['missing_controls', 'empty_controls'].includes(snapshot);
+assert.equal(context.witnessFailureCode, deadline ? 'witness_ready_deadline' : 'witness_ready_assertion');
+assert.equal(context.witnessCheck, 'task');
+assert.equal(reads, 1);
+assert.equal(sleeps, deadline ? 1 : 0);
+"""
+    result = subprocess.run(
+        [node, "--input-type=module", "-", str(driver), snapshot],
+        input=script,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "blocked",
+        "run",
+        "scenario",
+        "digest",
+        "profile",
+        "step",
+        "duplicate",
+        "planned_step",
+        "unknown",
+        "secret",
+    ],
+)
+def test_real_driver_failure_projection_binds_source_and_excludes_unreviewed_values(
+    binding: str,
+) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required to exercise the installed cancellation driver")
+    driver = (
+        Path(__file__).resolve().parents[1]
+        / "frontend/tests/installed/installed-windows-cancellation.mjs"
+    )
+    script = r"""
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+const source = readFileSync(process.argv[2], 'utf8');
+const start = source.indexOf('function projectFailureRunDetail(');
+const end = source.indexOf('async function diagnoseTerminalRun(', start);
+assert.ok(start >= 0 && end > start);
+const binding = process.argv[3];
+const ACTION = 'sandbox.execution.process-tree-cancellation-witness.v1';
+const PROFILE = 'gate11-windows-cancellation-witness.v1';
+const selected = {scenario_id: 'scenario.fixture.v1', digest: `sha256:${'a'.repeat(64)}`};
+const ownRun = `run-20261021T120000Z-${'c'.repeat(16)}`;
+const secret = 'PRIVATE_SYNTHETIC_SECRET_42'; // pragma: allowlist secret - synthetic test sentinel
+const step = {step_id: 'witness', behavior_id: ACTION, action_id: ACTION};
+const value = {
+  run_id: ownRun, scenario: {id: selected.scenario_id}, profile: {id: PROFILE}, status: 'completed',
+  plan: {scenario_id: selected.scenario_id, scenario_digest: selected.digest, mode: 'execute',
+    runner_profile_id: PROFILE, steps: [{...step}]},
+  steps: [{...step, status: 'blocked', execution_disposition: 'execute', runner_status: 'refused',
+    error: {code: 'cancellation_witness_blocked', message: secret}}],
+  stdout: secret, evidence: {records: [{content: secret}]}, path: secret,
+};
+if (binding === 'run') value.run_id = 'other';
+if (binding === 'scenario') value.scenario.id = 'other';
+if (binding === 'digest') value.plan.scenario_digest = `sha256:${'b'.repeat(64)}`;
+if (binding === 'profile') value.profile.id = 'other';
+if (binding === 'step') value.steps[0].action_id = 'other';
+if (binding === 'duplicate') value.steps.push({...value.steps[0]});
+if (binding === 'planned_step') value.plan.steps[0].step_id = 'other';
+if (['unknown', 'secret'].includes(binding)) {
+  const unsafe = binding === 'secret' ? secret : 'not_reviewed';
+  value.status = unsafe;
+  Object.assign(value.steps[0], {status: unsafe, execution_disposition: unsafe, runner_status: unsafe, error: {code: unsafe, message: secret}});
+}
+const project = runInNewContext(`${source.slice(start, end)}; projectFailureRunDetail`, {ACTION, PROFILE});
+const result = JSON.parse(JSON.stringify(project(value, ownRun, selected)));
+if (['blocked', 'unknown', 'secret'].includes(binding)) {
+  assert.deepEqual(result, {status: 'available', run_status: binding === 'blocked' ? 'completed' : 'other',
+    step_status: binding === 'blocked' ? 'blocked' : 'other',
+    execution_disposition: binding === 'blocked' ? 'execute' : 'other',
+    runner_status: binding === 'blocked' ? 'refused' : 'other',
+    error_code: binding === 'blocked' ? 'cancellation_witness_blocked' : 'other'});
+} else assert.deepEqual(result, {status: 'unavailable', reason: 'source_binding_mismatch'});
+assert.equal(JSON.stringify(result).includes(secret), false);
+assert.equal(JSON.stringify(result).includes('not_reviewed'), false);
+"""
+    result = subprocess.run(
+        [node, "--input-type=module", "-", str(driver), binding],
         input=script,
         text=True,
         capture_output=True,
@@ -326,6 +415,39 @@ def test_ready_record_requires_exact_request_bound_process_identity() -> None:
     assert not verifier._ready_record_valid(extra, directory_name=digest)
 
 
+@pytest.mark.parametrize("directory_name", ["abcd", "A" * 64, "g" * 64])
+def test_witness_observer_rejects_malformed_directory_name_before_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, directory_name: str
+) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    task = (
+        sandbox
+        / ".bluefire-executions"
+        / "approval-test"
+        / ".bluefire-cancellation-witness-v1"
+        / directory_name
+    )
+    task.mkdir(parents=True)
+    ready = {
+        "schema_version": "bluefire.process-tree-cancellation-ready.v1",
+        "task_id": f"execute-{directory_name}",
+        "request_hash": f"sha256:{directory_name}",
+        "parent_process_id": 101,
+        "descendant_process_id": 202,
+    }
+    (task / "ready.json").write_text(json.dumps(ready), encoding="utf-8")
+    pinned: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        verifier, "_pin_windows_processes", lambda value: pinned.append(value.copy())
+    )
+
+    with pytest.raises(ValueError, match="witness record"):
+        verifier._private_ready_record(sandbox, threading.Event())
+
+    assert pinned == []
+
+
 def test_witness_observer_uses_fresh_approval_workspace_and_pins_before_permit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -348,24 +470,15 @@ def test_witness_observer_uses_fresh_approval_workspace_and_pins_before_permit(
         "descendant_process_id": 202,
     }
     (task / "ready.json").write_text(json.dumps(ready), encoding="utf-8")
-    marker = tmp_path / "observed.json"
-    permit = tmp_path / "permit.json"
-    marker.write_text(
-        json.dumps({key: value for key, value in ready.items() if key != "schema_version"}),
-        encoding="utf-8",
-    )
     pinned: list[dict[str, object]] = []
     monkeypatch.setattr(
         verifier, "_pin_windows_processes", lambda value: pinned.append(value.copy())
     )
 
-    result = verifier._private_ready_record(sandbox, marker, permit, threading.Event())
+    result = verifier._private_ready_record(sandbox, threading.Event())
 
     assert pinned == [ready]
     assert result["control_path"] == task
-    assert json.loads(permit.read_text(encoding="utf-8")) == {
-        "witness_request_hash": f"sha256:{digest}"
-    }
 
 
 def test_witness_observer_rejects_ambiguous_approval_workspaces(tmp_path: Path) -> None:
@@ -374,24 +487,47 @@ def test_witness_observer_rejects_ambiguous_approval_workspaces(tmp_path: Path) 
     executions.mkdir(parents=True)
     (executions / "approval-one").mkdir()
     (executions / "approval-two").mkdir()
-    digest = "f" * 64
-    marker = tmp_path / "observed.json"
-    marker.write_text(
-        json.dumps(
-            {
-                "request_hash": f"sha256:{digest}",
-                "task_id": f"execute-{digest}",
-                "parent_process_id": 11,
-                "descendant_process_id": 22,
-            }
-        ),
-        encoding="utf-8",
-    )
-    permit = tmp_path / "permit.json"
-
     with pytest.raises(ValueError, match="workspace identity"):
-        verifier._private_ready_record(sandbox, marker, permit, threading.Event())
-    assert json.loads(permit.read_text(encoding="utf-8")) == {"denied": True}
+        verifier._private_ready_record(sandbox, threading.Event())
+
+
+def test_witness_observer_retries_empty_workspace_construction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    executions = sandbox / ".bluefire-executions"
+    executions.mkdir()
+    ready = {
+        "schema_version": "bluefire.process-tree-cancellation-ready.v1",
+        "task_id": "execute-" + "1" * 64,
+        "request_hash": "sha256:" + "1" * 64,
+        "parent_process_id": 101,
+        "descendant_process_id": 202,
+    }
+    task = executions / "owner" / ".bluefire-cancellation-witness-v1" / ("1" * 64)
+    snapshots = 0
+    pinned: list[dict[str, object]] = []
+
+    def advance(_seconds):
+        nonlocal snapshots
+        snapshots += 1
+        if snapshots == 1:
+            (executions / "owner").mkdir()
+        elif snapshots == 2:
+            (executions / "owner" / ".bluefire-cancellation-witness-v1").mkdir()
+        elif snapshots == 3:
+            task.mkdir()
+        elif snapshots == 4:
+            (task / "ready.json").write_text(json.dumps(ready), encoding="utf-8")
+
+    monkeypatch.setattr(verifier.time, "sleep", advance)
+    monkeypatch.setattr(
+        verifier, "_pin_windows_processes", lambda value: pinned.append(value.copy())
+    )
+    result = verifier._private_ready_record(sandbox, threading.Event())
+    assert snapshots == 4
+    assert result["control_path"] == task and pinned == [ready]
 
 
 @pytest.mark.parametrize(
@@ -614,6 +750,7 @@ def _cleanup_ready_report() -> dict[str, object]:
         "driver_job_created": False,
         "driver_job_empty": True,
         "driver_process_exited": True,
+        "driver_input_writer_stopped": True,
         "managed_runner_stopped": True,
         "service_thread_stopped": True,
         "service_http_server_closed": True,
@@ -633,6 +770,7 @@ def test_runtime_removal_requires_all_owned_resources_closed() -> None:
         "service_http_server_closed",
         "service_closed",
         "witness_observer_stopped",
+        "driver_input_writer_stopped",
     ):
         changed = _cleanup_ready_report()
         changed[field] = False
@@ -717,11 +855,15 @@ def test_private_environment_rejects_unreviewed_architecture_values(machine: str
     [
         (True, "ready"),
         (False, "ready"),
+        (True, "permit_mismatched_pids"),
         (True, "delayed"),
         (True, "construction_snapshots"),
         (True, "ambiguous_workspace"),
         (False, "delayed_cleanup"),
         (False, "cancel_uncertain"),
+        (False, "blocked_run"),
+        (False, "absent_run_link"),
+        (False, "conflicting_run_link"),
         (True, "approval_rejected"),
         (True, "unexpected"),
         (True, "wrong_receipt"),
@@ -761,6 +903,7 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
     run_id = "run-20261021T120000Z-" + "c" * 16
     interruption = _passed_driver_report()["execution_interruption"]
     pins: list[dict[str, object]] = []
+    sent_frames: list[dict[str, object]] = []
 
     def pin(record):
         if not permit_pin:
@@ -778,6 +921,7 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
         approval_calls = 0
         cancel_calls = 0
         cleanup_status_reads = 0
+        detail_calls = 0
 
         def catalog(self):
             return {
@@ -869,8 +1013,14 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
                         else "consumed"
                     )
                 },
-                "progress": {"run_id": run_id},
+                "progress": (
+                    {"run_id": run_id}
+                    if self.approval_calls and approval_gate != "absent_run_link"
+                    else {}
+                ),
             }
+            if approval_gate == "conflicting_run_link":
+                result["result_ref"] = "run-20261021T120000Z-" + "f" * 16
             if approval_gate == "delayed" and self.state == "planning":
                 self.state = "awaiting_approval"
             return result
@@ -900,9 +1050,18 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
                 assert self.approval_calls == 0 and not pins and not task.exists()
                 self.state = "cancelled"
                 return self.job(requested_id)
-            if not permit_pin or approval_gate == "ambiguous_workspace":
-                assert self.approval_calls == 1 and not pins
-                assert not (output / "witness-observed.json").exists() or not permit_pin
+            if not permit_pin or approval_gate in {"ambiguous_workspace", "permit_mismatched_pids"}:
+                assert self.approval_calls == 1
+                assert pins == (
+                    [] if not permit_pin or approval_gate == "ambiguous_workspace" else [ready]
+                )
+                if approval_gate == "permit_mismatched_pids":
+                    assert (
+                        sent_frames[0]["type"] == "witness_permit"
+                        and sent_frames[0]["ready"] != ready
+                    )
+                else:
+                    assert not any(frame["type"] == "witness_permit" for frame in sent_frames)
                 if approval_gate == "cancel_uncertain":
                     self.state = "cancelling"
                     raise RuntimeError("fixture cancellation response uncertain")
@@ -910,12 +1069,10 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
                     self.state = "cancelling"
                     return self.job(requested_id)
                 shutil.rmtree(task)
-                self.state = "cancelled"
+                self.state = "completed" if approval_gate == "blocked_run" else "cancelled"
                 return self.job(requested_id)
             assert pins == [ready]
-            assert json.loads((output / "witness-permit.json").read_text(encoding="utf-8")) == {
-                "witness_request_hash": ready["request_hash"]
-            }
+            assert sent_frames == [{"type": "witness_permit", "ready": ready}]
             shutil.rmtree(task)
             self.state = "cancelled"
             return self.job(requested_id)
@@ -933,6 +1090,42 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
                 },
             }
 
+        def detail(self, requested_id):
+            assert requested_id == run_id and self.state in {"completed", "cancelled"}
+            self.detail_calls += 1
+            assert self.detail_calls == 1
+            step = {
+                "step_id": "witness",
+                "behavior_id": verifier.ACTION_ID,
+                "action_id": verifier.ACTION_ID,
+            }
+            return {
+                "run_id": run_id,
+                "status": self.state,
+                "scenario": {"id": self.saved["id"]},
+                "profile": {"id": verifier.PROFILE_ID},
+                "plan": {
+                    "scenario_id": self.saved["id"],
+                    "scenario_digest": "sha256:" + "a" * 64,
+                    "mode": "execute",
+                    "runner_profile_id": verifier.PROFILE_ID,
+                    "steps": [step],
+                },
+                "steps": [
+                    {
+                        **step,
+                        "status": "blocked",
+                        "execution_disposition": "execute",
+                        "runner_status": "refused",
+                        "error": {
+                            "code": "cancellation_witness_blocked",
+                            "message": "PRIVATE_SYNTHETIC_SECRET_42",
+                        },
+                    }
+                ],
+                "stdout": "PRIVATE_SYNTHETIC_SECRET_42",
+            }
+
     capability = generate_browser_bootstrap_capability()
     service = FixtureService()
     server = create_server(
@@ -943,16 +1136,30 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
     stop = threading.Event()
     observed = []
     observer_errors = []
+    witness_messages = queue.Queue()
 
     def observe():
         try:
-            observed.append(
-                verifier._private_ready_record(
-                    sandbox, output / "witness-observed.json", output / "witness-permit.json", stop
+            record = verifier._private_ready_record(sandbox, stop)
+            observed.append(record)
+            witness_messages.put(
+                (
+                    "permit",
+                    {
+                        key: record[key]
+                        for key in (
+                            "schema_version",
+                            "task_id",
+                            "request_hash",
+                            "parent_process_id",
+                            "descendant_process_id",
+                        )
+                    },
                 )
             )
         except (RuntimeError, ValueError, OSError) as error:
             observer_errors.append(type(error).__name__)
+            witness_messages.put(("denied", None))
 
     observer = threading.Thread(target=observe)
     observer.start()
@@ -984,15 +1191,49 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
         )
         node_options = ["--import", preload.as_uri()]
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             [node, *node_options, str(driver), str(server.server_port), str(sandbox), str(output)],
-            input=json.dumps({"capability": capability}),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
-            capture_output=True,
-            timeout=25,
-            check=False,
+        )
+        assert process.stdin is not None
+        process.stdin.write(json.dumps({"type": "capability", "capability": capability}) + "\n")
+        process.stdin.flush()
+        deadline = time.monotonic() + 25
+        frame_sent = False
+        while process.poll() is None and time.monotonic() < deadline:
+            if not frame_sent and (observed or observer_errors):
+                kind, payload = witness_messages.get(timeout=1)
+                if approval_gate != "ambiguous_workspace":
+                    if kind == "permit" and payload is not None:
+                        assert pins == [ready]
+                        if approval_gate == "permit_mismatched_pids":
+                            payload["descendant_process_id"] += 1
+                        frame = {"type": "witness_permit", "ready": payload}
+                    else:
+                        frame = {"type": "witness_denied"}
+                    sent_frames.append(frame)
+                    process.stdin.write(json.dumps(frame) + "\n")
+                    process.stdin.flush()
+                    process.stdin.close()
+                frame_sent = True
+            else:
+                time.sleep(0.05)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+            pytest.fail("installed cancellation driver exceeded its test deadline")
+        result = subprocess.CompletedProcess(
+            process.args, process.returncode, stdout="", stderr=process.stderr.read()
         )
     finally:
+        if "process" in locals() and process.stdin is not None and not process.stdin.closed:
+            process.stdin.close()
+        if "process" in locals() and process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
         stop.set()
         observer.join(timeout=5)
         server.shutdown()
@@ -1001,6 +1242,7 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
     assert not observer.is_alive() and not server_thread.is_alive()
     report = json.loads((output / "driver-report.json").read_text(encoding="utf-8"))
     assert capability not in json.dumps(report)
+    assert "PRIVATE_SYNTHETIC_SECRET_42" not in json.dumps(report)
     expected_pass = permit_pin and approval_gate in {"ready", "delayed", "construction_snapshots"}
     assert result.returncode == (0 if expected_pass else 1), result.stderr
     if expected_pass:
@@ -1009,13 +1251,26 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
         assert report["request_counts"]["job_status"] == (4 if approval_gate == "delayed" else 3)
         assert service.approval_calls == 1 and service.cancel_calls == 1
         assert "failure_cleanup" not in report
+        assert "failure_run_diagnostic" not in report and service.detail_calls == 0
         if approval_gate == "construction_snapshots":
             assert json.loads(snapshots.read_text(encoding="utf-8")) == [
                 str(sandbox / ".bluefire-executions"),
                 str(task.parent),
             ]
-    elif not permit_pin or approval_gate == "ambiguous_workspace":
-        assert observer_errors == ["RuntimeError"] and not observed and not pins
+    elif not permit_pin or approval_gate in {"ambiguous_workspace", "permit_mismatched_pids"}:
+        if approval_gate == "permit_mismatched_pids":
+            assert not observer_errors and observed and pins == [ready]
+            assert sent_frames == [
+                {
+                    "type": "witness_permit",
+                    "ready": {**ready, "descendant_process_id": ready["descendant_process_id"] + 1},
+                }
+            ]
+        else:
+            expected_observer_error = (
+                "ValueError" if approval_gate == "ambiguous_workspace" else "RuntimeError"
+            )
+            assert observer_errors == [expected_observer_error] and not observed and not pins
         assert report["status"] == "failed_or_incomplete"
         assert report["error"]["stage"] == "independent-witness-handshake"
         assert report["request_counts"]["approval"] == 1
@@ -1027,7 +1282,9 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
             else (2 if approval_gate == "cancel_uncertain" else 3)
         )
         assert report["error"]["witness_check"] == (
-            "process_pin_permit" if not permit_pin else "workspace"
+            "process_pin_permit"
+            if not permit_pin or approval_gate == "permit_mismatched_pids"
+            else "workspace"
         )
         assert service.approval_calls == 1 and service.cancel_calls == 1
         if approval_gate == "cancel_uncertain":
@@ -1042,9 +1299,31 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
                 "cancel_attempted": True,
                 "approval_request_attempted": True,
                 "cancel_accepted": True,
-                "terminal_state": "cancelled",
+                "terminal_state": "completed" if approval_gate == "blocked_run" else "cancelled",
             }
-            assert service.state == "cancelled" and not task.exists()
+            assert service.state == ("completed" if approval_gate == "blocked_run" else "cancelled")
+            assert not task.exists()
+            if approval_gate in {"absent_run_link", "conflicting_run_link"}:
+                assert service.detail_calls == 0
+                assert "failure_run_detail" not in report["request_counts"]
+                assert report["failure_run_diagnostic"] == {
+                    "status": "unavailable",
+                    "reason": (
+                        "owned_run_link_absent"
+                        if approval_gate == "absent_run_link"
+                        else "owned_run_link_invalid"
+                    ),
+                }
+            else:
+                assert service.detail_calls == report["request_counts"]["failure_run_detail"] == 1
+                assert report["failure_run_diagnostic"] == {
+                    "status": "available",
+                    "run_status": service.state,
+                    "step_status": "blocked",
+                    "execution_disposition": "execute",
+                    "runner_status": "refused",
+                    "error_code": "cancellation_witness_blocked",
+                }
         assert report["checks"] == _passed_driver_report()["checks"][:3]
         assert not verifier._driver_passed(report)
     elif approval_gate == "approval_rejected":

@@ -3068,6 +3068,72 @@ def test_preexisting_or_mismatched_witness_state_never_claims_cooperative_cancel
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows cancellation lease boundary")
+def test_installed_environment_owned_workspace_prepares_cancellation_lease(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise real lease setup only, without selecting or launching a runner."""
+    from bluefire.service import BlueFireService
+
+    original = dict(os.environ)
+    architecture = original.get("PROCESSOR_ARCHITECTURE")
+    if architecture not in {"AMD64", "ARM64"}:
+        pytest.skip("Installed Windows cancellation requires a supported 64-bit host")
+    system_root = original.get("SYSTEMROOT") or original.get("WINDIR") or r"C:\Windows"
+    node = shutil.which("node")
+    paths = ([str(Path(node).parent)] if node else []) + [str(Path(system_root) / "System32")]
+    # Avoid the extra pytest case-name component while retaining installed-service path depth.
+    runtime = tmp_path_factory.getbasetemp() / "installed" / "runtime"
+    runtime.mkdir(parents=True)
+    for name in ("home", "state", "temp", "work", "sandbox", "managed"):
+        (runtime / name).mkdir(mode=0o700)
+    environment = {
+        "PROCESSOR_ARCHITECTURE": architecture,
+        "SYSTEMROOT": system_root,
+        "WINDIR": system_root,
+        "PATH": os.pathsep.join(paths),
+        "HOME": str(runtime / "home"),
+        "USERPROFILE": str(runtime / "home"),
+        "TEMP": str(runtime / "temp"),
+        "TMP": str(runtime / "temp"),
+        "LOCALAPPDATA": str(runtime / "home" / "AppData" / "Local"),
+        "APPDATA": str(runtime / "home" / "AppData" / "Roaming"),
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "BLUEFIRE_SANDBOX_ROOT": str(runtime / "sandbox"),
+    }
+    for name in original:
+        monkeypatch.delenv(name)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.chdir(runtime / "work")
+
+    workspace = BlueFireService._isolated_owned_sandbox(runtime / "sandbox", "approval-" + "1" * 32)
+    assert workspace.parent == runtime / "sandbox" / ".bluefire-executions"
+    digest = "c" * 64
+    manifest = {
+        "action_id": "sandbox.execution.process-tree-cancellation-witness.v1",
+        "behavior_id": "sandbox.execution.process-tree-cancellation-witness.v1",
+        "params": {},
+        "platform": "windows",
+        "request_hash": "sha256:" + digest,
+    }
+    lease = SubprocessRustRunner._prepare_cancellation_control(
+        manifest, {"platform": "windows", "sandbox_root": str(workspace)}, "execute-" + digest
+    )
+    assert lease is not None
+    task = workspace / ".bluefire-cancellation-witness-v1" / digest
+    try:
+        assert {item.name for item in task.parent.iterdir()} == {digest}
+        assert {item.name for item in task.iterdir()} == {".lease"}
+        assert lease.task.path == task
+    finally:
+        cleaned = lease.cleanup()
+    assert cleaned is True
+    assert not task.exists() and not task.parent.exists()
+    assert workspace.is_dir() and workspace.parent.is_dir()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cancellation lease boundary")
 def test_outer_cancellation_lease_owns_early_and_crash_cleanup(tmp_path: Path) -> None:
     digest = "c" * 64
     request_hash = "sha256:" + digest
