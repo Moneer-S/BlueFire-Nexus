@@ -1,3 +1,8 @@
+import { isDeepStrictEqual } from "node:util";
+
+// Saved JSON objects may be canonicalized; array order and exact values still matter.
+export const sameJson = isDeepStrictEqual;
+
 export function consumeRequestBudget(counts, limits, key) {
   if (!Object.hasOwn(limits, key) || counts[key] >= limits[key]) return false;
   counts[key] += 1;

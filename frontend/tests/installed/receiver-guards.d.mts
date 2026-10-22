@@ -1,3 +1,5 @@
+export function sameJson(left: unknown, right: unknown): boolean;
+
 export function consumeRequestBudget(
   counts: Record<string, number>,
   limits: Record<string, number>,

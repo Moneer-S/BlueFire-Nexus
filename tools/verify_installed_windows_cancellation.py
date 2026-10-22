@@ -279,6 +279,7 @@ def _driver_passed(value: object) -> bool:
         }
         and value.get("checks")
         == [
+            "ephemeral_authenticated_session_created",
             "shipped_gate11_profile_and_action_verified",
             "fresh_installed_runner_bootstrapped_and_started_through_service",
             "exact_execute_preflight_and_fresh_approval_consumed",
@@ -355,7 +356,7 @@ def _stop_managed_runner(lifecycle: Any) -> bool:
         status = lifecycle.status(profile_id=PROFILE_ID, profile_budget_seconds=30)
         if status.get("state") in {"stopped", "unbootstrapped"}:
             return True
-        lifecycle.stop(profile_id=PROFILE_ID, profile_budget_seconds=30)
+        lifecycle.stop(profile_id=PROFILE_ID)
         status = lifecycle.status(profile_id=PROFILE_ID, profile_budget_seconds=30)
         return status.get("state") in {"stopped", "unbootstrapped"}
     except Exception:
@@ -365,6 +366,20 @@ def _stop_managed_runner(lifecycle: Any) -> bool:
 def _require_windows() -> None:
     if os.name != "nt" or sys.platform != "win32" or not sys.flags.isolated:
         raise RuntimeError("Use isolated installed Python on Windows for this verifier")
+
+
+def _windows_architecture_environment(machine: str) -> dict[str, str]:
+    # platform.machine() reads this Windows system metadata after the environment is cleared.
+    architecture = {
+        "amd64": "AMD64",
+        "x64": "AMD64",
+        "x86_64": "AMD64",
+        "arm64": "ARM64",
+        "aarch64": "ARM64",
+    }.get(machine.casefold())
+    if architecture is None:
+        raise RuntimeError("Windows verifier host architecture is unsupported")
+    return {"PROCESSOR_ARCHITECTURE": architecture}
 
 
 def _private_ready_record(
@@ -600,9 +615,11 @@ def main() -> int:
         for name in ("home", "state", "temp", "work", "sandbox", "managed"):
             (runtime / name).mkdir(mode=0o700)
         package_runner = None
+        architecture_env = _windows_architecture_environment(platform.machine())
         os.environ.clear()
         system_root = original_env.get("SYSTEMROOT") or original_env.get("WINDIR") or r"C:\Windows"
         env = {
+            **architecture_env,
             "SYSTEMROOT": system_root,
             "WINDIR": system_root,
             "PATH": os.pathsep.join((str(node.parent), str(Path(system_root) / "System32"))),

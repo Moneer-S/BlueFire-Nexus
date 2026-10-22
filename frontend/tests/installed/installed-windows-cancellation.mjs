@@ -102,7 +102,7 @@ async function call(method, path, body) {
   const headers = { Accept: "application/json", Origin: origin };
   if (method === "POST" && path !== "/api/v1/session") headers["Content-Type"] = "application/json";
   if (path !== "/api/v1/session") headers["X-BlueFire-Session"] = session;
-  else headers["X-BlueFire-Browser-Capability"] = capability;
+  else headers["X-BlueFire-Browser-Bootstrap"] = capability;
   const response = await fetch(`${origin}${path}`, {
     method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     redirect: "error",
@@ -255,7 +255,10 @@ async function main() {
     }
   }
   assert.ok(ready, "fresh witness ready record appeared in the isolated approval workspace");
-  writeFileSync(join(output, "witness-observed.json"), `${JSON.stringify(ready.value)}\n`, { flag: "wx" });
+  const { task_id, request_hash, parent_process_id, descendant_process_id } = ready.value;
+  writeFileSync(join(output, "witness-observed.json"), `${JSON.stringify({
+    task_id, request_hash, parent_process_id, descendant_process_id,
+  })}\n`, { flag: "wx" });
   await waitForPermit(ready.value.request_hash);
   report.checks.push("exact_execute_preflight_and_fresh_approval_consumed");
   report.checks.push("cancel_requested_only_after_fresh_witness_processes_were_pinned");
@@ -314,10 +317,10 @@ async function main() {
 
 async function waitForJobState(terminal) {
   const deadline = Date.now() + 45_000;
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && counts.job_status < 100) {
     const job = (await call("GET", `/api/v1/jobs/${jobId}`)).value;
     if (terminal.has(job.state)) return job;
-    await sleep(100);
+    await sleep(1000);
   }
   throw new Error("job state did not settle before its bounded deadline");
 }

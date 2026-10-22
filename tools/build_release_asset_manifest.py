@@ -25,6 +25,7 @@ else:
 _MAX_WHEEL_BYTES = 1024 * 1024 * 1024
 _MAX_REPORT_BYTES = 64 * 1024
 _MAX_METADATA_BYTES = 1024 * 1024
+_MAX_BUILD_INFO_BYTES = 16 * 1024
 _MAX_RUNNER_BYTES = 512 * 1024 * 1024
 _MAX_RECORD_BYTES = 4 * 1024 * 1024
 _OUTPUT_NAMES = {"SHA256SUMS", "release-assets.json"}
@@ -37,6 +38,16 @@ _TARGETS = {
 _NORMALIZED_VERSION = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:rc(?:0|[1-9][0-9]*))?$"
 )
+_SOURCE_REVISION = re.compile(r"^[0-9a-f]{40}$")
+_BUILD_INFO_FIELDS = {
+    "schema_version",
+    "version",
+    "source_revision",
+    "source_provenance",
+    "ui_files",
+    "ui_digest",
+}
+_UI_NAMES = ("app.js", "index.html", "styles.css")
 
 
 def _read_regular(path: Path, maximum: int) -> bytes:
@@ -63,6 +74,12 @@ def _read_regular(path: Path, maximum: int) -> bytes:
 
 def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+def _canonical_json(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "utf-8"
+    )
 
 
 def _sha256_file(path: Path, maximum: int) -> str:
@@ -244,7 +261,13 @@ def _validate_record(archive: zipfile.ZipFile, record_name: str) -> None:
 
 
 def _inspect_wheel(
-    wheel: Path, *, version: str, tag: str, platform: str, architecture: str
+    wheel: Path,
+    *,
+    version: str,
+    source_revision: str,
+    tag: str,
+    platform: str,
+    architecture: str,
 ) -> dict[str, Any]:
     if not _NORMALIZED_VERSION.fullmatch(version):
         raise ValueError("expected version must use normalized PEP 440 spelling")
@@ -269,14 +292,73 @@ def _inspect_wheel(
         manifest_names = [
             name for name in names if name.endswith("/bluefire/native/runner-manifest.json")
         ]
+        build_info_names = [
+            name
+            for name in names
+            if name == "bluefire/_build_info.json" or name.endswith("/bluefire/_build_info.json")
+        ]
+        canonical_package_roots = (
+            f"bluefire_nexus-{version}.data/purelib/",
+            f"bluefire_nexus-{version}.data/platlib/",
+        )
+        canonical_manifest_names = {
+            f"{root}bluefire/native/runner-manifest.json" for root in canonical_package_roots
+        }
         if (
             dist_info_roots != {dist_info}
             or metadata_names != [metadata_name]
             or wheel_names != [wheel_name]
             or len(manifest_names) != 1
+            or len(build_info_names) != 1
         ):
-            raise ValueError("wheel must contain exactly one metadata file and native manifest")
+            raise ValueError(
+                "wheel must contain exactly one metadata file, build identity, and native manifest"
+            )
+        if manifest_names[0] not in canonical_manifest_names:
+            raise ValueError("native manifest is not rooted at the canonical BlueFire package path")
+        expected_build_info = manifest_names[0].removesuffix("native/runner-manifest.json")
+        expected_build_info += "_build_info.json"
+        if build_info_names[0] != expected_build_info:
+            raise ValueError("build identity and native manifest have different package roots")
         _validate_record(archive, record_name)
+
+        build_info = _strict_json(
+            _member_bytes(archive, build_info_names[0], _MAX_BUILD_INFO_BYTES)
+        )
+        if not isinstance(build_info, dict) or set(build_info) != _BUILD_INFO_FIELDS:
+            raise ValueError("wheel build identity has an invalid shape")
+        if (
+            build_info["schema_version"] != "bluefire.build-metadata.v1"
+            or build_info["version"] != version
+            or build_info["source_revision"] != source_revision
+            or build_info["source_provenance"] != "git_archive"
+        ):
+            raise ValueError(
+                "wheel build identity does not match the expected source revision and version"
+            )
+        files = build_info["ui_files"]
+        if not isinstance(files, list) or len(files) != len(_UI_NAMES):
+            raise ValueError("wheel build identity has an invalid UI inventory")
+        ui_root = build_info_names[0].removesuffix("_build_info.json") + "ui/"
+        for item, name in zip(files, _UI_NAMES, strict=True):
+            if (
+                not isinstance(item, dict)
+                or set(item) != {"name", "sha256", "size"}
+                or item["name"] != name
+                or type(item["size"]) is not int
+                or not 0 < item["size"] <= 8 * 1024 * 1024
+                or not isinstance(item["sha256"], str)
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", item["sha256"])
+            ):
+                raise ValueError("wheel build identity has an invalid UI inventory")
+            ui_path = ui_root + name
+            if ui_path not in names:
+                raise ValueError("wheel build identity references a missing UI member")
+            actual_size, actual_sha = _member_digest(archive, ui_path, 8 * 1024 * 1024)
+            if item["size"] != actual_size or item["sha256"] != "sha256:" + actual_sha:
+                raise ValueError("wheel build identity does not match its UI member")
+        if build_info["ui_digest"] != "sha256:" + _sha256(_canonical_json(files)):
+            raise ValueError("wheel build identity UI digest is invalid")
 
         metadata = _parse_headers(_member_bytes(archive, metadata_name, _MAX_METADATA_BYTES))
         if metadata.get_all("Name", []) != ["bluefire-nexus"] or metadata.get_all(
@@ -338,19 +420,23 @@ def _inspect_wheel(
     return {
         "wheel": wheel.name,
         "wheel_sha256": wheel_sha,
+        "source_revision": source_revision,
         "platform": platform,
         "architecture": architecture,
         "tag": tag,
+        "native_runner_version": expected_runner_version,
         "runner": {"filename": executable, "size": runner_size, "sha256": runner_sha},
     }
 
 
 def build_release_asset_outputs(
-    asset_dir: Path, *, version: str, expected_tags: Sequence[str]
+    asset_dir: Path, *, version: str, source_revision: str, expected_tags: Sequence[str]
 ) -> tuple[bytes, bytes]:
     """Validate each requested wheel/report pair and return deterministic output bytes."""
     if not _NORMALIZED_VERSION.fullmatch(version):
         raise ValueError("expected version must use normalized PEP 440 spelling")
+    if not isinstance(source_revision, str) or not _SOURCE_REVISION.fullmatch(source_revision):
+        raise ValueError("expected source revision must be a full lowercase 40-hex Git revision")
     if (
         not expected_tags
         or any(type(tag) is not str for tag in expected_tags)
@@ -397,7 +483,12 @@ def build_release_asset_outputs(
             },
         )
         inspected = _inspect_wheel(
-            wheel, version=version, tag=tag, platform=platform, architecture=architecture
+            wheel,
+            version=version,
+            source_revision=source_revision,
+            tag=tag,
+            platform=platform,
+            architecture=architecture,
         )
         runner_report = verifier._exact_mapping(
             inspection["runner"], {"filename", "size", "sha256"}
@@ -434,6 +525,8 @@ def build_release_asset_outputs(
     manifest = {
         "schema_version": "bluefire.release-assets.v1",
         "version": version,
+        "source_revision": source_revision,
+        "native_runner_version": verifier._native_runner_version(version),
         "checksum_file": "SHA256SUMS",
         "assets": assets,
         "integrity_note": "Checksums are unsigned content hashes, not publisher attestations.",
@@ -461,10 +554,13 @@ def _check_output(path: Path, payload: bytes) -> None:
 
 
 def write_release_asset_outputs(
-    asset_dir: Path, *, version: str, expected_tags: Sequence[str]
+    asset_dir: Path, *, version: str, source_revision: str, expected_tags: Sequence[str]
 ) -> None:
     checksums, manifest = build_release_asset_outputs(
-        asset_dir, version=version, expected_tags=expected_tags
+        asset_dir,
+        version=version,
+        source_revision=source_revision,
+        expected_tags=expected_tags,
     )
     _check_output(asset_dir / "SHA256SUMS", checksums)
     _check_output(asset_dir / "release-assets.json", manifest)
@@ -478,10 +574,14 @@ def _cli(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--version", required=True, help="normalized candidate version, e.g. 3.0.0rc2"
     )
+    parser.add_argument("--source-revision", required=True, help="full lowercase 40-hex Git commit")
     parser.add_argument("--expected-tag", action="append", choices=sorted(_TARGETS), required=True)
     args = parser.parse_args(argv)
     write_release_asset_outputs(
-        args.asset_dir, version=args.version, expected_tags=args.expected_tag
+        args.asset_dir,
+        version=args.version,
+        source_revision=args.source_revision,
+        expected_tags=args.expected_tag,
     )
     return 0
 

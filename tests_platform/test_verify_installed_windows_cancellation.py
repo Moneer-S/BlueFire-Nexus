@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import threading
 import zipfile
 from pathlib import Path
@@ -35,6 +37,7 @@ def _passed_driver_report() -> dict[str, object]:
             "process_tree_stopped": True,
         },
         "checks": [
+            "ephemeral_authenticated_session_created",
             "shipped_gate11_profile_and_action_verified",
             "fresh_installed_runner_bootstrapped_and_started_through_service",
             "exact_execute_preflight_and_fresh_approval_consumed",
@@ -278,6 +281,8 @@ def test_driver_receipt_contract_and_job_count_are_strict() -> None:
     assert not verifier._driver_passed(changed)
     changed = {**report, "request_counts": {**report["request_counts"], "cancel": True}}
     assert not verifier._driver_passed(changed)
+    changed = {**report, "checks": report["checks"][1:]}
+    assert not verifier._driver_passed(changed)
 
 
 @pytest.mark.parametrize(
@@ -368,9 +373,255 @@ def test_active_runner_must_stop_and_recheck() -> None:
         def status(self, **_kwargs):
             return {"state": next(self.states)}
 
-        def stop(self, **_kwargs):
+        def stop(self, *, profile_id: str):
+            assert profile_id == verifier.PROFILE_ID
             self.stopped = True
 
     lifecycle = Lifecycle()
     assert verifier._stop_managed_runner(lifecycle)
     assert lifecycle.stopped
+
+
+@pytest.mark.parametrize("machine, expected", [("AMD64", "x86_64"), ("ARM64", "aarch64")])
+def test_private_environment_preserves_supported_architecture_without_ambient_values(
+    monkeypatch: pytest.MonkeyPatch, machine: str, expected: str
+) -> None:
+    from bluefire import runner_bootstrap
+
+    monkeypatch.delenv("PROCESSOR_ARCHITECTURE", raising=False)
+    monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
+    monkeypatch.setattr(
+        runner_bootstrap.host_platform,
+        "machine",
+        lambda: os.environ.get("PROCESSOR_ARCHITECTURE", ""),
+    )
+    with pytest.raises(runner_bootstrap.RunnerBootstrapError):
+        runner_bootstrap.current_architecture()
+    environment = verifier._windows_architecture_environment(machine)
+    assert environment == {"PROCESSOR_ARCHITECTURE": machine}
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    assert runner_bootstrap.current_architecture() == expected
+
+
+@pytest.mark.parametrize("machine", ["", "x86", "unsupported", "AMD64\ncredential"])
+def test_private_environment_rejects_unreviewed_architecture_values(machine: str) -> None:
+    with pytest.raises(RuntimeError, match="architecture"):
+        verifier._windows_architecture_environment(machine)
+
+
+@pytest.mark.parametrize("permit_pin", [True, False])
+def test_real_driver_api_and_observer_contracts_without_native_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, permit_pin: bool
+) -> None:
+    """Exercise the shipped JS and API guards with fixture PIDs, never native actions."""
+    from bluefire.api import create_server, generate_browser_bootstrap_capability
+    from bluefire.contracts import ScenarioDefinition
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required to exercise the installed cancellation driver")
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    output = tmp_path / "output"
+    output.mkdir()
+    digest = "e" * 64
+    task = (
+        sandbox
+        / ".bluefire-executions"
+        / "approval-fixture"
+        / ".bluefire-cancellation-witness-v1"
+        / digest
+    )
+    ready = {
+        "schema_version": "bluefire.process-tree-cancellation-ready.v1",
+        "task_id": "execute-" + digest,
+        "request_hash": "sha256:" + digest,
+        "parent_process_id": 101,
+        "descendant_process_id": 202,
+    }
+    job_id = "job-" + "b" * 32
+    run_id = "run-20261021T120000Z-" + "c" * 16
+    interruption = _passed_driver_report()["execution_interruption"]
+    pins: list[dict[str, object]] = []
+
+    def pin(record):
+        if not permit_pin:
+            raise RuntimeError("fixture process pin refused")
+        pins.append(record.copy())
+
+    monkeypatch.setattr(verifier, "_pin_windows_processes", pin)
+
+    class FixtureService:
+        state = "awaiting_approval"
+        runner_state = "unbootstrapped"
+        saved = None
+
+        def catalog(self):
+            return {
+                "runner_profiles": [
+                    {
+                        "id": verifier.PROFILE_ID,
+                        "mode": "execute",
+                        "platforms": ["windows"],
+                        "scope": ["sandbox.workspace"],
+                        "network_allowlist": [],
+                        "approval_required": True,
+                        "enabled_actions": [verifier.ACTION_ID, "sandbox.cleanup.v1"],
+                        "blocked_actions": [],
+                        "budgets": {
+                            "max_steps": 1,
+                            "max_seconds": 30,
+                            "max_artifacts": 4,
+                            "max_bytes": 65536,
+                        },
+                    }
+                ]
+            }
+
+        def bootstrap_runner(self, *, profile_id, allow_upgrade=False):
+            assert profile_id == verifier.PROFILE_ID and allow_upgrade is False
+            self.runner_state = "stopped"
+            return self.runner_status(profile_id=profile_id)
+
+        def start_runner(self, *, profile_id):
+            assert self.runner_state == "stopped"
+            self.runner_state = "ready"
+            return self.runner_status(profile_id=profile_id)
+
+        def runner_status(self, *, profile_id):
+            assert profile_id == verifier.PROFILE_ID
+            return {"profile_id": profile_id, "state": self.runner_state}
+
+        def stop_runner(self, *, profile_id):
+            assert self.state == "cancelled"
+            self.runner_state = "stopped"
+            return self.runner_status(profile_id=profile_id)
+
+        def save_scenario_version(self, request):
+            assert set(request) == {"scenario"}
+            self.saved = request["scenario"]
+            ScenarioDefinition.from_mapping(self.saved)
+            return {
+                "scenario": {
+                    "scenario_id": self.saved["id"],
+                    "version": 1,
+                    "digest": "sha256:" + "a" * 64,
+                }
+            }
+
+        def preflight(self, request):
+            assert request["scenario"] == self.saved
+            assert request["mode"] == "execute" and request["autonomy"] == "off"
+            assert request["runner_profile_id"] == verifier.PROFILE_ID
+            assert request["target_scope"] == {"scope_refs": ["sandbox.workspace"]}
+            assert request["collectors"] == ["collector.filesystem.sandbox.v1"]
+            return {
+                "status": "approval_required",
+                "runner_profile": verifier.PROFILE_ID,
+                "scope": request["target_scope"],
+                "problems": ["Explicit operator approval is required."],
+            }
+
+        def submit_run(self, request):
+            return {"job": self.job(job_id), "preflight": self.preflight(request)}
+
+        def job(self, requested_id):
+            assert requested_id == job_id
+            return {
+                "job_id": job_id,
+                "state": self.state,
+                "approval_request": {
+                    "status": "pending" if self.state == "awaiting_approval" else "consumed"
+                },
+                "progress": {"run_id": run_id},
+            }
+
+        def approve_job(self, requested_id, request):
+            assert request == {"approved_by": "installed-windows-cancellation-reviewer"}
+            assert self.state == "awaiting_approval"
+            task.mkdir(parents=True)
+            (task / "ready.json").write_text(json.dumps(ready), encoding="utf-8")
+            self.state = "running"
+            return {"job": self.job(requested_id)}
+
+        def cancel_job(self, requested_id):
+            assert pins == [ready]
+            assert json.loads((output / "witness-permit.json").read_text(encoding="utf-8")) == {
+                "witness_request_hash": ready["request_hash"]
+            }
+            shutil.rmtree(task)
+            self.state = "cancelled"
+            return self.job(requested_id)
+
+        def retained_observations(self, requested_id):
+            assert requested_id == run_id and self.state == "cancelled"
+            return {
+                "run_id": run_id,
+                "observations": {
+                    "evidence": {
+                        "records": [
+                            {"content": {"artifact_type": "execution_interruption", **interruption}}
+                        ]
+                    }
+                },
+            }
+
+    capability = generate_browser_bootstrap_capability()
+    service = FixtureService()
+    server = create_server(
+        service, host="127.0.0.1", port=0, browser_bootstrap_capability=capability
+    )
+    server_thread = threading.Thread(target=server.serve_forever)
+    server_thread.start()
+    stop = threading.Event()
+    observed = []
+    observer_errors = []
+
+    def observe():
+        try:
+            observed.append(
+                verifier._private_ready_record(
+                    sandbox, output / "witness-observed.json", output / "witness-permit.json", stop
+                )
+            )
+        except (RuntimeError, ValueError, OSError) as error:
+            observer_errors.append(type(error).__name__)
+
+    observer = threading.Thread(target=observe)
+    observer.start()
+    driver = (
+        Path(__file__).resolve().parents[1]
+        / "frontend/tests/installed/installed-windows-cancellation.mjs"
+    )
+    try:
+        result = subprocess.run(
+            [node, str(driver), str(server.server_port), str(sandbox), str(output)],
+            input=json.dumps({"capability": capability}),
+            text=True,
+            capture_output=True,
+            timeout=25,
+            check=False,
+        )
+    finally:
+        stop.set()
+        observer.join(timeout=5)
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5)
+    assert not observer.is_alive() and not server_thread.is_alive()
+    report = json.loads((output / "driver-report.json").read_text(encoding="utf-8"))
+    assert capability not in json.dumps(report)
+    assert result.returncode == (0 if permit_pin else 1), result.stderr
+    if permit_pin:
+        assert not observer_errors and observed[0]["control_path"] == task
+        assert verifier._driver_passed(report)
+        assert report["request_counts"]["job_status"] == 3
+    else:
+        assert observer_errors == ["RuntimeError"] and not observed and not pins
+        assert report["status"] == "failed_or_incomplete"
+        assert report["error"]["stage"] == "independent-witness-handshake"
+        assert report["request_counts"]["approval"] == 1
+        assert report["request_counts"]["cancel"] == 0
+        assert report["request_counts"]["runner_stop"] == 0
+        assert not verifier._driver_passed(report)

@@ -6,7 +6,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import { classifyRequest, consumeRequestBudget } from "./receiver-guards.mjs";
+import { classifyRequest, consumeRequestBudget, sameJson as same } from "./receiver-guards.mjs";
 import { createDeadlineBudget } from "./receiver-deadline.mjs";
 
 const [modulePath, output, port] = process.argv.slice(2);
@@ -66,7 +66,6 @@ const report = {
 
 const exactKeys = (value, names) => value && typeof value === "object" && !Array.isArray(value)
   && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...names].sort());
-const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const boundedString = (value, max = 128) => typeof value === "string" && value.trim().length > 0 && value.length <= max;
 const safeStatus = (value, allowed) => allowed.includes(value) ? value : value == null ? "missing" : "other";
 const count = (key) => consumeRequestBudget(counts, ROUTE_LIMITS, key);
@@ -647,6 +646,7 @@ try {
   await draftRow.getByRole("button", { name: "Continue editing", exact: true }).click();
   await page.waitForFunction(() => location.hash.startsWith("#/builder"));
 
+  stage = "baseline-save-version";
   const saveResponsePromise = page.waitForResponse((response) => {
     const request = response.request();
     return request.method() === "POST" && new URL(response.url()).pathname === "/api/v1/scenario-versions";
@@ -663,6 +663,7 @@ try {
   assert.equal(saved.version, 1);
   assert.match(saved.digest, /^sha256:[0-9a-f]{64}$/);
   assert.ok(expectedScenarioCopy && same(saved.document, expectedScenarioCopy));
+  stage = "baseline-read-saved-version";
   const persistedCopies = (await appApi("/scenario-versions")).scenarios.filter((item) => item.scenario_id === saved.scenario_id);
   assert.equal(persistedCopies.length, 1, "Exactly one saved copy must be retained");
   assert.equal(persistedCopies[0].version, 1);
@@ -673,6 +674,7 @@ try {
   report.saved_scenario_copy = { scenario_id: saved.scenario_id, version: saved.version, digest: saved.digest };
   report.checks.push("packaged_starter_duplicated_and_saved_through_ui");
 
+  stage = "baseline-control-setup";
   await page.goto(`${ORIGIN}/#/compare?receiver=1`);
   await page.getByRole("radio", { name: "Retain redaction and verify legitimate use", exact: true }).check();
   await page.getByLabel("Saved experiment", { exact: true }).selectOption(`${saved.scenario_id}:${saved.version}:${saved.digest}`);
@@ -905,8 +907,9 @@ try {
   assert.equal(receiverSessionIds.size, 5);
   report.unique_receiver_session_count = receiverSessionIds.size;
   report.status = "passed";
-} catch {
-  report.errors.push({ stage, kind: "journey_failed" });
+} catch (error) {
+  const errorType = ["AssertionError", "TimeoutError", "TypeError", "Error"].includes(error?.name) ? error.name : "other";
+  report.errors.push({ stage, kind: "journey_failed", error_type: errorType });
   report.request_counts = counts;
 } finally {
   capability = "";

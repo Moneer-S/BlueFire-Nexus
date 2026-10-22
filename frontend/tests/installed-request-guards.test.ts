@@ -1,10 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { classifyRequest, consumeRequestBudget } from "./installed/receiver-guards.mjs";
+import { classifyRequest, consumeRequestBudget, sameJson } from "./installed/receiver-guards.mjs";
 
 const origin = "http://127.0.0.1:4317";
 const limits = { stop: 1 };
 
 describe("installed receiver request guards", () => {
+  it("compares canonical saved objects without changing array or value semantics", () => {
+    const requested = { id: "owned-copy", steps: [{ id: "create", parameters: { count: 8, redact: false } }, { id: "send" }] };
+    const persisted = { steps: [{ parameters: { redact: false, count: 8 }, id: "create" }, { id: "send" }], id: "owned-copy" };
+    expect(JSON.stringify(requested)).not.toBe(JSON.stringify(persisted));
+    expect(sameJson(requested, persisted)).toBe(true);
+    expect(sameJson(requested, { ...persisted, steps: [...persisted.steps].reverse() })).toBe(false);
+    expect(sameJson(requested, { ...persisted, extra: null })).toBe(false);
+    expect(sameJson({ count: 8 }, { count: "8" })).toBe(false);
+    expect(sameJson({ redact: false }, { redact: true })).toBe(false);
+    expect(sameJson({ selected: null }, {})).toBe(false);
+  });
+
   it("authorizes an allowlisted POST independently of read allowlists", () => {
     const counts = { stop: 0 };
     const decision = classifyRequest({
