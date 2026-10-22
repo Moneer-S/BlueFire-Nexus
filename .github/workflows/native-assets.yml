@@ -152,8 +152,11 @@ jobs:
           NATIVE_BINARY: ${{ matrix.binary }}
         run: |
           python - <<'PY'
-          import ast, hashlib, json, os, shutil, subprocess, tomllib
+          import ast, hashlib, json, os, shutil, subprocess, tempfile, tomllib
           from pathlib import Path
+          from bluefire.runner_bootstrap import build_runner_manifest, validate_runner_inventory
+          from bluefire.runner_client import SubprocessRustRunner
+          from bluefire.util import canonical_json_bytes
 
           root = Path(os.environ["GITHUB_WORKSPACE"])
           if subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip() != os.environ["GITHUB_SHA"]:
@@ -171,7 +174,26 @@ jobs:
           output.mkdir(exist_ok=True)
           binary = output / source.name
           shutil.copyfile(source, binary)
+          os.chmod(binary, 0o700)
           digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+          manifest = build_runner_manifest(
+              binary,
+              product_version=product_version,
+              platform_name=os.environ["NATIVE_PLATFORM"],
+              architecture=os.environ["NATIVE_ARCHITECTURE"],
+          )
+          with tempfile.TemporaryDirectory(prefix="bluefire-native-inventory-") as work_root:
+              inventory = SubprocessRustRunner(
+                  binary.resolve(strict=True),
+                  Path(work_root),
+                  timeout_seconds=10.0,
+                  output_limit_bytes=2 * 1024 * 1024,
+              ).inventory()
+          validate_runner_inventory(inventory, manifest)
+          inventory_bytes = canonical_json_bytes(inventory) + b"\n"
+          inventory_path = output / "runner-inventory.json"
+          with inventory_path.open("xb") as handle:
+              handle.write(inventory_bytes)
           tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=root, text=True).strip()
           receipt = {
               "schema_version": "bluefire.native-build-receipt.v1",
@@ -189,6 +211,11 @@ jobs:
               },
               "cargo_lock_sha256": hashlib.sha256((root / "runner/Cargo.lock").read_bytes()).hexdigest(),
               "binary": {"filename": binary.name, "bytes": binary.stat().st_size, "sha256": digest},
+              "inventory": {
+                  "filename": inventory_path.name,
+                  "bytes": len(inventory_bytes),
+                  "sha256": hashlib.sha256(inventory_bytes).hexdigest(),
+              },
           }
           (output / "receipt.json").write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n", encoding="utf-8")
           PY

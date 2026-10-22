@@ -104,6 +104,25 @@ test("opens at readable focus, keeps an explicit whole-path overview, and preser
   await expect(name).toHaveValue("My manually framed experiment");
 });
 
+test("step details use the full available inspector height", async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.goto("./#/builder");
+  await page.getByRole("button", { name: "Show node inspector" }).click();
+  const body = page.locator(".inspector-body");
+  await expect(body).toBeVisible();
+  await expect(body).toHaveCSS("max-height", "none");
+  await expect.poll(() => body.evaluate(element => {
+    const panel = element.closest(".inspector-panel")!.getBoundingClientRect();
+    return Math.abs(panel.bottom - element.getBoundingClientRect().bottom);
+  })).toBeLessThanOrEqual(3);
+  await page.setViewportSize({ width: 1366, height: 768 });
+  const section = body.locator(":scope > section").nth(1);
+  await expect(section).toHaveCSS("padding-top", "13px");
+  await expect(section).toHaveCSS("padding-bottom", "13px");
+  await expect(section).toHaveCSS("border-right-width", "0px");
+  await expect(section).toHaveCSS("border-bottom-width", "1px");
+});
+
 test("selecting a rightmost step keeps it visible beside its details without changing zoom", async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.goto("./#/builder");

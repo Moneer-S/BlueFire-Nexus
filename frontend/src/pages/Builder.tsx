@@ -26,6 +26,7 @@ import { useAssistancePanel, usePublishGraphAssistanceSelection } from "../state
 import { graphEditDocument, type GraphEditorDraft } from "../lib/graph-assistance";
 import { GraphProposalReview } from "../components/GraphProposalReview";
 import { SavedExperimentReview } from "../components/SavedExperimentReview";
+import { BuilderStepSearch } from "../components/BuilderStepSearch";
 import { BuilderRouteEdge } from "../components/BuilderRouteEdge";
 import { BuilderRoutes } from "../components/BuilderRoutes";
 import { GraphDeleteDialog, graphDeletionSummary, graphStepName } from "../components/GraphDeleteDialog";
@@ -265,11 +266,19 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     if (focusedSection !== null && sections.length > 1 && index >= 0) setFocusedSection(Math.floor(index / GRAPH_SECTION_SIZE));
   }, [focusedSection, sections.length, selectedId, visibleGraph]);
   const graphCanvas = useRef<HTMLDivElement>(null);
+  const orderedSteps = useRef<HTMLOListElement>(null);
   const [selectionToReveal, setSelectionToReveal] = useState("");
   const selectStep = useCallback((id: string) => { setSelectedId(id); setSelectionToReveal(id); setNodes((items) => items.map((node) => ({ ...node, selected: node.id === id }))); setEdges((items) => items.map((edge) => ({ ...edge, selected: false }))); setInspectorOpen(true); setPaletteOpen(false); }, []);
   const selectRoute = useCallback((id: string) => { setRoutesOpen(true); setSelectedId(""); setNodes((items) => items.map((node) => ({ ...node, selected: false }))); setEdges((items) => items.map((edge) => ({ ...edge, selected: edge.id === id }))); setInspectorOpen(false); setPaletteOpen(false); }, []);
   const onEdgeClick = useCallback((_: unknown, edge: FlowEdge) => { if (edge.data?.kind === "route") selectRoute(edge.id); }, [selectRoute]);
   const onNodeClick = useCallback((_: unknown, node: BehaviorFlowNode) => selectStep(node.id), [selectStep]);
+  const revealSearchResult = useCallback((id: string) => {
+    const index = scenario.steps.findIndex(step => step.id === id);
+    if (index < 0) return;
+    setAllBranches(true);
+    if (viewMode === "graph") setFocusedSection(scenario.steps.length > GRAPH_SECTION_SIZE ? Math.floor(index / GRAPH_SECTION_SIZE) : null);
+    selectStep(id);
+  }, [scenario.steps, selectStep, viewMode]);
   const onSelectionChange = useCallback(({ nodes: selection }: { nodes: BehaviorFlowNode[] }) => setSelectedId(selection.at(-1)?.id ?? ""), []);
   const onMove = useCallback((_: unknown, viewport: { zoom: number }) => setGraphZoom(Math.round(viewport.zoom * 100) / 100), []);
   const togglePalette = () => { setPaletteOpen((open) => !open); setInspectorOpen(false); };
@@ -306,6 +315,15 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     if (initialFrameDone.current || !nodesInitialized || viewMode !== "graph" || !nodes.length) return;
     initialFrameDone.current = fitNodes(shownSteps.map(step => step.id));
   }, [fitNodes, nodesInitialized, nodes.length, shownSteps, viewMode]);
+
+  useEffect(() => {
+    if (!selectionToReveal || selectionToReveal !== selectedId || !inspectorOpen || viewMode !== "steps") return;
+    const row = [...(orderedSteps.current?.querySelectorAll<HTMLButtonElement>("button[data-step-id]") ?? [])]
+      .find(button => button.dataset.stepId === selectionToReveal);
+    if (!row) return;
+    row.scrollIntoView({ block: "nearest", behavior: "instant" });
+    setSelectionToReveal("");
+  }, [inspectorOpen, selectedId, selectionToReveal, viewMode]);
 
   useEffect(() => {
     if (!selectionToReveal || selectionToReveal !== selectedId || !inspectorOpen || !nodesInitialized || viewMode !== "graph") return;
@@ -505,7 +523,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   const duplicateSelected = () => { if (!review?.readOnly && copySelected()) window.setTimeout(paste, 0); };
   const keyboard = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
-    if (event.defaultPrevented || commandPaletteOpen || deletionPending() || target.closest("input, select, textarea, [contenteditable]:not([contenteditable='false'])")) return;
+    if (event.defaultPrevented || commandPaletteOpen || deletionPending() || target.closest("[role='dialog'], input, select, textarea, [contenteditable]:not([contenteditable='false'])")) return;
     if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
     const key = event.key.toLowerCase();
     if (!["z", "c", "v", "d"].includes(key)) return;
@@ -610,6 +628,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
             <IconButton label={paletteOpen ? "Hide behavior palette" : "Show behavior palette"} aria-pressed={paletteOpen} onClick={togglePalette}>{paletteOpen ? <PanelLeftClose/> : <PanelLeftOpen/>}</IconButton><IconButton label="Add step" aria-pressed={paletteOpen} onClick={togglePalette}><Plus/></IconButton><div className="view-toggle" aria-label="Experiment view"><button aria-pressed={viewMode === "graph"} onClick={() => setViewMode("graph")}><Network/>Canvas</button><button aria-pressed={viewMode === "steps"} onClick={() => setViewMode("steps")}><ListOrdered/>Steps</button></div>
             <IconButton label={autoLayoutLabel} onClick={autoLayout} disabled={review?.readOnly || !nodes.length}><LayoutGrid/></IconButton>
             <IconButton label="Fit visible graph" onClick={fitGraph} disabled={!nodes.length}><ScanSearch/></IconButton>
+            <BuilderStepSearch steps={scenario.steps} behaviors={behaviorMap} onSelect={revealSearchResult} />
             <IconButton label="Focus selected step" onClick={fitSelection} disabled={!selected}><Maximize2/></IconButton>
             <output className="graph-scale" aria-label="Graph zoom">{Math.round(graphZoom * 100)}%{summaryZoom ? " · Overview" : ""}</output>
             <span className="graph-validation-state"><Badge tone={displayedValidation === "valid" ? "success" : displayedValidation === "invalid" ? "danger" : "neutral"}>{displayedValidation === "valid" ? "Ready for review" : displayedValidation === "invalid" ? "Needs attention" : "Not validated"}</Badge></span>
@@ -629,7 +648,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
         </div>
         {viewMode === "graph" && sections.length > 1 ? <nav className="graph-sections" aria-label="Experiment step groups"><IconButton label="Previous group" disabled={focusedSection === null || sectionIndex === 0} onClick={() => showSection(String(sectionIndex - 1))}><ChevronLeft/></IconButton><label><span className="sr-only">Display group</span><select aria-label="Step group" value={focusedSection === null ? "all" : sectionIndex} onChange={(event) => showSection(event.target.value)}>{sections.map((section, index) => <option key={index} value={index}>{section.title}</option>)}<option value="all">All steps</option></select></label><IconButton label="Next group" disabled={focusedSection === null || sectionIndex === sections.length - 1} onClick={() => showSection(String(sectionIndex + 1))}><ChevronRight/></IconButton><span className="graph-group-count">{shownIds.size} of {scenario.steps.length} steps</span>{groupBoundaries ? <details className="graph-group-connections"><summary>Group connections</summary><div><span className="graph-group-boundaries" aria-label="Conditional execution routes">{groupBoundaries.incoming.length ? `From: ${groupBoundaries.incoming.join(", ")}` : groupBoundaries.first ? "Entry group" : "No incoming route"}{groupBoundaries.outgoing.length ? ` · To: ${groupBoundaries.outgoing.join(", ")}` : ""}</span>{groupBoundaries.artifactCount ? <details className="graph-data-boundaries"><summary>Data dependencies ({groupBoundaries.artifactCount})</summary><div>{groupBoundaries.incomingArtifacts.length ? <section><strong>Inputs from other groups</strong><ul>{groupBoundaries.incomingArtifacts.map(item => <li key={`in-${item.identity}`}>{item.label}</li>)}</ul></section> : null}{groupBoundaries.outgoingArtifacts.length ? <section><strong>Outputs used by other groups</strong><ul>{groupBoundaries.outgoingArtifacts.map(item => <li key={`out-${item.identity}`}>{item.label}</li>)}</ul></section> : null}</div></details> : null}</div></details> : null}</nav> : null}
         <div className="graph-disclosure" role="status"><span>{viewMode === "graph" && sections.length > 1 ? "" : `${shownIds.size} of ${scenario.steps.length} steps shown${scenario.steps.length - shownIds.size ? ` · ${scenario.steps.length - shownIds.size} hidden` : ""} · `}{hiddenBranches} branches hidden. Review run includes the whole experiment.</span><button onClick={() => { setAllBranches((value) => !value); if (!allBranches) { setRoutesOpen(true); setInspectorOpen(false); setPaletteOpen(false); } }}>{allBranches ? "Focus on success path" : "Show all branches"}</button>{viewMode === "graph" ? <button id={routesToggleId} aria-expanded={routesOpen} onClick={() => { setRoutesOpen((value) => !value); if (!routesOpen) { setInspectorOpen(false); setPaletteOpen(false); } }}>{routesOpen ? "Hide route list" : "Show route list"}</button> : null}{selected && scenario.edges.some((edge) => edge.from_step === selected.id && edge.outcome !== "success") && !allBranches ? <button onClick={() => setExpandedBranches((previous) => { const next = new Set(previous); if (next.has(selected.id)) next.delete(selected.id); else next.add(selected.id); return next; })}>{expandedBranches.has(selected.id) ? "Collapse selected branches" : "Expand selected branches"}</button> : null}</div>
-        {viewMode === "steps" ? <ol className="ordered-steps" aria-label="Experiment steps">{visibleGraph.ordered.map((step, index) => { const behavior = behaviorMap.get(step.behavior_id); return <li key={step.id}><button aria-pressed={selectedId === step.id} onClick={() => selectStep(step.id)}><span className="step-number">{index + 1}</span><span><strong>{displayTitle(behavior?.title ?? "Unavailable step")}</strong><small>{behavior?.purpose}</small><span className="step-routes">{scenario.edges.filter((edge) => edge.from_step === step.id).map((edge) => <em key={edge.outcome}>{branchLabels[edge.outcome]} → {behaviorMap.get(scenario.steps.find((item) => item.id === edge.to_step)?.behavior_id ?? "")?.title ? displayTitle(behaviorMap.get(scenario.steps.find((item) => item.id === edge.to_step)?.behavior_id ?? "")!.title) : edge.to_step}</em>)}</span></span><Badge>{behavior?.execution_state === "action" ? "Executable" : behavior?.execution_state === "simulation" ? "Simulated" : "Research"}</Badge></button></li>; })}</ol> : null}
+        {viewMode === "steps" ? <ol ref={orderedSteps} className="ordered-steps" aria-label="Experiment steps">{visibleGraph.ordered.map((step, index) => { const behavior = behaviorMap.get(step.behavior_id); return <li key={step.id}><button data-step-id={step.id} aria-pressed={selectedId === step.id} onClick={() => selectStep(step.id)}><span className="step-number">{index + 1}</span><span><strong>{displayTitle(behavior?.title ?? "Unavailable step")}</strong><small>{behavior?.purpose}</small><span className="step-routes">{scenario.edges.filter((edge) => edge.from_step === step.id).map((edge) => <em key={edge.outcome}>{branchLabels[edge.outcome]} → {behaviorMap.get(scenario.steps.find((item) => item.id === edge.to_step)?.behavior_id ?? "")?.title ? displayTitle(behaviorMap.get(scenario.steps.find((item) => item.id === edge.to_step)?.behavior_id ?? "")!.title) : edge.to_step}</em>)}</span></span><Badge>{behavior?.execution_state === "action" ? "Executable" : behavior?.execution_state === "simulation" ? "Simulated" : "Research"}</Badge></button></li>; })}</ol> : null}
         <div className={`graph-stage ${routesOpen ? "routes-open" : ""}`} hidden={viewMode !== "graph"}>
         <div ref={graphCanvas} className="graph-canvas" tabIndex={0} aria-label="Scenario graph canvas" onKeyDown={(event) => {
           if (event.key !== "Enter" && event.key !== " ") return;

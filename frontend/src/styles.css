@@ -1245,3 +1245,9 @@ input:not([type="checkbox"]):not([type="radio"]), select { font-size: .875rem; }
 .saved-comparison-link strong { font-size: .875rem; }
 .saved-comparison-link small, .saved-comparison-link code { color: var(--muted); font-size: .75rem; overflow-wrap: anywhere; }
 .saved-comparison-link:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.builder-step-search-dialog { z-index: 131; }
+.builder-step-search-results li > button { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 16px; padding: 10px; border: 0; border-radius: 4px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.builder-step-search-results li > button:hover, .builder-step-search-results li > button:focus-visible { background: var(--surface-soft); }
+.builder-step-search-results li > button > span { min-width: 0; }
+.builder-step-search-results code { display: block; margin-top: 4px; color: var(--muted); font-size: .75rem; overflow-wrap: anywhere; }
+.builder-step-search-results li > button > small { flex: none; color: var(--muted); font-size: .75rem; }

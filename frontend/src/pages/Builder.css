@@ -95,7 +95,9 @@
 .workbench-builder .palette-panel, .workbench-builder .inspector-panel { position: static; display: flex; flex-direction: column; width: 100%; height: auto; min-height: 0; max-width: none; box-shadow: none; background: var(--ink-900); }
 .workbench-builder .builder-layout.palette-hidden .inspector-panel, .workbench-builder.builder-focus .inspector-panel, .workbench-builder.builder-focus .palette-panel { min-height: 0; height: auto; }
 .workbench-builder .palette-hidden .palette-panel, .workbench-builder .inspector-hidden .inspector-panel { display: none; }
-.workbench-builder .palette-list, .workbench-builder .inspector-body { flex: 1; min-height: 0; max-height: none; overflow: auto; }
+.workbench-builder .palette-list, .workbench-builder .builder-layout .inspector-body, .workbench-builder .builder-layout.palette-hidden .inspector-body { flex: 1; min-height: 0; max-height: none; overflow: auto; }
+.workbench-builder .builder-layout .inspector-body > section { padding: 13px 0; border-right: 0; border-bottom: 1px solid var(--line); }
+.workbench-builder .builder-layout .inspector-body > section:first-child { padding-top: 0; }
 .workbench-builder .inspector-panel > fieldset.graph-review-editor { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .workbench-builder .palette-list strong, .workbench-builder .inspector-body h3 { font-size: .78rem; }
 .workbench-builder .palette-list small, .workbench-builder .palette-list em, .workbench-builder .inspector-body p, .workbench-builder .inspector-body li, .workbench-builder .inspector-body .field small { font-size: .7rem; }
@@ -179,7 +181,7 @@
   .workbench-builder .graph-stage { flex: none; height: clamp(340px, 55dvh, 620px); }
   .workbench-builder .builder-layout:not(.inspector-hidden) .inspector-panel { position: static; width: 100%; max-width: none; height: auto; border: 1px solid var(--line); }
   .workbench-builder .palette-panel { max-height: 360px; }
-  .workbench-builder .inspector-body { overflow: visible; }
+  .workbench-builder .builder-layout .inspector-body, .workbench-builder .builder-layout.palette-hidden .inspector-body { overflow: visible; }
   .workbench-builder .graph-topbar { display: flex; flex-wrap: wrap; }
   .workbench-builder .graph-view-actions { width: 100%; flex-wrap: wrap; }
 }

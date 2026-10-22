@@ -75,7 +75,7 @@ def test_native_asset_receipt_is_versioned_and_allowlisted() -> None:
     windows_script = windows_run.split("$script = @'\n", 1)[1].split("\n'@", 1)[0]
     linux_script = linux_run.split("python - <<'PY'\n", 1)[1].split("\nPY", 1)[0]
 
-    expected = {
+    common_expected = {
         "schema_version",
         "source",
         "runner",
@@ -84,7 +84,10 @@ def test_native_asset_receipt_is_versioned_and_allowlisted() -> None:
         "cargo_lock_sha256",
         "binary",
     }
-    for script in (windows_script, linux_script):
+    for script, expected in (
+        (windows_script, common_expected),
+        (linux_script, common_expected | {"inventory"}),
+    ):
         parsed = ast.parse(script)
         receipt = next(
             node.value
@@ -102,13 +105,16 @@ def test_native_asset_receipt_is_versioned_and_allowlisted() -> None:
             for key, value in zip(receipt.keys, receipt.values, strict=True)
             if isinstance(key, ast.Constant)
         }
-        for key, allowed in {
+        nested_fields = {
             "source": {"commit", "tree"},
             "runner": {"os", "image", "architecture", "target"},
             "versions": {"product", "cargo_package"},
             "toolchain": {"rustc", "cargo"},
             "binary": {"filename", "bytes", "sha256"},
-        }.items():
+        }
+        if "inventory" in expected:
+            nested_fields["inventory"] = {"filename", "bytes", "sha256"}
+        for key, allowed in nested_fields.items():
             child = nested[key]
             assert isinstance(child, ast.Dict)
             assert {ast.literal_eval(child_key) for child_key in child.keys} == allowed
@@ -120,3 +126,61 @@ def test_native_asset_receipt_is_versioned_and_allowlisted() -> None:
         assert 'root / "runner/Cargo.lock"' in script
         assert 'root / "Cargo.lock"' not in script
     assert (WORKFLOW.parents[2] / "runner" / "Cargo.lock").is_file()
+
+
+def test_linux_native_receipt_binds_bounded_host_produced_inventory() -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    step = next(
+        step
+        for step in workflow["jobs"]["build"]["steps"]
+        if step.get("name") == "Create binary and sanitized build receipt (Linux)"
+    )
+    script = step["run"].split("python - <<'PY'\n", 1)[1].split("\nPY", 1)[0]
+    parsed = ast.parse(script)
+
+    assert "from bluefire.runner_client import SubprocessRustRunner" in script
+    assert (
+        "from bluefire.runner_bootstrap import build_runner_manifest, validate_runner_inventory"
+        in script
+    )
+    assert "from bluefire.util import canonical_json_bytes" in script
+    assert 'tempfile.TemporaryDirectory(prefix="bluefire-native-inventory-")' in script
+    assert "shutil.copyfile(source, binary)\nos.chmod(binary, 0o700)" in script
+    assert (
+        script.index("os.chmod(binary, 0o700)")
+        < script.index("manifest = build_runner_manifest(")
+        < script.index("SubprocessRustRunner(")
+    )
+    probe = next(
+        node
+        for node in ast.walk(parsed)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "SubprocessRustRunner"
+    )
+    assert len(probe.args) == 2
+    assert ast.unparse(probe.args[0]) == "binary.resolve(strict=True)"
+    assert ast.unparse(probe.args[1]) == "Path(work_root)"
+    assert {keyword.arg for keyword in probe.keywords} == {
+        "timeout_seconds",
+        "output_limit_bytes",
+    }
+    timeout = next(item.value for item in probe.keywords if item.arg == "timeout_seconds")
+    output_limit = next(item.value for item in probe.keywords if item.arg == "output_limit_bytes")
+    assert ast.literal_eval(timeout) == 10.0
+    assert ast.unparse(output_limit) == "2 * 1024 * 1024"
+    assert "validate_runner_inventory(inventory, manifest)" in script
+    assert 'inventory_bytes = canonical_json_bytes(inventory) + b"\\n"' in script
+    assert 'inventory_path = output / "runner-inventory.json"' in script
+    assert 'inventory_path.open("xb")' in script
+    assert '"inventory": {' in script
+    assert '"bytes": len(inventory_bytes)' in script
+    assert '"sha256": hashlib.sha256(inventory_bytes).hexdigest()' in script
+    assert '"filename": inventory_path.name' in script
+
+    upload = next(
+        step
+        for step in workflow["jobs"]["build"]["steps"]
+        if step.get("uses", "").startswith("actions/upload-artifact@")
+    )
+    assert upload["with"]["path"] == "native-assets/"
