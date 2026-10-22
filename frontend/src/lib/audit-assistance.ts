@@ -53,6 +53,31 @@ function validSummary(value: unknown): value is ImportedAuditSummary | Collected
 export function validAuditAssistanceSelection(value: unknown): value is AuditAssistanceSelection {
   return object(value) && Object.keys(value).length === 4 && value.kind === "s3_audit_review" && validS3Job(value.workflow_job_id) && validS3Job(value.review_id) && typeof value.review_digest === "string" && /^sha256:[0-9a-f]{64}$/.test(value.review_digest);
 }
+export function auditReviewSourceHref(selected: AuditAssistanceSelection): string {
+  if (!validAuditAssistanceSelection(selected)) throw new Error("Select an exact saved audit review.");
+  const query = new URLSearchParams({
+    exercise: selected.workflow_job_id,
+    audit_review: selected.review_id,
+    audit_digest: selected.review_digest,
+  });
+  return `/s3-access?${query.toString()}`;
+}
+export function auditReviewSourceSelection(owner: string, params: URLSearchParams): AuditAssistanceSelection | null {
+  const reviews = params.getAll("audit_review");
+  const digests = params.getAll("audit_digest");
+  if (!reviews.length && !digests.length) return null;
+  const exercises = params.getAll("exercise");
+  const selected = {
+    kind: "s3_audit_review" as const,
+    workflow_job_id: owner,
+    review_id: reviews[0] ?? "",
+    review_digest: digests[0] ?? "",
+  };
+  if (reviews.length !== 1 || digests.length !== 1 || exercises.length !== 1 || exercises[0] !== owner || !validAuditAssistanceSelection(selected)) {
+    throw new Error("The saved audit source link is incomplete or changed.");
+  }
+  return selected;
+}
 export function isAuditSelection(value: AssistanceContext["selected"]): value is AuditAssistanceSelection { return "kind" in value && value.kind === "s3_audit_review"; }
 export function checkedAuditAssistanceContext(value: unknown, selected: AuditAssistanceSelection): AuditAssistanceContext {
   if (!validAuditAssistanceSelection(selected) || !exact(value, ["schema_version", "selected", "context_digest", "analysis_only", "capabilities", "reference_summary", "limitations"]) || value.schema_version !== "bluefire.assistance-context.v1" || !sameJson(value.selected, selected) || typeof value.context_digest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value.context_digest) || value.analysis_only !== true || !Array.isArray(value.capabilities) || value.capabilities.length || !Array.isArray(value.limitations) || !value.limitations.length || value.limitations.length > 8 || value.limitations.some(row => typeof row !== "string" || row.length > 1000) || !validSummary(value.reference_summary)) throw new Error("The saved audit explanation context changed or is unavailable.");

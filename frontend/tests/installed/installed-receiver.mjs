@@ -1,5 +1,5 @@
 // Installed-wheel retained-redaction original and linked retest through the ordinary UI.
-/* global process, URL, URLSearchParams, document, fetch, sessionStorage, location, structuredClone, AbortSignal */
+/* global process, URL, URLSearchParams, document, fetch, sessionStorage, location, structuredClone, AbortSignal, getComputedStyle, CSS */
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { writeFileSync } from "node:fs";
@@ -117,6 +117,34 @@ function setPlaywrightBudget() {
   context?.setDefaultTimeout(timeout);
   context?.setDefaultNavigationTimeout(timeout);
   return timeout;
+}
+
+async function visibleControlsDiagnostic() {
+  if (!page) return undefined;
+  const timeoutMs = deadlineBudget.bounded(250, Date.now());
+  if (timeoutMs <= 0) return { unavailable: true };
+  try {
+    return await Promise.race([page.locator("button, input, select, [role='radio'], [role='checkbox']").evaluateAll((elements) => {
+      const visible = elements.filter((element) => {
+        const style = getComputedStyle(element);
+        const bounds = element.getBoundingClientRect();
+        return style.visibility !== "hidden" && style.display !== "none" && bounds.width > 0 && bounds.height > 0;
+      });
+      return {
+        visible_count: visible.length,
+        controls: visible.slice(0, 24).map((element) => ({
+          tag: element.tagName.toLowerCase(),
+          role: element.getAttribute("role") ?? "native",
+          type: element.getAttribute("type") ?? "",
+          disabled: Boolean(element.disabled),
+          has_aria_label: Boolean(element.getAttribute("aria-label")),
+          has_label: Boolean(element.closest("label") || (element.id && document.querySelector(`label[for="${CSS.escape(element.id)}"]`))),
+        })),
+      };
+    }), delay(timeoutMs, { unavailable: true }, { ref: false })]);
+  } catch {
+    return { unavailable: true };
+  }
 }
 
 const LOCATOR_FACTORIES = new Set(["getByRole", "getByLabel", "getByText", "getByPlaceholder", "getByTestId", "locator"]);
@@ -674,24 +702,33 @@ try {
   report.saved_scenario_copy = { scenario_id: saved.scenario_id, version: saved.version, digest: saved.digest };
   report.checks.push("packaged_starter_duplicated_and_saved_through_ui");
 
-  stage = "baseline-control-setup";
+  stage = "baseline-control-open";
   await page.goto(`${ORIGIN}/#/compare?receiver=1`);
+  stage = "baseline-control-workflow";
   await page.getByRole("radio", { name: "Retain redaction and verify legitimate use", exact: true }).check();
-  await page.getByLabel("Saved experiment", { exact: true }).selectOption(`${saved.scenario_id}:${saved.version}:${saved.digest}`);
+  stage = "baseline-control-saved-experiment";
+  await page.getByLabel("Saved experiment", { exact: false }).selectOption(`${saved.scenario_id}:${saved.version}:${saved.digest}`);
+  stage = "baseline-control-execution-mode";
   await page.getByRole("radio", { name: /^Execute / }).check();
+  stage = "baseline-control-environment-profile";
   await page.getByLabel("Environment profile", { exact: true }).selectOption(PROFILE);
+  stage = "baseline-control-target-scopes";
   for (const label of ["Files in the selected workspace", "Connections to the local lab receiver"]) {
     const scope = page.getByRole("checkbox", { name: label, exact: true });
     if (!(await scope.isChecked())) await scope.check();
   }
+  stage = "baseline-control-save-availability";
   const saveControl = page.getByRole("button", { name: "Save control test", exact: true });
   await saveControl.waitFor({ state: "visible" });
   await page.waitForFunction(() => {
     const button = [...document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "Save control test");
     return Boolean(button && !button.disabled);
   }, undefined, { timeout: 30_000 });
+  stage = "baseline-control-submit";
   await saveControl.click();
+  stage = "baseline-control-job-navigation";
   await page.waitForFunction(() => location.hash.includes("receiver_job=job-"));
+  stage = "baseline-control-owner-response";
   await waitForState(() => Boolean(receiverJobId && latestOwner?.context), "original receiver owner response");
   assert.match(receiverJobId ?? "", ID);
   assert.equal(latestOwner?.context?.workflow, "retained_redaction");
@@ -909,7 +946,9 @@ try {
   report.status = "passed";
 } catch (error) {
   const errorType = ["AssertionError", "TimeoutError", "TypeError", "Error"].includes(error?.name) ? error.name : "other";
-  report.errors.push({ stage, kind: "journey_failed", error_type: errorType });
+  const failure = { stage, kind: "journey_failed", error_type: errorType };
+  if (stage.startsWith("baseline-control-")) failure.visible_controls = await visibleControlsDiagnostic();
+  report.errors.push(failure);
   report.request_counts = counts;
 } finally {
   capability = "";

@@ -2,7 +2,7 @@ import { webcrypto } from "node:crypto";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useSearchParams } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import corpus from "../../tests_platform/fixtures/s3_audit_reviews_v1.json";
 import { auditFiles, auditInputDigest, checkedCollectedAuditReview, checkedAuditHistory, checkedAuditReview, readAuditPending, s3AuditApi, saveAuditPending, type AuditHistory, type AuditInput, type AuditReview } from "../src/lib/s3-audit";
@@ -17,7 +17,8 @@ const owner = history.workflow_job_id;
 const collectedOwner = collectedReview.workflow_job_id;
 const marker = { owner, submission_id: input.submission_id, run_id: input.run_id, delivery_state: input.delivery_state, input_digest: review.input_digest };
 const fixtureFile = () => { const bytes = Uint8Array.from(atob(input.logs[0]!.data), c => c.charCodeAt(0)); return Object.assign(new File([bytes], "audit.json.gz"), { arrayBuffer: async () => bytes.buffer }); };
-function view(selectedOwner = owner) { const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 }, mutations: { retry: false } } }); return render(<QueryClientProvider client={client}><MemoryRouter><S3Audit owner={selectedOwner} /></MemoryRouter></QueryClientProvider>); }
+function view(selectedOwner = owner, initialEntry = "/s3-access") { const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 }, mutations: { retry: false } } }); return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[initialEntry]}><S3Audit owner={selectedOwner} /></MemoryRouter></QueryClientProvider>); }
+function RouteSwitcher({ target }: { target: string }) { const [, setSearchParams] = useSearchParams(); return <button onClick={() => setSearchParams(new URLSearchParams(target.split("?")[1]))}>Switch audit source</button>; }
 function collectedHistory(): AuditHistory {
   if (history.schema_version !== "bluefire.s3-audit-reviews.v1") throw new Error("The import-history fixture must remain v1.");
   const base = structuredClone(history);
@@ -167,6 +168,101 @@ it("opens immutable evidence without submitting or claiming independent collecti
   expect(screen.getByText("Collection not independently verified")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Original run evidence" })).toHaveAttribute("href", `/runs/${review.source.run_id}`);
   expect(s3AuditApi.save).not.toHaveBeenCalled();
+});
+it("restores an exact saved review from its source route without submitting", async () => {
+  const href = `/s3-access?exercise=${owner}&audit_review=${review.review_id}&audit_digest=${review.review_digest}`;
+  view(owner, href);
+  await waitFor(() => expect(screen.getByLabelText("Saved audit review detail")).toBeInTheDocument());
+  expect(s3AuditApi.read).toHaveBeenCalledWith(owner, review.review_id);
+  expect(s3AuditApi.save).not.toHaveBeenCalled();
+});
+it("publishes only the latest same-owner source after delayed reads resolve out of order", async () => {
+  const second = history.reviews.find(row => row.review_id !== review.review_id)!;
+  const secondDetail = corpus.cases.map(row => row.review as AuditReview).find(row => row.review_id === second.review_id)!;
+  const href = (id: string, digest: string) => `/s3-access?exercise=${owner}&audit_review=${id}&audit_digest=${digest}`;
+  const pending = new Map<string, (value: AuditReview) => void>();
+  vi.mocked(s3AuditApi.read).mockImplementation((_selectedOwner, id) => new Promise(resolve => { pending.set(id, resolve); }));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[href(review.review_id, review.review_digest)]}>
+    <RouteSwitcher target={href(second.review_id, second.review_digest)} /><S3Audit owner={owner} />
+  </MemoryRouter></QueryClientProvider>);
+  await waitFor(() => expect(s3AuditApi.read).toHaveBeenCalled());
+  expect(s3AuditApi.read).toHaveBeenCalledWith(owner, review.review_id);
+  expect(pending.has(review.review_id)).toBe(true);
+  await userEvent.click(screen.getByRole("button", { name: "Switch audit source" }));
+  await waitFor(() => expect(pending.has(second.review_id)).toBe(true));
+  await act(async () => { pending.get(review.review_id)!(structuredClone(review)); });
+  expect(screen.queryByLabelText("Saved audit review detail")).not.toBeInTheDocument();
+  await act(async () => { pending.get(second.review_id)!(structuredClone(secondDetail)); });
+  await waitFor(() => expect(screen.getByRole("link", { name: "Original run evidence" })).toHaveAttribute("href", `/runs/${secondDetail.source.run_id}`));
+  expect(s3AuditApi.save).not.toHaveBeenCalled();
+});
+it("does not let a manual history read overwrite a newer exact source route", async () => {
+  const sourceA = history.reviews.find(row => row.source.reader === "probe")!;
+  const sourceB = history.reviews.find(row => row.review_id !== sourceA.review_id)!;
+  const detailA = corpus.cases.map(row => row.review as AuditReview).find(row => row.review_id === sourceA.review_id)!;
+  const detailB = corpus.cases.map(row => row.review as AuditReview).find(row => row.review_id === sourceB.review_id)!;
+  const href = `/s3-access?exercise=${owner}&audit_review=${sourceB.review_id}&audit_digest=${sourceB.review_digest}`;
+  const pending = new Map<string, (value: AuditReview) => void>();
+  vi.mocked(s3AuditApi.read).mockImplementation((_selectedOwner, id) => new Promise(resolve => { pending.set(id, resolve); }));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/s3-access"]}>
+    <RouteSwitcher target={href} /><S3Audit owner={owner} />
+  </MemoryRouter></QueryClientProvider>);
+  await userEvent.click(await screen.findByRole("button", { name: "Baseline reads · Probe" }));
+  await waitFor(() => expect(pending.has(sourceA.review_id)).toBe(true));
+  await userEvent.click(screen.getByRole("button", { name: "Switch audit source" }));
+  await waitFor(() => expect(pending.has(sourceB.review_id)).toBe(true));
+  await act(async () => { pending.get(sourceB.review_id)!(structuredClone(detailB)); });
+  await waitFor(() => expect(screen.getByRole("link", { name: "Original run evidence" })).toHaveAttribute("href", `/runs/${detailB.source.run_id}`));
+  await act(async () => { pending.get(sourceA.review_id)!(structuredClone(detailA)); });
+  expect(screen.getByRole("link", { name: "Original run evidence" })).toHaveAttribute("href", `/runs/${detailB.source.run_id}`);
+  expect(s3AuditApi.save).not.toHaveBeenCalled();
+});
+it("does not let a confirmed import replace a newer exact source route", async () => {
+  const sourceB = history.reviews.find(row => row.review_id !== review.review_id)!;
+  const detailB = corpus.cases.map(row => row.review as AuditReview).find(row => row.review_id === sourceB.review_id)!;
+  const href = `/s3-access?exercise=${owner}&audit_review=${sourceB.review_id}&audit_digest=${sourceB.review_digest}`;
+  const pendingRead = new Map<string, (value: AuditReview) => void>();
+  let resolveSave!: (value: AuditReview) => void;
+  saveAuditPending(marker);
+  vi.mocked(s3AuditApi.read).mockImplementation((_selectedOwner, id) => new Promise(resolve => { pendingRead.set(id, resolve); }));
+  vi.mocked(s3AuditApi.save).mockReturnValue(new Promise(resolve => { resolveSave = resolve; }));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/s3-access"]}>
+    <RouteSwitcher target={href} /><S3Audit owner={owner} />
+  </MemoryRouter></QueryClientProvider>);
+  await userEvent.upload(await screen.findByLabelText("Audit files"), fixtureFile());
+  await userEvent.click(screen.getByRole("button", { name: "Retry original import" }));
+  await waitFor(() => expect(s3AuditApi.save).toHaveBeenCalled());
+  await userEvent.click(screen.getByRole("button", { name: "Switch audit source" }));
+  await waitFor(() => expect(pendingRead.has(sourceB.review_id)).toBe(true));
+  await act(async () => { pendingRead.get(sourceB.review_id)!(structuredClone(detailB)); });
+  await waitFor(() => expect(screen.getByRole("link", { name: "Original run evidence" })).toHaveAttribute("href", `/runs/${detailB.source.run_id}`));
+  await act(async () => { resolveSave(structuredClone(review)); });
+  expect(screen.getByRole("link", { name: "Original run evidence" })).toHaveAttribute("href", `/runs/${detailB.source.run_id}`);
+  expect(readAuditPending(owner)).toBeNull();
+});
+it("fails closed when a source route or fetched review digest is stale", async () => {
+  const href = `/s3-access?exercise=${owner}&audit_review=${review.review_id}&audit_digest=${review.review_digest}`;
+  const changedHistory = structuredClone(history);
+  changedHistory.reviews.find(row => row.review_id === review.review_id)!.review_digest = `sha256:${"f".repeat(64)}`;
+  vi.mocked(s3AuditApi.list).mockResolvedValue(changedHistory);
+  view(owner, href);
+  expect(await screen.findByText("The saved audit review no longer matches this source link.")).toBeInTheDocument();
+  expect(s3AuditApi.read).not.toHaveBeenCalled();
+
+  cleanup();
+  vi.mocked(s3AuditApi.list).mockResolvedValue(structuredClone(history));
+  vi.mocked(s3AuditApi.read).mockResolvedValue({ ...structuredClone(review), review_digest: `sha256:${"f".repeat(64)}` });
+  view(owner, href);
+  expect(await screen.findByText("The saved review does not match its history entry.")).toBeInTheDocument();
+  expect(screen.queryByLabelText("Saved audit review detail")).not.toBeInTheDocument();
+});
+it("refuses an incomplete source route without opening any review", async () => {
+  view(owner, `/s3-access?exercise=${owner}&audit_review=${review.review_id}`);
+  expect(await screen.findByText("The saved audit source link is incomplete or changed.")).toBeInTheDocument();
+  expect(s3AuditApi.read).not.toHaveBeenCalled();
 });
 it("opens collected history with both original links and bounded retrieval claims", async () => {
   const v2 = collectedHistory();

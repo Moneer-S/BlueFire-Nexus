@@ -7,11 +7,11 @@ import { api, DEMO_MODE } from "../lib/api";
 import { savedRunSetupPath, savedRunSource } from "../lib/run-assistance";
 import { isGraphRequest, isGraphSelection, isSavedGraphRequest, isSavedRunSelection, isRunDetectionRequest, isRunDetectionSelection, isReceiverRequest, isAuditRequest } from "../lib/assistance";
 import { checkedReceiverAssistanceContext, isReceiverSelection } from "../lib/receiver-assistance";
-import { auditAssistanceContext, isAuditSelection } from "../lib/audit-assistance";
+import { auditAssistanceContext, auditReviewSourceHref, isAuditSelection } from "../lib/audit-assistance";
 import { RunReference } from "./RunReference";
 import { ReceiverAssistantProgress } from "./ReceiverAssistantProgress";
-import { detectionCreationPath } from "../lib/detection-creation";
-import { savedExperimentPath } from "../lib/receiver-navigation";
+import { detectionCreationPath, detectionCreationSelectionPath } from "../lib/detection-creation";
+import { receiverScenarioSetupPath } from "../lib/receiver-navigation";
 import { sameJson } from "../lib/replay-review";
 import { readAssistanceHistory, rememberAssistanceRequest, readViewedAssistanceRequest, viewAssistanceRequest, assistanceActive, assistanceJobId, assistancePath, clearAssistanceReceipt, clearAssistanceRecovery, matchesAssistanceReceipt, readAssistanceReceipt, readAssistanceRecovery, storeAssistanceReceipt, storeAssistanceRecovery, type AssistanceEnvelope, type AssistanceRequest, type AssistanceStatus, type GraphSelection } from "../lib/assistance";
 import { useAssistancePanel, useAssistanceSelection } from "../state/AssistanceContext";
@@ -36,15 +36,15 @@ function readDraft() {
   try { const value = sessionStorage.getItem(draftKey); return value && value.length <= 1000 ? value : ""; } catch { return ""; }
 }
 
-function selectionReturnPath(selection: NonNullable<ReturnType<typeof useAssistanceSelection>>): string {
+function selectionReturnPath(selection: NonNullable<ReturnType<typeof useAssistanceSelection>>): string | undefined {
   if ("kind" in selection) {
     if (selection.kind === "graph") return "/builder";
     if (selection.kind === "saved_graph") return savedRunSetupPath(selection.selected);
-    if (selection.kind === "run_detection") return detectionCreationPath(selection.selected.run_id);
+    if (selection.kind === "run_detection") return detectionCreationSelectionPath(selection.selected);
     if (selection.kind === "receiver") return selection.selected.kind === "receiver_scenario"
-      ? savedExperimentPath(selection.selected.selection)
+      ? receiverScenarioSetupPath(selection.selected)
       : `/compare?receiver_job=${encodeURIComponent(selection.selected.receiver_job_id)}`;
-    if (selection.kind === "audit") return `/s3-access?exercise=${encodeURIComponent(selection.selected.workflow_job_id)}`;
+    if (selection.kind === "audit") return auditReviewSourceHref(selection.selected);
   }
   return `/detection-lab?${new URLSearchParams({ run: selection.runId, candidate: selection.candidateId, candidate_scope: "registry" })}`;
 }
@@ -98,6 +98,7 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
     return () => { current = false; };
   }, [requestedJobId, requestedReceiverJobId, finishOpenJob, ownedReceipt]);
   const selection = useAssistanceSelection();
+  const returnPath = selection ? selectionReturnPath(selection) : undefined;
   const selectionIsCurrent = panel?.selectionIsCurrent ?? true;
   const graphSelection = selection && "kind" in selection && selection.kind === "graph" ? selection : undefined;
   const [graphOperation, setGraphOperation] = useState(() => {
@@ -295,7 +296,7 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
               {!selectionIsCurrent ? <>
                 <small>Previous selection</small><strong>{selection.title}</strong>
                 <p>This selection is from another view. Reopen its source before starting new work. Your draft is preserved.</p>
-                <Link className="button button-secondary button-medium" onClick={navigate} to={selectionReturnPath(selection)}>Reopen source<ArrowRight aria-hidden="true" /></Link>
+                {returnPath ? <Link className="button button-secondary button-medium" onClick={navigate} to={returnPath}>Reopen source<ArrowRight aria-hidden="true" /></Link> : <p>This exact setup cannot be reopened. Your captured context and draft are preserved.</p>}
               </> : <>
                 <small>{auditSelection ? "Explain saved audit evidence" : receiverSelection ? receiverSelection.selected.kind === "receiver_scenario" ? "Coordinate a receiver control test" : "Inspect an existing receiver test" : creationSelection ? "Create a detection from observed evidence" : savedGraphSelection ? "Run the saved experiment" : graphSelection ? wantsStepEdit ? "Edit the selected step" : "Build from an objective" : "Selected rule"}</small><strong>{graphSelection && !wantsStepEdit ? "New experiment" : selection.title}</strong>{auditSelection ? <p>{auditDescription}</p> : receiverSelection ? <p>{receiverSelection.selected.kind === "receiver_scenario" ? `Version ${receiverSelection.selected.selection.version} · ${receiverSelection.selected.run_intent.runner_profile_id}. The exact selected experiment, scope and run settings are frozen for this request. Prepare and Execute require native review.` : "Analyse the verified evidence currently available in this test. This request cannot stop or take ownership of the receiver test."}</p> : creationSelection ? <><p>{sentence(creationSelection.selected.target_language)} · {sentence(creationSelection.selected.case_role)} development case. Review and edit the proposed source in Detection Lab before saving and evaluating it.</p><RunReference runId={creationSelection.selected.run_id} label="Source observations" onNavigate={navigate}/></> : savedGraphSelection ? <p>Version {savedRunSource(savedGraphSelection.selected).version} · {sentence(savedGraphSelection.selected.run_intent.mode)} · {savedGraphSelection.selected.run_intent.runner_profile_id || "Select a runner profile"}. The selected settings stay bound to this request. Review the plan before Assist submits it; Execute still needs fresh approval.</p> : graphSelection ? <>{graphSelection.editStep || graphSelection.editUnavailable ? <Field label="Assistant operation"><select value={graphOperation} onChange={event => chooseGraphOperation(event.target.value)}><option value="edit_step">Edit selected step</option><option value="new">New experiment</option></select></Field> : null}{wantsStepEdit && graphSelection.editUnavailable ? <p role="status">{graphSelection.editUnavailable}</p> : editingStep ? <><p className="assistant-action-summary">Change this step’s parameters. Review before saving a separate experiment; nothing runs.</p><details className="assistant-source-details"><summary>Experiment purpose and model data</summary><p><strong>{editingStep.scenario.title}</strong> · {editingStep.dirty ? "Unsaved working graph" : "Current working graph"}</p><p>Purpose: {editingStep.scenario.purpose}</p><p>The model receives your objective, this step’s parameters and their allowed schema. Other steps, inputs and routes stay in this product and cannot change.</p></details></> : <p>Create a separate experiment from registered steps. Your current graph stays in place. Review and edit the proposal in Builder before saving.</p>}</> : <RunReference runId={detectionSelection!.runId} label="Source observations" onNavigate={navigate}/>}
               </>}

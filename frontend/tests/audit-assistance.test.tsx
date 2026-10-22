@@ -110,3 +110,18 @@ it("refuses changed selections, dispatch capabilities, and operation-bearing aud
   expect(matchesAssistanceReceipt(valid, body)).toBe(true);
   expect(matchesAssistanceReceipt({ ...valid, turn: { ...valid.turn, plan: [{ step_id: "step-1", capability_id: "graph.propose_and_validate", title: "Wrong", detector_ref: "none", reason: "Wrong" }] } }, body)).toBe(false);
 });
+
+it("encodes and parses an exact review source route while rejecting partial or repeated bindings", () => {
+  const href = auditContext.auditReviewSourceHref(selected);
+  const query = new URL(href, "http://localhost").searchParams;
+  expect(auditContext.auditReviewSourceSelection(owner, query)).toEqual(selected);
+  expect(() => auditContext.auditReviewSourceHref({ ...selected, review_digest: "bad" })).toThrow();
+  expect(() => auditContext.auditReviewSourceSelection(owner, new URLSearchParams({
+    exercise: owner, audit_review: review.review_id,
+  }))).toThrow();
+  expect(() => auditContext.auditReviewSourceSelection(owner, new URLSearchParams([
+    ["exercise", owner], ["audit_review", review.review_id], ["audit_review", review.review_id],
+    ["audit_digest", review.review_digest],
+  ]))).toThrow();
+  expect(() => auditContext.auditReviewSourceSelection("job-" + "f".repeat(32), query)).toThrow();
+});

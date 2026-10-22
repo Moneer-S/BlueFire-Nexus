@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
-import { checkedCreationEnvelope, checkedCreationSource, creationDigest, creationJobId, creationWorkActive, detectionCreationPath, readCreationDraft, storeCreationDraft, validCreationText,
+import { checkedCreationEnvelope, checkedCreationSelection, checkedCreationSource, creationDigest, creationJobId, creationWorkActive, detectionCreationPath, readCreationDraft, storeCreationDraft, validCreationText,
   type DetectionCreationDecision, type DetectionCreationDraft, type DetectionCreationEnvelope, type DetectionCreationLanguage, type DetectionCreationProposal, type DetectionCreationRole, type DetectionCreationValidation, type RunDetectionSelection } from "../lib/detection-creation";
 import { sameJson } from "../lib/replay-review";
 import { downloadArtifact } from "../lib/download";
@@ -11,26 +11,34 @@ import { EvaluationReport } from "./DetectionRunEvaluations";
 import { Button, Callout, ErrorState, Field, LoadingState, sentence } from "./Primitives";
 import "./DetectionAICreation.css";
 
-export function DetectionAICreation({ runId, jobId }: { runId: string; jobId?: string }) {
+export function DetectionAICreation({ runId, jobId, selection }: { runId: string; jobId?: string; selection?: RunDetectionSelection | null }) {
   if (jobId !== undefined) return <CreationReview key={jobId} jobId={jobId} selectedRunId={runId} />;
-  return <CreationSetup key={runId} runId={runId} />;
+  return <CreationSetup key={`${runId}:${JSON.stringify(selection)}`} runId={runId} selection={selection} />;
 }
 
-function CreationSetup({ runId }: { runId: string }) {
+function CreationSetup({ runId, selection }: { runId: string; selection?: RunDetectionSelection | null }) {
   const panel = useAssistancePanel();
-  const source = useQuery({ queryKey: ["detection-creation-source", runId], queryFn: async () => checkedCreationSource(await api.detectionCreationSource(runId), runId), enabled: Boolean(runId), retry: false });
-  const [chosenBehavior, setChosenBehavior] = useState<string>();
-  const [chosenLanguage, setChosenLanguage] = useState<DetectionCreationLanguage>();
-  const [role, setRole] = useState<DetectionCreationRole>("attack");
+  const source = useQuery({ queryKey: ["detection-creation-source", runId], queryFn: async () => checkedCreationSource(await api.detectionCreationSource(runId), runId), enabled: Boolean(runId), retry: false, refetchOnMount: selection ? "always" : true });
+  const [chosenBehavior, setChosenBehavior] = useState<string | undefined>(selection?.behavior_id);
+  const [chosenLanguage, setChosenLanguage] = useState<DetectionCreationLanguage | undefined>(selection?.target_language);
+  const [role, setRole] = useState<DetectionCreationRole>(selection?.case_role ?? "attack");
   const data = source.data;
+  const restoration = useMemo(() => {
+    if (selection === null) return { error: new Error("This captured detection selection link is incomplete or invalid. Reopen its source run.") };
+    if (!selection || !data) return {};
+    try { checkedCreationSelection(selection, data); return { verified: true }; }
+    catch (error) { return { error: error instanceof Error ? error : new Error("The captured detection selection could not be verified.") }; }
+  }, [selection, data]);
+  const selectionReady = selection === undefined || Boolean(restoration.verified && !source.isFetching && !source.isError);
   const behavior = chosenBehavior ?? (data?.behaviors.length === 1 ? data.behaviors[0]!.behavior_id : "");
   const language = chosenLanguage ?? (data?.languages.find((item) => item.id === "sqlite" && item.available)?.id ?? data?.languages.find((item) => item.available)?.id);
-  const selected = useMemo<RunDetectionSelection | undefined>(() => data?.available && data.behaviors.some((item) => item.behavior_id === behavior)
+  const selected = useMemo<RunDetectionSelection | undefined>(() => selectionReady && data?.available && data.behaviors.some((item) => item.behavior_id === behavior)
     && language && data.languages.some((item) => item.id === language && item.available) ? { kind: "run_detection", run_id: runId, source_binding_digest: data.source_binding_digest, behavior_id: behavior, target_language: language, case_role: role } : undefined,
-  [data, behavior, language, role, runId]);
+  [data, behavior, language, role, runId, selectionReady]);
   usePublishRunDetectionSelection(selected, data?.behaviors.find((item) => item.behavior_id === behavior)?.title);
   return <section className="detection-creation" aria-label="Create detection from run">
     <header><h2>Create a detection from this run</h2><p>Draft a query from independent observations, review its source, then measure what it matches.</p></header>
+    {restoration.error ? <ErrorState title="Captured source selection unavailable" error={restoration.error} /> : null}
     {!runId ? <Callout title="Choose a source run">Select a completed run above. The rule will use that run's independently observed evidence.</Callout> : source.isPending ? <LoadingState label="Checking source observations and query engines" /> : source.error ? <ErrorState title="Source evidence unavailable" error={source.error} retry={() => { void source.refetch(); }} /> : data ? <>
       <p>{data.observed_count} independent observations · {data.evidence_count} total records · {sentence(data.mode)}</p>
       {!data.available ? <Callout title="This source cannot support a draft">{data.reason ?? "Choose a run with usable independent observations."} <Link to={`/runs/${encodeURIComponent(runId)}`}>Review source evidence</Link></Callout> : <>

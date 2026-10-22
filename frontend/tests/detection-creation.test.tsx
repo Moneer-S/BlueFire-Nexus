@@ -6,7 +6,7 @@ import { expect, it, vi } from "vitest";
 import { DetectionAICreation } from "../src/components/DetectionAICreation";
 import { DetectionLabPage } from "../src/pages/DetectionLab";
 import { api } from "../src/lib/api";
-import { checkedCreationEnvelope, readCreationDraft, storeCreationDraft, type DetectionCreationDecision, type DetectionCreationEnvelope, type DetectionCreationSource, type DetectionCreationValidation, type RunDetectionSelection } from "../src/lib/detection-creation";
+import { checkedCreationEnvelope, checkedCreationSelection, detectionCreationPath, detectionCreationSelectionFromParams, detectionCreationSelectionPath, readCreationDraft, storeCreationDraft, type DetectionCreationDecision, type DetectionCreationEnvelope, type DetectionCreationSource, type DetectionCreationValidation, type RunDetectionSelection } from "../src/lib/detection-creation";
 import { AssistanceProvider, useAssistanceSelection } from "../src/state/AssistanceContext";
 
 const digest = `sha256:${"a".repeat(64)}`, reviewed = `sha256:${"b".repeat(64)}`;
@@ -27,6 +27,97 @@ function mount(review = false) {
   return { ...view, client, user: userEvent.setup() };
 }
 function stubReview() { vi.spyOn(api, "detectionCreation").mockResolvedValue(envelope()); return vi.spyOn(api, "validateDetectionCreation").mockImplementation(async (_id, body) => validation(body)); }
+
+function mountCreationPath(path: string, client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
+  vi.spyOn(api, "runs").mockResolvedValue({ schema_version: "bluefire.runs.v1", runs: [], unavailable_run_count: 0 });
+  vi.spyOn(api, "runDetail").mockImplementation(() => new Promise(() => {}));
+  return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><AssistanceProvider><Witness /><DetectionLabPage /></AssistanceProvider></MemoryRouter></QueryClientProvider>);
+}
+
+it("round-trips exact captured choices without changing existing saved-job links", () => {
+  const captured: RunDetectionSelection = { ...selection, target_language: "sigma", case_role: "replay" };
+  const params = new URL(detectionCreationSelectionPath(captured), "http://localhost").searchParams;
+  expect(detectionCreationSelectionFromParams(params)).toEqual(captured);
+  expect(detectionCreationPath(runId, jobId)).toBe(`/detection-lab?run=${runId}&create=1&create_job=${jobId}`);
+  expect(detectionCreationSelectionFromParams(new URLSearchParams({ run: runId, create: "1", create_job: jobId }))).toBeUndefined();
+  params.append("create_role", "attack");
+  expect(detectionCreationSelectionFromParams(params)).toBeNull();
+  expect(() => detectionCreationSelectionPath({ ...captured, case_role: "other" } as unknown as RunDetectionSelection)).toThrow("invalid");
+});
+
+it("restores nondefault captured behavior, language and role after a fresh source read and reload", async () => {
+  const data = source(); data.languages[1]!.available = true;
+  const captured: RunDetectionSelection = { ...selection, behavior_id: data.behaviors[1]!.behavior_id, target_language: "sigma", case_role: "replay" };
+  let resolve!: (value: DetectionCreationSource) => void;
+  const lookup = vi.spyOn(api, "detectionCreationSource").mockImplementationOnce(() => new Promise((done) => { resolve = done; })).mockResolvedValue(data);
+  const submit = vi.spyOn(api, "submitAssistance"), accept = vi.spyOn(api, "reviewDetectionCreation");
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(["detection-creation-source", runId], data);
+  const path = detectionCreationSelectionPath(captured);
+  const first = mountCreationPath(path, client);
+  expect(screen.getByLabelText("Published selection")).toBeEmptyDOMElement();
+  await waitFor(() => expect(lookup).toHaveBeenCalledTimes(1));
+  await act(async () => resolve(data));
+  await waitFor(() => expect(JSON.parse(screen.getByLabelText("Published selection").textContent!)).toMatchObject({ selected: captured }));
+  expect(screen.getByLabelText(/Behavior to detect/)).toHaveValue(captured.behavior_id);
+  expect(screen.getByLabelText("Rule language")).toHaveValue("sigma");
+  expect(screen.getByLabelText(/Development case/)).toHaveValue("replay");
+  first.unmount(); mountCreationPath(path);
+  await waitFor(() => expect(JSON.parse(screen.getByLabelText("Published selection").textContent!)).toMatchObject({ selected: captured }));
+  expect(lookup).toHaveBeenCalledTimes(2);
+  expect(submit).not.toHaveBeenCalled(); expect(accept).not.toHaveBeenCalled();
+});
+
+it.each(["digest", "behavior", "language", "partial"])("blocks a captured selection with changed or invalid %s instead of choosing defaults", async (field) => {
+  const data = source();
+  const captured = { ...selection };
+  if (field === "digest") data.source_binding_digest = reviewed;
+  if (field === "behavior") data.behaviors = [data.behaviors[1]!];
+  if (field === "language") data.languages[0]!.available = false;
+  const path = new URL(detectionCreationSelectionPath(captured), "http://localhost");
+  if (field === "partial") path.searchParams.delete("create_role");
+  vi.spyOn(api, "detectionCreationSource").mockResolvedValue(data);
+  const submit = vi.spyOn(api, "submitAssistance"), accept = vi.spyOn(api, "reviewDetectionCreation");
+  mountCreationPath(`${path.pathname}${path.search}`);
+  expect(await screen.findByText("Captured source selection unavailable")).toBeVisible();
+  expect(await screen.findByRole("button", { name: "Draft rule with Assistant" })).toBeDisabled();
+  expect(screen.getByLabelText("Published selection")).toBeEmptyDOMElement();
+  expect(submit).not.toHaveBeenCalled(); expect(accept).not.toHaveBeenCalled();
+});
+
+it("rejects a source from another run and ambiguous source choices", () => {
+  expect(() => checkedCreationSelection(selection, { ...source(), run_id: "run-20300101T000000Z-fedcba0987654321" })).toThrow("no longer available");
+  const data = source(); data.behaviors.push(data.behaviors[0]!);
+  expect(() => checkedCreationSelection(selection, data)).toThrow("no longer available");
+  const languages = source(); languages.languages.push(languages.languages[0]!);
+  expect(() => checkedCreationSelection(selection, languages)).toThrow("no longer available");
+  expect(() => checkedCreationSelection(selection, { ...source(), available: false })).toThrow("no longer available");
+});
+
+it.each([
+  `${detectionCreationSelectionPath(selection)}&create_job=${jobId}`,
+  `${detectionCreationSelectionPath(selection)}&create_job=`,
+  `${detectionCreationSelectionPath(selection)}&create_job=${jobId}&create_job=${jobId}`,
+  `${detectionCreationPath(runId, jobId)}&create_job=${jobId}`,
+  detectionCreationPath(runId, "invalid-job"),
+])("refuses ambiguous or malformed creation review routes without loading or starting work: %s", async (path) => {
+  const sourceLookup = vi.spyOn(api, "detectionCreationSource"), reviewLookup = vi.spyOn(api, "detectionCreation");
+  const submit = vi.spyOn(api, "submitAssistance"), accept = vi.spyOn(api, "reviewDetectionCreation");
+  mountCreationPath(path);
+  expect(await screen.findByText("Incomplete rule review link")).toBeVisible();
+  expect(screen.getByLabelText("Published selection")).toBeEmptyDOMElement();
+  expect(sourceLookup).not.toHaveBeenCalled(); expect(reviewLookup).not.toHaveBeenCalled();
+  expect(submit).not.toHaveBeenCalled(); expect(accept).not.toHaveBeenCalled();
+});
+
+it("preserves a single valid saved-job review route without starting new work", async () => {
+  stubReview();
+  const submit = vi.spyOn(api, "submitAssistance"), accept = vi.spyOn(api, "reviewDetectionCreation");
+  mountCreationPath(detectionCreationPath(runId, jobId));
+  expect(await screen.findByRole("heading", { name: "Review the proposed rule" })).toBeVisible();
+  expect(api.detectionCreation).toHaveBeenCalledWith(jobId);
+  expect(submit).not.toHaveBeenCalled(); expect(accept).not.toHaveBeenCalled();
+});
 
 it("requires a choice for ambiguous behaviors and publishes the exact new-rule selection", async () => {
   vi.spyOn(api, "detectionCreationSource").mockResolvedValue(source());

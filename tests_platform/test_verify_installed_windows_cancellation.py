@@ -410,9 +410,19 @@ def test_private_environment_rejects_unreviewed_architecture_values(machine: str
         verifier._windows_architecture_environment(machine)
 
 
-@pytest.mark.parametrize("permit_pin", [True, False])
+@pytest.mark.parametrize(
+    ("permit_pin", "approval_gate"),
+    [
+        (True, "ready"),
+        (False, "ready"),
+        (True, "delayed"),
+        (True, "unexpected"),
+        (True, "wrong_receipt"),
+        (True, "wrong_identity"),
+    ],
+)
 def test_real_driver_api_and_observer_contracts_without_native_execution(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, permit_pin: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, permit_pin: bool, approval_gate: str
 ) -> None:
     """Exercise the shipped JS and API guards with fixture PIDs, never native actions."""
     from bluefire.api import create_server, generate_browser_bootstrap_capability
@@ -453,9 +463,13 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
     monkeypatch.setattr(verifier, "_pin_windows_processes", pin)
 
     class FixtureService:
-        state = "awaiting_approval"
+        state = {"delayed": "queued", "unexpected": "running"}.get(
+            approval_gate, "awaiting_approval"
+        )
         runner_state = "unbootstrapped"
         saved = None
+        approval_calls = 0
+        cancel_calls = 0
 
         def catalog(self):
             return {
@@ -524,28 +538,46 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
             }
 
         def submit_run(self, request):
-            return {"job": self.job(job_id), "preflight": self.preflight(request)}
+            result = {"job": self.job(job_id), "preflight": self.preflight(request)}
+            result["job"]["job_id"] = job_id
+            if approval_gate == "delayed":
+                self.state = "planning"
+            return result
 
         def job(self, requested_id):
             assert requested_id == job_id
-            return {
-                "job_id": job_id,
+            result = {
+                "job_id": "job-" + "d" * 32 if approval_gate == "wrong_identity" else job_id,
                 "state": self.state,
                 "approval_request": {
-                    "status": "pending" if self.state == "awaiting_approval" else "consumed"
+                    "status": (
+                        "pending"
+                        if self.state == "awaiting_approval" and approval_gate != "wrong_receipt"
+                        else "consumed"
+                    )
                 },
                 "progress": {"run_id": run_id},
             }
+            if approval_gate == "delayed" and self.state == "planning":
+                self.state = "awaiting_approval"
+            return result
 
         def approve_job(self, requested_id, request):
             assert request == {"approved_by": "installed-windows-cancellation-reviewer"}
             assert self.state == "awaiting_approval"
+            self.approval_calls += 1
             task.mkdir(parents=True)
             (task / "ready.json").write_text(json.dumps(ready), encoding="utf-8")
             self.state = "running"
             return {"job": self.job(requested_id)}
 
         def cancel_job(self, requested_id):
+            assert requested_id == job_id
+            self.cancel_calls += 1
+            if approval_gate in {"unexpected", "wrong_receipt", "wrong_identity"}:
+                assert self.approval_calls == 0 and not pins and not task.exists()
+                self.state = "cancelled"
+                return self.job(requested_id)
             assert pins == [ready]
             assert json.loads((output / "witness-permit.json").read_text(encoding="utf-8")) == {
                 "witness_request_hash": ready["request_hash"]
@@ -612,16 +644,29 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
     assert not observer.is_alive() and not server_thread.is_alive()
     report = json.loads((output / "driver-report.json").read_text(encoding="utf-8"))
     assert capability not in json.dumps(report)
-    assert result.returncode == (0 if permit_pin else 1), result.stderr
-    if permit_pin:
+    expected_pass = permit_pin and approval_gate in {"ready", "delayed"}
+    assert result.returncode == (0 if expected_pass else 1), result.stderr
+    if expected_pass:
         assert not observer_errors and observed[0]["control_path"] == task
         assert verifier._driver_passed(report)
-        assert report["request_counts"]["job_status"] == 3
-    else:
+        assert report["request_counts"]["job_status"] == (4 if approval_gate == "delayed" else 3)
+        assert service.approval_calls == 1 and service.cancel_calls == 1
+    elif not permit_pin:
         assert observer_errors == ["RuntimeError"] and not observed and not pins
         assert report["status"] == "failed_or_incomplete"
         assert report["error"]["stage"] == "independent-witness-handshake"
         assert report["request_counts"]["approval"] == 1
         assert report["request_counts"]["cancel"] == 0
         assert report["request_counts"]["runner_stop"] == 0
+        assert not verifier._driver_passed(report)
+    else:
+        assert report["status"] == "failed_or_incomplete"
+        assert report["error"]["stage"] == "normal-submit-and-approval"
+        assert set(report["error"]) == {"stage", "error_type"}
+        assert report["job_id"] == job_id
+        assert report["request_counts"]["job_status"] == (0 if approval_gate == "unexpected" else 1)
+        assert report["request_counts"]["approval"] == 0
+        assert report["request_counts"]["cancel"] == 1
+        assert service.approval_calls == 0 and service.cancel_calls == 1
+        assert service.state == "cancelled" and not task.exists() and not pins
         assert not verifier._driver_passed(report)

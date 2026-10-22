@@ -20,7 +20,7 @@ import { InternalBenignFixtureEditor } from "../components/InternalBenignFixture
 import { isInternalBenignFixtureDraftText, readInternalBenignFixtureDraft, type InternalBenignFixtureDraft } from "../lib/internal-benign-fixtures";
 import { initialManualInternalConditions, isManualInternalConditionsText, manualDetectionDefinition, readManualInternalConditions } from "../lib/manual-detection-definition";
 import { isStructuredRuleDraftText, readStructuredRuleDraft, type StructuredRuleDraft } from "../lib/structured-rule-selection";
-import { detectionCreationPath } from "../lib/detection-creation";
+import { detectionCreationJobFromParams, detectionCreationPath, detectionCreationSelectionFromParams } from "../lib/detection-creation";
 import { detectionEvaluationHandoff, runCandidateKey, sourceObservedRecords, sourceRunParam } from "../lib/run-handoffs";
 import type {
   DetectionCandidate,
@@ -230,17 +230,20 @@ export function DetectionLabPage() {
 function DetectionCreationPage() {
   const [params, setParams] = useSearchParams();
   const runId = sourceRunParam(params, "run");
-  const jobId = params.has("create_job") ? params.get("create_job")! : undefined;
-  const runs = useQuery({ queryKey: ["runs"], queryFn: api.runs });
-  const source = useQuery({ queryKey: ["run", runId], queryFn: () => api.runDetail(runId), enabled: Boolean(runId), retry: false });
+  const selection = detectionCreationSelectionFromParams(params);
+  const jobId = detectionCreationJobFromParams(params);
+  const invalidJobLink = jobId === null || (params.has("create_job") && selection !== undefined);
+  const runs = useQuery({ queryKey: ["runs"], queryFn: api.runs, enabled: !invalidJobLink });
+  const source = useQuery({ queryKey: ["run", runId], queryFn: () => api.runDetail(runId), enabled: Boolean(runId) && !invalidJobLink, retry: false });
+  if (invalidJobLink) return <div className="page detection-page"><PageHeader title="Detection Lab" /><ErrorState title="Incomplete rule review link" error={new Error("Use one saved rule job link or an exact captured source selection, not both.")} /></div>;
   return <div className="page detection-page">
     <PageHeader title="Detection Lab" />
     <section className="detection-context" aria-label="Source run and evidence">
-      {jobId === undefined ? <Field label="Detection source run"><select value={runId} onChange={(event) => setParams((old) => { const next = new URLSearchParams(old); if (event.target.value) next.set("run", event.target.value); else next.delete("run"); return next; })}><option value="">Choose a run to bring in its evidence</option>{runId && !runs.data?.runs.some((run) => run.run_id === runId) ? <option value={runId}>{source.data ? sourceRunLabel(source.data) : "Selected source run \u00b7 Date unavailable"}</option> : null}{runs.data?.runs.map((run) => <option key={run.run_id} value={run.run_id}>{sourceRunLabel(run)}</option>)}</select></Field> : <p>{source.data ? runLabel(source.data) : "The saved proposal retains its original source run."}</p>}
+      {jobId === undefined ? <Field label="Detection source run"><select value={runId} onChange={(event) => setParams(new URLSearchParams({ create: "1", ...(event.target.value ? { run: event.target.value } : {}) }))}><option value="">Choose a run to bring in its evidence</option>{runId && !runs.data?.runs.some((run) => run.run_id === runId) ? <option value={runId}>{source.data ? sourceRunLabel(source.data) : "Selected source run \u00b7 Date unavailable"}</option> : null}{runs.data?.runs.map((run) => <option key={run.run_id} value={run.run_id}>{sourceRunLabel(run)}</option>)}</select></Field> : <p>{source.data ? runLabel(source.data) : "The saved proposal retains its original source run."}</p>}
       {runs.error && jobId === undefined ? <ErrorState title="Run list unavailable" error={runs.error} retry={() => { void runs.refetch(); }} /> : null}
       {source.error ? <ErrorState title="Source evidence unavailable" error={source.error} retry={() => { void source.refetch(); }} /> : source.data ? <><Link to={`/runs/${encodeURIComponent(runId)}`}>Review source run</Link><details className="detection-source-details"><summary>{sourceObservedRecords(source.data).length} independent observations · inspect source evidence</summary><SourceRunEvidence run={source.data} /></details></> : null}
     </section>
-    <DetectionAICreation runId={runId} jobId={jobId} />
+    <DetectionAICreation runId={runId} jobId={jobId ?? undefined} selection={selection} />
   </div>;
 }
 

@@ -234,11 +234,13 @@ async function main() {
 
   stage = "normal-submit-and-approval";
   const submission = (await call("POST", "/api/v1/runs", payload)).value;
+  const submittedJobId = submission.job.job_id;
+  assert.match(submittedJobId, /^job-[0-9a-f]{32}$/);
+  jobId = submittedJobId;
+  report.job_id = jobId;
   assert.equal(submission.preflight.status, "approval_required");
-  assert.equal(submission.job.state, "awaiting_approval");
-  jobId = submission.job.job_id;
-  assert.match(jobId, /^job-[0-9a-f]{32}$/);
-  const before = (await call("GET", `/api/v1/jobs/${jobId}`)).value;
+  assert.ok(new Set(["queued", "planning", "awaiting_approval"]).has(submission.job.state));
+  const before = await waitForJobState(new Set(["awaiting_approval"]), new Set(["queued", "planning"]));
   approvalStatusBefore = before.approval_request?.status;
   assert.equal(approvalStatusBefore, "pending");
   await call("POST", `/api/v1/jobs/${jobId}/approval`, { approved_by: "installed-windows-cancellation-reviewer" });
@@ -315,11 +317,13 @@ async function main() {
   report.status = "passed";
 }
 
-async function waitForJobState(terminal) {
+async function waitForJobState(terminal, transient = null) {
   const deadline = Date.now() + 45_000;
   while (Date.now() < deadline && counts.job_status < 100) {
     const job = (await call("GET", `/api/v1/jobs/${jobId}`)).value;
+    assert.equal(job.job_id, jobId);
     if (terminal.has(job.state)) return job;
+    assert.ok(transient === null || transient.has(job.state), "job left its expected approval planning states");
     await sleep(1000);
   }
   throw new Error("job state did not settle before its bounded deadline");
@@ -329,9 +333,16 @@ try {
   await main();
 } catch (error) {
   report.error = { stage, error_type: error instanceof Error ? error.name : "unknown" };
+  if (jobId && counts.approval === 0 && counts.cancel === 0) {
+    try {
+      await call("POST", `/api/v1/jobs/${jobId}/cancel`, {});
+    } catch (cleanupError) {
+      report.error.cleanup_error_type = cleanupError instanceof Error ? cleanupError.name : "unknown";
+    }
+  }
 } finally {
   capability = "";
   session = "";
   writeFileSync(join(output, "driver-report.json"), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx" });
 }
-process.exit(report.status === "passed" ? 0 : 1);
+process.exitCode = report.status === "passed" ? 0 : 1;
