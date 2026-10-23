@@ -1,11 +1,6 @@
 """Historical public wire evidence for already durable private Windows claims.
-
-The original claim is independently loaded from the store. expected_binding must
-be the independently retained trusted ORIGINAL admission binding, never fresh
-resource state or caller data authenticated merely by matching hashes. No Windows
-preparation, enrollment, task admission, execution or credential authority is
-created here. The supplied aware historical clock only bounds retained observed
-timestamps; it never replaces the original immutable execution interval.
+Loads retained admission and evidence without creating preparation, execution,
+credential, or replay authority; historical clocks only bound retained evidence.
 """
 
 from __future__ import annotations
@@ -16,6 +11,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Literal, cast
 
+from . import windows_file_access_managed_evidence as managed_evidence
 from . import windows_file_access_native_wire as wire
 from ._windows_file_access_cleanup_proof import (
     MAX_RECEIPT_BYTES,
@@ -553,10 +549,10 @@ def _load(
         "SELECT task_id,stage,document_digest, "
         "CASE WHEN length(CAST(document_json AS BLOB)) BETWEEN 1 AND ? "
         "THEN document_json ELSE NULL END AS document_json "
-        "FROM file_access_task_evidence WHERE task_id=? LIMIT 4",
+        "FROM file_access_task_evidence WHERE task_id=? LIMIT 5",
         (_ROW_MAX, context.task_id),
     ).fetchall()
-    _require(len(rows) <= 3)
+    _require(len(rows) <= 4)
     documents: dict[str, Any] = {}
     previous: str | None = None
     payloads: dict[str, bytes] = {}
@@ -564,7 +560,12 @@ def _load(
     projection = None
     returncode = None
     for row in rows:
-        _require(type(row["stage"]) is str and row["stage"] in _STAGES)
+        _require(
+            type(row["stage"]) is str
+            and row["stage"] in (*_STAGES, managed_evidence.READY_CONSUME_STAGE)
+        )
+        if row["stage"] == managed_evidence.READY_CONSUME_STAGE:
+            continue
         _require(row["stage"] not in documents)
         documents[row["stage"]] = (row, _row_document(row, _ROW_MAX))
     seen_gap = False
@@ -633,6 +634,7 @@ def _load(
         snapshot = kind(*arguments, cast(wire.PairNativeProjection | None, projection))
     else:
         snapshot = NativeTaskEvidence(*arguments, projection)
+    _managed_ready_consume_at(connection, context, snapshot, documents)
     return snapshot, documents
 
 
@@ -745,6 +747,57 @@ _CLEANUP_FIELDS = {
     "receipt_utf8",
     "private_packet_utf8",
 }
+_MANAGED_CLEANUP_FIELDS = _CLEANUP_FIELDS | {"managed_lineage_utf8"}
+
+
+def _managed_ready_consume_at(
+    connection: Any,
+    context: _Context,
+    trail: NativeTaskEvidence,
+    documents: dict[str, Any],
+) -> dict[str, Any] | None:
+    rows = connection.execute(
+        "SELECT task_id,stage,document_digest, "
+        "CASE WHEN length(CAST(document_json AS BLOB)) BETWEEN 1 AND ? "
+        "THEN document_json ELSE NULL END AS document_json "
+        "FROM file_access_task_evidence WHERE task_id=? AND stage=? LIMIT 2",
+        (
+            managed_evidence.READY_CONSUME_MAX,
+            context.task_id,
+            managed_evidence.READY_CONSUME_STAGE,
+        ),
+    ).fetchall()
+    _require(len(rows) <= 1)
+    if not rows:
+        return None
+    row = rows[0]
+    document = _row_document(row, managed_evidence.READY_CONSUME_MAX)
+    receipt = object.__new__(managed_evidence.PersistedManagedCorrectionReady)
+    object.__setattr__(receipt, "_raw", canonical_json(document).encode("utf-8"))
+    document = receipt.document()
+    _require(
+        context.protocol is _Protocol.CORRECTION_V3
+        and type(trail) is CorrectionNativeTaskEvidence
+        and trail.packet_bytes is not None
+        and trail.ready_bytes is not None
+        and document["protocol"] == _Protocol.CORRECTION_V3.value
+        and row["task_id"] == document["task_id"] == context.task_id
+        and row["stage"] == managed_evidence.READY_CONSUME_STAGE
+        and document["transport_request_hash"] == context.transport_hash
+        and document["claim_digest"] == context.claim_digest
+        and set(documents) >= {"packet", "ready"}
+        and document["ready_evidence_digest"] == documents["ready"][0]["document_digest"]
+    )
+    retained = wire.validate_correction_retained_packet(
+        context.original, cast(bytes, trail.packet_bytes)
+    )
+    wire.validate_correction_ready(retained, cast(bytes, trail.ready_bytes))
+    _require(
+        document["packet_digest"] == wire._binding(retained)["packet_digest"]
+        and document["ready_digest"]
+        == content_hash(wire._document(cast(bytes, trail.ready_bytes), wire.READY_MAX))
+    )
+    return document
 
 
 @dataclass(frozen=True, slots=True)
@@ -829,7 +882,10 @@ def _cleanup_load(
     if row is None:
         return NativeCleanupEvidence(trail, None, None), None
     document = _row_document(row, _ROW_MAX)
-    _require(set(document) == _CLEANUP_FIELDS and document["schema_version"] == _CLEANUP_SCHEMA)
+    _require(
+        set(document) in (_CLEANUP_FIELDS, _MANAGED_CLEANUP_FIELDS)
+        and document["schema_version"] == _CLEANUP_SCHEMA
+    )
     _require(row["task_id"] == document["task_id"] == context.task_id)
     _require(document["protocol"] == context.protocol.value)
     _require(document["transport_request_hash"] == context.transport_hash)
@@ -838,6 +894,39 @@ def _cleanup_load(
     packet = _text_bytes(document["private_packet_utf8"], wire.PUBLIC_MAX)
     proof = _cleanup_validate(context, receipt, packet, clock, trail)
     _require(document["packet_digest"] == proof["packet_digest"])
+    retained_trail, documents = _load(connection, context, clock)
+    _require(retained_trail == trail)
+    consume = _managed_ready_consume_at(connection, context, trail, documents)
+    if set(document) == _MANAGED_CLEANUP_FIELDS:
+        _require(consume is not None)
+        lineage_max = managed_evidence.MANAGED_CORRECTION_LINEAGE_MAX
+        lineage_raw = _text_bytes(document["managed_lineage_utf8"], lineage_max)
+        lineage = wire._document(lineage_raw, lineage_max)
+        _require(canonical_json(lineage).encode("utf-8") == lineage_raw)
+        _require(
+            type(trail) is CorrectionNativeTaskEvidence
+            and trail.ready_bytes is not None
+            and trail.terminal_bytes is not None
+            and trail.actual_returncode is not None
+        )
+        managed_evidence.validate_native_closure_lineage(
+            lineage,
+            task_id=context.task_id,
+            transport_request_hash=context.transport_hash,
+            claim_digest=context.claim_digest,
+            packet_digest=proof["packet_digest"],
+            ready_digest=content_hash(
+                wire._document(cast(bytes, trail.ready_bytes), wire.READY_MAX)
+            ),
+            terminal_digest=content_hash(
+                wire._document(cast(bytes, trail.terminal_bytes), wire.TERMINAL_MAX)
+            ),
+            actual_returncode=trail.actual_returncode,
+            cleanup_receipt_digest=content_hash(proof),
+            consume_receipt=cast(dict, consume),
+        )
+    else:
+        _require(consume is None)
     return NativeCleanupEvidence(trail, receipt, packet), document
 
 

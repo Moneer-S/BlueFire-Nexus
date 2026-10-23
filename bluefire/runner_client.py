@@ -26,6 +26,8 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterator, Mapping, Protocol, cast, runtime_checkable
 
+from . import windows_file_access_managed_result as windows_correction_result_module
+from . import windows_file_access_managed_session as windows_correction_session_module
 from .execution_contracts import execution_task_identity as execution_task_identity
 from .execution_contracts import reject_runner_execution_keys as reject_forbidden_execution_keys
 from .native_tool_candidate import validate_candidate_inspection
@@ -119,7 +121,30 @@ _WATCHDOG_EXIT_GRACE_SECONDS = 12.0
 _MAX_EXECUTION_TIMEOUT_SECONDS = 86_400.0
 _WATCHDOG_CONFIG_LIMIT_BYTES = 8 * 1024 * 1024
 _RUNNER_BINARY_LIMIT_BYTES = 256 * 1024 * 1024
-_WATCHDOG_CONTROL_NAMES = frozenset({"config.json", "start", "cancel", "ready.json", "status.json"})
+_WATCHDOG_CONTROL_NAMES = frozenset(
+    {"config.json", "session.json", "start", "cancel", "ready.json", "status.json"}
+)
+_WATCHDOG_CONFIG_KEYS = frozenset(
+    {
+        "schema_version",
+        "task_id",
+        "runner_binary",
+        "runner_binary_digest",
+        "parent_death_script_digest",
+        "watchdog_script_digest",
+        "watchdog_interpreter",
+        "watchdog_interpreter_digest",
+        "work_root",
+        "timeout_seconds",
+        "output_limit_bytes",
+        "durable_result_path",
+        "durable_result_parent_identity",
+        "durable_result_parent_mount_identity",
+        "manifest",
+        "profile",
+        "cancellation_lease_token",
+    }
+)
 _WATCHDOG_STATUS_SCHEMA = "bluefire.runner-watchdog-status.v2"
 _LEGACY_WATCHDOG_STATUS_SCHEMA = "bluefire.runner-watchdog-status.v1"
 _KILL_PROCESS_GROUP = getattr(os, "killpg", None)
@@ -137,7 +162,13 @@ _DARWIN_WAITID_EINTR_RETRIES = 8
 _RECEIVER_TASK_ID_ENV = "BLUEFIRE_RECEIVER_TASK_ID"
 _RECEIVER_TASK_KEY_ENV = "BLUEFIRE_RECEIVER_TASK_KEY"
 _RECEIVER_TASK_ENV_NAMES = frozenset({_RECEIVER_TASK_ID_ENV, _RECEIVER_TASK_KEY_ENV})
-_RECEIVER_AUTH_ACTION_IDS = frozenset({"sandbox.network.loopback.v1", "sandbox.peer.handoff.v1"})
+_RECEIVER_AUTH_ACTION_IDS = frozenset(
+    {
+        "sandbox.network.loopback.v1",
+        "sandbox.peer.handoff.v1",
+        windows_correction_session_module.ACTION_ID,
+    }
+)
 _CANCELLATION_ACTION_ID = "sandbox.execution.process-tree-cancellation-witness.v1"
 _CANCELLATION_CONTROL_PARENT = ".bluefire-cancellation-witness-v1"
 _CANCELLATION_READY_SCHEMA = "bluefire.process-tree-cancellation-ready.v1"
@@ -1406,6 +1437,131 @@ def cleanup_runner_watchdog_terminal_state(
             time.sleep(0.01)
 
 
+def cleanup_runner_managed_watchdog_terminal_state(
+    durable_result_path: str | Path,
+    task_id: str,
+    descriptor: windows_correction_session_module.ManagedCorrectionDescriptor,
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    result: Mapping[str, Any],
+) -> None:
+    """Remove only stale controls bound to one exact managed durable result."""
+
+    destination = Path(durable_result_path).expanduser()
+    try:
+        checked_descriptor = windows_correction_session_module.validate_descriptor(
+            descriptor.value,
+            manifest,
+            profile,
+            task_id=task_id,
+            require_live=False,
+        )
+        if (
+            type(descriptor) is not windows_correction_session_module.ManagedCorrectionDescriptor
+            or checked_descriptor.value != descriptor.value
+            or checked_descriptor.packet != descriptor.packet
+        ):
+            raise RunnerTransportError("managed correction session identity changed")
+        windows_correction_result_module.validate_runner_result(
+            result,
+            manifest,
+            profile,
+            expected_packet=descriptor.packet,
+            expected_session_nonce=str(descriptor.value["session_nonce"]),
+        )
+        expected_result = canonical_json_bytes(dict(result)) + b"\n"
+        with _PinnedPrivateDirectory(destination.parent) as result_parent:
+            if result_parent.read(
+                destination.name,
+                maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,
+            ) != expected_result:
+                raise OSError("managed correction durable result changed")
+
+        # The exact managed result already carries terminal and cleanup proof.
+        # Status may be absent when the watchdog dies after result promotion.
+        root = runner_watchdog_control_root(destination, task_id)
+        with _PinnedPrivateDirectory(root, delete=True) as pinned:
+            names = pinned.names(maximum=len(_WATCHDOG_CONTROL_NAMES) + 1)
+            if any(name not in _WATCHDOG_CONTROL_NAMES for name in names):
+                raise OSError("managed correction watchdog state is not exact")
+            captured = {
+                name: pinned.read_with_identity(
+                    name,
+                    maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,
+                )
+                for name in names
+            }
+            if "config.json" in captured:
+                config_raw = captured["config.json"][0]
+                config = SubprocessRustRunner._decode_json(
+                    config_raw, "runner watchdog configuration"
+                )
+                if (
+                    set(config) != _WATCHDOG_CONFIG_KEYS
+                    or config.get("schema_version") != "bluefire.runner-watchdog-config.v5"
+                    or config.get("task_id") != task_id
+                    or config.get("manifest") != dict(manifest)
+                    or config.get("profile") != dict(profile)
+                    or config.get("durable_result_path") != str(destination)
+                    or config_raw != canonical_json_bytes(config) + b"\n"
+                ):
+                    raise OSError("managed correction watchdog binding changed")
+            if (
+                "session.json" in captured
+                and captured["session.json"][0]
+                != canonical_json_bytes(dict(descriptor.value)) + b"\n"
+            ):
+                raise OSError("managed correction watchdog binding changed")
+            if "start" in captured and captured["start"][0] != b"start\n":
+                raise OSError("managed correction start gate changed")
+            if "cancel" in captured and captured["cancel"][0] != b"cancel\n":
+                raise OSError("managed correction cancellation marker changed")
+            if "ready.json" in captured:
+                ready_raw = captured["ready.json"][0]
+                ready = SubprocessRustRunner._decode_json(
+                    ready_raw, "runner watchdog readiness"
+                )
+                if (
+                    set(ready) != {"schema_version", "task_id", "watchdog_pid"}
+                    or ready.get("schema_version") != "bluefire.runner-watchdog-ready.v1"
+                    or ready.get("task_id") != task_id
+                    or type(ready.get("watchdog_pid")) is not int
+                    or not 1 <= ready["watchdog_pid"] <= 2**31 - 1
+                    or ready_raw != canonical_json_bytes(ready) + b"\n"
+                ):
+                    raise OSError("managed correction watchdog readiness changed")
+            if "status.json" in captured:
+                status_raw = captured["status.json"][0]
+                status = validate_runner_watchdog_terminal_status(
+                    SubprocessRustRunner._decode_json(
+                        status_raw, "runner watchdog status"
+                    ),
+                    task_id=task_id,
+                )
+                if (
+                    status.get("state") != "succeeded"
+                    or status.get("result_digest") != file_hash(destination)
+                    or status_raw != canonical_json_bytes(status) + b"\n"
+                ):
+                    raise OSError("managed correction watchdog status changed")
+            for name, (payload, identity) in captured.items():
+                pinned.unlink(
+                    name,
+                    maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,
+                    expected=payload,
+                    expected_identity=identity,
+                )
+            pinned.remove()
+    except (
+        OSError,
+        RunnerTransportError,
+        windows_correction_session_module.ManagedCorrectionSessionError,
+    ):
+        raise RunnerTransportError(
+            "managed correction watchdog state is not ready for reconciliation"
+        ) from None
+
+
 class SubprocessRustRunner:
     """Invoke one preconfigured runner binary with a fixed argument grammar."""
 
@@ -1790,6 +1946,14 @@ class SubprocessRustRunner:
     def s3_access_admission_protocol(self) -> str | None:
         return "bluefire.s3-access-admission.v1" if self._s3_launch_authority is not None else None
 
+    @property
+    def managed_correction_session_protocol(self) -> str | None:
+        return (
+            windows_correction_session_module.DESCRIPTOR_SCHEMA
+            if self._receiver_task_key_factory is not None
+            else None
+        )
+
     def execute_task(
         self,
         manifest: Mapping[str, Any],
@@ -1800,6 +1964,9 @@ class SubprocessRustRunner:
         durable_result_path: str | Path,
         owned_service_admission: OwnedServiceAdmission | None = None,
         s3_access_intent: S3LaunchIntent | None = None,
+        windows_correction_session: Mapping[str, Any] | None = None,
+        windows_correction_control: windows_correction_session_module.ManagedCorrectionControl
+        | None = None,
     ) -> Mapping[str, Any]:
         """Run one task through an independent crash-surviving watchdog process."""
 
@@ -1813,6 +1980,38 @@ class SubprocessRustRunner:
             )
 
         service_launch: ServiceLaunch | S3Launch | None = None
+        managed_descriptor: (
+            windows_correction_session_module.ManagedCorrectionDescriptor | None
+        ) = None
+        has_managed_descriptor = windows_correction_session is not None
+        has_managed_control = windows_correction_control is not None
+        if has_managed_descriptor != has_managed_control:
+            raise RunnerTransportError("Managed correction session authority is incomplete.")
+        if has_managed_descriptor:
+            if (
+                os.name != "nt"
+                or manifest.get("action_id") != windows_correction_session_module.ACTION_ID
+                or owned_service_admission is not None
+                or s3_access_intent is not None
+                or type(windows_correction_control)
+                is not windows_correction_session_module.ManagedCorrectionControl
+            ):
+                raise RunnerTransportError("Managed correction session authority is invalid.")
+            try:
+                managed_descriptor = windows_correction_session_module.validate_descriptor(
+                    windows_correction_session,
+                    manifest,
+                    profile,
+                    task_id=task_id,
+                )
+            except windows_correction_session_module.ManagedCorrectionSessionError:
+                raise RunnerTransportError(
+                    "Managed correction session authority is invalid."
+                ) from None
+            if windows_correction_control.descriptor.value != managed_descriptor.value:
+                raise RunnerTransportError("Managed correction session authority is invalid.")
+        elif manifest.get("action_id") == windows_correction_session_module.ACTION_ID:
+            raise RunnerTransportError("Managed correction execution requires live authority.")
         if owned_service_admission is not None and s3_access_intent is not None:
             raise RunnerTransportError("Multiple protected execution authorities are invalid.")
         if (
@@ -1868,13 +2067,24 @@ class SubprocessRustRunner:
         cancellation_control: _CancellationControlLease | None = None
         cancellation_error: RunnerTaskCancelled | None = None
         control_root: Path | None = None
+        bridge_thread: threading.Thread | None = None
+        bridge_failures: list[BaseException] = []
+        managed_key: bytearray | None = None
         try:
             receiver_environment = self._receiver_environment(
                 task_id,
                 action_id=manifest.get("action_id"),
             )
+            if managed_descriptor is not None:
+                key_hex = receiver_environment.get(_RECEIVER_TASK_KEY_ENV)
+                if not isinstance(key_hex, str) or _RECEIVER_TASK_KEY.fullmatch(key_hex) is None:
+                    raise RunnerTransportError(
+                        "Managed correction receiver authentication is unavailable."
+                    )
+                managed_key = bytearray.fromhex(key_hex)
             control_root = runner_watchdog_control_root(destination, task_id)
             config_path = control_root / "config.json"
+            session_path = control_root / "session.json"
             start_path = control_root / "start"
             cancellation_control = self._prepare_cancellation_control(manifest, profile, task_id)
             result_parent_identity = handoff_guard.directory_identity()
@@ -1912,6 +2122,12 @@ class SubprocessRustRunner:
                 canonical_json_bytes(config) + b"\n",
                 maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,
             )
+            if managed_descriptor is not None:
+                self._write_private_control_file(
+                    session_path,
+                    canonical_json_bytes(dict(managed_descriptor.value)) + b"\n",
+                    maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,
+                )
             try:
                 current_binary_digest = file_hash(self.runner_binary)
             except OSError:
@@ -1923,11 +2139,43 @@ class SubprocessRustRunner:
                 receiver_environment=receiver_environment,
                 task_id=task_id,
                 process_sink=spawned_watchdogs,
+                managed_session=managed_descriptor is not None,
                 **cast(
                     dict[str, Any],
                     {"service_launch": service_launch} if service_launch is not None else {},
                 ),
             )
+            receiver_environment.clear()
+            if managed_descriptor is not None:
+                assert windows_correction_control is not None and managed_key is not None
+
+                def bridge() -> None:
+                    try:
+                        self._bridge_managed_correction(
+                            watchdog,
+                            managed_descriptor,
+                            windows_correction_control,
+                            managed_key,
+                            cancel_event,
+                        )
+                    except BaseException as exc:
+                        bridge_failures.append(exc)
+                        windows_correction_control.fail("watchdog_handoff_failed")
+                        for stream in (watchdog.stdin, watchdog.stdout):
+                            if stream is not None:
+                                try:
+                                    stream.close()
+                                except OSError:
+                                    pass
+                    finally:
+                        managed_key[:] = b"\0" * len(managed_key)
+
+                bridge_thread = threading.Thread(
+                    target=bridge,
+                    name=f"bluefire-correction-handoff-{task_id[-12:]}",
+                    daemon=True,
+                )
+                bridge_thread.start()
             # `_spawn_watchdog` returns only after Windows job assignment. The
             # watchdog refuses to launch Rust until this exclusive gate exists.
             self._write_private_control_file(start_path, b"start\n", maximum=32)
@@ -1940,6 +2188,16 @@ class SubprocessRustRunner:
                 pending=pending,
                 cancel_event=cancel_event,
             )
+            if bridge_thread is not None:
+                bridge_thread.join(timeout=_WATCHDOG_EXIT_GRACE_SECONDS)
+                if bridge_thread.is_alive():
+                    raise RunnerTransportError(
+                        "Managed correction watchdog handoff did not terminate."
+                    )
+                if bridge_failures:
+                    raise RunnerTransportError(
+                        "Managed correction watchdog handoff failed."
+                    ) from bridge_failures[-1]
             if self._durable_result_guard is not None:
                 try:
                     self._durable_result_guard.authorize_cleanup_entry(
@@ -2018,6 +2276,19 @@ class SubprocessRustRunner:
                 if containment_released and control_root is not None:
                     self._cleanup_watchdog_control(control_root)
             finally:
+                if bridge_thread is not None and bridge_thread.is_alive():
+                    if watchdog is not None:
+                        for stream in (watchdog.stdin, watchdog.stdout):
+                            if stream is not None:
+                                try:
+                                    stream.close()
+                                except OSError:
+                                    pass
+                    bridge_thread.join(timeout=1.0)
+                if managed_key is not None and (
+                    bridge_thread is None or not bridge_thread.is_alive()
+                ):
+                    managed_key[:] = b"\0" * len(managed_key)
                 try:
                     handoff_guard.__exit__(*sys.exc_info())
                 finally:
@@ -2107,6 +2378,57 @@ class SubprocessRustRunner:
                 expected_identity=(pending_identities[-1] if pending_identities else None),
             )
             raise
+
+    def _commit_managed_correction_result(
+        self,
+        result: Mapping[str, Any],
+        manifest: Mapping[str, Any],
+        profile: Mapping[str, Any],
+        *,
+        task_id: str,
+        durable_result_path: str | Path,
+    ) -> Mapping[str, Any]:
+        """Watchdog-only publication of one already-closed managed correction."""
+
+        checked = self._validate_result(canonical_json_bytes(dict(result)), manifest, profile)
+        windows_correction_result_module.validate_runner_result(checked, manifest, profile)
+        destination, pending, retained_guard = self._durable_results.prepare(
+            durable_result_path,
+            task_id,
+        )
+        if retained_guard is not None:
+            raise AssertionError("unexpected retained durable result parent guard")
+        payload = canonical_json_bytes(dict(checked)) + b"\n"
+        output: BinaryIO | None = None
+        identity: tuple[int, int] | None = None
+        try:
+            output = self._durable_results.open_pending(pending)
+            guarded = cast(_GuardedBinaryFile, output)
+            identity = guarded.identity()
+            if output.write(payload) != len(payload):
+                raise OSError("short durable result write")
+            output.flush()
+            os.fsync(output.fileno())
+            guarded.validate_identity()
+            identity = guarded.identity()
+            output.close()
+            output = None
+            self._durable_results.promote(
+                pending,
+                destination,
+                pending_expected=payload,
+                pending_identity=identity,
+                final_payload=payload,
+            )
+            return checked
+        except (RunnerDurableResultExists, RunnerPendingResultExists):
+            raise
+        except BaseException:
+            self._durable_results.remove_pending(pending, expected_identity=identity)
+            raise
+        finally:
+            if output is not None:
+                output.close()
 
     @staticmethod
     def _prepare_watchdog_control(root: Path) -> None:
@@ -2298,7 +2620,10 @@ class SubprocessRustRunner:
         task_id: str,
         process_sink: list[subprocess.Popen[bytes]],
         service_launch: ServiceLaunch | S3Launch | None = None,
+        managed_session: bool = False,
     ) -> subprocess.Popen[bytes]:
+        if managed_session and os.name != "nt":
+            raise RunnerTransportError("Managed correction watchdog is unavailable.")
         try:
             interpreter = self._watchdog_interpreter
             interpreter_digest = self._watchdog_interpreter_digest
@@ -2363,7 +2688,8 @@ class SubprocessRustRunner:
                         descriptor_indexes = ()
                     process = self._spawn(
                         watchdog_arguments,
-                        stdout=subprocess.DEVNULL,
+                        stdin=(subprocess.PIPE if managed_session else subprocess.DEVNULL),
+                        stdout=(subprocess.PIPE if managed_session else subprocess.DEVNULL),
                         stderr=subprocess.DEVNULL,
                         canonical_argv0=interpreter,
                         receiver_environment=receiver_environment,
@@ -2412,6 +2738,52 @@ class SubprocessRustRunner:
                         proof.close_reader()
                 finally:
                     proof.close_writer()
+
+    @staticmethod
+    def _bridge_managed_correction(
+        process: subprocess.Popen[bytes],
+        descriptor: windows_correction_session_module.ManagedCorrectionDescriptor,
+        control: windows_correction_session_module.ManagedCorrectionControl,
+        key: bytearray,
+        cancel_event: threading.Event,
+    ) -> None:
+        if process.stdin is None or process.stdout is None:
+            raise RunnerTransportError("Managed correction watchdog channel is unavailable.")
+        ready_payload = windows_correction_session_module.read_frame(
+            process.stdout,
+            expected_kind="ready",
+            key=key,
+        )
+        _checked_ready, ready = (
+            windows_correction_session_module.validate_watchdog_ready_payload(
+                ready_payload, descriptor
+            )
+        )
+        control.publish_ready(ready, str(ready_payload["ack_nonce"]))
+        acknowledgement = control.wait_ack(cancel_event)
+        windows_correction_session_module.validate_watchdog_ack(
+            acknowledgement,
+            descriptor,
+            ready_payload,
+        )
+        if cancel_event.is_set():
+            raise RunnerTransportError("Managed correction was cancelled before acknowledgement.")
+        windows_correction_session_module.write_frame(
+            process.stdin,
+            "ack",
+            acknowledgement,
+            key,
+        )
+        confirmed = windows_correction_session_module.read_frame(
+            process.stdout,
+            expected_kind="acknowledged",
+            key=key,
+        )
+        windows_correction_session_module.validate_acknowledgement_payload(
+            confirmed,
+            acknowledgement,
+        )
+        control.mark_delivered(acknowledgement)
 
     def _await_watchdog_readiness(
         self,
@@ -3219,6 +3591,7 @@ class SubprocessRustRunner:
         self,
         argv: list[str],
         *,
+        stdin: int | BinaryIO | None = subprocess.DEVNULL,
         stdout: int | BinaryIO | None,
         stderr: int | BinaryIO | None = subprocess.PIPE,
         canonical_argv0: Path | None = None,
@@ -3233,6 +3606,8 @@ class SubprocessRustRunner:
     ) -> subprocess.Popen[bytes]:
         if process_sink:
             raise RunnerTransportError("runner process ownership sink is not empty")
+        if stdin != subprocess.DEVNULL and os.name != "nt":
+            raise RunnerTransportError("runner duplex watchdog channel is unavailable")
         if sys.platform == "darwin" and not _darwin_child_status_ownership_available():
             raise RunnerTransportError("Darwin child status ownership is unavailable")
         darwin_slot: object | None = object() if sys.platform == "darwin" else None
@@ -3375,7 +3750,7 @@ class SubprocessRustRunner:
                     argv,
                     cwd=self.work_root,
                     env=environment,
-                    stdin=subprocess.DEVNULL,
+                    stdin=stdin,
                     stdout=stdout,
                     stderr=stderr,
                     shell=False,
