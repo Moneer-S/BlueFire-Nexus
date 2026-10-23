@@ -45,6 +45,20 @@ available; it does not grant authorization.
   The complete fresh-read journey, Windows/macOS effective-access paths, AD and
   cloud workflows, and live model-directed endpoint replanning remain unverified.
 
+## Native verification
+
+- Hosted installed-wheel checks on macOS 15 Intel and macOS 26 Apple Silicon exercised
+  generated-fixture execution, discovery, and receipt-bound cleanup. They do not establish
+  effective file access, identity separation, or a complete native desktop journey.
+- Apple Silicon file-access checks cover protocol and ABI compatibility only; no live
+  file-access or setup operation is implied by those checks.
+- Generated resources on hosted Linux exercised the managed receiver's protected-payload
+  refusal, legitimate redacted payload, retained policy, and linked fresh retest.
+  Hosted Windows Server 2025 exercised generated process-tree cancellation and cleanup,
+  not Windows 11 compatibility or effective file access.
+
+Hosted checks are not representative customer endpoint, AD domain, or AWS validation.
+
 ## Structural
 
 - macOS package metadata, contracts, and error classification are checked when no macOS host is

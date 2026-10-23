@@ -35,7 +35,7 @@ const PAYLOAD_BINDING: NativeToolBinding = NativeToolBinding {
     adapter_id: "owned.service.payload.v1",
     adapter_version: "1.0.0",
     adapter_contract_digest:
-        "sha256:60bb8f6cd6e6b796bd1a7039b1e38c793faeb89f088302730f05da6f89d965e7",
+        "sha256:58529f5cb0b902ac330dd93721637fa1685beec27cab4e6d0052ee3cb2405ae8",
     tool_id: "owned.service.payload.binary.v1",
 };
 

@@ -246,7 +246,7 @@
     }
   },
   "rust": {
-    "lockfile_sha256": "46a6f2d1f5301b7a51cfc3d5608d37e50e89b68aa3afe43ab5408a29cffa2a71",
+    "lockfile_sha256": "1be6c3e6b4e53b0970f22fa7506ff0aec7122c7903fcac67dcf17604daf32e71",
     "release_graph": [
       "autocfg@1.5.1",
       "bitflags@2.13.1",
@@ -414,12 +414,17 @@
         "docs/assets/screenshots/builder.png",
         "docs/assets/screenshots/compare.png",
         "docs/assets/screenshots/detection-lab.png",
+        "docs/assets/screenshots/desktop-graph.png",
+        "docs/assets/screenshots/desktop-workspace.png",
         "docs/assets/screenshots/evidence.png",
         "docs/assets/screenshots/execute-review.png",
         "docs/assets/screenshots/live-run.png",
         "docs/assets/screenshots/overview.png",
         "docs/assets/screenshots/runners.png",
         "docs/assets/screenshots/walkthrough.gif"
+      ],
+      "generated-product-demo-video-mit": [
+        "docs/assets/screenshots/desktop-workflow.webm"
       ],
       "third-party-adapted-test-license-mit": [
         "bluefire/data/atomic_red_team_LICENSE.txt"

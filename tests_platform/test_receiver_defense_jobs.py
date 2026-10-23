@@ -17,15 +17,18 @@ import pytest
 
 from bluefire import product_store_receiver_defense as records
 from bluefire import receiver_defense_context as contexts
+from bluefire import service as service_module
 from bluefire.application_errors import APIError
 from bluefire.config import ExecutionMode
-from bluefire.job_runtime import JobState
+from bluefire.job_runtime import JobState, JobWaitTimeout
+from bluefire.product_store import ProductStore
 from bluefire.product_store_errors import ProductStoreError
 from bluefire.receiver_defense_jobs import ReceiverDefenseJobs
 from bluefire.receiver_policy import ReceiverContentPolicy
 from bluefire.receiver_session_contract import prepare_frame, ready_binding
 from bluefire.service import BlueFireService
 from bluefire.util import content_hash
+from tests_platform.seed_timing import observe_service_seed
 from tests_platform.test_graph_ai_jobs import Access
 from tests_platform.test_orchestrator import StructuredFakeRunner
 from tests_platform.test_receiver_policy import public_records
@@ -195,13 +198,14 @@ def setup(tmp_path, monkeypatch):
     access, runner, sessions = Access(), ReadyInventoryRunner(), []
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()
-    service = BlueFireService(
-        project_root=ROOT,
-        runs_dir=tmp_path / "runs",
-        product_db_path=tmp_path / "product.sqlite3",
-        ai_provider_access=access,
-        runner_factory=lambda _profile: (runner, sandbox),
-    )
+    with observe_service_seed(service_module, ProductStore):
+        service = BlueFireService(
+            project_root=ROOT,
+            runs_dir=tmp_path / "runs",
+            product_db_path=tmp_path / "product.sqlite3",
+            ai_provider_access=access,
+            runner_factory=lambda _profile: (runner, sandbox),
+        )
     profile = next(
         row for row in service.config.runner_profiles if row.mode is ExecutionMode.EXECUTE
     )
@@ -1513,17 +1517,21 @@ def test_cancelled_native_run_preserves_cleanup_and_finalization_boundaries(
 ):
     service, access, _, sessions, request = setup
     runner = FixtureRunner(sessions)
-    entered, release = threading.Event(), threading.Event()
+    actions, cancellations = [], []
     original = runner.execute_task
 
-    def held(manifest, profile, **kwargs):
+    def cancel_after_staging(manifest, profile, **kwargs):
+        actions.append(manifest["action_id"])
         result = original(manifest, profile, **kwargs)
         if manifest["action_id"] == "sandbox.collection.stage.v1":
-            entered.set()
-            assert release.wait(10)
+            assert result["status"] == "success"
+            # Cancel at the completed-staging boundary without a second thread's
+            # scheduling deadline competing with the run's terminal wait.
+            cancelled = service.cancel_job(parent["job_id"])
+            cancellations.append(cancelled["progress"]["stopped"])
         return result
 
-    runner.execute_task = held
+    runner.execute_task = cancel_after_staging
     if not finalization_available:
         original_finalize = service.store.finalize
 
@@ -1548,13 +1556,24 @@ def test_cancelled_native_run_preserves_cleanup_and_finalization_boundaries(
     )
     identifier = accepted["phases"][0]["execution_job"]["job_id"]
     service.job_controller.wait_for_state(identifier, {JobState.AWAITING_APPROVAL}, timeout=10)
+
+    def diagnostic():
+        snapshot = service.product_store.get_job(identifier)
+        return {
+            "state": snapshot["state"],
+            "phase": snapshot["progress"].get("phase"),
+            "actions": actions[:8],
+            "cancellation_count": len(cancellations),
+        }
+
+    service.approve_job(identifier, {"approved_by": "Reviewer"})
     try:
-        service.approve_job(identifier, {"approved_by": "Reviewer"})
-        assert entered.wait(10)
-        service.cancel_job(parent["job_id"])
-    finally:
-        release.set()
-    terminal = service.job_controller.wait(identifier, timeout=20)
+        terminal = service.job_controller.wait(identifier, timeout=20)
+    except JobWaitTimeout:
+        pytest.fail(f"Receiver execution did not settle: {diagnostic()}")
+    assert actions.count("sandbox.collection.stage.v1") == 1, diagnostic()
+    assert cancellations == [True], diagnostic()
+    assert "sandbox.peer.handoff.v1" not in actions, diagnostic()
     current = service.receiver_defense_job(parent["job_id"])
     phase = current["phases"][0]
     if finalization_available:

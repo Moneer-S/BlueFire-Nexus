@@ -18,6 +18,7 @@ import bluefire.install_gate_validation as validation
 import bluefire.product_gates as product_gates
 import bluefire.runtime_paths as runtime_paths
 from bluefire.product_acceptance import load_release_contract
+from bluefire.version import __version__
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 _DIGEST = "sha256:" + "a" * 64
@@ -490,7 +491,7 @@ def test_gate_contract_registration_and_guided_workflow_are_locked(tmp_path: Pat
             project_document,
             install_gate._project_section(project_document),
         )
-        == "3.0.0"
+        == __version__
     )
     structural = install_gate._structural_report(REPOSITORY)
     validation.validate_structural(structural)

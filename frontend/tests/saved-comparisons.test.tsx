@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import * as Tooltip from "@radix-ui/react-tooltip";
@@ -7,7 +7,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { api } from "../src/lib/api";
 import { compareDemoRuns, demoCatalog, demoRuns } from "../src/lib/demo";
 import { ComparePage } from "../src/pages/Compare";
-import type { ComparisonResponse, SavedComparisonSnapshot, SavedComparisonSummary } from "../src/types";
+import type { ComparisonResponse, RunRecord, SavedComparisonSnapshot, SavedComparisonSummary } from "../src/types";
 
 const runIds = demoRuns.slice(0, 2).map((run) => run.run_id);
 const original = compareDemoRuns(runIds);
@@ -30,6 +30,16 @@ function mocks() {
   vi.spyOn(api, "runs").mockResolvedValue({ schema_version: "v1", runs: demoRuns, unavailable_run_count: 0 });
   vi.spyOn(api, "catalog").mockResolvedValue(demoCatalog);
   vi.spyOn(api, "comparisonSnapshots").mockResolvedValue({ snapshots: rows });
+}
+
+function snapshotButton(snapshotId: string) {
+  const button = document.querySelector<HTMLButtonElement>(`button[data-snapshot-id="${snapshotId}"]`);
+  if (!button) throw new Error(`Saved comparison ${snapshotId} is not rendered`);
+  return button;
+}
+
+function namedRun(run: RunRecord, name: string): RunRecord {
+  return { ...run, presentation: { schema_version: "bluefire.run-presentation.v1", run_id: run.run_id, display_name: name, default_name: name, updated_at: null } };
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -74,12 +84,12 @@ it("does not let an earlier snapshot request replace a later navigation", async 
   const read = vi.spyOn(api, "comparisonSnapshot").mockImplementation((id) => id === "snapshot-a" ? first : Promise.resolve(saved("snapshot-b")));
   const compare = vi.spyOn(api, "compare");
   mount("/compare?snapshot=snapshot-a");
-  await screen.findByRole("button", { name: "Open saved comparison snapshot-b" });
-  await user.click(screen.getByRole("button", { name: "Open saved comparison snapshot-b" }));
+  await screen.findAllByRole("button", { name: /^Open saved comparison\./ });
+  await user.click(snapshotButton("snapshot-b"));
   await screen.findByRole("region", { name: "Comparison results" });
   await act(async () => { resolveFirst(saved("snapshot-a")); await first; });
-  expect(screen.getByRole("button", { name: "Open saved comparison snapshot-b" })).toHaveAttribute("aria-current", "page");
-  expect(screen.getByRole("button", { name: "Open saved comparison snapshot-a" })).not.toHaveAttribute("aria-current", "page");
+  expect(snapshotButton("snapshot-b")).toHaveAttribute("aria-current", "page");
+  expect(snapshotButton("snapshot-a")).not.toHaveAttribute("aria-current", "page");
   expect(read).toHaveBeenCalledTimes(2);
   expect(compare).not.toHaveBeenCalled();
 });
@@ -92,18 +102,79 @@ it("does not let a pending comparison replace a snapshot opened with the same ru
   const compare = vi.spyOn(api, "compare").mockReturnValue(pending);
   vi.spyOn(api, "comparisonSnapshot").mockResolvedValue(saved("snapshot-a"));
   mount("/compare");
-  await screen.findByRole("button", { name: "Open saved comparison snapshot-a" });
+  await screen.findAllByRole("button", { name: /^Open saved comparison\./ });
   const boxes = screen.getAllByRole("checkbox");
   await user.click(boxes[0]!);
   await user.click(boxes[1]!);
   await user.click(screen.getByRole("button", { name: "Compare selected" }));
-  await user.click(screen.getByRole("button", { name: "Open saved comparison snapshot-a" }));
+  await user.click(snapshotButton("snapshot-a"));
   await screen.findByRole("region", { name: "Comparison results" });
   await act(async () => {
     finish({ ...structuredClone(original), saved_snapshot: { snapshot_id: "stale-post-result", digest: "stale", created_at: "2026-10-18T12:00:00Z" } });
     await pending;
   });
   expect(compare).toHaveBeenCalledOnce();
-  expect(screen.getByRole("button", { name: "Open saved comparison snapshot-a" })).toHaveAttribute("aria-current", "page");
-  expect(screen.queryByRole("button", { name: "Open saved comparison stale-post-result" })).not.toBeInTheDocument();
+  expect(snapshotButton("snapshot-a")).toHaveAttribute("aria-current", "page");
+  expect(document.querySelector('[data-snapshot-id="stale-post-result"]')).not.toBeInTheDocument();
+});
+
+it("names saved comparisons by their exact runs in recorded order, with date and count secondary", async () => {
+  mocks();
+  const named = [namedRun(demoRuns[0]!, "Original collection"), namedRun(demoRuns[1]!, "Redacted collection"), namedRun({ ...demoRuns[0]!, run_id: "third-run" }, "Fresh permission retest")];
+  vi.mocked(api.runs).mockResolvedValue({ schema_version: "v1", runs: named, unavailable_run_count: 0 });
+  const recordedIds = [named[2]!.run_id, named[0]!.run_id, named[1]!.run_id];
+  vi.mocked(api.comparisonSnapshots).mockResolvedValue({ snapshots: [{ ...rows[0]!, run_ids: recordedIds, baseline_run_id: recordedIds[0]! }] });
+  mount("/compare");
+  const button = await screen.findByRole("button", { name: /^Open saved comparison\. Baseline: Fresh permission retest\. Compared run 1: Original collection\. Compared run 2: Redacted collection\. Saved / });
+  expect(Array.from(button.querySelectorAll("strong"), node => node.textContent)).toEqual(["Baseline: Fresh permission retest", "Compared run 1: Original collection", "Compared run 2: Redacted collection"]);
+  expect(button.querySelector("small")).toHaveTextContent(/3 runs$/);
+  expect(button).not.toHaveTextContent("snapshot-a");
+  expect(button).not.toHaveTextContent("third-run");
+  expect(button).not.toHaveTextContent("digest");
+});
+
+it("keeps exact record identities in expandable details without starting a comparison", async () => {
+  const user = userEvent.setup();
+  mocks();
+  const compare = vi.spyOn(api, "compare");
+  const read = vi.spyOn(api, "comparisonSnapshot");
+  mount("/compare");
+  await screen.findAllByRole("button", { name: /^Open saved comparison\./ });
+  const row = snapshotButton("snapshot-a").closest("li")!;
+  const details = row.querySelector("details")!;
+  const summary = within(row).getByText("Record details");
+  expect(details).not.toHaveAttribute("open");
+  summary.focus();
+  expect(summary).toHaveFocus();
+  await user.click(summary);
+  expect(details).toHaveAttribute("open");
+  expect(within(details).getByText("snapshot-a", { selector: "code" })).toBeVisible();
+  expect(within(details).getByText("snapshot-a-digest", { selector: "code" })).toBeVisible();
+  expect(Array.from(details.querySelectorAll("ol code"), node => node.textContent)).toEqual(runIds);
+  expect(compare).not.toHaveBeenCalled();
+  expect(read).not.toHaveBeenCalled();
+});
+
+it("does not substitute labels from duplicate or similar run identities", async () => {
+  mocks();
+  vi.mocked(api.runs).mockResolvedValue({ schema_version: "v1", runs: [
+    namedRun(demoRuns[0]!, "First conflicting name"), namedRun(demoRuns[0]!, "Second conflicting name"),
+    namedRun({ ...demoRuns[1]!, run_id: `${runIds[1]}-other` }, "Similar but unrelated run"),
+  ], unavailable_run_count: 1 });
+  mount("/compare");
+  const buttons = await screen.findAllByRole("button", { name: /^Open saved comparison\. Baseline: Ambiguous run record\. Compared run 1: Run unavailable\. Saved / });
+  expect(buttons).toHaveLength(2);
+  for (const button of buttons) {
+    expect(button).not.toHaveTextContent(/conflicting name|unrelated run/);
+  }
+});
+
+it("retains long purpose labels in full instead of shortening them to identifiers", async () => {
+  mocks();
+  const longName = ["Verify", "Generated", "Collection", "Permission", "Recovery", "Across", "The", "Authorized", "Desktop", "Workspace", "Without", "Changing", "The", "Original", "Run"].join("");
+  vi.mocked(api.runs).mockResolvedValue({ schema_version: "v1", runs: [namedRun(demoRuns[0]!, longName), namedRun(demoRuns[1]!, "Fresh retest")], unavailable_run_count: 0 });
+  mount("/compare");
+  await screen.findAllByRole("button", { name: /^Open saved comparison\./ });
+  expect(snapshotButton("snapshot-a").querySelector("strong")).toHaveTextContent(`Baseline: ${longName}`);
+  expect(snapshotButton("snapshot-a")).toHaveAccessibleName(expect.stringContaining(longName));
 });
