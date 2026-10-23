@@ -18,6 +18,7 @@ from bluefire.runner_transport import (
     AuthenticatedRunnerClient,
     AuthenticatedRunnerServer,
     AuthenticatedRunnerTransportError,
+    RunnerConnectionError,
     RunnerRemoteError,
     audit_runner_ledger,
     read_runner_ledger_generation,
@@ -553,3 +554,47 @@ def test_proof_is_not_accepted_for_unrequested_terminal_cancellation() -> None:
         validated_recovered_cancellation_proof(
             payload, payload["original_task_id"], payload["original_request_hash"]
         )
+
+
+@pytest.mark.parametrize(
+    "initial_reply", ["task_cancelled", "duplicate_request", "connection_loss"]
+)
+def test_direct_execution_preserves_reconciled_cleanup_requirement(
+    monkeypatch: pytest.MonkeyPatch, initial_reply: str
+) -> None:
+    client = object.__new__(AuthenticatedRunnerClient)
+    client.profile_id = _PROFILE_ID
+    client.recovery_attempts = 1
+    client.recovery_delay_seconds = 0
+    manifest = {"runner_profile_id": _PROFILE_ID}
+    profile = {"profile_id": _PROFILE_ID}
+    task_id, request_hash = client.execution_identity(manifest, profile)
+    calls: list[str] = []
+
+    def call(operation: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        calls.append(operation)
+        if operation == "execute":
+            assert kwargs == {"task_id": task_id, "request_hash": request_hash}
+            assert payload == {"manifest": manifest, "profile": profile}
+            if initial_reply == "connection_loss":
+                raise RunnerConnectionError("fixture response was lost")
+            raise RunnerRemoteError(initial_reply)
+        assert operation == "recover"
+        assert payload == {"original_task_id": task_id, "original_request_hash": request_hash}
+        return {
+            "original_task_id": task_id,
+            "original_request_hash": request_hash,
+            "state": "recovery_required",
+            "result": None,
+            "error_code": "recovery_required",
+            "cancellation_requested": True,
+            "receipt_ids": ["c" * 64],
+            "cleanup_required": True,
+        }
+
+    monkeypatch.setattr(client, "_call", call)
+    with pytest.raises(RunnerRemoteError) as error:
+        client.execute(manifest, profile)
+    assert error.value.code == "recovery_required"
+    assert calls == ["execute", "recover"]
+    assert client.last_execution_identity == (task_id, request_hash)

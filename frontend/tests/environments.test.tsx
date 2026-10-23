@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { EnvironmentsPage } from "../src/pages/Environments";
@@ -29,7 +29,7 @@ const windowsSetup = (): WindowsSetupFileAccessStatus => ({
 
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}><MemoryRouter><EnvironmentsPage /></MemoryRouter></QueryClientProvider>);
+  return { ...render(<QueryClientProvider client={client}><MemoryRouter><EnvironmentsPage /></MemoryRouter></QueryClientProvider>), client };
 }
 
 beforeEach(() => {
@@ -44,7 +44,7 @@ beforeEach(() => {
   vi.mocked(api.aiAuthorizations).mockResolvedValue({ schema_version: "bluefire.ai-live-authorizations.v1", context: { kind: "direct", binding_digest: null, expires_at_ms: null, provider: null }, authorizations: [] });
 });
 
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
 it("shows checked environment readiness separately from saved setup and links to canonical tools", async () => {
   mount();
@@ -104,15 +104,62 @@ it("uses read APIs only and does not treat synthetic AD setup as native availabi
 });
 
 it("marks provider lab readiness expired initially and when its known session expires", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2030-01-01T00:00:00Z"));
   vi.mocked(api.catalog).mockResolvedValue(catalogWithProviderExpiry(Date.now() - 1));
   mount();
-  expect(await screen.findByText("Session expired")).toBeVisible();
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(screen.getByText("Session expired")).toBeVisible();
 
   cleanup();
   vi.mocked(api.catalog).mockResolvedValue(catalogWithProviderExpiry(Date.now() + 100));
   mount();
-  expect(await screen.findByText("Ready")).toBeVisible();
-  expect(await screen.findByText("Session expired", {}, { timeout: 2_000 })).toBeVisible();
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(screen.getByText("Ready")).toBeVisible();
+  await act(async () => { await vi.advanceTimersByTimeAsync(101); });
+  expect(screen.getByText("Session expired")).toBeVisible();
+});
+
+it("rechecks provider readiness if the wall clock moves behind a scheduled expiry", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2030-01-01T00:00:00Z"));
+  vi.mocked(api.catalog).mockResolvedValue(catalogWithProviderExpiry(Date.now() + 100));
+  mount();
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(screen.getByText("Ready")).toBeVisible();
+
+  vi.setSystemTime(Date.now() - 1);
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  expect(screen.getByText("Ready")).toBeVisible();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+  expect(screen.getByText("Session expired")).toBeVisible();
+});
+
+it("rechecks provider readiness after a clamped long expiry timer", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2030-01-01T00:00:00Z"));
+  vi.mocked(api.catalog).mockResolvedValue(catalogWithProviderExpiry(Date.now() + 2_147_483_652));
+  mount();
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(screen.getByText("Ready")).toBeVisible();
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(2_147_483_647); });
+  expect(screen.getByText("Ready")).toBeVisible();
+  await act(async () => { await vi.advanceTimersByTimeAsync(5); });
+  expect(screen.getByText("Session expired")).toBeVisible();
+});
+
+it("cancels the provider expiry timer when the environments page unmounts", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2030-01-01T00:00:00Z"));
+  vi.mocked(api.catalog).mockResolvedValue(catalogWithProviderExpiry(Date.now() + 100));
+  const view = mount();
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+  view.unmount();
+  view.client.clear();
+  expect(vi.getTimerCount()).toBe(0);
 });
 
 it("does not preserve available file-access copy after setup expiration", async () => {

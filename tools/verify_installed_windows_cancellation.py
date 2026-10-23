@@ -345,7 +345,7 @@ def _request_counts_valid(value: object) -> bool:
         "run_submit": 1,
         "approval": 1,
         "cancel": 1,
-        "retained_observations": 1,
+        "run_detail": 1,
         "runner_stop": 1,
     }
     if not isinstance(value, dict) or set(value) != {*required, "job_status"}:

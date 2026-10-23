@@ -749,6 +749,7 @@ def audit_runner_ledger(
             if len(integrity) != 1 or str(integrity[0][0]) != "ok":
                 raise sqlite3.DatabaseError("ledger integrity check failed")
             total = execute = unresolved = active = cleanup_required = 0
+            # The projection selects only the two fixed schema-version expressions above.
             rows = connection.execute(f"""
                 SELECT task_id, operation, profile_id, request_hash, runner_id, client_id,
                        peer_fingerprint, ca_fingerprint, server_fingerprint,
@@ -757,7 +758,7 @@ def audit_runner_ledger(
                        cleanup_required, effect_dispatched, error_code, executor_instance,
                        cancellation_requested, created_at, updated_at, {proof_column}
                 FROM transport_tasks ORDER BY task_id
-                """)
+                """)  # nosec B608
             for row in rows:
                 total += 1
                 if total > 1_000_000:
@@ -4306,6 +4307,8 @@ class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
                 )
             if state == "timed_out":
                 raise RunnerTaskTimedOut("Runner task timed out after its process tree stopped.")
+            if state == "recovery_required":
+                raise RunnerRemoteError("recovery_required")
             if state == "not_found" and not resent:
                 resent = True
                 try:
@@ -4321,7 +4324,6 @@ class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
             if state in {
                 "failed",
                 "indeterminate",
-                "recovery_required",
                 "cancelled",
                 "timed_out",
             }:
@@ -4339,6 +4341,8 @@ class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
             )
         if recovered.get("state") == "timed_out":
             raise RunnerTaskTimedOut("Runner task timed out after its process tree stopped.")
+        if recovered.get("state") == "recovery_required":
+            raise RunnerRemoteError("recovery_required")
         if recovered.get("state") != "completed":
             raise RunnerConnectionError(
                 "Runner task exists but has no completed result; inspect recovery state."

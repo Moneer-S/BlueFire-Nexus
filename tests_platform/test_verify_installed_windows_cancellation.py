@@ -463,11 +463,253 @@ def _passed_driver_report() -> dict[str, object]:
             "run_submit": 1,
             "approval": 1,
             "cancel": 1,
-            "retained_observations": 1,
+            "run_detail": 1,
             "runner_stop": 1,
             "job_status": 2,
         },
     }
+
+
+def test_success_request_counts_require_canonical_detail_not_unsealed_observations() -> None:
+    counts = _passed_driver_report()["request_counts"]
+    assert verifier._request_counts_valid(counts)
+    old_counts = dict(counts)
+    old_counts["retained_observations"] = old_counts.pop("run_detail")
+    assert not verifier._request_counts_valid(old_counts)
+    assert not verifier._request_counts_valid({**counts, "run_detail": 2})
+
+
+def _settled_cancellation_detail(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from bluefire.config import AutonomyLevel
+    from bluefire.contracts import ScenarioDefinition
+    from bluefire.evidence import EvidenceProvenance, EvidenceRecord
+    from bluefire.retained_run_observations import retained_observations
+    from bluefire.run_store import RunStore, RunStoreError
+    from bluefire.service import BlueFireService
+    from bluefire.util import content_hash
+
+    document = ScenarioDefinition.from_mapping(
+        {
+            "schema_version": "bluefire.scenario.v1",
+            "id": "scenario.fixture.v1",
+            "title": "Fixture witness",
+            "purpose": "Verify cancellation evidence.",
+            "start": "witness",
+            "steps": [{"id": "witness", "behavior_id": verifier.ACTION_ID}],
+            "edges": [],
+            "provenance": {
+                "source": "fixture",
+                "reference": "fixture",
+                "license": "MIT",
+                "derived": False,
+            },
+            "limitations": [],
+        }
+    )
+    scenario = document.to_dict()
+    source = {"scenario_id": scenario["id"], "digest": content_hash(scenario), "document": scenario}
+    step = {
+        "step_id": "witness",
+        "behavior_id": verifier.ACTION_ID,
+        "action_id": verifier.ACTION_ID,
+    }
+    store = RunStore(tmp_path / "runs")
+    run = store.create_run(
+        scenario=scenario,
+        plan={
+            "scenario_id": source["scenario_id"],
+            "scenario_digest": source["digest"],
+            "mode": "execute",
+            "runner_profile_id": verifier.PROFILE_ID,
+            "steps": [step],
+        },
+        profile={"id": verifier.PROFILE_ID},
+        policy={},
+    )
+    witness = {"request_hash": "sha256:" + "e" * 64}
+    content = {
+        "artifact_type": "execution_interruption",
+        "schema_version": "bluefire.execution-interruption.v1",
+        "request_hash": witness["request_hash"],
+        "runner_task_id": "execute-" + "d" * 64,
+        "dispatch_requested": True,
+        "runner_result_received": False,
+        "effect_outcome": "unknown",
+        **_passed_driver_report()["execution_interruption"],
+    }
+    record = EvidenceRecord.create(
+        run_id=run.run_id,
+        step_id="witness",
+        behavior_id=verifier.ACTION_ID,
+        action_id=verifier.ACTION_ID,
+        runner_profile_id=verifier.PROFILE_ID,
+        provenance=EvidenceProvenance.UNKNOWN,
+        producer="orchestrator.v1",
+        content=content,
+        target_scope_ref="runner-profile:" + verifier.PROFILE_ID,
+    )
+    result = dict(store.read_json(run.run_id, "result.json"))
+    result["steps"] = [
+        {
+            **step,
+            "status": "failed",
+            "execution_disposition": "execute",
+            "error": {"code": "execution_interrupted"},
+            "runner_task_id": content["runner_task_id"],
+            "evidence_ids": [record.evidence_id],
+            "interruption": content,
+        }
+    ]
+    store.write_json(run.run_id, "result.json", result)
+    store.write_json(
+        run.run_id, "evidence.json", {"schema_version": "1.0", "records": [record.to_dict()]}
+    )
+    service = object.__new__(BlueFireService)
+    service.store = store
+    service._index_run = lambda _run: None
+    service._record_cleanup_recovery(
+        run.run_id,
+        {
+            "schema_version": "bluefire.cleanup-recovery.v1",
+            "run_id": run.run_id,
+            "status": "reconciled_no_outstanding",
+            "initial_receipt_count": 0,
+            "remaining_receipt_count": 0,
+            "attempts": [],
+        },
+        scenario=document,
+        profile=SimpleNamespace(id=verifier.PROFILE_ID),
+        autonomy=AutonomyLevel.OFF,
+        after_restart=False,
+    )
+    detail = store.get_run(run.run_id, require_finalized=True)
+    assert detail["status"] == "cancelled" and detail["manifest"]["run_id"] == run.run_id
+    with pytest.raises(RunStoreError):
+        retained_observations(store, run.run_id)
+    return store, detail, source, witness
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "valid",
+        "run",
+        "scenario",
+        "document",
+        "digest",
+        "profile",
+        "step",
+        "unsealed",
+        "foreign_record",
+        "request_hash",
+        "task",
+        "missing_flag",
+        "false_flag",
+        "row_flag",
+        "duplicate",
+        "evidence_link",
+        "cleanup_missing",
+        "cleanup_failed",
+        "cleanup_success_alias",
+        "cleanup_outstanding",
+        "cleanup_outstanding_alias",
+        "cleanup_attempted",
+        "cleanup_restart",
+        "recovery_missing",
+        "recovery_schema",
+        "recovery_run",
+        "recovery_status",
+        "recovery_initial",
+        "recovery_remaining",
+        "recovery_attempts",
+    ],
+)
+def test_real_driver_canonical_interruption_requires_sealed_exact_owned_source(
+    tmp_path: Path, binding: str
+) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required to exercise the installed cancellation driver")
+    _store, detail, source, witness = _settled_cancellation_detail(tmp_path)
+    driver = (
+        Path(__file__).resolve().parents[1]
+        / "frontend/tests/installed/installed-windows-cancellation.mjs"
+    )
+    script = r"""
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {runInNewContext} from 'node:vm';
+const sourceText = readFileSync(process.argv[2], 'utf8');
+const start = sourceText.indexOf('function canonicalCancellationInterruption(');
+const end = sourceText.indexOf('async function main(', start);
+assert.ok(start >= 0 && end > start);
+const {detail, source, witness} = JSON.parse(process.argv[3]);
+const binding = process.argv[4], ownRunId = detail.run_id;
+const interruption = detail.evidence.records[0].content;
+if (binding === 'run') detail.run_id = 'other';
+if (binding === 'scenario') detail.scenario_id = 'other';
+if (binding === 'document') detail.scenario.title = 'other';
+if (binding === 'digest') detail.plan.scenario_digest = `sha256:${'b'.repeat(64)}`;
+if (binding === 'profile') detail.profile.id = 'other';
+if (binding === 'step') detail.steps[0].step_id = 'other';
+if (binding === 'unsealed') delete detail.manifest;
+if (binding === 'foreign_record') detail.evidence.records[0].run_id = 'other';
+if (binding === 'request_hash') interruption.request_hash = `sha256:${'b'.repeat(64)}`;
+if (binding === 'task') interruption.runner_task_id = `execute-${'b'.repeat(64)}`;
+if (binding === 'missing_flag') delete interruption.control_cleanup_verified;
+if (binding === 'false_flag') interruption.cooperative_acknowledged = false;
+if (binding === 'row_flag') detail.steps[0].interruption.forced_tree_termination = false;
+if (binding === 'duplicate') detail.evidence.records.push(detail.evidence.records[0]);
+if (binding === 'evidence_link') detail.steps[0].evidence_ids = [];
+if (binding === 'cleanup_missing') delete detail.cleanup;
+if (binding === 'cleanup_failed') detail.cleanup.success = false;
+if (binding === 'cleanup_success_alias') detail.cleanup.succeeded = false;
+if (binding === 'cleanup_outstanding') detail.cleanup.outstanding_receipt_count = 1;
+if (binding === 'cleanup_outstanding_alias') detail.cleanup.outstanding_receipts = 1;
+if (binding === 'cleanup_attempted') detail.cleanup.attempted = true;
+if (binding === 'cleanup_restart') detail.cleanup.recovered_after_restart = true;
+if (binding === 'recovery_missing') delete detail.cleanup_recovery;
+if (binding === 'recovery_schema') detail.cleanup_recovery.schema_version = 'other';
+if (binding === 'recovery_run') detail.cleanup_recovery.run_id = 'other';
+if (binding === 'recovery_status') detail.cleanup_recovery.status = 'completed';
+if (binding === 'recovery_initial') detail.cleanup_recovery.initial_receipt_count = 1;
+if (binding === 'recovery_remaining') detail.cleanup_recovery.remaining_receipt_count = 1;
+if (binding === 'recovery_attempts') detail.cleanup_recovery.attempts = [{status:'success'}];
+const validate = runInNewContext(`${sourceText.slice(start,end)}; canonicalCancellationInterruption`, {
+  assert, Date, PROFILE:'gate11-windows-cancellation-witness.v1',
+  ACTION:'sandbox.execution.process-tree-cancellation-witness.v1',
+  INTERRUPTION_FLAGS:['cooperative_requested','cooperative_acknowledged','forced_tree_termination','control_cleanup_verified','process_tree_stopped'],
+});
+if (binding === 'valid') assert.equal(validate(detail, ownRunId, source, witness), interruption);
+else assert.throws(() => validate(detail, ownRunId, source, witness), {name:'AssertionError'});
+"""
+    result = subprocess.run(
+        [
+            node,
+            "--input-type=module",
+            "-",
+            str(driver),
+            json.dumps({"detail": detail, "source": source, "witness": witness}),
+            binding,
+        ],
+        input=script,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_canonical_cancellation_reader_rejects_tampered_sealed_evidence(tmp_path: Path) -> None:
+    from bluefire.run_store import RunStoreError
+
+    store, detail, _source, _witness = _settled_cancellation_detail(tmp_path)
+    store.write_json(detail["run_id"], "evidence.json", {"schema_version": "1.0", "records": []})
+    with pytest.raises(RunStoreError, match="integrity"):
+        store.get_run(detail["run_id"], require_finalized=True)
 
 
 def test_profile_authority_accepts_only_shipped_gate11_bounds() -> None:
@@ -959,6 +1201,9 @@ def test_private_environment_rejects_unreviewed_architecture_values(machine: str
         (True, "permit_mismatched_pids"),
         (True, "delayed"),
         (True, "construction_snapshots"),
+        (True, "canonical_wrong_source"),
+        (True, "canonical_incomplete_proof"),
+        (True, "canonical_cleanup_incomplete"),
         (True, "ambiguous_workspace"),
         (False, "delayed_cleanup"),
         (False, "cancel_uncertain"),
@@ -977,6 +1222,9 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
     """Exercise the shipped JS and API guards with fixture PIDs, never native actions."""
     from bluefire.api import create_server, generate_browser_bootstrap_capability
     from bluefire.contracts import ScenarioDefinition
+    from bluefire.evidence import EvidenceProvenance, EvidenceRecord
+    from bluefire.run_store import RunStore
+    from bluefire.util import content_hash
 
     node = shutil.which("node")
     if node is None:
@@ -1007,6 +1255,7 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
     sent_frames: list[dict[str, object]] = []
     ambiguity_rejected = threading.Event()
     ambiguity_order: list[str] = []
+    store = RunStore(tmp_path / "runs")
 
     def pin(record):
         if not permit_pin:
@@ -1025,6 +1274,8 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
         cancel_calls = 0
         cleanup_status_reads = 0
         detail_calls = 0
+        retained_calls = 0
+        sealed = False
 
         def catalog(self):
             return {
@@ -1070,12 +1321,14 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
         def save_scenario_version(self, request):
             assert set(request) == {"scenario"}
             self.saved = request["scenario"]
-            ScenarioDefinition.from_mapping(self.saved)
+            self.document = ScenarioDefinition.from_mapping(self.saved).to_dict()
+            self.digest = content_hash(self.document)
             return {
                 "scenario": {
                     "scenario_id": self.saved["id"],
                     "version": 1,
-                    "digest": "sha256:" + "a" * 64,
+                    "digest": self.digest,
+                    "document": self.document,
                 }
             }
 
@@ -1106,6 +1359,7 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
                 if self.cleanup_status_reads >= 3:
                     self.state = "cancelled"
                     shutil.rmtree(task)
+                    self.seal_run()
             result = {
                 "job_id": "job-" + "d" * 32 if approval_gate == "wrong_identity" else job_id,
                 "state": self.state,
@@ -1178,61 +1432,146 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
                     return self.job(requested_id)
                 shutil.rmtree(task)
                 self.state = "completed" if approval_gate == "blocked_run" else "cancelled"
+                self.seal_run()
                 return self.job(requested_id)
             assert pins == [ready]
             assert sent_frames == [{"type": "witness_permit", "ready": ready}]
             shutil.rmtree(task)
             self.state = "cancelled"
+            self.seal_run()
             return self.job(requested_id)
 
         def retained_observations(self, requested_id):
-            assert requested_id == run_id and self.state == "cancelled"
-            return {
-                "run_id": run_id,
-                "observations": {
-                    "evidence": {
-                        "records": [
-                            {"content": {"artifact_type": "execution_interruption", **interruption}}
-                        ]
-                    }
-                },
-            }
+            from http import HTTPStatus
 
-        def detail(self, requested_id):
-            assert requested_id == run_id and self.state in {"completed", "cancelled"}
-            self.detail_calls += 1
-            assert self.detail_calls == 1
+            from bluefire.api import APIError
+            from bluefire.retained_run_observations import retained_observations
+            from bluefire.run_store import RunStoreError
+
+            self.retained_calls += 1
+            try:
+                return retained_observations(store, requested_id)
+            except RunStoreError as error:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "retained_observations_unavailable",
+                    "Sealed records require canonical inspection.",
+                ) from error
+
+        def seal_run(self):
+            if self.sealed:
+                return
             step = {
                 "step_id": "witness",
                 "behavior_id": verifier.ACTION_ID,
                 "action_id": verifier.ACTION_ID,
             }
-            return {
-                "run_id": run_id,
-                "status": self.state,
-                "scenario": {"id": self.saved["id"]},
-                "profile": {"id": verifier.PROFILE_ID},
-                "plan": {
+            stored_document = (
+                {**self.document, "title": "Different saved source"}
+                if approval_gate == "canonical_wrong_source"
+                else self.document
+            )
+            store.create_run(
+                scenario=stored_document,
+                plan={
                     "scenario_id": self.saved["id"],
-                    "scenario_digest": "sha256:" + "a" * 64,
+                    "scenario_digest": content_hash(stored_document),
                     "mode": "execute",
                     "runner_profile_id": verifier.PROFILE_ID,
                     "steps": [step],
                 },
-                "steps": [
-                    {
-                        **step,
-                        "status": "blocked",
-                        "execution_disposition": "execute",
-                        "runner_status": "refused",
-                        "error": {
-                            "code": "cancellation_witness_blocked",
-                            "message": "PRIVATE_SYNTHETIC_SECRET_42",
-                        },
-                    }
-                ],
-                "stdout": "PRIVATE_SYNTHETIC_SECRET_42",
+                profile=self.catalog()["runner_profiles"][0],
+                policy={},
+                _reserved_run_id=run_id,
+            )
+            row = {
+                **step,
+                "status": "blocked",
+                "execution_disposition": "execute",
+                "runner_status": "refused",
+                "error": {
+                    "code": "cancellation_witness_blocked",
+                    "message": "PRIVATE_SYNTHETIC_SECRET_42",
+                },
             }
+            evidence = []
+            if permit_pin and approval_gate in {
+                "ready",
+                "delayed",
+                "construction_snapshots",
+                "canonical_wrong_source",
+                "canonical_incomplete_proof",
+                "canonical_cleanup_incomplete",
+            }:
+                content = {
+                    "artifact_type": "execution_interruption",
+                    "schema_version": "bluefire.execution-interruption.v1",
+                    "request_hash": ready["request_hash"],
+                    "runner_task_id": "execute-" + "d" * 64,
+                    "dispatch_requested": True,
+                    "runner_result_received": False,
+                    "effect_outcome": "unknown",
+                    **interruption,
+                }
+                if approval_gate == "canonical_incomplete_proof":
+                    content["control_cleanup_verified"] = False
+                record = EvidenceRecord.create(
+                    run_id=run_id,
+                    step_id="witness",
+                    behavior_id=verifier.ACTION_ID,
+                    action_id=verifier.ACTION_ID,
+                    runner_profile_id=verifier.PROFILE_ID,
+                    provenance=EvidenceProvenance.UNKNOWN,
+                    producer="orchestrator.v1",
+                    content=content,
+                    target_scope_ref="runner-profile:" + verifier.PROFILE_ID,
+                )
+                evidence = [record.to_dict()]
+                row = {
+                    **step,
+                    "status": "failed",
+                    "execution_disposition": "execute",
+                    "error": {"code": "execution_interrupted"},
+                    "runner_task_id": content["runner_task_id"],
+                    "evidence_ids": [record.evidence_id],
+                    "interruption": content,
+                }
+            store.finalize(
+                run_id,
+                result={
+                    "status": self.state,
+                    "scenario_id": self.saved["id"],
+                    "mode": "execute",
+                    "runner_profile_id": verifier.PROFILE_ID,
+                    "steps": [row],
+                    "cleanup": {
+                        "attempted": False,
+                        "success": approval_gate != "canonical_cleanup_incomplete",
+                        "succeeded": True,
+                        "outstanding_receipts": 0,
+                        "outstanding_receipt_count": 0,
+                        "recovered_after_restart": False,
+                    },
+                    "cleanup_recovery": {
+                        "schema_version": "bluefire.cleanup-recovery.v1",
+                        "run_id": run_id,
+                        "status": "reconciled_no_outstanding",
+                        "initial_receipt_count": 0,
+                        "remaining_receipt_count": 0,
+                        "attempts": [],
+                    },
+                    "stdout": "PRIVATE_SYNTHETIC_SECRET_42",
+                },
+                evidence=evidence,
+                detections=[],
+            )
+            self.sealed = True
+
+        def detail(self, requested_id):
+            assert requested_id == run_id and self.state in {"completed", "cancelled"}
+            self.detail_calls += 1
+            assert self.detail_calls == 1
+            return store.get_run(requested_id, require_finalized=True)
 
     capability = generate_browser_bootstrap_capability()
     service = FixtureService()
@@ -1355,6 +1694,7 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
         server.server_close()
         server_thread.join(timeout=5)
     assert not observer.is_alive() and not server_thread.is_alive()
+    assert service.retained_calls == 0
     report = json.loads((output / "driver-report.json").read_text(encoding="utf-8"))
     assert capability not in json.dumps(report)
     assert "PRIVATE_SYNTHETIC_SECRET_42" not in json.dumps(report)
@@ -1366,12 +1706,43 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
         assert report["request_counts"]["job_status"] == (4 if approval_gate == "delayed" else 3)
         assert service.approval_calls == 1 and service.cancel_calls == 1
         assert "failure_cleanup" not in report
-        assert "failure_run_diagnostic" not in report and service.detail_calls == 0
+        assert "failure_run_diagnostic" not in report and service.detail_calls == 1
+        assert report["request_counts"]["run_detail"] == 1
         if approval_gate == "construction_snapshots":
             assert json.loads(snapshots.read_text(encoding="utf-8")) == [
                 str(sandbox / ".bluefire-executions"),
                 str(task.parent),
             ]
+    elif approval_gate in {
+        "canonical_wrong_source",
+        "canonical_incomplete_proof",
+        "canonical_cleanup_incomplete",
+    }:
+        assert report["status"] == "failed_or_incomplete"
+        assert report["error"] == {
+            "stage": "cancel-and-retained-proof",
+            "error_type": "AssertionError",
+        }
+        assert report["request_counts"]["run_detail"] == service.detail_calls == 1
+        assert "failure_run_detail" not in report["request_counts"]
+        assert "failure_cleanup" not in report
+        assert service.approval_calls == service.cancel_calls == 1
+        assert service.state == "cancelled" and not task.exists()
+        assert report["checks"] == _passed_driver_report()["checks"][:5]
+        assert report["retained_interruption_diagnostic"] == {
+            "status": (
+                "proof_incomplete" if approval_gate == "canonical_incomplete_proof" else "complete"
+            ),
+            "false_flags": (
+                ["control_cleanup_verified"]
+                if approval_gate == "canonical_incomplete_proof"
+                else []
+            ),
+        }
+        assert report["failure_run_diagnostic"]["status"] == (
+            "unavailable" if approval_gate == "canonical_wrong_source" else "available"
+        )
+        assert not verifier._driver_passed(report)
     elif not permit_pin or approval_gate in {"ambiguous_workspace", "permit_mismatched_pids"}:
         if approval_gate == "permit_mismatched_pids":
             assert not observer_errors and observed and pins == [ready]

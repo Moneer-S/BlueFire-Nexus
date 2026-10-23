@@ -37,7 +37,7 @@ test("opens at readable focus, keeps an explicit whole-path overview, and preser
   await expect(page.locator(".react-flow__node:visible")).toHaveCount(3);
   await expect(page.locator(".graph-group-count")).toHaveText("3 of 7 steps");
   await expect(page.locator(".graph-disclosure")).not.toContainText("steps shown");
-  await expect(page.locator(".graph-disclosure")).toContainText(/branches hidden.*Review run includes the whole experiment/);
+  await expect(page.locator(".graph-disclosure")).toContainText(/routes hidden.*Review run includes the whole experiment/);
   await expect(page.locator(".graph-group-connections")).not.toHaveAttribute("open");
   await page.locator(".graph-group-connections > summary").click();
   await expect(page.getByText(/To: .*On success/)).toBeVisible();
