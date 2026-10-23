@@ -27,6 +27,9 @@ def filesystem_scope(plan: ExecutionPlan, *, opcode_for_step) -> tuple[str, ...]
         "sandbox.observability.variant.v1": ("staged", "observability"),
         "sandbox.export.local.v1": ("staged", "exports"),
         "sandbox.restricted.persistence-marker.v1": ("restricted",),
+        "sandbox.execution.process-tree-cancellation-witness.v1": (
+            ".bluefire-cancellation-witness-v1",
+        ),
     }
     selected: list[str] = []
     for step in plan.steps:
