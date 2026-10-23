@@ -3,9 +3,11 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import subprocess
 import zipfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -40,6 +42,26 @@ def report() -> dict:
 
 def test_accepts_complete_native_generated_scope() -> None:
     assert verifier.driver_passed(report())
+
+
+def test_installed_browser_navigations_use_service_hash_routes() -> None:
+    from bluefire.api import _STATIC_ROUTES
+
+    driver = (
+        Path(__file__).resolve().parents[1] / "frontend/tests/installed/installed-macos-native.mjs"
+    ).read_text(encoding="utf-8")
+    navigations = re.findall(r"page\.goto\(`([^`]+)`", driver)
+    assert navigations == ["${origin}/#/scenarios", "${origin}/#/runs/${runId}"]
+    for template in navigations:
+        url = urlsplit(
+            template.replace("${origin}", "http://127.0.0.1:4317").replace(
+                "${runId}", "run-generated"
+            )
+        )
+        assert url.path in _STATIC_ROUTES
+        assert url.fragment in {"/scenarios", "/runs/run-generated"}
+        assert not url.query
+    assert "assert.equal(new URL(page.url()).hash, `#/runs/${runId}`);" in driver
 
 
 @pytest.mark.parametrize(

@@ -104,11 +104,11 @@ const readPaths = new Set([
 ]);
 
 function readAllowed(url) {
-  if (!url.search && (readPaths.has(url.pathname) || ["/", "/experiments"].includes(url.pathname)
+  if (!url.search && (readPaths.has(url.pathname) || url.pathname === "/"
     || /^\/ui\/[A-Za-z0-9/_\-.]+$/.test(url.pathname))) return true;
   if (url.pathname === "/api/v1/runner") return url.search === `?profile_id=${PROFILE}`;
   if (jobId && !url.search && url.pathname === `/api/v1/jobs/${jobId}`) return true;
-  return Boolean(runId && !url.search && [`/runs/${runId}`, `/api/v1/runs/${runId}`].includes(url.pathname));
+  return Boolean(runId && !url.search && url.pathname === `/api/v1/runs/${runId}`);
 }
 
 function take(counter, cap, condition) {
@@ -335,7 +335,8 @@ async function main() {
   });
   page.on("dialog", async dialog => { report.errors.push({ stage, kind: "unexpected-dialog" }); await dialog.dismiss(); });
   enter("connect");
-  await ui(timeout => page.goto(`${origin}/experiments`, { waitUntil: "domcontentloaded", timeout }));
+  const documentResponse = await ui(timeout => page.goto(`${origin}/#/scenarios`, { waitUntil: "domcontentloaded", timeout }));
+  assert.equal(documentResponse?.status(), 200);
   await ui(timeout => page.getByLabel("One-time connection code", { exact: false }).fill(capability, { timeout }));
   await ui(timeout => page.getByRole("button", { name: "Connect", exact: true }).click({ timeout }));
   capability = "";
@@ -426,7 +427,7 @@ async function main() {
   report.checks.push("two_native_steps_completed", "independent_fixture_observed_before_cleanup", "receipt_cleanup_complete");
 
   enter("saved-run-ui");
-  await ui(timeout => page.goto(`${origin}/runs/${runId}`, { waitUntil: "domcontentloaded", timeout }));
+  await ui(timeout => page.goto(`${origin}/#/runs/${runId}`, { waitUntil: "domcontentloaded", timeout }));
   await ui(timeout => page.getByRole("heading", { name: TITLE, exact: true }).waitFor({ timeout }));
   await ui(timeout => page.getByRole("navigation", { name: "Run review sections" }).waitFor({ timeout }));
   await capture("macos-native-result");
@@ -454,7 +455,7 @@ async function main() {
   enter("same-tab-reload");
   await ui(timeout => page.reload({ waitUntil: "domcontentloaded", timeout }));
   await ui(timeout => page.getByRole("heading", { name: TITLE, exact: true }).waitFor({ timeout }));
-  assert.equal(new URL(page.url()).pathname, `/runs/${runId}`);
+  assert.equal(new URL(page.url()).hash, `#/runs/${runId}`);
   const reopened = await api(`/runs/${runId}`);
   assert.equal(reopened.run_id, runId);
   assert.equal(reopened.manifest?.bundle_hash, report.bundle_hash);
