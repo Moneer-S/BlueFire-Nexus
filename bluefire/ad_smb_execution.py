@@ -16,6 +16,7 @@ from .ad_smb_installed import InstalledEnvironment, load_installed
 from .ad_smb_receiver_results import context
 from .ad_smb_results import execution_manifest, now, original_context, validate_execution
 from .ad_smb_workspace_results import project_original
+from .domain_errors import JobCancelled
 from .runner_transport_errors import RunnerTransportError
 from .runner_trust import RunnerTrustError
 from .util import content_hash
@@ -37,6 +38,14 @@ class AdSmbExecutor(Protocol):
     def recover_original(
         self, request: Mapping[str, Any], context: Mapping[str, Any]
     ) -> dict[str, Any]: ...
+
+
+class AdSmbPreDispatchFailure(AdSmbError):
+    """Installed execution failed before its durable dispatch callback completed."""
+
+
+class AdSmbPreDispatchCancelled(JobCancelled):
+    """Installed execution was cancelled before its durable callback completed."""
 
 
 class UnavailableAdSmbExecutor:
@@ -169,34 +178,48 @@ class InstalledAdSmbExecutor:
         cancellation_event: threading.Event,
         before_dispatch: Callable[[dict[str, Any]], None],
     ) -> dict[str, Any]:
-        if cancellation_event.is_set():
-            return UnavailableAdSmbExecutor().execute(
-                request, cancellation_event=cancellation_event, before_dispatch=before_dispatch
+        checkpointed = False
+        try:
+            if cancellation_event.is_set():
+                raise JobCancelled("AD installed execution cancellation requested before dispatch.")
+            entry, role = self._selected(request)
+            client = entry.client(role)
+            self._identity(entry, role, client)
+            profile = entry.to_dict()["profiles"][role]
+            manifest = execution_manifest(request, profile)
+            original = context(manifest, profile)
+            # This callback is synchronous durable checkpointing, before any Execute.
+            completed = cast(Callable[[dict[str, Any]], object], before_dispatch)(original)
+            checkpointed = True
+            if completed is not None:
+                raise AdSmbError("AD original checkpoint callback did not complete synchronously.")
+            current, current_role = self._selected(request)
+            if current.digest != entry.digest or current_role != role:
+                raise AdSmbError("AD installed configuration changed before dispatch.")
+            if cancellation_event.is_set():
+                return UnavailableAdSmbExecutor().execute(
+                    request, cancellation_event=cancellation_event, before_dispatch=before_dispatch
+                )
+            result = client.execute_task(
+                manifest,
+                profile,
+                task_id=original["task_id"],
+                cancel_event=cancellation_event,
+                durable_result_path=self.root / "results" / (original["task_id"] + ".json"),
             )
-        entry, role = self._selected(request)
-        client = entry.client(role)
-        self._identity(entry, role, client)
-        profile = entry.to_dict()["profiles"][role]
-        manifest = execution_manifest(request, profile)
-        original = context(manifest, profile)
-        # This callback is synchronous durable checkpointing, before any Execute.
-        if cast(Callable[[dict[str, Any]], object], before_dispatch)(original) is not None:
-            raise AdSmbError("AD original checkpoint callback did not complete synchronously.")
-        current, current_role = self._selected(request)
-        if current.digest != entry.digest or current_role != role:
-            raise AdSmbError("AD installed configuration changed before dispatch.")
-        if cancellation_event.is_set():
-            return UnavailableAdSmbExecutor().execute(
-                request, cancellation_event=cancellation_event, before_dispatch=before_dispatch
-            )
-        result = client.execute_task(
-            manifest,
-            profile,
-            task_id=original["task_id"],
-            cancel_event=cancellation_event,
-            durable_result_path=self.root / "results" / (original["task_id"] + ".json"),
-        )
-        return project_original(request, original, entry.channel(role), result)
+            return project_original(request, original, entry.channel(role), result)
+        except JobCancelled as exc:
+            if not checkpointed:
+                raise AdSmbPreDispatchCancelled(
+                    "AD installed execution was cancelled before its durable dispatch checkpoint."
+                ) from exc
+            raise
+        except Exception as exc:
+            if not checkpointed:
+                raise AdSmbPreDispatchFailure(
+                    "AD installed execution failed before its durable dispatch checkpoint."
+                ) from exc
+            raise
 
     def recover_original(
         self, request: Mapping[str, Any], context: Mapping[str, Any]

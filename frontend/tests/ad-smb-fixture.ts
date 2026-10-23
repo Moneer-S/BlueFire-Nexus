@@ -54,6 +54,17 @@ export function rawAdWorkflow(options: { id?: string; phases?: AdPhase[]; allowe
   const phases = options.phases ?? [];
   return { workflow: { job_id: options.id ?? adOwner, kind: "ad_smb.exercise", request: { environment: rawAdEnvironment(), submitted_request: { environment_id: rawAdEnvironment().environment_id } }, progress: { revision: phases.length * 2, stopped: options.stopped ?? false, pending_operation: options.pending ?? null, policy_state: phases.includes("harden") && !phases.includes("rollback") ? "hardened" : "baseline", operations: phases.map(phase => rawAdOperation(phase, options.expectation)), reserved: {} } }, allowed_phases: options.allowed ?? (options.pending ? [] : ["inspect"]), remaining: { business_attempts: 6, sessions: 6, share_changes: 1, rollbacks: 1 }, effective_access_claim: false, execution_integration: options.unavailable ? "unavailable" : "injected_adapter" };
 }
+export function rawAdControllerLocalWorkflow(phase: AdPhase = "inspect") {
+  const value = rawAdWorkflow({ phases: [phase], allowed: [] });
+  const operation = value.workflow.progress.operations[0]!;
+  return { ...value, execution_integration: "configured_admission", workflow: { ...value.workflow,
+    request: { ...value.workflow.request, environment: { ...value.workflow.request.environment, provenance: "runner_reported" } },
+    progress: { ...value.workflow.progress, operations: [{ ...operation,
+      outcome: { ...operation.outcome, state: "not_started", read_expectation: phase === "baseline" || phase === "retest" ? "incomplete" : null, distinct_local_contexts: null },
+      executions: [{ ...operation.executions[0]!, provenance: "controller_local", dispatch: "not_started", observation: null }],
+    }] },
+  } };
+}
 export function rawAdList(values = [rawAdWorkflow()]) {
   return { schema_version: "bluefire.ad-smb-workflow-list.v1", effective_access_claim: false, workflows: values.map(({ workflow }) => ({ workflow_job_id: workflow.job_id, member: workflow.request.environment.scope.hosts.member.fqdn, provenance: workflow.request.environment.provenance, revision: workflow.progress.revision, stopped: workflow.progress.stopped, pending_operation: workflow.progress.pending_operation, policy_state: workflow.progress.policy_state })) };
 }

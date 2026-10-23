@@ -42,7 +42,7 @@ export interface AdNormalizedAudit {
   captureState: "query_exhausted" | "event_limit" | "byte_limit" | "event_rejected" | "deadline" | "cancelled" | "read_failed" | "cleanup_unknown";
   inputEvents: number; inputBytes: number; duplicateEvents: number; events: AdAuditEvent[]; limitations: string[];
 }
-export interface AdExecution { provenance: "synthetic_fixture" | "runner_reported"; dispatch: "not_started" | "attempted" | "unknown"; cleanup: "verified" | "unknown"; read: AdRead | null; audit: { events: number; truncated: boolean; digest: string; normalized?: AdNormalizedAudit } | null; change: AdChange | null }
+export interface AdExecution { provenance: "synthetic_fixture" | "runner_reported" | "controller_local"; dispatch: "not_started" | "attempted" | "unknown"; cleanup: "verified" | "unknown"; read: AdRead | null; audit: { events: number; truncated: boolean; digest: string; normalized?: AdNormalizedAudit } | null; change: AdChange | null }
 export interface AdOperation { id: string; phase: AdPhase; runId: string; state: "complete" | "partial" | "not_started" | "unknown"; expectation: "matched" | "not_met" | "incomplete" | null; distinctContexts: boolean | null; cleanup: "verified" | "unknown"; digest: string; executions: AdExecution[] }
 export interface AdWorkflow { id: string; environment: AdEnvironment; revision: number; stopped: boolean; pending: string | null; policy: "baseline" | "hardened" | "unknown"; operations: AdOperation[]; allowed: AdPhase[]; remaining: AdBudget; integration: "unavailable" | "injected_adapter" | "configured_admission" }
 export interface AdWorkflowSummary extends Pick<AdWorkflow, "id" | "revision" | "stopped" | "pending" | "policy"> { environment: Pick<AdEnvironment, "member" | "provenance"> }
@@ -183,9 +183,10 @@ function auditEvent(value: unknown): AdAuditEvent {
 }
 function execution(value: unknown): AdExecution {
   const row = object(value), observation = row.observation === null ? null : object(row.observation);
-  const result: AdExecution = { provenance: oneOf(row.provenance, ["synthetic_fixture", "runner_reported"]), dispatch: oneOf(row.dispatch, ["not_started", "attempted", "unknown"]), cleanup: oneOf(row.cleanup, ["verified", "unknown"]), read: null, audit: null, change: null };
+  const result: AdExecution = { provenance: oneOf(row.provenance, ["synthetic_fixture", "runner_reported", "controller_local"]), dispatch: oneOf(row.dispatch, ["not_started", "attempted", "unknown"]), cleanup: oneOf(row.cleanup, ["verified", "unknown"]), read: null, audit: null, change: null };
   if (row.schema_version !== "bluefire.ad-smb-execution.v1") throw bad();
   digest(row.request_digest);
+  if (result.provenance === "controller_local" && (result.dispatch !== "not_started" || result.cleanup !== "verified" || observation !== null)) throw bad();
   if (!observation) return result;
   if (result.dispatch !== "attempted") throw bad();
   if ("reader" in observation) {
@@ -217,6 +218,7 @@ function operation(value: unknown): AdOperation {
   const phase = oneOf(row.phase, adPhases), executions = list(row.executions, adSteps[phase].length).map(execution);
   const runId = text(row.run_id, 160); if (!/^run-[A-Za-z0-9_-]+$/.test(runId)) throw bad();
   const state = oneOf(outcome.state, ["complete", "partial", "not_started", "unknown"]);
+  if (executions.some(entry => entry.provenance === "controller_local") && (executions.length !== 1 || state !== "not_started" || outcome.cleanup !== "verified" || outcome.distinct_local_contexts !== null || outcome.read_expectation !== (phase === "baseline" || phase === "retest" ? "incomplete" : null))) throw bad();
   if (state === "complete" && executions.length !== adSteps[phase].length) throw bad();
   if (phase === "baseline" || phase === "retest") for (const [index, entry] of executions.entries()) {
     if (entry.read && (entry.read.reader !== (index === 0 ? "probe" : "legitimate") || entry.read.purpose !== (index === 2 ? "health" : "primary"))) throw bad();
@@ -232,6 +234,7 @@ export function checkedAdWorkflow(value: unknown, expected?: string): AdWorkflow
   if (pending && (allowed.length || operations.some(row => row.id === pending))) throw bad();
   const selected = environment(object(row.request).environment);
   if (operations.some(row => row.executions.some(entry => {
+    if (entry.provenance === "controller_local" && selected.provenance !== "runner_reported") return true;
     if (entry.change && entry.change.removed.sid !== selected.principals.probe) return true;
     const normalized = entry.audit?.normalized;
     return Boolean(normalized && (normalized.inputEvents > selected.auditEvents || normalized.inputBytes > selected.auditBytes || normalized.windowStart !== auditUtc(selected.createdAt) || normalized.sourceHostId !== selected.memberHostId || normalized.events.some(event =>

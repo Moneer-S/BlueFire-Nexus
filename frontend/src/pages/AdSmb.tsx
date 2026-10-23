@@ -93,7 +93,7 @@ export function AdSmbPage() {
     {[write.error, checkPending.error, loadReview.error, control.error].filter(Boolean).map((error, index) => <ErrorState key={index} error={error} />)}
     <div className="ad-smb-layout">
       <aside className="ad-smb-saved" aria-label="Saved AD exercises"><div className="ad-smb-section-heading"><h2>Saved exercises</h2><Link to={adSmbPath({}, ["workflow"])} aria-label="Environment selection"><Plus size={18} /></Link></div>
-        {saved.isPending ? <LoadingState label="Opening saved AD exercises" /> : saved.error ? <ErrorState error={saved.error} /> : <ul>{saved.data?.map(entry => <li key={entry.id}><Link aria-current={owner === entry.id ? "page" : undefined} to={adSmbPath({ workflow: entry.id })}><strong>{entry.environment.member}</strong><span>{entry.stopped ? "New work stopped" : sentence(entry.policy)} / revision {entry.revision}</span><small>{entry.environment.provenance === "synthetic_fixture" ? "Synthetic fixture" : "Runner-reported evidence"}</small></Link></li>)}</ul>}
+        {saved.isPending ? <LoadingState label="Opening saved AD exercises" /> : saved.error ? <ErrorState error={saved.error} /> : <ul>{saved.data?.map(entry => <li key={entry.id}><Link aria-current={owner === entry.id ? "page" : undefined} to={adSmbPath({ workflow: entry.id })}><strong>{entry.environment.member}</strong><span>{entry.stopped ? "New work stopped" : sentence(entry.policy)} / revision {entry.revision}</span><small>{entry.environment.provenance === "synthetic_fixture" ? "Synthetic fixture" : "Configured environment"}</small></Link></li>)}</ul>}
         {saved.data?.length === 0 ? <p>No saved exercises.</p> : null}
       </aside>
       <div className="ad-smb-workspace">
@@ -116,7 +116,7 @@ export function AdSmbPage() {
             })}
           </>}
         </section> : !adJobValid(owner) ? <ErrorState error={new Error("Open an exact saved AD exercise from the list.")} /> : workflow.error ? <ErrorState title="Saved AD exercise unavailable" error={workflow.error} retry={() => { void workflow.refetch(); }} /> : !value ? <LoadingState label="Opening saved AD exercise" /> : <>
-          <section className="ad-smb-section ad-smb-objective" aria-label="Selected AD objective"><div className="ad-smb-section-heading"><div><h2>Remove probe access, preserve legitimate reads</h2><p className="ad-smb-target">{value.environment.share}</p></div><Badge tone={value.environment.provenance === "synthetic_fixture" ? "warning" : "neutral"}>{value.environment.provenance === "synthetic_fixture" ? "Synthetic fixture" : "Runner-reported"}</Badge></div>
+          <section className="ad-smb-section ad-smb-objective" aria-label="Selected AD objective"><div className="ad-smb-section-heading"><div><h2>Remove probe access, preserve legitimate reads</h2><p className="ad-smb-target">{value.environment.share}</p></div><Badge tone={value.environment.provenance === "synthetic_fixture" ? "warning" : "neutral"}>{value.environment.provenance === "synthetic_fixture" ? "Synthetic fixture" : "Configured environment"}</Badge></div>
             <EnvironmentFacts environment={value.environment} />
             <div className="ad-smb-actions">{value.allowed.filter(phase => adPhaseCurrent(value, phase, now)).map(phase => <Button key={phase} disabled={!canReview} onClick={() => loadReview.mutate({ selected: value, phase })}>{phase === "rollback" ? <Undo2 /> : phase === "inspect" || phase === "audit" ? <FileSearch /> : <ClipboardCheck />}Review {adPhaseLabels[phase].toLowerCase()}</Button>)}
               <Button disabled={control.isPending || (value.stopped && !value.pending)} onClick={() => control.mutate({ id: value.id, operation: "stop" })}><Square />{value.pending ? "Stop current operation" : "Stop new work"}</Button>
@@ -173,6 +173,12 @@ function ReadComparison({ workflow }: { workflow: AdWorkflow }) {
     {retest?.distinctContexts === false || baseline?.distinctContexts === false ? <Callout tone="warning" title="Local contexts reused">Distinct local logon contexts were not established for this read sequence.</Callout> : null}
   </section>;
 }
+function evidenceSource(operation: AdOperation): string {
+  if (!operation.executions.length) return "No execution evidence";
+  if (operation.executions.some(entry => entry.provenance === "controller_local")) return "Local controller; not dispatched";
+  if (operation.executions.every(entry => entry.provenance === "synthetic_fixture")) return "Synthetic fixture";
+  return operation.executions.some(entry => entry.provenance === "synthetic_fixture") ? "Mixed synthetic and runner-reported" : "Runner-reported";
+}
 function Evidence({ workflow }: { workflow: AdWorkflow }) {
   const change = workflow.operations.flatMap(row => row.executions).find(row => row.change)?.change;
   const audit = workflow.operations.find(row => row.phase === "audit");
@@ -180,7 +186,7 @@ function Evidence({ workflow }: { workflow: AdWorkflow }) {
   return <section className="ad-smb-section" aria-label="Retained AD evidence"><h2>Evidence and settlement</h2>
     {change ? <AclChange change={change} environment={workflow.environment} /> : null}
     {auditObservation?.normalized ? <AuditEventTable value={auditObservation.normalized} /> : auditObservation ? <p>Audit retained: {auditObservation.events} source events{auditObservation.truncated ? "; incomplete or truncated capture" : ""}. Normalized event rows are not present in this saved summary. Source authentication and independence are not established.</p> : <p>{audit ? "No audit observation retained." : "Audit not collected."} No independent observation is reported.</p>}
-    <ol className="ad-smb-history">{workflow.operations.map(row => <li key={row.id}><div className="ad-smb-section-heading"><h3>{adPhaseLabels[row.phase]}</h3><Badge tone={row.state === "unknown" || row.expectation === "not_met" ? "warning" : "neutral"}>{sentence(row.state)}</Badge></div><DataList items={[{ label: "Cleanup", value: sentence(row.cleanup) }, { label: "Evidence", value: row.executions.every(execution => execution.provenance === "synthetic_fixture") ? "Synthetic fixture" : row.executions.some(execution => execution.provenance === "synthetic_fixture") ? "Mixed synthetic and runner-reported" : "Runner-reported" }]} /><Link to={`/runs/${encodeURIComponent(row.runId)}`}>Open retained run</Link><details><summary>Evidence references</summary><code>{row.digest}</code><ul>{row.executions.filter(execution => execution.read).map((execution, index) => <li key={index}>{execution.read?.reader} / {execution.read?.purpose}: {execution.read?.bytes} returned bytes; local context <code>{execution.read?.localContext ?? "Not recorded"}</code></li>)}</ul></details></li>)}</ol>
+    <ol className="ad-smb-history">{workflow.operations.map(row => <li key={row.id}><div className="ad-smb-section-heading"><h3>{adPhaseLabels[row.phase]}</h3><Badge tone={row.state === "unknown" || row.expectation === "not_met" ? "warning" : "neutral"}>{sentence(row.state)}</Badge></div><DataList items={[{ label: "Cleanup", value: sentence(row.cleanup) }, { label: "Evidence", value: evidenceSource(row) }]} /><Link to={`/runs/${encodeURIComponent(row.runId)}`}>Open retained run</Link><details><summary>Evidence references</summary><code>{row.digest}</code><ul>{row.executions.filter(execution => execution.read).map((execution, index) => <li key={index}>{execution.read?.reader} / {execution.read?.purpose}: {execution.read?.bytes} returned bytes; local context <code>{execution.read?.localContext ?? "Not recorded"}</code></li>)}</ul></details></li>)}</ol>
     {!workflow.operations.length ? <p>No stage evidence retained.</p> : null}
     <details><summary>Saved workflow reference</summary><code>{workflow.id}</code><p>Revision {workflow.revision}; share state {sentence(workflow.policy)}.</p></details>
   </section>;
