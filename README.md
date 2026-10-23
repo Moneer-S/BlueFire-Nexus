@@ -25,7 +25,7 @@ Connect behavior steps into an experiment, inspect the recorded outcome, then ca
 
 ![BlueFire Nexus Overview workspace](docs/assets/screenshots/desktop-workspace.png)
 
-Watch the [AI-Off synthetic simulation workflow](docs/assets/screenshots/desktop-workflow.webm). These desktop screenshots and the recording show generated sample data in a CI-qualified development build with the same packaged interface as RC2. They demonstrate simulation and saved-work interactions, not live model inference or native execution.
+Watch the [AI-Off synthetic simulation workflow](docs/assets/screenshots/desktop-workflow.webm). These screenshots and the recording come from an installed RC2 candidate using the packaged interface included in this prerelease. The recording shows actual workspace interactions with generated data and AI-Off simulation, edited for length. It does not demonstrate native execution or live model inference.
 
 ## Get started
 
