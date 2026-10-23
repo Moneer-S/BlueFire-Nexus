@@ -23,22 +23,28 @@ BlueFire Nexus is an open-source, AI-first security experimentation and defense-
 
 Connect behavior steps into an experiment, inspect the recorded outcome, then carry a run into detection work or compare it with another result. The optional AI Assistant works alongside the same workspace; manual editing and simulation remain available without an AI provider.
 
+![BlueFire Nexus Overview workspace](docs/assets/screenshots/desktop-workspace.png)
+
+Watch the [AI-Off synthetic simulation workflow](docs/assets/screenshots/desktop-workflow.webm). These desktop screenshots and the recording show generated sample data in a CI-qualified development build with the same packaged interface as RC2. They demonstrate simulation and saved-work interactions, not live model inference or native execution.
+
 ![Walkthrough of an experiment and its saved results](docs/assets/screenshots/walkthrough.gif)
 
 *Reviewing an experiment, a recorded collection observation, and saved run results using synthetic lab data.*
 
 ## Get started
 
-Download a [development build for your platform](docs/INSTALLATION.md#download-the-candidate). The package includes the application, browser interface, examples, and native runner. You need Python 3.10 or newer; you do not need to build the frontend.
+BlueFire Nexus 3.0.0-rc2 is a prerelease, not a stable release.
 
-Create a `bluefire-v3` folder, extract the downloaded artifact ZIP, and put its intact wheel in a `wheels` subfolder. Run the commands for your platform from `bluefire-v3`.
+Download the matching wheel and `SHA256SUMS` from the [3.0.0-rc2 GitHub release](https://github.com/Moneer-S/BlueFire-Nexus/releases/tag/v3.0.0-rc2) when its assets are available. Until then, the [installation guide](docs/INSTALLATION.md) explains how to obtain an unpublished candidate from a successful CI run for its exact source commit. The package includes the application, browser interface, examples, and native runner. You need 64-bit Python 3.10 or newer; you do not need to build the frontend.
+
+Create a `bluefire-v3` folder and put the intact wheel in a `wheels` subfolder. For release assets, also put `SHA256SUMS` in `bluefire-v3` and verify against the row with the exact wheel filename; these unsigned checksums detect a mismatch but do not attest publisher identity. Run the commands for your platform from `bluefire-v3`.
 
 <details>
 <summary><strong>Windows x86-64</strong></summary>
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install .\wheels\bluefire_nexus-3.0.0-py3-none-win_amd64.whl
+.\.venv\Scripts\python.exe -m pip install .\wheels\bluefire_nexus-3.0.0rc2-py3-none-win_amd64.whl
 .\.venv\Scripts\bluefire.exe --runs-dir (Join-Path $PWD 'workspace') ui
 ```
 
@@ -49,7 +55,7 @@ python -m venv .venv
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install ./wheels/bluefire_nexus-3.0.0-py3-none-linux_x86_64.whl
+.venv/bin/python -m pip install ./wheels/bluefire_nexus-3.0.0rc2-py3-none-linux_x86_64.whl
 .venv/bin/bluefire --runs-dir "$PWD/workspace" ui
 ```
 
@@ -60,7 +66,18 @@ python3 -m venv .venv
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install ./wheels/bluefire_nexus-3.0.0-py3-none-macosx_11_0_x86_64.whl
+.venv/bin/python -m pip install ./wheels/bluefire_nexus-3.0.0rc2-py3-none-macosx_11_0_x86_64.whl
+.venv/bin/bluefire --runs-dir "$PWD/workspace" ui
+```
+
+</details>
+
+<details>
+<summary><strong>Apple Silicon macOS</strong></summary>
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install ./wheels/bluefire_nexus-3.0.0rc2-py3-none-macosx_11_0_arm64.whl
 .venv/bin/bluefire --runs-dir "$PWD/workspace" ui
 ```
 
@@ -78,7 +95,7 @@ Reopen an exact saved version without replacing it, or export the working experi
 
 Work directly in the editor or use the Assistant to draft and revise the plan. From Build, the Assistant can use the current graph and selected-step context. Proposed graph changes remain reviewable before you apply them.
 
-![An experiment open in the Build workspace](docs/assets/screenshots/builder.png)
+![An experiment open in the Build workspace](docs/assets/screenshots/desktop-graph.png)
 
 ## Follow the run
 
@@ -120,9 +137,9 @@ The framework includes native methods and reviewed external-tool adaptations, in
 
 ## Current scope
 
-V3 is a development build, not a stable release. The included examples focus on local endpoint and file-collection tests using generated lab data. Execution support varies by method and platform. Remote runners, broad Active Directory coverage, and production EDR/SIEM collection integrations are not shipped.
+BlueFire brings experiment planning, review, execution, run inspection, and detection work into one local workspace. The optional Assistant supports drafting and revision; manual editing and simulation are available with AI Off. Deterministic and fixture-backed checks do not establish live model inference, and native action support varies by method and platform. Remote runners, broad Active Directory coverage, and production EDR/SIEM collection integrations are not shipped.
 
-Guided setup, reusable objectives, defensive changes, and endpoint, AD, and cloud workflows are active work. S3 audit collection is implemented behind `DISPATCH_RELEASED = false`; no live cloud proof is established. See the [program phases](docs/AI_FIRST_PROGRAM.md), [capability reference](docs/RELEASE_CAPABILITIES.md), [Windows paired readable-baseline guide](docs/WINDOWS_FILE_ACCESS_BASELINE.md), and [roadmap](https://github.com/Moneer-S/BlueFire-Nexus/issues/202).
+Generated fixtures and hosted CI are not customer-host, Active Directory, or AWS validation. S3 audit dispatch remains gated by `DISPATCH_RELEASED = false`. See the [program phases](docs/AI_FIRST_PROGRAM.md), [capability reference](docs/RELEASE_CAPABILITIES.md), [Windows paired readable-baseline guide](docs/WINDOWS_FILE_ACCESS_BASELINE.md), and [roadmap](https://github.com/Moneer-S/BlueFire-Nexus/issues/202).
 
 ## License
 
