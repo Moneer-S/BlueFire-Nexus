@@ -72,7 +72,7 @@ def test_simulate_replay_job_returns_finalized_result_with_original_lineage(
 
 
 def test_concurrent_duplicate_submissions_publish_one_callback_and_refuse_changed_reuse(
-    service, monkeypatch
+    service, monkeypatch, request
 ):
     source = source_run(service)
     payload = submission(service, source)
@@ -102,7 +102,8 @@ def test_concurrent_duplicate_submissions_publish_one_callback_and_refuse_change
         assert error.value.code == "replay_job_refused"
     finally:
         release.set()
-    service.job_controller.wait(results[0]["job"]["job_id"], timeout=10)
+    with diagnose_job_wait("replay_terminal", request.node.add_report_section):
+        service.job_controller.wait(results[0]["job"]["job_id"], timeout=10)
     assert len(calls) == 1
 
 
