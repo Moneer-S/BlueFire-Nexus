@@ -33,6 +33,16 @@ SCENARIO = re.compile(
 MAX_REPORT_BYTES = 128 * 1024
 MAX_PACKAGE_BYTES = 256 * 1024 * 1024
 TERMINAL_STATES = {"completed", "failed", "cancelled", "interrupted"}
+WORKER_CLEANUP_CHECKS = {
+    "browser_process_group_stopped",
+    "owned_jobs_settled",
+    "runner_stopped",
+    "generated_workspace_empty",
+    "http_shutdown",
+    "http_close",
+    "service_closed",
+    "service_thread_stopped",
+}
 REQUIRED_CHECKS = {
     "normal_ephemeral_browser_session",
     "shipped_execute_profile_verified",
@@ -331,7 +341,136 @@ def wait_driver_exit(process, exited_without_reap, *, timeout: float = 160) -> N
         time.sleep(0.1)
 
 
-def main(argv: list[str] | None = None) -> int:
+def supervise_owned_child(
+    child,
+    exited_without_reap,
+    output: Path,
+    *,
+    timeout: float = 230,
+    close_timeout: float = 20,
+    stop=stop_group,
+    clock=time.monotonic,
+    sleep=time.sleep,
+) -> dict[str, Any]:
+    """Reserve bounded group termination outside the service worker's deadline."""
+    deadline = clock() + timeout
+    close_deadline = None
+    result: dict[str, Any] = {
+        "worker_exit_observed": False,
+        "worker_process_group_stopped": False,
+        "worker_timeout_stage": None,
+        "worker_returncode": None,
+    }
+    try:
+        while True:
+            now = clock()
+            if close_deadline is None and (output / "service-close-started.json").exists():
+                close_deadline = now + close_timeout
+            if now >= deadline or (close_deadline is not None and now >= close_deadline):
+                result["worker_timeout_stage"] = (
+                    "service_close"
+                    if close_deadline is not None and now >= close_deadline
+                    else "journey"
+                )
+                break
+            if exited_without_reap(child.pid):
+                result["worker_exit_observed"] = True
+                break
+            sleep(min(0.1, deadline - now))
+    except Exception as exc:
+        result["worker_error_type"] = type(exc).__name__
+    finally:
+        try:
+            result["worker_process_group_stopped"] = stop(child) is True
+        except Exception as exc:
+            result["worker_stop_error_type"] = type(exc).__name__
+        result["worker_returncode"] = child.returncode
+    return result
+
+
+def worker_ready(value: object) -> bool:
+    return (
+        type(value) is dict
+        and value.get("schema_version") == "bluefire.installed-macos-native-receipt.v1"
+        and value.get("status") == "ready_for_finalization"
+        and value.get("scope") == "owned_generated_fixture_native_desktop"
+        and value.get("native_desktop_verified") is True
+        and value.get("effective_access") is False
+        and value.get("temporary_state_removed") is False
+        and type(value.get("browser_returncode")) is int
+        and value["browser_returncode"] == 0
+        and value.get("cleanup_errors") == []
+        and all(value.get(name) is True for name in WORKER_CLEANUP_CHECKS)
+    )
+
+
+def finalize_supervised_receipt(output: Path, supervision: dict[str, Any]) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "schema_version": "bluefire.installed-macos-native-receipt.v1",
+        "status": "failed_or_incomplete",
+        "scope": "owned_generated_fixture_native_desktop",
+        "native_desktop_verified": False,
+        "effective_access": False,
+        "temporary_state_removed": False,
+        "cleanup_errors": [],
+        **dict.fromkeys(WORKER_CLEANUP_CHECKS, False),
+    }
+    worker = None
+    cleanup_evidence = None
+    try:
+        worker = read_report(output / "worker-result.json")
+        cleanup_evidence = worker
+        report["worker_result_sha256"] = digest(output / "worker-result.json")
+    except (OSError, ValueError) as exc:
+        report["worker_result_error_type"] = type(exc).__name__
+        try:
+            cleanup_evidence = read_report(output / "service-close-started.json")
+        except (OSError, ValueError):
+            pass
+    if cleanup_evidence is not None:
+        for name in WORKER_CLEANUP_CHECKS:
+            report[name] = cleanup_evidence.get(name) is True
+        if type(cleanup_evidence.get("browser_returncode")) is int:
+            report["browser_returncode"] = cleanup_evidence["browser_returncode"]
+        report["cleanup_errors"] = cleanup_evidence.get("cleanup_errors")
+    report.update(supervision)
+    report["status"] = "failed_or_incomplete"
+    report["native_desktop_verified"] = False
+    report["temporary_state_removed"] = False
+    errors = report.get("cleanup_errors")
+    errors = (
+        list(errors) if type(errors) is list and all(type(item) is str for item in errors) else []
+    )
+    ready = (
+        worker_ready(worker)
+        and supervision.get("worker_exit_observed") is True
+        and supervision.get("worker_process_group_stopped") is True
+        and type(supervision.get("worker_returncode")) is int
+        and supervision["worker_returncode"] == 0
+        and supervision.get("worker_timeout_stage") is None
+        and "worker_error_type" not in supervision
+        and "worker_stop_error_type" not in supervision
+    )
+    if ready:
+        try:
+            shutil.rmtree(output / "runtime")
+            report["temporary_state_removed"] = not (output / "runtime").exists()
+        except OSError:
+            errors.append("temporary_state")
+        if report["temporary_state_removed"] and not errors:
+            report["native_desktop_verified"] = True
+            report["status"] = "passed"
+    else:
+        errors.append("worker_shutdown_unverified")
+    report["cleanup_errors"] = errors
+    report["supervision_scope"] = (
+        "Verifier process group only; its termination does not establish browser or runner-session cleanup"
+    )
+    write_new(output / "receipt.json", report)
+    return report
+
+
+def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in (
         "forbid-root",
@@ -343,7 +482,11 @@ def main(argv: list[str] | None = None) -> int:
         "output",
     ):
         parser.add_argument("--" + name, required=True, type=Path)
-    args = parser.parse_args(argv)
+    parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
+    return parser.parse_args(argv)
+
+
+def checked_inputs(args) -> tuple[Path, Path, dict[str, Path]]:
     if sys.platform != "darwin" or platform.machine() != "x86_64" or not sys.flags.isolated:
         raise RuntimeError("Use isolated installed Intel macOS Python for this verifier")
     forbidden = args.forbid_root.resolve(strict=True)
@@ -360,6 +503,44 @@ def main(argv: list[str] | None = None) -> int:
         or inputs["browser_driver"].is_relative_to(forbidden)
     ):
         raise RuntimeError("Fresh evidence and copied harness must be outside checkout")
+    return forbidden, output, inputs
+
+
+def run_supervised(args) -> int:
+    forbidden, output, inputs = checked_inputs(args)
+    from bluefire.runner_client import (
+        _darwin_child_exited_without_reap,
+        _darwin_child_status_ownership_available,
+    )
+
+    if not _darwin_child_status_ownership_available():
+        raise RuntimeError("Original verifier child-status custody is unavailable")
+    environment = isolated_environment(output / "runtime", inputs["node"], inputs["browser_cache"])
+    for name in ("ImageOS", "ImageVersion", "RUNNER_OS", "RUNNER_ARCH"):
+        if name in os.environ:
+            environment[name] = os.environ[name]
+    command = [sys.executable, "-I", "-B", str(Path(__file__).resolve()), "--worker"]
+    for name, value in {"forbid_root": forbidden, **inputs, "output": output}.items():
+        command.extend(("--" + name.replace("_", "-"), str(value)))
+    child = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=environment,
+        start_new_session=True,
+    )
+    supervision = supervise_owned_child(child, _darwin_child_exited_without_reap, output)
+    output.mkdir(mode=0o700, exist_ok=True)
+    if output.is_symlink():
+        raise RuntimeError("Verifier output must remain an owned directory")
+    report = finalize_supervised_receipt(output, supervision)
+    print(json.dumps(report, sort_keys=True))
+    return 0 if report["status"] == "passed" else 1
+
+
+def run_journey(args) -> int:
+    forbidden, output, inputs = checked_inputs(args)
     output.mkdir(mode=0o700)
     runtime = output / "runtime"
     runtime.mkdir(mode=0o700)
@@ -487,6 +668,11 @@ def main(argv: list[str] | None = None) -> int:
             ("service_closed", service.close),
         ):
             try:
+                if name == "service_closed":
+                    write_new(
+                        output / "service-close-started.json",
+                        {**report, "cleanup_errors": list(errors)},
+                    )
                 result = operation()
                 report[name] = result is not False
                 if result is False:
@@ -500,18 +686,17 @@ def main(argv: list[str] | None = None) -> int:
             report["native_desktop_verified"] = False
         report["service_thread_stopped"] = not thread.is_alive()
         os.chdir(output)
-        if report["native_desktop_verified"] and not errors and not thread.is_alive():
-            try:
-                shutil.rmtree(runtime)
-            except OSError:
-                errors.append("temporary_state")
-        report["temporary_state_removed"] = not runtime.exists()
+        report["temporary_state_removed"] = False
         report["cleanup_errors"] = errors
-        if report["native_desktop_verified"] and report["temporary_state_removed"] and not errors:
-            report["status"] = "passed"
-        write_new(output / "receipt.json", report)
-        print(json.dumps(report, sort_keys=True))
-    return 0 if report["status"] == "passed" else 1
+        if report["native_desktop_verified"] and not errors and not thread.is_alive():
+            report["status"] = "ready_for_finalization"
+        write_new(output / "worker-result.json", report)
+    return 0 if report["status"] == "ready_for_finalization" else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_arguments(argv)
+    return run_journey(args) if args.worker else run_supervised(args)
 
 
 if __name__ == "__main__":

@@ -277,3 +277,202 @@ def test_waiting_does_not_reap_original_child_or_adopt_another_pid() -> None:
     assert observed == [6543]
     with pytest.raises(subprocess.TimeoutExpired):
         verifier.wait_driver_exit(Child(), lambda pid: False, timeout=0)
+
+
+class Clock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+class SupervisedChild:
+    pid = 6543
+    returncode = None
+
+    def poll(self):
+        raise AssertionError("Supervisor must preserve original child custody")
+
+
+def test_unresponsive_service_close_is_terminated_at_its_own_deadline(tmp_path) -> None:
+    verifier.write_new(tmp_path / "service-close-started.json", {"status": "failed_or_incomplete"})
+    clock = Clock()
+    child = SupervisedChild()
+    stopped = []
+
+    def stop(process):
+        stopped.append(process.pid)
+        process.returncode = -9
+        return True
+
+    outcome = verifier.supervise_owned_child(
+        child,
+        lambda _pid: False,
+        tmp_path,
+        close_timeout=0.3,
+        stop=stop,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    assert 0.3 <= clock.now <= 0.4
+    assert stopped == [child.pid]
+    assert outcome["worker_timeout_stage"] == "service_close"
+    assert outcome["worker_exit_observed"] is False
+    assert outcome["worker_process_group_stopped"] is True
+    assert outcome["worker_returncode"] == -9
+
+
+def test_unresponsive_worker_without_close_marker_has_overall_deadline(tmp_path) -> None:
+    clock = Clock()
+    outcome = verifier.supervise_owned_child(
+        SupervisedChild(),
+        lambda _pid: False,
+        tmp_path,
+        timeout=0.2,
+        stop=lambda _child: False,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    assert clock.now == 0.2
+    assert outcome["worker_timeout_stage"] == "journey"
+    assert outcome["worker_process_group_stopped"] is False
+
+
+def test_supervisor_does_not_claim_termination_when_group_stop_raises(tmp_path) -> None:
+    def stop(_child):
+        raise subprocess.TimeoutExpired("owned group", 10)
+
+    outcome = verifier.supervise_owned_child(
+        SupervisedChild(), lambda _pid: True, tmp_path, stop=stop
+    )
+    assert outcome["worker_exit_observed"] is True
+    assert outcome["worker_process_group_stopped"] is False
+    assert outcome["worker_stop_error_type"] == "TimeoutExpired"
+
+
+def test_group_stop_signals_before_reaping_original_child(monkeypatch) -> None:
+    events = []
+
+    class Child(SupervisedChild):
+        def wait(self, *, timeout):
+            events.append(("wait", timeout))
+            self.returncode = 0
+
+    def signal_group(pid, signum):
+        assert pid == Child.pid
+        events.append(("signal", signum))
+        if signum == 0:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(verifier.os, "killpg", signal_group, raising=False)
+    monkeypatch.setattr(verifier.signal, "SIGKILL", 9, raising=False)
+    monkeypatch.setattr(verifier.time, "sleep", lambda _seconds: None)
+    assert verifier.stop_group(Child())
+    assert events == [
+        ("signal", verifier.signal.SIGTERM),
+        ("signal", 9),
+        ("wait", 10),
+        ("signal", 0),
+    ]
+
+
+def worker_result():
+    return {
+        "schema_version": "bluefire.installed-macos-native-receipt.v1",
+        "status": "ready_for_finalization",
+        "scope": "owned_generated_fixture_native_desktop",
+        "native_desktop_verified": True,
+        "effective_access": False,
+        "temporary_state_removed": False,
+        "browser_returncode": 0,
+        "cleanup_errors": [],
+        **dict.fromkeys(verifier.WORKER_CLEANUP_CHECKS, True),
+    }
+
+
+def supervision_result():
+    return {
+        "worker_exit_observed": True,
+        "worker_process_group_stopped": True,
+        "worker_timeout_stage": None,
+        "worker_returncode": 0,
+    }
+
+
+def test_browser_success_before_hung_close_cannot_promote_or_delete_runtime(tmp_path) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "retained.txt").write_text("owned generated state")
+    partial = worker_result()
+    partial["status"] = "failed_or_incomplete"
+    del partial["service_closed"]
+    del partial["service_thread_stopped"]
+    verifier.write_new(tmp_path / "service-close-started.json", partial)
+    supervision = supervision_result()
+    supervision.update(
+        worker_timeout_stage="service_close", worker_returncode=-9, worker_exit_observed=False
+    )
+    result = verifier.finalize_supervised_receipt(tmp_path, supervision)
+    assert result["status"] == "failed_or_incomplete"
+    assert result["native_desktop_verified"] is False
+    assert result["service_closed"] is False
+    assert result["service_thread_stopped"] is False
+    assert result["temporary_state_removed"] is False
+    assert (runtime / "retained.txt").read_text() == "owned generated state"
+    assert "worker_shutdown_unverified" in result["cleanup_errors"]
+    assert (tmp_path / "receipt.json").is_file()
+
+
+@pytest.mark.parametrize(
+    "scope,field,value",
+    [
+        ("worker", "service_closed", False),
+        ("worker", "owned_jobs_settled", False),
+        ("worker", "status", "passed"),
+        ("worker", "schema_version", "unrecognized"),
+        ("worker", "scope", "unrecognized"),
+        ("worker", "effective_access", True),
+        ("supervision", "worker_returncode", 1),
+        ("supervision", "worker_process_group_stopped", False),
+        ("supervision", "worker_exit_observed", False),
+        ("supervision", "worker_timeout_stage", "service_close"),
+    ],
+)
+def test_incomplete_shutdown_cannot_remove_runtime(tmp_path, scope, field, value) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    worker = worker_result()
+    supervision = supervision_result()
+    (worker if scope == "worker" else supervision)[field] = value
+    verifier.write_new(tmp_path / "worker-result.json", worker)
+    result = verifier.finalize_supervised_receipt(tmp_path, supervision)
+    assert result["status"] == "failed_or_incomplete"
+    assert result["native_desktop_verified"] is False
+    assert result["effective_access"] is False
+    assert result["scope"] == "owned_generated_fixture_native_desktop"
+    assert result["schema_version"] == "bluefire.installed-macos-native-receipt.v1"
+    assert result["temporary_state_removed"] is False
+    assert runtime.is_dir()
+
+
+def test_missing_worker_result_writes_failed_receipt(tmp_path) -> None:
+    result = verifier.finalize_supervised_receipt(tmp_path, supervision_result())
+    assert result["status"] == "failed_or_incomplete"
+    assert result["native_desktop_verified"] is False
+    assert result["worker_result_error_type"] == "FileNotFoundError"
+    assert "worker_shutdown_unverified" in result["cleanup_errors"]
+
+
+def test_only_completed_worker_and_verified_group_cleanup_finalize_success(tmp_path) -> None:
+    (tmp_path / "runtime").mkdir()
+    verifier.write_new(tmp_path / "worker-result.json", worker_result())
+    result = verifier.finalize_supervised_receipt(tmp_path, supervision_result())
+    assert result["status"] == "passed"
+    assert result["native_desktop_verified"] is True
+    assert result["temporary_state_removed"] is True
+    assert not (tmp_path / "runtime").exists()
+    assert (tmp_path / "worker-result.json").is_file()
