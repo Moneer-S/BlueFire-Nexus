@@ -42,6 +42,30 @@ let expectedRunSource;
 let terminalOwnedJob;
 let failureRunId = "";
 let witnessFailureCode = "";
+let retainedInterruptionDiagnostic = null;
+
+const INTERRUPTION_FLAGS = [
+  "cooperative_requested",
+  "cooperative_acknowledged",
+  "forced_tree_termination",
+  "control_cleanup_verified",
+  "process_tree_stopped",
+];
+
+function projectRetainedInterruptionDiagnostic(value) {
+  if (value == null) return { status: "missing", false_flags: [] };
+  if (typeof value !== "object" || Array.isArray(value)) {
+    return { status: "invalid_shape", false_flags: [] };
+  }
+  const falseFlags = INTERRUPTION_FLAGS.filter(flag => value[flag] === false);
+  if (!INTERRUPTION_FLAGS.every(flag => Object.hasOwn(value, flag) && typeof value[flag] === "boolean")) {
+    return { status: "invalid_shape", false_flags: falseFlags };
+  }
+  return {
+    status: falseFlags.length ? "proof_incomplete" : "complete",
+    false_flags: falseFlags,
+  };
+}
 
 async function readInputLine(maxBytes, deadline) {
   while (true) {
@@ -406,8 +430,12 @@ async function main() {
   const retained = (await call("GET", `/api/v1/runs/${runId}/retained-observations`)).value;
   assert.equal(retained.run_id, runId);
   const evidence = retained.observations?.evidence?.records;
+  if (!Array.isArray(evidence)) {
+    retainedInterruptionDiagnostic = { status: "invalid_shape", false_flags: [] };
+  }
   assert.ok(Array.isArray(evidence));
   const interruption = evidence.map(row => row.content).find(content => content?.artifact_type === "execution_interruption");
+  retainedInterruptionDiagnostic = projectRetainedInterruptionDiagnostic(interruption);
   assert.ok(interruption, "retained interruption evidence exists");
   const expectedInterruption = {
     cooperative_requested: true,
@@ -471,6 +499,9 @@ try {
   await main();
 } catch (error) {
   report.error = { stage, error_type: error instanceof Error ? error.name : "unknown" };
+  if (stage === "cancel-and-retained-proof" && retainedInterruptionDiagnostic) {
+    report.retained_interruption_diagnostic = retainedInterruptionDiagnostic;
+  }
   if (stage === "independent-witness-handshake") report.error.witness_check = witnessCheck;
   if (witnessFailureCode) report.error.code = witnessFailureCode;
   if (jobId && counts.cancel === 0) {

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from .domain_errors import RunnerTransportError as RunnerTransportError
 
 _TRANSPORT_MESSAGES = {
@@ -144,6 +146,34 @@ class RunnerAuthenticationError(AuthenticatedRunnerTransportError):
     """TLS, enrollment, framing, or message authentication failed."""
 
 
+_CANCELLATION_PROOF_FIELDS = frozenset(
+    {
+        "cooperative_requested",
+        "cooperative_acknowledged",
+        "forced_tree_termination",
+        "control_cleanup_verified",
+    }
+)
+
+
+def validated_cancellation_proof(value: Any) -> dict[str, bool]:
+    """Accept only explicit proof values, never truthiness or inferred state."""
+    if (
+        not isinstance(value, dict)
+        or set(value) != _CANCELLATION_PROOF_FIELDS
+        or any(type(value[field]) is not bool for field in _CANCELLATION_PROOF_FIELDS)
+        or (value["cooperative_acknowledged"] and not value["cooperative_requested"])
+    ):
+        raise RunnerAuthenticationError("Runner cancellation proof is invalid.")
+    return {field: value[field] for field in sorted(_CANCELLATION_PROOF_FIELDS)}
+
+
+def cancellation_proof_from_cancelled(error: RunnerTaskCancelled) -> dict[str, bool]:
+    return validated_cancellation_proof(
+        {field: getattr(error, field, None) for field in _CANCELLATION_PROOF_FIELDS}
+    )
+
+
 __all__ = [
     "TRANSPORT_FAILURE_REASONS",
     "DiagnosedRunnerTransportError",
@@ -156,6 +186,8 @@ __all__ = [
     "RunnerTaskCancelled",
     "RunnerTaskTimedOut",
     "RunnerTransportError",
+    "cancellation_proof_from_cancelled",
     "transport_failure_reason",
+    "validated_cancellation_proof",
     "watchdog_transport_failure_reason",
 ]
