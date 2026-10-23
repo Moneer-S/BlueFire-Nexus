@@ -17,15 +17,18 @@ import pytest
 
 from bluefire import product_store_receiver_defense as records
 from bluefire import receiver_defense_context as contexts
+from bluefire import service as service_module
 from bluefire.application_errors import APIError
 from bluefire.config import ExecutionMode
 from bluefire.job_runtime import JobState
+from bluefire.product_store import ProductStore
 from bluefire.product_store_errors import ProductStoreError
 from bluefire.receiver_defense_jobs import ReceiverDefenseJobs
 from bluefire.receiver_policy import ReceiverContentPolicy
 from bluefire.receiver_session_contract import prepare_frame, ready_binding
 from bluefire.service import BlueFireService
 from bluefire.util import content_hash
+from tests_platform.seed_timing import observe_service_seed
 from tests_platform.test_graph_ai_jobs import Access
 from tests_platform.test_orchestrator import StructuredFakeRunner
 from tests_platform.test_receiver_policy import public_records
@@ -195,13 +198,14 @@ def setup(tmp_path, monkeypatch):
     access, runner, sessions = Access(), ReadyInventoryRunner(), []
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()
-    service = BlueFireService(
-        project_root=ROOT,
-        runs_dir=tmp_path / "runs",
-        product_db_path=tmp_path / "product.sqlite3",
-        ai_provider_access=access,
-        runner_factory=lambda _profile: (runner, sandbox),
-    )
+    with observe_service_seed(service_module, ProductStore):
+        service = BlueFireService(
+            project_root=ROOT,
+            runs_dir=tmp_path / "runs",
+            product_db_path=tmp_path / "product.sqlite3",
+            ai_provider_access=access,
+            runner_factory=lambda _profile: (runner, sandbox),
+        )
     profile = next(
         row for row in service.config.runner_profiles if row.mode is ExecutionMode.EXECUTE
     )
