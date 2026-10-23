@@ -14,6 +14,9 @@ from .owned_service_transport import execute_owned_service_request, prepare_clie
 from .runner_transport_errors import RunnerAuthenticationError, validated_cancellation_proof
 from .runner_transport_security import enrollment_binding
 
+_RECOVERY_RECEIPT_ID = re.compile(r"^[0-9a-f]{64}$")
+_MAX_RECOVERY_RECEIPTS = 512
+
 
 def validated_transport_identity(client: Any) -> Mapping[str, Any]:
     """Validate the reported host identity against the current client enrollment."""
@@ -82,6 +85,9 @@ def validated_cancellation_payload(
 def validated_recovered_cancellation_proof(
     payload: Mapping[str, Any], task_id: str, request_hash: str
 ) -> dict[str, bool]:
+    if payload.get("state") == "recovery_required":
+        validated_recovery_required_payload(payload, task_id, request_hash)
+        return {}
     has_proof = "cancellation_proof" in payload
     if not has_proof and payload.get("state") != "cancelled":
         return {}
@@ -109,6 +115,40 @@ def validated_recovered_cancellation_proof(
     ):
         raise RunnerAuthenticationError("Runner cancellation recovery is invalid.")
     return validated_cancellation_proof(payload["cancellation_proof"]) if has_proof else {}
+
+
+def validated_recovery_required_payload(
+    payload: Mapping[str, Any], task_id: str, request_hash: str
+) -> None:
+    receipt_ids = payload.get("receipt_ids")
+    if (
+        set(payload)
+        != {
+            "original_task_id",
+            "original_request_hash",
+            "state",
+            "result",
+            "error_code",
+            "cancellation_requested",
+            "receipt_ids",
+            "cleanup_required",
+        }
+        or payload.get("original_task_id") != task_id
+        or payload.get("original_request_hash") != request_hash
+        or payload.get("state") != "recovery_required"
+        or payload.get("result") is not None
+        or payload.get("error_code") != "recovery_required"
+        or type(payload.get("cancellation_requested")) is not bool
+        or payload.get("cleanup_required") is not True
+        or not isinstance(receipt_ids, list)
+        or not 1 <= len(receipt_ids) <= _MAX_RECOVERY_RECEIPTS
+        or any(
+            not isinstance(receipt_id, str) or _RECOVERY_RECEIPT_ID.fullmatch(receipt_id) is None
+            for receipt_id in receipt_ids
+        )
+        or len(receipt_ids) != len(set(receipt_ids))
+    ):
+        raise RunnerAuthenticationError("Runner recovery-required response is invalid.")
 
 
 def execute_authenticated_task(

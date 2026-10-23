@@ -23,7 +23,10 @@ from bluefire.runner_transport import (
     audit_runner_ledger,
     read_runner_ledger_generation,
 )
-from bluefire.runner_transport_client import validated_recovered_cancellation_proof
+from bluefire.runner_transport_client import (
+    validated_recovered_cancellation_proof,
+    validated_recovery_required_payload,
+)
 from bluefire.runner_transport_errors import (
     RunnerAuthenticationError,
     validated_cancellation_proof,
@@ -547,6 +550,121 @@ def test_legacy_non_cancelled_recovery_without_proof_remains_unknown() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "cancellation_requested,receipt_ids",
+    [
+        (False, ["c" * 64]),
+        (True, ["c" * 64, "d" * 64]),
+    ],
+)
+def test_recovery_required_payload_accepts_server_contract_variants(
+    cancellation_requested: bool, receipt_ids: list[str]
+) -> None:
+    task_id = "execute-" + "a" * 64
+    request_hash = "sha256:" + "b" * 64
+    payload = {
+        "original_task_id": task_id,
+        "original_request_hash": request_hash,
+        "state": "recovery_required",
+        "result": None,
+        "error_code": "recovery_required",
+        "cancellation_requested": cancellation_requested,
+        "receipt_ids": receipt_ids,
+        "cleanup_required": True,
+    }
+    validated_recovery_required_payload(payload, task_id, request_hash)
+    assert validated_recovered_cancellation_proof(payload, task_id, request_hash) == {}
+
+
+def test_recovery_required_payload_accepts_receipt_limit() -> None:
+    task_id = "execute-" + "a" * 64
+    request_hash = "sha256:" + "b" * 64
+    payload = {
+        "original_task_id": task_id,
+        "original_request_hash": request_hash,
+        "state": "recovery_required",
+        "result": None,
+        "error_code": "recovery_required",
+        "cancellation_requested": False,
+        "receipt_ids": [f"{index:064x}" for index in range(512)],
+        "cleanup_required": True,
+    }
+    validated_recovery_required_payload(payload, task_id, request_hash)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "task_id",
+        "request_hash",
+        "missing_receipts",
+        "non_list_receipts",
+        "empty_receipts",
+        "malformed_receipt",
+        "nonstring_receipt",
+        "unhashable_receipt",
+        "duplicate_receipt",
+        "oversized_receipts",
+        "cleanup_false",
+        "cancellation_not_boolean",
+        "result",
+        "error_code",
+        "extra_field",
+        "proof_field",
+    ],
+)
+def test_recovery_required_payload_rejects_misbinding_or_malformed_details(
+    mutation: str,
+) -> None:
+    task_id = "execute-" + "a" * 64
+    request_hash = "sha256:" + "b" * 64
+    payload: dict[str, Any] = {
+        "original_task_id": task_id,
+        "original_request_hash": request_hash,
+        "state": "recovery_required",
+        "result": None,
+        "error_code": "recovery_required",
+        "cancellation_requested": True,
+        "receipt_ids": ["c" * 64],
+        "cleanup_required": True,
+    }
+    if mutation == "task_id":
+        payload["original_task_id"] = "execute-" + "e" * 64
+    elif mutation == "request_hash":
+        payload["original_request_hash"] = "sha256:" + "f" * 64
+    elif mutation == "missing_receipts":
+        del payload["receipt_ids"]
+    elif mutation == "non_list_receipts":
+        payload["receipt_ids"] = "c" * 64
+    elif mutation == "empty_receipts":
+        payload["receipt_ids"] = []
+    elif mutation == "malformed_receipt":
+        payload["receipt_ids"] = ["not-a-digest"]
+    elif mutation == "nonstring_receipt":
+        payload["receipt_ids"] = [7]
+    elif mutation == "unhashable_receipt":
+        payload["receipt_ids"] = [[]]
+    elif mutation == "duplicate_receipt":
+        payload["receipt_ids"] = ["c" * 64, "c" * 64]
+    elif mutation == "oversized_receipts":
+        payload["receipt_ids"] = [f"{index:064x}" for index in range(513)]
+    elif mutation == "cleanup_false":
+        payload["cleanup_required"] = False
+    elif mutation == "cancellation_not_boolean":
+        payload["cancellation_requested"] = 1
+    elif mutation == "result":
+        payload["result"] = {"status": "success"}
+    elif mutation == "error_code":
+        payload["error_code"] = "task_cancelled"
+    elif mutation == "extra_field":
+        payload["diagnostic"] = "unrecognized"
+    else:
+        payload["cancellation_proof"] = _valid_proof()
+
+    with pytest.raises(RunnerAuthenticationError):
+        validated_recovered_cancellation_proof(payload, task_id, request_hash)
+
+
 def test_proof_is_not_accepted_for_unrequested_terminal_cancellation() -> None:
     payload = _recovered_task()
     payload["cancellation_requested"] = False
@@ -559,8 +677,9 @@ def test_proof_is_not_accepted_for_unrequested_terminal_cancellation() -> None:
 @pytest.mark.parametrize(
     "initial_reply", ["task_cancelled", "duplicate_request", "connection_loss"]
 )
+@pytest.mark.parametrize("misbound_recovery", [False, True])
 def test_direct_execution_preserves_reconciled_cleanup_requirement(
-    monkeypatch: pytest.MonkeyPatch, initial_reply: str
+    monkeypatch: pytest.MonkeyPatch, initial_reply: str, misbound_recovery: bool
 ) -> None:
     client = object.__new__(AuthenticatedRunnerClient)
     client.profile_id = _PROFILE_ID
@@ -581,7 +700,7 @@ def test_direct_execution_preserves_reconciled_cleanup_requirement(
             raise RunnerRemoteError(initial_reply)
         assert operation == "recover"
         assert payload == {"original_task_id": task_id, "original_request_hash": request_hash}
-        return {
+        recovery = {
             "original_task_id": task_id,
             "original_request_hash": request_hash,
             "state": "recovery_required",
@@ -591,10 +710,17 @@ def test_direct_execution_preserves_reconciled_cleanup_requirement(
             "receipt_ids": ["c" * 64],
             "cleanup_required": True,
         }
+        if misbound_recovery:
+            recovery["original_request_hash"] = "sha256:" + "d" * 64
+        return recovery
 
     monkeypatch.setattr(client, "_call", call)
-    with pytest.raises(RunnerRemoteError) as error:
-        client.execute(manifest, profile)
-    assert error.value.code == "recovery_required"
+    if misbound_recovery:
+        with pytest.raises(RunnerAuthenticationError):
+            client.execute(manifest, profile)
+    else:
+        with pytest.raises(RunnerRemoteError) as error:
+            client.execute(manifest, profile)
+        assert error.value.code == "recovery_required"
     assert calls == ["execute", "recover"]
     assert client.last_execution_identity == (task_id, request_hash)
