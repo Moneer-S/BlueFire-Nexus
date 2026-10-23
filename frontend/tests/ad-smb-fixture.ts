@@ -65,6 +65,17 @@ export function rawAdControllerLocalWorkflow(phase: AdPhase = "inspect") {
     }] },
   } };
 }
+export function rawAdPreparation(state: "cancelled" | "failed" | "interrupted" = "failed", phase: AdPhase = "baseline") {
+  return { schema_version: "bluefire.ad-smb-preparation-settlement.v1", operation_job_id: adChild, phase, terminal_state: state, reserved_at: "2026-10-23T15:00:00Z", settled_at: "2026-10-23T15:01:00Z", request_digest: adHash, boundary: "before_run_retained", producer: "bluefire.ad-smb-controller" };
+}
+export function rawAdPreparationWorkflow(state: "cancelled" | "failed" | "interrupted" = "failed") {
+  const value = rawAdWorkflow({ allowed: [], stopped: true, unavailable: true });
+  return { ...value, remaining: { ...value.remaining, business_attempts: 3, sessions: 3 }, workflow: { ...value.workflow, progress: { ...value.workflow.progress, preparation_history: [rawAdPreparation(state)] } } };
+}
+export function rawAdPreparationJob(state: "cancelled" | "failed" | "interrupted" = "failed") {
+  const settlement = rawAdPreparation(state);
+  return { schema_version: "bluefire.job.v1", job_id: adChild, kind: "ad_smb.operation", state, created_at: settlement.reserved_at, result_ref: null, request: { ad_smb: { workflow_job_id: adOwner, operation_job_id: adChild, phase: settlement.phase } }, progress: { tasks: [], run_id: null, phase: state === "interrupted" ? "queued" : state, preparation_settlement: settlement }, error: { code: "execution_callback_failed", message: "Do not display raw request failure text." } };
+}
 export function rawAdList(values = [rawAdWorkflow()]) {
   return { schema_version: "bluefire.ad-smb-workflow-list.v1", effective_access_claim: false, workflows: values.map(({ workflow }) => ({ workflow_job_id: workflow.job_id, member: workflow.request.environment.scope.hosts.member.fqdn, provenance: workflow.request.environment.provenance, revision: workflow.progress.revision, stopped: workflow.progress.stopped, pending_operation: workflow.progress.pending_operation, policy_state: workflow.progress.policy_state })) };
 }

@@ -1,14 +1,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AdSmbPage } from "../src/pages/AdSmb";
 import { ObjectiveStart } from "../src/components/ObjectiveStart";
 import { adSmbApi, readAdPending, storeAdPending } from "../src/lib/ad-smb";
-import { adChild, adOwner, adPendingFixture, adSubmission, auditWindowStartForFixture, rawAdAcknowledgement, rawAdControllerLocalWorkflow, rawAdEnvironments, rawAdList, rawAdNormalizedObservation, rawAdReview, rawAdWorkflow } from "./ad-smb-fixture";
+import { adChild, adOwner, adPendingFixture, adSubmission, auditWindowStartForFixture, rawAdAcknowledgement, rawAdControllerLocalWorkflow, rawAdEnvironments, rawAdList, rawAdNormalizedObservation, rawAdPreparationJob, rawAdPreparationWorkflow, rawAdReview, rawAdWorkflow } from "./ad-smb-fixture";
 
 vi.mock("../src/lib/api", () => ({ DEMO_MODE: false, request: vi.fn(), ApiError: class extends Error {} }));
-function mount(path = `/ad-smb?workflow=${adOwner}`) { const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); return { ...render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><AdSmbPage /></MemoryRouter></QueryClientProvider>), client }; }
+function CurrentLocation() { const location = useLocation(); return <output aria-label="Current location">{location.pathname + location.search}</output>; }
+function mount(path = `/ad-smb?workflow=${adOwner}`) { const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); return { ...render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><AdSmbPage /><CurrentLocation /></MemoryRouter></QueryClientProvider>), client }; }
 beforeEach(() => {
   localStorage.clear();
   vi.spyOn(crypto, "randomUUID").mockReturnValue(adSubmission);
@@ -73,6 +74,115 @@ it("reopens a local pre-dispatch failure without presenting runner evidence or s
   expect(adSmbApi.review).not.toHaveBeenCalled();
   expect(adSmbApi.submit).not.toHaveBeenCalled();
   expect(adSmbApi.recover).not.toHaveBeenCalled();
+});
+it.each(["cancelled", "failed", "interrupted"] as const)("reopens a %s preparation with an original-request link, no run and no new work", async state => {
+  vi.mocked(adSmbApi.workflow).mockResolvedValue(rawAdPreparationWorkflow(state));
+  vi.mocked(adSmbApi.job).mockResolvedValue(rawAdPreparationJob(state));
+  mount();
+  const history = await screen.findByRole("region", { name: "AD preparation history" });
+  expect(within(history).getByRole("heading", { name: "Baseline reads" })).toBeVisible();
+  expect(within(history).getByText(state[0]!.toUpperCase() + state.slice(1))).toBeVisible();
+  expect(within(history).getByText(/No stage was dispatched/)).toBeVisible();
+  const link = within(history).getByRole("link", { name: "Open saved request" });
+  expect(link).toHaveAttribute("href", `/ad-smb?workflow=${adOwner}&preparation=${adChild}`);
+  expect(adSmbApi.job).not.toHaveBeenCalled();
+  fireEvent.click(link);
+  const detail = await screen.findByRole("region", { name: "Saved AD preparation" });
+  expect(await within(detail).findByText(/Reserved authority remains consumed/)).toBeVisible();
+  expect(adSmbApi.job).toHaveBeenCalledExactlyOnceWith(adChild);
+  expect(screen.queryByText(/could not finish this run|Do not display raw request/)).not.toBeInTheDocument();
+  fireEvent.click(within(detail).getByRole("link", { name: "Close saved preparation" }));
+  expect(screen.queryByRole("region", { name: "Saved AD preparation" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Open retained run" })).not.toBeInTheDocument();
+  expect(screen.getByText("No stage evidence retained.")).toBeVisible();
+  expect(within(history).queryByText("Cleanup")).not.toBeInTheDocument();
+  expect(within(history).queryByText("Runner-reported")).not.toBeInTheDocument();
+  expect(within(screen.getByRole("region", { name: "Remaining AD authority" })).getAllByText("3")).toHaveLength(2);
+  expect(adSmbApi.review).not.toHaveBeenCalled();
+  expect(adSmbApi.submit).not.toHaveBeenCalled();
+  expect(adSmbApi.recover).not.toHaveBeenCalled();
+});
+it("settles an explicitly checked original preparation and preserves its read-only history on reopening", async () => {
+  const settled = rawAdPreparationWorkflow("cancelled");
+  vi.mocked(adSmbApi.workflow).mockResolvedValueOnce(rawAdWorkflow({ pending: adChild, stopped: true })).mockResolvedValue(settled);
+  vi.mocked(adSmbApi.recover).mockResolvedValue(settled);
+  const first = mount();
+  fireEvent.click(await screen.findByRole("button", { name: "Check original results" }));
+  expect(await screen.findByRole("region", { name: "AD preparation history" })).toBeVisible();
+  expect(adSmbApi.recover).toHaveBeenCalledExactlyOnceWith(adOwner);
+  expect(screen.queryByRole("button", { name: "Check original results" })).not.toBeInTheDocument();
+  first.unmount(); first.client.clear();
+  mount();
+  expect(await screen.findByRole("region", { name: "AD preparation history" })).toBeVisible();
+  expect(adSmbApi.recover).toHaveBeenCalledOnce();
+  expect(adSmbApi.submit).not.toHaveBeenCalled();
+  expect(adSmbApi.review).not.toHaveBeenCalled();
+});
+it("reopens an exact preparation deep link with objective context and refuses a changed child", async () => {
+  vi.mocked(adSmbApi.workflow).mockResolvedValue(rawAdPreparationWorkflow());
+  const wrong = rawAdPreparationJob(); wrong.request.ad_smb.workflow_job_id = adChild;
+  vi.mocked(adSmbApi.job).mockResolvedValue(wrong);
+  mount(`/ad-smb?goal=ad-access&workflow=${adOwner}&preparation=${adChild}`);
+  const detail = await screen.findByRole("region", { name: "Saved AD preparation" });
+  expect(await within(detail).findByText("Original request unavailable")).toBeVisible();
+  expect(within(detail).getByRole("link", { name: "Close saved preparation" })).toHaveAttribute("href", `/ad-smb?goal=ad-access&workflow=${adOwner}`);
+  expect(within(detail).queryByText(/Reserved authority remains consumed/)).not.toBeInTheDocument();
+  expect(adSmbApi.submit).not.toHaveBeenCalled();
+  expect(adSmbApi.recover).not.toHaveBeenCalled();
+});
+it("does not fetch a preparation outside the selected exercise history", async () => {
+  mount(`/ad-smb?workflow=${adOwner}&preparation=${adChild}`);
+  expect(await screen.findByText("Saved preparation unavailable")).toBeVisible();
+  expect(adSmbApi.job).not.toHaveBeenCalled();
+});
+it.each(["saved", "pending"])("clears the selected preparation when opening a different %s exercise and preserves other context", async source => {
+  const otherOwner = `job-${"3".repeat(32)}`;
+  const prepared = rawAdPreparationWorkflow();
+  const other = rawAdWorkflow({ id: otherOwner });
+  vi.mocked(adSmbApi.list).mockResolvedValue(rawAdList([prepared, other]));
+  vi.mocked(adSmbApi.workflow).mockImplementation(async id => id === adOwner ? prepared : other);
+  vi.mocked(adSmbApi.job).mockResolvedValue(rawAdPreparationJob());
+  if (source === "pending") storeAdPending({ ...adPendingFixture(), workflow: otherOwner });
+  mount(`/ad-smb?goal=ad-access&view=history&workflow=${adOwner}&preparation=${adChild}`);
+  const detail = await screen.findByRole("region", { name: "Saved AD preparation" });
+  expect(await within(detail).findByText(/Reserved authority remains consumed/)).toBeVisible();
+  const links = within(screen.getByRole("complementary", { name: "Saved AD exercises" })).getAllByRole("link");
+  expect(links.find(link => link.getAttribute("aria-current") === "page")).toHaveAttribute("href", `/ad-smb?goal=ad-access&view=history&workflow=${adOwner}&preparation=${adChild}`);
+  const target = source === "pending" ? screen.getByRole("link", { name: "Open original exercise" }) : links.find(link => link.getAttribute("href")?.includes(otherOwner))!;
+  expect(target).toHaveAttribute("href", `/ad-smb?goal=ad-access&view=history&workflow=${otherOwner}`);
+  fireEvent.click(target);
+  await screen.findByRole("button", { name: "Review inspect share" });
+  expect(adSmbApi.workflow).toHaveBeenCalledWith(otherOwner);
+  expect(screen.queryByRole("region", { name: "Saved AD preparation" })).not.toBeInTheDocument();
+  expect(screen.queryByText("Saved preparation unavailable")).not.toBeInTheDocument();
+  expect(adSmbApi.job).toHaveBeenCalledExactlyOnceWith(adChild);
+  expect(adSmbApi.submit).not.toHaveBeenCalled();
+  expect(adSmbApi.recover).not.toHaveBeenCalled();
+});
+it("clears exercise-specific preparation when returning to environment selection", async () => {
+  vi.mocked(adSmbApi.workflow).mockResolvedValue(rawAdPreparationWorkflow());
+  vi.mocked(adSmbApi.job).mockResolvedValue(rawAdPreparationJob());
+  mount(`/ad-smb?goal=ad-access&workflow=${adOwner}&preparation=${adChild}`);
+  await screen.findByRole("region", { name: "Saved AD preparation" });
+  const target = screen.getByRole("link", { name: "Environment selection" });
+  expect(target).toHaveAttribute("href", "/ad-smb?goal=ad-access");
+  fireEvent.click(target);
+  expect(await screen.findByRole("region", { name: "AD environment readiness" })).toBeVisible();
+  expect(screen.queryByRole("region", { name: "Saved AD preparation" })).not.toBeInTheDocument();
+  expect(adSmbApi.create).not.toHaveBeenCalled();
+});
+it("does not carry an unowned preparation link into a newly saved exercise", async () => {
+  const newOwner = adPendingFixture().id;
+  vi.mocked(adSmbApi.workflow).mockResolvedValue(rawAdWorkflow({ id: newOwner }));
+  mount(`/ad-smb?goal=ad-access&preparation=${adChild}`);
+  fireEvent.click(await screen.findByRole("button", { name: "Save exercise" }));
+  await screen.findByText("Not admitted");
+  expect(screen.getByRole("status", { name: "Current location" })).toHaveTextContent(`/ad-smb?goal=ad-access&workflow=${newOwner}`);
+  expect(adSmbApi.create).toHaveBeenCalledOnce();
+  expect(adSmbApi.workflow).toHaveBeenCalledWith(newOwner);
+  expect(screen.queryByText("Saved preparation unavailable")).not.toBeInTheDocument();
+  expect(adSmbApi.job).not.toHaveBeenCalled();
+  expect(screen.getByRole("link", { name: "Environment selection" })).toHaveAttribute("href", "/ad-smb?goal=ad-access");
 });
 it.each(["/ad-smb", "/ad-smb?goal=ad-access"])("opens a saved summary through the separate detail request from %s", async path => {
   vi.mocked(adSmbApi.workflow).mockRejectedValue(new Error("Detail unavailable"));

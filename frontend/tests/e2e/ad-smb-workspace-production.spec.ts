@@ -2,14 +2,14 @@ import { randomBytes } from "node:crypto";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
-import { adHash, adOwner, rawAdEnvironments, rawAdList, rawAdNormalizedObservation, rawAdOperation, rawAdReview, rawAdWorkflow } from "../ad-smb-browser-fixture";
+import { adChild, adHash, adOwner, rawAdEnvironments, rawAdList, rawAdNormalizedObservation, rawAdOperation, rawAdPreparationJob, rawAdReview, rawAdWorkflow } from "../ad-smb-browser-fixture";
 import type { AdPhase } from "../../src/lib/ad-smb";
 
 const output = process.env.BLUEFIRE_S3_BROWSER_OUTPUT!;
 const viewports = [{ width: 1366, height: 900 }, { width: 1440, height: 900 }, { width: 390, height: 844 }];
 type FixtureWorkflow = ReturnType<typeof rawAdWorkflow>;
 
-async function fixture(page: Page, initial: FixtureWorkflow | null, loseAcknowledgement = false) {
+async function fixture(page: Page, initial: FixtureWorkflow | null, loseAcknowledgement = false, preparationJob?: ReturnType<typeof rawAdPreparationJob>) {
   let value = initial;
   let environmentOverride: unknown;
   let environmentChecks = 0;
@@ -44,6 +44,7 @@ async function fixture(page: Page, initial: FixtureWorkflow | null, loseAcknowle
     if (method === "GET" && url.pathname === "/api/v1/ad-smb/workflows") { await json(rawAdList(value ? [value] : [])); return; }
     const root = `/api/v1/ad-smb/workflows/${adOwner}`;
     if (method === "GET" && url.pathname === root && value) { await json(value); return; }
+    if (method === "GET" && preparationJob && url.pathname === `/api/v1/jobs/${adChild}`) { counts.saved += 1; await json(preparationJob); return; }
     if (method === "GET" && acknowledgement && url.pathname === `/api/v1/jobs/${acknowledgementId}`) { counts.saved += 1; await json(acknowledgement); return; }
     if (method === "POST" && url.pathname === `${root}/review` && value) {
       const body = request.postDataJSON() as { phase: AdPhase };
@@ -178,6 +179,44 @@ async function confirmReview(page: Page) {
 function assertNoUnexpected(counts: Awaited<ReturnType<typeof fixture>>["counts"]) {
   expect({ unexpected: counts.unexpected, pageErrors: counts.pageErrors, websocket: counts.websocket }).toEqual({ unexpected: 0, pageErrors: 0, websocket: 0 });
 }
+
+test("synthetic production bundle: saved preparation stays separate from runs on desktop", async ({ page }) => {
+  const original = rawAdWorkflow({ allowed: [], stopped: true });
+  const child = rawAdPreparationJob();
+  const value = { ...original, remaining: { ...original.remaining, business_attempts: 3, sessions: 3 }, workflow: { ...original.workflow, progress: { ...original.workflow.progress, preparation_history: [child.progress.preparation_settlement] } } };
+  const state = await fixture(page, value, false, child);
+  for (const viewport of [{ width: 1366, height: 768 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
+    await page.setViewportSize(viewport);
+    const history = page.getByRole("region", { name: "AD preparation history", exact: true });
+    const open = history.getByRole("link", { name: "Open saved request", exact: true });
+    await open.scrollIntoViewIfNeeded();
+    assertVerticalCapture(await capture(page, "preparation-history", viewport));
+    await open.click();
+    const detail = page.getByRole("region", { name: "Saved AD preparation", exact: true });
+    await expect(detail.getByText(/Reserved authority remains consumed/)).toBeVisible();
+    await detail.scrollIntoViewIfNeeded();
+    await detail.getByText("Request references", { exact: true }).click();
+    await expect(detail.getByText("execution_callback_failed", { exact: true })).toBeVisible();
+    assertVerticalCapture(await capture(page, "preparation-detail", viewport));
+    await expect(page.getByText("Run progress", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "Open retained run", exact: true })).toHaveCount(0);
+    await detail.getByRole("link", { name: "Close saved preparation", exact: true }).click();
+    await expect(detail).toHaveCount(0);
+    await open.click();
+    await expect(detail).toBeVisible();
+    await page.getByRole("link", { name: "Environment selection", exact: true }).click();
+    await expect(page).toHaveURL(/#\/ad-smb$/);
+    await expect(page.getByRole("region", { name: "AD environment readiness", exact: true })).toBeVisible();
+    await expect(page.getByText("Saved preparation unavailable", { exact: true })).toHaveCount(0);
+    await page.goBack();
+    await expect(detail.getByText(/Reserved authority remains consumed/)).toBeVisible();
+    await detail.getByRole("link", { name: "Close saved preparation", exact: true }).click();
+  }
+  expect({ review: state.counts.review, stage: state.counts.stage, stop: state.counts.stop, recover: state.counts.recover }).toEqual({ review: 0, stage: 0, stop: 0, recover: 0 });
+  expect(state.counts.saved).toBeGreaterThan(0);
+  assertNoUnexpected(state.counts);
+  report("preparation-interactions", state.counts);
+});
 
 test("synthetic production bundle: unavailable AD enrollment remains explicit at all widths", async ({ page }) => {
   const state = await fixture(page, null);

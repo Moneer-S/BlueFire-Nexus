@@ -355,11 +355,22 @@ class AdSmbJobs:
         pending = owner["progress"]["pending_operation"]
         if pending is None:
             return self.read(identifier)
-        owner, child = records.active(self.store, pending)
+        try:
+            owner, child = records.active(self.store, pending)
+        except AdSmbError:
+            refreshed = self._owner(identifier)
+            settled_ids = {row["job_id"] for row in refreshed["progress"]["operations"]} | {
+                row["operation_job_id"]
+                for row in refreshed["progress"].get("preparation_history", [])
+            }
+            if refreshed["progress"]["pending_operation"] is None and pending in settled_ids:
+                return self.read(identifier)
+            raise
         if child["state"] not in results.TERMINAL:
             raise AdSmbError("Wait for the original local AD operation to settle.")
         if child["progress"]["run_id"] is None:
-            raise AdSmbError("Original AD run identity was not retained; no replay is allowed.")
+            records.settle_preparation(self.store, pending)
+            return self.read(identifier)
         if not child["progress"]["tasks"] or "pre_dispatch_failure" in child["progress"]:
             # Only the installed executor's explicit pre-checkpoint marker proves
             # that no original remote task exists to discover or recover.
