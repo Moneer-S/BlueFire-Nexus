@@ -1363,6 +1363,81 @@ def test_transport_failure_discovers_fsynced_receipt_and_forces_cleanup(
     assert (sandbox / ".bluefire" / "receipts" / f"{runner.UNRELATED_RECEIPT_ID}.json").exists()
 
 
+@pytest.mark.parametrize("failure_kind", ["parent", "watchdog", "unknown"])
+def test_transport_failure_retains_finite_reason_without_changing_failed_outcome(
+    tmp_path: Path, failure_kind: str
+) -> None:
+    from bluefire.runner_transport import AuthenticatedRunnerClient, AuthenticatedRunnerServer
+    from bluefire.runner_transport_errors import DiagnosedRunnerTransportError
+    from bluefire.runner_trust import create_local_enrollment
+    from bluefire.secret_store import InMemorySecretProvider
+
+    if failure_kind == "parent":
+        failure = RunnerTransportError("Runner watchdog exited before readiness")
+        reason = "watchdog_exited_before_ready"
+    elif failure_kind == "watchdog":
+        failure = DiagnosedRunnerTransportError(
+            "Runner watchdog failed before publishing a valid result",
+            transport_failure_reason="windows_suspended_start_failed",
+        )
+        reason = "windows_suspended_start_failed"
+    else:
+        failure = RunnerTransportError("PRIVATE_SYNTHETIC_SECRET_42 at C:\\private")
+        reason = "other_transport"
+
+    class FailedRunner(StructuredFakeRunner):
+        def execute(
+            self, manifest: Mapping[str, Any], profile: Mapping[str, Any]
+        ) -> Mapping[str, Any]:
+            raise failure
+
+    scenario = load_scenario(SCENARIO_PATH)
+    profile = _execute_profile()
+    provider = InMemorySecretProvider()
+    trust = tmp_path / "trust"
+    create_local_enrollment(
+        trust,
+        runner_id="bluefire-rust-runner.v1",
+        client_id="bluefire-control-plane.v1",
+        allowed_profile_ids=[profile.id],
+        secret_provider=provider,
+    )
+    with AuthenticatedRunnerServer(
+        trust, FailedRunner(), tmp_path / "transport.sqlite3", secret_provider=provider
+    ) as server:
+        host, port = server.server_address
+        client = AuthenticatedRunnerClient(
+            trust,
+            profile_id=profile.id,
+            host=host,
+            port=port,
+            secret_provider=provider,
+        )
+        orchestrator = _orchestrator(tmp_path, client)
+        result = orchestrator.run(
+            scenario,
+            mode=ExecutionMode.EXECUTE,
+            profile=profile,
+            sandbox_root=tmp_path / "sandbox",
+            target_scope=FULL_TARGET_SCOPE,
+            **_approval_kwargs(
+                orchestrator,
+                scenario=scenario,
+                profile=profile,
+                target_scope=FULL_TARGET_SCOPE,
+            ),
+        )
+    row = _rows_by_step(result)["create_fixture"]
+    assert row["status"] == "failed"
+    assert row["execution_disposition"] == "execute"
+    assert row["error"] == {
+        "code": "runner_transport_failed",
+        "message": "Runner outcome is indeterminate and requires recovery.",
+        "transport_failure_reason": reason,
+    }
+    assert "runner_status" not in row
+
+
 def test_success_cannot_claim_an_uncommitted_receipt(tmp_path: Path) -> None:
     runner = UncommittedSuccessRunner()
     orchestrator = _orchestrator(tmp_path, runner)

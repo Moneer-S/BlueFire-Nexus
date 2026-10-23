@@ -248,6 +248,12 @@ assert.equal(sleeps, deadline ? 1 : 0);
         "planned_step",
         "unknown",
         "secret",
+        "transport_known",
+        "transport_io",
+        "transport_terminal",
+        "transport_unknown",
+        "transport_secret",
+        "transport_wrong_code",
     ],
 )
 def test_real_driver_failure_projection_binds_source_and_excludes_unreviewed_values(
@@ -295,14 +301,25 @@ if (['unknown', 'secret'].includes(binding)) {
   value.status = unsafe;
   Object.assign(value.steps[0], {status: unsafe, execution_disposition: unsafe, runner_status: unsafe, error: {code: unsafe, message: secret}});
 }
+const transportReasons = {transport_known: 'windows_suspended_start_failed',
+  transport_io: 'runner_io_failed', transport_terminal: 'watchdog_terminal_timeout'};
+if (binding.startsWith('transport_')) {
+  value.steps[0].error = {code: binding === 'transport_wrong_code'
+    ? 'cancellation_witness_blocked' : 'runner_transport_failed', message: secret,
+    transport_failure_reason: binding === 'transport_unknown' ? 'unreviewed_reason'
+      : binding === 'transport_secret' ? secret : transportReasons[binding] ?? 'windows_suspended_start_failed'};
+}
 const project = runInNewContext(`${source.slice(start, end)}; projectFailureRunDetail`, {ACTION, PROFILE});
 const result = JSON.parse(JSON.stringify(project(value, ownRun, selected)));
-if (['blocked', 'unknown', 'secret'].includes(binding)) {
-  assert.deepEqual(result, {status: 'available', run_status: binding === 'blocked' ? 'completed' : 'other',
-    step_status: binding === 'blocked' ? 'blocked' : 'other',
-    execution_disposition: binding === 'blocked' ? 'execute' : 'other',
-    runner_status: binding === 'blocked' ? 'refused' : 'other',
-    error_code: binding === 'blocked' ? 'cancellation_witness_blocked' : 'other'});
+if (['blocked', 'unknown', 'secret'].includes(binding) || binding.startsWith('transport_')) {
+  const unknown = ['unknown', 'secret'].includes(binding);
+  const transport = binding.startsWith('transport_') && binding !== 'transport_wrong_code';
+  assert.deepEqual(result, {status: 'available', run_status: unknown ? 'other' : 'completed',
+    step_status: unknown ? 'other' : 'blocked',
+    execution_disposition: unknown ? 'other' : 'execute',
+    runner_status: unknown ? 'other' : 'refused',
+    error_code: unknown ? 'other' : transport ? 'runner_transport_failed' : 'cancellation_witness_blocked',
+    transport_failure_reason: !transport ? 'absent' : transportReasons[binding] ?? 'other'});
 } else assert.deepEqual(result, {status: 'unavailable', reason: 'source_binding_mismatch'});
 assert.equal(JSON.stringify(result).includes(secret), false);
 assert.equal(JSON.stringify(result).includes('not_reviewed'), false);
@@ -1323,6 +1340,7 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
                     "execution_disposition": "execute",
                     "runner_status": "refused",
                     "error_code": "cancellation_witness_blocked",
+                    "transport_failure_reason": "absent",
                 }
         assert report["checks"] == _passed_driver_report()["checks"][:3]
         assert not verifier._driver_passed(report)

@@ -12,11 +12,12 @@ import {
   receiverContextRequestAllowed,
   receiverContextRequestIsFinal,
   receiverContextResponseMatchesRequest,
+  receiverOwnerAdmissionState,
   receiverOwnerContextMatches,
   receiverApprovalAcknowledgementName,
   sameJson as same,
 } from "./receiver-guards.mjs";
-import { createDeadlineBudget } from "./receiver-deadline.mjs";
+import { boundedLocalTimeout, createDeadlineBudget } from "./receiver-deadline.mjs";
 
 const [modulePath, output, port] = process.argv.slice(2);
 assert.match(port ?? "", /^\d{1,5}$/);
@@ -339,7 +340,8 @@ function authorizePost(url, body) {
   return false;
 }
 
-async function appApi(path) {
+async function appApi(path, requestedTimeout = remainingMs()) {
+  const timeout = boundedTimeout(requestedTimeout);
   return page.evaluate(async ({ apiPath, timeout }) => {
     const token = sessionStorage.getItem("bluefire.browser-session.v1");
     if (!token) throw new Error("Session unavailable");
@@ -350,14 +352,16 @@ async function appApi(path) {
     });
     if (!response.ok) throw new Error("Owned status read failed");
     return response.json();
-  }, { apiPath: path, timeout: remainingMs() });
+  }, { apiPath: path, timeout });
 }
 
-async function waitOwner(predicate, timeout = 120_000, ownerId = receiverJobId) {
-  const until = Date.now() + Math.min(remainingMs(), timeout);
+async function waitOwner(predicate, timeout = 120_000, ownerId = receiverJobId, deadline) {
+  const until = deadline ?? Date.now() + Math.min(remainingMs(), timeout);
   while (Date.now() < until) {
-    remainingMs();
-    latestOwner = await appApi(`/receiver-defense/jobs/${ownerId}`);
+    const requestTimeout = boundedLocalTimeout(until, Date.now(), remainingMs());
+    if (requestTimeout <= 0) break;
+    latestOwner = await appApi(`/receiver-defense/jobs/${ownerId}`, requestTimeout);
+    if (Date.now() >= until) break;
     const role = owners.get(ownerId);
     if (role === "original") originalEnvelope = latestOwner;
     else if (role === "linked") linkedEnvelope = latestOwner;
@@ -371,8 +375,8 @@ async function waitOwner(predicate, timeout = 120_000, ownerId = receiverJobId) 
   throw new Error("Receiver phase did not reach the expected saved state");
 }
 
-async function waitForState(predicate, label, timeout = 10_000) {
-  const until = Date.now() + Math.min(remainingMs(), timeout);
+async function waitForState(predicate, label, timeout = 10_000, deadline) {
+  const until = deadline ?? Date.now() + Math.min(remainingMs(), timeout);
   while (Date.now() < until) {
     remainingMs();
     if (predicate()) return;
@@ -755,11 +759,21 @@ try {
   stage = "baseline-control-job-navigation";
   await page.waitForFunction(() => location.hash.includes("receiver_job=job-"));
   stage = "baseline-control-owner-response";
-  await waitForState(() => Boolean(receiverJobId && latestOwner?.context), "original receiver owner response");
+  const ownerResponseDeadline = Date.now() + Math.min(remainingMs(), 10_000);
+  await waitForState(() => Boolean(receiverJobId && latestOwner?.context && latestFinalContextRequest && latestContext), "original receiver owner response", 10_000, ownerResponseDeadline);
   assert.match(receiverJobId ?? "", ID);
-  assert.equal(latestOwner?.context?.workflow, "retained_redaction");
-  assert.equal(latestOwner?.admission?.accepted, true);
-  report.receiver_job_id = receiverJobId;
+  const baselineOwnerId = receiverJobId;
+  const originalFinalRequest = structuredClone(latestFinalContextRequest);
+  const originalFinalContext = structuredClone(latestContext);
+  assert.notEqual(receiverOwnerAdmissionState(latestOwner, baselineOwnerId, originalFinalRequest, originalFinalContext), "invalid");
+  const admittedOwner = await waitOwner((value) => {
+    const state = receiverOwnerAdmissionState(value, baselineOwnerId, originalFinalRequest, originalFinalContext);
+    assert.notEqual(state, "invalid", "The saved owner response changed identity, source, context, or admission shape");
+    return state === "accepted";
+  }, 10_000, baselineOwnerId, ownerResponseDeadline);
+  assert.equal(admittedOwner.context.workflow, "retained_redaction");
+  assert.equal(admittedOwner.admission.accepted, true);
+  report.receiver_job_id = baselineOwnerId;
   report.checks.push("saved_scenario_context_and_receiver_admission");
 
   stage = "original-baseline-preparation";

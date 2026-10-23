@@ -5,6 +5,7 @@ import {
   receiverContextRequestAllowed,
   receiverContextRequestIsFinal,
   receiverContextResponseMatchesRequest,
+  receiverOwnerAdmissionState,
   receiverOwnerContextMatches,
   sameJson,
 } from "./installed/receiver-guards.mjs";
@@ -141,6 +142,38 @@ describe("installed receiver request guards", () => {
     expect(receiverOwnerContextMatches({ ...owner, run_intent: { ...finalRunIntent, target_scope: { scope_refs: ["sandbox.workspace"] } } }, finalRequest, response)).toBe(false);
   });
 
+  it("waits only on the exact owner's pending admission and rejects refusal or context drift", () => {
+    const finalRequest = { selection, workflow: "retained_redaction", run_intent: finalRunIntent };
+    const context = {
+      schema_version: "bluefire.receiver-defense-context.v2",
+      context_digest: `sha256:${"b".repeat(64)}`,
+      ...finalRequest,
+    };
+    const submissionId = "00000000-0000-4000-8000-000000000001";
+    const ownerId = `job-${submissionId.replaceAll("-", "")}`;
+    const submitted = { ...finalRequest, submission_id: submissionId, context_digest: context.context_digest };
+    const envelope = (admission: { accepted: boolean; problem: unknown }) => receiverOwnerEnvelope(ownerId, submitted, context, admission);
+    const acceptedEnvelope = envelope({ accepted: true, problem: null });
+
+    expect(receiverOwnerAdmissionState(envelope({ accepted: false, problem: null }), ownerId, finalRequest, context)).toBe("pending");
+    expect(receiverOwnerAdmissionState(envelope({ accepted: true, problem: null }), ownerId, finalRequest, context)).toBe("accepted");
+    expect(receiverOwnerAdmissionState(receiverOwnerEnvelope(ownerId, submitted, context, { accepted: true, problem: null }, "running"), ownerId, finalRequest, context)).toBe("pending");
+    expect(receiverOwnerAdmissionState(envelope({ accepted: false, problem: { code: "context_changed" } }), ownerId, finalRequest, context)).toBe("invalid");
+    expect(receiverOwnerAdmissionState(envelope({ accepted: true, problem: { code: "unexpected" } }), ownerId, finalRequest, context)).toBe("invalid");
+    expect(receiverOwnerAdmissionState(envelope({ accepted: true, problem: null }), `job-${"2".repeat(32)}`, finalRequest, context)).toBe("invalid");
+    expect(receiverOwnerAdmissionState({ ...acceptedEnvelope, context: { ...context, run_intent: { ...finalRunIntent, target_scope: { scope_refs: ["sandbox.workspace"] } } } }, ownerId, finalRequest, context)).toBe("invalid");
+    expect(receiverOwnerAdmissionState({ ...envelope({ accepted: true, problem: null }), job: { job_id: ownerId, request: { submitted_request: { ...submitted, context_digest: `sha256:${"c".repeat(64)}` } } } }, ownerId, finalRequest, context)).toBe("invalid");
+    expect(receiverOwnerAdmissionState({ ...acceptedEnvelope, job: { ...acceptedEnvelope.job, request: { ...acceptedEnvelope.job.request, context: { ...context, run_intent: { ...finalRunIntent, target_scope: { scope_refs: ["sandbox.workspace"] } } } } } }, ownerId, finalRequest, context)).toBe("invalid");
+    expect(receiverOwnerAdmissionState({ ...acceptedEnvelope, job: { ...acceptedEnvelope.job, request: { ...acceptedEnvelope.job.request, context_digest: `sha256:${"c".repeat(64)}` } } }, ownerId, finalRequest, context)).toBe("invalid");
+    expect(receiverOwnerAdmissionState({ ...acceptedEnvelope, schema_version: "unknown" }, ownerId, finalRequest, context)).toBe("invalid");
+    expect(receiverOwnerAdmissionState({ ...acceptedEnvelope, job: { ...acceptedEnvelope.job, kind: "scenario.run" } }, ownerId, finalRequest, context)).toBe("invalid");
+    expect(receiverOwnerAdmissionState({ ...acceptedEnvelope, phases: undefined }, ownerId, finalRequest, context)).toBe("invalid");
+    expect(receiverOwnerAdmissionState({ ...acceptedEnvelope, job: { ...acceptedEnvelope.job, request: { ...acceptedEnvelope.job.request, submitted_request: { ...submitted, submission_id: "submission" } } } }, ownerId, finalRequest, context)).toBe("invalid");
+    expect(receiverOwnerAdmissionState({ ...acceptedEnvelope, job: { ...acceptedEnvelope.job, request: { ...acceptedEnvelope.job.request, _submission: { ...acceptedEnvelope.job.request._submission, submission_id: "00000000-0000-4000-8000-000000000002" } } } }, ownerId, finalRequest, context)).toBe("invalid");
+    expect(receiverOwnerAdmissionState({ ...acceptedEnvelope, job: { ...acceptedEnvelope.job, request: { ...acceptedEnvelope.job.request, _submission: { ...acceptedEnvelope.job.request._submission, intent_digest: "bad" } } } }, ownerId, finalRequest, context)).toBe("invalid");
+    expect(receiverOwnerAdmissionState({ ...acceptedEnvelope, job: { ...acceptedEnvelope.job, request: { ...acceptedEnvelope.job.request, submitted_request: { ...submitted, extra: true } } } }, ownerId, finalRequest, context)).toBe("invalid");
+  });
+
   it("requires linked context and owner creation to echo the exact retained source control", () => {
     const sourceControl = { job_id: `job-${"1".repeat(32)}`, control_digest: `sha256:${"d".repeat(64)}` };
     const linkedExpected = {
@@ -178,13 +211,18 @@ describe("installed receiver request guards", () => {
       source_control: undefined,
     })).toBe(false);
 
-    const linkedOwner = { ...linkedRequest, submission_id: "submission", context_digest: linkedResponse.context_digest };
+    const linkedSubmissionId = "00000000-0000-4000-8000-000000000002";
+    const linkedOwner = { ...linkedRequest, submission_id: linkedSubmissionId, context_digest: linkedResponse.context_digest };
     expect(receiverOwnerContextMatches(linkedOwner, linkedRequest, linkedResponse)).toBe(true);
     expect(receiverOwnerContextMatches({ ...linkedOwner, source_control: { ...sourceControl, job_id: `job-${"2".repeat(32)}` } }, linkedRequest, linkedResponse)).toBe(false);
     expect(receiverOwnerContextMatches({ ...linkedOwner, source_control: undefined }, linkedRequest, linkedResponse)).toBe(false);
     expect(receiverOwnerContextMatches({ ...linkedOwner, context_digest: `sha256:${"a".repeat(64)}` }, linkedRequest, linkedResponse)).toBe(false);
     const originalResponse = { ...linkedResponse, source_control: undefined };
     expect(receiverOwnerContextMatches(linkedOwner, linkedRequest, originalResponse)).toBe(false);
+    const linkedOwnerId = `job-${linkedSubmissionId.replaceAll("-", "")}`;
+    const linkedEnvelope = receiverOwnerEnvelope(linkedOwnerId, linkedOwner, linkedResponse, { accepted: true, problem: null });
+    expect(receiverOwnerAdmissionState(linkedEnvelope, linkedOwnerId, linkedRequest, linkedResponse)).toBe("accepted");
+    expect(receiverOwnerAdmissionState({ ...linkedEnvelope, context: originalResponse }, linkedOwnerId, linkedRequest, linkedResponse)).toBe("invalid");
   });
 });
 
@@ -197,4 +235,34 @@ function intermediateContextRequest() {
     mode: "simulate", autonomy: "off", ai_provider_id: null, runner_profile_id: "sandbox-simulate.v1",
     target_scope: { scope_refs: ["sandbox.workspace"] },
   } };
+}
+
+function receiverOwnerEnvelope(ownerId: string, submittedRequest: Record<string, unknown>, context: Record<string, unknown>, admission: { accepted: boolean; problem: unknown }, state?: string) {
+  const accepted = admission.accepted && admission.problem === null;
+  const rejected = admission.problem !== null;
+  return {
+    schema_version: "bluefire.receiver-defense.v2",
+    job: {
+      schema_version: "bluefire.job.v1",
+      job_id: ownerId,
+      kind: "receiver.defense",
+      state: state ?? (accepted ? "completed" : rejected ? "failed" : "running"),
+      request: {
+        submitted_request: submittedRequest,
+        context,
+        context_digest: context.context_digest,
+        _submission: {
+          schema_version: "bluefire.job-submission.v1",
+          submission_id: submittedRequest.submission_id,
+          intent_digest: `sha256:${"e".repeat(64)}`,
+        },
+      },
+      progress: { admission },
+    },
+    context,
+    phases: [],
+    status: rejected ? "blocked" : "active",
+    admission,
+    next_action: { kind: "prepare_receiver", phase: "baseline", native_path: null },
+  };
 }

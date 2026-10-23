@@ -61,6 +61,57 @@ export function receiverOwnerContextMatches(ownerBody, finalRequest, finalRespon
   return receiverContextResponseMatchesRequest(request, finalRequest, finalResponse);
 }
 
+export function receiverOwnerAdmissionState(owner, ownerId, finalRequest, finalResponse) {
+  const retained = finalRequest?.workflow === "retained_redaction";
+  const expectedContextSchema = retained
+    ? "bluefire.receiver-defense-context.v2"
+    : "bluefire.receiver-defense-context.v1";
+  const expectedEnvelopeSchema = retained
+    ? "bluefire.receiver-defense.v2"
+    : "bluefire.receiver-defense.v1";
+  const job = owner?.job;
+  const request = job?.request;
+  const submitted = request?.submitted_request;
+  const submissionId = submitted?.submission_id;
+  const submissionBinding = request?._submission;
+  const pendingJob = ["queued", "planning", "running"].includes(job?.state);
+  if (!owner || typeof owner !== "object" || Array.isArray(owner)
+    || !finalRequest || typeof finalRequest !== "object" || Array.isArray(finalRequest)
+    || typeof ownerId !== "string" || !/^job-[0-9a-f]{32}$/.test(ownerId)
+    || owner.schema_version !== expectedEnvelopeSchema
+    || job?.schema_version !== "bluefire.job.v1" || job.job_id !== ownerId
+    || job.kind !== "receiver.defense"
+    || !["queued", "planning", "running", "completed", "failed", "cancelled", "interrupted"].includes(job.state)
+    || !request || typeof request !== "object" || Array.isArray(request)
+    || !job.progress || typeof job.progress !== "object" || Array.isArray(job.progress)
+    || !exactKeys(submitted, [...Object.keys(finalRequest), "submission_id", "context_digest"])
+    || !receiverOwnerContextMatches(submitted, finalRequest, finalResponse)
+    || typeof submissionId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(submissionId)
+    || ownerId !== `job-${submissionId.replaceAll("-", "")}`
+    || !exactKeys(submissionBinding, ["schema_version", "submission_id", "intent_digest"])
+    || submissionBinding.schema_version !== "bluefire.job-submission.v1"
+    || submissionBinding.submission_id !== submissionId
+    || typeof submissionBinding.intent_digest !== "string"
+    || !/^sha256:[0-9a-f]{64}$/.test(submissionBinding.intent_digest)
+    || !sameJson(request.context, owner.context)
+    || request.context_digest !== owner.context?.context_digest
+    || !Array.isArray(owner.phases) || !owner.next_action || typeof owner.next_action !== "object"
+    || !["active", "blocked", "stopping", "stopped", "completed"].includes(owner.status)
+    || !receiverContextResponseMatchesRequest(finalRequest, finalRequest, owner.context)
+    || owner.context.schema_version !== expectedContextSchema
+    || owner.context.context_digest !== finalResponse?.context_digest
+    || !exactKeys(owner.admission, ["accepted", "problem"])
+    || typeof owner.admission.accepted !== "boolean"
+    || !sameJson(job.progress.admission, owner.admission)) return "invalid";
+  if (owner.admission.accepted === true && owner.admission.problem === null
+    && job.state === "completed") return "accepted";
+  if (owner.admission.accepted === true && owner.admission.problem === null
+    && job.state === "running" && owner.status === "active") return "pending";
+  if (owner.admission.accepted === false && owner.admission.problem === null
+    && pendingJob && owner.status === "active") return "pending";
+  return "invalid";
+}
+
 function exactKeys(value, names) {
   return value && typeof value === "object" && !Array.isArray(value)
     && sameJson(Object.keys(value).sort(), [...names].sort());

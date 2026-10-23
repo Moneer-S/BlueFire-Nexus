@@ -263,6 +263,22 @@ function projectFailureRunDetail(value, ownedRunId, source) {
       "adapter_refused", "runner_transport_failed", "cancellation_witness_blocked",
       "cancellation_witness_failed", "cancellation_witness_timeout",
     ]),
+    transport_failure_reason: category(
+      step.error?.code === "runner_transport_failed" ? step.error.transport_failure_reason : null,
+      [
+        "cancellation_contract_invalid", "cancellation_state_unavailable", "private_state_unavailable",
+        "watchdog_state_unavailable", "runner_identity_unavailable", "runner_identity_changed",
+        "watchdog_runtime_unavailable", "watchdog_script_unavailable", "watchdog_identity_changed",
+        "launch_input_unavailable", "windows_containment_unavailable", "windows_suspended_start_failed",
+        "windows_process_control_unavailable", "process_launch_failed", "runner_io_failed", "durable_result_unavailable",
+        "pending_result_unavailable", "durable_result_commit_failed", "watchdog_exited_before_ready",
+        "watchdog_readiness_invalid", "watchdog_readiness_unavailable", "watchdog_readiness_timeout",
+        "watchdog_start_timeout", "watchdog_terminal_timeout", "watchdog_failure", "runner_unexpected_exit", "watchdog_no_valid_result",
+        "process_tree_release_failed", "process_tree_stop_failed", "timed_out", "output_limit",
+        "unsupported_result_schema", "invalid_json", "invalid_result", "other_transport",
+        "cancellation_cleanup_failed", "durable_result_exists", "pending_result_exists",
+      ],
+    ),
   };
 }
 

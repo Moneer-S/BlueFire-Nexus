@@ -90,13 +90,16 @@ from .runner_private_files import (
 )
 from .runner_python_environment import ActivePythonEnvironment
 from .runner_transport_errors import (
+    DiagnosedRunnerTransportError,
     RunnerDurableResultExists,
     RunnerPendingResultExists,
     RunnerReadinessError,
     RunnerTaskCancelled,
     RunnerTaskTimedOut,
     RunnerTransportError,
+    watchdog_transport_failure_reason,
 )
+from .runner_watchdog_status import validate_runner_watchdog_terminal_status
 from .runner_windows_containment import WindowsJobContainment
 from .s3_access_launch import ConfiguredS3LaunchAuthority, S3Launch, S3LaunchIntent
 from .service_launch import (
@@ -2530,6 +2533,18 @@ class SubprocessRustRunner:
             status = self._decode_json(payload, "runner watchdog status")
         except (OSError, RunnerTransportError):
             status = None
+        failure_reason = "watchdog_no_valid_result"
+        if status is not None and status.get("state") == "failed":
+            try:
+                validated = validate_runner_watchdog_terminal_status(status, task_id=task_id)
+                if validated["watchdog_pid"] != process.pid:
+                    raise RunnerTransportError("runner watchdog status is invalid")
+            except RunnerTransportError:
+                raise DiagnosedRunnerTransportError(
+                    "Runner watchdog failed before publishing a valid result",
+                    transport_failure_reason="other_transport",
+                ) from None
+            failure_reason = watchdog_transport_failure_reason(validated["error_code"])
         if status is not None and (
             status.get("schema_version") != _WATCHDOG_STATUS_SCHEMA
             or status.get("task_id") != task_id
@@ -2596,7 +2611,10 @@ class SubprocessRustRunner:
         if state == "succeeded" or (status is None and destination_present):
             output = self._durable_results.read(destination, maximum=self.output_limit_bytes)
             return self._validate_result(output, manifest, profile)
-        raise RunnerTransportError("Runner watchdog failed before publishing a valid result")
+        raise DiagnosedRunnerTransportError(
+            "Runner watchdog failed before publishing a valid result",
+            transport_failure_reason=failure_reason,
+        )
 
     @staticmethod
     def _cleanup_watchdog_control(root: Path) -> None:

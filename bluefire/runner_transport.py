@@ -59,9 +59,11 @@ from .runner_transport_client import (
     validated_transport_identity,
 )
 from .runner_transport_errors import (
+    TRANSPORT_FAILURE_REASONS,
     AuthenticatedRunnerTransportError,
     RunnerAuthenticationError,
     RunnerConnectionError,
+    transport_failure_reason,
 )
 from .runner_transport_framing import (
     _decode_json_object,
@@ -327,14 +329,20 @@ _LEDGER_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 class RunnerRemoteError(AuthenticatedRunnerTransportError):
     """An authenticated refusal returned by the runner service."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, transport_failure_reason: str | None = None) -> None:
         self.code = code if code in _REMOTE_ERROR_MESSAGES else "request_invalid"
+        if (
+            isinstance(transport_failure_reason, str)
+            and transport_failure_reason in TRANSPORT_FAILURE_REASONS
+        ):
+            self.transport_failure_reason = transport_failure_reason
         super().__init__(_REMOTE_ERROR_MESSAGES[self.code])
 
 
 class _RequestRefusal(Exception):
     def __init__(self, code: str) -> None:
         self.code = code
+        self.transport_failure_reason: str | None = None
         super().__init__(code)
 
 
@@ -2867,7 +2875,12 @@ class AuthenticatedRunnerServer:
                             try:
                                 response = self._dispatch(checked, enrollment, peer_fingerprint)
                             except _RequestRefusal as exc:
-                                response = self._error_response(request, enrollment, exc.code)
+                                response = self._error_response(
+                                    request,
+                                    enrollment,
+                                    exc.code,
+                                    failure_reason=getattr(exc, "transport_failure_reason", None),
+                                )
                     managed_shutdown = (
                         checked.get("operation") == "shutdown" and response.get("ok") is True
                     )
@@ -3303,8 +3316,13 @@ class AuthenticatedRunnerServer:
                 except BaseException:
                     return self._post_dispatch_resolution(task_id)
                 raise _RequestRefusal("task_cancelled") from None
-            except BaseException:
-                return self._post_dispatch_resolution(task_id)
+            except BaseException as exc:
+                try:
+                    return self._post_dispatch_resolution(task_id)
+                except _RequestRefusal as refusal:
+                    if isinstance(exc, RunnerTransportError):
+                        refusal.transport_failure_reason = transport_failure_reason(exc)
+                    raise
         finally:
             if task_aware:
                 with self._task_cancellations_lock:
@@ -3893,7 +3911,12 @@ class AuthenticatedRunnerServer:
         )
 
     def _error_response(
-        self, request: Mapping[str, Any], enrollment: RunnerEnrollment, code: str
+        self,
+        request: Mapping[str, Any],
+        enrollment: RunnerEnrollment,
+        code: str,
+        *,
+        failure_reason: str | None = None,
     ) -> Mapping[str, Any]:
         # A response can only be formed after the strict outer request shape was
         # decoded. Unknown fields are normalized to harmless placeholders rather
@@ -3925,7 +3948,13 @@ class AuthenticatedRunnerServer:
                 safe_request,
                 ok=False,
                 status="refused",
-                payload={},
+                payload=(
+                    {"transport_failure_reason": failure_reason}
+                    if request.get("operation") == "execute"
+                    and isinstance(failure_reason, str)
+                    and failure_reason in TRANSPORT_FAILURE_REASONS
+                    else {}
+                ),
                 error_code=code if code in _REMOTE_ERROR_MESSAGES else "request_invalid",
             ),
         )
@@ -4334,7 +4363,15 @@ class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
         if ok is True and status == "completed" and error_code is None:
             return payload
         if ok is False and status == "refused" and isinstance(error_code, str):
-            raise RunnerRemoteError(error_code)
+            reason = payload.get("transport_failure_reason")
+            if payload and (
+                request.get("operation") != "execute"
+                or set(payload) != {"transport_failure_reason"}
+                or not isinstance(reason, str)
+                or reason not in TRANSPORT_FAILURE_REASONS
+            ):
+                raise RunnerAuthenticationError("Runner response diagnostic is invalid.")
+            raise RunnerRemoteError(error_code, transport_failure_reason=reason)
         raise RunnerAuthenticationError("Runner response status is invalid.")
 
 

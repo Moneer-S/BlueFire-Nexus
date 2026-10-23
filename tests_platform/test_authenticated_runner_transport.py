@@ -875,6 +875,100 @@ def test_orchestrator_identity_dispatches_through_inventory_bound_authenticated_
     assert recovered["state"] == "completed"
 
 
+@pytest.mark.parametrize(
+    "mode",
+    ["known", "absent", "signature", "task", "unknown", "secret", "object", "extra", "health"],
+)
+def test_refused_transport_diagnostic_requires_exact_authenticated_finite_payload(
+    enrollment_root: Path, secret_provider: InMemorySecretProvider, mode: str
+) -> None:
+    from bluefire.runner_transport_errors import transport_failure_reason
+
+    enrollment = load_local_enrollment(enrollment_root, secret_provider=secret_provider)
+    request = _unsigned_request(enrollment, operation="health" if mode == "health" else "execute")
+    server = object.__new__(AuthenticatedRunnerServer)
+    response = dict(
+        server._error_response(
+            request,
+            enrollment,
+            "outcome_indeterminate",
+            failure_reason="windows_containment_unavailable",
+        )
+    )
+    if mode == "absent":
+        response["payload"] = {}
+    elif mode in {"unknown", "secret", "object", "extra", "health"}:
+        value = {
+            "unknown": "not_reviewed",
+            "secret": "PRIVATE_SYNTHETIC_SECRET_42",  # pragma: allowlist secret - synthetic sentinel
+            "object": {"private": "unreviewed"},
+        }.get(mode, "windows_containment_unavailable")
+        response["payload"] = {"transport_failure_reason": value}
+        if mode == "extra":
+            response["payload"]["unreviewed"] = "PRIVATE_SYNTHETIC_SECRET_42"
+    elif mode == "task":
+        response["task_id"] = "another-task"
+    response["response_hash"] = content_hash(response["payload"])
+    response.pop("authentication")
+    response = dict(wire._sign_response(enrollment, response))
+    if mode == "signature":
+        response["authentication"] = "sha256:" + "0" * 64
+    if mode in {"known", "absent"}:
+        with pytest.raises(RunnerRemoteError) as failure:
+            AuthenticatedRunnerClient._validated_response(response, request, enrollment)
+        assert failure.value.code == "outcome_indeterminate"
+        assert transport_failure_reason(failure.value) == (
+            "windows_containment_unavailable" if mode == "known" else "other_transport"
+        )
+    else:
+        with pytest.raises(RunnerAuthenticationError) as failure:
+            AuthenticatedRunnerClient._validated_response(response, request, enrollment)
+        assert transport_failure_reason(failure.value) == "other_transport"
+        assert "SECRET" not in str(failure.value)
+
+
+def test_finite_transport_diagnostic_does_not_override_reconciled_durable_success(
+    enrollment_root: Path,
+    secret_provider: InMemorySecretProvider,
+    tmp_path: Path,
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+) -> None:
+    from bluefire.runner_transport_errors import DiagnosedRunnerTransportError
+
+    class DurableThenFailureRunner(RecordingRunner):
+        def execute_task(
+            self,
+            manifest: Mapping[str, Any],
+            profile: Mapping[str, Any],
+            *,
+            task_id: str,
+            cancel_event: threading.Event,
+            durable_result_path: str | Path,
+        ) -> Mapping[str, Any]:
+            self.calls += 1
+            destination = Path(durable_result_path)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(
+                canonical_json_bytes(_result(manifest, profile, call=self.calls))
+            )
+            raise DiagnosedRunnerTransportError(
+                "Runner watchdog failed before publishing a valid result",
+                transport_failure_reason="watchdog_failure",
+            )
+
+    runner = DurableThenFailureRunner()
+    with AuthenticatedRunnerServer(
+        enrollment_root, runner, tmp_path / "transport.sqlite3", secret_provider=secret_provider
+    ) as server:
+        client = _client(enrollment_root, server, secret_provider)
+        result = client.execute(manifest, profile)
+        task_id, request_hash = client.execution_identity(manifest, profile)
+        assert client.recover(task_id, request_hash)["state"] == "completed"
+    assert result["status"] == "success"
+    assert runner.calls == 1
+
+
 def test_second_live_server_for_same_ledger_is_refused(
     enrollment_root: Path,
     secret_provider: InMemorySecretProvider,

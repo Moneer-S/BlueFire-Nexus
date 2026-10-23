@@ -43,6 +43,7 @@ if __package__ in {None, ""}:
         _PrivateFileCleanupError,
         _read_descriptor_bounded,
     )
+    from bluefire.runner_transport_errors import transport_failure_reason
     from bluefire.s3_access_launch import S3Launch, consume_s3_launch
     from bluefire.service_launch import ServiceLaunch, consume_service_launch
     from bluefire.util import canonical_json_bytes, file_hash
@@ -66,6 +67,7 @@ else:
         _PrivateFileCleanupError,
         _read_descriptor_bounded,
     )
+    from .runner_transport_errors import transport_failure_reason
     from .s3_access_launch import S3Launch, consume_s3_launch
     from .service_launch import ServiceLaunch, consume_service_launch
     from .util import canonical_json_bytes, file_hash
@@ -780,6 +782,9 @@ def _cleanup_cooperative_cancellation(
 
 
 def _classify_failure(error: RunnerTransportError) -> str:
+    reason = transport_failure_reason(error)
+    if reason != "other_transport":
+        return reason
     message = str(error).casefold()
     if "timed out" in message:
         return "timed_out"

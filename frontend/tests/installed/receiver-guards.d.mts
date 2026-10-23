@@ -23,6 +23,12 @@ export function receiverOwnerContextMatches(
   finalRequest: unknown,
   finalResponse: unknown,
 ): boolean;
+export function receiverOwnerAdmissionState(
+  owner: unknown,
+  ownerId: string,
+  finalRequest: unknown,
+  finalResponse: unknown,
+): "pending" | "accepted" | "invalid";
 
 export function consumeRequestBudget(
   counts: Record<string, number>,
