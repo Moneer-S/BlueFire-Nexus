@@ -116,7 +116,7 @@ it("hides the prior comparison and its report when a later captured S3 response 
   expect(await screen.findByRole("link", { name: "Download report" })).toBeVisible();
   expect(screen.getByRole("region", { name: "Comparison results" })).toBeVisible();
   await waitFor(() => expect(readSnapshot).toHaveBeenCalledWith(snapshotId));
-  await waitFor(() => expect(screen.getByRole("button", { name: `Open saved comparison ${snapshotId}` })).toHaveAttribute("aria-current", "page"));
+  await waitFor(() => expect(globalThis.document.querySelector(`button[data-snapshot-id="${snapshotId}"]`)).toHaveAttribute("aria-current", "page"));
   await screen.findByRole("heading", { name: "Current detector evaluations" });
 
   await user.click(screen.getByText("Choose different runs or prepare a replay"));

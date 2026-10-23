@@ -1,4 +1,20 @@
 .compare-page { container: compare-workspace / inline-size; }
+.compare-page .saved-comparison-link { min-width: 0; }
+.compare-page .saved-comparison-link > span { width: 100%; }
+.compare-page .saved-comparison-link strong { line-height: 1.45; overflow-wrap: anywhere; }
+.compare-page .saved-comparison-details { min-width: 0; padding-bottom: 10px; color: var(--muted); font-size: .75rem; }
+.compare-page .saved-comparison-details > summary { width: fit-content; cursor: pointer; padding: 4px 0; }
+.compare-page .saved-comparison-details > summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.compare-page .saved-comparison-details dl { display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1fr); gap: 6px 14px; margin: 10px 0; }
+.compare-page .saved-comparison-details dd { margin: 0; overflow-wrap: anywhere; }
+.compare-page .saved-comparison-details ol { margin: 0; padding-left: 22px; }
+.compare-page .saved-comparison-details li { border: 0; }
+.compare-page .saved-comparison-details code { color: var(--muted-strong); }
+.compare-page .run-select-list > label > span { min-width: 0; }
+.compare-page .run-select-list strong { overflow-wrap: anywhere; }
+.compare-page .history-panel > footer { align-items: center; flex-wrap: wrap; gap: 12px; }
+.compare-page .history-panel > footer .workspace-note { flex: 1 1 220px; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.compare-page .history-panel > footer > .button { flex: 0 0 auto; }
 .compare-page .comparison-results { gap: 28px; }
 .compare-page .comparison-outcomes { overflow: hidden; border-radius: 7px; }
 .compare-page .comparison-outcomes > .panel-header { align-items: flex-end; padding: 22px 24px 16px; }
