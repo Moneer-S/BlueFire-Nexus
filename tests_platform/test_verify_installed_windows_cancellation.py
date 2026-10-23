@@ -12,7 +12,15 @@ from pathlib import Path
 
 import pytest
 
+from bluefire.runner_private_files import _PinnedPrivateDirectory
 from tools import verify_installed_windows_cancellation as verifier
+
+
+def _write_private_ready(task: Path, ready: dict[str, object]) -> None:
+    with _PinnedPrivateDirectory(task) as control:
+        control.create(
+            "ready.json", json.dumps(ready).encode("utf-8"), maximum=verifier._MAX_READY_BYTES
+        )
 
 
 def test_receipt_is_written_directly_and_exclusively(
@@ -453,7 +461,7 @@ def test_witness_observer_rejects_malformed_directory_name_before_pin(
         "parent_process_id": 101,
         "descendant_process_id": 202,
     }
-    (task / "ready.json").write_text(json.dumps(ready), encoding="utf-8")
+    _write_private_ready(task, ready)
     pinned: list[dict[str, object]] = []
     monkeypatch.setattr(
         verifier, "_pin_windows_processes", lambda value: pinned.append(value.copy())
@@ -486,7 +494,7 @@ def test_witness_observer_uses_fresh_approval_workspace_and_pins_before_permit(
         "parent_process_id": 101,
         "descendant_process_id": 202,
     }
-    (task / "ready.json").write_text(json.dumps(ready), encoding="utf-8")
+    _write_private_ready(task, ready)
     pinned: list[dict[str, object]] = []
     monkeypatch.setattr(
         verifier, "_pin_windows_processes", lambda value: pinned.append(value.copy())
@@ -536,7 +544,7 @@ def test_witness_observer_retries_empty_workspace_construction(
         elif snapshots == 3:
             task.mkdir()
         elif snapshots == 4:
-            (task / "ready.json").write_text(json.dumps(ready), encoding="utf-8")
+            _write_private_ready(task, ready)
 
     monkeypatch.setattr(verifier.time, "sleep", advance)
     monkeypatch.setattr(
@@ -1049,7 +1057,7 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
                 raise RuntimeError("fixture approval refusal")
             self.approval_calls += 1
             task.mkdir(parents=True)
-            (task / "ready.json").write_text(json.dumps(ready), encoding="utf-8")
+            _write_private_ready(task, ready)
             if approval_gate == "ambiguous_workspace":
                 (sandbox / ".bluefire-executions" / "approval-unexpected").mkdir()
             self.state = "running"

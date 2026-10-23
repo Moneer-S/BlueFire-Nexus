@@ -17,6 +17,7 @@ import platform
 import queue
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import sysconfig
@@ -170,6 +171,125 @@ def _read_object(path: Path, maximum: int) -> dict[str, Any]:
     value = json.loads(raw)
     if not isinstance(value, dict):
         raise ValueError("verifier input must be an object")
+    return value
+
+
+_WITNESS_OBSERVATION_CODES = frozenset(
+    {
+        "ready_directory_unavailable",
+        "ready_read_failed",
+        "ready_json_invalid",
+        "ready_contract_invalid",
+        "parent_process_open_failed",
+        "parent_process_not_live",
+        "parent_process_wait_failed",
+        "descendant_process_open_failed",
+        "descendant_process_not_live",
+        "descendant_process_wait_failed",
+    }
+)
+
+
+class _WitnessObservationError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        super().__init__("independent witness observation failed")
+        self.code = code
+
+
+def _witness_observation_error_code(error: BaseException) -> str:
+    if (
+        type(error) is _WitnessObservationError
+        and type(error.code) is str
+        and error.code in _WITNESS_OBSERVATION_CODES
+    ):
+        return error.code
+    if type(error) is ValueError and error.args == (
+        "fresh witness record failed its exact contract",
+    ):
+        return "ready_contract_invalid"
+    return "witness_observation_failed"
+
+
+def _read_witness_ready(directory: Path) -> dict[str, Any]:
+    # The producer retains WRITE | DELETE access; the observer requests only READ
+    # under the verified private parent. The native child inherits that parent's
+    # ACL and must not be rewritten to the Python helper's protected-file ACL.
+    from bluefire.runner_descriptor_io import (
+        _descriptor_mount_identity,
+        _read_descriptor_bounded,
+    )
+    from bluefire.runner_private_files import _PinnedPrivateDirectory
+
+    stage = "ready_directory_unavailable"
+    try:
+        with _PinnedPrivateDirectory(
+            directory, share_delete=True, verify_permissions_only=True
+        ) as control:
+            stage = "ready_read_failed"
+            descriptor = control._open_existing("ready.json", write_dac=False)
+            try:
+
+                def snapshot() -> os.stat_result:
+                    details = os.fstat(descriptor)
+                    linked, mount_identity = control.entry_metadata_with_mount_identity(
+                        "ready.json"
+                    )
+                    if (
+                        not stat.S_ISREG(details.st_mode)
+                        or not stat.S_ISREG(linked.st_mode)
+                        or details.st_nlink != 1
+                        or linked.st_nlink != 1
+                        or getattr(details, "st_file_attributes", 0) & 0x400
+                        or getattr(linked, "st_file_attributes", 0) & 0x400
+                        or (details.st_dev, details.st_ino) != (linked.st_dev, linked.st_ino)
+                        or not 0 <= details.st_size <= _MAX_READY_BYTES
+                        or not 0 <= linked.st_size <= _MAX_READY_BYTES
+                        or _descriptor_mount_identity(descriptor) != mount_identity
+                    ):
+                        raise OSError("native witness file identity is invalid")
+                    return details
+
+                before = snapshot()
+                raw = _read_descriptor_bounded(descriptor, _MAX_READY_BYTES)
+                after = snapshot()
+                if (
+                    before.st_dev,
+                    before.st_ino,
+                    before.st_size,
+                    before.st_mtime_ns,
+                    before.st_ctime_ns,
+                ) != (
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_size,
+                    after.st_mtime_ns,
+                    after.st_ctime_ns,
+                ):
+                    raise OSError("native witness file changed while read")
+            finally:
+                os.close(descriptor)
+    except (OSError, RuntimeError) as error:
+        raise _WitnessObservationError(stage) from error
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate witness record field")
+            value[key] = item
+        return value
+
+    def reject_constant(_constant: str) -> Any:
+        raise ValueError("non-finite witness record value")
+
+    try:
+        value = json.loads(
+            raw.decode("utf-8"), object_pairs_hook=unique_object, parse_constant=reject_constant
+        )
+        if not isinstance(value, dict):
+            raise ValueError("witness record must be an object")
+    except (ValueError, UnicodeError) as error:
+        raise _WitnessObservationError("ready_json_invalid") from error
     return value
 
 
@@ -440,7 +560,7 @@ def _private_ready_record(sandbox: Path, stop: threading.Event) -> dict[str, Any
             continue
         if not _safe_regular_file(ready_path, _MAX_READY_BYTES):
             raise ValueError("fresh witness record was not a bounded regular file")
-        ready = _read_object(ready_path, _MAX_READY_BYTES)
+        ready = _read_witness_ready(child)
         if not _ready_record_valid(ready, directory_name=child.name):
             raise ValueError("fresh witness record failed its exact contract")
         _pin_windows_processes(ready)
@@ -489,12 +609,16 @@ def _pin_windows_processes(ready: dict[str, Any]) -> None:
     handles = []
     try:
         for name in ("parent_process_id", "descendant_process_id"):
+            role = "parent" if name == "parent_process_id" else "descendant"
             handle = open_process(0x00100000 | 0x1000, False, ready[name])
             if not handle:
-                raise RuntimeError("witness process was not live when cancellation was armed")
+                raise _WitnessObservationError(role + "_process_open_failed")
             handles.append(int(handle))
-            if wait(handle, 0) != 0x00000102:
-                raise RuntimeError("witness process was not live when cancellation was armed")
+            state = wait(handle, 0)
+            if state != 0x00000102:
+                raise _WitnessObservationError(
+                    role + ("_process_not_live" if state == 0 else "_process_wait_failed")
+                )
         _HELD_WITNESS_HANDLES.extend(handles)
     except BaseException:
         for handle in handles:
@@ -746,8 +870,8 @@ def main() -> int:
                         },
                     )
                 )
-            except (OSError, ValueError, RuntimeError, TimeoutError):
-                witness_error.append("witness_observation_failed")
+            except (OSError, ValueError, RuntimeError, TimeoutError) as error:
+                witness_error.append(_witness_observation_error_code(error))
                 try:
                     witness_messages.put_nowait(("denied", None))
                 except queue.Full:
