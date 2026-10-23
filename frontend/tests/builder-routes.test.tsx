@@ -72,6 +72,7 @@ it("renders all 17 separate routes with compact source labels and complete keybo
   const user = userEvent.setup();
   const view = mount(true);
   await showFullRouteGraph(user);
+  expect(screen.getByText("6 steps · 17 routes")).toBeInTheDocument();
   expect(routeButtons()).toHaveLength(17);
   await waitFor(() => expect(view.container.querySelectorAll(".react-flow__edge-path")).toHaveLength(17));
   const labels = Array.from(view.container.querySelectorAll(".react-flow__edge-text")).map((label) => label.textContent);
@@ -121,7 +122,7 @@ it("keeps disclosure explicit and returns focus when the route list is closed", 
   await user.click(routeButtons()[7]!);
   await user.click(screen.getByRole("button", { name: "Focus on success path" }));
   expect(routeButtons()).toHaveLength(5);
-  expect(screen.getByText(/12 branches hidden/)).toBeInTheDocument();
+  expect(screen.getByText(/12 routes hidden/)).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Delete route" })).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Close route list" }));
   expect(screen.getByRole("button", { name: "Show route list" })).toHaveFocus();

@@ -723,7 +723,8 @@ def main() -> int:
             "environment_names": sorted(environment),
             "not_proven": [
                 "CLI launch",
-                "native execution beyond the optional receiver baseline, or effective-access validation",
+                "native execution beyond the optional retained-redaction receiver journey",
+                "effective-access validation",
                 "live model inference",
                 "Assistant recovery across process restart",
                 "AD, AWS, or external endpoint access",

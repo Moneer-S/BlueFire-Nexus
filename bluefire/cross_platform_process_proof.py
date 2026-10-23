@@ -31,6 +31,7 @@ from .runner_client import (
     TaskAwareRunnerTransport,
     _pinned_launch_file,
     _PinnedPrivateDirectory,
+    execution_task_identity,
     runner_pending_result_path,
     runner_watchdog_control_root,
 )
@@ -769,9 +770,18 @@ def _execute_cancellation_task(
 ) -> tuple[RunnerTaskCancelled, Mapping[str, Any], Mapping[str, Any]]:
     """Run and observe cancellation entirely on the launcher's caller thread."""
 
+    transport_task_id, _transport_request_hash = execution_task_identity(manifest, profile)
+    if (
+        not isinstance(request_hash, str)
+        or _SHA256.fullmatch(request_hash) is None
+        or manifest.get("request_hash") != request_hash
+        or task_id != transport_task_id
+    ):
+        raise ProcessProofError("the cancellation execution identity is not request-bound")
+    witness_task_id = "execute-" + request_hash.removeprefix("sha256:")
     cancel = _CancellationReadinessEvent(
         control_root,
-        task_id=task_id,
+        task_id=witness_task_id,
         request_hash=request_hash,
     )
     cancellation_error: RunnerTaskCancelled | None = None
@@ -862,7 +872,8 @@ def process_tree_cancellation(
         timeout_ms=15_000,
     )
     request_hash = str(manifest["request_hash"])
-    task_id = "execute-" + request_hash.removeprefix("sha256:")
+    witness_task_id = "execute-" + request_hash.removeprefix("sha256:")
+    transport_task_id, _transport_request_hash = execution_task_identity(manifest, profile_doc)
     control_parent = sandbox / CONTROL_PARENT
     control_root = control_parent / request_hash.removeprefix("sha256:")
     binary = (resource_root / "bluefire-runner.exe").resolve(strict=True)
@@ -882,7 +893,7 @@ def process_tree_cancellation(
         runner,
         manifest,
         profile_doc,
-        task_id=task_id,
+        task_id=transport_task_id,
         request_hash=request_hash,
         control_root=control_root,
         durable_result_path=durable,
@@ -907,8 +918,8 @@ def process_tree_cancellation(
     )
     clean_transport_state = (
         not durable.exists()
-        and not runner_pending_result_path(durable, task_id).exists()
-        and not runner_watchdog_control_root(durable, task_id).exists()
+        and not runner_pending_result_path(durable, transport_task_id).exists()
+        and not runner_watchdog_control_root(durable, transport_task_id).exists()
     )
     check(
         cancellation_error.cooperative_requested
@@ -931,7 +942,7 @@ def process_tree_cancellation(
         "containment": "windows-job-object-kill-on-close",
         "runner_binary_sha256": binary_digest,
         "cancellation": {
-            "task_id": task_id,
+            "task_id": witness_task_id,
             "request_hash": request_hash,
             "terminal_state": "cancelled",
             "parent_process_identity": parent_identity,

@@ -18,3 +18,8 @@ export function createDeadlineBudget(startedAt, journeyMs, cleanupMs) {
     },
   };
 }
+
+export function boundedLocalTimeout(localDeadline, now, sharedRemaining) {
+  if (![localDeadline, now, sharedRemaining].every(Number.isFinite) || sharedRemaining <= 0) return 0;
+  return Math.max(0, Math.min(localDeadline - now, sharedRemaining));
+}

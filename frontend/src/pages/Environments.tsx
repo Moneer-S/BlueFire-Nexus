@@ -50,8 +50,17 @@ export function EnvironmentsPage() {
   const nextExpiry = expiryTimes.filter(expiry => expiry > now).sort((a, b) => a - b)[0];
   useEffect(() => {
     if (nextExpiry === undefined) return;
-    const timer = window.setTimeout(() => setNow(Date.now()), Math.min(nextExpiry - Date.now(), 2_147_483_647));
-    return () => window.clearTimeout(timer);
+    let active = true;
+    let timer = 0;
+    const refresh = () => {
+      if (!active) return;
+      const current = Date.now();
+      setNow(current);
+      const remaining = nextExpiry - current;
+      if (remaining > 0) timer = window.setTimeout(refresh, Math.min(remaining, 2_147_483_647));
+    };
+    timer = window.setTimeout(refresh, Math.max(0, Math.min(nextExpiry - Date.now(), 2_147_483_647)));
+    return () => { active = false; window.clearTimeout(timer); };
   }, [nextExpiry]);
 
   const fileCurrent = fileSetup ? fileSetup.expires_at_ms > now : Boolean(fileStatus.data?.available && fileStatus.data?.enrollment && fileStatus.data.enrollment.expires_at_ms > now);

@@ -14,8 +14,10 @@ import importlib.metadata
 import json
 import os
 import platform
+import queue
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import sysconfig
@@ -33,6 +35,7 @@ _MAX_DRIVER_SECONDS = 360
 _MAX_REPORT_BYTES = 256 * 1024
 _MAX_READY_BYTES = 4096
 _MAX_STATE_BYTES = 64 * 1024
+_MAX_DRIVER_FRAME_BYTES = 1024
 _MAX_WHEEL_BYTES = 128 * 1024 * 1024
 _MAX_PACKAGE_BYTES = 256 * 1024 * 1024
 _MAX_PACKAGE_FILES = 10000
@@ -141,12 +144,23 @@ def _installed_package_matches_wheel(wheel: Path, package: Path, version: str) -
         return False
 
 
-def _write_new(path: Path, value: object, *, maximum: int = _MAX_STATE_BYTES) -> None:
+def _write_receipt(path: Path, value: object, *, maximum: int = _MAX_STATE_BYTES) -> None:
     encoded = json.dumps(value, indent=2, sort_keys=True, allow_nan=False).encode("utf-8") + b"\n"
     if len(encoded) > maximum:
         raise RuntimeError("bounded verifier record exceeded its limit")
-    with path.open("xb") as stream:
-        stream.write(encoded)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        offset = 0
+        while offset < len(encoded):
+            written = os.write(descriptor, encoded[offset:])
+            if written <= 0:
+                raise OSError("bounded verifier receipt write made no progress")
+            offset += written
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _read_object(path: Path, maximum: int) -> dict[str, Any]:
@@ -160,9 +174,130 @@ def _read_object(path: Path, maximum: int) -> dict[str, Any]:
     return value
 
 
+_WITNESS_OBSERVATION_CODES = frozenset(
+    {
+        "ready_directory_unavailable",
+        "ready_read_failed",
+        "ready_json_invalid",
+        "ready_contract_invalid",
+        "parent_process_open_failed",
+        "parent_process_not_live",
+        "parent_process_wait_failed",
+        "descendant_process_open_failed",
+        "descendant_process_not_live",
+        "descendant_process_wait_failed",
+    }
+)
+
+
+class _WitnessObservationError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        super().__init__("independent witness observation failed")
+        self.code = code
+
+
+def _witness_observation_error_code(error: BaseException) -> str:
+    if (
+        type(error) is _WitnessObservationError
+        and type(error.code) is str
+        and error.code in _WITNESS_OBSERVATION_CODES
+    ):
+        return error.code
+    if type(error) is ValueError and error.args == (
+        "fresh witness record failed its exact contract",
+    ):
+        return "ready_contract_invalid"
+    return "witness_observation_failed"
+
+
+def _read_witness_ready(directory: Path) -> dict[str, Any]:
+    # The producer retains WRITE | DELETE access; the observer requests only READ
+    # under the verified private parent. The native child inherits that parent's
+    # ACL and must not be rewritten to the Python helper's protected-file ACL.
+    from bluefire.runner_descriptor_io import (
+        _descriptor_mount_identity,
+        _read_descriptor_bounded,
+    )
+    from bluefire.runner_private_files import _PinnedPrivateDirectory
+
+    stage = "ready_directory_unavailable"
+    try:
+        with _PinnedPrivateDirectory(
+            directory, share_delete=True, verify_permissions_only=True
+        ) as control:
+            stage = "ready_read_failed"
+            descriptor = control._open_existing("ready.json", write_dac=False)
+            try:
+
+                def snapshot() -> os.stat_result:
+                    details = os.fstat(descriptor)
+                    linked, mount_identity = control.entry_metadata_with_mount_identity(
+                        "ready.json"
+                    )
+                    if (
+                        not stat.S_ISREG(details.st_mode)
+                        or not stat.S_ISREG(linked.st_mode)
+                        or details.st_nlink != 1
+                        or linked.st_nlink != 1
+                        or getattr(details, "st_file_attributes", 0) & 0x400
+                        or getattr(linked, "st_file_attributes", 0) & 0x400
+                        or (details.st_dev, details.st_ino) != (linked.st_dev, linked.st_ino)
+                        or not 0 <= details.st_size <= _MAX_READY_BYTES
+                        or not 0 <= linked.st_size <= _MAX_READY_BYTES
+                        or _descriptor_mount_identity(descriptor) != mount_identity
+                    ):
+                        raise OSError("native witness file identity is invalid")
+                    return details
+
+                before = snapshot()
+                raw = _read_descriptor_bounded(descriptor, _MAX_READY_BYTES)
+                after = snapshot()
+                if (
+                    before.st_dev,
+                    before.st_ino,
+                    before.st_size,
+                    before.st_mtime_ns,
+                    before.st_ctime_ns,
+                ) != (
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_size,
+                    after.st_mtime_ns,
+                    after.st_ctime_ns,
+                ):
+                    raise OSError("native witness file changed while read")
+            finally:
+                os.close(descriptor)
+    except (OSError, RuntimeError) as error:
+        raise _WitnessObservationError(stage) from error
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate witness record field")
+            value[key] = item
+        return value
+
+    def reject_constant(_constant: str) -> Any:
+        raise ValueError("non-finite witness record value")
+
+    try:
+        value = json.loads(
+            raw.decode("utf-8"), object_pairs_hook=unique_object, parse_constant=reject_constant
+        )
+        if not isinstance(value, dict):
+            raise ValueError("witness record must be an object")
+    except (ValueError, UnicodeError) as error:
+        raise _WitnessObservationError("ready_json_invalid") from error
+    return value
+
+
 def _ready_record_valid(value: object, *, directory_name: str) -> bool:
     return (
-        isinstance(value, dict)
+        isinstance(directory_name, str)
+        and re.fullmatch(r"[0-9a-f]{64}", directory_name) is not None
+        and isinstance(value, dict)
         and set(value)
         == {
             "schema_version",
@@ -210,7 +345,7 @@ def _request_counts_valid(value: object) -> bool:
         "run_submit": 1,
         "approval": 1,
         "cancel": 1,
-        "retained_observations": 1,
+        "run_detail": 1,
         "runner_stop": 1,
     }
     if not isinstance(value, dict) or set(value) != {*required, "job_status"}:
@@ -313,6 +448,7 @@ def _runtime_removal_allowed(report: dict[str, object]) -> bool:
         and report.get("service_http_server_closed") is True
         and report.get("service_closed") is True
         and report.get("witness_observer_stopped") is True
+        and report.get("driver_input_writer_stopped") is True
         and witness_clean
     )
 
@@ -382,73 +518,81 @@ def _windows_architecture_environment(machine: str) -> dict[str, str]:
     return {"PROCESSOR_ARCHITECTURE": architecture}
 
 
-def _private_ready_record(
-    sandbox: Path, marker: Path, permit: Path, stop: threading.Event
-) -> dict[str, Any]:
+def _private_ready_record(sandbox: Path, stop: threading.Event) -> dict[str, Any]:
     deadline = time.monotonic() + _MAX_DRIVER_SECONDS - 15
-    try:
-        while not stop.is_set() and time.monotonic() < deadline:
-            if marker.exists():
-                if not _safe_regular_file(marker, _MAX_READY_BYTES):
-                    raise ValueError("witness observer signal was not a bounded regular file")
-                signal = _read_object(marker, _MAX_READY_BYTES)
-                if set(signal) != {
-                    "request_hash",
-                    "task_id",
-                    "parent_process_id",
-                    "descendant_process_id",
-                }:
-                    raise ValueError("witness observer signal shape was invalid")
-                executions = sandbox / ".bluefire-executions"
-                if executions.exists() and not _safe_directory(executions):
-                    raise ValueError("fresh Execute workspace root was redirected")
-                owners = list(executions.iterdir()) if executions.exists() else []
-                if len(owners) != 1 or not _safe_directory(owners[0]):
-                    raise ValueError("fresh Execute workspace identity was ambiguous")
-                controls = owners[0] / ".bluefire-cancellation-witness-v1"
-                if controls.exists() and not _safe_directory(controls):
-                    raise ValueError("fresh witness control root was redirected")
-                children = list(controls.iterdir()) if controls.exists() else []
-                if len(children) != 1:
-                    raise ValueError("fresh witness control directory was ambiguous")
-                child = children[0]
-                if not _safe_directory(child) or child.name != signal["request_hash"].removeprefix(
-                    "sha256:"
-                ):
-                    raise ValueError("fresh witness directory identity did not match")
-                ready_path = child / "ready.json"
-                if not _safe_regular_file(ready_path, _MAX_READY_BYTES):
-                    raise ValueError("fresh witness record was not a bounded regular file")
-                ready = _read_object(ready_path, _MAX_READY_BYTES)
-                if not _ready_record_valid(ready, directory_name=child.name):
-                    raise ValueError("fresh witness record failed its exact contract")
-                if any(
-                    signal[key] != ready[key]
-                    for key in (
-                        "task_id",
-                        "request_hash",
-                        "parent_process_id",
-                        "descendant_process_id",
-                    )
-                ):
-                    raise ValueError("driver and independent witness records did not match")
-                _pin_windows_processes(ready)
-                _write_new(
-                    permit,
-                    {"witness_request_hash": ready["request_hash"]},
-                    maximum=_MAX_READY_BYTES,
-                )
-                return {**ready, "control_path": child}
-            time.sleep(0.05)
-        if stop.is_set():
-            raise RuntimeError("witness observation was stopped")
-        raise TimeoutError("fresh cancellation witness did not arrive")
-    except BaseException:
+    while not stop.is_set() and time.monotonic() < deadline:
+        executions = sandbox / ".bluefire-executions"
         try:
-            _write_new(permit, {"denied": True}, maximum=_MAX_READY_BYTES)
+            executions.lstat()
+        except FileNotFoundError:
+            time.sleep(0.05)
+            continue
+        if not _safe_directory(executions):
+            raise ValueError("fresh Execute workspace root was redirected")
+        owners = list(executions.iterdir())
+        if not owners:
+            time.sleep(0.05)
+            continue
+        if len(owners) != 1 or not _safe_directory(owners[0]):
+            raise ValueError("fresh Execute workspace identity was ambiguous")
+        controls = owners[0] / ".bluefire-cancellation-witness-v1"
+        try:
+            controls.lstat()
+        except FileNotFoundError:
+            time.sleep(0.05)
+            continue
+        if not _safe_directory(controls):
+            raise ValueError("fresh witness control root was redirected")
+        children = list(controls.iterdir())
+        if not children:
+            time.sleep(0.05)
+            continue
+        if len(children) != 1:
+            raise ValueError("fresh witness control directory was ambiguous")
+        child = children[0]
+        if not _safe_directory(child):
+            raise ValueError("fresh witness directory was redirected")
+        ready_path = child / "ready.json"
+        try:
+            ready_path.lstat()
+        except FileNotFoundError:
+            time.sleep(0.05)
+            continue
+        if not _safe_regular_file(ready_path, _MAX_READY_BYTES):
+            raise ValueError("fresh witness record was not a bounded regular file")
+        ready = _read_witness_ready(child)
+        if not _ready_record_valid(ready, directory_name=child.name):
+            raise ValueError("fresh witness record failed its exact contract")
+        _pin_windows_processes(ready)
+        return {**ready, "control_path": child}
+    if stop.is_set():
+        raise RuntimeError("witness observation was stopped")
+    raise TimeoutError("fresh cancellation witness did not arrive")
+
+
+def _driver_input_writer(
+    stream: Any, messages: queue.Queue[dict[str, Any] | None], errors: list[str]
+) -> None:
+    try:
+        while True:
+            value = messages.get()
+            if value is None:
+                return
+            encoded = json.dumps(value, separators=(",", ":"), allow_nan=False).encode("ascii")
+            if len(encoded) > _MAX_DRIVER_FRAME_BYTES:
+                raise ValueError("bounded driver input frame exceeded its limit")
+            if stream.write(encoded + b"\n") != len(encoded) + 1:
+                raise OSError("bounded driver input write made no progress")
+            stream.flush()
+            if value.get("type") != "capability":
+                return
+    except (OSError, ValueError, TypeError, UnicodeError) as error:
+        errors.append(type(error).__name__)
+    finally:
+        try:
+            stream.close()
         except OSError:
             pass
-        raise
 
 
 def _pin_windows_processes(ready: dict[str, Any]) -> None:
@@ -465,12 +609,16 @@ def _pin_windows_processes(ready: dict[str, Any]) -> None:
     handles = []
     try:
         for name in ("parent_process_id", "descendant_process_id"):
+            role = "parent" if name == "parent_process_id" else "descendant"
             handle = open_process(0x00100000 | 0x1000, False, ready[name])
             if not handle:
-                raise RuntimeError("witness process was not live when cancellation was armed")
+                raise _WitnessObservationError(role + "_process_open_failed")
             handles.append(int(handle))
-            if wait(handle, 0) != 0x00000102:
-                raise RuntimeError("witness process was not live when cancellation was armed")
+            state = wait(handle, 0)
+            if state != 0x00000102:
+                raise _WitnessObservationError(
+                    role + ("_process_not_live" if state == 0 else "_process_wait_failed")
+                )
         _HELD_WITNESS_HANDLES.extend(handles)
     except BaseException:
         for handle in handles:
@@ -579,6 +727,7 @@ def main() -> int:
         "driver_job_created": False,
         "driver_job_empty": False,
         "driver_process_exited": False,
+        "driver_input_writer_stopped": True,
         "service_thread_stopped": False,
         "service_http_server_closed": False,
         "service_closed": False,
@@ -605,10 +754,14 @@ def main() -> int:
     driver_containment = None
     driver_job: int | None = None
     driver_assigned = False
+    driver_input_messages: queue.Queue[dict[str, Any] | None] | None = None
+    driver_input_thread: threading.Thread | None = None
+    driver_input_errors: list[str] = []
     witness_thread: threading.Thread | None = None
     witness_thread_started = False
     witness_error: list[str] = []
     witness_result: list[dict[str, Any]] = []
+    witness_messages: queue.Queue[tuple[str, dict[str, Any] | None]] = queue.Queue(maxsize=1)
     witness_stop = threading.Event()
     try:
         runtime.mkdir(mode=0o700)
@@ -697,16 +850,32 @@ def main() -> int:
         service_thread.start()
         service_thread_started = True
         sandbox = runtime / "sandbox"
-        signal_path = output / "witness-observed.json"
-        permit_path = output / "witness-permit.json"
 
         def observe_witness() -> None:
             try:
-                witness_result.append(
-                    _private_ready_record(sandbox, signal_path, permit_path, witness_stop)
+                ready = _private_ready_record(sandbox, witness_stop)
+                witness_result.append(ready)
+                witness_messages.put_nowait(
+                    (
+                        "permit",
+                        {
+                            key: ready[key]
+                            for key in (
+                                "schema_version",
+                                "task_id",
+                                "request_hash",
+                                "parent_process_id",
+                                "descendant_process_id",
+                            )
+                        },
+                    )
                 )
-            except (OSError, ValueError, RuntimeError, TimeoutError):
-                witness_error.append("witness_observation_failed")
+            except (OSError, ValueError, RuntimeError, TimeoutError) as error:
+                witness_error.append(_witness_observation_error_code(error))
+                try:
+                    witness_messages.put_nowait(("denied", None))
+                except queue.Full:
+                    pass
 
         witness_thread = threading.Thread(target=observe_witness, name="installed-cancel-witness")
         witness_thread.start()
@@ -728,13 +897,47 @@ def main() -> int:
         driver_assigned = True
         containment.resume_suspended(driver_process)
         report["witness_could_have_started"] = True
-        try:
-            driver_process.communicate(
-                json.dumps({"capability": capability}).encode("ascii"), timeout=_MAX_DRIVER_SECONDS
-            )
-            report["driver_process_exited"] = driver_process.poll() is not None
-        except subprocess.TimeoutExpired:
+        driver_input_messages = queue.Queue()
+        driver_input_thread = threading.Thread(
+            target=_driver_input_writer,
+            args=(driver_process.stdin, driver_input_messages, driver_input_errors),
+            name="installed-cancel-input-writer",
+            daemon=True,
+        )
+        driver_input_thread.start()
+        report["driver_input_writer_stopped"] = False
+        driver_input_messages.put({"type": "capability", "capability": capability})
+        driver_deadline = time.monotonic() + _MAX_DRIVER_SECONDS
+        frame_sent = False
+        while driver_process.poll() is None and time.monotonic() < driver_deadline:
+            if driver_input_errors:
+                raise RuntimeError("installed driver input channel failed")
+            if not frame_sent:
+                try:
+                    kind, payload = witness_messages.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                if kind == "permit" and payload is not None:
+                    driver_input_messages.put({"type": "witness_permit", "ready": payload})
+                else:
+                    driver_input_messages.put({"type": "witness_denied"})
+                frame_sent = True
+            else:
+                time.sleep(0.05)
+        if driver_process.poll() is None:
             report["status"] = "failed_or_incomplete"
+        report["driver_process_exited"] = driver_process.poll() is not None
+        if driver_process.poll() is not None and not witness_result:
+            witness_stop.set()
+        if driver_input_thread is not None:
+            try:
+                driver_input_messages.put_nowait(None)
+            except queue.Full:
+                pass
+            driver_input_thread.join(timeout=1)
+            report["driver_input_writer_stopped"] = not driver_input_thread.is_alive()
+            if not report["driver_input_writer_stopped"]:
+                report["status"] = "failed_or_incomplete"
         if not witness_result and witness_thread is not None:
             witness_stop.set()
         if witness_thread is not None:
@@ -807,6 +1010,15 @@ def main() -> int:
                     report["driver_process_exited"] = False
             else:
                 report["driver_process_exited"] = True
+
+            if driver_input_thread is not None:
+                if driver_input_messages is not None:
+                    driver_input_messages.put(None)
+                try:
+                    driver_input_thread.join(timeout=1)
+                    report["driver_input_writer_stopped"] = not driver_input_thread.is_alive()
+                except Exception:
+                    report["driver_input_writer_stopped"] = False
 
             witness_stop.set()
             if witness_thread is None or not witness_thread_started:
@@ -892,7 +1104,7 @@ def main() -> int:
             if not report["temporary_runtime_removed"] or not _runtime_removal_allowed(report):
                 report["status"] = "failed_or_incomplete"
             try:
-                _write_new(output / "receipt.json", report)
+                _write_receipt(output / "receipt.json", report)
             except Exception:
                 pass
         finally:

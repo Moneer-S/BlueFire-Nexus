@@ -6,8 +6,20 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import { classifyRequest, consumeRequestBudget, sameJson as same } from "./receiver-guards.mjs";
-import { createDeadlineBudget } from "./receiver-deadline.mjs";
+import {
+  classifyRequest,
+  consumeRequestBudget,
+  receiverContextRequestAllowed,
+  receiverContextRequestIsFinal,
+  receiverContextResponseMatchesRequest,
+  receiverOwnerAdmissionState,
+  receiverCompletedPhase,
+  receiverRunIsNotDemo,
+  receiverOwnerContextMatches,
+  receiverApprovalAcknowledgementName,
+  sameJson as same,
+} from "./receiver-guards.mjs";
+import { boundedLocalTimeout, createDeadlineBudget } from "./receiver-deadline.mjs";
 
 const [modulePath, output, port] = process.argv.slice(2);
 assert.match(port ?? "", /^\d{1,5}$/);
@@ -86,9 +98,9 @@ let savedSelection;
 let packagedStarter;
 let expectedScenarioCopy;
 let latestContext;
+let latestFinalContextRequest;
 let latestOwner;
 let latestPreparationDigest;
-let latestContextSourceControl;
 let originalControlDigest;
 let originalEnvelope;
 let linkedEnvelope;
@@ -222,21 +234,31 @@ function allowedRead(url) {
   return false;
 }
 
-function validateContext(body) {
+function contextExpectation(body) {
   const linked = body?.source_control !== undefined;
-  const keys = linked ? ["selection", "run_intent", "workflow", "source_control"] : ["selection", "run_intent", "workflow"];
-  if (!exactKeys(body, keys) || body.workflow !== "retained_redaction"
-    || !same(body.selection, savedSelection)
-    || !exactKeys(body.run_intent, ["mode", "autonomy", "ai_provider_id", "runner_profile_id", "target_scope", "collectors"])
-    || body.run_intent.mode !== "execute" || body.run_intent.autonomy !== "off"
-    || body.run_intent.ai_provider_id !== null || body.run_intent.runner_profile_id !== PROFILE
-    || !exactKeys(body.run_intent.target_scope, ["scope_refs"])
-    || !Array.isArray(body.run_intent.target_scope.scope_refs)
-    || !same([...body.run_intent.target_scope.scope_refs].sort(), ["network.loopback", "sandbox.workspace"])
-    || !same(body.run_intent.collectors, [FILESYSTEM_COLLECTOR])) return false;
-  if (linked && (!originalOwnerId || !originalControlDigest
-    || !same(body.source_control, { job_id: originalOwnerId, control_digest: originalControlDigest }))) return false;
-  return true;
+  return {
+    selection: savedSelection,
+    workflow: "retained_redaction",
+    sourceControl: linked ? { job_id: originalOwnerId, control_digest: originalControlDigest } : null,
+    profileIdsByMode: {
+      simulate: ["sandbox-simulate.v1"],
+      execute: ["sandbox-execute.v1", PROFILE],
+    },
+    scopeRefs: ["sandbox.workspace", "network.loopback"],
+    collectors: [FILESYSTEM_COLLECTOR],
+    finalRunIntent: {
+      mode: "execute",
+      autonomy: "off",
+      ai_provider_id: null,
+      runner_profile_id: PROFILE,
+      target_scope: { scope_refs: ["sandbox.workspace", "network.loopback"] },
+      collectors: [FILESYSTEM_COLLECTOR],
+    },
+  };
+}
+
+function validateFinalContext(body) {
+  return receiverContextRequestIsFinal(body, contextExpectation(body));
 }
 
 function validateScenarioCopy(value) {
@@ -270,8 +292,11 @@ function authorizePost(url, body) {
     return count("save_scenario") && exactKeys(body, ["scenario"]) && validateScenarioCopy(body.scenario);
   }
   if (path === "/api/v1/receiver-defense/context") {
-    const ok = count("context") && validateContext(body);
-    if (ok) latestContextSourceControl = body.source_control ?? null;
+    latestContext = undefined;
+    latestFinalContextRequest = undefined;
+    const expected = contextExpectation(body);
+    const ok = count("context") && receiverContextRequestAllowed(body, expected);
+    if (ok && receiverContextRequestIsFinal(body, expected)) latestFinalContextRequest = structuredClone(body);
     return ok;
   }
   if (path === "/api/v1/receiver-defense/jobs") {
@@ -283,12 +308,12 @@ function authorizePost(url, body) {
       ? Boolean(originalEnvelope?.status === "completed" && originalEnvelope?.control?.status === "retained"
         && originalEnvelope.control.receiver_state === "stopped" && phaseIndexes.original === 3
         && same(body.source_control, { job_id: originalOwnerId, control_digest: originalControlDigest }))
-      : !originalOwnerId && latestContextSourceControl === null;
+      : !originalOwnerId && latestFinalContextRequest?.source_control === undefined;
     const ok = count("owner") && roleReady && exactKeys(body, keys)
-      && validateContext({ selection: body.selection, run_intent: body.run_intent, workflow: body.workflow,
+      && validateFinalContext({ selection: body.selection, run_intent: body.run_intent, workflow: body.workflow,
         ...(linked ? { source_control: body.source_control } : {}) })
       && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(body.submission_id)
-      && body.context_digest === latestContext?.context_digest;
+      && receiverOwnerContextMatches(body, latestFinalContextRequest, latestContext);
     return ok;
   }
   const currentPhases = phaseOrders[activeOwnerRole];
@@ -317,7 +342,8 @@ function authorizePost(url, body) {
   return false;
 }
 
-async function appApi(path) {
+async function appApi(path, requestedTimeout = remainingMs()) {
+  const timeout = boundedTimeout(requestedTimeout);
   return page.evaluate(async ({ apiPath, timeout }) => {
     const token = sessionStorage.getItem("bluefire.browser-session.v1");
     if (!token) throw new Error("Session unavailable");
@@ -328,14 +354,16 @@ async function appApi(path) {
     });
     if (!response.ok) throw new Error("Owned status read failed");
     return response.json();
-  }, { apiPath: path, timeout: remainingMs() });
+  }, { apiPath: path, timeout });
 }
 
-async function waitOwner(predicate, timeout = 120_000, ownerId = receiverJobId) {
-  const until = Date.now() + Math.min(remainingMs(), timeout);
+async function waitOwner(predicate, timeout = 120_000, ownerId = receiverJobId, deadline) {
+  const until = deadline ?? Date.now() + Math.min(remainingMs(), timeout);
   while (Date.now() < until) {
-    remainingMs();
-    latestOwner = await appApi(`/receiver-defense/jobs/${ownerId}`);
+    const requestTimeout = boundedLocalTimeout(until, Date.now(), remainingMs());
+    if (requestTimeout <= 0) break;
+    latestOwner = await appApi(`/receiver-defense/jobs/${ownerId}`, requestTimeout);
+    if (Date.now() >= until) break;
     const role = owners.get(ownerId);
     if (role === "original") originalEnvelope = latestOwner;
     else if (role === "linked") linkedEnvelope = latestOwner;
@@ -349,8 +377,8 @@ async function waitOwner(predicate, timeout = 120_000, ownerId = receiverJobId) 
   throw new Error("Receiver phase did not reach the expected saved state");
 }
 
-async function waitForState(predicate, label, timeout = 10_000) {
-  const until = Date.now() + Math.min(remainingMs(), timeout);
+async function waitForState(predicate, label, timeout = 10_000, deadline) {
+  const until = deadline ?? Date.now() + Math.min(remainingMs(), timeout);
   while (Date.now() < until) {
     remainingMs();
     if (predicate()) return;
@@ -454,7 +482,7 @@ async function executePhase(phaseName, role) {
   const phaseExecutionId = executionJobId;
 
   stage = `${role}-${phaseName}-execute-approval`;
-  await page.getByRole("checkbox", { name: "I approve this exact immutable job envelope once", exact: true }).check();
+  await page.getByRole("checkbox", { name: receiverApprovalAcknowledgementName }).check();
   await page.getByLabel("Operator identity for this job", { exact: true }).fill(`Installed receiver ${role} verifier`);
   await page.getByRole("button", { name: "Approve and release job", exact: true }).click();
   await waitOwner((owner) => owner.phases?.find((item) => item.phase === phaseName)?.status === "completed");
@@ -571,8 +599,12 @@ try {
     if (request.method() === "GET" && path === "/api/v1/session" && response.status() === 401) expected401 += 1;
     if (request.method() !== "POST") return;
     try {
+      const contextRequestBody = path === "/api/v1/receiver-defense/context"
+        ? request.postDataJSON()
+        : undefined;
       const data = await response.json();
-      if (path === "/api/v1/receiver-defense/context" && response.ok()) latestContext = data;
+      if (path === "/api/v1/receiver-defense/context" && response.ok()
+        && receiverContextResponseMatchesRequest(contextRequestBody, latestFinalContextRequest, data)) latestContext = data;
       else if (path === "/api/v1/receiver-defense/jobs" && response.ok()) {
         const createdId = data.job?.job_id;
         const role = data.context?.source_control ? "linked" : "original";
@@ -711,7 +743,7 @@ try {
   stage = "baseline-control-execution-mode";
   await page.getByRole("radio", { name: /^Execute / }).check();
   stage = "baseline-control-environment-profile";
-  await page.getByLabel("Environment profile", { exact: true }).selectOption(PROFILE);
+  await page.getByRole("combobox", { name: "Environment profile", exact: true }).selectOption(PROFILE);
   stage = "baseline-control-target-scopes";
   for (const label of ["Files in the selected workspace", "Connections to the local lab receiver"]) {
     const scope = page.getByRole("checkbox", { name: label, exact: true });
@@ -729,11 +761,21 @@ try {
   stage = "baseline-control-job-navigation";
   await page.waitForFunction(() => location.hash.includes("receiver_job=job-"));
   stage = "baseline-control-owner-response";
-  await waitForState(() => Boolean(receiverJobId && latestOwner?.context), "original receiver owner response");
+  const ownerResponseDeadline = Date.now() + Math.min(remainingMs(), 10_000);
+  await waitForState(() => Boolean(receiverJobId && latestOwner?.context && latestFinalContextRequest && latestContext), "original receiver owner response", 10_000, ownerResponseDeadline);
   assert.match(receiverJobId ?? "", ID);
-  assert.equal(latestOwner?.context?.workflow, "retained_redaction");
-  assert.equal(latestOwner?.admission?.accepted, true);
-  report.receiver_job_id = receiverJobId;
+  const baselineOwnerId = receiverJobId;
+  const originalFinalRequest = structuredClone(latestFinalContextRequest);
+  const originalFinalContext = structuredClone(latestContext);
+  assert.notEqual(receiverOwnerAdmissionState(latestOwner, baselineOwnerId, originalFinalRequest, originalFinalContext), "invalid");
+  const admittedOwner = await waitOwner((value) => {
+    const state = receiverOwnerAdmissionState(value, baselineOwnerId, originalFinalRequest, originalFinalContext);
+    assert.notEqual(state, "invalid", "The saved owner response changed identity, source, context, or admission shape");
+    return state === "accepted";
+  }, 10_000, baselineOwnerId, ownerResponseDeadline);
+  assert.equal(admittedOwner.context.workflow, "retained_redaction");
+  assert.equal(admittedOwner.admission.accepted, true);
+  report.receiver_job_id = baselineOwnerId;
   report.checks.push("saved_scenario_context_and_receiver_admission");
 
   stage = "original-baseline-preparation";
@@ -743,15 +785,15 @@ try {
   await page.getByLabel("Prepared by", { exact: true }).fill("Installed receiver baseline verifier");
   await page.getByRole("button", { name: "Prepare baseline receiver", exact: true }).click();
   await waitOwner((owner) => owner.next_action?.kind === "review_replay" && owner.phases?.[0]?.review_ready === true);
-  const phase = latestOwner.phases.find((item) => item.phase === "baseline");
-  latestPreparationDigest = phase.preparation.preparation_digest;
+  const preparedBaseline = latestOwner.phases.find((item) => item.phase === "baseline");
+  latestPreparationDigest = preparedBaseline.preparation.preparation_digest;
   receiverStarted = true;
   report.receiver_preparation = {
-    phase: phase.phase,
-    policy_id: phase.policy_id,
+    phase: preparedBaseline.phase,
+    policy_id: preparedBaseline.policy_id,
     preparation_digest: latestPreparationDigest,
-    preflight_ready: phase.preparation.preflight?.status === "approval_required",
-    target_effects_started_before_review: phase.preparation.target_effects_started,
+    preflight_ready: preparedBaseline.preparation.preflight?.status === "approval_required",
+    target_effects_started_before_review: preparedBaseline.preparation.target_effects_started,
   };
   assert.equal(report.receiver_preparation.preflight_ready, true);
   assert.equal(report.receiver_preparation.target_effects_started_before_review, false);
@@ -767,11 +809,13 @@ try {
   report.execution_job_id = executionJobId;
 
   stage = "execute-approval";
-  await page.getByRole("checkbox", { name: "I approve this exact immutable job envelope once", exact: true }).check();
+  await page.getByRole("checkbox", { name: receiverApprovalAcknowledgementName }).check();
   await page.getByLabel("Operator identity for this job", { exact: true }).fill("Installed receiver baseline verifier");
   await page.getByRole("button", { name: "Approve and release job", exact: true }).click();
   await waitOwner((owner) => owner.phases?.[0]?.status === "completed");
-  const baseline = latestOwner.phases.find((item) => item.phase === "baseline");
+  stage = "baseline-result-binding";
+  const baseline = receiverCompletedPhase(latestOwner, "baseline");
+  assert.ok(baseline, "The refreshed baseline phase must include completed execution and preparation records");
   const result = baseline.result;
   assert.ok(result);
   assert.equal(baseline.execution_job.kind, "scenario.run");
@@ -780,13 +824,16 @@ try {
   assert.equal(result.phase, "baseline");
   assert.equal(result.run_id, baseline.execution_job.result_ref);
   assert.match(result.run_id, RUN_ID);
+  stage = "baseline-run-source";
   assert.equal(result.run?.mode, "execute");
-  assert.equal(result.run?.is_demo, false);
+  assert.equal(receiverRunIsNotDemo(result.run), true, "The finalized run must not be marked as a demo");
   assert.equal(result.run?.runner_profile_id, PROFILE);
   assert.equal(result.run?.plan?.autonomy, "off");
+  stage = "baseline-authenticated-observation";
   assert.equal(result.receiver_observation?.state, "verified");
   assert.equal(result.receiver_observation?.terminal?.decision?.decision, "accepted");
   assert.equal(result.receiver_observation?.terminal?.decision?.semantics?.record_count, 8);
+  stage = "baseline-cleanup";
   assert.equal(result.cleanup?.receiver, "verified_closed");
   assert.equal(result.cleanup?.run, "complete");
   assert.equal(baseline.cleanup?.receiver, "verified_closed");
@@ -812,15 +859,16 @@ try {
     receiver_cleanup: result.cleanup.receiver,
     result_digest: baseline.result_digest,
   };
+  stage = "baseline-retained-source-proof";
   assert.equal(report.baseline.scenario_id, savedSelection.scenario_id);
   assert.equal(report.baseline.receiver_terminal.authenticated, true);
   report.checks.push("native_execute_baseline_and_authenticated_receiver_terminal");
   originalEnvelope = latestOwner;
   phaseIndexes.original = 1;
   phaseEvidence.push({
-    owner_role: "original", owner_job_id: originalOwnerId, phase: "baseline", status: phase.status,
-    execution_state: phase.execution_job.state, observation_state: result.receiver_observation.state,
-    execution_job_id: executionJobId, preparation_digest: phase.preparation.preparation_digest,
+    owner_role: "original", owner_job_id: originalOwnerId, phase: "baseline", status: baseline.status,
+    execution_state: baseline.execution_job.state, observation_state: result.receiver_observation.state,
+    execution_job_id: executionJobId, preparation_digest: baseline.preparation.preparation_digest,
     run_id: result.run_id,
     artifact: result.artifact, decision: result.decision, terminal_decision: result.receiver_observation.terminal.decision.decision,
     terminal_authenticated: result.receiver_observation.terminal.decision.authenticated,
@@ -830,7 +878,7 @@ try {
     legitimate_use: null, cleanup: { receiver: result.cleanup.receiver, run: result.cleanup.run },
   });
   report.phase_evidence = phaseEvidence;
-  const baselineSessionId = phase.preparation.session?.receiver_session_id;
+  const baselineSessionId = baseline.preparation.session?.receiver_session_id;
   if (typeof baselineSessionId !== "string" || !/^[0-9a-f]{64}$/.test(baselineSessionId)) {
     throw new Error("Original baseline receiver session identity was invalid");
   }

@@ -176,7 +176,7 @@ test("laptop canvas and step details fit the viewport without losing the experim
     await expect(page.getByRole("heading", { name: "Endpoint control validation", level: 1 })).toBeVisible();
     await expect(page.locator(".graph-group-connections")).not.toHaveAttribute("open");
     await expect(page.locator(".graph-disclosure")).not.toContainText("steps shown");
-    await expect(page.locator(".graph-disclosure")).toContainText(/branches hidden.*Review run includes the whole experiment/);
+    await expect(page.locator(".graph-disclosure")).toContainText(/routes hidden.*Review run includes the whole experiment/);
     const canvas = await page.locator(".graph-canvas").boundingBox();
     expect(canvas?.y).toBeLessThan(360);
     expect(canvas?.height).toBeGreaterThan(350);

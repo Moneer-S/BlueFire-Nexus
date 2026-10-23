@@ -147,6 +147,7 @@ from .runner_receipt_validation import (
     _safe_receipt_path,
     discover_runner_receipts,
 )
+from .runner_transport_errors import transport_failure_reason
 from .runtime_proposals import (
     RuntimeProposalError,
     RuntimeProposals,
@@ -3113,7 +3114,11 @@ class Orchestrator:
                 execution_disposition="execute",
                 policy=decision.to_dict(),
                 receipts=new_discovered_receipts,
-                error={"code": "runner_transport_failed", "message": str(exc)},
+                error={
+                    "code": "runner_transport_failed",
+                    "message": str(exc),
+                    "transport_failure_reason": transport_failure_reason(exc),
+                },
                 **({"runner_task_id": runner_task_id} if runner_task_id is not None else {}),
             )
             return row, (record,), decision, new_discovered_receipts

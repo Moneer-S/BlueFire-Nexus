@@ -26,6 +26,7 @@ from bluefire.runner_client import (
     RunnerTransportError,
     SubprocessRustRunner,
     canonical_runner_inventory,
+    execution_task_identity,
     request_runner_task_cancel,
     runner_pending_result_path,
     runner_transport_identity,
@@ -340,6 +341,18 @@ class TaskAwareReceiptCancellationRunner(TaskAwareCancellationRunner):
         raise RunnerTaskCancelled("test process tree stopped after committed effect")
 
 
+class TaskAwareProofCancellationRunner(TaskAwareCancellationRunner):
+    def __init__(self, proof: Mapping[str, bool]) -> None:
+        super().__init__()
+        self.proof = dict(proof)
+
+    def execute_task(self, *args: Any, **kwargs: Any) -> Mapping[str, Any]:
+        try:
+            return super().execute_task(*args, **kwargs)
+        except RunnerTaskCancelled:
+            raise RunnerTaskCancelled("deterministic cancellation facts", **self.proof) from None
+
+
 class TaskAwareTimeoutRunner(RecordingRunner):
     def execute_task(
         self,
@@ -479,6 +492,26 @@ class DropFirstCancelResponseServer(AuthenticatedRunnerServer):
         if request.get("operation") == "cancel" and not self.dropped_cancel:
             self.dropped_cancel = True
             raise RunnerConnectionError("synthetic lost cancellation response")
+        return response
+
+
+class DropCancelledExecutionResponseServer(AuthenticatedRunnerServer):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.dropped = False
+
+    def _error_response(
+        self,
+        request: Mapping[str, Any],
+        enrollment: RunnerEnrollment,
+        code: str,
+        **kwargs: Any,
+    ) -> Mapping[str, Any]:
+        response = super()._error_response(request, enrollment, code, **kwargs)
+        if request.get("operation") == "execute" and code == "task_cancelled":
+            assert not self.dropped, "cancelled execution must not be dispatched again"
+            self.dropped = True
+            raise RunnerConnectionError("synthetic lost cancellation outcome")
         return response
 
 
@@ -873,6 +906,183 @@ def test_orchestrator_identity_dispatches_through_inventory_bound_authenticated_
     assert runner.calls == 1
     assert client.last_execution_identity == (task_id, request_hash)
     assert recovered["state"] == "completed"
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["known", "absent", "signature", "task", "unknown", "secret", "object", "extra", "health"],
+)
+def test_refused_transport_diagnostic_requires_exact_authenticated_finite_payload(
+    enrollment_root: Path, secret_provider: InMemorySecretProvider, mode: str
+) -> None:
+    from bluefire.runner_transport_errors import transport_failure_reason
+
+    enrollment = load_local_enrollment(enrollment_root, secret_provider=secret_provider)
+    request = _unsigned_request(enrollment, operation="health" if mode == "health" else "execute")
+    server = object.__new__(AuthenticatedRunnerServer)
+    response = dict(
+        server._error_response(
+            request,
+            enrollment,
+            "outcome_indeterminate",
+            failure_reason="windows_containment_unavailable",
+        )
+    )
+    if mode == "absent":
+        response["payload"] = {}
+    elif mode in {"unknown", "secret", "object", "extra", "health"}:
+        value = {
+            "unknown": "not_reviewed",
+            "secret": "PRIVATE_SYNTHETIC_SECRET_42",  # pragma: allowlist secret - synthetic sentinel
+            "object": {"private": "unreviewed"},
+        }.get(mode, "windows_containment_unavailable")
+        response["payload"] = {"transport_failure_reason": value}
+        if mode == "extra":
+            response["payload"]["unreviewed"] = "PRIVATE_SYNTHETIC_SECRET_42"
+    elif mode == "task":
+        response["task_id"] = "another-task"
+    response["response_hash"] = content_hash(response["payload"])
+    response.pop("authentication")
+    response = dict(wire._sign_response(enrollment, response))
+    if mode == "signature":
+        response["authentication"] = "sha256:" + "0" * 64
+    if mode in {"known", "absent"}:
+        with pytest.raises(RunnerRemoteError) as failure:
+            AuthenticatedRunnerClient._validated_response(response, request, enrollment)
+        assert failure.value.code == "outcome_indeterminate"
+        assert transport_failure_reason(failure.value) == (
+            "windows_containment_unavailable" if mode == "known" else "other_transport"
+        )
+    else:
+        with pytest.raises(RunnerAuthenticationError) as failure:
+            AuthenticatedRunnerClient._validated_response(response, request, enrollment)
+        assert transport_failure_reason(failure.value) == "other_transport"
+        assert "SECRET" not in str(failure.value)
+
+
+@pytest.mark.parametrize("failure_kind", ["diagnosed", "durable", "pending"])
+def test_finite_transport_diagnostic_does_not_override_reconciled_durable_success(
+    enrollment_root: Path,
+    secret_provider: InMemorySecretProvider,
+    tmp_path: Path,
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    failure_kind: str,
+) -> None:
+    from bluefire.runner_transport_errors import (
+        DiagnosedRunnerTransportError,
+        RunnerDurableResultExists,
+        RunnerPendingResultExists,
+    )
+
+    class DurableThenFailureRunner(RecordingRunner):
+        def execute_task(
+            self,
+            manifest: Mapping[str, Any],
+            profile: Mapping[str, Any],
+            *,
+            task_id: str,
+            cancel_event: threading.Event,
+            durable_result_path: str | Path,
+        ) -> Mapping[str, Any]:
+            self.calls += 1
+            destination = Path(durable_result_path)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(
+                canonical_json_bytes(_result(manifest, profile, call=self.calls))
+            )
+            if failure_kind == "durable":
+                raise RunnerDurableResultExists("PRIVATE_SYNTHETIC_SECRET_42")
+            if failure_kind == "pending":
+                raise RunnerPendingResultExists("PRIVATE_SYNTHETIC_SECRET_42")
+            raise DiagnosedRunnerTransportError(
+                "Runner watchdog failed before publishing a valid result",
+                transport_failure_reason="watchdog_failure",
+            )
+
+    runner = DurableThenFailureRunner()
+    with AuthenticatedRunnerServer(
+        enrollment_root, runner, tmp_path / "transport.sqlite3", secret_provider=secret_provider
+    ) as server:
+        client = _client(enrollment_root, server, secret_provider)
+        result = client.execute(manifest, profile)
+        task_id, request_hash = client.execution_identity(manifest, profile)
+        assert client.recover(task_id, request_hash)["state"] == "completed"
+    assert result["status"] == "success"
+    assert runner.calls == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows generated cancellation lease boundary")
+def test_authenticated_witness_lease_and_ready_keep_distinct_bound_task_identities(
+    enrollment_root: Path,
+    secret_provider: InMemorySecretProvider,
+    tmp_path: Path,
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+) -> None:
+    """Use real transport and lease setup, with fixture records and no native child."""
+    from types import SimpleNamespace
+
+    from bluefire.runner_watchdog import _cancellation_control_paths, _decode_cancellation_ready
+
+    action = "sandbox.execution.process-tree-cancellation-witness.v1"
+    witness_manifest = {**manifest, "action_id": action, "behavior_id": action, "params": {}}
+    transport_id = execution_task_identity(witness_manifest, profile)[0]
+    native_id = "execute-" + str(witness_manifest["request_hash"]).removeprefix("sha256:")
+    assert transport_id != native_id
+    observed = []
+
+    class GeneratedLeaseRunner(RecordingRunner):
+        def execute_task(
+            self,
+            manifest: Mapping[str, Any],
+            profile: Mapping[str, Any],
+            *,
+            task_id: str,
+            cancel_event: threading.Event,
+            durable_result_path: str | Path,
+        ) -> Mapping[str, Any]:
+            self.calls += 1
+            assert task_id == transport_id
+            lease = SubprocessRustRunner._prepare_cancellation_control(manifest, profile, task_id)
+            assert lease is not None
+            try:
+                assert lease.task_id == native_id
+                assert lease.task.path.name == str(manifest["request_hash"]).removeprefix("sha256:")
+                ready = {
+                    "schema_version": "bluefire.process-tree-cancellation-ready.v1",
+                    "task_id": native_id,
+                    "request_hash": manifest["request_hash"],
+                    "parent_process_id": 101,
+                    "descendant_process_id": 202,
+                }
+                payload = canonical_json_bytes(ready) + b"\n"
+                config = SimpleNamespace(task_id=task_id, manifest=manifest, profile=profile)
+                assert _cancellation_control_paths(config) == (lease.parent.path, lease.task.path)
+                assert _decode_cancellation_ready(config, payload) == ready
+                lease.task.create("ready.json", payload, maximum=1024)
+                observed.append((task_id, lease.task_id, lease.task.path))
+            finally:
+                cleaned = lease.cleanup()
+            assert cleaned is True
+            return _result(manifest, profile, call=self.calls)
+
+    runner = GeneratedLeaseRunner()
+    with AuthenticatedRunnerServer(
+        enrollment_root, runner, tmp_path / "transport.sqlite3", secret_provider=secret_provider
+    ) as server:
+        client = _client(enrollment_root, server, secret_provider)
+        result = client.execute_task(
+            witness_manifest,
+            profile,
+            task_id=transport_id,
+            cancel_event=threading.Event(),
+            durable_result_path=(tmp_path / "caller-result.json").resolve(),
+        )
+    assert result["status"] == "success" and runner.calls == 1
+    assert len(observed) == 1 and observed[0][:2] == (transport_id, native_id)
+    assert not observed[0][2].exists()
+    assert not observed[0][2].parent.exists()
 
 
 def test_second_live_server_for_same_ledger_is_refused(
@@ -1595,6 +1805,16 @@ def test_pre_effect_cancellation_during_slow_inventory_prevents_launch(
     assert cancellation["cancelled"] is True
     assert len(errors) == 1 and isinstance(errors[0], RunnerTaskCancelled)
     assert recovered["state"] == "cancelled"
+    assert recovered.get("cancellation_proof") is None
+    assert not any(
+        getattr(errors[0], field)
+        for field in (
+            "cooperative_requested",
+            "cooperative_acknowledged",
+            "forced_tree_termination",
+            "control_cleanup_verified",
+        )
+    )
 
 
 @contextmanager
@@ -1793,6 +2013,99 @@ def test_task_aware_cancellation_is_true_only_after_confirmed_runner_transition(
     assert recovered["error_code"] == "task_cancelled"
 
 
+@pytest.mark.parametrize("lost_response", [False, True])
+@pytest.mark.parametrize("task_interface", [False, True])
+@pytest.mark.parametrize("acknowledged", [False, True])
+def test_authenticated_cancellation_facts_survive_connection_loss_and_restart(
+    enrollment_root: Path,
+    secret_provider: InMemorySecretProvider,
+    tmp_path: Path,
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    lost_response: bool,
+    task_interface: bool,
+    acknowledged: bool,
+) -> None:
+    proof = {
+        "cooperative_requested": True,
+        "cooperative_acknowledged": acknowledged,
+        "forced_tree_termination": True,
+        "control_cleanup_verified": True,
+    }
+    runner = TaskAwareProofCancellationRunner(proof)
+    server_type = (
+        DropCancelledExecutionResponseServer if lost_response else AuthenticatedRunnerServer
+    )
+    state_path = tmp_path / "proof.sqlite3"
+    caller_path = (tmp_path / "caller-owned.json").resolve()
+    caller_path.write_bytes(b"caller-owned")
+    cancel_event = threading.Event()
+    outcomes: list[BaseException | Mapping[str, Any]] = []
+    with server_type(
+        enrollment_root, runner, state_path, secret_provider=secret_provider
+    ) as server:
+        client = _client(enrollment_root, server, secret_provider)
+        task_id, request_hash = client.execution_identity(manifest, profile)
+        generation = server.ledger_generation
+
+        def execute() -> None:
+            try:
+                outcomes.append(
+                    client.execute_task(
+                        manifest,
+                        profile,
+                        task_id=task_id,
+                        cancel_event=cancel_event,
+                        durable_result_path=caller_path,
+                    )
+                    if task_interface
+                    else client.execute(manifest, profile)
+                )
+            except BaseException as exc:
+                outcomes.append(exc)
+
+        execution = threading.Thread(target=execute, name="retained-cancellation-facts")
+        execution.start()
+        try:
+            assert runner.started.wait(timeout=15)
+            if task_interface:
+                cancel_event.set()
+            else:
+                cancelled = client.cancel(task_id, request_hash)
+                assert cancelled["state"] == "cancelled"
+                assert "cancellation_proof" not in cancelled
+            execution.join(timeout=15)
+            assert not execution.is_alive()
+            assert len(outcomes) == 1 and isinstance(outcomes[0], RunnerTaskCancelled)
+            assert {key: getattr(outcomes[0], key) for key in proof} == proof
+            recovered = client.recover(task_id, request_hash)
+            assert recovered["cancellation_proof"] == proof
+            assert recovered["state"] == "cancelled" and recovered["result"] is None
+            if lost_response:
+                assert server.dropped is True
+        finally:
+            cancel_event.set()
+            if runner.cancel_event is not None:
+                runner.cancel_event.set()
+            execution.join(timeout=15)
+    assert runner.calls == 1
+    assert caller_path.read_bytes() == b"caller-owned"
+    assert not any(
+        thread.name == f"bluefire-runner-cancel-{task_id[-12:]}" for thread in threading.enumerate()
+    )
+    replacement = RecordingRunner()
+    with AuthenticatedRunnerServer(
+        enrollment_root, replacement, state_path, secret_provider=secret_provider
+    ) as reopened:
+        assert reopened.ledger_generation == generation
+        client = _client(enrollment_root, reopened, secret_provider)
+        assert client.recover(task_id, request_hash)["cancellation_proof"] == proof
+        with pytest.raises(RunnerTaskCancelled) as duplicate:
+            client.execute(manifest, profile)
+        assert {key: getattr(duplicate.value, key) for key in proof} == proof
+    assert replacement.calls == 0
+
+
 def test_authenticated_client_execute_task_cancel_wins_without_redirect_or_thread_leak(
     enrollment_root: Path,
     secret_provider: InMemorySecretProvider,
@@ -1973,6 +2286,7 @@ def test_confirmed_runner_timeout_records_terminal_state_and_maps_typed_error(
     assert runner.calls == 1
     assert recovered["state"] == "timed_out"
     assert recovered["error_code"] == "task_timed_out"
+    assert recovered.get("cancellation_proof") is None
 
 
 def test_confirmed_cancellation_with_committed_receipt_requires_cleanup_recovery(
@@ -2015,6 +2329,7 @@ def test_confirmed_cancellation_with_committed_receipt_requires_cleanup_recovery
     assert recovered["state"] == "recovery_required"
     assert recovered["receipt_ids"] == [runner.receipt_id]
     assert recovered["cleanup_required"] is True
+    assert recovered.get("cancellation_proof") is None
 
 
 def test_restart_cancel_reaches_live_durable_watchdog_and_waits_for_confirmation(
@@ -2101,6 +2416,12 @@ def test_restart_cancel_reaches_live_durable_watchdog_and_waits_for_confirmation
     assert cancellation["state"] == "cancelled"
     assert cancellation["cancelled"] is True
     assert recovered["state"] == "cancelled"
+    assert recovered["cancellation_proof"] == {
+        "cooperative_requested": False,
+        "cooperative_acknowledged": False,
+        "forced_tree_termination": True,
+        "control_cleanup_verified": True,
+    }
     assert not control_root.exists()
 
 
@@ -2616,12 +2937,31 @@ def test_late_recovery_receipt_overrides_a_committed_terminal_state(
         )
 
         first = server._reconcile_execute_task(task_id)
+        with sqlite3.connect(state_path) as database:
+            saved_proof = database.execute(
+                "SELECT cancellation_proof_json FROM transport_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()[0]
+        database.close()
+        assert json.loads(saved_proof) == {
+            "cooperative_requested": False,
+            "cooperative_acknowledged": False,
+            "forced_tree_termination": True,
+            "control_cleanup_verified": True,
+        }
         recovered = client.recover(task_id, request_hash)
+        with sqlite3.connect(state_path) as database:
+            assert database.execute(
+                "SELECT cancellation_proof_json FROM transport_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone() == (None,)
+        database.close()
 
     assert first["state"] == "cancelled"
     assert recovered["state"] == "recovery_required"
     assert recovered["receipt_ids"] == [receipt_id]
     assert recovered["cleanup_required"] is True
+    assert recovered.get("cancellation_proof") is None
 
 
 def test_terminal_reconciliation_removes_an_exact_late_cancel_marker(

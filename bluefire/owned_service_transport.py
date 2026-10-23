@@ -200,9 +200,7 @@ def execute_owned_service_request(
     except remote_error as exc:
         code = getattr(exc, "code", None)
         if code == "task_cancelled":
-            raise cancelled_error(
-                "Runner task was cancelled after its process tree stopped."
-            ) from exc
+            return cast(Mapping[str, Any], client._recovered_execution(task_id, request_hash))
         if code == "task_timed_out":
             raise timed_out_error("Runner task timed out after its process tree stopped.") from exc
         if code != "duplicate_request":
