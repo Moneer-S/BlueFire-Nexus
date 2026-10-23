@@ -33,10 +33,12 @@ vice versa. The `macosx_11_0` wheel tag is a compatibility tag, not evidence tha
 11 or newer version was validated. Hosted native smoke coverage is on Intel macOS 15 and Apple
 Silicon macOS 26; check requirements for the particular method and local OS.
 
-Create a `bluefire-v3` directory, put `SHA256SUMS` there when provided, and place the downloaded
-wheel intact in a `wheels` subdirectory. For an unpublished CI candidate, the artifact's wheel
-is the source file; the release `SHA256SUMS` may not yet be available. Open a terminal in
-`bluefire-v3` and run the commands below.
+Create a `bluefire-v3` directory and put `SHA256SUMS` there when provided. A GitHub release
+downloads the wheel directly. A CI artifact downloads as a ZIP: extract that archive, locate
+the matching `.whl` inside its nested folders, and place the intact wheel in a `wheels`
+subdirectory. Do not extract the `.whl` itself. For an unpublished CI candidate, the release
+`SHA256SUMS` may not yet be available. Open a terminal in `bluefire-v3` and run the commands
+below.
 
 ## Install and open
 

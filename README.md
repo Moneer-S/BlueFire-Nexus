@@ -37,7 +37,7 @@ BlueFire Nexus 3.0.0-rc2 is a prerelease, not a stable release.
 
 Download the matching wheel and `SHA256SUMS` from the [3.0.0-rc2 GitHub release](https://github.com/Moneer-S/BlueFire-Nexus/releases/tag/v3.0.0-rc2) when its assets are available. Until then, the [installation guide](docs/INSTALLATION.md) explains how to obtain an unpublished candidate from a successful CI run for its exact source commit. The package includes the application, browser interface, examples, and native runner. You need 64-bit Python 3.10 or newer; you do not need to build the frontend.
 
-Create a `bluefire-v3` folder and put the intact wheel in a `wheels` subfolder. For release assets, also put `SHA256SUMS` in `bluefire-v3` and verify against the row with the exact wheel filename; these unsigned checksums detect a mismatch but do not attest publisher identity. Run the commands for your platform from `bluefire-v3`.
+Create a `bluefire-v3` folder and put the intact wheel in a `wheels` subfolder. For a CI artifact, first extract the downloaded ZIP and locate the `.whl` file inside; do not extract the wheel itself. For release assets, also put `SHA256SUMS` in `bluefire-v3` and verify against the row with the exact wheel filename; these unsigned checksums detect a mismatch but do not attest publisher identity. Run the commands for your platform from `bluefire-v3`.
 
 <details>
 <summary><strong>Windows x86-64</strong></summary>
