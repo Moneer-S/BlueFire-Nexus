@@ -14,7 +14,6 @@ import os
 import platform
 import re
 import shutil
-import signal
 import stat
 import subprocess
 import sys
@@ -312,20 +311,16 @@ def settle_owned_jobs(service, *, timeout: float = 20) -> bool:
 
 
 def stop_group(process: subprocess.Popen[bytes]) -> bool:
-    # The driver has not been reaped: its original PID still pins this group.
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(process.pid, sig)
-        except ProcessLookupError:
-            process.wait(timeout=10)
-            return True
-        time.sleep(0.2)
-    process.wait(timeout=10)
-    try:
-        os.killpg(process.pid, 0)
-    except ProcessLookupError:
-        return True
-    return False
+    from bluefire.runner_lifecycle import (
+        _LaunchProcess,
+        _terminate_darwin_contained_launch,
+    )
+
+    # Both callers own an unreaped child launched with start_new_session=True.
+    # Reuse the bounded Darwin drain: EPERM alone never establishes absence.
+    return _terminate_darwin_contained_launch(
+        _LaunchProcess(process=process, containment=process.pid)
+    )
 
 
 def stop_runner(service) -> bool:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import json
 import re
@@ -354,30 +355,148 @@ def test_supervisor_does_not_claim_termination_when_group_stop_raises(tmp_path) 
     assert outcome["worker_stop_error_type"] == "TimeoutExpired"
 
 
-def test_group_stop_signals_before_reaping_original_child(monkeypatch) -> None:
+@pytest.fixture
+def darwin_group_stop(monkeypatch):
+    from bluefire import runner_lifecycle
+
     events = []
+    clock = Clock()
 
     class Child(SupervisedChild):
         def wait(self, *, timeout):
             events.append(("wait", timeout))
             self.returncode = 0
+            return self.returncode
 
     def signal_group(pid, signum):
         assert pid == Child.pid
+        assert child.returncode is None
         events.append(("signal", signum))
-        if signum == 0:
-            raise ProcessLookupError
 
-    monkeypatch.setattr(verifier.os, "killpg", signal_group, raising=False)
-    monkeypatch.setattr(verifier.signal, "SIGKILL", 9, raising=False)
-    monkeypatch.setattr(verifier.time, "sleep", lambda _seconds: None)
-    assert verifier.stop_group(Child())
+    def inventory(*_identity):
+        assert child.returncode is None
+        events.append(("inventory", Child.pid))
+        return {Child.pid}
+
+    child = Child()
+    monkeypatch.setattr(runner_lifecycle, "_GET_PROCESS_GROUP_ID", lambda _pid: Child.pid)
+    monkeypatch.setattr(runner_lifecycle, "_GET_SESSION_ID", lambda _pid: Child.pid)
+    monkeypatch.setattr(runner_lifecycle, "_darwin_child_exited_without_reap", lambda _pid: True)
+    monkeypatch.setattr(runner_lifecycle, "_darwin_private_process_group_members", inventory)
+    monkeypatch.setattr(runner_lifecycle, "_darwin_private_session_members", inventory)
+    monkeypatch.setattr(runner_lifecycle, "_kill_process_group", signal_group)
+    monkeypatch.setattr(runner_lifecycle.time, "monotonic", clock)
+    monkeypatch.setattr(runner_lifecycle.time, "sleep", clock.sleep)
+    return runner_lifecycle, child, events, clock
+
+
+def test_group_stop_reaps_only_after_two_empty_inventories(darwin_group_stop) -> None:
+    _lifecycle, child, events, _clock = darwin_group_stop
+    assert verifier.stop_group(child)
     assert events == [
-        ("signal", verifier.signal.SIGTERM),
-        ("signal", 9),
-        ("wait", 10),
-        ("signal", 0),
+        ("inventory", child.pid),
+        ("inventory", child.pid),
+        ("inventory", child.pid),
+        ("inventory", child.pid),
+        ("wait", 5.0),
     ]
+    assert child.returncode == 0
+    before = list(events)
+    assert verifier.stop_group(child) is False
+    assert events == before
+
+
+def test_group_stop_proves_absence_after_permission_race(monkeypatch, darwin_group_stop) -> None:
+    lifecycle, child, events, _clock = darwin_group_stop
+    observations = iter((False, True, True))
+    monkeypatch.setattr(
+        lifecycle, "_darwin_child_exited_without_reap", lambda _pid: next(observations)
+    )
+
+    def denied_signal(pid, signum):
+        assert pid == child.pid and child.returncode is None
+        events.append(("signal", signum))
+        raise PermissionError(errno.EPERM, "No live group member")
+
+    monkeypatch.setattr(lifecycle, "_kill_process_group", denied_signal)
+    assert verifier.stop_group(child)
+    assert events == [
+        ("inventory", child.pid),
+        ("inventory", child.pid),
+        ("signal", int(lifecycle.signal.SIGTERM)),
+        ("inventory", child.pid),
+        ("inventory", child.pid),
+        ("inventory", child.pid),
+        ("inventory", child.pid),
+        ("wait", 5.0),
+    ]
+
+
+@pytest.mark.parametrize(
+    "inventory_name",
+    ["_darwin_private_process_group_members", "_darwin_private_session_members"],
+)
+@pytest.mark.parametrize("inventory_unknown", [False, True])
+def test_group_stop_never_accepts_live_or_unknown_members(
+    monkeypatch, darwin_group_stop, inventory_name, inventory_unknown
+) -> None:
+    lifecycle, child, events, clock = darwin_group_stop
+    members = None if inventory_unknown else {child.pid, child.pid + 1}
+    monkeypatch.setattr(lifecycle, inventory_name, lambda *_identity: members)
+
+    def denied_signal(pid, signum):
+        assert pid == child.pid and child.returncode is None
+        events.append(("signal", signum))
+        raise PermissionError(errno.EPERM, "Group signalling unavailable")
+
+    monkeypatch.setattr(lifecycle, "_kill_process_group", denied_signal)
+    assert verifier.stop_group(child) is False
+    assert child.returncode is None
+    assert not any(event[0] == "wait" for event in events)
+    assert [event for event in events if event[0] == "signal"] == [
+        ("signal", int(lifecycle.signal.SIGTERM)),
+        ("signal", int(getattr(lifecycle.signal, "SIGKILL", 9))),
+    ]
+    assert 6.0 <= clock.now < 6.1
+
+
+@pytest.mark.parametrize("identity_name", ["_GET_PROCESS_GROUP_ID", "_GET_SESSION_ID"])
+def test_group_stop_rejects_live_child_identity_mismatch(
+    monkeypatch, darwin_group_stop, identity_name
+) -> None:
+    lifecycle, child, events, clock = darwin_group_stop
+    monkeypatch.setattr(lifecycle, "_darwin_child_exited_without_reap", lambda _pid: False)
+    monkeypatch.setattr(lifecycle, identity_name, lambda _pid: child.pid + 1)
+    assert verifier.stop_group(child) is False
+    assert events == []
+    assert clock.now == 0.0
+    assert child.returncode is None
+
+
+def test_group_stop_rejects_lost_child_custody(monkeypatch, darwin_group_stop) -> None:
+    lifecycle, child, events, _clock = darwin_group_stop
+
+    def no_child(_pid):
+        raise ChildProcessError
+
+    monkeypatch.setattr(lifecycle, "_darwin_child_exited_without_reap", no_child)
+    assert verifier.stop_group(child) is False
+    assert events == []
+    assert child.returncode is None
+
+
+def test_group_stop_wait_failure_remains_unverified(monkeypatch, darwin_group_stop) -> None:
+    _lifecycle, child, events, _clock = darwin_group_stop
+
+    def wait_timeout(*, timeout):
+        events.append(("wait", timeout))
+        raise subprocess.TimeoutExpired("owned child", timeout)
+
+    monkeypatch.setattr(child, "wait", wait_timeout)
+    assert verifier.stop_group(child) is False
+    assert child.returncode is None
+    assert events[-1] == ("wait", 5.0)
+    assert not any(event[0] == "signal" for event in events)
 
 
 def worker_result():
