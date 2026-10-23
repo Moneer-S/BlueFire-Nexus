@@ -445,6 +445,7 @@ td .badge { margin-left: 6px; }
 .inspector-body .field + .field { margin-top: 10px; }
 .check-row { display: flex !important; align-items: flex-start; gap: 8px; color: var(--muted-strong); font-size: 0.65rem; line-height: 1.4; }
 .check-row input { margin-top: 1px; }
+.run-config .check-row > span { display: grid; gap: 3px; min-width: 0; }
 
 .builder-page.builder-focus { position: fixed; z-index: 100; inset: 0; display: block; padding: 12px; overflow: hidden; background: var(--ink-950); }
 .builder-page.builder-focus > :not(.graph-review-editor) { display: none; }

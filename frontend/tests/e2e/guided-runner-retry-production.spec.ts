@@ -131,3 +131,42 @@ for (const viewport of viewports) {
     writeFileSync(join(output, `runner-retry-${viewport.width}-summary.json`), `${JSON.stringify({ proof: "synthetic-production-bundle-ui-only", real_service: false, viewport, runnerReads: state.runnerReads, effects: state.effects, unexpected: state.unexpected, sockets: state.sockets, pageErrors: state.pageErrors }, null, 2)}\n`, { flag: "wx" });
   });
 }
+
+for (const viewport of [{ width: 1366, height: 768 }, { width: 1024, height: 768 }]) {
+  test(`run setup observation checkbox separates its description at ${viewport.width}px`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const { state, guide } = await fixture(page);
+    await expect(guide.getByText("Local service unavailable", { exact: true })).toBeVisible();
+    const row = page.getByRole("region", { name: "Required observations" }).locator(".check-row");
+    const checkbox = row.getByRole("checkbox", { name: /^Collection contents and redaction/ });
+    await row.scrollIntoViewIfNeeded();
+    await page.evaluate(async () => { await document.fonts.ready; });
+    await expect(checkbox).toBeEnabled();
+    await expect.poll(async () => row.evaluate(node => {
+      const bounds = node.getBoundingClientRect();
+      const title = node.querySelector("strong")!.getBoundingClientRect();
+      const description = node.querySelector("small")!.getBoundingClientRect();
+      const input = node.querySelector("input")!;
+      const control = input.getBoundingClientRect();
+      const inside = (rect: DOMRect) => rect.width > 0 && rect.height > 0 && rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1;
+      return {
+        separated: description.top >= title.bottom + 2,
+        textContained: inside(title) && inside(description),
+        checkboxReachable: control.width > 0 && control.height > 0 && control.top >= 0 && control.bottom <= innerHeight && document.elementFromPoint(control.left + control.width / 2, control.top + control.height / 2) === input,
+      };
+    })).toEqual({ separated: true, textContained: true, checkboxReachable: true });
+    const initialChecked = await checkbox.isChecked();
+    await checkbox.focus();
+    await expect(checkbox).toBeFocused();
+    await page.keyboard.press("Space");
+    await expect(checkbox).toBeChecked({ checked: !initialChecked });
+    await page.keyboard.press("Space");
+    await expect(checkbox).toBeChecked({ checked: initialChecked });
+    const screenshot = join(output, `run-setup-observations-${viewport.width}.png`);
+    if (existsSync(screenshot)) throw new Error("The run setup observation screenshot already exists.");
+    await page.screenshot({ path: screenshot, fullPage: false, animations: "disabled" });
+    expect(state.runnerReads).toEqual([`GET /api/v1/runner?profile_id=${profileId}`]);
+    expect(state.effects).toEqual([]);
+    expect({ unexpected: state.unexpected, sockets: state.sockets, pageErrors: state.pageErrors }).toEqual({ unexpected: 0, sockets: 0, pageErrors: 0 });
+  });
+}
