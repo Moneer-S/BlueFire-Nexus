@@ -276,6 +276,8 @@ function ComparisonWorkspace() {
   if (runsQuery.isError) return <ErrorState error={runsQuery.error} retry={() => runsQuery.refetch()} />;
   if (catalogQuery.isError) return <ErrorState error={catalogQuery.error} retry={() => catalogQuery.refetch()} />;
   const availableRuns = runsQuery.data.runs.filter(run => runIdentityCounts.get(run.run_id) === 1);
+  const savedRunNames = new Map(availableRuns.map(run => [run.run_id, runLabel(run)]));
+  const savedRunName = (runId: string) => savedRunNames.get(runId) ?? (runIdentityCounts.has(runId) ? "Ambiguous run record" : "Run unavailable");
   const runs = availableRuns.filter((run) => `${run.run_id} ${runLabel(run)} ${run.objective ?? ""} ${run.scenario_id ?? ""}`.toLowerCase().includes(search.toLowerCase())); const sourceSteps = source?.steps ?? []; const selectedSwapBehavior = sourceSteps.find((step) => step.step_id === swapStep)?.behavior_id; const sourceBehavior = catalogQuery.data.behaviors.find((item) => item.id === selectedSwapBehavior); const compatible = catalogQuery.data.behaviors.filter((candidate) => sourceBehavior && candidate.id !== sourceBehavior.id && JSON.stringify(candidate.inputs.map((item) => [item.type, item.required, item.multiple])) === JSON.stringify(sourceBehavior.inputs.map((item) => [item.type, item.required, item.multiple])) && JSON.stringify(candidate.outputs.map((item) => [item.type, item.multiple])) === JSON.stringify(sourceBehavior.outputs.map((item) => [item.type, item.multiple])));
   const execute = source?.mode === "execute"; const reviewReady = executeReviewReady(replayPreflight) && Boolean(preparation) && variantReady;
   const unavailableRuns = selected.filter(id => runIdentityCounts.get(id) !== 1);
@@ -298,7 +300,20 @@ function ComparisonWorkspace() {
   const detectorEvaluationRunIds = loadedSnapshot?.comparison.run_ids ?? selected;
   return <div className="page compare-page"><PageHeader title="Compare runs" actions={<><Link className="button button-ghost button-medium" to="/compare?receiver=1">Test a lab receiver control</Link><Link className="button button-ghost button-medium" to="/file-access">Test effective file access</Link><Button variant="secondary" onClick={() => runsQuery.refetch()}><RotateCcw/>Refresh history</Button></>} />
     {!DEMO_MODE ? <Panel className="saved-comparisons-panel"><PanelHeader title="Saved comparisons" actions={<IconButton label="Reload saved comparisons" onClick={() => { void savedComparisonsQuery.refetch(); if (snapshotId) void savedSnapshotQuery.refetch(); }} disabled={savedComparisonsQuery.isFetching || savedSnapshotQuery.isFetching}><RotateCcw aria-hidden="true"/></IconButton>} />
-      {savedComparisonsQuery.isError ? <p className="workspace-note">Saved comparison history is unavailable.</p> : savedComparisonsQuery.isPending ? <LoadingState label="Loading saved comparisons"/> : savedComparisonsQuery.data.snapshots.length ? <ul className="saved-comparisons-list">{savedComparisonsQuery.data.snapshots.map((item) => <li key={item.snapshot_id}><button className="saved-comparison-link" type="button" aria-label={`Open saved comparison ${item.snapshot_id}`} aria-current={snapshotId === item.snapshot_id ? "page" : undefined} onClick={() => openSavedSnapshot(item)}><span><strong>{formatDate(item.created_at)}</strong><small>{item.run_ids.length} runs · baseline {shortId(item.baseline_run_id)}</small></span><code>{shortDigest(item.digest)}</code></button></li>)}</ul> : <p className="workspace-note">No saved comparisons yet.</p>}
+      {savedComparisonsQuery.isError ? <p className="workspace-note">Saved comparison history is unavailable.</p> : savedComparisonsQuery.isPending ? <LoadingState label="Loading saved comparisons"/> : savedComparisonsQuery.data.snapshots.length ? <ul className="saved-comparisons-list">{savedComparisonsQuery.data.snapshots.map((item) => {
+        const labels = item.run_ids.map((runId, index) => `${runId === item.baseline_run_id ? "Baseline" : `Compared run ${index}`}: ${savedRunName(runId)}`);
+        return <li key={item.snapshot_id}>
+          <button className="saved-comparison-link" type="button" data-snapshot-id={item.snapshot_id} aria-label={`Open saved comparison. ${labels.join(". ")}. Saved ${formatDate(item.created_at)}`} aria-current={snapshotId === item.snapshot_id ? "page" : undefined} onClick={() => openSavedSnapshot(item)}>
+            <span>{labels.map((label, index) => <strong key={index}>{label}</strong>)}<small>{formatDate(item.created_at)} · {item.run_ids.length} runs</small></span>
+          </button>
+          <details className="saved-comparison-details"><summary>Record details</summary><dl>
+            <dt>Snapshot ID</dt><dd><code>{item.snapshot_id}</code></dd>
+            <dt>Baseline run ID</dt><dd><code>{item.baseline_run_id}</code></dd>
+            <dt>Recorded run order</dt><dd><ol>{item.run_ids.map((runId, index) => <li key={index}><code>{runId}</code></li>)}</ol></dd>
+            <dt>Digest</dt><dd><code>{item.digest}</code></dd>
+          </dl></details>
+        </li>;
+      })}</ul> : <p className="workspace-note">No saved comparisons yet.</p>}
       {snapshotId && savedSnapshotQuery.isError ? <ErrorState title="Saved comparison unavailable" error={savedSnapshotQuery.error} retry={() => void savedSnapshotQuery.refetch()} /> : null}
       {snapshotId && savedSnapshotQuery.isPending ? <LoadingState label="Opening saved comparison"/> : null}
     </Panel> : null}

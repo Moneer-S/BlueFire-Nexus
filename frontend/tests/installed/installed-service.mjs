@@ -910,7 +910,7 @@ try {
   report.objective_continuity.comparison_snapshot_id = report.comparison_snapshot_id;
   report.objective_continuity.comparison_run_ids = [...savedComparison.comparison.run_ids];
   await page.goto(`${origin}/#/compare`);
-  await page.getByRole("button", { name: `Open saved comparison ${report.comparison_snapshot_id}`, exact: true }).click();
+  await page.locator(`button[data-snapshot-id=${JSON.stringify(report.comparison_snapshot_id)}]`).click();
   await page.getByRole("region", { name: "Comparison results", exact: true }).waitFor();
   assert.match(new URL(page.url()).hash, new RegExp(`snapshot=${report.comparison_snapshot_id}`));
   const reopenedComparison = await api(`/comparison-snapshots/${report.comparison_snapshot_id}`);
