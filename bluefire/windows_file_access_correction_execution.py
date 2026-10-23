@@ -372,15 +372,17 @@ class WindowsCorrectionRuntime:
             consume_identity: dict[str, Any],
         ) -> managed_session.PersistedManagedCorrectionReady:
             nonlocal allowance
+            active_descriptor = descriptor
+            if active_descriptor is None:
+                raise wire.NativeWireError("Native reader wire refused")
             wire._require(
                 allowance is None
-                and descriptor is not None
                 and packet_bytes == packet._raw
                 and consume_identity
                 == {
                     "task_id": original["task_id"],
                     "transport_request_hash": original["transport_request_hash"],
-                    "session_nonce": descriptor["session_nonce"],
+                    "session_nonce": active_descriptor["session_nonce"],
                     "packet_digest": content_hash(wire._document(packet._raw)),
                     "ready_digest": content_hash(wire._document(ready_bytes)),
                     "ack_nonce": consume_identity.get("ack_nonce"),
@@ -412,7 +414,7 @@ class WindowsCorrectionRuntime:
                 original["task_id"],
                 original["transport_request_hash"],
                 binding,
-                session_nonce=descriptor["session_nonce"],
+                session_nonce=active_descriptor["session_nonce"],
                 ack_nonce=str(consume_identity["ack_nonce"]),
                 packet=packet_bytes,
                 ready=ready_bytes,
@@ -494,14 +496,17 @@ class WindowsCorrectionRuntime:
         # Packet and Ready are the durable proof that the original service
         # persisted consumption before it acknowledged the watchdog. Missing
         # stages are never reconstructed from the remote result.
-        wire._require(trail.packet_bytes is not None and trail.ready_bytes is not None)
+        packet_bytes = trail.packet_bytes
+        ready_bytes = trail.ready_bytes
+        if packet_bytes is None or ready_bytes is None:
+            raise wire.NativeWireError("Native reader wire refused")
         consume = managed_ready_store.load_persisted_managed_correction_ready(
             self.store,
             original["task_id"],
             original["transport_request_hash"],
             binding,
-            packet=trail.packet_bytes,
-            ready=trail.ready_bytes,
+            packet=packet_bytes,
+            ready=ready_bytes,
             clock=self._clock(),
         ).document()
         with self.store._connection() as connection:

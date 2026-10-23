@@ -152,7 +152,11 @@ def validate_managed_result(
     retained = wire.validate_correction_retained_packet(original, packet)
     wire.validate_correction_ready(retained, ready)
     actual_returncode = row.get("actual_returncode")
-    session._require(type(actual_returncode) is int and actual_returncode in (0, 4))
+    if type(actual_returncode) is not int:
+        raise session.ManagedCorrectionSessionError(
+            "Managed Windows correction session is invalid."
+        )
+    session._require(actual_returncode in (0, 4))
     wire.validate_correction_terminal(
         original,
         retained,
@@ -251,9 +255,15 @@ def validate_runner_result(
     expected_session_nonce: str | None = None,
 ) -> AuthenticatedManagedCorrectionResult:
     output = result.get("output")
-    session._require(isinstance(output, dict) and set(output) == {"windows_correction"})
+    if not isinstance(output, dict) or set(output) != {"windows_correction"}:
+        raise session.ManagedCorrectionSessionError(
+            "Managed Windows correction session is invalid."
+        )
     managed = output.get("windows_correction")
-    session._require(isinstance(managed, dict))
+    if not isinstance(managed, dict):
+        raise session.ManagedCorrectionSessionError(
+            "Managed Windows correction session is invalid."
+        )
     return validate_managed_result(
         managed,
         manifest,

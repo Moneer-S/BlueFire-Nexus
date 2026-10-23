@@ -18,7 +18,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, BinaryIO, Mapping
+from typing import IO, Any, Mapping
 
 from .execution_contracts import execution_task_identity
 from .util import canonical_json_bytes, content_hash
@@ -209,7 +209,9 @@ def validate_descriptor(
         and _DIGEST.fullmatch(str(row.get("target_descriptor_sha256"))) is not None
     )
     packet_issued_at_ms = row.get("packet_issued_at_ms")
-    _require(type(packet_issued_at_ms) is int and 0 < packet_issued_at_ms < 253_402_300_800_000)
+    if type(packet_issued_at_ms) is not int:
+        raise ManagedCorrectionSessionError("Managed Windows correction session is invalid.")
+    _require(0 < packet_issued_at_ms < 253_402_300_800_000)
     setup_record = _public_bytes(row.get("setup_record_b64"))
     setup_receipt = _public_bytes(row.get("setup_receipt_b64"))
     packet = _public_bytes(row.get("packet_b64"))
@@ -235,9 +237,10 @@ def validate_descriptor(
     expires_at_ms = _milliseconds(wire._time(manifest["expires_at"]))
     remaining_ms = packet_document.get("remaining_ms")
     now_ms = time.time_ns() // 1_000_000
+    if type(remaining_ms) is not int:
+        raise ManagedCorrectionSessionError("Managed Windows correction session is invalid.")
     _require(
-        type(remaining_ms) is int
-        and 0 < remaining_ms <= 5_000
+        0 < remaining_ms <= 5_000
         and requested_at_ms <= packet_issued_at_ms < expires_at_ms
         and (not require_live or packet_issued_at_ms <= now_ms < expires_at_ms)
     )
@@ -379,7 +382,7 @@ def persisted_consume_digest(value: Mapping[str, Any]) -> str:
 
 
 def _frame_authentication(key: bytes | bytearray, unsigned: Mapping[str, Any]) -> str:
-    _require(type(key) in {bytes, bytearray} and len(key) == 32)
+    _require((type(key) is bytes or type(key) is bytearray) and len(key) == 32)
     return (
         "sha256:"
         + hmac.new(bytes(key), canonical_json_bytes(dict(unsigned)), hashlib.sha256).hexdigest()
@@ -423,9 +426,9 @@ def decode_frame(raw: bytes, *, expected_kind: str, key: bytes | bytearray) -> d
 
 
 def write_frame(
-    stream: BinaryIO, kind: str, payload: Mapping[str, Any], key: bytes | bytearray
+    stream: IO[bytes], kind: str, payload: Mapping[str, Any], key: bytes | bytearray
 ) -> None:
-    data = memoryview(encode_frame(kind, payload, key))
+    data = encode_frame(kind, payload, key)
     while data:
         count = stream.write(data)
         _require(type(count) is int and 0 < count <= len(data))
@@ -433,7 +436,7 @@ def write_frame(
     stream.flush()
 
 
-def read_frame(stream: BinaryIO, *, expected_kind: str, key: bytes | bytearray) -> dict[str, Any]:
+def read_frame(stream: IO[bytes], *, expected_kind: str, key: bytes | bytearray) -> dict[str, Any]:
     def exact(length: int) -> bytes:
         data = bytearray()
         while len(data) < length:
@@ -691,12 +694,12 @@ class ManagedCorrectionControl:
                 and time.monotonic() < self.deadline
             )
         with self._lock:
-            _require(
-                self._ack is not None
-                and not cancel_event.is_set()
-                and not self._closed_event.is_set()
-            )
-            return dict(self._ack)
+            acknowledgement = self._ack
+            if acknowledgement is None or cancel_event.is_set() or self._closed_event.is_set():
+                raise ManagedCorrectionSessionError(
+                    "Managed Windows correction session is invalid."
+                )
+            return dict(acknowledgement)
 
     def mark_delivered(self, acknowledgement: Mapping[str, Any]) -> None:
         row = dict(acknowledgement)

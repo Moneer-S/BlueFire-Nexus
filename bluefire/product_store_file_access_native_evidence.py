@@ -921,7 +921,7 @@ def _cleanup_load(
             terminal_digest=content_hash(
                 wire._document(cast(bytes, trail.terminal_bytes), wire.TERMINAL_MAX)
             ),
-            actual_returncode=trail.actual_returncode,
+            actual_returncode=cast(int, trail.actual_returncode),
             cleanup_receipt_digest=content_hash(proof),
             consume_receipt=cast(dict, consume),
         )

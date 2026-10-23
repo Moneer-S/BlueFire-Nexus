@@ -2148,11 +2148,12 @@ class SubprocessRustRunner:
             receiver_environment.clear()
             if managed_descriptor is not None:
                 assert windows_correction_control is not None and managed_key is not None
+                managed_watchdog = watchdog
 
                 def bridge() -> None:
                     try:
                         self._bridge_managed_correction(
-                            watchdog,
+                            managed_watchdog,
                             managed_descriptor,
                             windows_correction_control,
                             managed_key,
@@ -2161,7 +2162,7 @@ class SubprocessRustRunner:
                     except BaseException as exc:
                         bridge_failures.append(exc)
                         windows_correction_control.fail("watchdog_handoff_failed")
-                        for stream in (watchdog.stdin, watchdog.stdout):
+                        for stream in (managed_watchdog.stdin, managed_watchdog.stdout):
                             if stream is not None:
                                 try:
                                     stream.close()
