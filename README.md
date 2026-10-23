@@ -27,10 +27,6 @@ Connect behavior steps into an experiment, inspect the recorded outcome, then ca
 
 Watch the [AI-Off synthetic simulation workflow](docs/assets/screenshots/desktop-workflow.webm). These desktop screenshots and the recording show generated sample data in a CI-qualified development build with the same packaged interface as RC2. They demonstrate simulation and saved-work interactions, not live model inference or native execution.
 
-![Walkthrough of an experiment and its saved results](docs/assets/screenshots/walkthrough.gif)
-
-*Reviewing an experiment, a recorded collection observation, and saved run results using synthetic lab data.*
-
 ## Get started
 
 BlueFire Nexus 3.0.0-rc2 is a prerelease, not a stable release.
@@ -113,11 +109,11 @@ Prevention, detection, execution success, and legitimate-use outcomes are separa
 
 Use **Detection Lab** to bring in a run as the evidence source, write a rule, and inspect matching records alongside examples that should not match. Save revised rules without losing earlier versions or evaluation results. **Compare** keeps run comparisons tied to selected runs, compares detector evaluations separately, and lets you revisit saved comparison snapshots. Download a report for a selected comparison.
 
-![A saved detection rule open in Detection Lab](docs/assets/screenshots/detection-lab.png)
+![A run-linked candidate and its synthetic source context in Detection Lab](docs/assets/screenshots/detection-lab.png)
 
 Repeat the experiment or change a method, then open **Compare** to see the differences between runs. Compare rule evaluations separately to see which records each revision matched. Export the results when you need to share or investigate them further.
 
-![The Compare workspace with two selected runs](docs/assets/screenshots/compare.png)
+![The Compare workspace with two selected AI-Off simulation runs](docs/assets/screenshots/compare.png)
 
 ## Work with your model
 
