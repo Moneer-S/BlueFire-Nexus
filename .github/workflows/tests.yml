@@ -395,6 +395,25 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Verify installed Windows native result publication
+        if: always() && matrix.platform == 'windows' && steps.installed-wheel.outcome == 'success'
+        timeout-minutes: 8
+        working-directory: ${{ runner.temp }}
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:GITHUB_WORKSPACE 'wheel-source'
+          $python = Join-Path $env:RUNNER_TEMP 'bluefire-wheel-smoke/Scripts/python.exe'
+          & $python -I -m pip install --disable-pip-version-check 'pytest>=9.0.3,<10' 'pytest-timeout>=2.4,<3'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $verifier = Join-Path $env:RUNNER_TEMP 'verify_installed_windows_result_publication.py'
+          $helper = Join-Path $env:RUNNER_TEMP 'verify_installed_windows_cancellation.py'
+          Copy-Item -LiteralPath (Join-Path $source 'tools/verify_installed_windows_result_publication.py') -Destination $verifier
+          Copy-Item -LiteralPath (Join-Path $source 'tools/verify_installed_windows_cancellation.py') -Destination $helper
+          $wheels = @(Get-ChildItem -LiteralPath (Join-Path $source 'dist') -Filter '*.whl' -File)
+          if ($wheels.Count -ne 1) { throw 'Exactly one candidate wheel is required' }
+          & $python -I -B $verifier --source $source --source-revision $env:GITHUB_SHA --forbid-root $env:GITHUB_WORKSPACE --wheel "$($wheels[0].FullName)" --helper $helper --runner-temp $env:RUNNER_TEMP --output (Join-Path $env:RUNNER_TEMP 'bluefire-installed-windows-result-publication-evidence')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Verify installed Windows native cancellation and cleanup
         if: always() && matrix.platform == 'windows' && steps.installed-wheel.outcome == 'success' && steps.installed-verification-node.outcome == 'success'
         timeout-minutes: 8
@@ -419,7 +438,10 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bluefire-installed-cancellation-windows-x86_64
-          path: ${{ runner.temp }}/bluefire-installed-windows-cancellation-evidence/*.json
+          path: |
+            ${{ runner.temp }}/bluefire-installed-windows-cancellation-evidence/*.json
+            ${{ runner.temp }}/bluefire-installed-windows-result-publication-evidence/*.json
+            ${{ runner.temp }}/bluefire-installed-windows-result-publication-evidence/*.xml
           retention-days: 7
           if-no-files-found: warn
 

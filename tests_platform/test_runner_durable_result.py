@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from bluefire import runner_durable_result as result_module
+from bluefire import runner_private_files as private_files_module
 from bluefire.run_store import RunStore
 from bluefire.runner_durable_result import DurableRunnerResult, runner_pending_result_path
 from bluefire.runner_private_files import _PinnedPrivateDirectory, _windows_extended_path
@@ -15,6 +16,121 @@ from bluefire.runner_transport_errors import (
     RunnerPendingResultExists,
     RunnerTransportError,
 )
+
+
+def _observe_windows_rename(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[str], list[tuple[object, object, str]]]:
+    native_rename = private_files_module._windows_rename_descriptor
+    calls: list[str] = []
+    failures: list[tuple[object, object, str]] = []
+
+    def checked_rename(descriptor: int, root_descriptor: int, target_name: str) -> None:
+        calls.append(target_name)
+        try:
+            native_rename(descriptor, root_descriptor, target_name)
+        except FileExistsError:
+            raise
+        except OSError as exc:
+            failures.append((exc.errno, getattr(exc, "winerror", None), type(exc).__name__))
+            raise
+
+    monkeypatch.setattr(private_files_module, "_windows_rename_descriptor", checked_rename)
+    return calls, failures
+
+
+def _fail_with_windows_rename_diagnostic(
+    failures: list[tuple[object, object, str]],
+    error: RunnerTransportError,
+) -> None:
+    if not failures:
+        raise error
+    errno, winerror, error_type = failures[-1]
+    pytest.fail(
+        "Windows handle-relative result promotion failed after production normalization "
+        f"(error_type={error_type}, errno={errno!r}, winerror={winerror!r})"
+    )
+
+
+def _windows_path_units(path: Path) -> int:
+    return len(os.fspath(path).encode("utf-16-le", errors="surrogatepass")) // 2
+
+
+def _publication_lengths(destination: Path, task_id: str) -> dict[str, int]:
+    pending = runner_pending_result_path(destination, task_id)
+    parent = destination.parent
+    return {
+        "parent": _windows_path_units(parent),
+        "staging": _windows_path_units(parent / (".t-" + "0" * 12)),
+        "final": _windows_path_units(destination),
+        "pending": _windows_path_units(pending),
+    }
+
+
+def _short_native_destination(tmp_path: Path, task_id: str) -> Path:
+    destination = tmp_path / "native-results" / ("a" * 40 + ".json")
+    lengths = _publication_lengths(destination, task_id)
+    expected_parent = _windows_path_units(tmp_path) + 1 + len("native-results")
+    assert lengths == {
+        "parent": expected_parent,
+        "staging": expected_parent + 16,
+        "final": expected_parent + 46,
+        "pending": expected_parent + 90,
+    }
+    if not (
+        lengths["parent"] < 160
+        and lengths["staging"] < 180
+        and lengths["final"] < 220
+        and lengths["pending"] < 240
+    ):
+        pytest.skip(f"short Windows native result root is unavailable: {lengths}")
+    return destination
+
+
+def _deep_native_destination(tmp_path: Path, task_id: str) -> Path:
+    parent = tmp_path / "native-results"
+    target_length = 233
+    if _windows_path_units(parent) >= target_length - 1:
+        pytest.skip("retained-failure Windows path geometry requires a shorter owned temp root")
+    while _windows_path_units(parent) < target_length:
+        remaining = target_length - _windows_path_units(parent)
+        assert remaining >= 2
+        segment_length = min(32, remaining - 1)
+        if remaining - (segment_length + 1) == 1:
+            segment_length -= 1
+        parent /= "d" * segment_length
+    destination = parent / ("a" * 40 + ".json")
+    assert _publication_lengths(destination, task_id) == {
+        "parent": 233,
+        "staging": 249,
+        "final": 279,
+        "pending": 323,
+    }
+    return destination
+
+
+def _write_pending_result(
+    owner: DurableRunnerResult,
+    destination: Path,
+    task_id: str,
+    payload: bytes,
+) -> tuple[Path, Path, tuple[int, int]]:
+    final, pending, retained = owner.prepare(destination, task_id)
+    assert retained is None
+    stream = owner.open_pending(pending)
+    try:
+        assert stream.write(payload) == len(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+        identity = stream.identity()
+    finally:
+        stream.close()
+    return final, pending, identity
+
+
+def _remove_windows_test_files(*paths: Path) -> None:
+    for path in paths:
+        _windows_extended_path(path).unlink()
 
 
 def pending_file(tmp_path: Path):
@@ -30,6 +146,104 @@ def pending_file(tmp_path: Path):
     finally:
         stream.close()
     return owner, final, pending, payload, identity
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native result promotion")
+def test_windows_short_native_result_promotion_publishes_exact_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task_id = "task-native-short-01"
+    destination = _short_native_destination(tmp_path, task_id)
+    payload = b'{"result":"pending"}\n'
+    committed = b'{"result":"validated"}\n'
+    owner = DurableRunnerResult()
+    final, pending, identity = _write_pending_result(owner, destination, task_id, payload)
+    calls, failures = _observe_windows_rename(monkeypatch)
+
+    try:
+        owner.promote(
+            pending,
+            final,
+            pending_expected=payload,
+            pending_identity=identity,
+            final_payload=committed,
+        )
+    except RunnerTransportError as exc:
+        _fail_with_windows_rename_diagnostic(failures, exc)
+
+    assert calls == [final.name]
+    assert failures == []
+    assert owner.read(final, maximum=len(committed)) == committed
+    assert not owner.exists(pending)
+    assert set(os.listdir(_windows_extended_path(final.parent))) == {final.name}
+    _remove_windows_test_files(final)
+    assert os.listdir(_windows_extended_path(final.parent)) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native result promotion")
+def test_windows_native_result_collision_preserves_both_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task_id = "task-native-collision-01"
+    destination = _short_native_destination(tmp_path, task_id)
+    payload = b'{"result":"pending"}\n'
+    occupied = b'{"result":"racing-final"}\n'
+    owner = DurableRunnerResult()
+    final, pending, identity = _write_pending_result(owner, destination, task_id, payload)
+    final.write_bytes(occupied)
+    calls, failures = _observe_windows_rename(monkeypatch)
+
+    with pytest.raises(RunnerDurableResultExists, match="requires reconciliation"):
+        owner.promote(
+            pending,
+            final,
+            pending_expected=payload,
+            pending_identity=identity,
+            final_payload=b'{"result":"validated"}\n',
+        )
+
+    assert calls == [final.name]
+    assert failures == []
+    assert final.read_bytes() == occupied
+    assert owner.read(pending, maximum=len(payload)) == payload
+    assert set(os.listdir(_windows_extended_path(final.parent))) == {
+        final.name,
+        pending.name,
+    }
+    _remove_windows_test_files(final, pending)
+    assert os.listdir(_windows_extended_path(final.parent)) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended native result promotion")
+def test_windows_deep_native_result_promotion_matches_retained_failure_geometry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task_id = "task-native-deep-01"
+    destination = _deep_native_destination(tmp_path, task_id)
+    payload = b'{"result":"pending"}\n'
+    committed = b'{"result":"validated"}\n'
+    owner = DurableRunnerResult()
+    final, pending, identity = _write_pending_result(owner, destination, task_id, payload)
+    calls, failures = _observe_windows_rename(monkeypatch)
+
+    try:
+        owner.promote(
+            pending,
+            final,
+            pending_expected=payload,
+            pending_identity=identity,
+            final_payload=committed,
+        )
+    except RunnerTransportError as exc:
+        _fail_with_windows_rename_diagnostic(failures, exc)
+
+    assert calls == [final.name]
+    assert failures == []
+    assert owner.read(final, maximum=len(committed)) == committed
+    assert not owner.exists(pending)
+    assert set(os.listdir(_windows_extended_path(final.parent))) == {final.name}
+    _remove_windows_test_files(final)
+    assert os.listdir(_windows_extended_path(final.parent)) == []
 
 
 def test_pending_output_is_published_once_and_reads_are_bounded(tmp_path: Path) -> None:

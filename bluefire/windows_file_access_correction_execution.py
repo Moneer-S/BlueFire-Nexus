@@ -8,6 +8,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from . import product_store_file_access_managed_closure as managed_closure_store
+from . import product_store_file_access_managed_ready as managed_ready_store
 from . import product_store_file_access_native_evidence as native
 from . import product_store_windows_correction as journal
 from . import product_store_windows_correction_publication as publication
@@ -16,14 +18,14 @@ from . import windows_file_access_context as context
 from . import windows_file_access_correction_admission as admission
 from . import windows_file_access_correction_control_process as control_process
 from . import windows_file_access_correction_observation as observation
+from . import windows_file_access_managed_result as managed_result
+from . import windows_file_access_managed_session as managed_session
 from . import windows_file_access_native_wire as wire
 from .product_store_errors import ProductStoreError
 from .util import canonical_json_bytes, content_hash
-from .windows_file_access_correction_credential import CorrectionBeginProducer
 from .windows_file_access_pair_launch import (
     CorrectionLaunchOwner,
     PairLaunchOwner,
-    launch_correction_retest,
 )
 
 
@@ -39,6 +41,90 @@ class WindowsCorrectionRuntime:
 
     def _clock(self) -> datetime:
         return datetime.now(timezone.utc)
+
+    def _runner_client(self, setup_receipt: dict) -> Any:
+        try:
+            source = setup_receipt["source"]
+            client, _sandbox = self.control.service.runner_lifecycle.client_for_profile(
+                source["source_profile_id"]
+            )
+            wire._require(dict(client.transport_identity()) == source["transport"])
+            return client
+        except Exception:
+            raise ProductStoreError(
+                "The original managed correction transport is unavailable."
+            ) from None
+
+    def _persist_managed_result(
+        self,
+        authenticated: managed_result.AuthenticatedManagedCorrectionResult,
+        *,
+        original: dict,
+        binding: dict,
+    ) -> None:
+        task_id = original["task_id"]
+        transport_hash = original["transport_request_hash"]
+        managed_ready_store.validate_persisted_managed_correction_ready(
+            self.store,
+            task_id,
+            transport_hash,
+            binding,
+            authenticated.value["persisted_consume_receipt"],
+            packet=authenticated.packet,
+            ready=authenticated.ready,
+            clock=self._clock(),
+        )
+        trail = native.query(
+            self.store,
+            task_id,
+            transport_hash,
+            binding,
+            self._clock(),
+            _protocol=native._Protocol.CORRECTION_V3,
+        )
+        wire._require(
+            type(trail) is native.CorrectionNativeTaskEvidence
+            and trail.packet_bytes == authenticated.packet
+            and trail.ready_bytes == authenticated.ready
+            and (
+                trail.terminal_bytes is None
+                or (
+                    trail.terminal_bytes == authenticated.terminal
+                    and trail.actual_returncode == authenticated.value["actual_returncode"]
+                )
+            )
+        )
+        native.record(
+            self.store,
+            task_id,
+            transport_hash,
+            binding,
+            "terminal",
+            authenticated.terminal,
+            authenticated.value["actual_returncode"],
+            self._clock(),
+            _protocol=native._Protocol.CORRECTION_V3,
+        )
+        completed = native.query(
+            self.store,
+            task_id,
+            transport_hash,
+            binding,
+            self._clock(),
+            _protocol=native._Protocol.CORRECTION_V3,
+        )
+        closure = managed_result.native_closure(
+            authenticated,
+            claim_digest=completed.claim_digest,
+        )
+        managed_closure_store.record_authenticated_managed_correction_closure(
+            self.store,
+            task_id,
+            transport_hash,
+            binding,
+            closure,
+            self._clock(),
+        )
 
     def _retain_control(
         self, job_id: str, owner: control_process.CorrectionControlCleanupOwner
@@ -77,16 +163,32 @@ class WindowsCorrectionRuntime:
                 result = reader.outcome(True).process
                 if result is None or result.cleanup_receipt is None:
                     raise ProductStoreError("The correction retest closure is unresolved.")
+                wire._require(type(result.cleanup_receipt) is native.OwnedCleanupReceipt)
+                result.cleanup_receipt.document()
                 original = wire._reservation(reader.original, wire._CORRECTION)
-                native.record_cleanup(
+                retained = native.query_cleanup(
                     self.store,
                     original["task_id"],
                     original["transport_request_hash"],
                     wire._document(reader.original._expected),
-                    result.cleanup_receipt,
                     self._clock(),
                     _protocol=native._Protocol.CORRECTION_V3,
                 )
+                if retained.owned_job_cleanup == "verified":
+                    wire._require(
+                        retained.receipt_bytes == result.cleanup_receipt._raw
+                        and retained.private_packet_bytes == result.cleanup_receipt._packet
+                    )
+                else:
+                    native.record_cleanup(
+                        self.store,
+                        original["task_id"],
+                        original["transport_request_hash"],
+                        wire._document(reader.original._expected),
+                        result.cleanup_receipt,
+                        self._clock(),
+                        _protocol=native._Protocol.CORRECTION_V3,
+                    )
                 with self._lock:
                     if self._retest_owners.get(job_id) is reader:
                         del self._retest_owners[job_id]
@@ -238,17 +340,20 @@ class WindowsCorrectionRuntime:
         reservation = wire.validate_correction_original_reservation(
             original, expected_binding=binding
         )
+        packet_clock = self._clock()
+        packet_monotonic = time.monotonic()
         packet = wire.prepare_correction_packet(
             reservation,
             challenge=secrets.token_hex(32),
-            clock=self._clock(),
-            monotonic_now=time.monotonic(),
+            clock=packet_clock,
+            monotonic_now=packet_monotonic,
             original_monotonic_deadline=deadline,
         )
         identity = dict(
             transport_request_hash=original["transport_request_hash"], expected_binding=binding
         )
         allowance: Callable[[datetime, float], None] | None = None
+        descriptor: dict[str, Any] | None = None
 
         def revalidate() -> None:
             require_live()
@@ -261,66 +366,194 @@ class WindowsCorrectionRuntime:
                 monotonic_now=time.monotonic(),
             )
 
-        def require_ready() -> None:
-            if allowance is None:
-                raise ProductStoreError("No original correction Ready allowance exists.")
-            allowance(self._clock(), time.monotonic())
-
-        def evidence(stage: str, raw: bytes, returncode: int | None, clock: datetime) -> None:
+        def consume_ready(
+            packet_bytes: bytes,
+            ready_bytes: bytes,
+            consume_identity: dict[str, Any],
+        ) -> managed_session.PersistedManagedCorrectionReady:
             nonlocal allowance
-            if stage == "ready":
-                wire._require(allowance is None)
-                allowance = retest.consume_ready(
-                    self.store,
-                    original["task_id"],
-                    **identity,
-                    prepared_packet=packet,
-                    ready_bytes=raw,
-                    clock=clock,
-                    monotonic_now=time.monotonic(),
-                )
-            elif stage in ("packet", "terminal"):
-                native.record(
-                    self.store,
-                    original["task_id"],
-                    original["transport_request_hash"],
-                    binding,
-                    stage,
-                    raw,
-                    returncode,
-                    clock,
-                    _protocol=native._Protocol.CORRECTION_V3,
-                )
-            else:
-                raise ProductStoreError("The correction evidence stage is unavailable.")
+            active_descriptor = descriptor
+            if active_descriptor is None:
+                raise wire.NativeWireError("Native reader wire refused")
+            wire._require(
+                allowance is None
+                and packet_bytes == packet._raw
+                and consume_identity
+                == {
+                    "task_id": original["task_id"],
+                    "transport_request_hash": original["transport_request_hash"],
+                    "session_nonce": active_descriptor["session_nonce"],
+                    "packet_digest": content_hash(wire._document(packet._raw)),
+                    "ready_digest": content_hash(wire._document(ready_bytes)),
+                    "ack_nonce": consume_identity.get("ack_nonce"),
+                }
+            )
+            native.record(
+                self.store,
+                original["task_id"],
+                original["transport_request_hash"],
+                binding,
+                "packet",
+                packet_bytes,
+                None,
+                self._clock(),
+                _protocol=native._Protocol.CORRECTION_V3,
+            )
+            allowance = retest.consume_ready(
+                self.store,
+                original["task_id"],
+                **identity,
+                prepared_packet=packet,
+                ready_bytes=ready_bytes,
+                clock=self._clock(),
+                monotonic_now=time.monotonic(),
+            )
+            allowance(self._clock(), time.monotonic())
+            return managed_ready_store.persisted_managed_correction_ready(
+                self.store,
+                original["task_id"],
+                original["transport_request_hash"],
+                binding,
+                session_nonce=active_descriptor["session_nonce"],
+                ack_nonce=str(consume_identity["ack_nonce"]),
+                packet=packet_bytes,
+                ready=ready_bytes,
+                clock=self._clock(),
+            )
 
-        producer = CorrectionBeginProducer(
-            checked,
-            reservation,
-            packet,
-            revalidate_original=revalidate,
-            require_ready_allowance=require_ready,
-            cancellation_event=ctx.cancellation_event,
+        record, setup_receipt, retained_binding = observation.checked_provenance(checked)
+        wire._require(retained_binding == prepared["binding"])
+        descriptor = managed_session.build_descriptor(
+            session_nonce=secrets.token_hex(32),
+            task_id=original["task_id"],
+            transport_request_hash=original["transport_request_hash"],
+            expected_binding=binding,
+            correction_binding=prepared["binding"],
+            setup_record=checked._setup._raw,
+            setup_receipt=checked._setup._receipt,
+            target_descriptor_sha256=checked._descriptor_sha256,
+            packet=packet._raw,
+            packet_issued_at_ms=managed_session._milliseconds(packet_clock),
+            manifest=original["manifest"],
+            profile=original["profile"],
         )
         revalidate()
-        result = launch_correction_retest(
-            checked,
-            reservation,
-            packet,
-            producer,
-            revalidate_original=revalidate,
-            evidence_sink=evidence,
-            cancellation_event=ctx.cancellation_event,
-            retain_launch_owner=lambda owner: self._retain_retest(ctx.job_id, owner),
+        client = self._runner_client(setup_receipt)
+        try:
+            result = client.execute_windows_correction_session(
+                original["manifest"],
+                original["profile"],
+                descriptor,
+                cancel_event=ctx.cancellation_event,
+                ready_consumer=consume_ready,
+            )
+            authenticated = managed_result.validate_runner_result(
+                result,
+                original["manifest"],
+                original["profile"],
+                expected_packet=packet._raw,
+                expected_session_nonce=descriptor["session_nonce"],
+            )
+        except Exception:
+            raise ProductStoreError(
+                "The original managed correction outcome is unavailable."
+            ) from None
+        wire._require(record == observation.checked_provenance(checked)[0])
+        self._persist_managed_result(
+            authenticated,
+            original=original,
+            binding=binding,
         )
-        if not self.cleanup(ctx.job_id) or result.cleanup != "verified":
-            raise ProductStoreError("The original correction retest closure remains unresolved.")
         publication.publish(self.store, ctx.job_id, clock=self._clock())
 
+    def _recover_managed_result(self, job_id: str) -> None:
+        saved = self.store.file_access_operation_records(job_id)
+        wire._require(len(saved["tasks"]) == 1)
+        claim = saved["tasks"][0]["task"]
+        original = {
+            "manifest": claim["manifest"],
+            "profile": claim["runner_profile"],
+            "task_id": claim["task_id"],
+            "transport_request_hash": claim["transport_request_hash"],
+        }
+        binding = managed_session.expected_binding_from_manifest(original["manifest"])
+        reservation = wire.validate_correction_original_reservation(
+            original,
+            expected_binding=binding,
+        )
+        wire._require(reservation._raw == canonical_json_bytes(original))
+        snapshot = native.query_cleanup(
+            self.store,
+            original["task_id"],
+            original["transport_request_hash"],
+            binding,
+            self._clock(),
+            _protocol=native._Protocol.CORRECTION_V3,
+        )
+        if snapshot.owned_job_cleanup == "verified":
+            return
+        trail = snapshot.native_evidence
+        # Packet and Ready are the durable proof that the original service
+        # persisted consumption before it acknowledged the watchdog. Missing
+        # stages are never reconstructed from the remote result.
+        packet_bytes = trail.packet_bytes
+        ready_bytes = trail.ready_bytes
+        if packet_bytes is None or ready_bytes is None:
+            raise wire.NativeWireError("Native reader wire refused")
+        consume = managed_ready_store.load_persisted_managed_correction_ready(
+            self.store,
+            original["task_id"],
+            original["transport_request_hash"],
+            binding,
+            packet=packet_bytes,
+            ready=ready_bytes,
+            clock=self._clock(),
+        ).document()
+        with self.store._connection() as connection:
+            _operation, _prepared, imported, _control = journal.original_at(
+                self.store, connection, job_id
+            )
+        client = self._runner_client(imported["setup_receipt"])
+        try:
+            recovered = client.recover(
+                original["task_id"],
+                original["transport_request_hash"],
+            )
+            wire._require(
+                isinstance(recovered, dict)
+                and recovered.get("state") == "completed"
+                and isinstance(recovered.get("result"), dict)
+            )
+            authenticated = managed_result.validate_runner_result(
+                recovered["result"],
+                original["manifest"],
+                original["profile"],
+                expected_packet=trail.packet_bytes,
+                expected_session_nonce=consume["session_nonce"],
+            )
+            wire._require(authenticated.ready == trail.ready_bytes)
+        except Exception:
+            raise ProductStoreError(
+                "The original managed correction outcome is unavailable."
+            ) from None
+        self._persist_managed_result(
+            authenticated,
+            original=original,
+            binding=binding,
+        )
+
     def recover(self, job_id: str, *, expected_outcome_digest: str) -> None:
-        """No setup observation, setter, credential release, task or process replay."""
+        """Recover only the original authenticated result; never redispatch work."""
         if not self.cleanup(job_id):
             raise ProductStoreError("The original correction closure remains unresolved.")
+        saved = self.store.file_access_operation_records(job_id)
+        if saved["tasks"]:
+            try:
+                self._recover_managed_result(job_id)
+            except Exception:
+                raise ProductStoreError(
+                    "The original correction closure remains unresolved."
+                ) from None
         publication.publish(
             self.store, job_id, clock=self._clock(), expected_outcome_digest=expected_outcome_digest
         )

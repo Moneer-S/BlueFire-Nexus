@@ -19,6 +19,10 @@ from bluefire.product_store_errors import ProductStoreError
 from bluefire.service import BlueFireService
 from bluefire.util import content_hash
 from tests_platform.ai_live_authorization_support import authorize_service
+from tests_platform.ai_proposal_startup_diagnostics import (
+    proposal_process_diagnostic,
+    proposal_process_timeout,
+)
 from tests_platform.job_wait_diagnostics import diagnose_job_wait
 from tests_platform.test_ai_drafts import _model_draft
 
@@ -440,46 +444,78 @@ def test_other_controls_are_refused_without_provider_access(setup):
 
 @pytest.mark.parametrize("kind", ["openai_responses", "chat_completions"])
 def test_process_loss_after_proposal_publication_recovers_native_review_without_model(
-    tmp_path, kind
+    tmp_path, kind, request
 ):
     import subprocess
     import sys
 
     database, marker = tmp_path / "crash.sqlite3", tmp_path / "published.json"
     program = r"""
+from tests_platform.ai_proposal_startup_diagnostics import proposal_process_phase
+proposal_process_phase('child_started')
 import json, os, sys, uuid
 from pathlib import Path
 from bluefire.config import AIConfig, AIProviderConfig, AutonomyLevel
 from bluefire.service import BlueFireService
+from bluefire.job_runtime import JobWaitTimeout
 from tests_platform.ai_live_authorization_support import authorize_service
 from tests_platform.test_graph_ai_jobs import Access
+from tests_platform.job_wait_diagnostics import diagnose_job_wait
+proposal_process_phase('imports_complete')
 database, marker, kind = sys.argv[1:]
+proposal_process_phase('service_initializing')
 service = BlueFireService(project_root=Path.cwd(), runs_dir=Path(database).parent / 'runs', product_db_path=database, ai_provider_access=Access())
+proposal_process_phase('service_ready')
 provider = AIProviderConfig.from_mapping({'id':'provider.graph-crash.v1','kind':kind,'model':'unit-model','endpoint':'http://127.0.0.1:8765/v1/' + ('responses' if kind == 'openai_responses' else 'chat/completions')})
 service._runtime_ai_config = AIConfig(AutonomyLevel.OFF,provider.id,service.config.ai.fallback_provider,(provider,*service.config.ai.providers))
+proposal_process_phase('authorizing')
 authorize_service(service, provider)
+proposal_process_phase('authorized')
 original = service.graph_ai._propose
 def crash_after_publication(ctx, request):
+    proposal_process_phase('proposal_entered')
     original(ctx, request)
+    proposal_process_phase('proposal_published')
     Path(marker).write_text(json.dumps({'parent_id':request['assistance_turn']['parent_job_id'],'child_id':ctx.job_id,'provider':provider.to_dict()}), encoding='utf-8')
+    proposal_process_phase('crash_marker_saved')
     os._exit(77)
 service.graph_ai._propose = crash_after_publication
+proposal_process_phase('context_preparing')
 context = service.assistance_graph_context()
+proposal_process_phase('context_ready')
 body = {'submission_id':str(uuid.uuid4()),'selection':context['selected'],'context_digest':context['context_digest'],'message':'Propose a registered graph for review.','autonomy':'assist','provider_id':provider.id}
+proposal_process_phase('submitting')
 parent = service.submit_assistance_turn(body)['job']
-service.job_controller.wait(parent['job_id'], timeout=15)
+proposal_process_phase('submitted', parent)
+proposal_process_phase('waiting_parent')
+try:
+    with diagnose_job_wait('graph_parent'):
+        parent_result = service.job_controller.wait(parent['job_id'], timeout=15)
+except JobWaitTimeout:
+    proposal_process_phase('parent_wait_timeout')
+    raise
+proposal_process_phase('parent_terminal', parent_result)
 child = service.product_store.get_job(parent['job_id'])['progress']['children']['step-1']['job_id']
-service.job_controller.wait(child, timeout=15)
+proposal_process_phase('waiting_child')
+try:
+    with diagnose_job_wait('graph_child'):
+        child_result = service.job_controller.wait(child, timeout=15)
+except JobWaitTimeout:
+    proposal_process_phase('child_wait_timeout')
+    raise
+proposal_process_phase('child_terminal', child_result)
 raise AssertionError('Expected owned test process loss')
 """
-    process = subprocess.run(
-        [sys.executable, "-c", program, str(database), str(marker), kind],
-        cwd=ROOT,
-        capture_output=True,
-        timeout=40,
-        check=False,
-    )
-    assert process.returncode == 77, process.stderr.decode(errors="replace")
+    with proposal_process_timeout(request.node):
+        process = subprocess.run(
+            [sys.executable, "-c", program, str(database), str(marker), kind],
+            cwd=ROOT,
+            capture_output=True,
+            timeout=40,
+            check=False,
+        )
+    returncode = process.returncode
+    assert returncode == 77, proposal_process_diagnostic(process.stdout, process.stderr)
     retained = json.loads(marker.read_text(encoding="utf-8"))
     access = Access()
     reopened = BlueFireService(
