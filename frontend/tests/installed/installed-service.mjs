@@ -1,0 +1,1032 @@
+// The copied driver talks only to a real, freshly installed loopback service.
+/* global process, URL, document, window, requestAnimationFrame, localStorage, sessionStorage, fetch, innerWidth, innerHeight, getComputedStyle */
+import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL, URLSearchParams } from "node:url";
+
+const [modulePath, output, port] = process.argv.slice(2);
+assert.match(port ?? "", /^\d{1,5}$/);
+let input = "";
+for await (const chunk of process.stdin) {
+  input += chunk;
+  assert.ok(input.length <= 256);
+}
+let { capability } = JSON.parse(input);
+input = "";
+assert.match(capability ?? "", /^[A-Za-z0-9_-]{64}$/);
+const secrets = [capability];
+const { chromium } = await import(pathToFileURL(modulePath).href);
+const origin = `http://127.0.0.1:${port}`;
+const title = "Installed browser collection comparison";
+const objectiveQuestion = "Does the collection plan retain the requested generated records in an AI-off simulation?";
+const responsiveViewports = [
+  { width: 1366, height: 768 },
+  { width: 1440, height: 900 },
+  { width: 1024, height: 768 },
+  { width: 910, height: 512 },
+];
+const responsiveReadPaths = new Set([
+  "/api/v1/session", "/api/v1/scenarios", "/api/v1/catalog", "/api/v1/runs",
+  "/api/v1/comparison-snapshots", "/api/v1/detection-lab/health", "/api/v1/detections",
+  "/api/v1/resources/research-sources", "/api/v1/resources/runner-profiles",
+  "/api/v1/resources/runners", "/api/v1/resources/model-providers", "/api/v1/ai/authorizations",
+  "/api/v1/s3-access/environments", "/api/v1/s3-access/exercises",
+  "/api/v1/ad-smb/environments", "/api/v1/ad-smb/workflows",
+  "/api/v1/file-access/status", "/api/v1/assistance/graph-context",
+]);
+const exactKeys = (value, keys) => value && typeof value === "object" && !Array.isArray(value)
+  && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
+const stableValue = value => Array.isArray(value) ? value.map(stableValue)
+  : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stableValue(value[key])]))
+    : value;
+const sameStructure = (left, right) => JSON.stringify(stableValue(left)) === JSON.stringify(stableValue(right));
+function responsiveReadAllowed(path) {
+  if (responsiveReadPaths.has(path)) return true;
+  const run = path.match(/^\/api\/v1\/runs\/(run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16})$/);
+  if (run) return ownedRunIds.includes(run[1]);
+  const detection = path.match(/^\/api\/v1\/detections\/(detection-[0-9a-f]{20})$/);
+  if (detection) return detection[1] === ownedDetectionId;
+  const snapshot = path.match(/^\/api\/v1\/comparison-snapshots\/([A-Za-z0-9_-]+)$/);
+  return Boolean(snapshot && snapshot[1] === report.comparison_snapshot_id);
+}
+const withoutLayout = scenario => {
+  if (!scenario || typeof scenario !== "object" || Array.isArray(scenario)) return null;
+  const { layout: _layout, ...document } = scenario;
+  void _layout;
+  return document;
+};
+const report = { schema_version: "bluefire.installed-browser-journey.v1", real_service: true, mocked_responses: false, native_execution: false, live_model_inference: false, simulation_mode: "synthetic_only", simulation_autonomy: "off", checks: [], screenshots: [], errors: [], blocked_requests: [] };
+let browser, context, page, connected = false, stage = "launch", bootstrapSession401 = 0;
+let sessionPosts = 0, scenarioVersionPosts = 0, scenarioValidationPosts = 0, graphContextPosts = 0, controlListPosts = 0;
+let preflightPosts = 0, simulationRunPosts = 0, comparisonPosts = 0;
+let detectionFromRunPosts = 0, detectionParsePosts = 0, detectionFixturePosts = 0, detectionBenignPosts = 0;
+let readOnlyCapturePhase = false;
+let ownedRunIds = [];
+let ownedScenarioId = "", generatedScenario, savedScenarioDocument, reviewedScenarioDocument, ownedScenarioVersion;
+const runPlanFingerprints = [];
+let sourceDetectionId, ownedDetectionId, expectedMaliciousFixtures, expectedBenignFixtures;
+
+function hasOwnedLayout(layout) {
+  const nodeIds = reviewedScenarioDocument?.steps?.map(step => step.id);
+  if (!Array.isArray(nodeIds) || !exactKeys(layout, ["schema_version", "nodes"]) || layout.schema_version !== "bluefire.layout.v1"
+    || !Array.isArray(layout.nodes) || layout.nodes.length > nodeIds.length) return false;
+  const expectedIds = new Set(nodeIds);
+  const seenIds = new Set();
+  return layout.nodes.every(node => {
+    if (!exactKeys(node, ["id", "x", "y"]) || !expectedIds.has(node.id) || seenIds.has(node.id)
+      || !Number.isFinite(node.x) || Math.abs(node.x) > 100000 || !Number.isFinite(node.y) || Math.abs(node.y) > 100000) return false;
+    seenIds.add(node.id);
+    return true;
+  });
+}
+
+function isOwnedScenarioDocument(value) {
+  return sameStructure(value, savedScenarioDocument) || sameStructure(value, reviewedScenarioDocument);
+}
+
+function hasOwnedScenarioLayout(scenario) {
+  if (!scenario || typeof scenario !== "object" || Array.isArray(scenario)) return false;
+  if (!Object.hasOwn(scenario ?? {}, "layout")) return true;
+  const nodeIds = reviewedScenarioDocument?.steps?.map(step => step.id);
+  const layout = scenario.layout;
+  if (!Array.isArray(nodeIds) || !layout || typeof layout !== "object" || Array.isArray(layout)) return false;
+  const expectedIds = new Set(nodeIds);
+  const positionedIds = Object.keys(layout);
+  if (positionedIds.length > nodeIds.length || positionedIds.some(id => !expectedIds.has(id))) return false;
+  return Object.values(layout).every(position => exactKeys(position, ["x", "y"])
+    && Number.isFinite(position.x) && Math.abs(position.x) <= 100000
+    && Number.isFinite(position.y) && Math.abs(position.y) <= 100000);
+}
+
+async function api(path, body) {
+  return page.evaluate(async ({ path, body }) => {
+    const session = sessionStorage.getItem("bluefire.browser-session.v1");
+    if (!session) throw new Error("Session missing");
+    const response = await fetch(`/api/v1${path}`, {
+      method: body ? "POST" : "GET", redirect: "error", credentials: "omit",
+      headers: { "X-BlueFire-Session": session, Accept: "application/json", ...(body ? { "Content-Type": "application/json" } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    if (!response.ok) throw new Error("Installed API request failed");
+    return response.json();
+  }, { path, body });
+}
+
+function syntheticFixture(selection, fixtureId) {
+  assert.ok(selection && typeof selection === "object" && !Array.isArray(selection) && Object.keys(selection).length > 0);
+  const fixture = { fixture_id: fixtureId };
+  for (const [rawField, value] of Object.entries(selection)) {
+    const [field, operator, extra] = rawField.split("|");
+    assert.match(field ?? "", /^[A-Za-z_][A-Za-z0-9_]*$/);
+    assert.equal(extra, undefined);
+    assert.ok(operator === undefined || ["contains", "startswith", "endswith"].includes(operator));
+    assert.ok(["string", "number", "boolean"].includes(typeof value));
+    assert.equal(Object.hasOwn(fixture, field), false);
+    fixture[field] = value;
+  }
+  return fixture;
+}
+
+function benignNonmatchFixture(selection, fixtureId) {
+  const fixture = syntheticFixture(selection, fixtureId);
+  for (const [rawField, value] of Object.entries(selection)) {
+    const [field, operator] = rawField.split("|");
+    if (operator) continue;
+    if (typeof value === "string") fixture[field] = "__bluefire_benign_nonmatch__";
+    else if (typeof value === "number") fixture[field] = value + 1;
+    else fixture[field] = !value;
+    return fixture;
+  }
+  throw new Error("The owned source detector has no exact-match field for a bounded benign nonmatch.");
+}
+
+function detectionDocument(envelope) {
+  assert.ok(envelope?.candidate?.document && typeof envelope.candidate.document === "object");
+  return envelope.candidate.document;
+}
+
+async function capture(name, metadata = {}) {
+  assert.ok(connected, "Never capture connection credentials");
+  await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+  const geometry = await page.evaluate(() => ({ width: innerWidth, height: innerHeight, document_width: document.documentElement.clientWidth, scroll_width: document.documentElement.scrollWidth, nodes: document.querySelectorAll(".react-flow__node").length, edges: document.querySelectorAll(".react-flow__edge").length }));
+  assert.ok(geometry.scroll_width <= geometry.document_width, "Desktop page overflows horizontally");
+  const screenshot = await page.screenshot({ fullPage: false, animations: "disabled", mask: [page.locator('input[type="password"]')] });
+  writeFileSync(join(output, `${name}.png`), screenshot, { flag: "wx" });
+  report.screenshots.push({ name, sha256: createHash("sha256").update(screenshot).digest("hex"), geometry, ...metadata });
+}
+
+async function captureResponsiveSurface({ name, heading, controls, scrollRoot }) {
+  readOnlyCapturePhase = true;
+  try {
+    for (const viewport of responsiveViewports) {
+      stage = `${name}-${viewport.width}x${viewport.height}`;
+      await page.setViewportSize(viewport);
+      await page.evaluate(selector => {
+        window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+        document.getElementById("main-content")?.scrollTo({ top: 0, left: 0, behavior: "instant" });
+        if (selector) document.querySelector(selector)?.scrollTo({ top: 0, left: 0, behavior: "instant" });
+      }, scrollRoot);
+      await page.evaluate(async () => { await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+      const headingLocator = page.getByRole("heading", { name: heading, exact: true }).first();
+      await headingLocator.waitFor({ state: "visible" });
+      const headingGeometry = await headingLocator.evaluate(element => {
+        const box = element.getBoundingClientRect();
+        return { visible: getComputedStyle(element).visibility !== "hidden" && box.width > 0 && box.height > 0,
+          left: box.left, right: box.right, client_width: element.clientWidth, scroll_width: element.scrollWidth };
+      });
+      report.layout_probe = { surface: name, viewport, element: "heading", geometry: headingGeometry };
+      assert.ok(headingGeometry.visible, `${name} heading must be visible`);
+      assert.ok(headingGeometry.left >= -1 && headingGeometry.right <= viewport.width + 1, `${name} heading must fit the viewport`);
+      assert.ok(headingGeometry.scroll_width <= headingGeometry.client_width + 1, `${name} heading text must not be clipped`);
+
+      const checkedControls = [];
+      for (const control of controls) {
+        if (control.bringIntoView) await control.locator.evaluate(element => element.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }));
+        await control.locator.waitFor({ state: "visible" });
+        const geometry = await control.locator.evaluate((element, selector) => {
+          const box = element.getBoundingClientRect();
+          const clip = selector ? element.closest(selector)?.getBoundingClientRect() : undefined;
+          return { visible: getComputedStyle(element).visibility !== "hidden" && box.width > 0 && box.height > 0,
+            left: box.left, right: box.right, top: box.top, bottom: box.bottom,
+            clip_top: clip?.top, clip_bottom: clip?.bottom,
+            client_width: element.clientWidth, scroll_width: element.scrollWidth };
+        }, control.withinScroll ? scrollRoot : undefined);
+        report.layout_probe = { surface: name, viewport, element: control.label, geometry };
+        assert.ok(geometry.visible, `${name} ${control.label} must be visible`);
+        assert.ok(geometry.left >= -1 && geometry.right <= viewport.width + 1, `${name} ${control.label} must fit the viewport`);
+        assert.ok(geometry.top >= -1 && geometry.bottom <= viewport.height + 1, `${name} ${control.label} must fit the viewport height`);
+        if (control.withinScroll) assert.ok(Number.isFinite(geometry.clip_top) && Number.isFinite(geometry.clip_bottom)
+          && geometry.top >= geometry.clip_top - 1 && geometry.bottom <= geometry.clip_bottom + 1,
+        `${name} ${control.label} must be reachable inside its scroll viewport`);
+        if (control.textFits) assert.ok(geometry.scroll_width <= geometry.client_width + 1, `${name} ${control.label} text must not be clipped`);
+        checkedControls.push(control.label);
+      }
+
+      const documentWidth = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));
+      assert.ok(documentWidth.scroll <= documentWidth.client + 1, `${name} must not overflow horizontally`);
+      if (scrollRoot) await page.locator(scrollRoot).evaluate(element => element.scrollTo({ top: 0, left: 0, behavior: "instant" }));
+      await capture(`${name}-${viewport.width}x${viewport.height}`, {
+        surface: name,
+        readable_heading: heading,
+        readable_controls: checkedControls,
+        layout_checks: ["heading_visible_and_unclipped", "controls_visible_and_in_viewport", "no_horizontal_overflow", ...(scrollRoot ? ["controls_reachable_in_scroll_viewport", "capture_scroll_reset"] : [])],
+      });
+      report.checks.push(`${name}_readable_at_${viewport.width}x${viewport.height}`);
+      delete report.layout_probe;
+    }
+  } finally {
+    readOnlyCapturePhase = false;
+  }
+}
+
+async function visibleGraphTitles(selectedOnly = false) {
+  const selector = selectedOnly ? ".react-flow__node:visible:has(.flow-node.selected)" : ".react-flow__node:visible";
+  return page.locator(selector).evaluateAll(nodes => nodes.map(node => {
+    const card = node.querySelector(".flow-node");
+    const title = card?.querySelector(":scope > strong");
+    if (!card || !title) return { title: "", fitsCard: false, fitsWidth: false };
+    const cardBox = card.getBoundingClientRect();
+    const titleBox = title.getBoundingClientRect();
+    return {
+      title: title.textContent?.trim() ?? "",
+      fitsCard: titleBox.left >= cardBox.left - 1 && titleBox.right <= cardBox.right + 1
+        && titleBox.top >= cardBox.top - 1 && titleBox.bottom <= cardBox.bottom + 1,
+      fitsWidth: title.scrollWidth <= title.clientWidth + 1,
+    };
+  }));
+}
+
+function expectedCrossGroupBindings(visibleIds) {
+  const steps = reviewedScenarioDocument.steps;
+  const identities = new Set();
+  const labels = [];
+  for (const consumer of steps) {
+    for (const [input, binding] of Object.entries(consumer.inputs ?? {})) {
+      if (visibleIds.has(consumer.id) === visibleIds.has(binding.from_step)) continue;
+      const identity = JSON.stringify([binding.from_step, consumer.id, input, binding.artifact]);
+      if (identities.has(identity)) continue;
+      identities.add(identity);
+      labels.push({ artifact: binding.artifact, input: input.replaceAll("_", " ").replace(/^./, value => value.toUpperCase()) });
+    }
+  }
+  return labels;
+}
+
+async function waitForGraphFrame(selectedOnly) {
+  await page.waitForFunction(selected => {
+    const canvas = document.querySelector(".graph-canvas");
+    if (!canvas) return false;
+    const boundary = canvas.getBoundingClientRect();
+    const nodes = [...canvas.querySelectorAll(selected ? ".flow-node.selected" : ".react-flow__node")]
+      .filter(node => getComputedStyle(node).display !== "none" && getComputedStyle(node).visibility !== "hidden");
+    return nodes.length > 0 && nodes.every(node => {
+      const box = node.getBoundingClientRect();
+      return box.width > 0 && box.height > 0 && box.left >= boundary.left - 1 && box.top >= boundary.top - 1
+        && box.right <= boundary.right + 1 && box.bottom <= boundary.bottom + 1;
+    });
+  }, selectedOnly);
+  // React Flow's viewport animation is JavaScript-driven, not a CSS animation.
+  await page.evaluate(() => new Promise((resolve, reject) => {
+    let previous = "", stable = 0, frames = 0;
+    const sample = () => {
+      const current = document.querySelector(".react-flow__viewport")?.getAttribute("style") ?? "";
+      stable = current && current === previous ? stable + 1 : 0;
+      previous = current;
+      if (stable >= 4) resolve(true);
+      else if (++frames >= 120) reject(new Error("Graph frame did not settle"));
+      else requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  }));
+}
+
+try {
+  browser = await chromium.launch({ headless: true, args: ["--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1", "--no-proxy-server", "--disable-background-networking"] });
+  report.browser_version = browser.version();
+  context = await browser.newContext({ serviceWorkers: "block", viewport: { width: 1440, height: 900 } });
+  context.setDefaultTimeout(20_000);
+  await context.routeWebSocket("**/*", socket => socket.close());
+  await context.route("**/*", async route => {
+    const request = route.request(), url = new URL(request.url()), method = request.method();
+    let allowed = url.origin === origin && ["GET", "HEAD"].includes(method), reason;
+    if (url.origin !== origin) reason = "non_loopback";
+    else if (readOnlyCapturePhase) {
+      allowed = false;
+      if (method === "GET" && responsiveReadAllowed(url.pathname)) allowed = true;
+      else if (method === "POST" && url.pathname === "/api/v1/file-access/control-list") {
+        let body;
+        try { body = request.postData() ? request.postDataJSON() : null; }
+        catch { reason = "invalid_json_body"; }
+        allowed = !reason && controlListPosts < 2 && exactKeys(body, []);
+        if (allowed) controlListPosts += 1; else reason ??= "read_only_history_lookup_cap_or_body";
+      } else reason = "responsive_capture_read_only_allowlist";
+    }
+    else if (!["GET", "HEAD", "POST"].includes(method)) reason = "method_not_allowed";
+    else if (method === "POST") {
+      let body;
+      try { body = request.postData() ? request.postDataJSON() : null; }
+      catch { reason = "invalid_json_body"; }
+      if (!reason) {
+        const bodyIsEmptyObject = body && typeof body === "object" && !Array.isArray(body) && Object.keys(body).length === 0;
+        const isOwnedGraph = exactKeys(body, ["scenario"]) && (scenarioVersionPosts === 0
+          ? sameStructure(body.scenario, generatedScenario)
+          : scenarioVersionPosts === 1 && sameStructure(body.scenario, reviewedScenarioDocument));
+        const hasNoExecutionOverrides = !["collectors", "collector_binding", "action_implementations", "action_overrides"].some(key => Object.hasOwn(body ?? {}, key));
+        const isOwnedRunRequest = sameStructure(body?.scenario, reviewedScenarioDocument) && hasOwnedLayout(body?.layout)
+          && body.mode === "simulate" && body.autonomy === "off"
+          && body.ai_provider_id === "deterministic-offline.v1" && body.runner_profile_id === "sandbox-simulate.v1"
+          && exactKeys(body, ["scenario", "layout", "mode", "autonomy", "ai_provider_id", "runner_profile_id", "target_scope"])
+          && exactKeys(body.target_scope, ["scope_refs"]) && Array.isArray(body.target_scope.scope_refs)
+          && sameStructure(body.target_scope.scope_refs, ["sandbox.workspace"]) && hasNoExecutionOverrides;
+        allowed = false;
+        switch (url.pathname) {
+          case "/api/v1/session":
+            allowed = sessionPosts < 1 && !request.postData();
+            if (allowed) sessionPosts += 1; else reason = "session_cap_or_body";
+            break;
+          case "/api/v1/scenario-versions":
+            allowed = scenarioVersionPosts < 2 && isOwnedGraph;
+            if (allowed) scenarioVersionPosts += 1; else reason = "scenario_write_cap_or_owner";
+            break;
+          case "/api/v1/scenarios/validate":
+            allowed = scenarioValidationPosts < 1 && exactKeys(body, ["scenario", "layout"])
+              && isOwnedScenarioDocument(body.scenario) && hasOwnedLayout(body.layout);
+            if (allowed) scenarioValidationPosts += 1; else reason = "validation_cap_or_owner";
+            break;
+          case "/api/v1/assistance/graph-context":
+            allowed = graphContextPosts < 1 && exactKeys(body, ["kind", "base_scenario", ...(Object.hasOwn(body ?? {}, "edit_step") ? ["edit_step"] : [])]) && body?.kind === "graph"
+              && Object.hasOwn(body, "edit_step")
+              && (body.base_scenario === null || (ownedScenarioVersion && sameStructure(body.base_scenario, ownedScenarioVersion)))
+              && (exactKeys(body.edit_step, ["scenario", "step_id", "dirty"])
+                && sameStructure(withoutLayout(body.edit_step.scenario), reviewedScenarioDocument)
+                && hasOwnedScenarioLayout(body.edit_step.scenario)
+                && reviewedScenarioDocument.steps.some(step => step.id === body.edit_step.step_id)
+                && typeof body.edit_step.dirty === "boolean");
+            if (allowed) graphContextPosts += 1; else reason = "graph_context_cap_or_owner";
+            break;
+          case "/api/v1/file-access/control-list":
+            allowed = controlListPosts < 2 && bodyIsEmptyObject;
+            if (allowed) controlListPosts += 1; else reason = "control_list_cap_or_body";
+            break;
+          case "/api/v1/runs/preflight":
+            allowed = preflightPosts < 2 && isOwnedRunRequest;
+            if (allowed) preflightPosts += 1; else reason = "preflight_cap_or_request_scope";
+            break;
+          case "/api/v1/runs":
+            allowed = simulationRunPosts < 2 && isOwnedRunRequest;
+            if (allowed) simulationRunPosts += 1; else reason = "run_cap_or_request_scope";
+            break;
+          case "/api/v1/comparisons":
+            allowed = comparisonPosts < 1 && exactKeys(body, ["run_ids"]) && Array.isArray(body.run_ids) && body.run_ids.length === 2
+              && JSON.stringify(body.run_ids) === JSON.stringify(ownedRunIds);
+            if (allowed) comparisonPosts += 1; else reason = "comparison_cap_or_run_ids";
+            break;
+          default:
+            if (url.pathname === "/api/v1/detections/from-run") {
+              allowed = detectionFromRunPosts < 1 && exactKeys(body, ["run_id", "candidate_id"])
+                && body.run_id === ownedRunIds[0] && body.candidate_id === sourceDetectionId;
+              if (allowed) detectionFromRunPosts += 1; else reason = "detection_import_cap_or_source";
+            } else {
+              const match = url.pathname.match(/^\/api\/v1\/detections\/(detection-[0-9a-f]{20})\/(parse|exercise-fixtures|evaluate-benign)$/);
+              if (match && match[1] === ownedDetectionId) {
+                const action = match[2];
+                if (action === "parse") {
+                  allowed = detectionParsePosts < 1 && exactKeys(body, []);
+                  if (allowed) detectionParsePosts += 1; else reason = "detection_parse_cap_or_owner";
+                } else if (action === "exercise-fixtures") {
+                  allowed = detectionFixturePosts < 1 && exactKeys(body, ["fixtures"])
+                    && sameStructure(body.fixtures, expectedMaliciousFixtures);
+                  if (allowed) detectionFixturePosts += 1; else reason = "detection_fixture_cap_or_payload";
+                } else {
+                  allowed = detectionBenignPosts < 1 && exactKeys(body, ["fixtures", "notes"])
+                    && sameStructure(body.fixtures, expectedBenignFixtures)
+                    && sameStructure(body.notes, ["Owned synthetic benign nonmatch fixture."]);
+                  if (allowed) detectionBenignPosts += 1; else reason = "detection_benign_cap_or_payload";
+                }
+              } else reason = "write_not_allowlisted";
+            }
+        }
+      }
+    }
+    if (!allowed) {
+      report.blocked_requests.push({ method, path: url.origin === origin ? url.pathname : "non-loopback", reason: reason ?? "request_not_allowed" });
+      await route.abort();
+      return;
+    }
+    // No response substitution: the installed service owns every API result.
+    await route.continue();
+  });
+  page = await context.newPage();
+  page.on("response", response => {
+    if (!connected && stage === "connect" && response.url() === `${origin}/api/v1/session` && response.request().method() === "GET" && response.status() === 401) bootstrapSession401 += 1;
+  });
+  page.on("pageerror", () => report.errors.push({ stage, kind: "page-error" }));
+  page.on("console", message => {
+    if (message.type() !== "error") return;
+    if (!connected && stage === "connect" && bootstrapSession401 > 0 && message.location().url === `${origin}/api/v1/session` && /^Failed to load resource: the server responded with a status of 401\b/.test(message.text())) {
+      bootstrapSession401 -= 1;
+      report.checks.push("expected_unauthenticated_session_probe");
+      return;
+    }
+    report.errors.push({ stage, kind: "console-error" });
+  });
+  page.on("dialog", async dialog => {
+    if (dialog.type() === "confirm" && dialog.message().startsWith("Open this saved version and replace your current unsaved graph?")) await dialog.accept();
+    else { report.errors.push({ stage, kind: "unexpected-dialog" }); await dialog.dismiss(); }
+  });
+
+  stage = "connect";
+  await page.goto(origin, { waitUntil: "domcontentloaded" });
+  await page.getByLabel("One-time connection code", { exact: false }).fill(capability);
+  await page.getByRole("button", { name: "Connect", exact: true }).click();
+  capability = "";
+  await page.waitForFunction(() => sessionStorage.getItem("bluefire.browser-session.v1") !== null);
+  secrets.push(await page.evaluate(() => sessionStorage.getItem("bluefire.browser-session.v1")));
+  connected = true;
+  await page.getByRole("link", { name: "Build", exact: true }).waitFor();
+  report.checks.push("normal_ephemeral_browser_session");
+
+  stage = "saved-experiment";
+  await page.getByRole("heading", { name: "Overview", exact: true }).waitFor();
+  await page.getByRole("link", { name: "Open experiments", exact: true }).click();
+  await page.getByRole("heading", { name: "Experiments", exact: true }).waitFor();
+  const catalog = await api("/scenarios");
+  const source = catalog.scenarios.find(item => item.id === "scenario.endpoint.lab-collection-methods.v1");
+  assert.ok(source);
+  const sourceRow = page.locator(".experiment-row").filter({ has: page.getByRole("button", { name: source.title, exact: true }) });
+  assert.equal(await sourceRow.count(), 1);
+  await sourceRow.getByRole("button", { name: "Duplicate", exact: true }).click();
+  const duplicateDraft = await page.evaluate(() => JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")));
+  assert.ok(duplicateDraft?.id?.startsWith(`${source.id.replace(/\.v\d+$/, "")}.copy.`));
+  assert.ok(duplicateDraft.id.endsWith(".v1"));
+  assert.notEqual(duplicateDraft.id, source.id);
+  ownedScenarioId = duplicateDraft.id;
+  const duplicateRow = page.locator(".experiment-row").filter({ has: page.getByRole("button", { name: `${source.title} copy`, exact: true }) });
+  await duplicateRow.getByRole("button", { name: "Continue editing", exact: true }).click();
+  await page.getByLabel("Experiment name", { exact: true }).fill(title);
+  const purposeField = page.getByLabel("Experiment question", { exact: true });
+  if (!await purposeField.isVisible()) {
+    await page.locator("details").filter({ has: purposeField }).getByText("Experiment purpose", { exact: true }).click();
+  }
+  await purposeField.fill(objectiveQuestion);
+  await page.waitForFunction(({ title, purpose }) => {
+    try {
+      const draft = JSON.parse(localStorage.getItem("bluefire.local.scenario.v1") ?? "null");
+      return draft?.title === title && draft?.purpose === purpose;
+    } catch { return false; }
+  }, { title, purpose: objectiveQuestion });
+  const objectiveDraft = await page.evaluate(() => JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")));
+  generatedScenario = withoutLayout(objectiveDraft);
+  assert.equal(generatedScenario.id, ownedScenarioId);
+  assert.equal(generatedScenario.title, title);
+  assert.equal(generatedScenario.purpose, objectiveQuestion);
+  assert.deepEqual(generatedScenario.steps, source.steps);
+  assert.deepEqual(generatedScenario.edges, source.edges);
+  const firstSaveResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/scenario-versions" && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Save version", exact: true }).click();
+  const saved = (await (await firstSaveResponse).json()).scenario;
+  assert.equal(saved.scenario_id, ownedScenarioId);
+  assert.equal(saved.version, 1);
+  assert.equal(saved.document.purpose, objectiveQuestion);
+  assert.deepEqual(saved.document.steps, source.steps);
+  assert.deepEqual(saved.document.edges, source.edges);
+  savedScenarioDocument = saved.document;
+  reviewedScenarioDocument = { ...savedScenarioDocument, title: `${title} reviewed` };
+  report.objective_continuity = {
+    claim: "scenario-purpose objective continuity through owned AI-off simulation only",
+    objective: objectiveQuestion,
+    scenario_id: ownedScenarioId,
+    source_scenario_id: source.id,
+    saved_version: saved.version,
+    saved_digest: saved.digest,
+  };
+  report.checks.push("overview_to_experiments_duplicate_and_scenario_purpose_authored_in_builder");
+  const savedRoute = `${origin}/#/builder?${new URLSearchParams({ saved_scenario: saved.scenario_id, version: String(saved.version), digest: saved.digest })}`;
+  await page.goto(savedRoute);
+  await page.getByRole("button", { name: "Open this version for editing", exact: true }).click();
+  await page.locator(".react-flow__node").first().waitFor();
+  await page.getByLabel("Experiment name", { exact: true }).fill(`${title} reviewed`);
+  await page.getByRole("button", { name: "Arrange visible group", exact: true }).click();
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  await page.getByRole("button", { name: "Redo", exact: true }).click();
+  const saveResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/scenario-versions" && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Save version", exact: true }).click();
+  const updated = (await (await saveResponse).json()).scenario;
+  ownedScenarioVersion = { scenario_id: updated.scenario_id, version: updated.version, digest: updated.digest };
+  assert.equal(updated.scenario_id, ownedScenarioId);
+  assert.equal(updated.document.title, `${title} reviewed`);
+  assert.equal(updated.document.purpose, objectiveQuestion);
+  assert.equal(updated.version, saved.version + 1);
+  assert.ok(sameStructure(updated.document, reviewedScenarioDocument));
+  reviewedScenarioDocument = updated.document;
+  assert.deepEqual(updated.document.steps, source.steps);
+  assert.deepEqual(updated.document.edges, source.edges);
+  report.objective_continuity.reviewed_version = updated.version;
+  report.objective_continuity.reviewed_digest = updated.digest;
+  report.checks.push("saved_graph_rename_layout_undo_redo_without_semantic_change");
+
+  stage = "graph-export";
+  await page.waitForFunction(title => {
+    try { return JSON.parse(localStorage.getItem("bluefire.local.scenario.v1") ?? "null")?.title === title; }
+    catch { return false; }
+  }, reviewedScenarioDocument.title);
+  const workingScenario = await page.evaluate(() => JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")));
+  assert.ok(sameStructure(withoutLayout(workingScenario), reviewedScenarioDocument), "Working export must match the saved canonical document");
+  assert.ok(hasOwnedScenarioLayout(workingScenario), "Working export must retain only owned finite layout positions");
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export", exact: true }).click();
+  const download = await downloadPromise;
+  assert.equal(download.suggestedFilename(), `${ownedScenarioId}.json`);
+  const stream = await download.createReadStream();
+  assert.ok(stream, "Scenario export must be readable in memory");
+  const chunks = [];
+  let byteLength = 0;
+  for await (const chunk of stream) {
+    byteLength += chunk.length;
+    assert.ok(byteLength <= 256 * 1024, "Scenario export exceeded the 256 KiB test bound");
+    chunks.push(chunk);
+  }
+  const exportText = Buffer.concat(chunks).toString("utf8");
+  const exportedScenario = JSON.parse(exportText);
+  assert.ok(sameStructure(exportedScenario, workingScenario), "Export must match the complete working graph including layout");
+  for (const secret of secrets) assert.ok(typeof secret === "string" && secret.length > 0 && !exportText.includes(secret), "Export must not contain browser connection credentials");
+  secrets.fill("");
+  report.checks.push("working_graph_json_export_preserves_canonical_document_and_layout_without_credentials");
+
+  stage = "graph-default-group";
+  assert.equal(await page.getByRole("combobox", { name: "Step group", exact: true }).inputValue(), "0");
+  for (const viewport of [{ width: 1366, height: 768 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
+    await page.setViewportSize(viewport);
+    await page.getByRole("button", { name: "Fit visible graph", exact: true }).click();
+    await waitForGraphFrame(false);
+    const visibleNodes = await page.locator(".react-flow__node:visible").count();
+    assert.equal(visibleNodes, 3);
+    const zoom = Number.parseInt(await page.getByLabel("Graph zoom", { exact: true }).textContent() ?? "0", 10);
+    assert.ok(zoom >= 80, `Default three-step group is too small at ${viewport.width}px (${zoom}%)`);
+    const titles = await visibleGraphTitles();
+    assert.equal(titles.length, 3);
+    assert.ok(titles.every(title => title.title && title.fitsCard && title.fitsWidth), "Default group titles must fit their cards");
+    const visibleNodeIds = await page.locator(".react-flow__node:visible").evaluateAll(nodes => nodes.map(node => node.getAttribute("data-id")));
+    assert.ok(visibleNodeIds.every(id => id && reviewedScenarioDocument.steps.some(step => step.id === id)), "Visible graph nodes must map to saved step IDs");
+    const visibleIds = new Set(visibleNodeIds);
+    const crossingRoutes = reviewedScenarioDocument.edges.filter(edge => visibleIds.has(edge.from_step) !== visibleIds.has(edge.to_step));
+    assert.ok(crossingRoutes.length > 0, "Fixture must retain a conditional route across the visible group boundary");
+    const groupConnections = page.locator(".graph-group-connections");
+    assert.equal(await groupConnections.getAttribute("open"), null, "Group connections should be collapsed initially");
+    await groupConnections.locator(":scope > summary").click();
+    const boundaryText = await page.locator('.graph-group-boundaries[aria-label="Conditional execution routes"]').innerText();
+    for (const outcome of new Set(crossingRoutes.map(edge => edge.outcome))) {
+      const label = { success: "On success", partial: "When partly complete", blocked: "When blocked", failed: "On failure" }[outcome];
+      assert.ok(label && boundaryText.includes(label), `Conditional route boundary is missing ${outcome}`);
+    }
+    const bindings = expectedCrossGroupBindings(visibleIds);
+    assert.ok(bindings.length > 0, "Fixture must retain an artifact binding across the visible group boundary");
+    const dependencyDetails = page.locator(".graph-data-boundaries");
+    assert.equal(await dependencyDetails.locator("summary").innerText(), `Data dependencies (${bindings.length})`);
+    await dependencyDetails.locator("summary").click();
+    const dependencyText = await dependencyDetails.innerText();
+    for (const binding of bindings) {
+      assert.ok(dependencyText.includes(binding.artifact), `Artifact boundary is missing ${binding.artifact}`);
+      assert.ok(dependencyText.includes(binding.input), `Artifact boundary is missing input ${binding.input}`);
+    }
+    await dependencyDetails.locator("summary").click();
+    await groupConnections.locator(":scope > summary").click();
+    await capture(`graph-default-group-${viewport.width}x${viewport.height}`);
+  }
+  report.checks.push("readable_default_group_desktop_framing");
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  stage = "graph-interaction";
+  await page.getByRole("button", { name: "Add step", exact: true }).click();
+  await page.getByRole("textbox", { name: "Search palette", exact: true }).fill("collect");
+  assert.ok(await page.locator(".palette-list button").count() > 0);
+  await page.getByRole("button", { name: "Add step", exact: true }).click();
+  await page.getByRole("combobox", { name: "Step group", exact: true }).selectOption("all");
+  await page.getByRole("button", { name: "Steps", exact: true }).click();
+  stage = "graph-select-ordered-step";
+  await page.locator(".ordered-steps button").filter({ has: page.locator("strong").filter({ hasText: /^Collect selected records \(native JSONL\)$/ }) }).click();
+  stage = "graph-frame-selection";
+  await page.getByRole("button", { name: "Canvas", exact: true }).click();
+  const inspector = page.getByRole("button", { name: "Show node inspector", exact: true });
+  if (await inspector.isVisible()) await inspector.click();
+  await page.locator(".inspector-panel:not([hidden])").waitFor();
+  for (const viewport of [{ width: 1366, height: 768 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
+    await page.setViewportSize(viewport);
+    await page.getByRole("button", { name: "Fit visible graph", exact: true }).click();
+    await waitForGraphFrame(false);
+    await capture(`graph-overview-${viewport.width}x${viewport.height}`);
+    await page.getByRole("button", { name: "Focus selected step", exact: true }).click();
+    await page.waitForFunction(() => Number.parseInt(document.querySelector('[aria-label="Graph zoom"]')?.textContent ?? "0", 10) >= 80);
+    await waitForGraphFrame(true);
+    const selectedTitle = await visibleGraphTitles(true);
+    assert.equal(selectedTitle.length, 1);
+    assert.equal(selectedTitle[0].title, "Collect selected records (native JSONL)");
+    assert.ok(selectedTitle[0].fitsCard && selectedTitle[0].fitsWidth, "Long behavior title must fit the focused card");
+    await capture(`graph-focused-${viewport.width}x${viewport.height}`);
+  }
+  async function reachableGraphElement(locator, description, checkText = true) {
+    await locator.evaluate(element => element.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }));
+    const geometry = await locator.evaluate(element => {
+      const box = element.getBoundingClientRect();
+      const main = document.getElementById("main-content")?.getBoundingClientRect();
+      return { left: box.left, right: box.right, top: box.top, bottom: box.bottom,
+        width: box.width, height: box.height, clipTop: Math.max(0, main?.top ?? 0),
+        clipBottom: Math.min(innerHeight, main?.bottom ?? innerHeight), viewportWidth: innerWidth,
+        textFits: element.scrollWidth <= element.clientWidth + 1 };
+    });
+    report.layout_probe = { surface: "constrained-graph", element: description, geometry };
+    assert.ok(geometry.width > 0 && geometry.height > 0 && (!checkText || geometry.textFits), `${description} must remain readable`);
+    assert.ok(geometry.left >= -1 && geometry.right <= geometry.viewportWidth + 1
+      && geometry.top >= geometry.clipTop - 1 && geometry.bottom <= geometry.clipBottom + 1,
+    `${description} must be reachable within the desktop work area`);
+    delete report.layout_probe;
+  }
+  for (const viewport of [{ width: 1024, height: 768 }, { width: 910, height: 512 }]) {
+    stage = `graph-constrained-${viewport.width}x${viewport.height}`;
+    await page.setViewportSize(viewport);
+    for (const name of ["Fit visible graph", "Steps", "Canvas", "Focus selected step", "Hide node inspector"]) {
+      await reachableGraphElement(page.getByRole("button", { name, exact: true }), name);
+    }
+    await page.getByRole("button", { name: "Hide node inspector", exact: true }).click();
+    const showInspector = page.getByRole("button", { name: "Show node inspector", exact: true });
+    await reachableGraphElement(showInspector, "Show node inspector");
+    await showInspector.click();
+    await page.locator(".inspector-panel:not([hidden])").waitFor();
+    await page.getByRole("button", { name: "Fit visible graph", exact: true }).click();
+    await waitForGraphFrame(false);
+    await page.getByRole("button", { name: "Steps", exact: true }).click();
+    const selectedStep = page.locator('.ordered-steps button[aria-pressed="true"]');
+    assert.match(await selectedStep.innerText(), /Collect selected records \(native JSONL\)/);
+    await page.getByRole("button", { name: "Canvas", exact: true }).click();
+    await page.getByRole("button", { name: "Focus selected step", exact: true }).click();
+    await waitForGraphFrame(true);
+    const zoom = Number.parseInt(await page.getByLabel("Graph zoom", { exact: true }).textContent() ?? "0", 10);
+    assert.ok(zoom >= 80, "Selected step must retain a readable focused scale");
+    const selectedNode = page.locator(".react-flow__node:visible:has(.flow-node.selected)");
+    assert.equal(await selectedNode.count(), 1);
+    // Port handles extend outside the node; title fit is checked separately.
+    await reachableGraphElement(selectedNode, "Focused step", false);
+    const selectedTitles = await visibleGraphTitles(true);
+    assert.ok(selectedTitles.every(title => title.fitsCard && title.fitsWidth));
+    await capture(`graph-constrained-focus-${viewport.width}x${viewport.height}`);
+    const inspectorHeading = page.locator(".inspector-panel:not([hidden])").getByRole("heading", { name: "Collect selected records (native JSONL)", exact: true });
+    await reachableGraphElement(inspectorHeading, "Selected step inspector");
+    await reachableGraphElement(page.getByRole("button", { name: "Close step details", exact: true }), "Close step details");
+    await capture(`graph-constrained-inspector-${viewport.width}x${viewport.height}`);
+    report.checks.push(`graph_selection_fit_ordered_view_and_inspector_reachable_at_${viewport.width}x${viewport.height}`);
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.locator(".graph-topbar").evaluate(element => element.scrollIntoView({ block: "start", behavior: "instant" }));
+  await page.getByRole("button", { name: "Assistant", exact: true }).click();
+  await page.locator("#experiment-assistant").waitFor();
+  await waitForGraphFrame(true);
+  await capture("graph-assistant");
+  await page.getByRole("button", { name: "Close assistant", exact: true }).click();
+  report.checks.push("graph_palette_selection_inspector_assistant_entry_without_model_request");
+
+  async function simulateSavedScenario(screenshotName) {
+    stage = "simulate-open-review";
+    await page.getByRole("link", { name: "Review run", exact: true }).click();
+    stage = "simulate-select-mode";
+    await page.getByRole("radio", { name: /^Simulate Synthetic evidence only/ }).check();
+    stage = "simulate-select-autonomy";
+    await page.getByRole("group", { name: "AI autonomy", exact: true }).getByRole("radio", { name: /^Off / }).check();
+    stage = "simulate-open-provider-details";
+    await page.getByText("AI provider & environment details", { exact: true }).click();
+    stage = "simulate-select-provider";
+    await page.getByRole("combobox", { name: "Provider", exact: true }).selectOption("deterministic-offline.v1");
+    stage = "simulate-select-profile";
+    await page.getByRole("combobox", { name: /^Environment profile\b/ }).selectOption("sandbox-simulate.v1");
+    stage = "simulate-preflight";
+    const preflightResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/runs/preflight" && response.request().method() === "POST");
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    const preflight = await (await preflightResponse).json();
+    assert.equal(preflight.ready, true);
+    assert.equal(preflight.plan?.scenario_id, ownedScenarioId);
+    assert.equal(preflight.plan?.scenario_digest, ownedScenarioVersion.digest);
+    assert.equal(preflight.plan?.objective, objectiveQuestion);
+    stage = "simulate-submit";
+    await page.getByRole("button", { name: "Submit Simulate job", exact: true }).click();
+    stage = "simulate-wait-for-review";
+    const review = page.getByRole("button", { name: "Review", exact: true });
+    await review.waitFor({ timeout: 90_000 });
+    stage = "simulate-open-result";
+    await review.click();
+    stage = "simulate-verify-result";
+    await page.getByRole("heading", { name: `${title} reviewed`, exact: true, level: 1 }).waitFor();
+    const id = new URL(page.url()).hash.match(/^#\/runs\/(run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16})$/)?.[1];
+    assert.ok(id);
+    ownedRunIds.push(id);
+    const run = await api(`/runs/${id}`);
+    assert.equal(run.run_id, id);
+    assert.equal(run.scenario_id, ownedScenarioId);
+    assert.equal(run.scenario?.title, reviewedScenarioDocument.title);
+    assert.equal(run.objective, objectiveQuestion);
+    assert.equal(run.mode, "simulate");
+    assert.equal(run.autonomy ?? run.autonomy_level, "off");
+    assert.ok(sameStructure(withoutLayout(run.scenario), reviewedScenarioDocument));
+    assert.ok(sameStructure(run.plan, preflight.plan), "Finalized run must retain its reviewed preflight plan");
+    const planFingerprint = createHash("sha256").update(JSON.stringify(stableValue(run.plan))).digest("hex");
+    runPlanFingerprints.push({ run_id: id, plan_fingerprint: planFingerprint });
+    await capture(screenshotName);
+    return id;
+  }
+
+  const firstRunId = await simulateSavedScenario("simulation-review");
+  report.simulation_run_id = firstRunId;
+  report.checks.push("normal_preflight_and_durable_ai_off_simulation_review");
+
+  stage = "reopen-saved-experiment";
+  await page.goto(`${origin}/#/builder?${new URLSearchParams({ saved_scenario: updated.scenario_id, version: String(updated.version), digest: updated.digest })}`);
+  await page.getByRole("button", { name: "Open this version for editing", exact: true }).waitFor();
+  await page.reload();
+  await page.getByRole("button", { name: "Open this version for editing", exact: true }).waitFor();
+  const reopened = (await api(`/scenario-versions/${updated.scenario_id}/versions/${updated.version}`)).scenario;
+  assert.equal(reopened.digest, updated.digest);
+  assert.equal(reopened.document.id, ownedScenarioId);
+  assert.equal(reopened.document.purpose, objectiveQuestion);
+  const original = (await api(`/scenario-versions/${saved.scenario_id}/versions/${saved.version}`)).scenario;
+  assert.equal(original.digest, saved.digest);
+  assert.equal(original.document.id, ownedScenarioId);
+  assert.equal(original.document.purpose, objectiveQuestion);
+  report.checks.push("same_tab_reload_saved_reopen_and_prior_version_preserved");
+
+  stage = "second-saved-simulation";
+  await page.getByRole("button", { name: "Open this version for editing", exact: true }).click();
+  await page.locator(".react-flow__node").first().waitFor();
+  const secondRunId = await simulateSavedScenario("simulation-review-second");
+  assert.notEqual(firstRunId, secondRunId);
+  report.simulation_run_ids = [...ownedRunIds];
+  report.checks.push("two_owned_synthetic_ai_off_runs");
+
+  stage = "detection-open-owned-run";
+  await page.goto(`${origin}/#/runs/${encodeURIComponent(firstRunId)}`);
+  const detectionLink = page.getByRole("link", { name: "Open Detection Lab", exact: true });
+  await page.waitForFunction(id => Array.from(document.querySelectorAll("a")).some(link => link.textContent?.trim() === "Open Detection Lab" && new URL(link.href).hash.includes(`run=${encodeURIComponent(id)}`)), firstRunId);
+  stage = "detection-follow-source-link";
+  await detectionLink.click();
+  stage = "detection-verify-owned-source";
+  await page.getByRole("heading", { name: "Detection Lab", exact: true }).waitFor();
+  stage = "detection-wait-owned-value";
+  await page.waitForFunction(id => Array.from(document.querySelectorAll("select")).some(select => select.value === id), firstRunId);
+  stage = "detection-assert-owned-value";
+  assert.equal(await page.getByRole("combobox", { name: /^Detection source run\b/ }).inputValue(), firstRunId);
+  stage = "detection-verify-observation-count";
+  const sourceSummary = page.locator(".detection-source-details > summary").first();
+  await sourceSummary.waitFor();
+  const sourceCount = Number((await sourceSummary.innerText()).match(/^(\d+) independent observations/)?.[1]);
+  assert.equal(sourceCount, 0);
+  report.source_observation_count = sourceCount;
+  const sourceRun = await api("/runs/" + firstRunId);
+  assert.equal(sourceRun.run_id, firstRunId);
+  assert.equal(sourceRun.mode, "simulate");
+  assert.notEqual(sourceRun.is_demo, true);
+  const sourceCandidates = sourceRun.detections?.candidates;
+  assert.ok(Array.isArray(sourceCandidates) && sourceCandidates.length > 0);
+  const sourceCandidate = sourceCandidates[0];
+  assert.equal(sourceCandidate.target_language, "internal");
+  sourceDetectionId = sourceCandidate.candidate_id;
+  assert.match(sourceDetectionId ?? "", /^detection-[0-9a-f]{20}$/);
+  expectedMaliciousFixtures = [syntheticFixture(sourceCandidate.selection, "synthetic-selection-example")];
+  expectedBenignFixtures = [benignNonmatchFixture(sourceCandidate.selection, "synthetic-benign-nonmatch")];
+  const selectedSourceCandidate = page.locator(".candidate-list button[aria-pressed='true']");
+  await selectedSourceCandidate.waitFor();
+  assert.ok((await selectedSourceCandidate.innerText()).includes(sourceCandidate.title));
+  await selectedSourceCandidate.click();
+  await page.waitForFunction(({ runId, candidateId }) => {
+    const params = new URLSearchParams(window.location.hash.split("?")[1]);
+    return params.get("run") === runId && params.get("candidate") === candidateId && !params.has("candidate_scope");
+  }, { runId: firstRunId, candidateId: sourceDetectionId });
+  await sourceSummary.click();
+  await capture("detection-lab-source-run-evidence");
+  await sourceSummary.click();
+  stage = "detection-save-source-hypothesis";
+  const importResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/detections/from-run" && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Save hypothesis from run", exact: true }).click();
+  const imported = await (await importResponse).json();
+  const importedDocument = detectionDocument(imported);
+  ownedDetectionId = imported.candidate.id;
+  assert.match(ownedDetectionId ?? "", /^detection-[0-9a-f]{20}$/);
+  assert.equal(importedDocument.candidate_id, ownedDetectionId);
+  assert.equal(importedDocument.state, "hypothesis");
+  assert.equal(importedDocument.revision, 1);
+  assert.equal(imported.source_run_id, firstRunId);
+  assert.equal(imported.source_candidate_id, sourceDetectionId);
+  assert.deepEqual(importedDocument.selection, sourceCandidate.selection);
+  stage = "detection-validate-owned-hypothesis";
+  const parseResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/detections/" + ownedDetectionId + "/parse" && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Validate source", exact: true }).click();
+  const parsedDocument = detectionDocument(await (await parseResponse).json());
+  assert.equal(parsedDocument.candidate_id, ownedDetectionId);
+  assert.equal(parsedDocument.state, "parsed");
+  stage = "detection-exercise-owned-fixture";
+  await page.getByRole("tab", { name: "Fixtures", exact: true }).click();
+  const maliciousInput = page.getByRole("textbox", { name: /^Malicious fixtures JSON\b/ });
+  const uiMaliciousFixtures = JSON.parse(await maliciousInput.inputValue());
+  assert.deepEqual(uiMaliciousFixtures, expectedMaliciousFixtures);
+  const fixtureResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/detections/" + ownedDetectionId + "/exercise-fixtures" && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Exercise malicious fixtures", exact: true }).click();
+  const exercisedDocument = detectionDocument(await (await fixtureResponse).json());
+  assert.equal(exercisedDocument.state, "fixture_exercised");
+  assert.deepEqual(exercisedDocument.malicious_fixture_ids, ["synthetic-selection-example"]);
+  assert.equal(exercisedDocument.match_count, 1);
+  await page.waitForFunction(() => {
+    const selected = document.querySelector(".candidate-list button[aria-pressed='true']");
+    return selected?.textContent?.includes("Fixture exercised")
+      && document.querySelector(".candidate-workspace")?.getAttribute("data-active-tab") === "fixtures";
+  });
+  stage = "detection-evaluate-benign-fixture";
+  await page.getByRole("tab", { name: "Fixtures", exact: true }).click();
+  await page.getByText("Advanced benign samples JSON", { exact: true }).click();
+  await page.getByRole("textbox", { name: /^Benign fixtures JSON\b/ }).fill(JSON.stringify(expectedBenignFixtures, null, 2));
+  await page.getByRole("textbox", { name: /^Benign evaluation notes\b/ }).fill("Owned synthetic benign nonmatch fixture.");
+  const benignResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/detections/" + ownedDetectionId + "/evaluate-benign" && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Evaluate benign fixtures", exact: true }).click();
+  const benignDocument = detectionDocument(await (await benignResponse).json());
+  assert.equal(benignDocument.state, "benign_evaluated");
+  assert.deepEqual(benignDocument.benign_fixture_ids, ["synthetic-benign-nonmatch"]);
+  assert.equal(benignDocument.benign_match_count, 0);
+  assert.match(benignDocument.definition_digest ?? "", /^sha256:[0-9a-f]{64}$/);
+  report.detection_fixture_evaluation = {
+    source_run_id: firstRunId,
+    source_run_mode: "simulate",
+    source_candidate_id: sourceDetectionId,
+    candidate_id: ownedDetectionId,
+    revision: benignDocument.revision,
+    revision_kind: benignDocument.revision_kind,
+    definition_digest: benignDocument.definition_digest,
+    state: benignDocument.state,
+    matcher: "internal structured fixture matcher",
+    fixture_only: true,
+    evaluation_scope: "Synthetic matcher fixtures only; not a changed-environment retest.",
+    malicious_fixture_ids: benignDocument.malicious_fixture_ids,
+    malicious_match_count: benignDocument.match_count,
+    benign_fixture_ids: benignDocument.benign_fixture_ids,
+    benign_match_count: benignDocument.benign_match_count,
+    independent_observations: 0,
+    changed_environment_retest: false,
+  };
+  report.checks.push("run_linked_definition_saved_validated_and_fixture_evaluated");
+  stage = "detection-reopen-saved-revision";
+  const detectionParams = new URLSearchParams({ run: firstRunId, candidate: ownedDetectionId, candidate_scope: "registry" });
+  const detectionReopenUrl = origin + "/#/detection-lab?" + detectionParams.toString();
+  if (page.url() === detectionReopenUrl) await page.reload();
+  else await page.goto(detectionReopenUrl);
+  stage = "detection-reopen-selected-candidate";
+  await page.getByRole("heading", { name: "Detection Lab", exact: true }).waitFor();
+  const reopenedDetection = page.locator(".candidate-list button[aria-pressed='true']");
+  await reopenedDetection.waitFor();
+  await reopenedDetection.getByText("Benign fixtures evaluated", { exact: true }).waitFor();
+  assert.ok((await reopenedDetection.innerText()).includes(sourceCandidate.title));
+  assert.match(await reopenedDetection.innerText(), /Benign fixtures evaluated/);
+  stage = "detection-reopen-server-revision";
+  const detectionList = await api("/detections");
+  const reopenedResource = detectionList.candidates.filter(candidate => candidate.id === ownedDetectionId);
+  assert.equal(reopenedResource.length, 1);
+  assert.equal(reopenedResource[0].document.revision, benignDocument.revision);
+  assert.equal(reopenedResource[0].document.state, benignDocument.state);
+  assert.equal(reopenedResource[0].document.definition_digest, benignDocument.definition_digest);
+  report.checks.push("saved_detection_revision_reopened_from_registry");
+  report.checks.push("detection_lab_linked_to_owned_simulation_source");
+  report.checks.push("detection_fixture_tab_preserved_across_lifecycle_update");
+  await page.getByRole("tab", { name: "Candidate", exact: true }).click();
+  await captureResponsiveSurface({
+    name: "detection-lab",
+    heading: "Detection Lab",
+    controls: [
+      { label: "Detection source run", locator: page.getByRole("combobox", { name: /^Detection source run\b/ }), textFits: false },
+      { label: "Source evidence", locator: sourceSummary, textFits: true },
+    ],
+  });
+
+  stage = "comparison-restore-owned-runs";
+  const comparisonParams = new URLSearchParams({ compare_context: "1" });
+  ownedRunIds.forEach(id => comparisonParams.append("compare_run", id));
+  await page.goto(`${origin}/#/compare?${comparisonParams}`);
+  await page.getByRole("button", { name: "Compare selected", exact: true }).waitFor();
+  assert.equal(await page.getByRole("checkbox").count(), 2);
+  stage = "comparison-submit-owned-runs";
+  const comparisonResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/comparisons" && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Compare selected", exact: true }).click();
+  stage = "comparison-verify-saved-snapshot";
+  const comparison = await (await comparisonResponse).json();
+  assert.ok(comparison.saved_snapshot?.snapshot_id);
+  assert.deepEqual(comparison.run_ids, ownedRunIds);
+  assert.deepEqual(comparison.summaries?.map(run => run.run_id), ownedRunIds);
+  assert.equal(comparison.baseline_run_id, ownedRunIds[0]);
+  report.comparison_snapshot_id = comparison.saved_snapshot.snapshot_id;
+  const savedComparison = await api(`/comparison-snapshots/${report.comparison_snapshot_id}`);
+  assert.equal(savedComparison.snapshot_id, report.comparison_snapshot_id);
+  assert.deepEqual(savedComparison.comparison.run_ids, ownedRunIds);
+  assert.deepEqual(savedComparison.source_bindings.map(binding => binding.run_id), ownedRunIds);
+  assert.equal(savedComparison.source_integrity?.status, "verified");
+  assert.ok(savedComparison.comparison.deltas?.every(delta => delta.objective_changed === false));
+  await page.getByRole("region", { name: "Comparison results", exact: true }).waitFor();
+  await capture("saved-two-run-comparison");
+  report.objective_continuity.runs = runPlanFingerprints;
+  report.objective_continuity.comparison_snapshot_id = report.comparison_snapshot_id;
+  report.objective_continuity.comparison_run_ids = [...savedComparison.comparison.run_ids];
+  await page.goto(`${origin}/#/compare`);
+  await page.getByRole("button", { name: `Open saved comparison ${report.comparison_snapshot_id}`, exact: true }).click();
+  await page.getByRole("region", { name: "Comparison results", exact: true }).waitFor();
+  assert.match(new URL(page.url()).hash, new RegExp(`snapshot=${report.comparison_snapshot_id}`));
+  const reopenedComparison = await api(`/comparison-snapshots/${report.comparison_snapshot_id}`);
+  assert.deepEqual(reopenedComparison.comparison.run_ids, ownedRunIds);
+  assert.deepEqual(reopenedComparison.source_bindings.map(binding => binding.run_id), ownedRunIds);
+  report.checks.push("saved_comparison_reopened_with_exact_scenario_objective_and_plan_run_lineage");
+  await capture("reopened-saved-comparison");
+  await captureResponsiveSurface({
+    name: "comparison",
+    heading: "Compare runs",
+    controls: [{ label: "Refresh history", locator: page.getByRole("button", { name: "Refresh history", exact: true }), textFits: true }],
+  });
+
+  stage = "environments-load-overview";
+  await page.goto(`${origin}/#/environments`);
+  await page.getByRole("heading", { name: "Environments", exact: true }).waitFor();
+  for (const name of ["Cloud access", "File access", "Directory access", "Execution configuration", "Model access"]) {
+    await page.getByRole("region", { name, exact: true }).waitFor();
+  }
+  stage = "environments-capture-overview";
+  await capture("environments-overview");
+  stage = "environments-capture-model-access";
+  await page.getByRole("heading", { name: "Model access", exact: true }).scrollIntoViewIfNeeded();
+  await capture("environments-model-access");
+  report.checks.push("environments_saved_setup_and_inventory_overview");
+  await page.evaluate(() => window.scrollTo({ top: 0, left: 0, behavior: "instant" }));
+  await captureResponsiveSurface({
+    name: "environments",
+    heading: "Environments",
+    controls: [{ label: "Open S3 access", locator: page.getByRole("link", { name: "Open S3 access", exact: true }), textFits: true }],
+  });
+
+  stage = "file-access-open-unavailable-view";
+  await page.getByRole("button", { name: "Show more tools", exact: true }).click();
+  await page.getByRole("link", { name: "File access", exact: true }).click();
+  await page.getByRole("heading", { name: "Effective file access", exact: true }).waitFor();
+  await page.getByRole("region", { name: "File-access enrollment", exact: true }).waitFor();
+  await page.getByText("Execution unavailable", { exact: true }).waitFor();
+  await capture("file-access-unavailable");
+  report.checks.push("file_access_unavailable_state_opened_without_authorizing_work");
+  await captureResponsiveSurface({
+    name: "file-access-unavailable",
+    heading: "Effective file access",
+    controls: [
+      { label: "Refresh state", locator: page.getByRole("button", { name: "Refresh state", exact: true }), textFits: true },
+      { label: "Execution unavailable", locator: page.getByText("Execution unavailable", { exact: true }), textFits: true },
+    ],
+  });
+
+  stage = "assistant-open-detached-selection";
+  await page.getByRole("button", { name: "Assistant", exact: true }).click();
+  const previousSelection = page.getByRole("region", { name: "Previous selection", exact: true });
+  await previousSelection.waitFor();
+  stage = "assistant-set-off-mode";
+  const mode = page.getByRole("combobox", { name: /^(AI mode|Assistant mode)\b/ });
+  await mode.selectOption("off");
+  assert.equal(await page.getByRole("button", { name: /^Start work/ }).isDisabled(), true);
+  stage = "assistant-capture-detached";
+  await capture("assistant-detached");
+  report.checks.push("detached_assistant_keeps_previous_selection_non_actionable");
+  await captureResponsiveSurface({
+    name: "docked-assistant",
+    heading: "Experiment assistant",
+    scrollRoot: ".assistant-body",
+    controls: [
+      { label: "Close assistant", locator: page.getByRole("button", { name: "Close assistant", exact: true }), textFits: false },
+      { label: "Reopen source", locator: page.getByRole("link", { name: "Reopen source", exact: true }), textFits: true, bringIntoView: true, withinScroll: true },
+      { label: "AI mode", locator: mode, textFits: false, bringIntoView: true, withinScroll: true },
+      { label: "Provider", locator: page.getByRole("combobox", { name: /^(Provider|Assistant provider)\b/ }), textFits: false, bringIntoView: true, withinScroll: true },
+      { label: "Message", locator: page.getByRole("textbox", { name: "What would you like to do?", exact: true }), textFits: false, bringIntoView: true, withinScroll: true },
+      { label: "Start work", locator: page.getByRole("button", { name: /^Start work/ }), textFits: true, bringIntoView: true, withinScroll: true },
+    ],
+  });
+
+  assert.equal(preflightPosts, 2);
+  assert.equal(simulationRunPosts, 2);
+  assert.equal(comparisonPosts, 1);
+  assert.equal(sessionPosts, 1);
+  assert.equal(scenarioVersionPosts, 2);
+  assert.ok(controlListPosts >= 1 && controlListPosts <= 2);
+  assert.equal(detectionFromRunPosts, 1);
+  assert.equal(detectionParsePosts, 1);
+  assert.equal(detectionFixturePosts, 1);
+  assert.equal(detectionBenignPosts, 1);
+  report.request_caps = { session_posts: sessionPosts, scenario_version_posts: scenarioVersionPosts, scenario_validation_posts: scenarioValidationPosts, graph_context_posts: graphContextPosts, control_list_posts: controlListPosts, preflight_posts: preflightPosts, simulation_run_posts: simulationRunPosts, comparison_posts: comparisonPosts, detection_from_run_posts: detectionFromRunPosts, detection_parse_posts: detectionParsePosts, detection_fixture_posts: detectionFixturePosts, detection_benign_posts: detectionBenignPosts };
+  assert.equal(report.errors.length, 0);
+  assert.equal(report.blocked_requests.length, 0);
+  report.status = "passed";
+} catch (error) {
+  report.status = "failed_or_incomplete";
+  report.errors.push({ stage, kind: "journey-failed", error_type: error instanceof Error ? error.name : "unknown" });
+  if (connected && stage.startsWith("graph-")) {
+    report.graph_failure_geometry = await page.evaluate(() => {
+      const geometry = element => {
+        if (!element) return null;
+        const box = element.getBoundingClientRect(), style = getComputedStyle(element);
+        return { x: box.x, y: box.y, width: box.width, height: box.height,
+          client_width: element.clientWidth, client_height: element.clientHeight,
+          min_height: style.minHeight, flex_basis: style.flexBasis, transform: style.transform };
+      };
+      return {
+        canvas: geometry(document.querySelector(".graph-canvas")),
+        stage: geometry(document.querySelector(".graph-stage")),
+        viewport: geometry(document.querySelector(".react-flow__viewport")),
+        nodes: [...document.querySelectorAll(".react-flow__node")].slice(0, 128)
+          .filter(node => getComputedStyle(node).display !== "none" && getComputedStyle(node).visibility !== "hidden")
+          .map(geometry),
+      };
+    }).catch(() => null);
+  }
+  if (connected) await capture("failure-state").catch(() => {});
+  process.exitCode = 1;
+} finally {
+  capability = "";
+  await context?.close().catch(() => { report.errors.push({ stage: "cleanup", kind: "context-close" }); process.exitCode = 1; });
+  await browser?.close().catch(() => { report.errors.push({ stage: "cleanup", kind: "browser-close" }); process.exitCode = 1; });
+  if (process.exitCode) report.status = "failed_or_incomplete";
+  writeFileSync(join(output, "browser-report.json"), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx" });
+}

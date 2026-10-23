@@ -4,7 +4,7 @@ import { RunnerInventoryRecovery } from "./ExecuteRunnerReadiness";
 import { RunNameControl, CopyRunId } from "../components/RunNameControl";
 import { assistanceRunLink } from "../lib/run-assistance";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, AlertTriangle, CircleStop, Clock3, FileSearch, Gauge, ListTree, Pause, Play, RotateCcw, ShieldCheck, Sparkles, TerminalSquare } from "lucide-react";
+import { Activity, AlertTriangle, ArrowLeft, ArrowRight, CircleStop, Clock3, Download, FileCheck2, FileSearch, FlaskConical, Gauge, GitCompareArrows, ListTree, Pause, Play, RotateCcw, ShieldCheck, Sparkles, Target, TerminalSquare } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, ApiError, DEMO_MODE, type ReplayPreparation } from "../lib/api";
@@ -436,8 +436,16 @@ export function RunWorkspace({ embedded }: { embedded?: { job: RunJob; releaseEn
 }
 
 function HistoricalRunReview({ run, catalog }: { run: RunRecord; catalog: CatalogResponse }) {
-  return <div className="page runs-page">
-    <PageHeader title={runLabel(run)} description={`${sentence(run.mode)} · ${sentence(run.status)} · ${formatDate(run.finalized_at ?? run.created_at)}`} actions={<><RunNameControl key={run.run_id} run={run}/><Link className="button button-secondary button-medium" to="/runs">Back to run workspace</Link><Link className="button button-secondary button-medium" to={detectionLink(run.run_id)}>Open Detection Lab</Link><Link className={"button button-medium button-" + (typeof run.replay?.source_run_id === "string" ? "secondary" : "primary")} to={comparisonLink(run.run_id)}>Replay & compare</Link>{typeof run.replay?.source_run_id === "string" ? <Link className="button button-primary button-medium" to={comparisonLink(run.replay.source_run_id, run.run_id)}>Compare with original run</Link> : null}</>} />
+  return <div className="page runs-page historical-run-page">
+    <Link className="run-back-link" to="/runs"><ArrowLeft aria-hidden="true"/>Back to run workspace</Link>
+    <PageHeader title={runLabel(run)} description="Recorded results, observations, and the next defensive test." actions={<><RunNameControl key={run.run_id} run={run}/><Link className="button button-secondary button-medium" to={detectionLink(run.run_id)}><FlaskConical aria-hidden="true"/>Open Detection Lab</Link><Link className={"button button-medium button-" + (typeof run.replay?.source_run_id === "string" ? "secondary" : "primary")} to={comparisonLink(run.run_id)}><GitCompareArrows aria-hidden="true"/>Replay & compare</Link>{typeof run.replay?.source_run_id === "string" ? <Link className="button button-primary button-medium" to={comparisonLink(run.replay.source_run_id, run.run_id)}>Compare with original run<ArrowRight aria-hidden="true"/></Link> : null}</>} />
+    <dl className="run-record-context" aria-label="Recorded run context">
+      <div><dt>Mode</dt><dd>{run.is_demo ? "Seeded simulation" : run.mode === "simulate" ? "Simulation" : "Execution"}</dd></div>
+      <div><dt>Run state</dt><dd>{sentence(run.status)}</dd></div>
+      <div><dt>Environment</dt><dd>{typeof run.profile?.environment_type === "string" ? sentence(run.profile.environment_type) : "Not recorded"}</dd></div>
+      <div><dt>{run.finalized_at ? "Finalized" : "Started"}</dt><dd>{formatDate(run.finalized_at ?? run.created_at)}</dd></div>
+      {run.scenario ? <div><dt>Recorded plan</dt><dd>{run.scenario.steps.length} steps / {run.scenario.edges.length} routes</dd></div> : null}
+    </dl>
     <RunReview run={run} catalog={catalog} />
   </div>;
 }
@@ -613,6 +621,17 @@ export function DetectionDetail({ run }: { run: RunRecord | null }) {
 
 
 export function RunReview({ run, catalog }: { run: RunRecord; catalog: CatalogResponse }) {
+  const pathRef = useRef<HTMLElement>(null);
+  const evidenceRef = useRef<HTMLDetailsElement>(null);
+  const detectionRef = useRef<HTMLDetailsElement>(null);
+  const cleanupRef = useRef<HTMLElement>(null);
+  const exportRef = useRef<HTMLDivElement>(null);
+  const focusSection = (section: HTMLElement | null) => {
+    if (!section) return;
+    if (section instanceof HTMLDetailsElement) section.open = true;
+    section.scrollIntoView?.({ block: "start", behavior: "auto" });
+    (section.querySelector<HTMLElement>("summary, h2, h3") ?? section).focus({ preventScroll: true });
+  };
   const steps = run.steps ?? [];
   const stopped = steps.find((step) => step.execution_disposition !== "counterfactual" && ["blocked", "control_blocked", "refused", "failed", "error", "cancelled"].includes(step.status));
   const evidence = run.evidence?.records;
@@ -630,17 +649,17 @@ export function RunReview({ run, catalog }: { run: RunRecord; catalog: CatalogRe
   const outcome = objectiveLabel(run.objective_reached, run.mode);
   const cleanup = cleanupSummary(run.cleanup);
   const needsCleanup = cleanup.startsWith("Needs attention") || cleanup.startsWith("Failed");
-  const stepName = (step: RunStep) => catalog.behaviors.find((item) => item.id === step.behavior_id)?.title ?? step.step_id;
+  const stepName = (step: RunStep) => recordedStepLabels(step, catalog, run).name;
   const outcomeDescription = run.objective_reached === true
     ? run.mode === "simulate" ? "The simulated path reached the experiment's objective. This does not establish a real effect or a working defense." : "The run records its objective as achieved. Check independent observations below to assess what was verified."
     : run.objective_reached === false ? "The run did not achieve its objective. An unmet objective alone does not establish that a target control prevented it."
     : "This record does not establish whether the objective was achieved. Review the path and available evidence before drawing a conclusion.";
   return <div className="review-stack run-review">
-    <RunExports key={run.run_id} run={run}/>
+    <div className="run-review-toolbar"><nav aria-label="Run review sections"><Button size="small" variant="ghost" onClick={() => focusSection(pathRef.current)}><ListTree aria-hidden="true"/>Path & steps</Button><Button size="small" variant="ghost" onClick={() => focusSection(evidenceRef.current)}><FileSearch aria-hidden="true"/>Evidence</Button><Button size="small" variant="ghost" onClick={() => focusSection(detectionRef.current)}><FlaskConical aria-hidden="true"/>Detection work</Button><Button size="small" variant="ghost" onClick={() => focusSection(cleanupRef.current)}><ShieldCheck aria-hidden="true"/>Cleanup</Button><Button size="small" variant="ghost" onClick={() => focusSection(exportRef.current)}><Download aria-hidden="true"/>Export</Button></nav></div>
     {run.is_demo ? <Callout title="Seeded review">This is a sanitized Simulate record. It does not prove runner execution, independent observation, or a real control block.</Callout> : null}
     {run.approval_pause ? <Callout tone="warning" title="Waiting for a reviewed continuation">The planner paused before the next action. Return to its saved job to review the proposed change and, for Execute, approve the next run.</Callout> : null}
     <section className="run-outcome" aria-label="Recorded run outcome">
-      <div className="run-outcome-main"><p className="eyebrow">Recorded outcome</p><h2>{outcome}</h2><p>{outcomeDescription}</p>{run.objective ? <div className="run-objective"><strong>Objective</strong><p>{run.objective}</p></div> : null}</div>
+      <div className="run-outcome-main"><div className="run-outcome-heading"><span className="run-outcome-symbol"><Target aria-hidden="true"/></span><div><p className="eyebrow">{run.mode === "simulate" ? "Simulation outcome" : "Recorded objective outcome"}</p><h2>{outcome}</h2></div></div><p>{outcomeDescription}</p>{run.objective ? <div className="run-objective"><strong>Objective</strong><p>{run.objective}</p></div> : null}</div>
       <dl className="run-outcome-facts">
         <div><dt>Independent observations</dt><dd>{observed ? `${observed.length} observed records` : "Not reported"}<small>{observed?.length === 0 ? "No independent confirmation is recorded." : observed ? "Collector observations; inspect their content and limitations." : "The evidence document is unavailable."}</small></dd></div>
         <div><dt>First stopped step</dt><dd>{stopped ? <>{stepName(stopped)}<small>{stepOutcomeLabel(stopped, run.mode)}</small></> : <>None recorded<small>This does not establish that the path completed.</small></>}</dd></div>
@@ -648,18 +667,40 @@ export function RunReview({ run, catalog }: { run: RunRecord; catalog: CatalogRe
       </dl>
     </section>
     {stopped?.error?.message ? <Callout tone="warning" title={stepOutcomeLabel(stopped, run.mode)}>{stopped.error.message}</Callout> : null}
-    <section className="run-evidence-summary" aria-label="Evidence and detection summary">
-      <div><h3>Evidence sources</h3><p>{evidence ? (sources || "No evidence records") : "Evidence not reported"}</p><small>These sources support different claims. Runner output and simulated records are not independent observations.</small></div>
-      <div><h3>Detection work</h3><p>{detections ? `${detections.length} linked candidate${detections.length === 1 ? "" : "s"}` : "Not reported"}</p><small>{detections?.length ? "Review each candidate's validation stage and evaluated inputs before claiming coverage." : "No evaluated detection result is established here. Open Detection Lab to investigate this run."}</small></div>
-    </section>
-    <AdaptiveRunPath run={run} catalog={catalog}/>
-    <section className="run-path-section" aria-label="Recorded step outcomes"><header><h2>Path taken</h2><p>{steps.length} recorded steps · outcomes as reported by this run</p></header>
-      {steps.length ? <ol className="run-path-list">{steps.map((step, index) => <li key={`${step.step_id}-${index}`}><span className="run-step-number" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span><div><strong>{stepName(step)}</strong><small>{stepOutcomeLabel(step, run.mode)}</small></div><details><summary>Step details</summary><DataList items={[{ label: "Step", value: step.step_id }, { label: "Method", value: step.action_id ?? step.simulation_id ?? "Not reported" }, { label: "Disposition", value: sentence(step.execution_disposition ?? "not reported") }, { label: "Evidence references", value: step.evidence_ids?.join(", ") || "None recorded" }]} />{step.error?.message ? <p>{step.error.message}</p> : null}</details></li>)}</ol> : <p className="field-note">No step outcomes are recorded.</p>}
-    </section>
-    <details className="run-review-details"><summary>Inspect evidence records{evidence ? ` (${evidence.length})` : " · not reported"}</summary><EvidenceDetail run={run} catalog={catalog}/></details>
-    <details className="run-review-details"><summary>Inspect detection candidates{detections ? ` (${detections.length})` : " · not reported"}</summary><DetectionDetail run={run}/></details>
+    <div className="run-review-body">
+      <div className="run-review-path"><AdaptiveRunPath run={run} catalog={catalog}/>
+        <section ref={pathRef} className="run-path-section" aria-label="Recorded step outcomes"><header><div><h2 tabIndex={-1}>Path taken</h2><p>{steps.length} recorded steps · outcomes as reported by this run</p></div><Badge tone={run.mode === "simulate" ? "violet" : "neutral"}>{run.mode === "simulate" ? "Simulated path" : "Recorded sequence"}</Badge></header>
+          {steps.length ? <ol className="run-path-list">{steps.map((step, index) => {
+            const labels = recordedStepLabels(step, catalog, run);
+            const method = labels.method === `Simulation · ${labels.name}` ? "Simulation" : labels.method === labels.name ? undefined : labels.method;
+            return <li key={`${step.step_id}-${index}`} data-disposition={step.execution_disposition ?? "not_recorded"}>
+              <span className="run-step-number" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
+              <div className="run-step-content">
+                <div className="run-step-heading"><strong>{labels.name}</strong><Badge tone={step.execution_disposition === "counterfactual" ? "violet" : statusTone(step.status)}>{stepOutcomeLabel(step, run.mode)}</Badge></div>
+                <div className="run-step-metadata">
+                  {method ? <small>{method}</small> : null}
+                  {step.evidence_ids?.length ? <span className="run-step-evidence"><FileSearch aria-hidden="true"/>{step.evidence_ids.length} linked evidence {step.evidence_ids.length === 1 ? "record" : "records"}</span> : null}
+                  <details><summary>Step details</summary><DataList items={[{ label: "Step", value: step.step_id }, { label: "Method", value: step.action_id ?? step.simulation_id ?? "Not reported" }, { label: "Disposition", value: sentence(step.execution_disposition ?? "not reported") }, { label: "Evidence references", value: step.evidence_ids?.join(", ") || "None recorded" }]} /></details>
+                </div>
+                {step.error?.message ? <p className="run-step-error">{step.error.message}</p> : null}
+              </div>
+            </li>;
+          })}</ol> : <p className="field-note">No step outcomes are recorded.</p>}
+        </section>
+      </div>
+      <aside className="run-review-support" aria-label="Evidence and cleanup context">
+        <section className="run-evidence-summary" aria-label="Evidence and detection summary">
+          <div><h3><FileSearch aria-hidden="true"/>Evidence sources</h3><p>{evidence ? (sources || "No evidence records") : "Evidence not reported"}</p><small>These sources support different claims. Runner output and simulated records are not independent observations.</small><Button size="small" variant="ghost" onClick={() => focusSection(evidenceRef.current)}>Inspect evidence<ArrowRight aria-hidden="true"/></Button></div>
+          <div><h3><FlaskConical aria-hidden="true"/>Detection work</h3><p>{detections ? `${detections.length} linked candidate${detections.length === 1 ? "" : "s"}` : "Not reported"}</p><Button size="small" variant="ghost" onClick={() => focusSection(detectionRef.current)}>Review candidates<ArrowRight aria-hidden="true"/></Button><small>{detections?.length ? "Review each candidate's validation stage and evaluated inputs before claiming coverage." : "No evaluated detection result is established here. Open Detection Lab to investigate this run."}</small></div>
+        </section>
+        <section ref={cleanupRef} className="run-cleanup-review" aria-label="Cleanup and retained changes"><h3 tabIndex={-1}><ShieldCheck aria-hidden="true"/>Cleanup record</h3><p>Temporary effects and intentionally retained defensive changes have separate lifecycles. A cleanup result does not establish a defense rollback or legitimate-use outcome.</p><details><summary>Recorded cleanup details</summary><StructuredPanel value={run.cleanup} empty="No cleanup record was retained."/></details></section>
+      </aside>
+    </div>
+    <details ref={evidenceRef} className="run-review-details"><summary>Inspect evidence records{evidence ? ` (${evidence.length})` : " · not reported"}</summary><EvidenceDetail run={run} catalog={catalog}/></details>
+    <details ref={detectionRef} className="run-review-details"><summary>Inspect detection candidates{detections ? ` (${detections.length})` : " · not reported"}</summary><DetectionDetail run={run}/></details>
     {aiProposals.length ? <details className="run-review-details"><summary>AI decisions ({aiProposals.length})</summary><AIProposalTrail run={run} catalog={catalog} proposals={aiProposals}/></details> : <p className="run-ai-note">No runtime AI proposal records are attached.</p>}
     {runLimitationGroups(run).map((group) => <section className="run-limitations" aria-label={group.title} key={group.title}><h2>{group.title}</h2>{group.description ? <p>{group.description}</p> : null}{group.items.length ? <ul>{group.items.map((item, index) => <li key={index}>{item}</li>)}</ul> : <p>No limitations were attached. This is incomplete metadata, not proof that there are none.</p>}</section>)}
+    <div ref={exportRef} className="run-review-export"><h2 tabIndex={-1}><FileCheck2 aria-hidden="true"/>Keep this run</h2><RunExports key={run.run_id} run={run}/></div>
     <details className="run-review-details"><summary>Run identity, environment and technical record</summary><DataList items={[{ label: "Run ID", value: <CopyRunId runId={run.run_id}/> }, { label: "Mode", value: sentence(run.mode) }, { label: "AI mode", value: sentence(run.autonomy ?? run.autonomy_level ?? (run.ai_enabled ? "assist" : "off")) }, { label: "Profile", value: run.runner_profile_id ?? "Not recorded" }, { label: "Targets", value: recordedTargetScope(run) }, { label: "Started", value: formatDate(run.created_at) }, { label: "Finalized", value: formatDate(run.finalized_at) }, { label: "Replay lineage", value: run.replay ? "Replay-linked" : "Original run" }]} /><details><summary>Raw reproducibility metadata</summary><div className="raw-columns"><StructuredPanel value={run.manifest ?? { schema_version: run.schema_version, scenario_id: run.scenario_id, profile_id: run.runner_profile_id }} empty="No manifest metadata."/><pre aria-label="Canonical run technical record">{JSON.stringify({ run_id: run.run_id, schema_version: run.schema_version, scenario_id: run.scenario_id, runner_profile_id: run.runner_profile_id, cleanup: run.cleanup ?? null, replay: run.replay ?? null }, null, 2)}</pre></div></details></details>
   </div>;
 }

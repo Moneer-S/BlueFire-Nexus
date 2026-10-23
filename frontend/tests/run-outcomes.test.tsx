@@ -174,3 +174,54 @@ it("accounts for refusal and unknown evidence without promoting either to observ
   expect(screen.getByText(/1 policy or refusal · 2 other or unknown/)).toBeVisible();
   expect(within(screen.getByRole("region", { name: "Recorded run outcome" })).getByText("0 observed records")).toBeVisible();
 });
+
+it("opens review sections and moves keyboard focus without replacing the saved record", async () => {
+  const user = userEvent.setup();
+  const record = run({ evidence: { records: [{ evidence_id: "observation-one", provenance: "observed", summary: "Generated records were independently read" }] }, cleanup: { success: true, outstanding_effects: 0 } });
+  const before = structuredClone(record);
+  render(<RunReview run={record} catalog={demoCatalog}/>);
+  const navigation = within(screen.getByRole("navigation", { name: "Run review sections" }));
+  await user.click(navigation.getByRole("button", { name: "Evidence" }));
+  const evidence = screen.getByText("Inspect evidence records (1)");
+  expect(evidence.closest("details")).toHaveAttribute("open");
+  expect(evidence).toHaveFocus();
+  expect(screen.getByText("Generated records were independently read")).toBeVisible();
+  await user.click(navigation.getByRole("button", { name: "Detection work" }));
+  expect(screen.getByText("Inspect detection candidates (1)")).toHaveFocus();
+  await user.click(within(screen.getByRole("region", { name: "Evidence and detection summary" })).getByRole("button", { name: "Review candidates" }));
+  expect(screen.getByText("Inspect detection candidates (1)").closest("details")).toHaveAttribute("open");
+  expect(screen.getByText("Inspect detection candidates (1)")).toHaveFocus();
+  await user.click(navigation.getByRole("button", { name: "Path & steps" }));
+  expect(screen.getByRole("heading", { name: "Path taken" })).toHaveFocus();
+  await user.click(navigation.getByRole("button", { name: "Cleanup" }));
+  expect(screen.getByRole("heading", { name: "Cleanup record" })).toHaveFocus();
+  await user.click(navigation.getByRole("button", { name: "Export" }));
+  expect(screen.getByRole("heading", { name: "Keep this run" })).toHaveFocus();
+  expect(screen.getByRole("button", { name: "Download report" })).toBeEnabled();
+  expect(record).toEqual(before);
+});
+
+it("presents actual alternate attempts and keeps simulated continuations distinct in the path", () => {
+  const original = demoCatalog.behaviors[0]!, alternate = demoCatalog.behaviors[1]!;
+  const record = run({ scenario: { ...demoScenario, steps: [{ id: "selected", behavior_id: original.id, inputs: {}, parameters: {}, alternates: [alternate.id] }] }, steps: [
+    { step_id: "selected", behavior_id: alternate.id, status: "success", evidence_ids: ["observed-one"] },
+    { step_id: "preview", behavior_id: original.id, status: "success", execution_disposition: "counterfactual" },
+  ] });
+  render(<RunReview run={record} catalog={demoCatalog}/>);
+  const path = within(screen.getByRole("region", { name: "Recorded step outcomes" }));
+  const entries = path.getAllByRole("listitem");
+  expect(within(entries[0]!).getByText(alternate.title)).toBeVisible();
+  expect(within(entries[0]!).getByText("Reported success")).toBeVisible();
+  expect(within(entries[0]!).getByText("1 linked evidence record")).toBeVisible();
+  expect(within(entries[1]!).getByText("Simulated continuation")).toBeVisible();
+  expect(within(entries[1]!).queryByText("Reported success")).not.toBeInTheDocument();
+});
+
+it("does not promote cleanup success to rollback or legitimate-use proof", async () => {
+  render(<RunReview run={run({ cleanup: { success: true, outstanding_effects: 0 } })} catalog={demoCatalog}/>);
+  const cleanup = within(screen.getByRole("region", { name: "Cleanup and retained changes" }));
+  expect(cleanup.getByText(/does not establish a defense rollback or legitimate-use outcome/)).toBeVisible();
+  await userEvent.setup().click(cleanup.getByText("Recorded cleanup details"));
+  expect(cleanup.getByText("Outstanding effects")).toBeVisible();
+  expect(cleanup.getByText("0")).toBeVisible();
+});

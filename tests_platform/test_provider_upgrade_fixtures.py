@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import copy
 import json
+import sys
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 import bluefire.cli as cli
 import tools.run_provider_gate_journey as provider_gate_helper
 from bluefire import __version__
+from bluefire.action_package_errors import ActionPackageError
 from bluefire.action_packages import verify_action_package
 from bluefire.api import APIError
 from bluefire.cli import _execute, _parser
@@ -22,6 +24,7 @@ from bluefire.config import RunnerProfile
 from bluefire.contracts import ExecutionMode
 from bluefire.service import BlueFireService
 from bluefire.util import canonical_json_bytes, content_hash
+from bluefire.version import native_runner_version
 from tests_platform.test_api import json_body, request, running_server
 from tests_platform.test_service import EXECUTE_PROFILE_ACTIONS, _ready_inventory
 
@@ -46,12 +49,23 @@ def _load_document(path: Path) -> dict[str, Any]:
     return cast(dict[str, Any], value)
 
 
+def _selected_fixture_root() -> Path:
+    runner_version = native_runner_version(__version__)
+    if runner_version == "3.0.0-rc2":
+        return FIXTURE_ROOT / "gate_rc2"
+    if "-" in runner_version:
+        raise AssertionError("provider upgrade fixtures are unavailable for this prerelease")
+    return FIXTURE_ROOT
+
+
 def _fixture_index() -> dict[str, Any]:
-    return _load_document(FIXTURE_ROOT / "fixture-index.json")
+    return _load_document(_selected_fixture_root() / "fixture-index.json")
 
 
 def _trust_request(version: str = "1.0.0") -> dict[str, Any]:
-    return _load_document(FIXTURE_ROOT / str(_fixture_row(version)["publisher_trust_file"]))
+    return _load_document(
+        _selected_fixture_root() / str(_fixture_row(version)["publisher_trust_file"])
+    )
 
 
 def _fixture_row(version: str) -> Mapping[str, Any]:
@@ -61,11 +75,15 @@ def _fixture_row(version: str) -> Mapping[str, Any]:
 
 
 def _fixture_envelope(version: str) -> dict[str, Any]:
-    return _load_document(FIXTURE_ROOT / str(_fixture_row(version)["file"]))
+    return _load_document(_selected_fixture_root() / str(_fixture_row(version)["file"]))
 
 
 def _public_key(version: str) -> Ed25519PublicKey:
-    encoded = str(_trust_request(version)["public_key"])
+    return _public_key_from_document(_trust_request(version))
+
+
+def _public_key_from_document(document: Mapping[str, Any]) -> Ed25519PublicKey:
+    encoded = str(document["public_key"])
     return Ed25519PublicKey.from_public_bytes(base64.urlsafe_b64decode(encoded + "="))
 
 
@@ -74,7 +92,7 @@ def _verified_fixture(version: str) -> Any:
     return verify_action_package(
         canonical_json_bytes(_fixture_envelope(version)),
         trusted_signers={(trust["publisher_id"], trust["key_id"]): _public_key(version)},
-        bluefire_version=__version__,
+        bluefire_version=native_runner_version(__version__),
         platform="windows",
     )
 
@@ -262,8 +280,9 @@ def _readiness_row(service: BlueFireService) -> tuple[Mapping[str, Any], Mapping
 
 
 def test_committed_provider_upgrade_fixtures_are_signed_real_no_import_wasm() -> None:
+    selected_root = _selected_fixture_root()
     index = _fixture_index()
-    assert {path.name for path in FIXTURE_ROOT.iterdir() if path.is_file()} == {
+    assert {path.name for path in selected_root.iterdir() if path.is_file()} == {
         "fixture-index.json",
         "provider-1.0.0.signed.json",
         "provider-2.0.0.signed.json",
@@ -277,7 +296,7 @@ def test_committed_provider_upgrade_fixtures_are_signed_real_no_import_wasm() ->
     assert index["provider_id"] == PROVIDER_ID
     assert [row["version"] for row in index["packages"]] == list(VERSIONS)
     trust_documents = [
-        _load_document(FIXTURE_ROOT / name) for name in index["publisher_trust_files"]
+        _load_document(selected_root / name) for name in index["publisher_trust_files"]
     ]
     for trust in trust_documents:
         assert set(trust) == {
@@ -306,6 +325,10 @@ def test_committed_provider_upgrade_fixtures_are_signed_real_no_import_wasm() ->
         assert provider is not None
         assert verified.manifest.package_id == PACKAGE_ID
         assert verified.manifest.version == version
+        expected_minimum = (
+            "3.0.0-rc2" if native_runner_version(__version__) == "3.0.0-rc2" else "3.0.0"
+        )
+        assert verified.manifest.compatibility.minimum_bluefire_version == expected_minimum
         assert verified.manifest.action_ids == (ACTION_ID,)
         assert verified.manifest.behavior_ids == (BEHAVIOR_ID,)
         assert provider.provider_id == PROVIDER_ID
@@ -383,6 +406,61 @@ def test_committed_provider_upgrade_fixtures_are_signed_real_no_import_wasm() ->
         == packages[1].actions[0].program.action_contract_digest
         == packages[2].actions[0].program.action_contract_digest
     )
+
+
+def test_prerelease_fixture_has_an_explicit_rc_compatibility_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys.modules[__name__], "__version__", "3.0.0rc2")
+    selected_root = _selected_fixture_root()
+    assert selected_root.name == "gate_rc2"
+    index = _fixture_index()
+    assert [row["version"] for row in index["packages"]] == list(VERSIONS)
+    assert all(
+        _verified_fixture(version).manifest.compatibility.minimum_bluefire_version == "3.0.0-rc2"
+        for version in VERSIONS
+    )
+
+    prerelease_root = FIXTURE_ROOT / "prerelease_rc2"
+    fixture_path = prerelease_root / "provider-3.0.0-rc2.signed.json"
+    trust = _load_document(prerelease_root / "publisher-trust.yaml")
+    envelope = _load_document(fixture_path)
+    assert {path.name for path in prerelease_root.iterdir() if path.is_file()} == {
+        "provider-3.0.0-rc2.signed.json",
+        "publisher-trust.yaml",
+    }
+    _assert_no_private_key_material(trust)
+    _assert_no_private_key_material(envelope)
+    signers = {(trust["publisher_id"], trust["key_id"]): _public_key_from_document(trust)}
+
+    def verify(document: Mapping[str, Any], bluefire_version: str) -> Any:
+        return verify_action_package(
+            canonical_json_bytes(document),
+            trusted_signers=signers,
+            bluefire_version=bluefire_version,
+            platform="windows",
+        )
+
+    prerelease = verify(envelope, "3.0.0-rc2")
+    assert prerelease.manifest.version == "3.0.0-rc2"
+    assert prerelease.manifest.compatibility.minimum_bluefire_version == "3.0.0-rc2"
+    assert verify(envelope, "3.0.0").manifest.version == "3.0.0-rc2"
+    with pytest.raises(ActionPackageError, match="incompatible"):
+        verify(envelope, "3.0.0-rc1")
+
+    stable_trust = _load_document(FIXTURE_ROOT / "publisher-trust.yaml")
+    stable_signers = {
+        (stable_trust["publisher_id"], stable_trust["key_id"]): _public_key_from_document(
+            stable_trust
+        )
+    }
+    with pytest.raises(ActionPackageError, match="incompatible"):
+        verify_action_package(
+            canonical_json_bytes(_load_document(FIXTURE_ROOT / "provider-1.0.0.signed.json")),
+            trusted_signers=stable_signers,
+            bluefire_version="3.0.0-rc2",
+            platform="windows",
+        )
 
 
 def test_provider_upgrade_changes_catalog_and_readiness_then_cleans_up(
@@ -597,7 +675,7 @@ def test_real_provider_lifecycle_traverses_cli_management(
     provenance_file = tmp_path / "provider-provenance.json"
     public_key_file.write_text(str(trust["public_key"]), encoding="utf-8")
     provenance_file.write_text(json.dumps(trust["provenance"]), encoding="utf-8")
-    envelope_file = FIXTURE_ROOT / str(_fixture_row("1.0.0")["file"])
+    envelope_file = _selected_fixture_root() / str(_fixture_row("1.0.0")["file"])
     row = _fixture_row("1.0.0")
 
     trusted = _execute(

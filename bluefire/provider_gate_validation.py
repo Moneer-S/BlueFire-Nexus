@@ -9,16 +9,26 @@ from .provider_gate_structural_validation import (
     STRUCTURAL_SCHEMA,
     _check_map,
     _is_sha256_digest,
-    _validate_structural,
+)
+from .provider_gate_structural_validation import (
+    _validate_structural as _validate_structural_evidence,
 )
 from .util import content_hash
-from .version import __version__
+from .version import __version__, native_runner_version
 
 # Pinned, not imported: this release-layer module may not depend on the domain-layer
 # runner registry (GATE-10 dependency direction). tests_platform/test_provider_gate.py
 # pins the 26 ordinary actions plus one reserved, structural S3 descriptor.
 # The historical evidence field counts advertised descriptors, not dispatch authority.
 _CORE_ACTION_COUNT = 27
+
+
+def _validate_structural(report: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Validate a structural report against this build's native runner version."""
+    return _validate_structural_evidence(
+        report, expected_runner_version=native_runner_version(__version__)
+    )
+
 
 JOURNEY_SCHEMA = "bluefire.provider-journey-evidence.v1"
 VERIFICATION_SCHEMA = "bluefire.provider-verification-evidence.v1"
@@ -213,6 +223,7 @@ def _suite_test_passed(suite: Mapping[str, Any], selector: str) -> bool:
 
 
 def _validate_packaged_runner(value: Any) -> Mapping[str, Any]:
+    expected_runner_version = native_runner_version(__version__)
     expected_fields = {
         "package_manifest_sha256",
         "binary_sha256",
@@ -244,7 +255,7 @@ def _validate_packaged_runner(value: Any) -> Mapping[str, Any]:
         "schema_version": "bluefire.runner-inventory.v1",
         "runner": "bluefire-rust-runner",
         "runner_id": "bluefire-rust-runner.v1",
-        "runner_version": __version__,
+        "runner_version": expected_runner_version,
         "action_sdk_version": "bluefire.runner-action-sdk.v1",
         "receipt_protocol": "bluefire.runner-receipt-wal.v2",
         "platform": "windows",
@@ -267,7 +278,7 @@ def _validate_packaged_runner(value: Any) -> Mapping[str, Any]:
         or not isinstance(value.get("binary_size"), int)
         or not 0 < int(value["binary_size"]) <= 134_217_728
         or value.get("runner_id") != "bluefire-rust-runner.v1"
-        or value.get("runner_version") != __version__
+        or value.get("runner_version") != expected_runner_version
         or value.get("platform") != "windows"
         or value.get("architecture") != "x86_64"
         or value.get("logical_action_absent_from_core_inventory") is not True

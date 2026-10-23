@@ -59,6 +59,7 @@ from bluefire.runner_trust import (
     remove_local_enrollment,
 )
 from bluefire.util import canonical_json_bytes, content_hash, file_hash
+from bluefire.version import native_runner_version
 from tests_platform.runner_lifecycle_host_helper import (
     ProcessFixtureRunner,
     ProcessTestSecretProvider,
@@ -77,7 +78,7 @@ def _fake_bootstrap(**values: Any) -> BootstrappedRunner:
     architecture = current_architecture(values.get("architecture"))
     manifest = RunnerPackageManifest(
         product_version=str(values.get("product_version") or __version__),
-        runner_version=__version__,
+        runner_version=native_runner_version(__version__),
         platform=platform_name,
         architecture=architecture,
         filename="bluefire-runner.exe" if platform_name == "windows" else "bluefire-runner",

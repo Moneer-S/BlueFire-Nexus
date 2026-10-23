@@ -32,10 +32,10 @@ def test_bootstrap_seeds_versioned_secret_safe_product_metadata(tmp_path: Path) 
     )
 
     assert first == second
-    assert first["scenario"] == 13
+    assert first["scenario"] == 14
     assert first["action"] == 29
     assert first["collector"] >= 6
-    assert len(store.list_scenarios()) == 13
+    assert len(store.list_scenarios()) == 14
     assert len(store.list_resources("action")) == 29
     assert "scenario.atomic.gzip-collection.v1" in {
         item["scenario_id"] for item in store.list_scenarios()

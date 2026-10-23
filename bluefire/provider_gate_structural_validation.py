@@ -12,6 +12,10 @@ _COMPATIBILITY = {
     "minimum_bluefire_version": "3.0.0",
     "maximum_bluefire_version_exclusive": "4.0.0",
 }
+_RC2_COMPATIBILITY = {
+    "minimum_bluefire_version": "3.0.0-rc2",
+    "maximum_bluefire_version_exclusive": "4.0.0",
+}
 _LICENSE = {
     "spdx_id": "MIT",
     "notice": "Copyright 2026 BlueFire fixture authors; MIT licensed.",
@@ -289,6 +293,16 @@ _SOURCE_AUDIT_PATHS = (
     "runner/src/atomic_gzip.rs",
     "runner/src/s3_worker_process.rs",
 )
+
+
+def _compatibility_for_runner_version(runner_version: str) -> Mapping[str, str]:
+    if runner_version == "3.0.0-rc2":
+        return _RC2_COMPATIBILITY
+    if "-" in runner_version:
+        raise ValueError("provider fixture compatibility is unsupported for this prerelease")
+    return _COMPATIBILITY
+
+
 _PROCESS_CHECKS = {
     "python_process_call_inventory": True,
     "popen_shell_disabled": True,
@@ -481,7 +495,9 @@ def _is_sha256_digest(value: Any) -> bool:
     )
 
 
-def _validate_structural(report: Mapping[str, Any]) -> Mapping[str, Any]:
+def _validate_structural(
+    report: Mapping[str, Any], *, expected_runner_version: str | None = None
+) -> Mapping[str, Any]:
     if not isinstance(report, Mapping) or set(report) != {
         "schema_version",
         "passed",
@@ -532,7 +548,12 @@ def _validate_structural(report: Mapping[str, Any]) -> Mapping[str, Any]:
         or manifest.get("distinct_package_digests") != 3
         or manifest.get("distinct_content_digests") != 3
         or manifest.get("distinct_artifacts") != 2
-        or manifest.get("compatibility") != _COMPATIBILITY
+        or manifest.get("compatibility")
+        not in (
+            (_COMPATIBILITY, _RC2_COMPATIBILITY)
+            if expected_runner_version is None
+            else (_compatibility_for_runner_version(expected_runner_version),)
+        )
         or any(
             not isinstance(items, Mapping)
             or set(items) != set(_VERSIONS)
@@ -541,6 +562,7 @@ def _validate_structural(report: Mapping[str, Any]) -> Mapping[str, Any]:
         )
     ):
         raise ValueError("provider structural manifest-integrity evidence is invalid")
+    expected_compatibility = manifest["compatibility"]
     package_digests, content_digests, artifact_digests = digest_maps
     assert isinstance(package_digests, Mapping)
     assert isinstance(content_digests, Mapping)
@@ -601,7 +623,7 @@ def _validate_structural(report: Mapping[str, Any]) -> Mapping[str, Any]:
             or row.get("typed_parameters") != _TYPED_PARAMETERS
             or row.get("typed_outputs") != _TYPED_OUTPUTS
             or row.get("license") != _LICENSE
-            or row.get("compatibility") != _COMPATIBILITY
+            or row.get("compatibility") != expected_compatibility
             or row.get("definition_provenance")
             != {
                 "source": "BlueFire committed deterministic no-import WebAssembly provider fixture",

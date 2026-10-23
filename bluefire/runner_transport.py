@@ -56,12 +56,17 @@ from .runner_result_persistence import commit_durable_result
 from .runner_transport_client import (
     execute_authenticated_task,
     validated_cancellation_payload,
+    validated_recovered_cancellation_proof,
     validated_transport_identity,
 )
 from .runner_transport_errors import (
+    TRANSPORT_FAILURE_REASONS,
     AuthenticatedRunnerTransportError,
     RunnerAuthenticationError,
     RunnerConnectionError,
+    cancellation_proof_from_cancelled,
+    transport_failure_reason,
+    validated_cancellation_proof,
 )
 from .runner_transport_framing import (
     _decode_json_object,
@@ -107,7 +112,9 @@ from .secret_store import SecretProvider
 from .util import canonical_json_bytes, content_hash, file_hash
 
 TRANSPORT_SCHEMA_VERSION = "bluefire.runner-transport.v1"
-LEDGER_SCHEMA_VERSION = 4
+LEDGER_SCHEMA_VERSION = 5
+_LEGACY_LEDGER_SCHEMA_VERSION = 4
+_MAX_CANCELLATION_PROOF_BYTES = 512
 DEFAULT_MAX_FRAME_BYTES = 4 * 1024 * 1024
 DEFAULT_MAX_WORKERS = 16
 DEFAULT_CONTROL_WORKER_RESERVE = 4
@@ -271,7 +278,7 @@ _LEDGER_METADATA_COLUMNS = (
     ("schema_version", "TEXT", 1, 0),
     ("ledger_generation", "TEXT", 1, 0),
 )
-_TRANSPORT_TASKS_SQL = """
+_TRANSPORT_TASKS_V4_SQL = """
 CREATE TABLE transport_tasks (
     task_id TEXT PRIMARY KEY,
     operation TEXT NOT NULL,
@@ -298,6 +305,7 @@ CREATE TABLE transport_tasks (
     updated_at INTEGER NOT NULL
 )
 """
+_TRANSPORT_TASKS_SQL = _TRANSPORT_TASKS_V4_SQL.rstrip()[:-1] + ", cancellation_proof_json BLOB)"
 _TRANSPORT_TASKS_NONCE_INDEX_SQL = "CREATE INDEX transport_tasks_nonce ON transport_tasks(nonce)"
 _LEDGER_APPLICATION_OBJECTS = frozenset(
     {
@@ -327,14 +335,20 @@ _LEDGER_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 class RunnerRemoteError(AuthenticatedRunnerTransportError):
     """An authenticated refusal returned by the runner service."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, transport_failure_reason: str | None = None) -> None:
         self.code = code if code in _REMOTE_ERROR_MESSAGES else "request_invalid"
+        if (
+            isinstance(transport_failure_reason, str)
+            and transport_failure_reason in TRANSPORT_FAILURE_REASONS
+        ):
+            self.transport_failure_reason = transport_failure_reason
         super().__init__(_REMOTE_ERROR_MESSAGES[self.code])
 
 
 class _RequestRefusal(Exception):
     def __init__(self, code: str) -> None:
         self.code = code
+        self.transport_failure_reason: str | None = None
         super().__init__(code)
 
 
@@ -445,7 +459,11 @@ def _validated_index_shapes(
     return tuple(sorted(shapes))
 
 
-def _validated_ledger_schema(connection: sqlite3.Connection) -> None:
+def _validated_ledger_schema(
+    connection: sqlite3.Connection, *, version: int = LEDGER_SCHEMA_VERSION
+) -> None:
+    if version not in {_LEGACY_LEDGER_SCHEMA_VERSION, LEDGER_SCHEMA_VERSION}:
+        raise sqlite3.DatabaseError("unsupported ledger schema")
     objects = _ledger_application_objects(connection)
     identities = frozenset((kind, name) for kind, name, _table, _sql in objects)
     if identities != _LEDGER_APPLICATION_OBJECTS or len(objects) != len(
@@ -457,7 +475,11 @@ def _validated_ledger_schema(connection: sqlite3.Connection) -> None:
         _normalized_sql(definitions.get(("table", "runner_ledger_metadata")))
         != _normalized_sql(_LEDGER_METADATA_SQL)
         or _normalized_sql(definitions.get(("table", "transport_tasks")))
-        != _normalized_sql(_TRANSPORT_TASKS_SQL)
+        != _normalized_sql(
+            _TRANSPORT_TASKS_V4_SQL
+            if version == _LEGACY_LEDGER_SCHEMA_VERSION
+            else _TRANSPORT_TASKS_SQL
+        )
         or _normalized_sql(definitions.get(("index", "transport_tasks_nonce")))
         != _normalized_sql(_TRANSPORT_TASKS_NONCE_INDEX_SQL)
     ):
@@ -477,11 +499,15 @@ def _validated_ledger_schema(connection: sqlite3.Connection) -> None:
         raise sqlite3.DatabaseError("unexpected task ledger foreign keys")
 
 
-def _validated_ledger_generation(connection: sqlite3.Connection) -> str:
+def _validated_ledger_generation(
+    connection: sqlite3.Connection, *, allow_legacy: bool = False
+) -> str:
     version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-    if version != LEDGER_SCHEMA_VERSION:
+    if version != LEDGER_SCHEMA_VERSION and not (
+        allow_legacy and version == _LEGACY_LEDGER_SCHEMA_VERSION
+    ):
         raise sqlite3.DatabaseError("unsupported ledger schema")
-    _validated_ledger_schema(connection)
+    _validated_ledger_schema(connection, version=version)
     definition = connection.execute(
         "SELECT type, sql FROM sqlite_master WHERE name = 'runner_ledger_metadata'"
     ).fetchall()
@@ -512,6 +538,46 @@ def _validated_ledger_generation(connection: sqlite3.Connection) -> str:
     ):
         raise sqlite3.DatabaseError("invalid ledger generation")
     return ledger_generation
+
+
+def _stored_cancellation_proof(row: Mapping[str, Any]) -> dict[str, bool] | None:
+    raw = row["cancellation_proof_json"]
+    if raw is None:
+        return None
+    if (
+        row["operation"] != "execute"
+        or row["state"] != "cancelled"
+        or row["error_code"] != "task_cancelled"
+        or row["effect_dispatched"] != 1
+        or row["cancellation_requested"] != 1
+        or row["cleanup_required"] != 0
+        or row["result_json"] is not None
+        or row["recovery_receipts_json"] is not None
+        or not isinstance(raw, bytes)
+        or len(raw) > _MAX_CANCELLATION_PROOF_BYTES
+    ):
+        raise RunnerAuthenticationError("Runner stored cancellation proof is invalid.")
+    return validated_cancellation_proof(_decode_json_object(raw))
+
+
+def _watchdog_cancellation_proof(status: Mapping[str, Any]) -> dict[str, bool] | None:
+    if (
+        status.get("schema_version") != "bluefire.runner-watchdog-status.v2"
+        or status.get("state") != "cancelled"
+        or status.get("error_code") != "cancelled"
+    ):
+        return None
+    return validated_cancellation_proof(
+        {
+            field: status.get(field)
+            for field in (
+                "cooperative_requested",
+                "cooperative_acknowledged",
+                "forced_tree_termination",
+                "control_cleanup_verified",
+            )
+        }
+    )
 
 
 @contextmanager
@@ -639,7 +705,7 @@ def _pinned_ledger_inspection(
 def read_runner_ledger_generation(state_path: str | Path) -> str | None:
     """Read one exact ledger generation without creating or modifying the ledger.
 
-    A cleanly absent path returns ``None``. Unsafe, malformed, legacy, or raced
+    A cleanly absent path returns ``None``. Unsafe, malformed, unsupported, or raced
     paths are refused so lifecycle code cannot derive a recovery namespace from
     anything except the strict singleton metadata record.
     """
@@ -648,7 +714,7 @@ def read_runner_ledger_generation(state_path: str | Path) -> str | None:
         if connection is None:
             return None
         try:
-            return _validated_ledger_generation(connection)
+            return _validated_ledger_generation(connection, allow_legacy=True)
         except sqlite3.Error:
             raise AuthenticatedRunnerTransportError(
                 "Runner recovery ledger generation could not be verified."
@@ -672,20 +738,27 @@ def audit_runner_ledger(
         if connection is None:
             return None
         try:
-            generation = _validated_ledger_generation(connection)
+            generation = _validated_ledger_generation(connection, allow_legacy=True)
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            proof_column = (
+                "NULL AS cancellation_proof_json"
+                if version == _LEGACY_LEDGER_SCHEMA_VERSION
+                else "cancellation_proof_json"
+            )
             integrity = connection.execute("PRAGMA quick_check(1)").fetchall()
             if len(integrity) != 1 or str(integrity[0][0]) != "ok":
                 raise sqlite3.DatabaseError("ledger integrity check failed")
             total = execute = unresolved = active = cleanup_required = 0
-            rows = connection.execute("""
+            # The projection selects only the two fixed schema-version expressions above.
+            rows = connection.execute(f"""
                 SELECT task_id, operation, profile_id, request_hash, runner_id, client_id,
                        peer_fingerprint, ca_fingerprint, server_fingerprint,
                        client_fingerprint, enrollment_generation, nonce, state,
                        execute_payload_json, result_json, recovery_receipts_json,
                        cleanup_required, effect_dispatched, error_code, executor_instance,
-                       cancellation_requested, created_at, updated_at
+                       cancellation_requested, created_at, updated_at, {proof_column}
                 FROM transport_tasks ORDER BY task_id
-                """)
+                """)  # nosec B608
             for row in rows:
                 total += 1
                 if total > 1_000_000:
@@ -704,7 +777,9 @@ def audit_runner_ledger(
                     row["execute_payload_json"],
                     row["result_json"],
                     row["recovery_receipts_json"],
+                    row["cancellation_proof_json"],
                 )
+                _stored_cancellation_proof(dict(row))
                 execute_identity_valid = True
                 if is_execute:
                     try:
@@ -1841,7 +1916,7 @@ class AuthenticatedRunnerServer:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-                if version not in {0, LEDGER_SCHEMA_VERSION}:
+                if version not in {0, _LEGACY_LEDGER_SCHEMA_VERSION, LEDGER_SCHEMA_VERSION}:
                     raise sqlite3.DatabaseError("unsupported ledger schema")
                 if version == 0:
                     if _ledger_application_objects(connection):
@@ -1856,6 +1931,14 @@ class AuthenticatedRunnerServer:
                         VALUES (1, ?, ?)
                         """,
                         (_LEDGER_METADATA_SCHEMA, secrets.token_hex(32)),
+                    )
+                    connection.execute(f"PRAGMA user_version = {LEDGER_SCHEMA_VERSION}")
+                elif version == _LEGACY_LEDGER_SCHEMA_VERSION:
+                    # Validate the exact prior schema before its only permitted
+                    # migration. Existing rows remain explicitly unproved.
+                    _validated_ledger_generation(connection, allow_legacy=True)
+                    connection.execute(
+                        "ALTER TABLE transport_tasks ADD COLUMN cancellation_proof_json BLOB"
                     )
                     connection.execute(f"PRAGMA user_version = {LEDGER_SCHEMA_VERSION}")
                 ledger_generation = _validated_ledger_generation(connection)
@@ -2079,7 +2162,8 @@ class AuthenticatedRunnerServer:
                     SELECT task_id, operation, profile_id, request_hash, runner_id,
                            state, execute_payload_json, result_json,
                            recovery_receipts_json, cleanup_required, effect_dispatched,
-                           error_code, executor_instance, cancellation_requested, updated_at
+                           error_code, executor_instance, cancellation_requested, updated_at,
+                           cancellation_proof_json
                     FROM transport_tasks WHERE task_id = ?
                     """,
                     (task_id,),
@@ -2125,7 +2209,7 @@ class AuthenticatedRunnerServer:
                 """
                 UPDATE transport_tasks
                 SET state = 'completed', result_json = ?, recovery_receipts_json = NULL,
-                    cleanup_required = 0, error_code = NULL,
+                    cleanup_required = 0, error_code = NULL, cancellation_proof_json = NULL,
                     updated_at = MAX(updated_at + 1, ?)
                 WHERE task_id = ? AND operation = 'execute' AND effect_dispatched = 1
                   AND state = ? AND updated_at = ?
@@ -2229,6 +2313,7 @@ class AuthenticatedRunnerServer:
                 """
                 UPDATE transport_tasks
                 SET state = ?, result_json = NULL, recovery_receipts_json = ?,
+                    cancellation_proof_json = NULL,
                     cleanup_required = ?, error_code = ?,
                     updated_at = MAX(updated_at + 1, ?)
                 WHERE task_id = ? AND operation = 'execute' AND effect_dispatched = 1
@@ -2323,16 +2408,27 @@ class AuthenticatedRunnerServer:
         error_code: str,
         expected_state: str | None = None,
         expected_updated_at: int | None = None,
+        cancellation_proof: Mapping[str, bool] | None = None,
     ) -> str | None:
         if state not in {"cancelled", "timed_out"}:
             raise sqlite3.DatabaseError("invalid confirmed execute terminal state")
         if (expected_state is None) != (expected_updated_at is None):
             raise sqlite3.DatabaseError("incomplete execute reconciliation identity")
+        if cancellation_proof is not None and state != "cancelled":
+            raise RunnerAuthenticationError("Runner cancellation proof state is invalid.")
+        encoded_proof = (
+            canonical_json_bytes(validated_cancellation_proof(dict(cancellation_proof)))
+            if cancellation_proof is not None
+            else None
+        )
         with self._database(write=True) as connection:
             connection.execute("BEGIN IMMEDIATE")
             current = connection.execute(
                 """
-                SELECT state, error_code, updated_at FROM transport_tasks
+                SELECT state, error_code, updated_at, operation, effect_dispatched,
+                       cancellation_requested, cleanup_required, result_json,
+                       recovery_receipts_json, cancellation_proof_json
+                FROM transport_tasks
                 WHERE task_id = ? AND operation = 'execute' AND effect_dispatched = 1
                 """,
                 (task_id,),
@@ -2340,6 +2436,7 @@ class AuthenticatedRunnerServer:
             if current is None:
                 connection.rollback()
                 raise sqlite3.DatabaseError("execute terminal state changed")
+            stored_proof = _stored_cancellation_proof(dict(current))
             current_state = str(current["state"])
             current_updated_at = int(current["updated_at"])
             if expected_state is not None and (
@@ -2357,6 +2454,21 @@ class AuthenticatedRunnerServer:
                 if current_state == state and current["error_code"] != error_code:
                     connection.rollback()
                     raise sqlite3.DatabaseError("execute terminal state changed")
+                if current_state == state == "cancelled" and encoded_proof is not None:
+                    if (
+                        stored_proof is not None
+                        and canonical_json_bytes(stored_proof) != encoded_proof
+                    ):
+                        raise RunnerAuthenticationError("Runner cancellation proof changed.")
+                    if stored_proof is None:
+                        connection.execute(
+                            """
+                            UPDATE transport_tasks SET cancellation_proof_json = ?,
+                                updated_at = MAX(updated_at + 1, ?)
+                            WHERE task_id = ? AND state = 'cancelled' AND updated_at = ?
+                            """,
+                            (encoded_proof, time.time_ns(), task_id, current_updated_at),
+                        )
                 connection.commit()
                 return current_state
             if current_state not in {"running", "indeterminate"}:
@@ -2368,7 +2480,8 @@ class AuthenticatedRunnerServer:
                 SET state = ?, result_json = NULL, recovery_receipts_json = NULL,
                     cleanup_required = 0, cancellation_requested = CASE
                         WHEN ? = 'cancelled' THEN 1 ELSE cancellation_requested END,
-                    error_code = ?, updated_at = MAX(updated_at + 1, ?)
+                    error_code = ?, cancellation_proof_json = ?,
+                    updated_at = MAX(updated_at + 1, ?)
                 WHERE task_id = ? AND operation = 'execute' AND effect_dispatched = 1
                   AND state = ? AND updated_at = ?
                 """,
@@ -2376,6 +2489,7 @@ class AuthenticatedRunnerServer:
                     state,
                     state,
                     error_code,
+                    encoded_proof,
                     time.time_ns(),
                     task_id,
                     current_state,
@@ -2399,6 +2513,7 @@ class AuthenticatedRunnerServer:
         row = self._execute_row(task_id)
         if row is None or row["operation"] != "execute":
             return {"state": "not_found", "result": None, "receipt_ids": []}
+        _stored_cancellation_proof(dict(row))
         existing_state = str(row["state"])
         observed_updated_at = int(row["updated_at"])
         existing_terminal = existing_state in {"failed", "cancelled", "timed_out"}
@@ -2505,6 +2620,24 @@ class AuthenticatedRunnerServer:
                 )
             )
             if status_matches:
+                if (
+                    existing_state == "cancelled"
+                    and terminal_status is not None
+                    and (
+                        terminal_status.get("schema_version")
+                        == "bluefire.runner-watchdog-status.v2"
+                    )
+                ):
+                    committed_state = self._set_confirmed_execute_terminal(
+                        task_id,
+                        state="cancelled",
+                        error_code="task_cancelled",
+                        expected_state=existing_state,
+                        expected_updated_at=observed_updated_at,
+                        cancellation_proof=_watchdog_cancellation_proof(terminal_status),
+                    )
+                    if committed_state != "cancelled":
+                        return None
                 try:
                     self._cleanup_reconciled_watchdog(task_id)
                 except RunnerTransportError:
@@ -2601,6 +2734,11 @@ class AuthenticatedRunnerServer:
                 error_code=terminal_error,
                 expected_state=existing_state,
                 expected_updated_at=observed_updated_at,
+                cancellation_proof=(
+                    _watchdog_cancellation_proof(watchdog_status)
+                    if terminal_state == "cancelled" and watchdog_status is not None
+                    else None
+                ),
             )
             if committed_state is None or committed_state != terminal_state:
                 return None
@@ -2726,25 +2864,17 @@ class AuthenticatedRunnerServer:
         if not self._enter_effect_dispatch(task_id, None):
             raise _RequestRefusal("task_cancelled")
 
-    def _mark_task_cancelled(self, task_id: str) -> None:
-        with self._database(write=True) as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            cursor = connection.execute(
-                """
-                UPDATE transport_tasks
-                SET state = 'cancelled', result_json = NULL,
-                    recovery_receipts_json = NULL, cleanup_required = 0,
-                    cancellation_requested = 1, error_code = 'task_cancelled',
-                    updated_at = MAX(updated_at + 1, ?)
-                WHERE task_id = ? AND operation = 'execute' AND state = 'running'
-                  AND effect_dispatched = 1
-                """,
-                (time.time_ns(), task_id),
-            )
-            if cursor.rowcount != 1:
-                connection.rollback()
-                raise sqlite3.DatabaseError("execute cancellation state changed")
-            connection.commit()
+    def _mark_task_cancelled(
+        self, task_id: str, *, cancellation_proof: Mapping[str, bool] | None = None
+    ) -> None:
+        state = self._set_confirmed_execute_terminal(
+            task_id,
+            state="cancelled",
+            error_code="task_cancelled",
+            cancellation_proof=cancellation_proof,
+        )
+        if state != "cancelled":
+            raise sqlite3.DatabaseError("execute cancellation state changed")
 
     def start(self) -> AuthenticatedRunnerServer:
         if self._serve_thread is not None:
@@ -2867,7 +2997,12 @@ class AuthenticatedRunnerServer:
                             try:
                                 response = self._dispatch(checked, enrollment, peer_fingerprint)
                             except _RequestRefusal as exc:
-                                response = self._error_response(request, enrollment, exc.code)
+                                response = self._error_response(
+                                    request,
+                                    enrollment,
+                                    exc.code,
+                                    failure_reason=getattr(exc, "transport_failure_reason", None),
+                                )
                     managed_shutdown = (
                         checked.get("operation") == "shutdown" and response.get("ok") is True
                     )
@@ -3279,7 +3414,7 @@ class AuthenticatedRunnerServer:
                 except BaseException:
                     return self._post_dispatch_resolution(task_id)
                 raise _RequestRefusal("task_timed_out") from None
-            except RunnerTaskCancelled:
+            except RunnerTaskCancelled as exc:
                 try:
                     receipts = self._discover_recovery_receipts(manifest, profile)
                     if receipts:
@@ -3293,7 +3428,9 @@ class AuthenticatedRunnerServer:
                         if recovery_state != "recovery_required":
                             return self._post_dispatch_resolution(task_id)
                         raise _RequestRefusal("recovery_required")
-                    self._mark_task_cancelled(task_id)
+                    self._mark_task_cancelled(
+                        task_id, cancellation_proof=cancellation_proof_from_cancelled(exc)
+                    )
                     try:
                         self._cleanup_reconciled_watchdog(task_id)
                     except RunnerTransportError:
@@ -3303,8 +3440,13 @@ class AuthenticatedRunnerServer:
                 except BaseException:
                     return self._post_dispatch_resolution(task_id)
                 raise _RequestRefusal("task_cancelled") from None
-            except BaseException:
-                return self._post_dispatch_resolution(task_id)
+            except BaseException as exc:
+                try:
+                    return self._post_dispatch_resolution(task_id)
+                except _RequestRefusal as refusal:
+                    if isinstance(exc, RunnerTransportError):
+                        refusal.transport_failure_reason = transport_failure_reason(exc)
+                    raise
         finally:
             if task_aware:
                 with self._task_cancellations_lock:
@@ -3320,11 +3462,13 @@ class AuthenticatedRunnerServer:
                     COALESCE(length(execute_payload_json), 0)
                     + COALESCE(length(result_json), 0)
                     + COALESCE(length(recovery_receipts_json), 0)
+                    + COALESCE(length(cancellation_proof_json), 0)
                 ), 0) AS blob_bytes,
                 COALESCE(SUM(
                     COALESCE(length(execute_payload_json), 0)
                     + COALESCE(length(result_json), 0)
                     + COALESCE(length(recovery_receipts_json), 0)
+                    + COALESCE(length(cancellation_proof_json), 0)
                     + CASE
                         WHEN operation = 'execute' AND result_json IS NULL
                              AND state IN ('running', 'indeterminate', 'recovery_required')
@@ -3521,7 +3665,7 @@ class AuthenticatedRunnerServer:
                 """
                 UPDATE transport_tasks
                 SET state = 'completed', result_json = ?, recovery_receipts_json = NULL,
-                    cleanup_required = 0, error_code = NULL,
+                    cleanup_required = 0, error_code = NULL, cancellation_proof_json = NULL,
                     updated_at = MAX(updated_at + 1, ?)
                 WHERE task_id = ? AND state = 'running'
                 """,
@@ -3619,6 +3763,7 @@ class AuthenticatedRunnerServer:
                                execute_payload_json, result_json, recovery_receipts_json,
                                cleanup_required, effect_dispatched, error_code,
                                executor_instance, cancellation_requested,
+                               cancellation_proof_json,
                                runner_id, client_id, peer_fingerprint, ca_fingerprint,
                                server_fingerprint, client_fingerprint, enrollment_generation
                         FROM transport_tasks WHERE task_id = ?
@@ -3646,6 +3791,7 @@ class AuthenticatedRunnerServer:
             or any(row[field] != value for field, value in binding.items())
         ):
             raise _RequestRefusal("task_identity_mismatch")
+        _stored_cancellation_proof(dict(row))
         state = str(row["state"])
         needs_reconciliation = (
             state in {"indeterminate", "recovery_required"}
@@ -3700,6 +3846,7 @@ class AuthenticatedRunnerServer:
             ):
                 raise sqlite3.DatabaseError("recovery receipt state is invalid")
             receipt_ids = list(candidate_ids)
+        proof = _stored_cancellation_proof(dict(row))
         return {
             "original_task_id": original_task,
             "original_request_hash": original_hash,
@@ -3714,6 +3861,7 @@ class AuthenticatedRunnerServer:
             "cancellation_requested": bool(row["cancellation_requested"]),
             "receipt_ids": receipt_ids,
             "cleanup_required": bool(row["cleanup_required"]),
+            **({"cancellation_proof": proof} if proof is not None else {}),
         }
 
     def _cancel_payload(
@@ -3893,7 +4041,12 @@ class AuthenticatedRunnerServer:
         )
 
     def _error_response(
-        self, request: Mapping[str, Any], enrollment: RunnerEnrollment, code: str
+        self,
+        request: Mapping[str, Any],
+        enrollment: RunnerEnrollment,
+        code: str,
+        *,
+        failure_reason: str | None = None,
     ) -> Mapping[str, Any]:
         # A response can only be formed after the strict outer request shape was
         # decoded. Unknown fields are normalized to harmless placeholders rather
@@ -3925,7 +4078,13 @@ class AuthenticatedRunnerServer:
                 safe_request,
                 ok=False,
                 status="refused",
-                payload={},
+                payload=(
+                    {"transport_failure_reason": failure_reason}
+                    if request.get("operation") == "execute"
+                    and isinstance(failure_reason, str)
+                    and failure_reason in TRANSPORT_FAILURE_REASONS
+                    else {}
+                ),
                 error_code=code if code in _REMOTE_ERROR_MESSAGES else "request_invalid",
             ),
         )
@@ -4021,9 +4180,7 @@ class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
             return self._execution_result(response)
         except RunnerRemoteError as exc:
             if exc.code == "task_cancelled":
-                raise RunnerTaskCancelled(
-                    "Runner task was cancelled after its process tree stopped."
-                ) from None
+                return self._recovered_execution(task_id, request_hash)
             if exc.code == "task_timed_out":
                 raise RunnerTaskTimedOut(
                     "Runner task timed out after its process tree stopped."
@@ -4064,11 +4221,13 @@ class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
         _token(task_id)
         if _DIGEST.fullmatch(request_hash) is None:
             raise RunnerAuthenticationError("Runner recovery identity is invalid.")
-        return self._call(
+        payload = self._call(
             "recover",
             {"original_task_id": task_id, "original_request_hash": request_hash},
             task_id=self._random_task("recover"),
         )
+        validated_recovered_cancellation_proof(payload, task_id, request_hash)
+        return payload
 
     def cancel(self, task_id: str, request_hash: str) -> Mapping[str, Any]:
         _token(task_id)
@@ -4139,14 +4298,17 @@ class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
             except RunnerConnectionError:
                 continue
             state = recovered.get("state")
+            proof = validated_recovered_cancellation_proof(recovered, task_id, request_hash)
             if state == "completed":
                 return self._recovered_result_payload(recovered)
             if state == "cancelled":
                 raise RunnerTaskCancelled(
-                    "Runner task was cancelled after its process tree stopped."
+                    "Runner task was cancelled after its process tree stopped.", **proof
                 )
             if state == "timed_out":
                 raise RunnerTaskTimedOut("Runner task timed out after its process tree stopped.")
+            if state == "recovery_required":
+                raise RunnerRemoteError("recovery_required")
             if state == "not_found" and not resent:
                 resent = True
                 try:
@@ -4162,7 +4324,6 @@ class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
             if state in {
                 "failed",
                 "indeterminate",
-                "recovery_required",
                 "cancelled",
                 "timed_out",
             }:
@@ -4173,10 +4334,15 @@ class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
 
     def _recovered_execution(self, task_id: str, request_hash: str) -> Mapping[str, Any]:
         recovered = self.recover(task_id, request_hash)
+        proof = validated_recovered_cancellation_proof(recovered, task_id, request_hash)
         if recovered.get("state") == "cancelled":
-            raise RunnerTaskCancelled("Runner task was cancelled after its process tree stopped.")
+            raise RunnerTaskCancelled(
+                "Runner task was cancelled after its process tree stopped.", **proof
+            )
         if recovered.get("state") == "timed_out":
             raise RunnerTaskTimedOut("Runner task timed out after its process tree stopped.")
+        if recovered.get("state") == "recovery_required":
+            raise RunnerRemoteError("recovery_required")
         if recovered.get("state") != "completed":
             raise RunnerConnectionError(
                 "Runner task exists but has no completed result; inspect recovery state."
@@ -4334,7 +4500,15 @@ class AuthenticatedRunnerClient(native_tools.NativeToolInspectionClient):
         if ok is True and status == "completed" and error_code is None:
             return payload
         if ok is False and status == "refused" and isinstance(error_code, str):
-            raise RunnerRemoteError(error_code)
+            reason = payload.get("transport_failure_reason")
+            if payload and (
+                request.get("operation") != "execute"
+                or set(payload) != {"transport_failure_reason"}
+                or not isinstance(reason, str)
+                or reason not in TRANSPORT_FAILURE_REASONS
+            ):
+                raise RunnerAuthenticationError("Runner response diagnostic is invalid.")
+            raise RunnerRemoteError(error_code, transport_failure_reason=reason)
         raise RunnerAuthenticationError("Runner response status is invalid.")
 
 

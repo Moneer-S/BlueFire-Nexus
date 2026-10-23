@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { expect, it, vi } from "vitest";
 import { ReceiverTestSetup } from "../src/components/ReceiverTestSetup";
 import { api } from "../src/lib/api";
@@ -12,6 +12,11 @@ import { receiverFixtureDigest } from "./receiver-defense-fixture";
 function Witness() {
   const { runConfig, scenario } = useProduct();
   return <><output aria-label="Global run configuration">{JSON.stringify(runConfig)}</output><output aria-label="Builder draft">{JSON.stringify(scenario)}</output></>;
+}
+
+function LocationWitness() {
+  const location = useLocation();
+  return <output aria-label="Current route">{location.pathname}{location.search}</output>;
 }
 it("starts the receiver form's selected profile without changing the Builder's run configuration", async () => {
   const catalog = structuredClone(demoCatalog);
@@ -38,4 +43,22 @@ it("starts the receiver form's selected profile without changing the Builder's r
   expect(screen.getByLabelText("Global run configuration").textContent).toBe(originalConfig);
   expect(screen.getByLabelText("Builder draft").textContent).toBe(originalDraft);
   expect(screen.getByRole("radio", { name: /Auto/ })).toBeDisabled();
+});
+
+it("opens the packaged receiver-redaction starter through the Experiments copy flow", async () => {
+  sessionStorage.removeItem("bluefire.receiver-defense.selected.v1");
+  vi.spyOn(api, "catalog").mockResolvedValue(structuredClone(demoCatalog));
+  vi.spyOn(api, "scenarioVersions").mockResolvedValue({ schema_version: "bluefire.scenario-version-list.v1", scenarios: [] });
+  const receiverContext = vi.spyOn(api, "receiverContext");
+  const onStart = vi.fn();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter><Witness /><LocationWitness /><ReceiverTestSetup disabled={false} onStart={onStart} /></MemoryRouter></ProductProvider></QueryClientProvider>);
+  const originalDraft = screen.getByLabelText("Builder draft").textContent;
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("link", { name: "Open “Validate receiver redaction and legitimate use”" }));
+  expect(screen.getByLabelText("Current route")).toHaveTextContent("/scenarios?selected=scenario.receiver-defense.redaction-validation.v1&view=packaged");
+  expect(screen.getByLabelText("Builder draft").textContent).toBe(originalDraft);
+  expect(receiverContext).not.toHaveBeenCalled();
+  expect(onStart).not.toHaveBeenCalled();
+  expect(screen.queryByRole("button", { name: "Save control test" })).not.toBeInTheDocument();
 });

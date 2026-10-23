@@ -2,13 +2,43 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
+import sys
+import zipfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from bluefire.action_package_metadata import PackageCompatibility, SemVer
 from bluefire.cross_platform_wheel import _write_member
+from bluefire.version import native_runner_version
 from tools import verify_packaged_runner as verifier
-from tools.verify_packaged_runner import _disposable_workspace_proof, _native_runner_members
+from tools.verify_packaged_runner import (
+    _SMOKE_ALIAS_MIN_BLUEFIRE_VERSION,
+    _disposable_workspace_proof,
+    _native_runner_members,
+)
+
+
+def test_prerelease_floor_is_explicit_and_stable_release_still_qualifies():
+    stable_floor = PackageCompatibility.from_mapping(
+        {
+            "minimum_bluefire_version": "3.0.0",
+            "maximum_bluefire_version_exclusive": "4.0.0",
+        }
+    )
+    rc_floor = PackageCompatibility.from_mapping(
+        {
+            "minimum_bluefire_version": _SMOKE_ALIAS_MIN_BLUEFIRE_VERSION,
+            "maximum_bluefire_version_exclusive": "4.0.0",
+        }
+    )
+
+    assert not stable_floor.supports(SemVer.parse("3.0.0-rc2"))
+    assert rc_floor.supports(SemVer.parse("3.0.0-rc2"))
+    assert rc_floor.supports(SemVer.parse("3.0.0"))
 
 
 def test_failure_diagnostic_is_bounded_and_never_emits_unapproved_values():
@@ -176,6 +206,160 @@ def test_cli_preserves_argument_parser_exit(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert not captured.out and "usage:" in captured.err
     assert "packaged runner verification failed" not in captured.err
+
+
+def test_inspect_cli_runs_outside_checkout_without_pythonpath(tmp_path):
+    checkout = Path(__file__).resolve().parents[1]
+    outside = tmp_path / "outside"
+    wheel_dir = tmp_path / "empty-wheels"
+    outside.mkdir()
+    wheel_dir.mkdir()
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    environment.pop("PYTHONHOME", None)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-E",
+            "-S",
+            str(checkout / "tools" / "verify_packaged_runner.py"),
+            "inspect",
+            "--wheel-dir",
+            str(wheel_dir),
+            "--platform",
+            "linux",
+            "--architecture",
+            "x86_64",
+            "--wheel-platform-tag",
+            "linux_x86_64",
+        ],
+        cwd=outside,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert "Traceback" not in completed.stderr
+    lines = completed.stderr.splitlines()
+    assert lines[0] == "packaged runner verification failed"
+    diagnostic = json.loads(lines[1])
+    assert diagnostic["phase"] == "inspection"
+    assert diagnostic["reason"] == "wheel_inspection_failed"
+    assert diagnostic["exception_types"] == ["RuntimeError"]
+
+
+def test_inspect_cli_accepts_a_valid_synthetic_wheel_outside_checkout(tmp_path):
+    checkout = Path(__file__).resolve().parents[1]
+    outside = tmp_path / "outside"
+    wheel_dir = tmp_path / "wheels"
+    outside.mkdir()
+    wheel_dir.mkdir()
+    version = "3.0.0rc2"
+    tag = "linux_x86_64"
+    wheel_name = f"bluefire_nexus-{version}-py3-none-{tag}.whl"
+    runner = b"synthetic native runner bytes"
+    runner_name = "bluefire-runner"
+    native_root = f"bluefire_nexus-{version}.data/purelib/bluefire/native"
+    runner_path = f"{native_root}/{runner_name}"
+    manifest = {
+        "schema_version": "bluefire.native-runner-package.v1",
+        "product": {"name": "bluefire-nexus", "version": version},
+        "runner": {
+            "id": "bluefire-rust-runner.v1",
+            "version": "3.0.0-rc2",
+            "inventory_schema": "bluefire.runner-inventory.v1",
+            "action_sdk_version": "bluefire.runner-action-sdk.v1",
+            "receipt_protocol": "bluefire.runner-receipt-wal.v2",
+        },
+        "artifact": {
+            "filename": runner_name,
+            "platform": "linux",
+            "architecture": "x86_64",
+            "size": len(runner),
+            "sha256": hashlib.sha256(runner).hexdigest(),
+            "wheel_platform_tag": tag,
+        },
+    }
+    dist_info = f"bluefire_nexus-{version}.dist-info"
+    members = {
+        f"{dist_info}/METADATA": (
+            f"Metadata-Version: 2.1\nName: bluefire-nexus\nVersion: {version}\n\n"
+        ).encode(),
+        f"{dist_info}/WHEEL": (
+            f"Wheel-Version: 1.0\nRoot-Is-Purelib: false\nTag: py3-none-{tag}\n"
+        ).encode(),
+        f"{native_root}/runner-manifest.json": json.dumps(manifest).encode(),
+        runner_path: runner,
+    }
+    with zipfile.ZipFile(wheel_dir / wheel_name, "w") as archive:
+        for name, payload in members.items():
+            archive.writestr(name, payload)
+
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    environment.pop("PYTHONHOME", None)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-E",
+            "-S",
+            str(checkout / "tools" / "verify_packaged_runner.py"),
+            "inspect",
+            "--wheel-dir",
+            str(wheel_dir),
+            "--platform",
+            "linux",
+            "--architecture",
+            "x86_64",
+            "--wheel-platform-tag",
+            tag,
+        ],
+        cwd=outside,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stderr == ""
+    diagnostic = json.loads(completed.stdout)
+    assert diagnostic["verified"] is True
+    assert diagnostic["wheel"] == wheel_name
+    assert diagnostic["runner"]["filename"] == runner_name
+    assert diagnostic["runner"]["sha256"] == hashlib.sha256(runner).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("product_version", "expected"),
+    [
+        ("3.0.0", "3.0.0"),
+        ("3.0.0rc0", "3.0.0-rc0"),
+        ("3.0.0rc2", "3.0.0-rc2"),
+        ("0.1.9rc12", "0.1.9-rc12"),
+    ],
+)
+def test_verifier_native_version_projection_matches_shared_authority(product_version, expected):
+    assert verifier._native_runner_version(product_version) == expected
+    assert verifier._native_runner_version(product_version) == native_runner_version(
+        product_version
+    )
+
+
+@pytest.mark.parametrize(
+    "product_version", ["03.0.0", "3.0", "3.0.0-rc2", "3.0.0rc02", "3.0.0.post1", None, 3]
+)
+def test_verifier_native_version_rejections_match_shared_authority(product_version):
+    with pytest.raises(ValueError):
+        verifier._native_runner_version(product_version)
+    with pytest.raises(ValueError):
+        native_runner_version(product_version)
 
 
 def test_successful_cli_keeps_the_original_report_and_exit_status(monkeypatch, capsys):

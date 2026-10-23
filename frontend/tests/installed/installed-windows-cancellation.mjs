@@ -1,0 +1,611 @@
+/* global process, Buffer, fetch, crypto, setTimeout, clearTimeout, AbortSignal */
+import assert from "node:assert/strict";
+import { readdirSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const [portText, sandboxText, output] = process.argv.slice(2);
+assert.match(portText ?? "", /^\d{1,5}$/);
+const port = Number(portText);
+assert.ok(port > 0 && port <= 65535);
+const stdinReader = process.stdin[Symbol.asyncIterator]();
+let stdinBuffer = Buffer.alloc(0);
+let stdinDone = false;
+let stdinBytesRead = 0;
+let capability = "";
+
+const PROFILE = "gate11-windows-cancellation-witness.v1";
+const ACTION = "sandbox.execution.process-tree-cancellation-witness.v1";
+const MAX_RESPONSE_BYTES = 1_048_576;
+const MAX_INPUT_BYTES = 2050;
+const origin = `http://127.0.0.1:${port}`;
+const sandbox = sandboxText;
+const counts = {
+  session: 0, catalog: 0, runner_status: 0, runner_bootstrap: 0, runner_start: 0,
+  scenario_save: 0, preflight: 0, run_submit: 0, approval: 0, cancel: 0,
+  run_detail: 0, runner_stop: 0, job_status: 0,
+};
+const report = {
+  schema_version: "bluefire.installed-windows-cancellation.v1",
+  status: "failed_or_incomplete",
+  profile_id: PROFILE,
+  checks: [],
+  request_counts: counts,
+};
+let stage = "session";
+let session = "";
+let jobId = "";
+let runId = "";
+let ready = null;
+let approvalStatusBefore = "";
+let approvalStatusAfter = "";
+let expectedRunSource;
+let terminalOwnedJob;
+let failureRunId = "";
+let witnessFailureCode = "";
+let retainedInterruptionDiagnostic = null;
+let proofRunDetail = null;
+
+const INTERRUPTION_FLAGS = [
+  "cooperative_requested",
+  "cooperative_acknowledged",
+  "forced_tree_termination",
+  "control_cleanup_verified",
+  "process_tree_stopped",
+];
+
+function projectRetainedInterruptionDiagnostic(value) {
+  if (value == null) return { status: "missing", false_flags: [] };
+  if (typeof value !== "object" || Array.isArray(value)) {
+    return { status: "invalid_shape", false_flags: [] };
+  }
+  const falseFlags = INTERRUPTION_FLAGS.filter(flag => value[flag] === false);
+  if (!INTERRUPTION_FLAGS.every(flag => Object.hasOwn(value, flag) && typeof value[flag] === "boolean")) {
+    return { status: "invalid_shape", false_flags: falseFlags };
+  }
+  return {
+    status: falseFlags.length ? "proof_incomplete" : "complete",
+    false_flags: falseFlags,
+  };
+}
+
+async function readInputLine(maxBytes, deadline) {
+  while (true) {
+    const newline = stdinBuffer.indexOf(0x0a);
+    if (newline >= 0) {
+      const line = stdinBuffer.subarray(0, newline);
+      stdinBuffer = stdinBuffer.subarray(newline + 1);
+      assert.ok(line.length > 0 && line.length <= maxBytes, "input frame size was invalid");
+      for (const byte of line) assert.ok(byte <= 0x7f, "input frame was not ASCII");
+      return JSON.parse(line.toString("ascii"));
+    }
+    assert.ok(stdinBuffer.length <= maxBytes, "input frame exceeded its byte limit");
+    if (stdinDone) throw new Error("input frame was truncated");
+    const remaining = deadline - Date.now();
+    assert.ok(remaining > 0, "input frame deadline expired");
+    let timer;
+    const next = await Promise.race([
+      stdinReader.next(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("input frame deadline expired")), remaining);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    if (next.done) {
+      stdinDone = true;
+      continue;
+    }
+    const chunk = Buffer.from(next.value);
+    stdinBytesRead += chunk.length;
+    assert.ok(stdinBytesRead <= MAX_INPUT_BYTES, "input exceeded its total byte limit");
+    assert.ok(stdinBuffer.length + chunk.length <= MAX_INPUT_BYTES, "input buffer exceeded its byte limit");
+    stdinBuffer = Buffer.concat([stdinBuffer, chunk]);
+  }
+}
+
+async function requireInputEnd(deadline) {
+  assert.equal(stdinBuffer.length, 0, "unexpected extra input frame");
+  if (stdinDone) return;
+  const remaining = deadline - Date.now();
+  assert.ok(remaining > 0, "input end deadline expired");
+  let timer;
+  const next = await Promise.race([
+    stdinReader.next(),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("input end deadline expired")), remaining);
+    }),
+  ]).finally(() => clearTimeout(timer));
+  assert.equal(next.done, true, "unexpected extra input frame");
+  stdinDone = true;
+}
+
+async function readBoundedResponse(response) {
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new Error("service response exceeded fixture bound");
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, total).toString("utf8");
+}
+
+async function call(method, path, body) {
+  const permitted = new Set([
+    "POST /api/v1/session",
+    "GET /api/v1/catalog",
+    `GET /api/v1/runner?profile_id=${PROFILE}`,
+    "POST /api/v1/runner/bootstrap",
+    "POST /api/v1/runner/start",
+    "POST /api/v1/runner/stop",
+    "POST /api/v1/scenario-versions",
+    "POST /api/v1/runs/preflight",
+    "POST /api/v1/runs",
+  ]);
+  if (jobId) {
+    permitted.add(`GET /api/v1/jobs/${jobId}`);
+    permitted.add(`POST /api/v1/jobs/${jobId}/approval`);
+    permitted.add(`POST /api/v1/jobs/${jobId}/cancel`);
+  }
+  if (runId) permitted.add(`GET /api/v1/runs/${runId}`);
+  if (failureRunId) permitted.add(`GET /api/v1/runs/${failureRunId}`);
+  const key = `${method} ${path}`;
+  assert.ok(permitted.has(key), `unexpected local service route: ${method} ${path}`);
+  const counter = {
+    "POST /api/v1/session": "session",
+    "GET /api/v1/catalog": "catalog",
+    [`GET /api/v1/runner?profile_id=${PROFILE}`]: "runner_status",
+    "POST /api/v1/runner/bootstrap": "runner_bootstrap",
+    "POST /api/v1/runner/start": "runner_start",
+    "POST /api/v1/runner/stop": "runner_stop",
+    "POST /api/v1/scenario-versions": "scenario_save",
+    "POST /api/v1/runs/preflight": "preflight",
+    "POST /api/v1/runs": "run_submit",
+    [`GET /api/v1/jobs/${jobId}`]: "job_status",
+    [`POST /api/v1/jobs/${jobId}/approval`]: "approval",
+    [`POST /api/v1/jobs/${jobId}/cancel`]: "cancel",
+    [`GET /api/v1/runs/${runId}`]: "run_detail",
+    ...(failureRunId && failureRunId !== runId
+      ? { [`GET /api/v1/runs/${failureRunId}`]: "failure_run_detail" } : {}),
+  }[key];
+  if (["run_detail", "failure_run_detail"].includes(counter)) assert.equal(counts[counter] ?? 0, 0);
+  if (counter) counts[counter] = (counts[counter] ?? 0) + 1;
+  const headers = { Accept: "application/json", Origin: origin };
+  if (method === "POST" && path !== "/api/v1/session") headers["Content-Type"] = "application/json";
+  if (path !== "/api/v1/session") headers["X-BlueFire-Session"] = session;
+  else headers["X-BlueFire-Browser-Bootstrap"] = capability;
+  const response = await fetch(`${origin}${path}`, {
+    method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    redirect: "error",
+    signal: AbortSignal.timeout(path.endsWith("/runner/bootstrap") ? 120_000
+      : path.endsWith("/runner/start") || path.endsWith("/runner/stop") ? 45_000 : 20_000),
+  });
+  const text = await readBoundedResponse(response);
+  let value = null;
+  if (text) value = JSON.parse(text);
+  assert.ok(response.ok, `local service refused ${method} ${path} with ${response.status}`);
+  return { status: response.status, value };
+}
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+let witnessCheck = "workspace";
+
+async function witnessReady() {
+  witnessCheck = "workspace";
+  const executions = join(sandbox, ".bluefire-executions");
+  const ownerNames = readdirSync(executions);
+  if (ownerNames.length === 0) return null;
+  assert.equal(ownerNames.length, 1, "one fresh approval workspace expected");
+  const owner = join(executions, ownerNames[0]);
+  assert.ok(lstatSync(owner).isDirectory() && !lstatSync(owner).isSymbolicLink());
+  witnessCheck = "task";
+  const controls = join(owner, ".bluefire-cancellation-witness-v1");
+  const names = readdirSync(controls);
+  if (names.length === 0) return null;
+  assert.equal(names.length, 1, "one fresh cancellation task expected");
+  const task = join(controls, names[0]);
+  const stat = lstatSync(task);
+  assert.ok(stat.isDirectory() && !stat.isSymbolicLink());
+  witnessCheck = "ready_record";
+  const readyPath = join(task, "ready.json");
+  const readyStat = lstatSync(readyPath);
+  assert.ok(readyStat.isFile() && !readyStat.isSymbolicLink() && readyStat.size <= 4096);
+  const value = JSON.parse(readFileSync(readyPath, "utf8"));
+  assert.deepEqual(Object.keys(value).sort(), [
+    "descendant_process_id", "parent_process_id", "request_hash", "schema_version", "task_id",
+  ]);
+  assert.equal(value.schema_version, "bluefire.process-tree-cancellation-ready.v1");
+  assert.match(value.request_hash, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(value.task_id, `execute-${value.request_hash.slice(7)}`);
+  for (const field of ["parent_process_id", "descendant_process_id"]) {
+    assert.ok(Number.isInteger(value[field]) && value[field] > 0 && value[field] <= 0xffffffff);
+  }
+  assert.notEqual(value.parent_process_id, value.descendant_process_id);
+  return { value, task };
+}
+
+async function waitForWitnessReady() {
+  const deadline = Date.now() + 45_000;
+  while (!ready && Date.now() < deadline) {
+    try { ready = await witnessReady(); }
+    catch (error) {
+      if (error?.code !== "ENOENT") {
+        witnessFailureCode = error?.code === "ERR_ASSERTION"
+          ? "witness_ready_assertion" : "witness_ready_read_failed";
+        throw error;
+      }
+    }
+    if (!ready) await sleep(50);
+  }
+  if (!ready) witnessFailureCode = "witness_ready_deadline";
+  assert.ok(ready, "fresh witness ready record appeared in the isolated approval workspace");
+  return ready;
+}
+
+async function waitForPermit(expectedReady) {
+  const deadline = Date.now() + 15_000;
+  const permit = await readInputLine(1024, deadline);
+  if (permit?.type === "witness_denied") {
+    assert.deepEqual(Object.keys(permit).sort(), ["type"]);
+    witnessFailureCode = "independent_witness_denied";
+    throw new Error("independent witness process pin was denied");
+  }
+  assert.deepEqual(Object.keys(permit ?? {}).sort(), ["ready", "type"]);
+  assert.equal(permit.type, "witness_permit");
+  assert.deepEqual(permit.ready, expectedReady);
+  await requireInputEnd(deadline);
+}
+
+function projectFailureRunDetail(value, ownedRunId, source) {
+  const isWitness = step => step?.step_id === "witness"
+    && step.behavior_id === ACTION && step.action_id === ACTION;
+  if (!source || value?.run_id !== ownedRunId || value.scenario?.id !== source.scenario_id
+    || value.plan?.scenario_id !== source.scenario_id || value.plan?.scenario_digest !== source.digest
+    || value.plan?.mode !== "execute" || value.plan?.runner_profile_id !== PROFILE
+    || value.profile?.id !== PROFILE || !Array.isArray(value.steps) || value.steps.length !== 1
+    || !isWitness(value.steps[0]) || !Array.isArray(value.plan?.steps)
+    || value.plan.steps.length !== 1 || !isWitness(value.plan.steps[0])) {
+    return { status: "unavailable", reason: "source_binding_mismatch" };
+  }
+  const category = (candidate, allowed) => candidate == null ? "absent"
+    : allowed.includes(candidate) ? candidate : "other";
+  const step = value.steps[0];
+  return {
+    status: "available",
+    run_status: category(value.status, ["completed", "cancelled", "failed", "interrupted", "paused"]),
+    step_status: category(step.status, ["success", "partial", "blocked", "failed"]),
+    execution_disposition: category(step.execution_disposition, ["execute", "simulate", "counterfactual"]),
+    runner_status: category(step.runner_status, ["success", "partial", "refused", "control_blocked", "failed", "timed_out", "cancelled"]),
+    error_code: category(step.error?.code, [
+      "adapter_refused", "runner_transport_failed", "cancellation_witness_blocked",
+      "cancellation_witness_failed", "cancellation_witness_timeout",
+    ]),
+    transport_failure_reason: category(
+      step.error?.code === "runner_transport_failed" ? step.error.transport_failure_reason : null,
+      [
+        "cancellation_contract_invalid", "cancellation_state_unavailable", "private_state_unavailable",
+        "watchdog_state_unavailable", "runner_identity_unavailable", "runner_identity_changed",
+        "watchdog_runtime_unavailable", "watchdog_script_unavailable", "watchdog_identity_changed",
+        "launch_input_unavailable", "windows_containment_unavailable", "windows_suspended_start_failed",
+        "windows_process_control_unavailable", "process_launch_failed", "runner_io_failed", "durable_result_unavailable",
+        "pending_result_unavailable", "durable_result_commit_failed", "watchdog_exited_before_ready",
+        "watchdog_readiness_invalid", "watchdog_readiness_unavailable", "watchdog_readiness_timeout",
+        "watchdog_start_timeout", "watchdog_terminal_timeout", "watchdog_failure", "runner_unexpected_exit", "watchdog_no_valid_result",
+        "process_tree_release_failed", "process_tree_stop_failed", "timed_out", "output_limit",
+        "unsupported_result_schema", "invalid_json", "invalid_result", "other_transport",
+        "cancellation_cleanup_failed", "durable_result_exists", "pending_result_exists",
+      ],
+    ),
+  };
+}
+
+async function diagnoseTerminalRun(job) {
+  const refs = [job.progress?.run_id, job.result_ref].filter(value => value != null);
+  if (!refs.length) {
+    report.failure_run_diagnostic = { status: "unavailable", reason: "owned_run_link_absent" };
+    return;
+  }
+  if (job.job_id !== jobId || !["cancelled", "completed", "failed", "interrupted"].includes(job.state)
+    || refs.some(value => typeof value !== "string"
+      || !/^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$/.test(value) || value !== refs[0])
+    || !expectedRunSource) {
+    report.failure_run_diagnostic = { status: "unavailable", reason: "owned_run_link_invalid" };
+    return;
+  }
+  failureRunId = refs[0];
+  try {
+    const detail = proofRunDetail !== null && failureRunId === runId
+      ? proofRunDetail : (await call("GET", `/api/v1/runs/${failureRunId}`)).value;
+    report.failure_run_diagnostic = projectFailureRunDetail(detail, failureRunId, expectedRunSource);
+  } catch {
+    report.failure_run_diagnostic = { status: "unavailable", reason: "detail_unavailable" };
+  }
+}
+
+function canonicalCancellationInterruption(value, ownedRunId, source, witness) {
+  const isWitness = step => step?.step_id === "witness"
+    && step.behavior_id === ACTION && step.action_id === ACTION;
+  assert.ok(source?.document && witness);
+  assert.equal(value?.run_id, ownedRunId);
+  assert.equal(value.status, "cancelled");
+  assert.equal(value.mode, "execute");
+  assert.equal(value.runner_profile_id, PROFILE);
+  assert.equal(value.scenario_id, source.scenario_id);
+  assert.deepEqual(value.scenario, source.document);
+  assert.equal(value.plan?.scenario_id, source.scenario_id);
+  assert.equal(value.plan?.scenario_digest, source.digest);
+  assert.equal(value.plan?.mode, "execute");
+  assert.equal(value.plan?.runner_profile_id, PROFILE);
+  assert.equal(value.profile?.id, PROFILE);
+  assert.ok(Array.isArray(value.plan?.steps) && value.plan.steps.length === 1
+    && isWitness(value.plan.steps[0]));
+  assert.ok(Array.isArray(value.steps) && value.steps.length === 1 && isWitness(value.steps[0]));
+  assert.equal(value.steps[0].execution_disposition, "execute");
+  assert.equal(value.steps[0].status, "failed");
+  assert.equal(value.steps[0].error?.code, "execution_interrupted");
+  assert.equal(value.cleanup?.attempted, false);
+  assert.equal(value.cleanup?.success, true);
+  assert.equal(value.cleanup?.succeeded, true);
+  assert.equal(value.cleanup?.outstanding_receipts, 0);
+  assert.equal(value.cleanup?.outstanding_receipt_count, 0);
+  assert.equal(value.cleanup?.recovered_after_restart, false);
+  assert.equal(value.cleanup_recovery?.schema_version, "bluefire.cleanup-recovery.v1");
+  assert.equal(value.cleanup_recovery?.run_id, ownedRunId);
+  assert.equal(value.cleanup_recovery?.status, "reconciled_no_outstanding");
+  assert.equal(value.cleanup_recovery?.initial_receipt_count, 0);
+  assert.equal(value.cleanup_recovery?.remaining_receipt_count, 0);
+  assert.ok(Array.isArray(value.cleanup_recovery?.attempts) && value.cleanup_recovery.attempts.length === 0);
+  assert.ok(typeof value.finalized_at === "string" && Number.isFinite(Date.parse(value.finalized_at)));
+  assert.equal(value.manifest?.schema_version, "1.0");
+  assert.equal(value.manifest?.run_id, ownedRunId);
+  assert.match(value.manifest?.bundle_hash ?? "", /^sha256:[0-9a-f]{64}$/);
+  for (const name of ["scenario.json", "plan.json", "profile.json", "policy.json", "result.json", "evidence.json", "detections.json", "events.jsonl"]) {
+    const file = value.manifest?.files?.[name];
+    assert.match(file?.hash ?? "", /^sha256:[0-9a-f]{64}$/);
+    assert.ok(Number.isSafeInteger(file?.size_bytes) && file.size_bytes >= 0);
+  }
+  const records = value.evidence?.records;
+  assert.ok(Array.isArray(records));
+  const interruptions = records.filter(row => row?.content?.artifact_type === "execution_interruption");
+  assert.equal(interruptions.length, 1);
+  const record = interruptions[0];
+  assert.equal(record.run_id, ownedRunId);
+  assert.ok(isWitness(record));
+  assert.equal(record.runner_profile_id, PROFILE);
+  assert.equal(record.producer, "orchestrator.v1");
+  assert.equal(record.provenance, "unknown");
+  assert.ok(typeof record.evidence_id === "string" && value.steps[0].evidence_ids?.includes(record.evidence_id));
+  const interruption = record.content;
+  assert.equal(interruption.schema_version, "bluefire.execution-interruption.v1");
+  assert.equal(interruption.request_hash, witness.request_hash);
+  assert.match(interruption.runner_task_id ?? "", /^execute-[0-9a-f]{64}$/);
+  assert.equal(interruption.runner_task_id, value.steps[0].runner_task_id);
+  assert.equal(interruption.dispatch_requested, true);
+  assert.equal(interruption.runner_result_received, false);
+  assert.equal(interruption.effect_outcome, "unknown");
+  for (const key of INTERRUPTION_FLAGS) {
+    assert.equal(interruption[key], true);
+    assert.equal(value.steps[0].interruption?.[key], true);
+  }
+  return interruption;
+}
+
+async function main() {
+  stage = "bootstrap-session";
+  const sessionResponse = await call("POST", "/api/v1/session");
+  assert.equal(sessionResponse.status, 200);
+  assert.deepEqual(Object.keys(sessionResponse.value).sort(), ["session"]);
+  session = sessionResponse.value.session;
+  assert.match(session, /^[A-Za-z0-9_-]{64}$/);
+  capability = "";
+  report.checks.push("ephemeral_authenticated_session_created");
+
+  stage = "profile-authority";
+  const catalog = (await call("GET", "/api/v1/catalog")).value;
+  const profile = catalog.runner_profiles?.find(row => row.id === PROFILE);
+  assert.ok(profile, "shipped Gate 11 Windows witness profile is installed");
+  assert.equal(profile.mode, "execute");
+  assert.deepEqual(profile.platforms, ["windows"]);
+  assert.deepEqual(profile.scope, ["sandbox.workspace"]);
+  assert.deepEqual(profile.network_allowlist, []);
+  assert.equal(profile.approval_required, true);
+  assert.deepEqual(profile.enabled_actions, [ACTION, "sandbox.cleanup.v1"]);
+  assert.deepEqual(profile.blocked_actions, []);
+  assert.deepEqual(profile.budgets, { max_steps: 1, max_seconds: 30, max_artifacts: 4, max_bytes: 65536 });
+  report.checks.push("shipped_gate11_profile_and_action_verified");
+
+  stage = "runner-bootstrap-start";
+  await call("POST", "/api/v1/runner/bootstrap", { profile_id: PROFILE });
+  await call("POST", "/api/v1/runner/start", { profile_id: PROFILE });
+  const runnerStatus = (await call("GET", `/api/v1/runner?profile_id=${PROFILE}`)).value;
+  assert.equal(runnerStatus.profile_id, PROFILE);
+  assert.equal(runnerStatus.state, "ready");
+  report.checks.push("fresh_installed_runner_bootstrapped_and_started_through_service");
+
+  stage = "fresh-scenario-save";
+  const scenarioId = `scenario.installed-windows-cancel.${crypto.randomUUID()}.v1`;
+  const scenario = {
+    schema_version: "bluefire.scenario.v1",
+    id: scenarioId,
+    title: "Installed Windows cancellation witness",
+    purpose: "Verify bounded cancellation of the fixed local process-tree witness.",
+    start: "witness",
+    steps: [{ id: "witness", behavior_id: ACTION }],
+    edges: [],
+    provenance: { source: "BlueFire installed cancellation verifier", reference: scenarioId, license: "MIT", derived: false, notes: "One fixed registered witness action; no external content." },
+    limitations: ["This generated scenario proves only the packaged Windows cancellation witness profile."],
+  };
+  const saved = (await call("POST", "/api/v1/scenario-versions", { scenario })).value.scenario;
+  assert.equal(saved.scenario_id, scenarioId);
+  assert.equal(saved.version, 1);
+  assert.match(saved.digest, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(saved.document?.id, scenarioId);
+  expectedRunSource = { scenario_id: scenarioId, digest: saved.digest, document: saved.document };
+
+  stage = "normal-execute-preflight";
+  const payload = {
+    scenario: { ...scenario, layout: undefined },
+    layout: { schema_version: "bluefire.layout.v1", nodes: [] },
+    mode: "execute",
+    autonomy: "off",
+    ai_provider_id: null,
+    runner_profile_id: PROFILE,
+    target_scope: { scope_refs: ["sandbox.workspace"] },
+    collectors: ["collector.filesystem.sandbox.v1"],
+  };
+  const preflight = (await call("POST", "/api/v1/runs/preflight", payload)).value;
+  assert.equal(preflight.status, "approval_required");
+  assert.equal(preflight.runner_profile, PROFILE);
+  assert.deepEqual(preflight.scope, { scope_refs: ["sandbox.workspace"] });
+  assert.deepEqual(preflight.problems, ["Explicit operator approval is required."]);
+
+  stage = "normal-submit-and-approval";
+  const submission = (await call("POST", "/api/v1/runs", payload)).value;
+  const submittedJobId = submission.job.job_id;
+  assert.match(submittedJobId, /^job-[0-9a-f]{32}$/);
+  jobId = submittedJobId;
+  report.job_id = jobId;
+  assert.equal(submission.preflight.status, "approval_required");
+  assert.ok(new Set(["queued", "planning", "awaiting_approval"]).has(submission.job.state));
+  const before = await waitForJobState(new Set(["awaiting_approval"]), new Set(["queued", "planning"]));
+  approvalStatusBefore = before.approval_request?.status;
+  assert.equal(approvalStatusBefore, "pending");
+  await call("POST", `/api/v1/jobs/${jobId}/approval`, { approved_by: "installed-windows-cancellation-reviewer" });
+  const approved = await waitForJobState(new Set(["running", "completed", "failed", "cancelled"]));
+  assert.equal(approved.state, "running", "witness Execute must still be running before cancellation");
+
+  stage = "independent-witness-handshake";
+  ready = await waitForWitnessReady();
+  witnessCheck = "process_pin_permit";
+  await waitForPermit(ready.value);
+  report.checks.push("exact_execute_preflight_and_fresh_approval_consumed");
+  report.checks.push("cancel_requested_only_after_fresh_witness_processes_were_pinned");
+
+  stage = "cancel-and-retained-proof";
+  const cancel = await call("POST", `/api/v1/jobs/${jobId}/cancel`, {});
+  assert.equal(cancel.status, 202);
+  const cancelled = await waitForJobState(new Set(["cancelled", "completed", "failed", "interrupted"]));
+  assert.equal(cancelled.state, "cancelled");
+  const runLinks = [cancelled.progress?.run_id, cancelled.result_ref].filter(value => value != null);
+  assert.ok(runLinks.length > 0 && runLinks.every(value => value === runLinks[0]));
+  runId = runLinks[0];
+  assert.match(runId ?? "", /^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$/);
+  approvalStatusAfter = cancelled.approval_request?.status;
+  assert.ok(["consumed", "claimed"].includes(approvalStatusAfter));
+  proofRunDetail = (await call("GET", `/api/v1/runs/${runId}`)).value;
+  const evidence = proofRunDetail?.evidence?.records;
+  if (!Array.isArray(evidence)) {
+    retainedInterruptionDiagnostic = { status: "invalid_shape", false_flags: [] };
+  }
+  assert.ok(Array.isArray(evidence));
+  const observedInterruption = evidence.map(row => row?.content).find(content => content?.artifact_type === "execution_interruption");
+  retainedInterruptionDiagnostic = projectRetainedInterruptionDiagnostic(observedInterruption);
+  const interruption = canonicalCancellationInterruption(proofRunDetail, runId, expectedRunSource, ready.value);
+  const expectedInterruption = {
+    cooperative_requested: true,
+    cooperative_acknowledged: true,
+    forced_tree_termination: true,
+    control_cleanup_verified: true,
+    process_tree_stopped: true,
+  };
+  for (const [key, value] of Object.entries(expectedInterruption)) assert.equal(interruption[key], value);
+  const taskPath = ready.task;
+  let controlRemoved = false;
+  try { lstatSync(taskPath); } catch (error) { if (error?.code === "ENOENT") controlRemoved = true; else throw error; }
+  assert.ok(controlRemoved, "witness control directory was removed after cancellation");
+  report.checks.push("retained_interruption_confirmed_cancellation_and_cleanup");
+  report.checks.push("both_witness_process_handles_signaled_and_control_tree_removed");
+  report.approval_status_before = approvalStatusBefore;
+  report.approval_status_after = approvalStatusAfter;
+  report.job_state_after_cancel = cancelled.state;
+  report.witness_request_hash = ready.value.request_hash;
+  report.execution_interruption = expectedInterruption;
+
+  stage = "runner-stop";
+  await call("POST", "/api/v1/runner/stop", { profile_id: PROFILE });
+  const stopped = (await call("GET", `/api/v1/runner?profile_id=${PROFILE}`)).value;
+  assert.equal(stopped.profile_id, PROFILE);
+  assert.ok(["stopped", "unbootstrapped"].includes(stopped.state));
+  report.runner_stopped = true;
+  report.checks.push("managed_runner_stopped_through_service");
+  report.scenario_id = scenarioId;
+  report.scenario_version = saved.version;
+  report.scenario_digest = saved.digest;
+  report.job_id = jobId;
+  report.run_id = runId;
+  report.preflight_status = preflight.status;
+  report.request_counts = counts;
+  report.status = "passed";
+}
+
+async function waitForJobState(terminal, transient = null) {
+  const deadline = Date.now() + 45_000;
+  while (Date.now() < deadline && counts.job_status < 100) {
+    const job = (await call("GET", `/api/v1/jobs/${jobId}`)).value;
+    assert.equal(job.job_id, jobId);
+    if (terminal.has(job.state)) {
+      if (["cancelled", "completed", "failed", "interrupted"].includes(job.state)) terminalOwnedJob = job;
+      return job;
+    }
+    assert.ok(transient === null || transient.has(job.state), "job left its expected approval planning states");
+    await sleep(1000);
+  }
+  throw new Error("job state did not settle before its bounded deadline");
+}
+
+try {
+  stage = "input-capability";
+  const bootstrap = await readInputLine(1024, Date.now() + 360_000);
+  assert.deepEqual(Object.keys(bootstrap ?? {}).sort(), ["capability", "type"]);
+  assert.equal(bootstrap.type, "capability");
+  capability = bootstrap.capability;
+  assert.match(capability ?? "", /^[A-Za-z0-9_-]{64}$/);
+  await main();
+} catch (error) {
+  report.error = { stage, error_type: error instanceof Error ? error.name : "unknown" };
+  if (stage === "cancel-and-retained-proof" && retainedInterruptionDiagnostic) {
+    report.retained_interruption_diagnostic = retainedInterruptionDiagnostic;
+  }
+  if (stage === "independent-witness-handshake") report.error.witness_check = witnessCheck;
+  if (witnessFailureCode) report.error.code = witnessFailureCode;
+  if (jobId && counts.cancel === 0) {
+    report.failure_cleanup = {
+      cancel_attempted: true,
+      approval_request_attempted: counts.approval > 0,
+    };
+    try {
+      const cleanup = await call("POST", `/api/v1/jobs/${jobId}/cancel`, {});
+      report.failure_cleanup.cancel_accepted = cleanup.status === 202;
+      if (cleanup.status === 202) {
+        try {
+          const settled = await waitForJobState(
+            new Set(["cancelled", "completed", "failed", "interrupted"]),
+          );
+          report.failure_cleanup.terminal_state = settled.state;
+        } catch (settlementError) {
+          report.failure_cleanup.settlement_error_type = (
+            settlementError instanceof Error ? settlementError.name : "unknown"
+          );
+        }
+      }
+    } catch (cleanupError) {
+      report.error.cleanup_error_type = cleanupError instanceof Error ? cleanupError.name : "unknown";
+    }
+  }
+  if (terminalOwnedJob) await diagnoseTerminalRun(terminalOwnedJob);
+} finally {
+  capability = "";
+  session = "";
+  process.stdin.destroy();
+  writeFileSync(join(output, "driver-report.json"), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx" });
+}
+process.exitCode = report.status === "passed" ? 0 : 1;

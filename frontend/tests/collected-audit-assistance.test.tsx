@@ -44,7 +44,9 @@ function envelope(body: AssistanceRequest): AssistanceEnvelope {
 }
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><MemoryRouter><ProductProvider><AssistanceProvider><S3Audit owner={owner} /><ExperimentAssistant providers={[provider]} /></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>);
+  const tree = (showAudit = true) => <QueryClientProvider client={client}><MemoryRouter><ProductProvider><AssistanceProvider>{showAudit ? <S3Audit owner={owner} /> : <div>Another view</div>}<ExperimentAssistant providers={[provider]} /></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>;
+  const view = render(tree());
+  return { ...view, leaveAuditView: () => view.rerender(tree(false)) };
 }
 
 it.each(["assist", "auto"] as const)("explains the exact collected review in %s without dispatch or reload duplication", async autonomy => {
@@ -72,10 +74,39 @@ it.each(["assist", "auto"] as const)("explains the exact collected review in %s 
   expect(Object.keys(body).sort()).toEqual(["autonomy", "context_digest", "message", "provider_id", "selection", "submission_id"]);
   expect(save).not.toHaveBeenCalled();
   expect(screen.queryByRole("button", { name: /Approve|Execute/ })).not.toBeInTheDocument();
+  view.leaveAuditView();
+  expect(await screen.findByText(answer)).toBeInTheDocument();
+  expect(readAssistanceReceipt()).toEqual(body);
   view.unmount();
   mount();
   await screen.findByText(answer);
   expect(submit).toHaveBeenCalledTimes(1);
+});
+
+it("releases collected audit selection ownership on leaving the detail", async () => {
+  vi.spyOn(s3AuditApi, "list").mockResolvedValue({ schema_version: "bluefire.s3-audit-reviews.v2", workflow_job_id: owner,
+    reads: [], reviews: [], collections: [collectedSummary], maximum_collections: 2, maximum_reviews: 32, maximum_input_bytes: 524288, maximum_expanded_bytes: 1048576 });
+  vi.spyOn(s3AuditApi, "read").mockResolvedValue(collectedReview);
+  const get = vi.spyOn(auditContext, "auditAssistanceContext").mockResolvedValue(context);
+  const submit = vi.spyOn(api, "submitAssistance");
+  const view = mount(), user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /Collected audit/ }));
+  await user.click(await screen.findByRole("button", { name: "Explain review" }));
+  await waitFor(() => expect(get).toHaveBeenCalledWith(selected));
+  await user.selectOptions(screen.getByLabelText("AI mode"), "assist");
+  await user.selectOptions(screen.getByLabelText("Provider"), provider.provider_id);
+  const draft = "Explain the collection limits.";
+  await user.type(screen.getByLabelText("What would you like to do?"), draft);
+  const contextReads = get.mock.calls.length;
+
+  view.leaveAuditView();
+  expect(screen.getByRole("region", { name: "Previous selection" })).toHaveTextContent("This selection is from another view. Reopen its source before starting new work. Your draft is preserved.");
+  expect(screen.getByLabelText("What would you like to do?")).toHaveValue(draft);
+  expect(screen.getByRole("button", { name: "Start work" })).toBeDisabled();
+  expect(get).toHaveBeenCalledTimes(contextReads);
+  await user.click(screen.getByRole("button", { name: "Start work" }));
+  expect(submit).not.toHaveBeenCalled();
+  expect(readAssistanceReceipt()).toBeUndefined();
 });
 
 it.each([

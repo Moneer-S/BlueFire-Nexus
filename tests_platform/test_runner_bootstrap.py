@@ -26,6 +26,7 @@ from bluefire.runner_bootstrap import (
     RunnerBootstrapError,
     RunnerPackageManifest,
     bootstrap_runner,
+    build_runner_manifest,
     load_runner_manifest,
     parse_runner_manifest,
     validate_runner_inventory,
@@ -37,6 +38,7 @@ from bluefire.runner_inventory import (
     RunnerInventoryAuthorityError,
     validate_builtin_action_inventory,
 )
+from bluefire.version import native_runner_version
 from tools.stage_native_runner import stage_native_runner
 
 PRODUCT_VERSION = __version__
@@ -131,7 +133,7 @@ def _manifest(payload: bytes | None = None) -> RunnerPackageManifest:
     payload = _fake_pe() if payload is None else payload
     return RunnerPackageManifest(
         product_version=PRODUCT_VERSION,
-        runner_version=PRODUCT_VERSION,
+        runner_version=native_runner_version(PRODUCT_VERSION),
         platform=PLATFORM,
         architecture=ARCHITECTURE,
         filename=FILENAME,
@@ -145,7 +147,7 @@ def _inventory(**changes: Any) -> Mapping[str, Any]:
     value: dict[str, Any] = {
         "schema_version": INVENTORY_SCHEMA_VERSION,
         "runner_id": RUNNER_ID,
-        "runner_version": PRODUCT_VERSION,
+        "runner_version": native_runner_version(PRODUCT_VERSION),
         "action_sdk_version": ACTION_SDK_VERSION,
         "receipt_protocol": RECEIPT_PROTOCOL_VERSION,
         "platform": PLATFORM,
@@ -426,6 +428,49 @@ def test_manifest_is_strict_and_duplicate_json_keys_are_refused(tmp_path: Path) 
 
 
 @pytest.mark.parametrize(
+    ("product_version", "runner_version"),
+    [("3.0.0", "3.0.0"), ("3.0.0rc0", "3.0.0-rc0"), ("3.0.0rc2", "3.0.0-rc2")],
+)
+def test_manifest_uses_the_exact_native_version_projection(
+    product_version: str, runner_version: str
+) -> None:
+    document = _manifest().to_dict()
+    document["product"]["version"] = product_version
+    document["runner"]["version"] = runner_version
+    parsed = parse_runner_manifest(
+        document,
+        product_version=product_version,
+        platform_name=PLATFORM,
+        architecture=ARCHITECTURE,
+    )
+    assert parsed.product_version == product_version
+    assert parsed.runner_version == runner_version
+
+
+@pytest.mark.parametrize(
+    "product_version", ["3.0.0RC2", "3.0.0rc02", "03.0.0", "3.0.0.post1", "3.0.0.dev1"]
+)
+def test_native_version_projection_refuses_noncanonical_or_unsupported_versions(
+    product_version: str,
+) -> None:
+    with pytest.raises(ValueError, match="normalized stable or RC"):
+        native_runner_version(product_version)
+
+
+def test_manifest_refuses_nonprojected_runner_version() -> None:
+    document = _manifest().to_dict()
+    document["product"]["version"] = "3.0.0rc2"
+    document["runner"]["version"] = "3.0.0rc2"
+    with pytest.raises(RunnerBootstrapError, match="incompatible"):
+        parse_runner_manifest(
+            document,
+            product_version="3.0.0rc2",
+            platform_name=PLATFORM,
+            architecture=ARCHITECTURE,
+        )
+
+
+@pytest.mark.parametrize(
     ("field", "value"),
     [
         ("runner_id", "another-runner.v1"),
@@ -552,6 +597,19 @@ def test_staging_helper_writes_only_verified_platform_specific_assets(tmp_path: 
     assert not list(output.glob("*.tmp"))
 
 
+def test_runner_manifest_builder_uses_semver_prerelease(tmp_path: Path) -> None:
+    source = tmp_path / FILENAME
+    source.write_bytes(_fake_pe())
+    manifest = build_runner_manifest(
+        source,
+        platform_name=PLATFORM,
+        architecture=ARCHITECTURE,
+        product_version="3.0.0rc2",
+    )
+    assert manifest.product_version == "3.0.0rc2"
+    assert manifest.runner_version == "3.0.0-rc2"
+
+
 @pytest.mark.parametrize(
     ("platform_name", "filename", "wheel_tag"),
     [
@@ -585,7 +643,7 @@ def test_staging_binds_platform_architecture_version_inventory_and_hash(
     assert manifest.platform == platform_name
     assert manifest.architecture == ARCHITECTURE
     assert manifest.product_version == PRODUCT_VERSION
-    assert manifest.runner_version == PRODUCT_VERSION
+    assert manifest.runner_version == native_runner_version(PRODUCT_VERSION)
     assert manifest.wheel_platform_tag == wheel_tag
     assert manifest.size == len(payload)
     assert manifest.sha256 == hashlib.sha256(payload).hexdigest()

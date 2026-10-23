@@ -31,7 +31,9 @@ function envelope(body: AssistanceRequest): AssistanceEnvelope {
 }
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><MemoryRouter><ProductProvider><AssistanceProvider><S3Audit owner={owner} /><ExperimentAssistant providers={[provider]} /></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>);
+  const tree = (showAudit = true) => <QueryClientProvider client={client}><MemoryRouter><ProductProvider><AssistanceProvider>{showAudit ? <S3Audit owner={owner} /> : <div>Another view</div>}<ExperimentAssistant providers={[provider]} /></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>;
+  const view = render(tree());
+  return { ...view, leaveAuditView: () => view.rerender(tree(false)) };
 }
 
 it.each(["assist", "auto"] as const)("opens the actual saved audit in %s and retains one read-only request across reload", async autonomy => {
@@ -61,10 +63,41 @@ it.each(["assist", "auto"] as const)("opens the actual saved audit in %s and ret
   expect(JSON.stringify(body)).not.toContain(corpus.cases[0]!.input.logs[0]!.data);
   expect(readAssistanceHistory()).toContainEqual(body);
   expect(save).not.toHaveBeenCalled();
+  view.leaveAuditView();
+  expect(await screen.findByText("The imported record matches the synthetic read. Collection is not independently proven.")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Saved cloud exercise" })).toHaveAttribute("href", `/s3-access?exercise=${owner}`);
+  expect(submit).toHaveBeenCalledTimes(1);
   view.unmount();
   mount();
   await screen.findByText("The imported record matches the synthetic read. Collection is not independently proven.");
   expect(submit).toHaveBeenCalledTimes(1);
+});
+
+it("ends audit selection ownership when leaving its detail without losing the draft or starting work", async () => {
+  vi.spyOn(s3AuditApi, "list").mockResolvedValue(checkedAuditHistory(corpus.history as AuditHistory, owner));
+  vi.spyOn(s3AuditApi, "read").mockResolvedValue(review);
+  const get = vi.spyOn(auditContext, "auditAssistanceContext").mockResolvedValue(context);
+  const submit = vi.spyOn(api, "submitAssistance");
+  const view = mount(), user = userEvent.setup();
+  await user.click((await screen.findAllByRole("button", { name: /Baseline reads.*Probe/ }))[0]!);
+  await user.click(await screen.findByRole("button", { name: "Explain review" }));
+  await waitFor(() => expect(get).toHaveBeenCalledWith(selected));
+  await user.selectOptions(screen.getByLabelText("AI mode"), "assist");
+  await user.selectOptions(screen.getByLabelText("Provider"), provider.provider_id);
+  const draft = "Explain the unresolved collection evidence.";
+  await user.type(screen.getByLabelText("What would you like to do?"), draft);
+  expect(screen.getByRole("button", { name: "Start work" })).toBeEnabled();
+  const contextReads = get.mock.calls.length;
+
+  view.leaveAuditView();
+  expect(screen.getByText("Another view")).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "Previous selection" })).toHaveTextContent("This selection is from another view. Reopen its source before starting new work. Your draft is preserved.");
+  expect(screen.getByLabelText("What would you like to do?")).toHaveValue(draft);
+  expect(screen.getByRole("button", { name: "Start work" })).toBeDisabled();
+  expect(get).toHaveBeenCalledTimes(contextReads);
+  await user.click(screen.getByRole("button", { name: "Start work" }));
+  expect(submit).not.toHaveBeenCalled();
+  expect(readAssistanceReceipt()).toBeUndefined();
 });
 
 it("refuses changed selections, dispatch capabilities, and operation-bearing audit receipts", () => {
@@ -76,4 +109,19 @@ it("refuses changed selections, dispatch capabilities, and operation-bearing aud
   const valid = envelope(body);
   expect(matchesAssistanceReceipt(valid, body)).toBe(true);
   expect(matchesAssistanceReceipt({ ...valid, turn: { ...valid.turn, plan: [{ step_id: "step-1", capability_id: "graph.propose_and_validate", title: "Wrong", detector_ref: "none", reason: "Wrong" }] } }, body)).toBe(false);
+});
+
+it("encodes and parses an exact review source route while rejecting partial or repeated bindings", () => {
+  const href = auditContext.auditReviewSourceHref(selected);
+  const query = new URL(href, "http://localhost").searchParams;
+  expect(auditContext.auditReviewSourceSelection(owner, query)).toEqual(selected);
+  expect(() => auditContext.auditReviewSourceHref({ ...selected, review_digest: "bad" })).toThrow();
+  expect(() => auditContext.auditReviewSourceSelection(owner, new URLSearchParams({
+    exercise: owner, audit_review: review.review_id,
+  }))).toThrow();
+  expect(() => auditContext.auditReviewSourceSelection(owner, new URLSearchParams([
+    ["exercise", owner], ["audit_review", review.review_id], ["audit_review", review.review_id],
+    ["audit_digest", review.review_digest],
+  ]))).toThrow();
+  expect(() => auditContext.auditReviewSourceSelection("job-" + "f".repeat(32), query)).toThrow();
 });

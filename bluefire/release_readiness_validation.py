@@ -34,6 +34,7 @@ from .release_rights_audit import run_release_rights_audit
 from .source_intake_gate_validation import CHECK_NAMES as SOURCE_INTAKE_CHECK_NAMES
 from .source_intake_gate_validation import validate_persisted_source_intake_gate
 from .util import content_hash
+from .version import native_runner_version
 
 UPSTREAM_REPORT = "gate12-upstream-closure.json"
 STRUCTURAL_REPORT = "gate12-release-structure.json"
@@ -628,6 +629,11 @@ def audit_release_structure(
         "rust": cargo_match.group(1) if cargo_match else None,
         "frontend": frontend_version,
     }
+    python_version = versions["python"]
+    try:
+        semver = native_runner_version(python_version) if isinstance(python_version, str) else None
+    except ValueError:
+        semver = None
     checks = {
         "readme_product_loop": documentation["README.md"]["tokens_present"],
         "capability_classification": documentation["docs/RELEASE_CAPABILITIES.md"][
@@ -647,7 +653,9 @@ def audit_release_structure(
         "rights_audit": rights.get("unresolved_items") == [],
         "license_decision": rights.get("decision") == "retain-mit"
         and rights.get("project_license") == "MIT",
-        "version_consistency": len(set(versions.values())) == 1 and None not in versions.values(),
+        "version_consistency": (
+            semver is not None and versions["rust"] == semver and versions["frontend"] == semver
+        ),
     }
     return {
         "schema_version": STRUCTURAL_SCHEMA,

@@ -40,7 +40,7 @@
       "LicenseRef-MITRE-ATTACK-2026",
       "© 2026 The MITRE Corporation.",
       "cffi (MIT-0)",
-      "69 packages in its production lock closure",
+      "71 packages in its production lock closure",
       "49 external crates in `Cargo.lock`",
       "pySigma 1.5.0 (LGPL-2.1-only)",
       "BlueFire Nexus remains MIT licensed",
@@ -128,9 +128,10 @@
     ]
   },
   "frontend": {
-    "lockfile_sha256": "fbcd94ae2c77d5b73169d380fb250c53ca86f33c6f777c973f545f32109f8bd3",
-    "locked_package_count": 391,
+    "lockfile_sha256": "ccc0c8846ba8939b5a03a0c98d3a9a117a3c7ceb723b1014af7677cfd27cf46b",
+    "locked_package_count": 393,
     "direct_requirements": {
+      "@dagrejs/dagre": "3.1.1",
       "@radix-ui/react-dialog": "^1.1.15",
       "@radix-ui/react-tooltip": "^1.2.8",
       "@tanstack/react-query": "^5.90.2",
@@ -181,6 +182,8 @@
         "lucide-react@0.544.0"
       ],
       "MIT": [
+        "@dagrejs/dagre@3.1.1",
+        "@dagrejs/graphlib@4.0.5",
         "@floating-ui/core@1.8.0",
         "@floating-ui/dom@1.8.0",
         "@floating-ui/react-dom@2.1.9",
@@ -385,6 +388,7 @@
         "bluefire/data/release_rights_policy.json",
         "bluefire/data/python_runtime_backports.json",
         "bluefire/data/research_sources.yaml",
+        "bluefire/data/receiver_defense_validation.yaml",
         "bluefire/data/restricted_persistence_canary.yaml",
         "bluefire/data/sandbox_research_chain.yaml",
         "bluefire/data/windows_endpoint_validation.yaml",

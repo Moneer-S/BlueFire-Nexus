@@ -182,10 +182,12 @@ def test_off_admission_and_failed_provider_never_fallback_or_save(setup):
     access.invalid = True
     body["submission_id"] = str(uuid.uuid4())
     parent = service.submit_assistance_turn(body)["job"]
-    parent = service.job_controller.wait(parent["job_id"], timeout=15)
-    child = service.job_controller.wait(
-        parent["progress"]["children"]["step-1"]["job_id"], timeout=15
-    )
+    with diagnose_job_wait("graph_parent"):
+        parent = service.job_controller.wait(parent["job_id"], timeout=15)
+    with diagnose_job_wait("graph_child"):
+        child = service.job_controller.wait(
+            parent["progress"]["children"]["step-1"]["job_id"], timeout=15
+        )
     assert child["state"] == "failed" and "proposal" not in child["progress"]
     assert access.calls == [PURPOSE, "bluefire_ai_graph_draft"]
 

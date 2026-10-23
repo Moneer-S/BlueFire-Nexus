@@ -15,6 +15,19 @@ const otherId = `detection-${"c".repeat(20)}`;
 const parent: DetectionResource = { kind: "detections", id, status: "parsed", digest: "sha256:parent", created_at: "2026-09-06", updated_at: "2026-09-06", document: { candidate_id: id, revision_root_id: id, revision: 1, title: "Baseline SQL", target_language: "sqlite", state: "parsed", rule_source: source, selection: { observation_kind: "filesystem" }, logsource: { category: "file_event" }, parser_backend: { name: "SQLite bounded executor" } } };
 const manualKey = "bluefire.detection-draft.v1:manual-new-rule";
 const manualDefaults = { title: "", behaviorId: "sandbox.collection.stage.v1", language: "sqlite" };
+function registryDraftKey(candidateId: string) {
+  return Object.keys(sessionStorage).find(key => {
+    const prefix = "bluefire.detection-draft.v1:";
+    if (!key.startsWith(prefix)) return false;
+    try {
+      const binding: unknown = JSON.parse(key.slice(prefix.length));
+      return Boolean(binding && typeof binding === "object" && !Array.isArray(binding)
+        && "namespace" in binding && binding.namespace === "registry"
+        && "id" in binding && binding.id === candidateId
+        && "digest" in binding && "definition" in binding);
+    } catch { return false; }
+  });
+}
 
 function LocationWitness() {
   return <output data-testid="location">{useLocation().search}</output>;
@@ -180,7 +193,7 @@ it.each(["malformed", "oversized", "unknown-envelope"])("leaves an unreadable %s
   const { user, remount } = setup();
   const action = vi.spyOn(api, "detectionAction");
   await edit(user);
-  const key = Object.keys(sessionStorage).find(key => key.startsWith("bluefire.detection-draft.v1:") && !key.includes(":observed:"))!;
+  const key = registryDraftKey(id)!;
   expect(key).toBeTruthy();
   const raw = kind === "malformed" ? "{unreadable" : kind === "oversized" ? "x".repeat(2 * 1024 * 1024 + 1) : JSON.stringify({ ...JSON.parse(sessionStorage.getItem(key)!), unknown_field: "Preserve this unrecognized envelope" });
   sessionStorage.setItem(key, raw);

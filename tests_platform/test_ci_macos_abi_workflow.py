@@ -35,6 +35,26 @@ def test_macos_arm64_abi_host_check_uses_a_draining_exact_match():
     assert _host_check_command() == ("rustc -vV | grep -x 'host: aarch64-apple-darwin' >/dev/null")
 
 
+def test_macos_arm64_runs_and_uploads_installed_wheel_smoke():
+    workflow = yaml.safe_load(
+        (REPOSITORY / ".github/workflows/tests.yml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["package"]["steps"]
+    smoke = next(step for step in steps if step["name"] == "Smoke installed wheel outside checkout")
+    upload = next(
+        step
+        for step in steps
+        if step["name"] == "Upload macOS 26 arm64 SDK, protocol, and installed-wheel evidence"
+    )
+
+    assert "if" not in smoke
+    assert "verify_packaged_runner.py" in smoke["run"]
+    assert "'smoke'" in smoke["run"]
+    assert "installed-wheel-smoke.json" in smoke["run"]
+    assert "${{ runner.temp }}/installed-wheel-smoke.json" in upload["with"]["path"]
+    assert upload["if"].startswith("always()")
+
+
 @pytest.mark.parametrize(
     ("host", "producer_exit", "expected_success"),
     [

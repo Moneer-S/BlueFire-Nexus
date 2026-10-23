@@ -11,6 +11,7 @@ import { defaultGraphView } from "../src/lib/graph-view-retention";
 import { BuilderPage } from "../src/pages/Builder";
 import { ProductProvider, useProduct } from "../src/state/ProductContext";
 import type { Scenario } from "../src/types";
+import { builderOptions } from "./helpers/builder-options";
 
 const key = `bluefire.working-graph-view.v1:${demoScenario.id}`;
 const graphKey = "bluefire.local.scenario.v1";
@@ -84,6 +85,7 @@ it("restores a selected branch, Steps view and inspector on navigation and brows
   // Hiding a branch still clears selection and cannot make Delete act on it.
   const confirm = vi.spyOn(window, "confirm");
   await user.click(textButton("Focus on success path"));
+  await builderOptions(user);
   const deleteButton = screen.getByLabelText("Delete selected node", { selector: "button" });
   expect(deleteButton).toBeVisible();
   expect(deleteButton).toBeDisabled();
@@ -115,11 +117,12 @@ it("restores the selected section on the actual canvas after remount", async () 
   const scenario: Scenario = { ...structuredClone(demoScenario), start: "step_1", steps: Array.from({ length: 17 }, (_, index) => ({ ...structuredClone(demoScenario.steps[0]!), id: `step_${index + 1}` })), edges: [], layout: undefined };
   scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success", to_step: step.id }));
   const { user, remount } = setup(scenario);
-  await user.click(within(screen.getByLabelText("Experiment sections")).getByRole("button", { name: "Next section" }));
-  expect(screen.getByRole("combobox", { name: "Path section" })).toHaveValue("1");
+  await user.click(within(screen.getByLabelText("Experiment step groups")).getByRole("button", { name: "Next group" }));
+  expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue("1");
   remount();
-  expect(screen.getByRole("combobox", { name: "Path section" })).toHaveValue("1");
-  expect(document.querySelector('.react-flow__node[data-id="step_9"]')).toBeInTheDocument();
+  expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue("1");
+  expect(document.querySelector('.react-flow__node[data-id="step_4"]')).toBeInTheDocument();
+  await builderOptions(user);
   expect(labelButton("Copy selected node")).toBeEnabled();
   expect(JSON.parse(localStorage.getItem(graphKey)!)).toEqual(scenario);
 });

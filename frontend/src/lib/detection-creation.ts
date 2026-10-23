@@ -24,6 +24,22 @@ export function validRunDetectionSelection(value: unknown): value is RunDetectio
 }
 
 export const detectionCreationPath = (runId: string, jobId?: string) => `/detection-lab?${new URLSearchParams({ run: runId, create: "1", ...(jobId ? { create_job: jobId } : {}) })}`;
+const selectionParameters = ["create_source_digest", "create_behavior", "create_language", "create_role"] as const;
+export function detectionCreationSelectionPath(selection: RunDetectionSelection): string {
+  if (!validRunDetectionSelection(selection)) throw new Error("The captured detection selection is invalid.");
+  return `${detectionCreationPath(selection.run_id)}&${new URLSearchParams({ create_source_digest: selection.source_binding_digest, create_behavior: selection.behavior_id, create_language: selection.target_language, create_role: selection.case_role })}`;
+}
+export function detectionCreationSelectionFromParams(params: URLSearchParams): RunDetectionSelection | null | undefined {
+  if (!selectionParameters.some((key) => params.has(key))) return;
+  if (params.has("create_job") || ["run", "create", ...selectionParameters].some((key) => params.getAll(key).length !== 1) || params.get("create") !== "1") return null;
+  const selected = { kind: "run_detection", run_id: params.get("run"), source_binding_digest: params.get("create_source_digest"), behavior_id: params.get("create_behavior"), target_language: params.get("create_language"), case_role: params.get("create_role") };
+  return validRunDetectionSelection(selected) ? selected : null;
+}
+export function detectionCreationJobFromParams(params: URLSearchParams): string | null | undefined {
+  const jobs = params.getAll("create_job");
+  if (!jobs.length) return;
+  return jobs.length === 1 && creationJobId(jobs[0]!) ? jobs[0]! : null;
+}
 
 export interface DetectionCreationSource {
   schema_version: "bluefire.detection-creation-source.v1";
@@ -33,6 +49,13 @@ export interface DetectionCreationSource {
   behaviors: Array<{ behavior_id: string; title: string; step_ids: string[]; observed_count: number }>;
   languages: Array<{ id: DetectionCreationLanguage; available: boolean; reason: string | null; backend: Record<string, unknown> }>;
   limitations: string[];
+}
+export function checkedCreationSelection(selected: RunDetectionSelection, source: DetectionCreationSource): RunDetectionSelection {
+  if (!validRunDetectionSelection(selected) || !source.available || source.run_id !== selected.run_id || source.source_binding_digest !== selected.source_binding_digest
+    || source.behaviors.filter((row) => row.behavior_id === selected.behavior_id).length !== 1
+    || source.languages.filter((row) => row.id === selected.target_language).length !== 1
+    || !source.languages.some((row) => row.id === selected.target_language && row.available)) throw new Error("The captured behavior, language or evidence is no longer available. Reopen the source run and choose a new detection selection.");
+  return selected;
 }
 export interface DetectionCreationValidation {
   proposal_digest: string; reviewed_digest: string; title: string; source: string;

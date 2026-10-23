@@ -9,6 +9,7 @@ import { demoCatalog, demoScenario } from "../src/lib/demo";
 import { graphDocument, type GraphEnvelope } from "../src/lib/graph-assistance";
 import { BuilderPage } from "../src/pages/Builder";
 import { ProductProvider } from "../src/state/ProductContext";
+import { builderOptions } from "./helpers/builder-options";
 
 const jobId = `job-${"b".repeat(32)}`;
 const digest = (letter: string) => `sha256:${letter.repeat(64)}`;
@@ -41,9 +42,11 @@ it("keeps a saved canvas inspectable while preventing deletion and mutation affo
   await userEvent.keyboard("{Delete}");
   expect(confirm).not.toHaveBeenCalled();
   expect(view.container.querySelectorAll(".react-flow__node")).toHaveLength(before);
-  for (const name of ["Delete selected node", "Duplicate selected node", "Paste node", "Auto-layout"]) expect(screen.getByRole("button", { name })).toBeDisabled();
+  await builderOptions(userEvent);
+  for (const name of ["Delete selected node", "Duplicate selected node", "Paste node", "Arrange visible group"]) expect(screen.getByRole("button", { name })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Copy selected node" })).toBeEnabled();
-  expect(screen.getByRole("button", { name: "Fit graph" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Fit visible graph" })).toBeEnabled();
+  await builderOptions(userEvent, false);
   await userEvent.click(screen.getByRole("button", { name: "Steps" }));
   const steps = within(screen.getByRole("list", { name: "Experiment steps" })).getAllByRole("button");
   await userEvent.click(steps[1]!);
@@ -65,7 +68,7 @@ it("vetoes keyboard Undo and native deletion when an edited proposal becomes sto
   await screen.findByRole("textbox", { name: "Experiment name" });
   const first = () => view.container.querySelector(`.react-flow__node[data-id="${document.start}"]`) as HTMLElement;
   const originalPosition = first().style.transform;
-  await userEvent.click(screen.getByRole("button", { name: "Auto-layout" }));
+  await userEvent.click(screen.getByRole("button", { name: "Arrange visible group" }));
   const arrangedPosition = first().style.transform;
   expect(arrangedPosition).not.toBe(originalPosition);
   expect(screen.getByRole("button", { name: "Undo" })).toBeEnabled();
@@ -81,7 +84,9 @@ it("vetoes keyboard Undo and native deletion when an edited proposal becomes sto
   expect(first()).toBeInTheDocument();
   expect(first().style.transform).toBe(arrangedPosition);
   expect(confirm).not.toHaveBeenCalled();
+  await builderOptions(userEvent);
   expect(screen.getByRole("button", { name: "Copy selected node" })).toBeEnabled();
+  await builderOptions(userEvent, false);
   await userEvent.click(screen.getByRole("button", { name: "Show node inspector" }));
   expect(screen.getByRole("button", { name: "Close step details" })).toBeEnabled();
   expect(view.review).not.toHaveBeenCalled();

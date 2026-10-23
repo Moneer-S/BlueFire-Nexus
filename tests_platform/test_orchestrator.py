@@ -1363,6 +1363,107 @@ def test_transport_failure_discovers_fsynced_receipt_and_forces_cleanup(
     assert (sandbox / ".bluefire" / "receipts" / f"{runner.UNRELATED_RECEIPT_ID}.json").exists()
 
 
+@pytest.mark.parametrize("failure_kind", ["parent", "watchdog", "unknown", "durable", "pending"])
+@pytest.mark.parametrize("fixture_platform", ["windows", "linux", "macos"])
+def test_transport_failure_retains_finite_reason_without_changing_failed_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_kind: str,
+    fixture_platform: str,
+) -> None:
+    from bluefire.runner_transport import AuthenticatedRunnerClient, AuthenticatedRunnerServer
+    from bluefire.runner_transport_errors import (
+        DiagnosedRunnerTransportError,
+        RunnerDurableResultExists,
+        RunnerPendingResultExists,
+    )
+    from bluefire.runner_trust import create_local_enrollment
+    from bluefire.secret_store import InMemorySecretProvider
+
+    # Model each supported planner contract without changing the real host's native APIs.
+    monkeypatch.setattr("bluefire.orchestrator.current_platform", lambda: fixture_platform)
+    monkeypatch.setattr("bluefire.runner_contracts.current_platform", lambda: fixture_platform)
+
+    if failure_kind == "parent":
+        failure = RunnerTransportError("Runner watchdog exited before readiness")
+        reason = "watchdog_exited_before_ready"
+    elif failure_kind == "watchdog":
+        failure = DiagnosedRunnerTransportError(
+            "Runner watchdog failed before publishing a valid result",
+            transport_failure_reason="windows_suspended_start_failed",
+        )
+        reason = "windows_suspended_start_failed"
+    elif failure_kind in {"durable", "pending"}:
+        error_type = (
+            RunnerDurableResultExists if failure_kind == "durable" else RunnerPendingResultExists
+        )
+        failure = error_type("PRIVATE_SYNTHETIC_SECRET_42 at C:\\private")
+        reason = "durable_result_exists" if failure_kind == "durable" else "pending_result_exists"
+    else:
+        failure = RunnerTransportError("PRIVATE_SYNTHETIC_SECRET_42 at C:\\private")
+        reason = "other_transport"
+
+    class FailedRunner(StructuredFakeRunner):
+        def inventory(self) -> Mapping[str, Any]:
+            return {**super().inventory(), "platform": fixture_platform}
+
+        def execute(
+            self, manifest: Mapping[str, Any], profile: Mapping[str, Any]
+        ) -> Mapping[str, Any]:
+            assert manifest["platform"] == profile["platform"] == fixture_platform
+            self.calls.append((dict(manifest), dict(profile)))
+            raise failure
+
+    scenario = load_scenario(SCENARIO_PATH)
+    profile = _execute_profile()
+    provider = InMemorySecretProvider()
+    trust = tmp_path / "trust"
+    create_local_enrollment(
+        trust,
+        runner_id="bluefire-rust-runner.v1",
+        client_id="bluefire-control-plane.v1",
+        allowed_profile_ids=[profile.id],
+        secret_provider=provider,
+    )
+    runner = FailedRunner()
+    with AuthenticatedRunnerServer(
+        trust, runner, tmp_path / "transport.sqlite3", secret_provider=provider
+    ) as server:
+        host, port = server.server_address
+        client = AuthenticatedRunnerClient(
+            trust,
+            profile_id=profile.id,
+            host=host,
+            port=port,
+            secret_provider=provider,
+        )
+        orchestrator = _orchestrator(tmp_path, client)
+        result = orchestrator.run(
+            scenario,
+            mode=ExecutionMode.EXECUTE,
+            profile=profile,
+            sandbox_root=tmp_path / "sandbox",
+            target_scope=FULL_TARGET_SCOPE,
+            **_approval_kwargs(
+                orchestrator,
+                scenario=scenario,
+                profile=profile,
+                target_scope=FULL_TARGET_SCOPE,
+            ),
+        )
+    assert len(runner.calls) == 1
+    assert runner.calls[0][0]["action_id"] == "sandbox.fixture.create.v1"
+    row = _rows_by_step(result)["create_fixture"]
+    assert row["status"] == "failed"
+    assert row["execution_disposition"] == "execute"
+    assert row["error"] == {
+        "code": "runner_transport_failed",
+        "message": "Runner outcome is indeterminate and requires recovery.",
+        "transport_failure_reason": reason,
+    }
+    assert "runner_status" not in row
+
+
 def test_success_cannot_claim_an_uncommitted_receipt(tmp_path: Path) -> None:
     runner = UncommittedSuccessRunner()
     orchestrator = _orchestrator(tmp_path, runner)

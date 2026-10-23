@@ -611,9 +611,29 @@ def test_upstream_closure_revalidates_gate01_and_production_browser_receipts(
         validate_upstream_closure(tmp_path, tmp_path, binding)
 
 
+@pytest.mark.parametrize(
+    ("python_version", "rust_version", "frontend_version", "consistent"),
+    [
+        ("0.1.0", "0.1.0", "0.1.0", True),
+        ("3.0.0rc2", "3.0.0-rc2", "3.0.0-rc2", True),
+        ("3.0.0rc2", "3.0.0rc2", "3.0.0rc2", False),
+        ("3.0.0rc2", "3.0.0-rc2", "3.0.0rc2", False),
+        ("3.0.0rc2", "3.0.0-rc1", "3.0.0-rc2", False),
+        ("3.0.0rc2", "3.0.0-rc2", "3.0.0-rc1", False),
+        ("3.0.0-rc2", "3.0.0-rc2", "3.0.0-rc2", False),
+        ("3.0.0rc02", "3.0.0-rc2", "3.0.0-rc2", False),
+        ("invalid", "invalid", "invalid", False),
+        ("3.0.0rc2", "3.0.0-rc2", None, False),
+        ("3.0.0rc2", "3.0.0-rc2", {"version": "3.0.0-rc2"}, False),
+    ],
+)
 def test_release_structure_binds_commit_tree_docs_versions_and_rights(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    python_version: str,
+    rust_version: str,
+    frontend_version: object,
+    consistent: bool,
 ) -> None:
     for relative, tokens in validation_module._REQUIRED_DOCS.items():
         path = tmp_path / relative
@@ -621,12 +641,16 @@ def test_release_structure_binds_commit_tree_docs_versions_and_rights(
         path.write_text("\n".join(tokens), encoding="utf-8")
     (tmp_path / "frontend").mkdir(exist_ok=True)
     (tmp_path / "frontend/package.json").write_text(
-        json.dumps({"version": "0.1.0"}), encoding="utf-8"
+        json.dumps({"version": frontend_version}), encoding="utf-8"
     )
     (tmp_path / "runner").mkdir()
-    (tmp_path / "runner/Cargo.toml").write_text('[package]\nversion = "0.1.0"\n', encoding="utf-8")
+    (tmp_path / "runner/Cargo.toml").write_text(
+        f'[package]\nversion = "{rust_version}"\n', encoding="utf-8"
+    )
     (tmp_path / "bluefire").mkdir()
-    (tmp_path / "bluefire/version.py").write_text('__version__ = "0.1.0"\n', encoding="utf-8")
+    (tmp_path / "bluefire/version.py").write_text(
+        f'__version__ = "{python_version}"\n', encoding="utf-8"
+    )
     rights = SimpleNamespace(
         to_dict=lambda: {
             "decision": "retain-mit",
@@ -648,8 +672,14 @@ def test_release_structure_binds_commit_tree_docs_versions_and_rights(
     report = audit_release_structure(tmp_path, _binding())
 
     assert report["schema_version"] == STRUCTURAL_SCHEMA
-    assert report["passed"] is True
-    assert all(report["checks"].values())
+    assert report["passed"] is consistent
+    assert report["checks"]["version_consistency"] is consistent
+    assert all(value for name, value in report["checks"].items() if name != "version_consistency")
+    assert report["versions"] == {
+        "python": python_version,
+        "rust": rust_version,
+        "frontend": frontend_version,
+    }
 
 
 def test_opsec_report_scans_tracked_tree_and_decoded_sbom_values(

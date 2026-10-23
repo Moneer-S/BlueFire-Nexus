@@ -450,6 +450,13 @@ def test_pytest_report_section_retains_exact_payload_without_stdout(monkeypatch,
     assert captured.out == captured.err == ""
 
 
+def test_service_terminal_stage_label_is_allowlisted(monkeypatch, capsys):
+    timeout, _ = actual_timeout({"state": "running", "progress": {"phase": "running"}})
+    monkeypatch.setattr(diagnostic.sys, "_current_frames", lambda: {})
+    report = emit(timeout, capsys, stage="service_terminal")
+    assert report["stage"] == "service_terminal"
+
+
 @pytest.mark.parametrize(
     "stage",
     ["assist_rejection_approval", "assist_cancellation_approval"],

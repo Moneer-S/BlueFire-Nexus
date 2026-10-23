@@ -9,12 +9,15 @@ runner's receipt-bound cleanup action.
 from __future__ import annotations
 
 import argparse
+import email.policy
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import zipfile
+from email.parser import BytesParser
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -80,6 +83,23 @@ _WINDOWS_PAIR_CAPABILITY_FAILURES = frozenset(
 )
 _VERIFICATION_STAGE = "arguments"
 _BOOTSTRAP_FAILURE_STATUS: Mapping[str, Any] | None = None
+_SMOKE_ALIAS_MIN_BLUEFIRE_VERSION = "3.0.0-rc2"
+_PRODUCT_VERSION = re.compile(
+    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:rc(0|[1-9][0-9]*))?$"
+)
+
+
+def _native_runner_version(product_version: str) -> str:
+    """Project normalized product versions without importing the source package."""
+
+    if not isinstance(product_version, str):
+        raise ValueError("product version must be a normalized stable or RC version")
+    match = _PRODUCT_VERSION.fullmatch(product_version)
+    if match is None:
+        raise ValueError("product version must be a normalized stable or RC version")
+    major, minor, patch, rc = match.groups()
+    stable = f"{major}.{minor}.{patch}"
+    return stable if rc is None else f"{stable}-rc{rc}"
 
 
 def _stage(name: str) -> None:
@@ -240,12 +260,28 @@ def inspect_wheel(args: argparse.Namespace) -> int:
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
         wheel_metadata = [name for name in names if name.endswith(".dist-info/WHEEL")]
+        package_metadata = [name for name in names if name.endswith(".dist-info/METADATA")]
         manifests = [
             name for name in names if name.endswith("/bluefire/native/runner-manifest.json")
         ]
         executables = _native_runner_members(names, executable_name)
-        if len(wheel_metadata) != 1 or len(manifests) != 1:
+        if len(package_metadata) != 1 or len(wheel_metadata) != 1 or len(manifests) != 1:
             raise RuntimeError("wheel must contain exactly one metadata file, manifest, and runner")
+        package_headers = BytesParser(policy=email.policy.default).parsebytes(
+            archive.read(package_metadata[0])
+        )
+        product_versions = package_headers.get_all("Version", [])
+        if (
+            package_headers.defects
+            or package_headers.get_all("Name", []) != ["bluefire-nexus"]
+            or len(product_versions) != 1
+        ):
+            raise RuntimeError("wheel package version metadata is invalid")
+        product_version = product_versions[0]
+        try:
+            expected_runner_version = _native_runner_version(product_version)
+        except ValueError as exc:
+            raise RuntimeError("wheel package version is not normalized") from exc
         metadata = archive.read(wheel_metadata[0]).decode("utf-8")
         if f"Tag: {expected_tag}" not in metadata.splitlines():
             raise RuntimeError("wheel metadata does not carry the expected platform tag")
@@ -297,7 +333,11 @@ def inspect_wheel(args: argparse.Namespace) -> int:
             "action_sdk_version": runner["action_sdk_version"],
             "receipt_protocol": runner["receipt_protocol"],
         }
-        if observed_contract != expected_contract or product["version"] != runner["version"]:
+        if (
+            observed_contract != expected_contract
+            or product["version"] != product_version
+            or runner["version"] != expected_runner_version
+        ):
             raise RuntimeError("packaged runner compatibility contract is invalid")
         expected_artifact = {
             "platform": args.platform,
@@ -626,7 +666,7 @@ def _smoke_signed_package_alias(runner: Any, work_root: Path) -> Mapping[str, An
         "package_id": package_id,
         "version": "1.0.0",
         "compatibility": {
-            "minimum_bluefire_version": "3.0.0",
+            "minimum_bluefire_version": _SMOKE_ALIAS_MIN_BLUEFIRE_VERSION,
             "maximum_bluefire_version_exclusive": "4.0.0",
         },
         "license": {

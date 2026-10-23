@@ -9,6 +9,7 @@ import { demoCatalog, demoScenario } from "../src/lib/demo";
 import { BuilderPage } from "../src/pages/Builder";
 import { ProductProvider } from "../src/state/ProductContext";
 import type { Outcome, Scenario } from "../src/types";
+import { builderOptions } from "./helpers/builder-options";
 
 // Same six-step/17-route topology as the public receiver experiment, with registered demo methods; no runtime effects.
 const names = ["create_fixture", "transform_fixture", "inspect_fixture_metadata", "stage_records", "authorized_peer_handoff", "cleanup_workspace"];
@@ -33,16 +34,16 @@ function measurements() {
     return observer;
   });
   Object.defineProperty(SVGElement.prototype, "getBBox", { configurable: true, value: () => ({ x: 0, y: 0, width: 24, height: 12 }) });
-  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) { return this.classList.contains("react-flow__handle") ? 10 : this.classList.contains("react-flow__node") ? 252 : 1000; });
-  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) { return this.classList.contains("react-flow__handle") ? 10 : this.classList.contains("react-flow__node") ? 160 : 600; });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) { return this.classList.contains("react-flow__handle") ? 10 : this.classList.contains("react-flow__node") ? 220 : 1000; });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) { return this.classList.contains("react-flow__handle") ? 10 : this.classList.contains("react-flow__node") ? 150 : 600; });
   vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
     const element = this as HTMLElement;
     const handle = element.classList.contains("react-flow__handle"), node = element.classList.contains("react-flow__node");
     const viewport = element.closest(".react-flow__viewport");
     const scale = viewport && (handle || node) ? new window.DOMMatrixReadOnly(getComputedStyle(viewport).transform).m22 : 1;
-    const x = handle ? (element.style.left.endsWith("%") ? Number.parseFloat(element.style.left) * 2.52 : 126) * scale : 0;
-    const y = handle && element.getAttribute("data-handlepos") === "bottom" ? 160 * scale : 0;
-    const width = (handle ? 10 : node ? 252 : 1000) * scale, height = (handle ? 10 : node ? 160 : 600) * scale;
+    const x = handle ? (element.style.left.endsWith("%") ? Number.parseFloat(element.style.left) * 2.2 : element.getAttribute("data-handlepos") === "right" ? 220 : 0) * scale : 0;
+    const y = handle ? (element.getAttribute("data-handlepos") === "bottom" ? 150 : element.getAttribute("data-handlepos") === "right" || element.getAttribute("data-handlepos") === "left" ? Number.parseFloat(element.style.top) * 1.5 || 75 : 0) * scale : 0;
+    const width = (handle ? 10 : node ? 220 : 1000) * scale, height = (handle ? 10 : node ? 150 : 600) * scale;
     return { x, y, width, height, left: x, top: y, right: x + width, bottom: y + height, toJSON: () => ({}) };
   });
 }
@@ -61,11 +62,17 @@ function mount(readOnly = false, experiment = scenario) {
 }
 const cached = (): Scenario => JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!);
 const routeButtons = () => within(screen.getByRole("list", { name: "Visible routes" })).getAllByRole("button");
+async function showFullRouteGraph(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  const groups = screen.queryByRole("combobox", { name: "Step group" });
+  if (groups) await user.selectOptions(groups, "all");
+}
 
 it("renders all 17 separate routes with compact source labels and complete keyboard inspection", async () => {
   const user = userEvent.setup();
   const view = mount(true);
-  await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  await showFullRouteGraph(user);
+  expect(screen.getByText("6 steps · 17 routes")).toBeInTheDocument();
   expect(routeButtons()).toHaveLength(17);
   await waitFor(() => expect(view.container.querySelectorAll(".react-flow__edge-path")).toHaveLength(17));
   const labels = Array.from(view.container.querySelectorAll(".react-flow__edge-text")).map((label) => label.textContent);
@@ -86,7 +93,7 @@ it("deletes only the selected route after confirmation and Undo restores every r
   const user = userEvent.setup();
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
   mount();
-  await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  await showFullRouteGraph(user);
   await user.click(routeButtons()[6]!);
   const selectedButton = routeButtons()[6]!;
   await user.keyboard("{Delete}");
@@ -111,11 +118,11 @@ it("deletes only the selected route after confirmation and Undo restores every r
 it("keeps disclosure explicit and returns focus when the route list is closed", async () => {
   const user = userEvent.setup();
   mount();
-  await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  await showFullRouteGraph(user);
   await user.click(routeButtons()[7]!);
   await user.click(screen.getByRole("button", { name: "Focus on success path" }));
   expect(routeButtons()).toHaveLength(5);
-  expect(screen.getByText(/12 branches hidden/)).toBeInTheDocument();
+  expect(screen.getByText(/12 routes hidden/)).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Delete route" })).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Close route list" }));
   expect(screen.getByRole("button", { name: "Show route list" })).toHaveFocus();
@@ -127,8 +134,9 @@ it("keeps disclosure explicit and returns focus when the route list is closed", 
 it("keeps keyboard node deletion on its replacement when the route list is open", async () => {
   const user = userEvent.setup();
   mount();
-  await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  await showFullRouteGraph(user);
   await user.click(screen.getByRole("button", { name: "Show node inspector" }));
+  expect(screen.getByText("View options", { selector: "summary" }).closest("details")).not.toHaveAttribute("open");
   const node = screen.getByTestId("rf__node-stage_records");
   node.focus();
   await user.keyboard("{Enter}");
@@ -139,8 +147,10 @@ it("keeps keyboard node deletion on its replacement when the route list is open"
   await waitFor(() => expect(screen.queryByTestId("rf__node-stage_records")).not.toBeInTheDocument());
   const replacement = screen.getByTestId("rf__node-create_fixture");
   await waitFor(() => expect(replacement).toHaveFocus());
+  expect(screen.getByText("View options", { selector: "summary" }).closest("details")).not.toHaveAttribute("open");
   expect(replacement).toHaveClass("selected");
   expect(screen.getByLabelText(/^Step ID/)).toHaveValue("create_fixture");
+  await builderOptions(user);
   expect(screen.getByRole("button", { name: "Delete selected node" })).toBeEnabled();
   expect(routeButtons().every(button => button.getAttribute("aria-pressed") === "false")).toBe(true);
   expect(cached().steps).toEqual(scenario.steps.filter(step => step.id !== "stage_records"));
@@ -150,7 +160,9 @@ it("keeps deleted input-connection focus on the canvas instead of selecting an u
   const user = userEvent.setup();
   mount(false, demoScenario);
   await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  await builderOptions(user);
   await user.click(screen.getByRole("checkbox", { name: "Show input connections" }));
+  await builderOptions(user, false);
   const edge = screen.getByTestId("rf__edge-artifact-place_fixture-workspace-run_fixture-workspace");
   edge.focus();
   await user.keyboard("{Enter}");
@@ -181,7 +193,7 @@ it("never labels an unvalidated saved view ready, and shows validation only afte
 it("opens complete route inspection from the canvas keyboard without stealing its focus", async () => {
   const user = userEvent.setup();
   mount(true);
-  await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  await showFullRouteGraph(user);
   await user.click(screen.getByRole("button", { name: "Close route list" }));
   const edge = screen.getByTestId("rf__edge-route-inspect_fixture_metadata-failed-cleanup_workspace-10");
   edge.focus();
@@ -197,7 +209,7 @@ it("opens complete route inspection from the canvas keyboard without stealing it
 it("keeps saved route inspection read-only and returns between the route list and source details", async () => {
   const user = userEvent.setup();
   const view = mount(true);
-  await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  await showFullRouteGraph(user);
   await user.click(routeButtons()[6]!);
   expect(screen.getByRole("button", { name: "Delete route" })).toBeDisabled();
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -218,7 +230,7 @@ it("keeps saved route inspection read-only and returns between the route list an
 it.each(["click", "keyboard"])("reopens a retained selected route after closing its list using %s", async (method) => {
   const user = userEvent.setup();
   mount(true);
-  await user.click(await screen.findByRole("button", { name: "Show all branches" }));
+  await showFullRouteGraph(user);
   await user.click(routeButtons()[6]!);
   await user.click(screen.getByRole("button", { name: "Close route list" }));
   const edge = screen.getByTestId("rf__edge-route-transform_fixture-blocked-cleanup_workspace-6");

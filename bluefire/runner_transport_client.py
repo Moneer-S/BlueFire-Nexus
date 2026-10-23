@@ -11,8 +11,11 @@ from typing import Any, Callable, Mapping, cast
 
 from .owned_service_authority import OwnedServiceAuthorityError, OwnedServiceGrant
 from .owned_service_transport import execute_owned_service_request, prepare_client_service_payload
-from .runner_transport_errors import RunnerAuthenticationError
+from .runner_transport_errors import RunnerAuthenticationError, validated_cancellation_proof
 from .runner_transport_security import enrollment_binding
+
+_RECOVERY_RECEIPT_ID = re.compile(r"^[0-9a-f]{64}$")
+_MAX_RECOVERY_RECEIPTS = 512
 
 
 def validated_transport_identity(client: Any) -> Mapping[str, Any]:
@@ -77,6 +80,75 @@ def validated_cancellation_payload(
     ):
         raise RunnerAuthenticationError("Runner cancellation response is invalid.")
     return payload
+
+
+def validated_recovered_cancellation_proof(
+    payload: Mapping[str, Any], task_id: str, request_hash: str
+) -> dict[str, bool]:
+    if payload.get("state") == "recovery_required":
+        validated_recovery_required_payload(payload, task_id, request_hash)
+        return {}
+    has_proof = "cancellation_proof" in payload
+    if not has_proof and payload.get("state") != "cancelled":
+        return {}
+    if (
+        set(payload)
+        != {
+            "original_task_id",
+            "original_request_hash",
+            "state",
+            "result",
+            "error_code",
+            "cancellation_requested",
+            "receipt_ids",
+            "cleanup_required",
+        }
+        | ({"cancellation_proof"} if has_proof else set())
+        or payload.get("original_task_id") != task_id
+        or payload.get("original_request_hash") != request_hash
+        or payload.get("state") != "cancelled"
+        or payload.get("result") is not None
+        or payload.get("error_code") != "task_cancelled"
+        or payload.get("cancellation_requested") is not True
+        or payload.get("receipt_ids") != []
+        or payload.get("cleanup_required") is not False
+    ):
+        raise RunnerAuthenticationError("Runner cancellation recovery is invalid.")
+    return validated_cancellation_proof(payload["cancellation_proof"]) if has_proof else {}
+
+
+def validated_recovery_required_payload(
+    payload: Mapping[str, Any], task_id: str, request_hash: str
+) -> None:
+    receipt_ids = payload.get("receipt_ids")
+    if (
+        set(payload)
+        != {
+            "original_task_id",
+            "original_request_hash",
+            "state",
+            "result",
+            "error_code",
+            "cancellation_requested",
+            "receipt_ids",
+            "cleanup_required",
+        }
+        or payload.get("original_task_id") != task_id
+        or payload.get("original_request_hash") != request_hash
+        or payload.get("state") != "recovery_required"
+        or payload.get("result") is not None
+        or payload.get("error_code") != "recovery_required"
+        or type(payload.get("cancellation_requested")) is not bool
+        or payload.get("cleanup_required") is not True
+        or not isinstance(receipt_ids, list)
+        or not 1 <= len(receipt_ids) <= _MAX_RECOVERY_RECEIPTS
+        or any(
+            not isinstance(receipt_id, str) or _RECOVERY_RECEIPT_ID.fullmatch(receipt_id) is None
+            for receipt_id in receipt_ids
+        )
+        or len(receipt_ids) != len(set(receipt_ids))
+    ):
+        raise RunnerAuthenticationError("Runner recovery-required response is invalid.")
 
 
 def execute_authenticated_task(
@@ -202,8 +274,6 @@ def execute_authenticated_task(
         raise execution_error
 
     terminal = monitor_payload[-1] if monitor_payload else None
-    if terminal is not None and terminal.get("state") == "cancelled":
-        raise cancelled_error("Runner task was cancelled after its process tree stopped.")
     if cancel_event.is_set() or terminal is not None or monitor_error:
         recovered_error: BaseException | None = None
         for attempt in range(client.recovery_attempts):
@@ -215,10 +285,13 @@ def execute_authenticated_task(
                 recovered_error = exc
                 continue
             state = recovered.get("state")
+            proof = validated_recovered_cancellation_proof(recovered, checked_task_id, request_hash)
             if state == "completed":
                 return cast(Mapping[str, Any], client._recovered_result_payload(recovered))
             if state == "cancelled":
-                raise cancelled_error("Runner task was cancelled after its process tree stopped.")
+                raise cancelled_error(
+                    "Runner task was cancelled after its process tree stopped.", **proof
+                )
             if state == "timed_out":
                 raise timed_out_error("Runner task timed out after its process tree stopped.")
             if state == "recovery_required":

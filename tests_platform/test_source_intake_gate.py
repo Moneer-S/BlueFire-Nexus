@@ -614,6 +614,6 @@ def test_gate09_is_registered_in_static_dispatcher() -> None:
 
     assert product_gates._WORKFLOWS["GATE-09"] is not None
     assert PACKAGE_ID == "bluefire-research.attack-system-information"
-    assert PACKAGE_VERSION == "19.2.0"
+    assert PACKAGE_VERSION == "19.2.1"
     assert PUBLISHER_ID == "bluefire.source-intake"
     assert KEY_ID == "local-reviewed-t1082-v1"

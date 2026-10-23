@@ -1,10 +1,10 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { NodeProps, ReactFlowProps } from "@xyflow/react";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../src/lib/api";
 import { demoCatalog, demoScenario } from "../src/lib/demo";
 import * as graphView from "../src/lib/graph-view";
@@ -14,6 +14,7 @@ import type { Scenario, ScenarioEdge } from "../src/types";
 
 const nodeRenders = vi.hoisted(() => [] as string[]);
 const renderedGraphs = vi.hoisted(() => [] as Pick<ReactFlowProps, "nodes" | "edges">[]);
+beforeEach(() => { nodeRenders.length = 0; renderedGraphs.length = 0; });
 vi.mock("@xyflow/react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@xyflow/react")>();
   const measuredTypes = new WeakMap<object, ReactFlowProps["nodeTypes"]>();
@@ -54,7 +55,7 @@ function renderBuilder(scenario: Scenario = demoScenario) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(["catalog"], demoCatalog);
   vi.spyOn(api, "catalog").mockResolvedValue(demoCatalog);
-  return render(<QueryClientProvider client={client}><Tooltip.Provider><MemoryRouter><ProductProvider><ContextControls /><BuilderPage /></ProductProvider></MemoryRouter></Tooltip.Provider></QueryClientProvider>);
+  return { ...render(<QueryClientProvider client={client}><Tooltip.Provider><MemoryRouter><ProductProvider><ContextControls /><BuilderPage /></ProductProvider></MemoryRouter></Tooltip.Provider></QueryClientProvider>), client };
 }
 
 function largeLayoutScenario(mode: "absent" | "partial" | "complete"): Scenario {
@@ -90,6 +91,26 @@ function largeLayoutScenario(mode: "absent" | "partial" | "complete"): Scenario 
 }
 
 describe("Builder metadata and graph updates", () => {
+  it("refreshes saved work listings after saving a renamed experiment", async () => {
+    const { client } = renderBuilder();
+    client.setQueryData(["scenarios"], { scenarios: [demoScenario] });
+    client.setQueryData(["scenario-versions"], { scenarios: [] });
+    client.setQueryData(["scenario-versions", "history", demoScenario.id], []);
+    const save = vi.spyOn(api, "saveScenarioVersion").mockImplementation(async (document) => ({
+      schema_version: "bluefire.scenario-versions.v1",
+      scenario: { scenario_id: document.id, title: document.title, version: 2, digest: "a".repeat(64), created_at: "2026-10-21T00:00:00Z", document },
+    }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "Experiment name" }), { target: { value: "A useful saved experiment name" } });
+    expect(screen.getAllByRole("textbox", { name: "Experiment name" })).toHaveLength(1);
+    expect(screen.getByRole("heading", { level: 1, name: "A useful saved experiment name" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save version" }));
+    await screen.findByText("Version 2 saved.");
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ title: "A useful saved experiment name" }));
+    expect(client.getQueryState(["scenarios"])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(["scenario-versions"])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(["scenario-versions", "history", demoScenario.id])?.isInvalidated).toBe(true);
+  });
+
   it.each(["absent", "partial", "complete"] as const)(
     "builds fallback positions once for a %s saved layout and keeps them presentation-only",
     async (mode) => {
@@ -98,26 +119,42 @@ describe("Builder metadata and graph updates", () => {
       const layout = vi.spyOn(graphView, "initialGraphLayout");
       const { unmount } = renderBuilder(scenario);
       try {
-        await screen.findByRole("textbox", { name: "Experiment name" });
+        const name = await screen.findByRole("textbox", { name: "Experiment name" });
+        const viewControls = within(screen.getByLabelText("Experiment view"));
         await waitFor(() => expect(renderedGraphs.at(-1)?.nodes).toHaveLength(128));
 
         expect(layout).toHaveBeenCalledTimes(mode === "complete" ? 0 : 1);
         const nodes = renderedGraphs.at(-1)!.nodes!;
-        for (const [index, node] of nodes.entries()) {
+        const positions = new Map(nodes.map(node => [node.id, node.position]));
+        for (const node of nodes) {
           const saved = scenario.layout?.[node.id];
-          expect(node.position).toEqual(saved ?? {
-            x: 48 + (index % 4) * 294,
-            y: 48 + Math.floor(index / 4) * 190,
-          });
+          if (saved) expect(node.position).toEqual(saved);
+          expect(Number.isFinite(node.position.x) && Number.isFinite(node.position.y)).toBe(true);
+        }
+        if (mode !== "complete") {
+          // Check every pair, but report offending identities in one assertion
+          // instead of constructing thousands of independent matcher contexts.
+          const collisions: [string, string][] = [];
+          for (let index = 0; index < nodes.length; index += 1) for (let otherIndex = index + 1; otherIndex < nodes.length; otherIndex += 1) {
+            const node = nodes[index]!, other = nodes[otherIndex]!;
+            const a = node.position, b = other.position;
+            if (!(a.x + graphView.GRAPH_NODE_WIDTH <= b.x || b.x + graphView.GRAPH_NODE_WIDTH <= a.x || a.y + graphView.GRAPH_NODE_HEIGHT <= b.y || b.y + graphView.GRAPH_NODE_HEIGHT <= a.y)) collisions.push([node.id, other.id]);
+          }
+          expect(collisions).toEqual([]);
+          const backwardEdges = scenario.edges.filter(edge => edge.outcome === "success" && !scenario.layout?.[edge.from_step] && !scenario.layout?.[edge.to_step]
+            && positions.get(edge.to_step)!.x <= positions.get(edge.from_step)!.x);
+          expect(backwardEdges).toEqual([]);
         }
         const originalCoordinates = nodes.map(({ id, position }) => [id, { ...position }] as const);
         expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).layout).toEqual(originalLayout);
 
-        fireEvent.change(screen.getByRole("textbox", { name: "Experiment name" }), {
+        fireEvent.change(name, {
           target: { value: `${scenario.title} edited` },
         });
-        fireEvent.click(screen.getByRole("button", { name: "Steps" }));
-        fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
+        fireEvent.click(viewControls.getByRole("button", { name: "Steps" }));
+        expect(viewControls.getByRole("button", { name: "Steps" })).toHaveAttribute("aria-pressed", "true");
+        fireEvent.click(viewControls.getByRole("button", { name: "Canvas" }));
+        expect(viewControls.getByRole("button", { name: "Canvas" })).toHaveAttribute("aria-pressed", "true");
         expect(layout).toHaveBeenCalledTimes(mode === "complete" ? 0 : 1);
         expect(renderedGraphs.at(-1)!.nodes!.map(({ id, position }) => [id, { ...position }])).toEqual(originalCoordinates);
         expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).layout).toEqual(originalLayout);

@@ -68,7 +68,7 @@ function fixedMeasurements() {
   });
   Object.defineProperty(SVGElement.prototype, "getBBox", { configurable: true, value: () => ({ x: 0, y: 0, width: 60, height: 14 }) });
   vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
-    return this.classList.contains("react-flow__handle") ? 10 : this.classList.contains("react-flow__node") ? 252 : 1000;
+    return this.classList.contains("react-flow__handle") ? 10 : this.classList.contains("react-flow__node") ? 220 : 1000;
   });
   vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
     return this.classList.contains("react-flow__handle") ? 10 : this.classList.contains("react-flow__node") ? 160 : 700;
@@ -81,10 +81,10 @@ function fixedMeasurements() {
     // The canvas may now frame its measured nodes before their handles change.
     const viewport = element.closest(".react-flow__viewport");
     const scale = viewport && (isHandle || isNode) ? new window.DOMMatrixReadOnly(getComputedStyle(viewport).transform).m22 : 1;
-    const x = (isHandle && element.classList.contains("output-handle") ? 252 : 0) * scale;
+    const x = (isHandle && element.style.left.endsWith("%") ? Number.parseFloat(element.style.left) * 2.2 : isHandle && element.getAttribute("data-handlepos") === "right" ? 220 : 0) * scale;
     const y = (isHandle ? Number.parseFloat(element.style.top) || 0 : 0) * scale;
-    const width = (isHandle ? 10 : isNode ? 252 : 1000) * scale;
-    const height = (isHandle ? 10 : isNode ? 160 : 700) * scale;
+    const width = (isHandle ? 10 : isNode ? 220 : 1000) * scale;
+    const height = (isHandle ? 10 : isNode ? 150 : 700) * scale;
     return { x, y, width, height, left: x, top: y, right: x + width, bottom: y + height, toJSON: () => ({}) };
   });
 }
@@ -101,13 +101,18 @@ it("refreshes same-size reused nodes' handle IDs and order so the new artifact e
   vi.spyOn(api, "catalog").mockResolvedValue(catalog);
   render(<QueryClientProvider client={client}><Tooltip.Provider><MemoryRouter><ProductProvider><ReplaceGraph /><BuilderPage /></ProductProvider></MemoryRouter></Tooltip.Provider></QueryClientProvider>);
   await user.click(await screen.findByRole("checkbox", { name: "Show input connections" }));
-  type MeasuredNode = { id: string; measured: { width: number; height: number }; handles?: { source: { id: string; y: number }[]; target: { id: string }[] } };
+  const sourceCard = screen.getByTestId("rf__node-source");
+  const sinkCard = screen.getByTestId("rf__node-sink");
+  expect(sourceCard.querySelector(".route-success")).toHaveAttribute("data-handlepos", "right");
+  expect(sourceCard.querySelector(".output-handle")).toHaveAttribute("data-handlepos", "bottom");
+  expect(sinkCard.querySelector(".input-handle")).toHaveAttribute("data-handlepos", "top");
+  type MeasuredNode = { id: string; measured: { width: number; height: number }; handles?: { source: { id: string; x: number }[]; target: { id: string }[] } };
   const nodes = () => JSON.parse(screen.getByLabelText("Measured graph handles").textContent!) as MeasuredNode[];
   await waitFor(() => expect(nodes().find((node) => node.id === "source")?.handles?.source.map((handle) => handle.id)).toContain("out:old_output"));
   const oldEdge = await screen.findByTestId("rf__edge-artifact-source-old_output-sink-old_input");
   expect(oldEdge.querySelector("path.react-flow__edge-path")).toHaveAttribute("d");
   const before = nodes();
-  const oldSharedY = before.find((node) => node.id === "source")!.handles!.source.find((handle) => handle.id === "out:shared_output")!.y;
+  const oldSharedX = before.find((node) => node.id === "source")!.handles!.source.find((handle) => handle.id === "out:shared_output")!.x;
   await user.click(screen.getByRole("button", { name: "Replace same-ID node handles" }));
   await waitFor(() => {
     const after = nodes();
@@ -118,7 +123,7 @@ it("refreshes same-size reused nodes' handle IDs and order so the new artifact e
       expect(node.handles?.target.map((handle) => handle.id)).toContain("in:new_input");
       expect(node.handles?.target.map((handle) => handle.id)).not.toContain("in:old_input");
     }
-    expect(after.find((node) => node.id === "source")!.handles!.source.find((handle) => handle.id === "out:shared_output")!.y).toBe(oldSharedY - 18);
+    expect(after.find((node) => node.id === "source")!.handles!.source.find((handle) => handle.id === "out:shared_output")!.x).toBeCloseTo(oldSharedX - 73.33333333333333, 4);
   });
   expect(screen.queryByTestId("rf__edge-artifact-source-old_output-sink-old_input")).not.toBeInTheDocument();
   const newEdge = await screen.findByTestId("rf__edge-artifact-source-new_output-sink-new_input");

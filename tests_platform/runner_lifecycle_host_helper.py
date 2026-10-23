@@ -18,6 +18,7 @@ from bluefire.runner_inventory import (
     RUNNER_ACTION_SDK_SCHEMA_VERSION,
 )
 from bluefire.secret_store import SecretStoreError
+from bluefire.version import native_runner_version
 
 _PREFIX = b"bluefire-process-test-only-v1\0"
 
@@ -52,7 +53,7 @@ class ProcessFixtureRunner:
         return {
             "schema_version": "bluefire.runner-inventory.v1",
             "runner_id": "bluefire-rust-runner.v1",
-            "runner_version": __version__,
+            "runner_version": native_runner_version(__version__),
             "action_sdk_version": RUNNER_ACTION_SDK_SCHEMA_VERSION,
             "receipt_protocol": "bluefire.runner-receipt-wal.v2",
             "platform": self.platform_name,

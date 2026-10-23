@@ -162,7 +162,7 @@ def test_native_wheel_build_and_verification_use_the_exact_archive():
         "linux",
         "macos",
     }
-    smoke = steps["Bootstrap and Execute from installed wheel outside checkout"]
+    smoke = steps["Smoke installed wheel outside checkout"]
     assert smoke["working-directory"] == "${{ runner.temp }}"
     assert "'--forbid-root', os.environ['GITHUB_WORKSPACE']" in smoke["run"]
     upload = steps["Upload wheel and verification reports"]["with"]["path"].splitlines()
@@ -171,6 +171,90 @@ def test_native_wheel_build_and_verification_use_the_exact_archive():
         "wheel-source/dist/package-inspection.json",
         "${{ runner.temp }}/installed-wheel-smoke.json",
     ]
+
+
+def test_windows_installed_verifier_resolves_one_node_path_with_spaces(tmp_path):
+    if os.name != "nt":
+        pytest.skip("PowerShell application lookup is Windows-specific")
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is unavailable")
+
+    step = next(
+        step
+        for step in _package_job()["steps"]
+        if step["name"] == "Verify installed Windows native cancellation and cleanup"
+    )
+    resolution = next(line.strip() for line in step["run"].splitlines() if "$node =" in line)
+    invocation = next(
+        line.strip()
+        for line in step["run"].splitlines()
+        if line.strip().startswith("& $python -I -B $verifier")
+    )
+    assert "Select-Object -First 1 -ExpandProperty Source" in resolution
+    assert '--node "$node"' in invocation
+
+    first_node_dir = tmp_path / "first node installation"
+    second_node_dir = tmp_path / "second node installation"
+    first_node_dir.mkdir()
+    second_node_dir.mkdir()
+    first_node = first_node_dir / "node.exe"
+    second_node = second_node_dir / "node.exe"
+    first_node.write_bytes(b"")
+    second_node.write_bytes(b"")
+
+    verifier = tmp_path / "capture verifier arguments.py"
+    verifier.write_text("import json, sys; print(json.dumps(sys.argv[1:]))\n", encoding="utf-8")
+    driver = tmp_path / "installed driver with spaces.mjs"
+    wheel = tmp_path / "candidate wheel with spaces.whl"
+    driver.touch()
+    wheel.touch()
+    runner_temp = tmp_path / "runner temp"
+    runner_temp.mkdir()
+    env = {
+        **os.environ,
+        "PATH": os.pathsep.join((str(first_node_dir), str(second_node_dir), os.environ["PATH"])),
+        "GITHUB_WORKSPACE": str(REPOSITORY),
+        "RUNNER_TEMP": str(runner_temp),
+    }
+
+    def ps_literal(value: str | Path) -> str:
+        return "'" + str(value).replace("'", "''") + "'"
+
+    script = "\n".join(
+        (
+            "$ErrorActionPreference = 'Stop'",
+            f"$python = {ps_literal(Path(sys.executable).absolute())}",
+            f"$verifier = {ps_literal(verifier)}",
+            f"$driver = {ps_literal(driver)}",
+            f"$wheels = @([pscustomobject]@{{ FullName = {ps_literal(wheel)} }})",
+            resolution,
+            "if (-not $node) { throw 'Node.js application was not found' }",
+            invocation,
+        )
+    )
+    result = subprocess.run(
+        [pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        cwd=tmp_path,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    arguments = json.loads(result.stdout.strip().splitlines()[-1])
+    for option, value in (
+        ("--node", str(first_node)),
+        ("--driver", str(driver)),
+        ("--wheel", str(wheel)),
+        (
+            "--output",
+            str(runner_temp / "bluefire-installed-windows-cancellation-evidence"),
+        ),
+    ):
+        assert arguments.count(option) == 1
+        assert arguments[arguments.index(option) + 1] == value
+    assert str(second_node) not in arguments
 
 
 def test_actual_committed_archives_distinguish_backend_changes_with_identical_ui(tmp_path):

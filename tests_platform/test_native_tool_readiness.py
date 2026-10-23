@@ -15,6 +15,7 @@ from bluefire.native_tool_installations import NativeToolInstallation
 from bluefire.runner_inventory import BUILTIN_NATIVE_TOOL_ACTION_IDS
 from bluefire.service import BlueFireService
 from bluefire.tool_adapters.chmod import ADAPTER_ID, CONTRACT, TOOL_ID, VERSION
+from tests_platform.job_wait_diagnostics import diagnose_job_wait
 from tests_platform.test_native_tool_approval_binding import configured_profile
 from tests_platform.test_service import ReadyInventoryRunner, _ready_inventory
 
@@ -248,7 +249,8 @@ def test_dispatch_inspection_refusal_settles_claimed_workspace(
         job_id = str(submission["job"]["job_id"])
         service.job_controller.wait_for_state(job_id, {JobState.AWAITING_APPROVAL}, timeout=3)
         service.approve_job(job_id, {"approved_by": "tool-reviewer"})
-        failed = service.job_controller.wait(job_id, timeout=3)
+        with diagnose_job_wait("service_terminal"):
+            failed = service.job_controller.wait(job_id, timeout=3)
 
         assert dispatch_inspections == 1
         assert failed["state"] == "failed"

@@ -592,9 +592,9 @@ describe("product application", () => {
     const user = userEvent.setup();
     renderApp("/getting-started");
 
-    expect(await screen.findByRole("heading", { name: "Start an experiment" })).toBeVisible();
-    expect(screen.getByText("Continue your work")).toBeVisible();
-    expect(screen.getByRole("link", { name: "Choose an experiment" })).toHaveAttribute("href", "/scenarios");
+    expect(await screen.findByRole("heading", { name: "Start an objective" })).toBeVisible();
+    expect(await screen.findByText("Continue your work")).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Continue your work" })).getByRole("link", { name: "Experiments" })).toHaveAttribute("href", "/scenarios");
     expect(screen.getByRole("link", { name: "Prepare Execute" })).toBeVisible();
     await user.click(screen.getByText("Workspace availability"));
     expect(screen.getByText("Local service")).toBeVisible();
@@ -643,11 +643,11 @@ describe("product application", () => {
     await user.click(runSelectors[1]!);
     await user.click(screen.getByRole("button", { name: "Compare selected" }));
 
-    expect(await screen.findByText("Runs with meaningful changes")).toBeVisible();
+    expect(await screen.findByText("with meaningful recorded changes")).toBeVisible();
     expect(screen.getByRole("link", { name: "Review baseline run summary" })).toHaveAttribute("href", `/runs/${encodeURIComponent(demoRuns[0]!.run_id)}`);
     expect(screen.getByRole("region", { name: "Compared run outcomes" })).toBeVisible();
     expect(screen.getByText("Observed: 3, Synthetic: 1")).not.toBeVisible();
-    await user.click(screen.getByText("Step-by-step results and run details"));
+    for (const details of screen.getAllByText("Run context and technical details")) await user.click(details);
     await user.click(screen.getByText("Detailed changes in evidence, policy, and runtime"));
     expect(screen.getByText("Observed: 3, Synthetic: 1")).toBeVisible();
     expect(screen.getByText("Benign evaluated: 1, Observed exercised: 2")).toBeVisible();

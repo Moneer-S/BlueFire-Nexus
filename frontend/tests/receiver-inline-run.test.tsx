@@ -9,6 +9,7 @@ import { ProductProvider, useProduct } from "../src/state/ProductContext";
 import type { RunJob } from "../src/types";
 import { nativeReceiverFixture } from "./receiver-inline-run-fixture";
 import { receiverFixture } from "./receiver-defense-fixture";
+import { receiverApprovalAcknowledgementName } from "./installed/receiver-guards.mjs";
 
 const clients: QueryClient[] = [];
 afterEach(() => { for (const client of clients.splice(0)) client.clear(); vi.useRealTimers(); });
@@ -39,6 +40,16 @@ function mount(envelope = nativeReceiverFixture()) {
 const approvalCheckbox = () => screen.getByRole("checkbox", { name: /I approve this exact immutable job envelope once/ });
 async function ready() { await screen.findByRole("checkbox", { name: /I approve this exact immutable job envelope once/ }); await waitFor(() => expect(approvalCheckbox()).toBeEnabled()); }
 function confirm() { fireEvent.click(approvalCheckbox()); fireEvent.change(screen.getByRole("textbox", { name: "Operator identity for this job" }), { target: { value: "Reviewer" } }); }
+
+it("includes the browser-persistence warning in the immutable approval checkbox name", async () => {
+  mount();
+  await ready();
+  const acknowledgement = screen.getByRole("checkbox", { name: receiverApprovalAcknowledgementName });
+  expect(acknowledgement).toBeEnabled();
+  expect(acknowledgement).not.toBeChecked();
+  fireEvent.click(acknowledgement);
+  expect(acknowledgement).toBeChecked();
+});
 
 it.each(["baseline", "protected", "restored"] as const)("reviews and releases the exact %s phase inline without new intent or navigation", async (phase) => {
   const envelope = nativeReceiverFixture(phase);

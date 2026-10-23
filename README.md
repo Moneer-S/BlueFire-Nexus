@@ -19,9 +19,9 @@
   <a href="https://github.com/Moneer-S/BlueFire-Nexus/issues/202">Roadmap</a>
 </p>
 
-BlueFire Nexus is an open-source purple-team framework for building repeatable security tests and improving detections. Connect individual actions into an attack chain, run it in your lab, and inspect the results. Change a method or detection rule, repeat the experiment, and compare the outcome.
+BlueFire Nexus is an open-source, AI-first security experimentation and defense-validation workspace. Its desktop-oriented local interface connects objectives, composable attack-chain plans, reviewed execution, independent observations, defensive changes, and fresh retesting.
 
-The graph editor, run history, detection tools, and optional AI Assistant work in the same local application.
+Connect behavior steps into an experiment, inspect the recorded outcome, then carry a run into detection work or compare it with another result. The optional AI Assistant works alongside the same workspace; manual editing and simulation remain available without an AI provider.
 
 ![Walkthrough of an experiment and its saved results](docs/assets/screenshots/walkthrough.gif)
 
@@ -72,9 +72,11 @@ Open an example in **Experiments** to inspect or edit it in **Build**. Choose **
 
 ## Build the experiment
 
-Choose the steps, how each step runs, and what happens next if it succeeds, fails, or is blocked. Edit parameters in the graph, add compatible alternatives, and save the experiment for another run.
+Choose the steps, how each step runs, and what happens next if it succeeds, fails, or is blocked. The topology-focused canvas groups connected steps for navigation and shows conditional routes and data dependencies; switch to the ordered step view when that is easier to review. Edit parameters, add compatible alternatives, and save immutable versions for another run.
 
-Work directly in the editor or use the Assistant to draft and revise the plan. You can inspect its proposed changes before applying them.
+Reopen an exact saved version without replacing it, or export the working experiment as JSON.
+
+Work directly in the editor or use the Assistant to draft and revise the plan. From Build, the Assistant can use the current graph and selected-step context. Proposed graph changes remain reviewable before you apply them.
 
 ![An experiment open in the Build workspace](docs/assets/screenshots/builder.png)
 
@@ -84,9 +86,15 @@ Review the path taken, collected files and observations, errors, and cleanup sta
 
 A step reporting success and a collector confirming its effects are shown separately. Saved results remain available for inspection, comparison, and export.
 
+## Test the defense
+
+Saved defensive workflows keep the original baseline, reviewed change, and follow-up tests connected. The generated-data receiver workflow distinguishes refusal of the original payload from acceptance of a redacted legitimate payload, retains the reviewed policy separately from temporary test cleanup, and offers a linked fresh retest.
+
+Prevention, detection, execution success, and legitimate-use outcomes are separate results. A new rule evaluated against saved evidence is not a fresh execution against a changed environment.
+
 ## Improve the detection
 
-Use **Detection Lab** to write a rule, evaluate it against a run's observations, and inspect the matching records. Test activity you want to catch alongside examples that should not match. Save a revised rule without losing the previous version or its results.
+Use **Detection Lab** to bring in a run as the evidence source, write a rule, and inspect matching records alongside examples that should not match. Save revised rules without losing earlier versions or evaluation results. **Compare** keeps run comparisons tied to selected runs, compares detector evaluations separately, and lets you revisit saved comparison snapshots. Download a report for a selected comparison.
 
 ![A saved detection rule open in Detection Lab](docs/assets/screenshots/detection-lab.png)
 

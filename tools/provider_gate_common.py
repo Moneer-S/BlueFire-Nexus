@@ -24,8 +24,14 @@ PUBLISHER_ID = "bluefire.fixture.provider-upgrade"
 SUCCESS_VERSIONS = ("1.0.0", "2.0.0")
 LIMIT_VERSION = "3.0.0"
 ALL_VERSIONS = (*SUCCESS_VERSIONS, LIMIT_VERSION)
+RC2_RUNNER_VERSION = "3.0.0-rc2"
+RC2_FIXTURE_DIRECTORY = "gate_rc2"
 EXPECTED_COMPATIBILITY = {
     "minimum_bluefire_version": "3.0.0",
+    "maximum_bluefire_version_exclusive": "4.0.0",
+}
+EXPECTED_RC2_COMPATIBILITY = {
+    "minimum_bluefire_version": RC2_RUNNER_VERSION,
     "maximum_bluefire_version_exclusive": "4.0.0",
 }
 EXPECTED_LICENSE = {

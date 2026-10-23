@@ -33,6 +33,7 @@ from .cross_platform_run_validation import validate_persisted_run
 from .cross_platform_source_intake_probe import validate_probe
 from .product_acceptance_run_bundle import validated_run_bundle
 from .util import canonical_json_bytes, content_hash
+from .version import native_runner_version
 
 WINDOWS_REPORT = "windows-packaged-execute.json"
 LINUX_REPORT = "linux-container-execute.json"
@@ -669,35 +670,18 @@ def _receiver(value: Mapping[str, Any]) -> Mapping[str, Any]:
 def _status_document(value: Any, windows_runner: Mapping[str, Any]) -> Mapping[str, Any]:
     status = _exact(
         value,
-        {
-            "schema_version",
-            "state",
-            "runner_id",
-            "profile_id",
-            "loopback_only",
-            "enrollment",
-            "process",
-            "runner",
-            "health",
-        },
+        set(
+            "schema_version state runner_id profile_id loopback_only enrollment "
+            "process runner health".split()
+        ),
         "persisted runner readiness document",
     )
     runner = _exact(
         status.get("runner"),
-        {
-            "id",
-            "source",
-            "product_version",
-            "runner_version",
-            "platform",
-            "architecture",
-            "binary_digest",
-            "managed_binary",
-            "managed_sandbox",
-            "inventory_schema",
-            "action_sdk_version",
-            "receipt_protocol",
-        },
+        set(
+            "id source product_version runner_version platform architecture binary_digest "
+            "managed_binary managed_sandbox inventory_schema action_sdk_version receipt_protocol".split()
+        ),
         "persisted readiness runner",
     )
     health = _exact(
@@ -705,6 +689,17 @@ def _status_document(value: Any, windows_runner: Mapping[str, Any]) -> Mapping[s
         {"transport", "tls", "runner_binary_digest", "inventory_digest", "accepting_execute"},
         "persisted readiness health",
     )
+    product_version = runner.get("product_version")
+    if not isinstance(product_version, str):
+        raise CrossPlatformGateValidationError(
+            "persisted runner readiness product version is invalid"
+        )
+    try:
+        expected_runner_version = native_runner_version(product_version)
+    except ValueError as exc:
+        raise CrossPlatformGateValidationError(
+            "persisted runner readiness product version is invalid"
+        ) from exc
     if (
         status.get("schema_version") != "bluefire.runner-lifecycle-status.v1"
         or status.get("state") != "ready"
@@ -715,7 +710,7 @@ def _status_document(value: Any, windows_runner: Mapping[str, Any]) -> Mapping[s
         or status.get("process") != "authenticated"
         or runner.get("id") != windows_runner["runner_id"]
         or runner.get("source") != "packaged"
-        or runner.get("product_version") != windows_runner["runner_version"]
+        or expected_runner_version != windows_runner["runner_version"]
         or runner.get("runner_version") != windows_runner["runner_version"]
         or runner.get("platform") != "windows"
         or runner.get("architecture") != "x86_64"

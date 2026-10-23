@@ -284,19 +284,23 @@ test("production operator UI completes authoring, management, run, replay, and c
   await page.getByRole("button", { name: "Undo" }).click();
   // Adding a step reveals it; Undo preserves that viewport. Frame the restored
   // graph through the operator control before selecting its first node again.
-  await page.getByRole("button", { name: "Fit graph", exact: true }).click();
+  await page.getByRole("button", { name: "Fit visible graph", exact: true }).click();
   await nodes.first().click();
+  await page.getByText("View options", { exact: true }).click();
+  await expect(page.getByRole("group", { name: "Selection tools" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Duplicate selected node" })).toBeEnabled();
   await page.getByRole("button", { name: "Copy selected node" }).click();
   await expect(page.locator(".compatibility-banner")).toContainText("copied");
   await page.getByRole("button", { name: "Paste node" }).click();
   await expect(nodes).toHaveCount(initialNodeCount + 1);
+  await page.getByText("View options", { exact: true }).click();
   await page.getByRole("button", { name: "Undo" }).click();
   await expect(nodes).toHaveCount(initialNodeCount);
   completed.push("edit_graph_and_history");
 
   await page.getByRole("button", { name: "Add step", exact: true }).click();
-  const viewportBefore = await page.locator(".react-flow__viewport").getAttribute("style");
+  const viewportZoom = () => page.locator(".react-flow__viewport").evaluate(element => new DOMMatrixReadOnly(getComputedStyle(element).transform).a);
+  const zoomBefore = await viewportZoom();
   await page.getByText("View options", { exact: true }).click();
   await page.getByLabel("Behavior palette width").fill("380");
   await expect(page.locator(".palette-panel")).toHaveCSS("width", "380px");
@@ -306,7 +310,16 @@ test("production operator UI completes authoring, management, run, replay, and c
   await page.getByLabel("Node inspector width").fill("420");
   await expect(page.locator(".inspector-panel")).toHaveCSS("width", "420px");
   await page.getByText("View options", { exact: true }).click();
-  expect(await page.locator(".react-flow__viewport").getAttribute("style")).toBe(viewportBefore);
+  // A narrower rail may require a pan to reveal the selection, but never a zoom reset.
+  await expect.poll(viewportZoom).toBe(zoomBefore);
+  const selectedBounds = await page.locator(".react-flow__node.selected").boundingBox();
+  const canvasBounds = await page.locator(".graph-canvas").boundingBox();
+  expect(selectedBounds).not.toBeNull();
+  expect(canvasBounds).not.toBeNull();
+  expect(selectedBounds!.x).toBeGreaterThanOrEqual(canvasBounds!.x);
+  expect(selectedBounds!.y).toBeGreaterThanOrEqual(canvasBounds!.y);
+  expect(selectedBounds!.x + selectedBounds!.width).toBeLessThanOrEqual(canvasBounds!.x + canvasBounds!.width);
+  expect(selectedBounds!.y + selectedBounds!.height).toBeLessThanOrEqual(canvasBounds!.y + canvasBounds!.height);
   await page.getByRole("button", { name: "Hide node inspector" }).click();
   await expect(page.locator(".inspector-panel")).toBeHidden();
   await page.getByRole("button", { name: "Enter graph focus mode" }).click();

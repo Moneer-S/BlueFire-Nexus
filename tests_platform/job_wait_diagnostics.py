@@ -13,6 +13,7 @@ STAGES = {
     "replay_approval",
     "replay_terminal",
     "receiver_terminal",
+    "service_terminal",
     "assist_rejection_approval",
     "assist_cancellation_approval",
 }

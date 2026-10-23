@@ -8,6 +8,7 @@ import { api } from "../src/lib/api";
 import { demoCatalog, demoScenario } from "../src/lib/demo";
 import { BuilderPage } from "../src/pages/Builder";
 import { ProductProvider, useProduct } from "../src/state/ProductContext";
+import { builderOptions } from "./helpers/builder-options";
 
 function NavigationTarget() {
   const { scenario, setScenario, dirty } = useProduct();
@@ -57,7 +58,11 @@ describe("Builder selection and navigation", () => {
     const title = demoCatalog.behaviors.find((behavior) => behavior.id === branch.behavior_id)!.title;
     const branchName = new RegExp(`^\\d+ ${title}`);
     await user.click(within(screen.getByRole("list", { name: "Experiment steps" })).getByRole("button", { name: branchName }));
-    if (operation === "duplicate") await user.click(screen.getByRole("button", { name: "Copy selected node" }));
+    if (operation === "duplicate") {
+      await builderOptions(user);
+      await user.click(screen.getByRole("button", { name: "Copy selected node" }));
+      await builderOptions(user, false);
+    }
     await user.click(screen.getByRole("button", { name: "Focus on success path" }));
     expect(within(screen.getByRole("list", { name: "Experiment steps" })).queryByRole("button", { name: branchName })).not.toBeInTheDocument();
     if (operation === "copy") {
@@ -66,10 +71,12 @@ describe("Builder selection and navigation", () => {
     } else if (operation === "duplicate") {
       await user.keyboard("{Control>}d{/Control}");
     } else {
+      await builderOptions(user);
       await user.click(screen.getByRole("button", { name: "Delete selected node" }));
     }
     const cached = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!);
     expect(cached).toEqual(demoScenario);
+    await builderOptions(user);
     expect(screen.getByRole("button", { name: "Delete selected node" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Copy selected node" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Duplicate selected node" })).toBeDisabled();
@@ -91,6 +98,7 @@ describe("Builder selection and navigation", () => {
     expect(screen.getByLabelText(/^Step ID/)).toHaveValue(added.id);
     await waitFor(() => expect(screen.getByTestId(`rf__node-${added.id}`)).toHaveClass("selected"));
     const beforeDeletion = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!);
+    await builderOptions(user);
     await user.click(screen.getByRole("button", { name: "Delete selected node" }));
     const dialog = await screen.findByRole("dialog", { name: "Delete from experiment?" });
     expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
@@ -116,6 +124,7 @@ describe("Builder selection and navigation", () => {
     await user.click(steps[1]!);
     const deletedId = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!).steps[1].id as string;
     expect(screen.getByTestId(`rf__node-${deletedId}`)).toHaveClass("selected");
+    await builderOptions(user);
     await user.click(screen.getByRole("button", { name: "Delete selected node" }));
     await user.click(within(await screen.findByRole("dialog", { name: "Delete from experiment?" })).getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!).steps.map((step: { id: string }) => step.id)).not.toContain(deletedId));
@@ -130,6 +139,7 @@ describe("Builder selection and navigation", () => {
     const user = userEvent.setup();
     renderBuilder();
     await user.click(await screen.findByRole("button", { name: "Enter graph focus mode" }));
+    await builderOptions(user);
     const trigger = screen.getByRole("button", { name: "Delete selected node" });
     await user.click(trigger);
     const dialog = await screen.findByRole("dialog", { name: "Delete from experiment?" });
@@ -137,6 +147,7 @@ describe("Builder selection and navigation", () => {
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     await waitFor(() => expect(trigger).toHaveFocus());
+    expect(trigger).toBeVisible();
     expect(screen.getByRole("button", { name: "Exit graph focus mode" })).toBeVisible();
     expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(demoScenario);
   }, 15000);
@@ -146,22 +157,25 @@ describe("Builder selection and navigation", () => {
     scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success", to_step: step.id }));
     const user = userEvent.setup();
     renderBuilder(scenario);
-    await user.click(await screen.findByRole("button", { name: "Next section" }));
-    expect(screen.getByRole("combobox", { name: "Path section" })).toHaveValue("1");
+    await user.click(await screen.findByRole("button", { name: "Next group" }));
+    expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue("1");
+    await builderOptions(user);
     expect(screen.getByRole("button", { name: "Copy selected node" })).toBeEnabled();
+    await builderOptions(user, false);
     await user.click(screen.getByRole("button", { name: "Steps" }));
     const list = within(screen.getByRole("list", { name: "Experiment steps" }));
-    expect(list.getByRole("button", { pressed: true })).toHaveAccessibleName(/^9 /);
+    expect(list.getByRole("button", { pressed: true })).toHaveAccessibleName(/^4 /);
     await user.click(list.getAllByRole("button").at(-1)!);
     await user.click(screen.getByRole("button", { name: "Canvas" }));
-    expect(screen.getByRole("combobox", { name: "Path section" })).toHaveValue("2");
+    expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue("5");
+    await builderOptions(user);
     expect(screen.getByRole("button", { name: "Copy selected node" })).toBeEnabled();
   }, 15000);
 
   it.each([
-    { count: 17, section: "1", deleted: "step_9", replacement: "step_10", remainingSection: "1" },
-    { count: 17, section: "2", deleted: "step_17", replacement: "step_9", remainingSection: "1" },
-    { count: 13, section: "1", deleted: "step_13", replacement: "step_9", remainingSection: null },
+    { count: 17, section: "2", deleted: "step_9", replacement: "step_7", remainingSection: "2" },
+    { count: 17, section: "5", deleted: "step_17", replacement: "step_16", remainingSection: "5" },
+    { count: 13, section: "4", deleted: "step_13", replacement: "step_10", remainingSection: "3" },
   ])("keeps a visible selection after deleting $deleted from section $section", async ({ count, section, deleted, replacement, remainingSection }) => {
     const scenario: typeof demoScenario = { ...structuredClone(demoScenario), start: "step_1", steps: Array.from({ length: count }, (_, index) => ({ ...structuredClone(demoScenario.steps[0]!), id: `step_${index + 1}` })), edges: [], layout: undefined };
     scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success", to_step: step.id }));
@@ -169,12 +183,13 @@ describe("Builder selection and navigation", () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     renderBuilder(scenario);
     await user.click(await screen.findByRole("button", { name: "Show all branches" }));
-    await user.selectOptions(screen.getByRole("combobox", { name: "Path section" }), section);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Step group" }), section);
     await user.click(screen.getByRole("button", { name: "Steps" }));
     await user.click(within(screen.getByRole("list", { name: "Experiment steps" })).getAllByRole("button")[scenario.steps.findIndex((step) => step.id === deleted)]!);
     await user.click(screen.getByRole("button", { name: "Canvas" }));
-    expect(screen.getByRole("combobox", { name: "Path section" })).toHaveValue(section);
+    expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue(section);
     expect(screen.getByTestId(`rf__node-${deleted}`)).toHaveClass("selected");
+    await builderOptions(user);
     await user.click(screen.getByRole("button", { name: "Delete selected node" }));
     const dialog = await screen.findByRole("dialog", { name: "Delete from experiment?" });
     expect(within(dialog).getByText(`Place deterministic fixture (step ${scenario.steps.findIndex(step => step.id === deleted) + 1})`)).toBeVisible();
@@ -183,8 +198,8 @@ describe("Builder selection and navigation", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Delete selected node" })).toBeEnabled());
     expect(screen.getByTestId(`rf__node-${replacement}`)).toHaveClass("selected");
     expect(screen.getByLabelText(/^Step ID/)).toHaveValue(replacement);
-    if (remainingSection === null) expect(screen.queryByRole("combobox", { name: "Path section" })).not.toBeInTheDocument();
-    else expect(screen.getByRole("combobox", { name: "Path section" })).toHaveValue(remainingSection);
+    if (remainingSection === null) expect(screen.queryByRole("combobox", { name: "Step group" })).not.toBeInTheDocument();
+    else expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue(remainingSection);
     const saved = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!);
     expect(saved.steps).toHaveLength(count - 1);
     expect(saved.steps.some((step: { id: string }) => step.id === deleted)).toBe(false);

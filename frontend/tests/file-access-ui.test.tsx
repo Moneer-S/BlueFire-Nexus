@@ -81,7 +81,7 @@ it("imports Windows setup only after an explicit save and opens the non-executab
   vi.spyOn(fileAccessApi, "control").mockResolvedValue(saved);
   const imported = vi.mocked(fileAccessApi.importSetup);
   mount(<FileAccessPage />);
-  expect(await screen.findByRole("heading", { name: "Windows protected setup" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "Windows task access is unavailable" })).toBeInTheDocument();
   expect(imported).not.toHaveBeenCalled();
   expect(screen.getByRole("button", { name: "Save verified setup" })).toBeEnabled();
   expect(screen.queryByRole("button", { name: /baseline|harden|rollback|reset/i })).not.toBeInTheDocument();
@@ -93,6 +93,41 @@ it("imports Windows setup only after an explicit save and opens the non-executab
   expect(screen.getByText("Task usage").nextElementSibling).toHaveTextContent("None");
   expect(screen.getByText("Account and object cleanup").nextElementSibling).toHaveTextContent("Required");
   expect(screen.queryByText(/owner UID|probe UID|record count|observed mode/i)).not.toBeInTheDocument();
+});
+
+it("separates verified setup from executable access and keeps exact provenance out of the primary view", async () => {
+  const status = windowsSetupStatus();
+  vi.mocked(fileAccessApi.status).mockResolvedValue(status);
+  const submit = vi.spyOn(fileAccessApi, "submit");
+  mount(<FileAccessPage />);
+  const enrollment = within(await screen.findByRole("region", { name: "File-access enrollment" }));
+  await enrollment.findByRole("heading", { name: "Windows task access is unavailable" });
+  expect(enrollment.getByText("Protected setup").nextElementSibling).toHaveTextContent("Verified");
+  expect(enrollment.getByText("Task access").nextElementSibling).toHaveTextContent("Unavailable");
+  expect(enrollment.getByText("Execution unavailable")).toBeInTheDocument();
+  expect(enrollment.getByRole("button", { name: "Save verified setup" })).toBeEnabled();
+  const requirements = enrollment.getByText("Task access requirements").closest("details")!;
+  expect(requirements).not.toHaveAttribute("open");
+  expect(within(requirements).getByText(/original owner's non-elevated session/)).toBeInTheDocument();
+  expect(within(requirements).getByRole("link", { name: "Windows setup guide" })).toHaveAttribute("href", "https://github.com/Moneer-S/BlueFire-Nexus/blob/main/docs/WINDOWS_FILE_ACCESS_BASELINE.md");
+  const provenance = enrollment.getByText("Protected setup details").closest("details")!;
+  expect(provenance).not.toHaveAttribute("open");
+  expect(within(provenance).getByText(status.setup.enrollment_id)).toBeInTheDocument();
+  expect(within(provenance).getByText(status.setup.enrollment_digest)).toBeInTheDocument();
+  expect(enrollment.queryByText("Paired setup is ready for review")).not.toBeInTheDocument();
+  expect(fileAccessApi.review).not.toHaveBeenCalled();
+  expect(submit).not.toHaveBeenCalled();
+});
+
+it("labels saved work by its retained purpose without changing the control identity", async () => {
+  mount(<FileAccessPage />);
+  const saved = within(await screen.findByRole("region", { name: "Saved file-access controls" }));
+  const purpose = await saved.findByText("Retest retained permission changes");
+  expect(purpose.closest("a")).toHaveAttribute("href", `/file-access?control=${controlId}`);
+  expect(purpose.closest("a")).toHaveAccessibleName(/^Retest retained permission changes,/);
+  const reference = saved.getByText(controlId).closest("details");
+  expect(reference).not.toHaveAttribute("open");
+  expect(fileAccessApi.control).not.toHaveBeenCalled();
 });
 
 it("imports a paired setup and permits only a current, explicitly reviewed baseline", async () => {
@@ -426,12 +461,15 @@ it.each(["settled_partial", "complete"] as const)("projects %s after the exact c
 });
 it("recovers an unknown request after reload without replay or replacement", async () => {
   storeFileAccessPending({ id: proposalId, body: fileAccessSubmissionFixture() });
+  vi.mocked(fileAccessApi.list).mockResolvedValue({ schema_version: "bluefire.file-access-control-list.v1", controls: [] });
   const submit = vi.spyOn(fileAccessApi, "submit");
   mount(<FileAccessPage />);
   await screen.findByText("Operation confirmation pending");
   expect(await screen.findByRole("button", { name: "Resubmit original request" })).toBeEnabled();
   expect(submit).not.toHaveBeenCalled();
   expect(readFileAccessPending()?.body).toEqual(fileAccessSubmissionFixture());
+  expect(await screen.findByText("No saved control is available yet")).toBeInTheDocument();
+  expect(screen.queryByText("No operation has been started.")).not.toBeInTheDocument();
 });
 it("does not show another control's operation evidence from a mismatched saved link", async () => {
   const value = fileAccessOperationFixture();
@@ -470,7 +508,7 @@ it("binds a late operation response to its original control after navigation", a
   fireEvent.change(await screen.findByRole("textbox", { name: "Operation reviewed by" }), { target: { value: "reviewer" } });
   fireEvent.click(screen.getByRole("checkbox")); fireEvent.click(screen.getByRole("button", { name: "Restore baseline access" }));
   await waitFor(() => expect(submit).toHaveBeenCalledOnce());
-  fireEvent.click(screen.getByRole("link", { name: `Open generated file access, Hardened, revision 3, reference ${ownerId.slice(-8)}` }));
+  fireEvent.click(screen.getByRole("link", { name: `Retest retained permission changes, Generated records, Hardened, revision 3, reference ${ownerId.slice(-8)}` }));
   await screen.findByText("second-generation");
   const response = fileAccessOperationFixture();
   const sent = submit.mock.calls[0]![0]; response.job.job_id = `job-${sent.submission_id.replaceAll("-", "")}`; response.job.progress.submitted_request = sent;

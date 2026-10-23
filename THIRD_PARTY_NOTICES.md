@@ -149,11 +149,12 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-The packaged web application has 69 packages in its production lock closure: 58 MIT packages;
+The packaged web application has 71 packages in its production lock closure: 60 MIT packages,
+including `@dagrejs/dagre@3.1.1` and its transitive dependency `@dagrejs/graphlib@4.0.5`;
 the ISC-licensed D3 modules `d3-color`, `d3-dispatch`, `d3-drag`, `d3-interpolate`,
 `d3-selection`, `d3-timer`, `d3-transition`, and `d3-zoom`; ISC-licensed `lucide-react`;
 BSD-3-Clause `d3-ease`; and 0BSD `tslib`. The exact name/version inventory is in the policy.
-The remaining entries in the 391-package pnpm lock are build, test, platform, or development
+The remaining entries in the 393-package pnpm lock are build, test, platform, or development
 entries and are not represented as shipped browser code by this review.
 
 The native runner review classifies all 49 external crates in `Cargo.lock`; the conservative

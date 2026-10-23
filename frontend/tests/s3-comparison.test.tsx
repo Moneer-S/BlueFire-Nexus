@@ -105,6 +105,8 @@ it("renders captured run links and reports synthetic/runner provenance and clean
     expect(region).toHaveTextContent(result.cleanup === null ? "Cleanup: Not recorded" : `Cleanup: ${result.cleanup === "verified" ? "Verified" : "Unknown"}`);
   }
   expect(screen.getByText(/does not establish defensive effectiveness/i)).toBeVisible();
+  expect(screen.getByText(/Legitimate-use checks stay visible alongside probe results/i)).toBeVisible();
+  expect(screen.getByRole("heading", { name: "S3 access outcomes" })).toBeVisible();
   expect(region).not.toHaveTextContent(/prevention rate|coverage percentage|effectiveness percentage/i);
 });
 
@@ -117,8 +119,8 @@ it("keeps unknown cleanup and unavailable projection distinct from task-level no
   expect(screen.getByRole("region", { name: "S3 access comparison" })).toHaveTextContent("Unknown");
   expect(screen.getByRole("region", { name: "S3 access comparison" })).toHaveTextContent("Cleanup: Unknown");
   expect(screen.getByRole("region", { name: "S3 access comparison" })).toHaveTextContent("Cleanup unresolved");
-  expect(screen.getByText(/Generic run-level comparison; S3 access outcomes are reported separately/)).toBeVisible();
-  expect(screen.getByText(/Task-level changes reported/)).toBeVisible();
+  expect(screen.getByText(/S3 saved read results are shown separately/)).toBeVisible();
+  expect(screen.getByText(/with meaningful recorded changes/)).toBeVisible();
   expect(screen.queryByText("No meaningful change reported against the baseline.")).not.toBeInTheDocument();
 
   const unavailable = projection("missing_context");
@@ -126,7 +128,7 @@ it("keeps unknown cleanup and unavailable projection distinct from task-level no
   expect(unavailable.reason).toBe("saved_context_unavailable");
   view.unmount();
   render(<MemoryRouter><ComparisonResult comparison={response("missing_context")} /></MemoryRouter>);
-  expect(screen.getByRole("region", { name: "S3 access comparison" })).toHaveTextContent("S3 comparison unavailable: Saved context unavailable");
-  expect(screen.getByText(/Generic run-level comparison; S3 access outcomes are reported separately/)).toBeVisible();
+  expect(screen.getByRole("region", { name: "S3 access comparison" })).toHaveTextContent("Saved S3 comparison is unavailable: Saved context unavailable");
+  expect(screen.getByText(/S3 saved read results are shown separately/)).toBeVisible();
   expect(screen.queryByText("No meaningful change reported against the baseline.")).not.toBeInTheDocument();
 });

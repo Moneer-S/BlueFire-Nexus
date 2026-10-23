@@ -29,7 +29,7 @@ from .runner_inventory import (
     packaged_builtin_inventory,
     validate_builtin_action_inventory,
 )
-from .version import __version__
+from .version import __version__, native_runner_version
 from .windows_owner_acl import WindowsOwnerAclError, apply_owner_private_acl_path
 
 MANIFEST_SCHEMA_VERSION = "bluefire.native-runner-package.v1"
@@ -46,7 +46,6 @@ MANIFEST_FILENAME = "runner-manifest.json"
 
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_RUNNER_BYTES = 128 * 1024 * 1024
-_VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 _WHEEL_TAGS = {
@@ -57,6 +56,14 @@ _WHEEL_TAGS = {
     ("macos", "x86_64"): "macosx_11_0_x86_64",
     ("macos", "aarch64"): "macosx_11_0_arm64",
 }
+
+
+def _is_supported_product_version(value: str) -> bool:
+    try:
+        native_runner_version(value)
+    except ValueError:
+        return False
+    return True
 
 
 class RunnerBootstrapError(RuntimeError):
@@ -259,12 +266,16 @@ def parse_runner_manifest(
     machine = current_architecture(architecture)
     expected_filename = "bluefire-runner.exe" if system == "windows" else "bluefire-runner"
     expected_tag = wheel_platform_tag(system, machine)
+    try:
+        expected_runner_version = native_runner_version(product_version)
+    except ValueError as exc:
+        raise RunnerBootstrapError("The packaged runner manifest is invalid.") from exc
     expected = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "product_name": PRODUCT_NAME,
         "product_version": product_version,
         "runner_id": RUNNER_ID,
-        "runner_version": product_version,
+        "runner_version": expected_runner_version,
         "inventory_schema": INVENTORY_SCHEMA_VERSION,
         "action_sdk_version": ACTION_SDK_VERSION,
         "receipt_protocol": RECEIPT_PROTOCOL_VERSION,
@@ -289,8 +300,6 @@ def parse_runner_manifest(
     }
     if actual != expected:
         raise RunnerBootstrapError("The packaged runner is incompatible with this product or host.")
-    if not _VERSION.fullmatch(product_version) or not _VERSION.fullmatch(str(runner["version"])):
-        raise RunnerBootstrapError("The packaged runner manifest is invalid.")
     size = artifact.get("size")
     digest = artifact.get("sha256")
     if (
@@ -355,6 +364,10 @@ def bootstrap_runner(
 ) -> BootstrappedRunner:
     """Resolve an advanced override or install and verify the packaged runner."""
 
+    try:
+        expected_runner_version = native_runner_version(product_version)
+    except ValueError as exc:
+        raise RunnerBootstrapError("The product version is unsupported.") from exc
     values = os.environ if environ is None else environ
     system = current_platform(platform_name)
     machine = current_architecture(architecture)
@@ -380,7 +393,7 @@ def bootstrap_runner(
             raise RunnerBootstrapError("The configured runner binary is invalid.")
         manifest = RunnerPackageManifest(
             product_version=product_version,
-            runner_version=product_version,
+            runner_version=expected_runner_version,
             platform=system,
             architecture=machine,
             filename=("bluefire-runner.exe" if system == "windows" else "bluefire-runner"),
@@ -444,13 +457,13 @@ def build_runner_manifest(
     expected_name = "bluefire-runner.exe" if system == "windows" else "bluefire-runner"
     if (
         artifact.name != expected_name
-        or not _VERSION.fullmatch(product_version)
+        or not _is_supported_product_version(product_version)
         or inspect_native_architecture(artifact, platform_name=system) != machine
     ):
         raise RunnerBootstrapError("The native runner staging input is invalid.")
     return RunnerPackageManifest(
         product_version=product_version,
-        runner_version=product_version,
+        runner_version=native_runner_version(product_version),
         platform=system,
         architecture=machine,
         filename=expected_name,

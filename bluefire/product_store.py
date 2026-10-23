@@ -2600,7 +2600,7 @@ class ProductStore(
         """Reverify and bind the exact installed head to one catalog/runner snapshot."""
 
         from .action_packages import ActionPackageError, verify_action_package_for_activation
-        from .version import __version__
+        from .version import __version__, native_runner_version
 
         stable_id = _identifier(package_id, "action-package ID")
         if not isinstance(version, str) or _ACTION_PACKAGE_VERSION.fullmatch(version) is None:
@@ -2636,7 +2636,7 @@ class ProductStore(
                             row["trusted_public_key_bytes"]
                         )
                     },
-                    bluefire_version=__version__,
+                    bluefire_version=native_runner_version(__version__),
                     runner_inventory=runner_inventory,
                     runner_identity_digest=runner_identity_digest,
                     expected_catalog_generation=int(catalog["generation"]),
@@ -2677,7 +2677,7 @@ class ProductStore(
             VerifiedActionPackageActivation,
             verify_action_package_for_activation,
         )
-        from .version import __version__
+        from .version import __version__, native_runner_version
 
         if not isinstance(activation, VerifiedActionPackageActivation):
             raise ActionPackageIntegrityError(
@@ -2689,7 +2689,8 @@ class ProductStore(
         _exact_sha256_digest(
             activation.expected_catalog_digest, "expected action-package catalog digest"
         )
-        if activation.bluefire_version != __version__:
+        current_native_version = native_runner_version(__version__)
+        if activation.bluefire_version != current_native_version:
             raise ActionPackageIntegrityError(
                 "action-package activation is not bound to this BlueFire Nexus version"
             )
@@ -2738,7 +2739,7 @@ class ProductStore(
                             row["trusted_public_key_bytes"]
                         )
                     },
-                    bluefire_version=__version__,
+                    bluefire_version=current_native_version,
                     runner_inventory=activation.runner_inventory(),
                     runner_identity_digest=activation.runner_identity_digest,
                     expected_catalog_generation=int(catalog["generation"]),

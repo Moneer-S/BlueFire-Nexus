@@ -1,15 +1,38 @@
 import { useQuery } from "@tanstack/react-query";
 import { FileSearch, MessageSquareText, Plus, RefreshCw, Save } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState, sentence } from "../components/Primitives";
-import { auditDelivery, auditFiles, auditInputDigest, clearAuditPending, readAuditPending, s3AuditApi, saveAuditPending, type AuditCollectionSummary, type AuditCollectedReview, type AuditDelivery, type AuditImportReview, type AuditPending, type SavedAuditReview } from "../lib/s3-audit";
+import { auditDelivery, auditFiles, auditInputDigest, clearAuditPending, readAuditPending, s3AuditApi, saveAuditPending, type AuditCollectionSummary, type AuditCollectedReview, type AuditDelivery, type AuditImportReview, type AuditPending, type AuditSummary, type SavedAuditReview } from "../lib/s3-audit";
 import { phaseName, s3JobId } from "../lib/s3-access";
+import { sameJson } from "../lib/replay-review";
+import { auditReviewSourceSelection, type AuditAssistanceSelection } from "../lib/audit-assistance";
 import { useAssistancePanel } from "../state/AssistanceContext";
+
+function reviewMatchesSummary(value: SavedAuditReview, expected: AuditSummary | AuditCollectionSummary): boolean {
+  if ("source" in expected) {
+    return value.schema_version === "bluefire.s3-audit-review.v1"
+      && value.review_id === expected.review_id && value.review_digest === expected.review_digest
+      && value.created_at === expected.created_at && sameJson(value.source, expected.source)
+      && value.correlation.audit.reported_delivery_state === expected.reported_delivery_state
+      && sameJson(value.correlation.reads.map(row => row.status), expected.statuses);
+  }
+  return value.schema_version === "bluefire.s3-audit-collected-review.v1"
+    && value.review_id === expected.review_id && value.review_digest === expected.review_digest
+    && value.created_at === expected.created_at && value.phase === expected.phase
+    && value.collection_run_id === expected.collection_run_id
+    && value.original_pair.reads[0].run_id === expected.original_run_ids[0]
+    && value.original_pair.reads[1].run_id === expected.original_run_ids[1]
+    && value.collection_provenance === expected.collection_provenance
+    && value.receipt.result.data.delivery_state === expected.reported_delivery_state
+    && sameJson([...value.receipt.result.data.correlations.probe.reads, ...value.receipt.result.data.correlations.legitimate.reads].map(row => row.status), expected.statuses);
+}
 
 export function S3Audit({ owner }: { owner: string }) { return <AuditWorkspace key={owner} owner={owner} />; }
 
 function AuditWorkspace({ owner }: { owner: string }) {
+  const [searchParams] = useSearchParams();
+  const search = searchParams.toString();
   const history = useQuery({ queryKey: ["s3-audit", owner], queryFn: () => s3AuditApi.list(owner), retry: false });
   const [run, setRun] = useState("");
   const [delivery, setDelivery] = useState<AuditDelivery>("unknown");
@@ -22,6 +45,7 @@ function AuditWorkspace({ owner }: { owner: string }) {
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
   const mounted = useRef(false);
+  const sourceGeneration = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
   useEffect(() => {
     mounted.current = true;
@@ -30,33 +54,89 @@ function AuditWorkspace({ owner }: { owner: string }) {
     setReady(true);
     return () => { mounted.current = false; };
   }, [owner]);
+  const hasSource = searchParams.has("audit_review") || searchParams.has("audit_digest");
+  const sourceSummaryKey = (() => {
+    if (!hasSource) return "none";
+    try {
+      const selected = auditReviewSourceSelection(owner, new URLSearchParams(search));
+      if (!selected || history.isPending || !history.data) return "loading";
+      const summaries = [...history.data.reviews, ...(history.data.schema_version === "bluefire.s3-audit-reviews.v2" ? history.data.collections : [])];
+      return JSON.stringify(summaries.find(row => row.review_id === selected.review_id) ?? null);
+    } catch { return "invalid"; }
+  })();
+  useEffect(() => {
+    const generation = ++sourceGeneration.current;
+    const cleanup = () => { if (sourceGeneration.current === generation) sourceGeneration.current += 1; };
+    setReview(null);
+    setError(undefined);
+    setBusy(false);
+    if (!hasSource) return cleanup;
+    if (history.isPending || sourceSummaryKey === "loading") return cleanup;
+    let selected: AuditAssistanceSelection | null;
+    let summary: AuditSummary | AuditCollectionSummary | null;
+    try {
+      selected = auditReviewSourceSelection(owner, new URLSearchParams(search));
+      summary = JSON.parse(sourceSummaryKey) as AuditSummary | AuditCollectionSummary | null;
+    } catch (reason) { setError(reason); return cleanup; }
+    if (!selected || !summary || summary.review_digest !== selected.review_digest) {
+      setError(new Error("The saved audit review no longer matches this source link."));
+      return cleanup;
+    }
+    setBusy(true);
+    void s3AuditApi.read(owner, selected.review_id).then(value => {
+      if (sourceGeneration.current !== generation || !mounted.current) return;
+      if (!reviewMatchesSummary(value, summary)) {
+        setError(new Error("The saved review does not match its history entry."));
+        return;
+      }
+      setReview(value);
+      setFiles([]);
+      if (fileInput.current) fileInput.current.value = "";
+    }).catch(reason => {
+      if (sourceGeneration.current === generation && mounted.current) setError(reason);
+    }).finally(() => {
+      if (sourceGeneration.current === generation && mounted.current) setBusy(false);
+    });
+    return cleanup;
+  }, [owner, search, hasSource, sourceSummaryKey, history.isPending]);
   const act = async (task: () => Promise<void>) => {
     if (lock.current) return;
+    const generation = sourceGeneration.current;
     lock.current = true; setBusy(true); setError(undefined);
-    try { await task(); } catch (reason) { if (mounted.current) setError(reason); }
-    finally { lock.current = false; if (mounted.current) setBusy(false); }
+    try { await task(); } catch (reason) { if (mounted.current && sourceGeneration.current === generation) setError(reason); }
+    finally { lock.current = false; if (mounted.current && sourceGeneration.current === generation) setBusy(false); }
   };
-  const accept = (value: SavedAuditReview, original?: AuditPending, expected?: AuditCollectionSummary) => {
+  const accept = (value: SavedAuditReview, original?: AuditPending, expected?: AuditSummary | AuditCollectionSummary, display = true) => {
     if (!mounted.current) return;
-    if (expected && (value.schema_version !== "bluefire.s3-audit-collected-review.v1" || value.review_id !== expected.review_id || value.review_digest !== expected.review_digest || value.created_at !== expected.created_at || value.phase !== expected.phase || value.collection_run_id !== expected.collection_run_id || value.original_pair.reads[0].run_id !== expected.original_run_ids[0] || value.original_pair.reads[1].run_id !== expected.original_run_ids[1] || value.collection_provenance !== expected.collection_provenance || value.receipt.result.data.delivery_state !== expected.reported_delivery_state || JSON.stringify([...value.receipt.result.data.correlations.probe.reads, ...value.receipt.result.data.correlations.legitimate.reads].map(row => row.status)) !== JSON.stringify(expected.statuses))) throw new Error("The saved collection does not match its history entry.");
+    if (expected && !reviewMatchesSummary(value, expected)) throw new Error("The saved audit review does not match its history entry.");
     if (original) {
       if (value.schema_version !== "bluefire.s3-audit-review.v1" || value.source.run_id !== original.run_id || value.input_digest !== original.input_digest) throw new Error("The saved review does not match the original import.");
       try { clearAuditPending(original); setPending(null); } catch (reason) { setStorageError(reason); }
     }
-    setReview(value); setFiles([]); if (fileInput.current) fileInput.current.value = "";
+    if (display) { setReview(value); setFiles([]); if (fileInput.current) fileInput.current.value = ""; }
     void history.refetch();
   };
-  const save = () => { void act(async () => {
-    const original = pending;
-    const request = { submission_id: original?.submission_id ?? crypto.randomUUID(), run_id: run, delivery_state: delivery, logs: await auditFiles(files) };
-    const digest = await auditInputDigest(request);
-    if (!mounted.current) return;
-    if (original && digest !== original.input_digest) throw new Error("These files or selections differ from the pending import. The original request was not resent.");
-    const marker: AuditPending = { owner, submission_id: request.submission_id, run_id: run, delivery_state: delivery, input_digest: digest };
-    saveAuditPending(marker); setPending(marker);
-    accept(await s3AuditApi.save(owner, request), marker);
-  }); };
-  const open = (id: string, original?: AuditPending, expected?: AuditCollectionSummary) => { void act(async () => accept(await s3AuditApi.read(owner, id), original, expected)); };
+  const save = () => {
+    const generation = sourceGeneration.current;
+    void act(async () => {
+      const original = pending;
+      const request = { submission_id: original?.submission_id ?? crypto.randomUUID(), run_id: run, delivery_state: delivery, logs: await auditFiles(files) };
+      const digest = await auditInputDigest(request);
+      if (!mounted.current) return;
+      if (original && digest !== original.input_digest) throw new Error("These files or selections differ from the pending import. The original request was not resent.");
+      const marker: AuditPending = { owner, submission_id: request.submission_id, run_id: run, delivery_state: delivery, input_digest: digest };
+      saveAuditPending(marker); setPending(marker);
+      const value = await s3AuditApi.save(owner, request);
+      accept(value, marker, undefined, sourceGeneration.current === generation);
+    });
+  };
+  const open = (id: string, original?: AuditPending, expected?: AuditSummary | AuditCollectionSummary) => {
+    const generation = sourceGeneration.current;
+    void act(async () => {
+      const value = await s3AuditApi.read(owner, id);
+      if (sourceGeneration.current === generation) accept(value, original, expected);
+    });
+  };
   const newReview = () => { if (!pending || busy) return; try { clearAuditPending(pending); setPending(null); setReview(null); setFiles([]); if (fileInput.current) fileInput.current.value = ""; setError(undefined); void history.refetch(); } catch (reason) { setStorageError(reason); } };
   const selected = history.data?.reads.find(row => row.run_id === run);
   const importedCount = history.data?.reviews.length ?? 0;
@@ -75,7 +155,7 @@ function AuditWorkspace({ owner }: { owner: string }) {
       {importedCount === 32 ? <Callout tone="warning" title="Import review limit reached">All 32 saved import reviews remain available.</Callout> : null}
       {selected ? <div className="s3-actions"><Link to={`/runs/${selected.run_id}`}>Original run</Link><Badge>{selected.provenance === "synthetic" ? "Synthetic runner source" : "Runner reported source"}</Badge><span>Cleanup: {sentence(selected.cleanup)}</span></div> : null}
       {pending ? <Callout tone="warning" title="Import confirmation pending"><p>The review may already be saved. Raw files are not retained in this browser. Starting another review keeps any saved history.</p><div className="s3-actions"><Button disabled={busy} onClick={() => open(s3JobId(pending.submission_id), pending)}><FileSearch />Check saved review</Button><Button disabled={busy} onClick={newReview}><Plus />Start another review</Button></div></Callout> : null}
-      <div className="s3-audit-history" aria-label="Saved audit reviews">{history.data?.reviews.map(row => <article key={row.review_id}><Button disabled={busy} onClick={() => open(row.review_id, pending && s3JobId(pending.submission_id) === row.review_id ? pending : undefined)}><FileSearch />{phaseName[row.source.phase]} · {sentence(row.source.reader)}</Button><Badge>Operator import</Badge><time dateTime={row.created_at}>{new Date(row.created_at).toLocaleString()}</time><span>{row.statuses.map(sentence).join(" · ")}</span></article>)}{collections.map(row => <article key={row.review_id}><Button disabled={busy} onClick={() => open(row.review_id, undefined, row)}><FileSearch />{phaseName[row.phase]} · Collected audit</Button><Badge>Authenticated source retrieval</Badge><Badge tone="warning">Integrity unverified</Badge><time dateTime={row.created_at}>{new Date(row.created_at).toLocaleString()}</time><span>{collectionDeliveryLabel(row.reported_delivery_state)} · {row.statuses.map(sentence).join(" · ")}</span></article>)}{!history.data?.reviews.length && !collections.length ? <p>No saved audit reviews.</p> : null}</div>
+      <div className="s3-audit-history" aria-label="Saved audit reviews">{history.data?.reviews.map(row => <article key={row.review_id}><Button disabled={busy} onClick={() => open(row.review_id, pending && s3JobId(pending.submission_id) === row.review_id ? pending : undefined, row)}><FileSearch />{phaseName[row.source.phase]} · {sentence(row.source.reader)}</Button><Badge>Operator import</Badge><time dateTime={row.created_at}>{new Date(row.created_at).toLocaleString()}</time><span>{row.statuses.map(sentence).join(" · ")}</span></article>)}{collections.map(row => <article key={row.review_id}><Button disabled={busy} onClick={() => open(row.review_id, undefined, row)}><FileSearch />{phaseName[row.phase]} · Collected audit</Button><Badge>Authenticated source retrieval</Badge><Badge tone="warning">Integrity unverified</Badge><time dateTime={row.created_at}>{new Date(row.created_at).toLocaleString()}</time><span>{collectionDeliveryLabel(row.reported_delivery_state)} · {row.statuses.map(sentence).join(" · ")}</span></article>)}{!history.data?.reviews.length && !collections.length ? <p>No saved audit reviews.</p> : null}</div>
     </>}
     {storageError ? <ErrorState title="Local import recovery unavailable" error={storageError} /> : null}
     {error ? <ErrorState title="Audit review not confirmed" error={error} /> : null}
@@ -90,9 +170,15 @@ function AuditDetail({ value }: { value: SavedAuditReview }) {
 
 function ImportedAuditDetail({ value }: { value: AuditImportReview }) {
   const audit = value.correlation.audit;
-  const assistant = useAssistancePanel();
-  const explain = () => { if (!assistant) return; assistant.publish(Symbol("audit-review"), { kind: "audit", selected: { kind: "s3_audit_review", workflow_job_id: value.workflow_job_id, review_id: value.review_id, review_digest: value.review_digest }, title: `${phaseName[value.source.phase]} audit review`, manualEdits: false }); assistant.setOpen(true); };
-  return <div className="s3-audit-detail" aria-label="Saved audit review detail"><div className="s3-setup-heading"><h3>{phaseName[value.source.phase]} · {sentence(value.source.reader)}</h3>{assistant ? <Button onClick={explain}><MessageSquareText />Explain review</Button> : null}</div><div className="s3-actions"><Link to={`/runs/${value.source.run_id}`}>Original run evidence</Link><Badge>{value.source.provenance === "synthetic" ? "Synthetic runner source" : "Runner reported source"}</Badge><Badge tone="warning">Collection not independently verified</Badge></div><div className="s3-audit-results">{value.correlation.reads.map(row => <article key={row.purpose}><h3>{row.purpose === "health" ? "Canary object" : "Primary object"}</h3><Badge tone={row.status === "matched" ? "info" : "warning"}>{sentence(row.status)}</Badge><DataList items={[{ label: "Runner", value: sentence(row.worker_outcome) }, { label: "Imported events", value: row.audit_event_ids.length }, { label: "Full object bytes", value: "Not proven" }]} /></article>)}</div><DataList items={[{ label: "Reported delivery", value: sentence(audit.reported_delivery_state) }, { label: "Imported records", value: audit.source_event_count }, { label: "Excluded", value: audit.counts.excluded }, { label: "Unknown", value: audit.counts.unknown }, { label: "Duplicates", value: audit.counts.duplicates }]} /><p>Operator-supplied records do not verify collection completeness or defensive effectiveness.</p><details><summary>Source bindings and minimized evidence</summary><pre>{JSON.stringify(value, null, 2)}</pre></details></div>;
+  const { publish, setOpen } = useAssistancePanel() ?? {};
+  useEffect(() => {
+    if (!publish) return;
+    const owner = Symbol("audit-review");
+    publish(owner, { kind: "audit", selected: { kind: "s3_audit_review", workflow_job_id: value.workflow_job_id, review_id: value.review_id, review_digest: value.review_digest }, title: `${phaseName[value.source.phase]} audit review`, manualEdits: false });
+    return () => publish(owner);
+  }, [publish, value.workflow_job_id, value.review_id, value.review_digest, value.source.phase]);
+  const explain = () => setOpen?.(true);
+  return <div className="s3-audit-detail" aria-label="Saved audit review detail"><div className="s3-setup-heading"><h3>{phaseName[value.source.phase]} · {sentence(value.source.reader)}</h3>{publish ? <Button onClick={explain}><MessageSquareText />Explain review</Button> : null}</div><div className="s3-actions"><Link to={`/runs/${value.source.run_id}`}>Original run evidence</Link><Badge>{value.source.provenance === "synthetic" ? "Synthetic runner source" : "Runner reported source"}</Badge><Badge tone="warning">Collection not independently verified</Badge></div><div className="s3-audit-results">{value.correlation.reads.map(row => <article key={row.purpose}><h3>{row.purpose === "health" ? "Canary object" : "Primary object"}</h3><Badge tone={row.status === "matched" ? "info" : "warning"}>{sentence(row.status)}</Badge><DataList items={[{ label: "Runner", value: sentence(row.worker_outcome) }, { label: "Imported events", value: row.audit_event_ids.length }, { label: "Full object bytes", value: "Not proven" }]} /></article>)}</div><DataList items={[{ label: "Reported delivery", value: sentence(audit.reported_delivery_state) }, { label: "Imported records", value: audit.source_event_count }, { label: "Excluded", value: audit.counts.excluded }, { label: "Unknown", value: audit.counts.unknown }, { label: "Duplicates", value: audit.counts.duplicates }]} /><p>Operator-supplied records do not verify collection completeness or defensive effectiveness.</p><details><summary>Source bindings and minimized evidence</summary><pre>{JSON.stringify(value, null, 2)}</pre></details></div>;
 }
 
 function collectionDeliveryLabel(state: Exclude<AuditDelivery, "complete">) {
@@ -103,15 +189,21 @@ function collectionDeliveryLabel(state: Exclude<AuditDelivery, "complete">) {
 
 function CollectedAuditDetail({ value }: { value: AuditCollectedReview }) {
   const data = value.receipt.result.data;
-  const assistant = useAssistancePanel();
-  const explain = () => { if (!assistant) return; assistant.publish(Symbol("collected-audit-review"), { kind: "audit", selected: { kind: "s3_audit_review", workflow_job_id: value.workflow_job_id, review_id: value.review_id, review_digest: value.review_digest }, title: `${phaseName[value.phase]} collected audit review`, manualEdits: false }); assistant.setOpen(true); };
+  const { publish, setOpen } = useAssistancePanel() ?? {};
+  useEffect(() => {
+    if (!publish) return;
+    const owner = Symbol("collected-audit-review");
+    publish(owner, { kind: "audit", selected: { kind: "s3_audit_review", workflow_job_id: value.workflow_job_id, review_id: value.review_id, review_digest: value.review_digest }, title: `${phaseName[value.phase]} collected audit review`, manualEdits: false });
+    return () => publish(owner);
+  }, [publish, value.workflow_job_id, value.review_id, value.review_digest, value.phase]);
+  const explain = () => setOpen?.(true);
   const correlationRows = [
     ...data.correlations.probe.reads,
     ...data.correlations.legitimate.reads,
   ];
   const usage = Object.entries(data.usage).map(([key, amount]) => ({ label: sentence(key), value: amount.toLocaleString() }));
   return <div className="s3-audit-detail" aria-label="Saved audit review detail">
-    <div className="s3-setup-heading"><h3>{phaseName[value.phase]} · Collected audit</h3>{assistant ? <Button onClick={explain}><MessageSquareText />Explain review</Button> : null}</div>
+    <div className="s3-setup-heading"><h3>{phaseName[value.phase]} · Collected audit</h3>{publish ? <Button onClick={explain}><MessageSquareText />Explain review</Button> : null}</div>
     <div className="s3-actions"><Badge>Authenticated source retrieval</Badge><Badge tone="warning">Integrity unverified</Badge><Badge tone="warning">{collectionDeliveryLabel(data.delivery_state)}</Badge></div>
     <div className="s3-actions" aria-label="Original read evidence">
       {value.original_pair.reads.map(read => <Link key={read.run_id} to={`/runs/${read.run_id}`}>{sentence(read.reader)} original run evidence</Link>)}

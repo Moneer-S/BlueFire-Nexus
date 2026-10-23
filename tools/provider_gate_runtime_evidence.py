@@ -38,6 +38,7 @@ from tools.provider_gate_common import (
     _load_document,
     _sha256_file,
 )
+from tools.provider_gate_fixture_evidence import _fixture_root
 
 
 def _tampered_envelope(envelope: Mapping[str, Any], mode: str, substitute: str) -> dict[str, Any]:
@@ -533,7 +534,7 @@ def _journey_report(
     ] = _runner_context,
     service_factory: Callable[..., BlueFireService] = BlueFireService,
 ) -> dict[str, Any]:
-    root = repository / "tests_platform" / "fixtures" / "provider_upgrade"
+    root = _fixture_root(repository)
     rows = {str(row["version"]): row for row in index["packages"]}
     envelopes = {
         version: _load_document(_contained_file(root, rows[version]["file"]))
