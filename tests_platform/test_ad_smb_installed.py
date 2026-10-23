@@ -253,12 +253,13 @@ def test_cancelled_before_dispatch_has_no_channel_or_checkpoint(setup):
     executor, _, task, _, calls = setup
     stop = threading.Event()
     stop.set()
-    result = executor.execute(
-        task["manifest"]["params"]["ad_smb_request"],
-        cancellation_event=stop,
-        before_dispatch=lambda _: pytest.fail("no checkpoint"),
-    )
-    assert result["dispatch"] == "not_started" and calls == []
+    with pytest.raises(execution.AdSmbPreDispatchCancelled):
+        executor.execute(
+            task["manifest"]["params"]["ad_smb_request"],
+            cancellation_event=stop,
+            before_dispatch=lambda _: pytest.fail("no checkpoint"),
+        )
+    assert calls == []
 
 
 def test_config_removed_after_checkpoint_never_dispatches(setup):

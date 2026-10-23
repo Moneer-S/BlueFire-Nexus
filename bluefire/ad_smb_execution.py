@@ -181,9 +181,7 @@ class InstalledAdSmbExecutor:
         checkpointed = False
         try:
             if cancellation_event.is_set():
-                return UnavailableAdSmbExecutor().execute(
-                    request, cancellation_event=cancellation_event, before_dispatch=before_dispatch
-                )
+                raise JobCancelled("AD installed execution cancellation requested before dispatch.")
             entry, role = self._selected(request)
             client = entry.client(role)
             self._identity(entry, role, client)
