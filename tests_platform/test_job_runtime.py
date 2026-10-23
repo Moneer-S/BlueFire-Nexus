@@ -7,7 +7,9 @@ from typing import Any, Mapping
 import pytest
 
 from bluefire.application_errors import APIError
+from bluefire.domain_errors import JobCancelled as ContractJobCancelled
 from bluefire.job_runtime import (
+    JobCancelled,
     JobContext,
     JobQueueFull,
     JobResult,
@@ -16,6 +18,10 @@ from bluefire.job_runtime import (
     RunJobController,
 )
 from bluefire.product_store import ProductStore
+
+
+def test_job_cancelled_reexports_foundation_contract() -> None:
+    assert JobCancelled is ContractJobCancelled
 
 
 @pytest.mark.parametrize("code", ["run_record_incomplete", "unreviewed_error"])

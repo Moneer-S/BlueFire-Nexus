@@ -16,6 +16,10 @@ export const adOwner = `job-${"1".repeat(32)}`;
 export const adChild = `job-${"2".repeat(32)}`;
 export const adSubmission = "22222222-2222-4222-8222-222222222222";
 export const adSids = { probe: "S-1-5-21-1-2-3-1001", legitimate: "S-1-5-21-1-2-3-1002", controller: "S-1-5-21-1-2-3-1003" };
+export function rawAdPreparationJob() {
+  const settlement = { schema_version: "bluefire.ad-smb-preparation-settlement.v1", operation_job_id: adChild, phase: "baseline", terminal_state: "failed", reserved_at: "2026-10-23T15:00:00Z", settled_at: "2026-10-23T15:01:00Z", request_digest: adHash, boundary: "before_run_retained", producer: "bluefire.ad-smb-controller" };
+  return { schema_version: "bluefire.job.v1", job_id: adChild, kind: "ad_smb.operation", state: "failed", created_at: settlement.reserved_at, result_ref: null, request: { ad_smb: { workflow_job_id: adOwner, operation_job_id: adChild, phase: settlement.phase } }, progress: { tasks: [], run_id: null, phase: "failed", preparation_settlement: settlement }, error: { code: "execution_callback_failed", message: "Synthetic preparation failure." } };
+}
 export function rawAdEnvironment() {
   const createdAt = new Date(Date.now() - 60_000).toISOString();
   return { environment_id: `ad-env-${"3".repeat(32)}`, provenance: "synthetic_fixture", scope: {

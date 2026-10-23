@@ -805,6 +805,53 @@ def test_installed_pre_dispatch_cancellation_recovers_locally_and_keeps_budget(w
     assert jobs.recover(identifier) == recovered
 
 
+def test_installed_cancel_after_job_checkpoint_before_executor_check_stays_cancelled(
+    workspace,
+):
+    jobs, fixture_executor, service = workspace
+    fixture_executor.selected["provenance"] = "runner_reported"
+    identifier = create(jobs)
+    remaining_before = jobs.read(identifier)["remaining"]
+    installed, _entry, calls = installed_checkpoint_executor(fixture_executor, service.store.root)
+    execute = installed.execute
+    entered, release = threading.Event(), threading.Event()
+
+    def wait_before_executor_check(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return execute(*args, **kwargs)
+
+    installed.execute = wait_before_executor_check
+    jobs._executor = installed
+    child, _ = submit(jobs, identifier, "inspect", wait=False)
+    assert entered.wait(5)
+    jobs.stop(identifier)
+    release.set()
+    child = wait_for_ad_job(jobs.controller, child["job_id"])
+
+    assert child["state"] == "cancelled"
+    assert child["progress"]["tasks"] == []
+    run_id = child["progress"]["run_id"]
+    marker = child["progress"]["pre_dispatch_failure"]
+    assert marker["request_index"] == 0
+    assert marker["run_id"] == run_id
+    assert marker["request_digest"] == content_hash(child["request"]["requests"][0])
+    remaining_reserved = jobs.read(identifier)["remaining"]
+    assert remaining_reserved == {
+        key: remaining_before[key] - value for key, value in results.phase_budget("inspect").items()
+    }
+    recovered = jobs.recover(identifier)
+    operation = recovered["workflow"]["progress"]["operations"][-1]
+    assert operation["job_id"] == child["job_id"]
+    assert operation["outcome"]["state"] == "not_started"
+    assert operation["executions"][0]["provenance"] == "controller_local"
+    assert recovered["workflow"]["progress"]["pending_operation"] is None
+    assert recovered["remaining"] == remaining_reserved
+    assert calls == []
+    assert service.store.validate_bundle(run_id)["valid"]
+    assert jobs.recover(identifier) == recovered
+
+
 def test_retained_run_checkpoint_cancellation_recovers_locally_without_dispatch(
     workspace, monkeypatch
 ):
@@ -835,8 +882,7 @@ def test_retained_run_checkpoint_cancellation_recovers_locally_without_dispatch(
     assert child["progress"]["pre_dispatch_failure"]["request_index"] == 0
     remaining_reserved = jobs.read(identifier)["remaining"]
     assert remaining_reserved == {
-        key: remaining_before[key] - value
-        for key, value in results.phase_budget("inspect").items()
+        key: remaining_before[key] - value for key, value in results.phase_budget("inspect").items()
     }
     recovered = jobs.recover(identifier)
     operation = recovered["workflow"]["progress"]["operations"][-1]
@@ -902,8 +948,7 @@ def test_owner_stop_race_admission_refusal_recovers_local_no_dispatch(workspace,
     assert stopped["workflow"]["progress"]["stopped"] is True
     remaining_reserved = jobs.read(identifier)["remaining"]
     assert remaining_reserved == {
-        key: remaining_before[key] - value
-        for key, value in results.phase_budget("inspect").items()
+        key: remaining_before[key] - value for key, value in results.phase_budget("inspect").items()
     }
     recovered = jobs.recover(identifier)
     operation = recovered["workflow"]["progress"]["operations"][-1]
@@ -936,9 +981,7 @@ def test_saved_deadline_refusal_recovers_local_no_dispatch(workspace, monkeypatc
     monkeypatch.setattr(records, "retain_run", retain_then_block)
     child, _ = submit(jobs, identifier, "inspect", wait=False)
     assert retained.wait(5)
-    clock[0] = timestamp(child["request"]["requests"][0]["deadline"]) + timedelta(
-        microseconds=1
-    )
+    clock[0] = timestamp(child["request"]["requests"][0]["deadline"]) + timedelta(microseconds=1)
     release.set()
     child = wait_for_ad_job(jobs.controller, child["job_id"])
 
@@ -947,8 +990,7 @@ def test_saved_deadline_refusal_recovers_local_no_dispatch(workspace, monkeypatc
     assert child["progress"]["pre_dispatch_failure"]["request_index"] == 0
     remaining_reserved = jobs.read(identifier)["remaining"]
     assert remaining_reserved == {
-        key: remaining_before[key] - value
-        for key, value in results.phase_budget("inspect").items()
+        key: remaining_before[key] - value for key, value in results.phase_budget("inspect").items()
     }
     recovered = jobs.recover(identifier)
     operation = recovered["workflow"]["progress"]["operations"][-1]
