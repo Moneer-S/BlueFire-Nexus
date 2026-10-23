@@ -19,8 +19,84 @@ from tools import verify_installed_windows_cancellation as verifier
 def _write_private_ready(task: Path, ready: dict[str, object]) -> None:
     with _PinnedPrivateDirectory(task) as control:
         control.create(
-            "ready.json", json.dumps(ready).encode("utf-8"), maximum=verifier._MAX_READY_BYTES
+            "ready.json",
+            json.dumps(ready).encode("utf-8"),
+            maximum=verifier._MAX_READY_BYTES,
+            atomic_no_replace=True,
         )
+
+
+def test_private_ready_fixture_publishes_only_complete_single_link_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = tmp_path / "task"
+    task.mkdir()
+    ready = {"fixture": "complete private record"}
+    real_write = os.write
+    real_promote = _PinnedPrivateDirectory.promote
+    writes = 0
+    publications = 0
+
+    def short_write(descriptor, payload):
+        nonlocal writes
+        writes += 1
+        assert not (task / "ready.json").exists()
+        return real_write(descriptor, payload[:7])
+
+    def promote(control, source, destination, **options):
+        nonlocal publications
+        publications += 1
+        assert destination == "ready.json" and options["atomic_no_replace"] is True
+        assert not (task / destination).exists()
+        assert (task / source).stat().st_nlink == 1
+        assert json.loads(control.read(source, maximum=verifier._MAX_READY_BYTES)) == ready
+        return real_promote(control, source, destination, **options)
+
+    monkeypatch.setattr(os, "write", short_write)
+    monkeypatch.setattr(_PinnedPrivateDirectory, "promote", promote)
+
+    _write_private_ready(task, ready)
+
+    assert writes > 1 and publications == 1
+    assert json.loads((task / "ready.json").read_bytes()) == ready
+    assert (task / "ready.json").stat().st_nlink == 1
+    assert {path.name for path in task.iterdir()} == {"ready.json"}
+
+
+def test_private_ready_fixture_never_replaces_existing_record(tmp_path: Path) -> None:
+    task = tmp_path / "task"
+    task.mkdir()
+    _write_private_ready(task, {"fixture": "original"})
+
+    with pytest.raises(OSError):
+        _write_private_ready(task, {"fixture": "replacement"})
+
+    assert json.loads((task / "ready.json").read_bytes()) == {"fixture": "original"}
+    assert {path.name for path in task.iterdir()} == {"ready.json"}
+
+
+def test_private_ready_fixture_interrupted_write_never_publishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = tmp_path / "task"
+    task.mkdir()
+    real_write = os.write
+    writes = 0
+
+    def interrupted_write(descriptor, payload):
+        nonlocal writes
+        writes += 1
+        assert not (task / "ready.json").exists()
+        if writes == 2:
+            raise OSError("fixture interrupted write")
+        return real_write(descriptor, payload[:7])
+
+    monkeypatch.setattr(os, "write", interrupted_write)
+
+    with pytest.raises(OSError, match="fixture interrupted write"):
+        _write_private_ready(task, {"fixture": "incomplete record"})
+
+    assert writes == 2 and list(task.iterdir()) == []
 
 
 def test_receipt_is_written_directly_and_exclusively(
@@ -929,6 +1005,8 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
     interruption = _passed_driver_report()["execution_interruption"]
     pins: list[dict[str, object]] = []
     sent_frames: list[dict[str, object]] = []
+    ambiguity_rejected = threading.Event()
+    ambiguity_order: list[str] = []
 
     def pin(record):
         if not permit_pin:
@@ -1057,9 +1135,14 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
                 raise RuntimeError("fixture approval refusal")
             self.approval_calls += 1
             task.mkdir(parents=True)
-            _write_private_ready(task, ready)
             if approval_gate == "ambiguous_workspace":
                 (sandbox / ".bluefire-executions" / "approval-unexpected").mkdir()
+                # Do not publish a pinnable record or release the JS approval
+                # response before the independent observer rejects both owners.
+                assert ambiguity_rejected.wait(timeout=5)
+                assert observer_errors == ["ValueError"] and not observed and not pins
+                ambiguity_order.append("approval_after_observer_rejection")
+            _write_private_ready(task, ready)
             self.state = "running"
             return {"job": self.job(requested_id)}
 
@@ -1185,6 +1268,13 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
         except (RuntimeError, ValueError, OSError) as error:
             observer_errors.append(type(error).__name__)
             witness_messages.put(("denied", None))
+            if (
+                approval_gate == "ambiguous_workspace"
+                and type(error) is ValueError
+                and error.args == ("fresh Execute workspace identity was ambiguous",)
+            ):
+                ambiguity_order.append("observer_rejected_ambiguity")
+                ambiguity_rejected.set()
 
     observer = threading.Thread(target=observe)
     observer.start()
@@ -1296,6 +1386,11 @@ def test_real_driver_api_and_observer_contracts_without_native_execution(
                 "ValueError" if approval_gate == "ambiguous_workspace" else "RuntimeError"
             )
             assert observer_errors == [expected_observer_error] and not observed and not pins
+            if approval_gate == "ambiguous_workspace":
+                assert ambiguity_order == [
+                    "observer_rejected_ambiguity",
+                    "approval_after_observer_rejection",
+                ]
         assert report["status"] == "failed_or_incomplete"
         assert report["error"]["stage"] == "independent-witness-handshake"
         assert report["request_counts"]["approval"] == 1
