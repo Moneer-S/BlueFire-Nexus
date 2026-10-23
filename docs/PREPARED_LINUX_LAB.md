@@ -70,7 +70,7 @@ python tools/stage_native_runner.py \
   --runner "$CARGO_TARGET_DIR/x86_64-unknown-linux-musl/release/bluefire-runner" \
   --output-root "$PWD/bluefire/native" --platform linux --architecture x86_64
 python -m pip wheel --no-build-isolation --no-deps --wheel-dir dist .
-python -m pip download --only-binary=:all: --dest wheelhouse dist/bluefire_nexus-3.0.0-py3-none-linux_x86_64.whl
+python -m pip download --only-binary=:all: --dest wheelhouse dist/bluefire_nexus-3.0.0rc2-py3-none-linux_x86_64.whl
 ```
 
 The build environment includes the declared runtime dependencies because the staging helper
@@ -91,7 +91,7 @@ Choose a **new** local state directory with enough disk space for the cloned bas
 wheel input archive. The following commands use paths relative to the current PowerShell folder:
 
 ```powershell
-python -m bluefire.prepared_lab prepare --state-dir .\lab-state --wheel .\dist\bluefire_nexus-3.0.0-py3-none-linux_x86_64.whl --wheelhouse .\wheelhouse
+python -m bluefire.prepared_lab prepare --state-dir .\lab-state --wheel .\dist\bluefire_nexus-3.0.0rc2-py3-none-linux_x86_64.whl --wheelhouse .\wheelhouse
 python -m bluefire.prepared_lab start --state-dir .\lab-state --port 8767
 ```
 

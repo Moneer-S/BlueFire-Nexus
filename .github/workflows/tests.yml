@@ -82,7 +82,10 @@ jobs:
             partition: remainder
           - os: windows-latest
             python-version: "3.12"
-            partition: a-d
+            partition: a-b
+          - os: windows-latest
+            python-version: "3.12"
+            partition: c-d
           - os: windows-latest
             python-version: "3.12"
             partition: e-q
@@ -172,6 +175,22 @@ jobs:
                 Sort-Object Name |
                 ForEach-Object { "tests_platform/$($_.Name)" })
               if ($testFiles.Count -eq 0) { throw 'Empty e-q test partition' }
+              python -m pytest -vv --durations=50 @testFiles
+            }
+            'a-b' {
+              $testFiles = @(Get-ChildItem -LiteralPath tests_platform -File |
+                Where-Object { $_.Name -cmatch '^test_[a-b].*\.py$' } |
+                Sort-Object Name |
+                ForEach-Object { "tests_platform/$($_.Name)" })
+              if ($testFiles.Count -eq 0) { throw 'Empty a-b test partition' }
+              python -m pytest -vv --durations=50 @testFiles
+            }
+            'c-d' {
+              $testFiles = @(Get-ChildItem -LiteralPath tests_platform -File |
+                Where-Object { $_.Name -cmatch '^test_[c-d].*\.py$' } |
+                Sort-Object Name |
+                ForEach-Object { "tests_platform/$($_.Name)" })
+              if ($testFiles.Count -eq 0) { throw 'Empty c-d test partition' }
               python -m pytest -vv --durations=50 @testFiles
             }
             'remainder' {
