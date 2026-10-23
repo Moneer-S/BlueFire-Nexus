@@ -450,7 +450,9 @@ def original_context(request: Mapping[str, Any], value: Any) -> dict[str, Any]:
     return row
 
 
-def validate_execution(request: Mapping[str, Any], value: Any) -> dict[str, Any]:
+def _validate_execution(
+    request: Mapping[str, Any], value: Any, *, allow_controller_local: bool = False
+) -> dict[str, Any]:
     limit = MAX_AUDIT_EXECUTION_BYTES if request.get("step") == "collect_audit" else 256 * 1024
     row = document(value, limit=limit)
     exact(
@@ -458,12 +460,22 @@ def validate_execution(request: Mapping[str, Any], value: Any) -> dict[str, Any]
         {"schema_version", "request_digest", "provenance", "dispatch", "cleanup", "observation"},
         "AD execution",
     )
+    controller_local = row["provenance"] == "controller_local"
     if (
         row["schema_version"] != "bluefire.ad-smb-execution.v1"
         or row["request_digest"] != content_hash(request)
-        or row["provenance"] not in {"runner_reported", "synthetic_fixture"}
+        or row["provenance"] not in {"runner_reported", "synthetic_fixture", "controller_local"}
         or row["dispatch"] not in {"not_started", "attempted", "unknown"}
         or row["cleanup"] not in {"verified", "unknown"}
+        or (
+            controller_local
+            and (
+                not allow_controller_local
+                or row["dispatch"] != "not_started"
+                or row["cleanup"] != "verified"
+                or row["observation"] is not None
+            )
+        )
     ):
         raise AdSmbError("AD execution identity or state is invalid.")
     observation = row["observation"]
@@ -536,6 +548,20 @@ def validate_execution(request: Mapping[str, Any], value: Any) -> dict[str, Any]
         observed_at = timestamp(observation["snapshot"]["observed_at"])
         if not timestamp(request["requested_at"]) <= observed_at <= timestamp(request["deadline"]):
             raise AdSmbError("AD member observation is outside its original request window.")
+    return row
+
+
+def validate_execution(request: Mapping[str, Any], value: Any) -> dict[str, Any]:
+    return _validate_execution(request, value)
+
+
+def validate_controller_local_execution(
+    request: Mapping[str, Any], value: Any
+) -> dict[str, Any]:
+    """Validate only the no-dispatch projection admitted by a durable controller marker."""
+    row = _validate_execution(request, value, allow_controller_local=True)
+    if row["provenance"] != "controller_local":
+        raise AdSmbError("AD controller-local execution has invalid identity or state.")
     return row
 
 
@@ -682,9 +708,12 @@ def outcome(
             for execution in operation["executions"]
             if execution["observation"] is not None
         }
-        distinct = len({row["local_authentication_id"] for row in observations}) == len(
-            observations
-        ) and not old_luids.intersection(row["local_authentication_id"] for row in observations)
+        if observations:
+            distinct = len({row["local_authentication_id"] for row in observations}) == len(
+                observations
+            ) and not old_luids.intersection(
+                row["local_authentication_id"] for row in observations
+            )
     elif phase in {"harden", "rollback"}:
         known = known and all(
             row["state"] in {"readback_matched", "not_attempted"} for row in observations

@@ -12,6 +12,7 @@ from bluefire import ad_smb_installed as installed
 from bluefire.ad_smb_contract import AdSmbError, AdSmbScope
 from bluefire.ad_smb_jobs import AdSmbJobs
 from bluefire.ad_smb_receiver_results import context
+from bluefire.job_runtime import JobCancelled
 from bluefire.util import canonical_json_bytes, content_hash
 from tests_platform.test_ad_smb_contract import NOW, pin
 from tests_platform.test_ad_smb_jobs import workspace as workspace
@@ -190,11 +191,26 @@ def test_checkpoint_failure_never_dispatches(setup):
     def refuse(_):
         raise AdSmbError("synthetic durable failure")
 
-    with pytest.raises(AdSmbError):
+    with pytest.raises(execution.AdSmbPreDispatchFailure):
         executor.execute(
             task["manifest"]["params"]["ad_smb_request"],
             cancellation_event=threading.Event(),
             before_dispatch=refuse,
+        )
+    assert "execute" not in calls
+
+
+def test_checkpoint_cancellation_remains_cancellation_without_dispatch(setup):
+    executor, _, task, _, calls = setup
+
+    def cancel(_):
+        raise JobCancelled("authored cancellation")
+
+    with pytest.raises(execution.AdSmbPreDispatchCancelled):
+        executor.execute(
+            task["manifest"]["params"]["ad_smb_request"],
+            cancellation_event=threading.Event(),
+            before_dispatch=cancel,
         )
     assert "execute" not in calls
 
@@ -247,12 +263,13 @@ def test_cancelled_before_dispatch_has_no_channel_or_checkpoint(setup):
 
 def test_config_removed_after_checkpoint_never_dispatches(setup):
     executor, _, task, state, calls = setup
-    with pytest.raises(AdSmbError):
+    with pytest.raises(AdSmbError) as error:
         executor.execute(
             task["manifest"]["params"]["ad_smb_request"],
             cancellation_event=threading.Event(),
             before_dispatch=lambda _: setattr(state, "entries", ()),
         )
+    assert not isinstance(error.value, execution.AdSmbPreDispatchFailure)
     assert "execute" not in calls
 
 

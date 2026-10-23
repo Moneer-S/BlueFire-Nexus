@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { adConfirmed, adPhaseCurrent, adSmbApi, checkedAdEnvironments, checkedAdList, checkedAdReview, checkedAdWorkflow, clearAdPending, readAdPending, storeAdPending } from "../src/lib/ad-smb";
 import { request } from "../src/lib/api";
-import { adChild, adOwner, adPendingFixture, adSids, auditWindowStartForFixture, rawAdAcknowledgement, rawAdEnvironments, rawAdList, rawAdNormalizedObservation, rawAdReview, rawAdWorkflow } from "./ad-smb-fixture";
+import { adChild, adOwner, adPendingFixture, adSids, auditWindowStartForFixture, rawAdAcknowledgement, rawAdControllerLocalWorkflow, rawAdEnvironments, rawAdList, rawAdNormalizedObservation, rawAdReview, rawAdWorkflow } from "./ad-smb-fixture";
 
 vi.mock("../src/lib/api", () => ({ DEMO_MODE: false, request: vi.fn() }));
 beforeEach(() => localStorage.clear());
@@ -12,6 +12,37 @@ it("minimizes saved evidence without retaining handles, descriptor bytes or prot
   expect(value.operations[4]!.executions[0]!.audit).toEqual({ events: 3, truncated: true, digest: expect.any(String) });
   expect(JSON.stringify(value)).not.toMatch(/credential_handle|credential-fff|PRIVATE_DESCRIPTOR_BYTES|binary_b64|transport_identity/);
   expect(value.operations[3]!.expectation).toBe("matched");
+});
+it.each(["inspect", "baseline", "harden", "retest", "rollback", "audit"] as const)("retains a controller-local %s failure without execution or access claims", phase => {
+  const operation = checkedAdWorkflow(rawAdControllerLocalWorkflow(phase), adOwner).operations[0]!;
+  expect(operation).toMatchObject({ state: "not_started", cleanup: "verified", distinctContexts: null, expectation: phase === "baseline" || phase === "retest" ? "incomplete" : null });
+  expect(operation.executions).toEqual([{ provenance: "controller_local", dispatch: "not_started", cleanup: "verified", read: null, audit: null, change: null }]);
+});
+it.each([
+  { dispatch: "attempted" }, { dispatch: "unknown" }, { cleanup: "unknown" }, { observation: {} },
+])("rejects incompatible controller-local execution fields: %j", patch => {
+  const raw = rawAdControllerLocalWorkflow();
+  Object.assign(raw.workflow.progress.operations[0]!.executions[0]!, patch);
+  expect(() => checkedAdWorkflow(raw, adOwner)).toThrow();
+});
+it.each([
+  { state: "complete" }, { state: "partial" }, { state: "unknown" }, { cleanup: "unknown" },
+  { read_expectation: "matched" }, { distinct_local_contexts: true }, { distinct_local_contexts: false },
+])("rejects incompatible controller-local outcome fields: %j", patch => {
+  const raw = rawAdControllerLocalWorkflow();
+  Object.assign(raw.workflow.progress.operations[0]!.outcome, patch);
+  expect(() => checkedAdWorkflow(raw, adOwner)).toThrow();
+});
+it("rejects controller-local evidence mixed with runner dispatch or a fixture environment", () => {
+  const raw = rawAdControllerLocalWorkflow("baseline");
+  const executions = raw.workflow.progress.operations[0]!.executions;
+  executions.push({ ...executions[0]!, provenance: "runner_reported" });
+  expect(() => checkedAdWorkflow(raw, adOwner)).toThrow();
+  executions.pop();
+  raw.workflow.request.environment.provenance = "synthetic_fixture";
+  expect(() => checkedAdWorkflow(raw, adOwner)).toThrow();
+  raw.workflow.request.environment.provenance = "controller_local";
+  expect(() => checkedAdWorkflow(raw, adOwner)).toThrow();
 });
 function auditWorkflowWithNormalized(count = 3) {
   const raw = rawAdWorkflow({ phases: ["audit"] });

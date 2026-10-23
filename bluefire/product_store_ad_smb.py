@@ -12,6 +12,8 @@ from .product_store_errors import ProductStoreError
 from .product_store_serialization import canonical_json, utc_now
 from .util import content_hash
 
+_PRE_DISPATCH_FAILURE_SCHEMA = "bluefire.ad-smb-pre-dispatch-failure.v1"
+
 
 def owner_at(store, connection, identifier):
     owner = job_at(store, connection, result.job_id(identifier))
@@ -294,9 +296,106 @@ def record_recovery(store, identifier, index, context, execution):
         patch(connection, child, {"tasks": tasks})
 
 
+def _installed_pre_dispatch_failure(child):
+    progress = child["progress"]
+    run_id = progress.get("run_id")
+    if not isinstance(run_id, str) or not isinstance(progress.get("initial_run"), dict):
+        raise AdSmbError("AD pre-dispatch failure requires its retained original run.")
+    request = child["request"]["requests"][0]
+    return {
+        "schema_version": _PRE_DISPATCH_FAILURE_SCHEMA,
+        "operation_job_id": child["job_id"],
+        "run_id": run_id,
+        "request_index": 0,
+        "request_digest": content_hash(request),
+        "boundary": "before_durable_original_checkpoint",
+        "producer": "bluefire.ad-smb-controller",
+    }
+
+
+def record_installed_pre_dispatch_failure(store, identifier, index, request):
+    """Retain a proven installed no-dispatch boundary only while no task exists."""
+    with store._connection(write=True) as connection:
+        _owner, child = _active_at(store, connection, identifier)
+        expected_request = child["request"]["requests"][0]
+        if (
+            child["state"] not in {"running", "cancelling"}
+            or type(index) is not int
+            or index != 0
+            or request != expected_request
+        ):
+            raise AdSmbError("AD pre-dispatch failure does not match an untouched first request.")
+        if child["progress"]["tasks"] != []:
+            return False
+        marker = _installed_pre_dispatch_failure(child)
+        previous = child["progress"].get("pre_dispatch_failure")
+        if previous is not None and previous != marker:
+            raise AdSmbError("AD pre-dispatch failure marker cannot be replaced.")
+        patch(connection, child, {"pre_dispatch_failure": marker})
+        return True
+
+
+def adopt_installed_pre_dispatch_failure(store, identifier):
+    """Settle an explicitly marked installed failure before the first task checkpoint."""
+    with store._connection(write=True) as connection:
+        _owner, child = _active_at(store, connection, identifier)
+        tasks = child["progress"]["tasks"]
+        marker = _installed_pre_dispatch_failure(child)
+        if (
+            child["state"] not in result.TERMINAL
+            or child["progress"].get("pre_dispatch_failure") != marker
+        ):
+            raise AdSmbError(
+                "AD pre-dispatch recovery requires the exact installed-executor failure marker."
+            )
+        request = child["request"]["requests"][0]
+        execution = result.validate_controller_local_execution(
+            request,
+            {
+                "schema_version": "bluefire.ad-smb-execution.v1",
+                "request_digest": content_hash(request),
+                "provenance": "controller_local",
+                "dispatch": "not_started",
+                "cleanup": "verified",
+                "observation": None,
+            },
+        )
+        adopted = {
+            "index": 0,
+            "context": None,
+            "execution": execution,
+            "recovery": None,
+        }
+        if tasks == [adopted]:
+            return execution
+        if tasks != []:
+            raise AdSmbError("AD pre-dispatch recovery cannot replace original task evidence.")
+        patch(
+            connection,
+            child,
+            {"tasks": [adopted]},
+        )
+        return execution
+
+
 def _executions(owner, child):
+    tasks = child["progress"]["tasks"]
+    marker = child["progress"].get("pre_dispatch_failure")
+    if marker is not None:
+        if marker != _installed_pre_dispatch_failure(child) or len(tasks) != 1:
+            raise AdSmbError("AD installed pre-dispatch evidence marker changed.")
+        adopted = tasks[0]
+        if (
+            adopted.get("index") != 0
+            or adopted.get("context") is not None
+            or adopted.get("recovery") is not None
+            or not isinstance(adopted.get("execution"), dict)
+            or adopted["execution"].get("dispatch") != "not_started"
+            or adopted["execution"].get("observation") is not None
+        ):
+            raise AdSmbError("AD installed pre-dispatch evidence is not the local adoption.")
     executions = []
-    for index, task in enumerate(child["progress"]["tasks"]):
+    for index, task in enumerate(tasks):
         exact(task, {"index", "context", "execution", "recovery"}, "AD task checkpoint")
         execution = task["recovery"] or task["execution"]
         if (
@@ -308,9 +407,21 @@ def _executions(owner, child):
         request = child["request"]["requests"][index]
         if task["context"] is not None:
             result.original_context(request, task["context"])
-        checked = result.validate_execution(request, execution)
+        controller_local = marker is not None and index == 0
+        checked = (
+            result.validate_controller_local_execution(request, execution)
+            if controller_local
+            else result.validate_execution(request, execution)
+        )
         if (
-            checked["provenance"] != owner["request"]["environment"]["provenance"]
+            (
+                checked["provenance"]
+                != (
+                    "controller_local"
+                    if controller_local
+                    else owner["request"]["environment"]["provenance"]
+                )
+            )
             or (checked["dispatch"] != "not_started" and task["context"] is None)
             or (
                 task["execution"] is not None
