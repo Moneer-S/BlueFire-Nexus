@@ -13,6 +13,8 @@ import {
   receiverContextRequestIsFinal,
   receiverContextResponseMatchesRequest,
   receiverOwnerAdmissionState,
+  receiverCompletedPhase,
+  receiverRunIsNotDemo,
   receiverOwnerContextMatches,
   receiverApprovalAcknowledgementName,
   sameJson as same,
@@ -783,15 +785,15 @@ try {
   await page.getByLabel("Prepared by", { exact: true }).fill("Installed receiver baseline verifier");
   await page.getByRole("button", { name: "Prepare baseline receiver", exact: true }).click();
   await waitOwner((owner) => owner.next_action?.kind === "review_replay" && owner.phases?.[0]?.review_ready === true);
-  const phase = latestOwner.phases.find((item) => item.phase === "baseline");
-  latestPreparationDigest = phase.preparation.preparation_digest;
+  const preparedBaseline = latestOwner.phases.find((item) => item.phase === "baseline");
+  latestPreparationDigest = preparedBaseline.preparation.preparation_digest;
   receiverStarted = true;
   report.receiver_preparation = {
-    phase: phase.phase,
-    policy_id: phase.policy_id,
+    phase: preparedBaseline.phase,
+    policy_id: preparedBaseline.policy_id,
     preparation_digest: latestPreparationDigest,
-    preflight_ready: phase.preparation.preflight?.status === "approval_required",
-    target_effects_started_before_review: phase.preparation.target_effects_started,
+    preflight_ready: preparedBaseline.preparation.preflight?.status === "approval_required",
+    target_effects_started_before_review: preparedBaseline.preparation.target_effects_started,
   };
   assert.equal(report.receiver_preparation.preflight_ready, true);
   assert.equal(report.receiver_preparation.target_effects_started_before_review, false);
@@ -811,7 +813,9 @@ try {
   await page.getByLabel("Operator identity for this job", { exact: true }).fill("Installed receiver baseline verifier");
   await page.getByRole("button", { name: "Approve and release job", exact: true }).click();
   await waitOwner((owner) => owner.phases?.[0]?.status === "completed");
-  const baseline = latestOwner.phases.find((item) => item.phase === "baseline");
+  stage = "baseline-result-binding";
+  const baseline = receiverCompletedPhase(latestOwner, "baseline");
+  assert.ok(baseline, "The refreshed baseline phase must include completed execution and preparation records");
   const result = baseline.result;
   assert.ok(result);
   assert.equal(baseline.execution_job.kind, "scenario.run");
@@ -820,13 +824,16 @@ try {
   assert.equal(result.phase, "baseline");
   assert.equal(result.run_id, baseline.execution_job.result_ref);
   assert.match(result.run_id, RUN_ID);
+  stage = "baseline-run-source";
   assert.equal(result.run?.mode, "execute");
-  assert.equal(result.run?.is_demo, false);
+  assert.equal(receiverRunIsNotDemo(result.run), true, "The finalized run must not be marked as a demo");
   assert.equal(result.run?.runner_profile_id, PROFILE);
   assert.equal(result.run?.plan?.autonomy, "off");
+  stage = "baseline-authenticated-observation";
   assert.equal(result.receiver_observation?.state, "verified");
   assert.equal(result.receiver_observation?.terminal?.decision?.decision, "accepted");
   assert.equal(result.receiver_observation?.terminal?.decision?.semantics?.record_count, 8);
+  stage = "baseline-cleanup";
   assert.equal(result.cleanup?.receiver, "verified_closed");
   assert.equal(result.cleanup?.run, "complete");
   assert.equal(baseline.cleanup?.receiver, "verified_closed");
@@ -852,15 +859,16 @@ try {
     receiver_cleanup: result.cleanup.receiver,
     result_digest: baseline.result_digest,
   };
+  stage = "baseline-retained-source-proof";
   assert.equal(report.baseline.scenario_id, savedSelection.scenario_id);
   assert.equal(report.baseline.receiver_terminal.authenticated, true);
   report.checks.push("native_execute_baseline_and_authenticated_receiver_terminal");
   originalEnvelope = latestOwner;
   phaseIndexes.original = 1;
   phaseEvidence.push({
-    owner_role: "original", owner_job_id: originalOwnerId, phase: "baseline", status: phase.status,
-    execution_state: phase.execution_job.state, observation_state: result.receiver_observation.state,
-    execution_job_id: executionJobId, preparation_digest: phase.preparation.preparation_digest,
+    owner_role: "original", owner_job_id: originalOwnerId, phase: "baseline", status: baseline.status,
+    execution_state: baseline.execution_job.state, observation_state: result.receiver_observation.state,
+    execution_job_id: executionJobId, preparation_digest: baseline.preparation.preparation_digest,
     run_id: result.run_id,
     artifact: result.artifact, decision: result.decision, terminal_decision: result.receiver_observation.terminal.decision.decision,
     terminal_authenticated: result.receiver_observation.terminal.decision.authenticated,
@@ -870,7 +878,7 @@ try {
     legitimate_use: null, cleanup: { receiver: result.cleanup.receiver, run: result.cleanup.run },
   });
   report.phase_evidence = phaseEvidence;
-  const baselineSessionId = phase.preparation.session?.receiver_session_id;
+  const baselineSessionId = baseline.preparation.session?.receiver_session_id;
   if (typeof baselineSessionId !== "string" || !/^[0-9a-f]{64}$/.test(baselineSessionId)) {
     throw new Error("Original baseline receiver session identity was invalid");
   }

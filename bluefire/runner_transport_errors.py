@@ -73,6 +73,10 @@ class DiagnosedRunnerTransportError(RunnerTransportError):
 
 def transport_failure_reason(error: RunnerTransportError) -> str:
     """Never derive a published label from unrecognized exception text."""
+    if isinstance(error, RunnerDurableResultExists):
+        return "durable_result_exists"
+    if isinstance(error, RunnerPendingResultExists):
+        return "pending_result_exists"
     reason = getattr(error, "transport_failure_reason", None)
     if reason is not None:
         return (

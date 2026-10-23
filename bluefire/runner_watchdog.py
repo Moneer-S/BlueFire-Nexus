@@ -32,6 +32,7 @@ if __package__ in {None, ""}:
         SubprocessRustRunner,
         _consume_receiver_task_environment,
         _PinnedPrivateDirectory,
+        execution_task_identity,
         runner_watchdog_control_root,
     )
     from bluefire.runner_darwin_containment import (
@@ -56,6 +57,7 @@ else:
         SubprocessRustRunner,
         _consume_receiver_task_environment,
         _PinnedPrivateDirectory,
+        execution_task_identity,
         runner_watchdog_control_root,
     )
     from .runner_darwin_containment import (
@@ -629,19 +631,20 @@ def _cancellation_control_paths(config: _WatchdogConfig) -> tuple[Path, Path] | 
     manifest = config.manifest
     profile = config.profile
     request_hash = manifest.get("request_hash")
-    expected_task_id = (
+    witness_task_id = (
         "execute-" + request_hash.removeprefix("sha256:")
         if isinstance(request_hash, str) and _DIGEST.fullmatch(request_hash) is not None
         else None
     )
+    transport_task_id, _transport_request_hash = execution_task_identity(manifest, profile)
     if (
         manifest.get("action_id") != _CANCELLATION_ACTION_ID
         or manifest.get("behavior_id") != _CANCELLATION_ACTION_ID
         or manifest.get("params") != {}
         or manifest.get("platform") != "windows"
         or profile.get("platform") != "windows"
-        or expected_task_id is None
-        or config.task_id != expected_task_id
+        or witness_task_id is None
+        or config.task_id != transport_task_id
     ):
         return None
     sandbox_raw = profile.get("sandbox_root")
@@ -668,6 +671,15 @@ def _decode_cancellation_ready(
         payload,
         "runner cancellation readiness",
     )
+    request_hash = config.manifest.get("request_hash")
+    witness_task_id = (
+        "execute-" + request_hash.removeprefix("sha256:")
+        if isinstance(request_hash, str) and _DIGEST.fullmatch(request_hash)
+        else None
+    )
+    transport_task_id, _transport_request_hash = execution_task_identity(
+        config.manifest, config.profile
+    )
     if (
         set(ready)
         != {
@@ -678,7 +690,9 @@ def _decode_cancellation_ready(
             "descendant_process_id",
         }
         or ready.get("schema_version") != _CANCELLATION_READY_SCHEMA
-        or ready.get("task_id") != config.task_id
+        or witness_task_id is None
+        or config.task_id != transport_task_id
+        or ready.get("task_id") != witness_task_id
         or ready.get("request_hash") != config.manifest.get("request_hash")
         or type(ready.get("parent_process_id")) is not int
         or int(ready["parent_process_id"]) <= 0
@@ -710,7 +724,7 @@ def _cleanup_cooperative_cancellation(
 
     control_paths = _cancellation_control_paths(config)
     if control_paths is None:
-        return True
+        return config.manifest.get("action_id") != _CANCELLATION_ACTION_ID
     control_parent, control_root = control_paths
     try:
         if not control_root.exists():

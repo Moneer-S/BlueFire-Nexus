@@ -29,6 +29,8 @@ export function receiverOwnerAdmissionState(
   finalRequest: unknown,
   finalResponse: unknown,
 ): "pending" | "accepted" | "invalid";
+export function receiverRunIsNotDemo(run: unknown): boolean;
+export function receiverCompletedPhase(owner: unknown, phaseName: string): Record<string, unknown> | null;
 
 export function consumeRequestBudget(
   counts: Record<string, number>,

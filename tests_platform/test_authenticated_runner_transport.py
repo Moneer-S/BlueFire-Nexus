@@ -26,6 +26,7 @@ from bluefire.runner_client import (
     RunnerTransportError,
     SubprocessRustRunner,
     canonical_runner_inventory,
+    execution_task_identity,
     request_runner_task_cancel,
     runner_pending_result_path,
     runner_transport_identity,
@@ -927,14 +928,20 @@ def test_refused_transport_diagnostic_requires_exact_authenticated_finite_payloa
         assert "SECRET" not in str(failure.value)
 
 
+@pytest.mark.parametrize("failure_kind", ["diagnosed", "durable", "pending"])
 def test_finite_transport_diagnostic_does_not_override_reconciled_durable_success(
     enrollment_root: Path,
     secret_provider: InMemorySecretProvider,
     tmp_path: Path,
     manifest: Mapping[str, Any],
     profile: Mapping[str, Any],
+    failure_kind: str,
 ) -> None:
-    from bluefire.runner_transport_errors import DiagnosedRunnerTransportError
+    from bluefire.runner_transport_errors import (
+        DiagnosedRunnerTransportError,
+        RunnerDurableResultExists,
+        RunnerPendingResultExists,
+    )
 
     class DurableThenFailureRunner(RecordingRunner):
         def execute_task(
@@ -952,6 +959,10 @@ def test_finite_transport_diagnostic_does_not_override_reconciled_durable_succes
             destination.write_bytes(
                 canonical_json_bytes(_result(manifest, profile, call=self.calls))
             )
+            if failure_kind == "durable":
+                raise RunnerDurableResultExists("PRIVATE_SYNTHETIC_SECRET_42")
+            if failure_kind == "pending":
+                raise RunnerPendingResultExists("PRIVATE_SYNTHETIC_SECRET_42")
             raise DiagnosedRunnerTransportError(
                 "Runner watchdog failed before publishing a valid result",
                 transport_failure_reason="watchdog_failure",
@@ -967,6 +978,79 @@ def test_finite_transport_diagnostic_does_not_override_reconciled_durable_succes
         assert client.recover(task_id, request_hash)["state"] == "completed"
     assert result["status"] == "success"
     assert runner.calls == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows generated cancellation lease boundary")
+def test_authenticated_witness_lease_and_ready_keep_distinct_bound_task_identities(
+    enrollment_root: Path,
+    secret_provider: InMemorySecretProvider,
+    tmp_path: Path,
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+) -> None:
+    """Use real transport and lease setup, with fixture records and no native child."""
+    from types import SimpleNamespace
+
+    from bluefire.runner_watchdog import _cancellation_control_paths, _decode_cancellation_ready
+
+    action = "sandbox.execution.process-tree-cancellation-witness.v1"
+    witness_manifest = {**manifest, "action_id": action, "behavior_id": action, "params": {}}
+    transport_id = execution_task_identity(witness_manifest, profile)[0]
+    native_id = "execute-" + str(witness_manifest["request_hash"]).removeprefix("sha256:")
+    assert transport_id != native_id
+    observed = []
+
+    class GeneratedLeaseRunner(RecordingRunner):
+        def execute_task(
+            self,
+            manifest: Mapping[str, Any],
+            profile: Mapping[str, Any],
+            *,
+            task_id: str,
+            cancel_event: threading.Event,
+            durable_result_path: str | Path,
+        ) -> Mapping[str, Any]:
+            self.calls += 1
+            assert task_id == transport_id
+            lease = SubprocessRustRunner._prepare_cancellation_control(manifest, profile, task_id)
+            assert lease is not None
+            try:
+                assert lease.task_id == native_id
+                assert lease.task.path.name == str(manifest["request_hash"]).removeprefix("sha256:")
+                ready = {
+                    "schema_version": "bluefire.process-tree-cancellation-ready.v1",
+                    "task_id": native_id,
+                    "request_hash": manifest["request_hash"],
+                    "parent_process_id": 101,
+                    "descendant_process_id": 202,
+                }
+                payload = canonical_json_bytes(ready) + b"\n"
+                config = SimpleNamespace(task_id=task_id, manifest=manifest, profile=profile)
+                assert _cancellation_control_paths(config) == (lease.parent.path, lease.task.path)
+                assert _decode_cancellation_ready(config, payload) == ready
+                lease.task.create("ready.json", payload, maximum=1024)
+                observed.append((task_id, lease.task_id, lease.task.path))
+            finally:
+                cleaned = lease.cleanup()
+            assert cleaned is True
+            return _result(manifest, profile, call=self.calls)
+
+    runner = GeneratedLeaseRunner()
+    with AuthenticatedRunnerServer(
+        enrollment_root, runner, tmp_path / "transport.sqlite3", secret_provider=secret_provider
+    ) as server:
+        client = _client(enrollment_root, server, secret_provider)
+        result = client.execute_task(
+            witness_manifest,
+            profile,
+            task_id=transport_id,
+            cancel_event=threading.Event(),
+            durable_result_path=(tmp_path / "caller-result.json").resolve(),
+        )
+    assert result["status"] == "success" and runner.calls == 1
+    assert len(observed) == 1 and observed[0][:2] == (transport_id, native_id)
+    assert not observed[0][2].exists()
+    assert not observed[0][2].parent.exists()
 
 
 def test_second_live_server_for_same_ledger_is_refused(

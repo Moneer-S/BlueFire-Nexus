@@ -3006,8 +3006,8 @@ def test_preexisting_or_mismatched_witness_state_never_claims_cooperative_cancel
 
     def config_for(raw_digest: str) -> SimpleNamespace:
         request_hash = "sha256:" + raw_digest
-        return SimpleNamespace(
-            task_id="execute-" + raw_digest,
+        config = SimpleNamespace(
+            task_id="",
             manifest={
                 "action_id": "sandbox.execution.process-tree-cancellation-witness.v1",
                 "behavior_id": "sandbox.execution.process-tree-cancellation-witness.v1",
@@ -3017,17 +3017,23 @@ def test_preexisting_or_mismatched_witness_state_never_claims_cooperative_cancel
             },
             profile={"platform": "windows", "sandbox_root": str(sandbox)},
         )
+        config.task_id = runner_client_module.execution_task_identity(
+            config.manifest, config.profile
+        )[0]
+        return config
 
     def ready(config: SimpleNamespace, parent_process_id: int) -> Path:
         root = (
-            sandbox / ".bluefire-cancellation-witness-v1" / config.task_id.removeprefix("execute-")
+            sandbox
+            / ".bluefire-cancellation-witness-v1"
+            / config.manifest["request_hash"].removeprefix("sha256:")
         )
         root.mkdir(parents=True)
         (root / "ready.json").write_text(
             json.dumps(
                 {
                     "schema_version": "bluefire.process-tree-cancellation-ready.v1",
-                    "task_id": config.task_id,
+                    "task_id": "execute-" + config.manifest["request_hash"].removeprefix("sha256:"),
                     "request_hash": config.manifest["request_hash"],
                     "parent_process_id": parent_process_id,
                     "descendant_process_id": parent_process_id + 1,
@@ -3065,6 +3071,117 @@ def test_preexisting_or_mismatched_witness_state_never_claims_cooperative_cancel
     assert not requested.is_set()
     assert not acknowledged.is_set()
     assert {entry.name for entry in mismatched_root.iterdir()} == {"ready.json"}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cancellation lease boundary")
+@pytest.mark.parametrize("wrong_identity", ["native", "other_payload", "unknown"])
+def test_cancellation_lease_requires_exact_transport_identity(
+    tmp_path: Path, wrong_identity: str
+) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    manifest = {
+        "action_id": "sandbox.execution.process-tree-cancellation-witness.v1",
+        "behavior_id": "sandbox.execution.process-tree-cancellation-witness.v1",
+        "params": {},
+        "platform": "windows",
+        "request_hash": "sha256:" + "c" * 64,
+    }
+    profile = {"platform": "windows", "sandbox_root": str(sandbox)}
+    task_id = {
+        "native": "execute-" + "c" * 64,
+        "other_payload": runner_client_module.execution_task_identity(
+            manifest, {**profile, "sandbox_root": str(tmp_path / "other")}
+        )[0],
+        "unknown": "execute-" + "d" * 64,
+    }[wrong_identity]
+    assert task_id != runner_client_module.execution_task_identity(manifest, profile)[0]
+    with pytest.raises(RunnerTransportError, match="cancellation control contract is invalid"):
+        SubprocessRustRunner._prepare_cancellation_control(manifest, profile, task_id)
+    assert list(sandbox.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "identity",
+    ["valid", "transport_as_native", "native_as_transport", "other_profile", "other_manifest"],
+)
+def test_witness_ready_binds_native_and_transport_identities_separately(identity: str) -> None:
+    manifest = {
+        "action_id": "sandbox.execution.process-tree-cancellation-witness.v1",
+        "behavior_id": "sandbox.execution.process-tree-cancellation-witness.v1",
+        "params": {},
+        "platform": "windows",
+        "request_hash": "sha256:" + "a" * 64,
+    }
+    profile = {"platform": "windows", "sandbox_root": "generated-fixture-sandbox"}
+    transport_id = runner_client_module.execution_task_identity(manifest, profile)[0]
+    native_id = "execute-" + "a" * 64
+    assert transport_id != native_id
+    config = SimpleNamespace(task_id=transport_id, manifest=manifest, profile=profile)
+    ready = {
+        "schema_version": "bluefire.process-tree-cancellation-ready.v1",
+        "task_id": native_id,
+        "request_hash": manifest["request_hash"],
+        "parent_process_id": 101,
+        "descendant_process_id": 202,
+    }
+    if identity == "transport_as_native":
+        ready["task_id"] = transport_id
+    elif identity == "native_as_transport":
+        config.task_id = native_id
+    elif identity == "other_profile":
+        config.profile = {**profile, "sandbox_root": "other-generated-fixture-sandbox"}
+    elif identity == "other_manifest":
+        config.manifest = {**manifest, "request_hash": "sha256:" + "b" * 64}
+    if identity == "valid":
+        assert (
+            runner_watchdog_module._decode_cancellation_ready(config, json.dumps(ready).encode())
+            == ready
+        )
+    else:
+        with pytest.raises(RunnerTransportError, match="cancellation readiness is invalid"):
+            runner_watchdog_module._decode_cancellation_ready(config, json.dumps(ready).encode())
+
+
+@pytest.mark.parametrize("identity", ["valid", "native_as_transport", "other_profile"])
+def test_cancellation_control_consumers_require_the_exact_transport_binding(
+    tmp_path: Path, identity: str
+) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    manifest = {
+        "action_id": "sandbox.execution.process-tree-cancellation-witness.v1",
+        "behavior_id": "sandbox.execution.process-tree-cancellation-witness.v1",
+        "params": {},
+        "platform": "windows",
+        "request_hash": "sha256:" + "a" * 64,
+    }
+    profile = {"platform": "windows", "sandbox_root": str(sandbox)}
+    config = SimpleNamespace(
+        task_id=runner_client_module.execution_task_identity(manifest, profile)[0],
+        manifest=manifest,
+        profile=profile,
+    )
+    if identity == "native_as_transport":
+        config.task_id = "execute-" + "a" * 64
+    elif identity == "other_profile":
+        config.profile = {**profile, "sandbox_root": str(tmp_path / "other")}
+    requested, acknowledged = threading.Event(), threading.Event()
+    paths = runner_watchdog_module._cancellation_control_paths(config)
+    if identity == "valid":
+        parent = sandbox / ".bluefire-cancellation-witness-v1"
+        assert paths == (parent, parent / ("a" * 64))
+    else:
+        assert paths is None
+        assert (
+            runner_watchdog_module._cleanup_cooperative_cancellation(
+                config, requested, acknowledged
+            )
+            is False
+        )
+        runner_watchdog_module._cooperative_cancellation(config, requested, acknowledged, [101])
+        assert not requested.is_set() and not acknowledged.is_set()
+    assert list(sandbox.iterdir()) == []
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows cancellation lease boundary")
@@ -3117,15 +3234,19 @@ def test_installed_environment_owned_workspace_prepares_cancellation_lease(
         "platform": "windows",
         "request_hash": "sha256:" + digest,
     }
-    lease = SubprocessRustRunner._prepare_cancellation_control(
-        manifest, {"platform": "windows", "sandbox_root": str(workspace)}, "execute-" + digest
+    profile = {"platform": "windows", "sandbox_root": str(workspace)}
+    transport_task_id, _transport_hash = runner_client_module.execution_task_identity(
+        manifest, profile
     )
+    assert transport_task_id != "execute-" + digest
+    lease = SubprocessRustRunner._prepare_cancellation_control(manifest, profile, transport_task_id)
     assert lease is not None
     task = workspace / ".bluefire-cancellation-witness-v1" / digest
     try:
         assert {item.name for item in task.parent.iterdir()} == {digest}
         assert {item.name for item in task.iterdir()} == {".lease"}
         assert lease.task.path == task
+        assert lease.task_id == "execute-" + digest
     finally:
         cleaned = lease.cleanup()
     assert cleaned is True
@@ -3148,8 +3269,12 @@ def test_outer_cancellation_lease_owns_early_and_crash_cleanup(tmp_path: Path) -
         "request_hash": request_hash,
     }
     profile = {"platform": "windows", "sandbox_root": str(sandbox)}
+    transport_task_id, _transport_hash = runner_client_module.execution_task_identity(
+        manifest, profile
+    )
+    assert transport_task_id != task_id
 
-    early = SubprocessRustRunner._prepare_cancellation_control(manifest, profile, task_id)
+    early = SubprocessRustRunner._prepare_cancellation_control(manifest, profile, transport_task_id)
     assert early is not None
     early_root = sandbox / ".bluefire-cancellation-witness-v1" / digest
     assert {item.name for item in early_root.iterdir()} == {".lease"}
@@ -3157,7 +3282,9 @@ def test_outer_cancellation_lease_owns_early_and_crash_cleanup(tmp_path: Path) -
     assert not early_root.exists()
     assert not early_root.parent.exists()
 
-    crashed = SubprocessRustRunner._prepare_cancellation_control(manifest, profile, task_id)
+    crashed = SubprocessRustRunner._prepare_cancellation_control(
+        manifest, profile, transport_task_id
+    )
     assert crashed is not None
     crashed_root = sandbox / ".bluefire-cancellation-witness-v1" / digest
     (crashed_root / "ready.json").write_text(
@@ -3247,6 +3374,10 @@ def test_cancellation_cleanup_binds_immutable_live_handshake_identities(
         profile={"platform": "windows", "sandbox_root": str(sandbox)},
         cancellation_lease_token=token,
     )
+    config.task_id = runner_client_module.execution_task_identity(config.manifest, config.profile)[
+        0
+    ]
+    assert config.task_id != task_id
     requested = threading.Event()
     acknowledged = threading.Event()
     handshakes: list[Any] = []

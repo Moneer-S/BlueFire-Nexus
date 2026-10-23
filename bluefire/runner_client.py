@@ -2131,18 +2131,19 @@ class SubprocessRustRunner:
         if os.name != "nt" or manifest.get("action_id") != _CANCELLATION_ACTION_ID:
             return None
         request_hash = manifest.get("request_hash")
-        expected_task_id = (
+        witness_task_id = (
             "execute-" + request_hash.removeprefix("sha256:")
             if isinstance(request_hash, str) and _SHA256_DIGEST.fullmatch(request_hash)
             else None
         )
+        expected_task_id, _transport_request_hash = execution_task_identity(manifest, profile)
         sandbox_raw = profile.get("sandbox_root")
         if (
             manifest.get("behavior_id") != _CANCELLATION_ACTION_ID
             or manifest.get("params") != {}
             or manifest.get("platform") != "windows"
             or profile.get("platform") != "windows"
-            or expected_task_id is None
+            or witness_task_id is None
             or not isinstance(request_hash, str)
             or task_id != expected_task_id
             or not isinstance(sandbox_raw, str)
@@ -2187,7 +2188,7 @@ class SubprocessRustRunner:
                 parent=parent_control,
                 task=task_control,
                 parent_created=parent_created,
-                task_id=task_id,
+                task_id=witness_task_id,
                 request_hash=request_hash,
                 token=token,
             )

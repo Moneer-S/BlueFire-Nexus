@@ -7,6 +7,8 @@ import {
   receiverContextResponseMatchesRequest,
   receiverOwnerAdmissionState,
   receiverOwnerContextMatches,
+  receiverCompletedPhase,
+  receiverRunIsNotDemo,
   sameJson,
 } from "./installed/receiver-guards.mjs";
 
@@ -42,6 +44,33 @@ describe("installed receiver request guards", () => {
     expect(sameJson({ count: 8 }, { count: "8" })).toBe(false);
     expect(sameJson({ redact: false }, { redact: true })).toBe(false);
     expect(sameJson({ selected: null }, {})).toBe(false);
+  });
+
+  it("accepts finalized backend run records without an optional demo marker but rejects explicit demos", () => {
+    expect(receiverRunIsNotDemo({ run_id: "run-verified", mode: "execute" })).toBe(true);
+    expect(receiverRunIsNotDemo({ run_id: "run-demo", mode: "execute", is_demo: false })).toBe(true);
+    expect(receiverRunIsNotDemo({ run_id: "run-demo", mode: "simulate", is_demo: true })).toBe(false);
+    expect(receiverRunIsNotDemo({ run_id: "run-unknown", mode: "execute", is_demo: "false" })).toBe(false);
+    expect(receiverRunIsNotDemo({ run_id: "run-unknown", mode: "execute", is_demo: 0 })).toBe(false);
+    expect(receiverRunIsNotDemo(undefined)).toBe(false);
+  });
+
+  it("uses only a refreshed completed phase snapshot for retained execution evidence", () => {
+    const preparedSnapshot = {
+      phases: [{ phase: "baseline", status: "review_ready", preparation: { preparation_digest: `sha256:${"a".repeat(64)}` }, execution_job: null, result: null }],
+    };
+    const freshPhase = {
+      phase: "baseline",
+      status: "completed",
+      preparation: { preparation_digest: `sha256:${"a".repeat(64)}`, session: { receiver_session_id: "b".repeat(64) } },
+      execution_job: { job_id: `job-${"1".repeat(32)}`, state: "completed" },
+      result: { run_id: "run-verified" },
+      cleanup: { receiver: "verified_closed", run: "complete" },
+    };
+    const freshOwner = { phases: [freshPhase] };
+
+    expect(receiverCompletedPhase(preparedSnapshot, "baseline")).toBeNull();
+    expect(receiverCompletedPhase(freshOwner, "baseline")).toBe(freshPhase);
   });
 
   it("authorizes an allowlisted POST independently of read allowlists", () => {

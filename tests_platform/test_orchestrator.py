@@ -1363,12 +1363,16 @@ def test_transport_failure_discovers_fsynced_receipt_and_forces_cleanup(
     assert (sandbox / ".bluefire" / "receipts" / f"{runner.UNRELATED_RECEIPT_ID}.json").exists()
 
 
-@pytest.mark.parametrize("failure_kind", ["parent", "watchdog", "unknown"])
+@pytest.mark.parametrize("failure_kind", ["parent", "watchdog", "unknown", "durable", "pending"])
 def test_transport_failure_retains_finite_reason_without_changing_failed_outcome(
     tmp_path: Path, failure_kind: str
 ) -> None:
     from bluefire.runner_transport import AuthenticatedRunnerClient, AuthenticatedRunnerServer
-    from bluefire.runner_transport_errors import DiagnosedRunnerTransportError
+    from bluefire.runner_transport_errors import (
+        DiagnosedRunnerTransportError,
+        RunnerDurableResultExists,
+        RunnerPendingResultExists,
+    )
     from bluefire.runner_trust import create_local_enrollment
     from bluefire.secret_store import InMemorySecretProvider
 
@@ -1381,6 +1385,12 @@ def test_transport_failure_retains_finite_reason_without_changing_failed_outcome
             transport_failure_reason="windows_suspended_start_failed",
         )
         reason = "windows_suspended_start_failed"
+    elif failure_kind in {"durable", "pending"}:
+        error_type = (
+            RunnerDurableResultExists if failure_kind == "durable" else RunnerPendingResultExists
+        )
+        failure = error_type("PRIVATE_SYNTHETIC_SECRET_42 at C:\\private")
+        reason = "durable_result_exists" if failure_kind == "durable" else "pending_result_exists"
     else:
         failure = RunnerTransportError("PRIVATE_SYNTHETIC_SECRET_42 at C:\\private")
         reason = "other_transport"

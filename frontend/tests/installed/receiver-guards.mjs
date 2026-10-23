@@ -112,6 +112,19 @@ export function receiverOwnerAdmissionState(owner, ownerId, finalRequest, finalR
   return "invalid";
 }
 
+export function receiverRunIsNotDemo(run) {
+  return run !== null && typeof run === "object" && !Array.isArray(run)
+    && (run.is_demo === undefined || run.is_demo === false);
+}
+
+export function receiverCompletedPhase(owner, phaseName) {
+  if (!owner || typeof owner !== "object" || Array.isArray(owner) || !Array.isArray(owner.phases)) return null;
+  const phase = owner.phases.find((item) => item?.phase === phaseName);
+  if (phase?.status !== "completed" || phase.execution_job?.state !== "completed"
+    || !phase.preparation?.preparation_digest || !phase.result || !phase.cleanup) return null;
+  return phase;
+}
+
 function exactKeys(value, names) {
   return value && typeof value === "object" && !Array.isArray(value)
     && sameJson(Object.keys(value).sort(), [...names].sort());

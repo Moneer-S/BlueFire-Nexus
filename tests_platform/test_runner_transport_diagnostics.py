@@ -16,6 +16,8 @@ from bluefire.runner_client import SubprocessRustRunner
 from bluefire.runner_transport_errors import (
     TRANSPORT_FAILURE_REASONS,
     DiagnosedRunnerTransportError,
+    RunnerDurableResultExists,
+    RunnerPendingResultExists,
     RunnerTransportError,
     transport_failure_reason,
     watchdog_transport_failure_reason,
@@ -98,6 +100,37 @@ def test_untrusted_diagnosed_reason_is_rechecked(reason: Any) -> None:
     error.transport_failure_reason = reason
     assert transport_failure_reason(error) == "other_transport"
     assert str(error) == "original failure"
+
+
+@pytest.mark.parametrize(
+    ("error_type", "reason"),
+    [
+        (RunnerDurableResultExists, "durable_result_exists"),
+        (RunnerPendingResultExists, "pending_result_exists"),
+    ],
+)
+def test_specialized_recovery_reason_uses_type_not_exception_text(
+    error_type: Any, reason: str
+) -> None:
+    error = error_type("PRIVATE_SYNTHETIC_SECRET_42 at C:\\private")
+    assert transport_failure_reason(error) == reason
+
+
+@pytest.mark.parametrize(
+    ("code", "error_type"),
+    [
+        ("durable_result_exists", RunnerDurableResultExists),
+        ("pending_result_exists", RunnerPendingResultExists),
+    ],
+)
+def test_specialized_failed_status_retains_checked_reason_and_exception_type(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: str, error_type: Any
+) -> None:
+    status = _failed_status()
+    status["error_code"] = code
+    error = _await_failed_status(tmp_path, monkeypatch, status)
+    assert isinstance(error, error_type)
+    assert transport_failure_reason(error) == code
 
 
 def _failed_status() -> dict[str, Any]:
