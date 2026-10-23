@@ -985,9 +985,7 @@ def validate_stored_execute_result(
         try:
             windows_correction_result.validate_runner_result(checked, manifest, profile)
         except windows_correction_session.ManagedCorrectionSessionError:
-            raise RunnerTransportError(
-                "runner managed correction result is invalid"
-            ) from None
+            raise RunnerTransportError("runner managed correction result is invalid") from None
     return checked
 
 
@@ -1331,9 +1329,7 @@ class AuthenticatedRunnerServer:
                         manifest,
                         profile,
                         expected_packet=managed_descriptor.packet,
-                        expected_session_nonce=str(
-                            managed_descriptor.value["session_nonce"]
-                        ),
+                        expected_session_nonce=str(managed_descriptor.value["session_nonce"]),
                     )
                 except windows_correction_session.ManagedCorrectionSessionError:
                     raise RunnerTransportError(
@@ -2092,9 +2088,7 @@ class AuthenticatedRunnerServer:
                     raise RunnerTransportError("runner execution manifest is invalid")
                 base = {"manifest": manifest, "profile": profile}
                 if content_hash(base) != row.get("request_hash"):
-                    raise RunnerTransportError(
-                        "runner execution manifest identity is invalid"
-                    )
+                    raise RunnerTransportError("runner execution manifest identity is invalid")
                 try:
                     managed_descriptor = windows_correction_session.validate_descriptor(
                         decoded["windows_correction_session"],
@@ -3203,9 +3197,7 @@ class AuthenticatedRunnerServer:
                     peer_fingerprint=peer_fingerprint,
                     service_grant=service_grant,
                     windows_correction_descriptor=(
-                        supplied["windows_correction_session"]
-                        if has_windows_correction
-                        else None
+                        supplied["windows_correction_session"] if has_windows_correction else None
                     ),
                     enrollment_binding=binding,
                 )
@@ -3222,17 +3214,13 @@ class AuthenticatedRunnerServer:
             elif operation == "windows_correction_status":
                 supplied = self._require_payload(
                     request,
-                    frozenset(
-                        {"original_task_id", "original_request_hash", "session_nonce"}
-                    ),
+                    frozenset({"original_task_id", "original_request_hash", "session_nonce"}),
                 )
                 payload = self._windows_correction_status_payload(
                     supplied, binding, profile_id=str(request["profile_id"])
                 )
             elif operation == "windows_correction_ack":
-                supplied = self._require_payload(
-                    request, windows_correction_session.ACK_FIELDS
-                )
+                supplied = self._require_payload(request, windows_correction_session.ACK_FIELDS)
                 payload = self._windows_correction_ack_payload(
                     supplied, binding, profile_id=str(request["profile_id"])
                 )
@@ -3466,9 +3454,7 @@ class AuthenticatedRunnerServer:
                             manifest,
                             profile,
                             expected_packet=managed_descriptor.packet,
-                            expected_session_nonce=str(
-                                managed_descriptor.value["session_nonce"]
-                            ),
+                            expected_session_nonce=str(managed_descriptor.value["session_nonce"]),
                         )
                     except windows_correction_session.ManagedCorrectionSessionError:
                         raise RunnerTransportError(
@@ -3922,9 +3908,7 @@ class AuthenticatedRunnerServer:
                         manifest,
                         profile,
                         expected_packet=managed_descriptor.packet,
-                        expected_session_nonce=str(
-                            managed_descriptor.value["session_nonce"]
-                        ),
+                        expected_session_nonce=str(managed_descriptor.value["session_nonce"]),
                     )
                     try:
                         cleanup_runner_managed_watchdog_terminal_state(
@@ -3957,8 +3941,8 @@ class AuthenticatedRunnerServer:
             result = stored.get("result")
             if not isinstance(result, dict) or set(stored) != {"result"}:
                 raise sqlite3.DatabaseError("completed task result is invalid")
-            manifest, profile, _service_grant, managed_descriptor = (
-                self._stored_execute_payload(dict(row))
+            manifest, profile, _service_grant, managed_descriptor = self._stored_execute_payload(
+                dict(row)
             )
             result = self._validated_execute_result(result, manifest, profile)
             if managed_descriptor is not None:

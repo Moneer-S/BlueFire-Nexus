@@ -366,8 +366,7 @@ def test_reconstructed_runtime_keeps_completed_terminal_unknown_without_original
         connection.execute("DROP TRIGGER synthetic_retest_failure")
         assert (
             connection.execute(
-                "SELECT COUNT(*) FROM file_access_owned_process_closures "
-                "WHERE task_id=?",
+                "SELECT COUNT(*) FROM file_access_owned_process_closures " "WHERE task_id=?",
                 (before["tasks"][0]["task"]["task_id"],),
             ).fetchone()[0]
             == 0

@@ -940,7 +940,10 @@ def _run_managed_windows_correction(
                 raise RunnerTransportError("Managed correction was cancelled.")
             principal = session_facts.current_process_principal()
             principal.validate()
-            if principal.elevated is not False or principal.user_sid != record["resource"]["owner_sid"]:
+            if (
+                principal.elevated is not False
+                or principal.user_sid != record["resource"]["owner_sid"]
+            ):
                 raise RunnerTransportError("Managed correction principal is invalid.")
 
         require_current()

@@ -1471,10 +1471,13 @@ def cleanup_runner_managed_watchdog_terminal_state(
         )
         expected_result = canonical_json_bytes(dict(result)) + b"\n"
         with _PinnedPrivateDirectory(destination.parent) as result_parent:
-            if result_parent.read(
-                destination.name,
-                maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,
-            ) != expected_result:
+            if (
+                result_parent.read(
+                    destination.name,
+                    maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,
+                )
+                != expected_result
+            ):
                 raise OSError("managed correction durable result changed")
 
         # The exact managed result already carries terminal and cleanup proof.
@@ -1518,9 +1521,7 @@ def cleanup_runner_managed_watchdog_terminal_state(
                 raise OSError("managed correction cancellation marker changed")
             if "ready.json" in captured:
                 ready_raw = captured["ready.json"][0]
-                ready = SubprocessRustRunner._decode_json(
-                    ready_raw, "runner watchdog readiness"
-                )
+                ready = SubprocessRustRunner._decode_json(ready_raw, "runner watchdog readiness")
                 if (
                     set(ready) != {"schema_version", "task_id", "watchdog_pid"}
                     or ready.get("schema_version") != "bluefire.runner-watchdog-ready.v1"
@@ -1533,9 +1534,7 @@ def cleanup_runner_managed_watchdog_terminal_state(
             if "status.json" in captured:
                 status_raw = captured["status.json"][0]
                 status = validate_runner_watchdog_terminal_status(
-                    SubprocessRustRunner._decode_json(
-                        status_raw, "runner watchdog status"
-                    ),
+                    SubprocessRustRunner._decode_json(status_raw, "runner watchdog status"),
                     task_id=task_id,
                 )
                 if (
@@ -1965,8 +1964,9 @@ class SubprocessRustRunner:
         owned_service_admission: OwnedServiceAdmission | None = None,
         s3_access_intent: S3LaunchIntent | None = None,
         windows_correction_session: Mapping[str, Any] | None = None,
-        windows_correction_control: windows_correction_session_module.ManagedCorrectionControl
-        | None = None,
+        windows_correction_control: (
+            windows_correction_session_module.ManagedCorrectionControl | None
+        ) = None,
     ) -> Mapping[str, Any]:
         """Run one task through an independent crash-surviving watchdog process."""
 
@@ -1980,9 +1980,9 @@ class SubprocessRustRunner:
             )
 
         service_launch: ServiceLaunch | S3Launch | None = None
-        managed_descriptor: (
-            windows_correction_session_module.ManagedCorrectionDescriptor | None
-        ) = None
+        managed_descriptor: windows_correction_session_module.ManagedCorrectionDescriptor | None = (
+            None
+        )
         has_managed_descriptor = windows_correction_session is not None
         has_managed_control = windows_correction_control is not None
         if has_managed_descriptor != has_managed_control:
@@ -2754,10 +2754,8 @@ class SubprocessRustRunner:
             expected_kind="ready",
             key=key,
         )
-        _checked_ready, ready = (
-            windows_correction_session_module.validate_watchdog_ready_payload(
-                ready_payload, descriptor
-            )
+        _checked_ready, ready = windows_correction_session_module.validate_watchdog_ready_payload(
+            ready_payload, descriptor
         )
         control.publish_ready(ready, str(ready_payload["ack_nonce"]))
         acknowledgement = control.wait_ack(cancel_event)

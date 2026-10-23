@@ -209,10 +209,7 @@ def validate_descriptor(
         and _DIGEST.fullmatch(str(row.get("target_descriptor_sha256"))) is not None
     )
     packet_issued_at_ms = row.get("packet_issued_at_ms")
-    _require(
-        type(packet_issued_at_ms) is int
-        and 0 < packet_issued_at_ms < 253_402_300_800_000
-    )
+    _require(type(packet_issued_at_ms) is int and 0 < packet_issued_at_ms < 253_402_300_800_000)
     setup_record = _public_bytes(row.get("setup_record_b64"))
     setup_receipt = _public_bytes(row.get("setup_receipt_b64"))
     packet = _public_bytes(row.get("packet_b64"))
@@ -383,7 +380,10 @@ def persisted_consume_digest(value: Mapping[str, Any]) -> str:
 
 def _frame_authentication(key: bytes | bytearray, unsigned: Mapping[str, Any]) -> str:
     _require(type(key) in {bytes, bytearray} and len(key) == 32)
-    return "sha256:" + hmac.new(bytes(key), canonical_json_bytes(dict(unsigned)), hashlib.sha256).hexdigest()
+    return (
+        "sha256:"
+        + hmac.new(bytes(key), canonical_json_bytes(dict(unsigned)), hashlib.sha256).hexdigest()
+    )
 
 
 def encode_frame(kind: str, payload: Mapping[str, Any], key: bytes | bytearray) -> bytes:
@@ -422,7 +422,9 @@ def decode_frame(raw: bytes, *, expected_kind: str, key: bytes | bytearray) -> d
     return dict(value["payload"])
 
 
-def write_frame(stream: BinaryIO, kind: str, payload: Mapping[str, Any], key: bytes | bytearray) -> None:
+def write_frame(
+    stream: BinaryIO, kind: str, payload: Mapping[str, Any], key: bytes | bytearray
+) -> None:
     data = memoryview(encode_frame(kind, payload, key))
     while data:
         count = stream.write(data)
@@ -504,14 +506,12 @@ def validate_watchdog_ack(
         set(row) == _ACK_FIELDS
         and row.get("schema_version") == ACK_SCHEMA
         and row.get("original_task_id") == descriptor.value["task_id"]
-        and row.get("original_request_hash")
-        == descriptor.value["transport_request_hash"]
+        and row.get("original_request_hash") == descriptor.value["transport_request_hash"]
         and row.get("session_nonce") == descriptor.value["session_nonce"]
         and row.get("packet_digest") == descriptor.packet_digest
         and row.get("ready_digest") == ready_row["ready_digest"]
         and row.get("ack_nonce") == ready_row["ack_nonce"]
-        and row.get("persisted_consume_digest")
-        == persisted_consume_digest(receipt)
+        and row.get("persisted_consume_digest") == persisted_consume_digest(receipt)
     )
     return row
 
@@ -656,8 +656,7 @@ class ManagedCorrectionControl:
                 and row.get("ready_digest") == self._ready_digest
                 and row.get("ack_nonce") == self._ack_nonce
                 and isinstance(row.get("persisted_consume_digest"), str)
-                and row["persisted_consume_digest"]
-                == persisted_consume_digest(receipt)
+                and row["persisted_consume_digest"] == persisted_consume_digest(receipt)
                 and self._ready is not None
                 and self._ack is None
                 and not self._closed_event.is_set()
@@ -734,8 +733,7 @@ def validate_status(
     _require(
         row.get("schema_version") == STATUS_SCHEMA
         and row.get("original_task_id") == descriptor.value["task_id"]
-        and row.get("original_request_hash")
-        == descriptor.value["transport_request_hash"]
+        and row.get("original_request_hash") == descriptor.value["transport_request_hash"]
         and row.get("session_nonce") == descriptor.value["session_nonce"]
         and row.get("packet_digest") == descriptor.packet_digest
         and row.get("state") in {"waiting_ready", "ready", "acknowledged", "failed"}
@@ -775,8 +773,7 @@ def validate_ack_response(
         }
         and row.get("schema_version") == ACK_SCHEMA
         and row.get("original_task_id") == descriptor.value["task_id"]
-        and row.get("original_request_hash")
-        == descriptor.value["transport_request_hash"]
+        and row.get("original_request_hash") == descriptor.value["transport_request_hash"]
         and row.get("session_nonce") == descriptor.value["session_nonce"]
         and row.get("state") == "acknowledged"
         and row.get("persisted_consume_digest") == consume_digest

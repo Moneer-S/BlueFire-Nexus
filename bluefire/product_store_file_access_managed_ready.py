@@ -62,9 +62,7 @@ def persisted_managed_correction_ready(
                 "ack_nonce": ack_nonce,
                 "ready_evidence_digest": documents["ready"][0]["document_digest"],
             }
-            previous = native._managed_ready_consume_at(
-                connection, context, trail, documents
-            )
+            previous = native._managed_ready_consume_at(connection, context, trail, documents)
             if previous is None:
                 serialized = canonical_json(row)
                 native._text_bytes(serialized, managed_evidence.READY_CONSUME_MAX)
@@ -78,9 +76,7 @@ def persisted_managed_correction_ready(
                     ),
                 )
                 trail, documents = native._load(connection, context, clock)
-                previous = native._managed_ready_consume_at(
-                    connection, context, trail, documents
-                )
+                previous = native._managed_ready_consume_at(connection, context, trail, documents)
             native._require(previous == row)
         receipt = object.__new__(managed_evidence.PersistedManagedCorrectionReady)
         object.__setattr__(receipt, "_raw", canonical_json(previous).encode("utf-8"))
@@ -114,9 +110,7 @@ def load_persisted_managed_correction_ready(
             native._recheck(connection, context)
             trail, documents = native._load(connection, context, clock)
             native._require(trail.packet_bytes == packet and trail.ready_bytes == ready)
-            committed = native._managed_ready_consume_at(
-                connection, context, trail, documents
-            )
+            committed = native._managed_ready_consume_at(connection, context, trail, documents)
             native._require(committed is not None)
         receipt = object.__new__(managed_evidence.PersistedManagedCorrectionReady)
         object.__setattr__(receipt, "_raw", canonical_json(committed).encode("utf-8"))
@@ -155,9 +149,7 @@ def validate_persisted_managed_correction_ready(
             native._recheck(connection, context)
             trail, documents = native._load(connection, context, clock)
             native._require(trail.packet_bytes == packet and trail.ready_bytes == ready)
-            committed = native._managed_ready_consume_at(
-                connection, context, trail, documents
-            )
+            committed = native._managed_ready_consume_at(connection, context, trail, documents)
             native._require(committed == row)
         return candidate
     except native._FAILURES:

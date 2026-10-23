@@ -58,9 +58,7 @@ class ManagedCorrectionEvidenceError(ValueError):
 
 def _require(valid: bool) -> None:
     if not valid:
-        raise ManagedCorrectionEvidenceError(
-            "Managed Windows correction evidence is invalid."
-        )
+        raise ManagedCorrectionEvidenceError("Managed Windows correction evidence is invalid.")
 
 
 @dataclass(frozen=True, slots=True, init=False)

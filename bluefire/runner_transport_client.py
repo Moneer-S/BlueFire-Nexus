@@ -206,9 +206,7 @@ def _receive_frame(
     )
 
 
-def _send_frame(
-    connection: ssl.SSLSocket, value: Mapping[str, Any], maximum: int
-) -> None:
+def _send_frame(connection: ssl.SSLSocket, value: Mapping[str, Any], maximum: int) -> None:
     framing._send_frame(connection, value, maximum, frame_header=_FRAME_HEADER)
 
 
@@ -616,9 +614,7 @@ class AuthenticatedRunnerClientMixin:
         descriptor = windows_correction_session.validate_descriptor(
             descriptor_value, manifest, profile
         )
-        if not callable(getattr(cancel_event, "is_set", None)) or not callable(
-            ready_consumer
-        ):
+        if not callable(getattr(cancel_event, "is_set", None)) or not callable(ready_consumer):
             raise RunnerAuthenticationError("Runner correction session callback is invalid.")
         task_id = str(descriptor.value["task_id"])
         request_hash = str(descriptor.value["transport_request_hash"])
@@ -634,9 +630,7 @@ class AuthenticatedRunnerClientMixin:
         def execute_request() -> None:
             try:
                 responses.append(
-                    self._call(
-                        "execute", payload, task_id=task_id, request_hash=request_hash
-                    )
+                    self._call("execute", payload, task_id=task_id, request_hash=request_hash)
                 )
             except BaseException as exc:
                 failures.append(exc)
@@ -716,8 +710,12 @@ class AuthenticatedRunnerClientMixin:
             )
         if responses:
             return self._execution_result(responses[-1])
-        failure = failures[-1] if failures else RunnerConnectionError(
-            "Runner correction session ended without an authenticated response."
+        failure = (
+            failures[-1]
+            if failures
+            else RunnerConnectionError(
+                "Runner correction session ended without an authenticated response."
+            )
         )
         if isinstance(failure, RunnerRemoteError) and failure.code not in {
             "duplicate_request",
@@ -745,9 +743,7 @@ class AuthenticatedRunnerClientMixin:
                     "Runner task was cancelled after its process tree stopped."
                 )
             if state == "timed_out":
-                raise RunnerTaskTimedOut(
-                    "Runner task timed out after its process tree stopped."
-                )
+                raise RunnerTaskTimedOut("Runner task timed out after its process tree stopped.")
             if state in {"failed", "indeterminate", "recovery_required"}:
                 break
         raise RunnerConnectionError(
@@ -854,9 +850,7 @@ class AuthenticatedRunnerClientMixin:
             ack,
             task_id=self._random_task("windows-correction-ack"),
         )
-        return windows_correction_session.validate_ack_response(
-            payload, descriptor, consume_digest
-        )
+        return windows_correction_session.validate_ack_response(payload, descriptor, consume_digest)
 
     def _cancel_for_execute_task(
         self,

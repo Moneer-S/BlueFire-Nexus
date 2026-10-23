@@ -24,9 +24,7 @@ def record_authenticated_managed_correction_closure(
     """Persist only the exact authenticated closure for the original task."""
 
     try:
-        native._require(
-            type(closure) is managed_evidence.AuthenticatedManagedCorrectionClosure
-        )
+        native._require(type(closure) is managed_evidence.AuthenticatedManagedCorrectionClosure)
         context = native._context(
             store,
             task_id,
@@ -37,9 +35,7 @@ def record_authenticated_managed_correction_closure(
         with store._connection(write=True) as connection:
             native._recheck(connection, context)
             trail, documents = native._load(connection, context, clock)
-            consume = native._managed_ready_consume_at(
-                connection, context, trail, documents
-            )
+            consume = native._managed_ready_consume_at(connection, context, trail, documents)
             native._require(
                 consume is not None
                 and type(trail) is native.CorrectionNativeTaskEvidence
@@ -47,9 +43,7 @@ def record_authenticated_managed_correction_closure(
                 and trail.terminal_bytes is not None
                 and trail.actual_returncode is not None
             )
-            snapshot, previous = native._cleanup_load(
-                connection, context, clock, trail
-            )
+            snapshot, previous = native._cleanup_load(connection, context, clock, trail)
             proof = native._cleanup_validate(
                 context, closure._receipt, closure._packet, clock, trail
             )

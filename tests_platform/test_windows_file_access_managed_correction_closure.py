@@ -132,14 +132,11 @@ def test_managed_closure_is_separate_exact_type_and_reopens_idempotently(recover
     with value.store._connection() as connection:
         retained = json.loads(
             connection.execute(
-                "SELECT document_json FROM file_access_owned_process_closures "
-                "WHERE task_id=?",
+                "SELECT document_json FROM file_access_owned_process_closures " "WHERE task_id=?",
                 (identity["task_id"],),
             ).fetchone()[0]
         )
-    assert retained["managed_lineage_utf8"] == canonical_json_bytes(lineage).decode(
-        "utf-8"
-    )
+    assert retained["managed_lineage_utf8"] == canonical_json_bytes(lineage).decode("utf-8")
     reopened = ProductStore(value.store.path)
     assert (
         managed_closure_store.record_authenticated_managed_correction_closure(

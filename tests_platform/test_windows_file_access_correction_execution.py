@@ -329,9 +329,7 @@ def execution(reviewed, paired, monkeypatch):
                     ack_nonce = "a" * 64
                     identity = {
                         "task_id": self.descriptor.value["task_id"],
-                        "transport_request_hash": self.descriptor.value[
-                            "transport_request_hash"
-                        ],
+                        "transport_request_hash": self.descriptor.value["transport_request_hash"],
                         "session_nonce": self.descriptor.value["session_nonce"],
                         "packet_digest": self.descriptor.packet_digest,
                         "ready_digest": content_hash(module.wire._document(raw)),
@@ -347,9 +345,7 @@ def execution(reviewed, paired, monkeypatch):
                     self.consume_receipt = consume_receipt
                     self.ready = raw
                     if state.fault == "after_ready":
-                        raise ProductStoreError(
-                            "synthetic failure after durable Ready consumption"
-                        )
+                        raise ProductStoreError("synthetic failure after durable Ready consumption")
                     acknowledged = True
                 elif stage == "terminal":
                     assert acknowledged
@@ -403,11 +399,13 @@ def execution(reviewed, paired, monkeypatch):
     source = module.wire._document(checked_setup._receipt)["source"]
     control.service.runner_lifecycle = SimpleNamespace(
         client_for_profile=lambda profile_id: (
-            client,
-            None,
+            (
+                client,
+                None,
+            )
+            if profile_id == source["source_profile_id"]
+            else pytest.fail("unexpected correction profile")
         )
-        if profile_id == source["source_profile_id"]
-        else pytest.fail("unexpected correction profile")
     )
     ctx = SimpleNamespace(
         job_id=job_id, cancellation_event=threading.Event(), checkpoint=state.phases.append
@@ -630,11 +628,14 @@ def test_ready_consume_is_one_durable_row_and_cannot_be_rebound(execution):
                 **{**identity, **mutation}
             )
     with v.store._connection() as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM file_access_task_evidence "
-            "WHERE task_id=? AND stage='managed_ready_consume'",
-            (identity["task_id"],),
-        ).fetchone()[0] == 1
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM file_access_task_evidence "
+                "WHERE task_id=? AND stage='managed_ready_consume'",
+                (identity["task_id"],),
+            ).fetchone()[0]
+            == 1
+        )
 
     missing_path = v.store.path.with_name("missing-managed-ready-consume.sqlite3")
     shutil.copy2(v.store.path, missing_path)
@@ -668,11 +669,14 @@ def test_ready_consume_is_one_durable_row_and_cannot_be_rebound(execution):
             clock=identity["clock"],
         )
     with missing._connection() as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM file_access_task_evidence "
-            "WHERE task_id=? AND stage='managed_ready_consume'",
-            (identity["task_id"],),
-        ).fetchone()[0] == 0
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM file_access_task_evidence "
+                "WHERE task_id=? AND stage='managed_ready_consume'",
+                (identity["task_id"],),
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_recovery_rejects_foreign_session_before_result_persistence(execution):
@@ -734,11 +738,14 @@ def test_noop_ready_consumer_cannot_ack_or_release_begin(execution):
     descriptor = v.state.remote_client.descriptor
     assert descriptor is not None
     with v.store._connection() as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM file_access_task_evidence "
-            "WHERE task_id=? AND stage='managed_ready_consume'",
-            (descriptor.value["task_id"],),
-        ).fetchone()[0] == 0
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM file_access_task_evidence "
+                "WHERE task_id=? AND stage='managed_ready_consume'",
+                (descriptor.value["task_id"],),
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_failed_after_ready_status_and_duplicate_handoffs_are_refused(execution):
@@ -778,9 +785,7 @@ def test_failed_after_ready_status_and_duplicate_handoffs_are_refused(execution)
         "ready_digest": ready_payload["ready_digest"],
         "ack_nonce": receipt["ack_nonce"],
         "persisted_consume_receipt": receipt,
-        "persisted_consume_digest": module.managed_session.persisted_consume_digest(
-            receipt
-        ),
+        "persisted_consume_digest": module.managed_session.persisted_consume_digest(receipt),
     }
     assert control.register_ack(acknowledgement) == acknowledgement
     with pytest.raises(module.managed_session.ManagedCorrectionSessionError):
@@ -791,9 +796,9 @@ def test_failed_after_ready_status_and_duplicate_handoffs_are_refused(execution)
 def test_watchdog_frames_reject_mutation_and_wrong_authentication_key():
     key = bytearray(range(32))
     frame = module.managed_session.encode_frame("ready", {"sequence": 1}, key)
-    assert module.managed_session.read_frame(
-        io.BytesIO(frame), expected_kind="ready", key=key
-    ) == {"sequence": 1}
+    assert module.managed_session.read_frame(io.BytesIO(frame), expected_kind="ready", key=key) == {
+        "sequence": 1
+    }
 
     with pytest.raises(module.managed_session.ManagedCorrectionSessionError):
         module.managed_session.read_frame(
@@ -802,9 +807,7 @@ def test_watchdog_frames_reject_mutation_and_wrong_authentication_key():
     changed = bytearray(frame)
     changed[-1] ^= 1
     with pytest.raises(module.managed_session.ManagedCorrectionSessionError):
-        module.managed_session.read_frame(
-            io.BytesIO(changed), expected_kind="ready", key=key
-        )
+        module.managed_session.read_frame(io.BytesIO(changed), expected_kind="ready", key=key)
 
 
 def test_descriptor_uses_endpoint_local_epoch_without_renewing_live_session(execution):
@@ -819,22 +822,16 @@ def test_descriptor_uses_endpoint_local_epoch_without_renewing_live_session(exec
 
     v.state.wall = issued + 100
     v.state.mono = 10.0
-    epoch_one = module.managed_session.validate_descriptor(
-        descriptor.value, manifest, profile
-    )
+    epoch_one = module.managed_session.validate_descriptor(descriptor.value, manifest, profile)
     first_remaining = epoch_one.packet_deadline - v.state.mono
     v.state.mono = 1_000_000.0
-    epoch_two = module.managed_session.validate_descriptor(
-        descriptor.value, manifest, profile
-    )
+    epoch_two = module.managed_session.validate_descriptor(descriptor.value, manifest, profile)
     assert epoch_two.packet_deadline - v.state.mono == pytest.approx(first_remaining)
 
     original_deadline = epoch_two.packet_deadline
     v.state.wall += 200
     v.state.mono += 0.2
-    repeated = module.managed_session.validate_descriptor(
-        descriptor.value, manifest, profile
-    )
+    repeated = module.managed_session.validate_descriptor(descriptor.value, manifest, profile)
     assert repeated.packet_deadline == pytest.approx(original_deadline)
     assert epoch_two.packet_deadline == original_deadline
 

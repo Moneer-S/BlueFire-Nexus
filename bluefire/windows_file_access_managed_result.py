@@ -89,8 +89,7 @@ def build_managed_result(
     session._require(
         proof["protocol"] == "correction_v3"
         and proof["task_id"] == descriptor.value["task_id"]
-        and proof["transport_request_hash"]
-        == descriptor.value["transport_request_hash"]
+        and proof["transport_request_hash"] == descriptor.value["transport_request_hash"]
         and proof["packet_digest"] == descriptor.packet_digest
         and proof["supported_terminal_returncode"] == actual_returncode
     )
@@ -183,8 +182,7 @@ def validate_managed_result(
         and proof["task_id"] == task_id
         and proof["transport_request_hash"] == request_hash
         and proof["supported_terminal_returncode"] == actual_returncode
-        and row.get("persisted_consume_digest")
-        == session.persisted_consume_digest(consume_receipt)
+        and row.get("persisted_consume_digest") == session.persisted_consume_digest(consume_receipt)
     )
     return AuthenticatedManagedCorrectionResult(
         value=row,
@@ -214,8 +212,8 @@ def build_runner_result(
 
     def timestamp(value: datetime) -> str:
         session._require(value.utcoffset() is not None)
-        return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace(
-            "+00:00", "Z"
+        return (
+            value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
         )
 
     return {

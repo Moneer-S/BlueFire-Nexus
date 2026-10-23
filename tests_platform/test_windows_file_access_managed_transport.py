@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import secrets
@@ -15,6 +16,7 @@ import pytest
 
 import bluefire.runner_transport as runner_transport
 from bluefire import product_store_file_access_managed_ready as managed_ready_store
+from bluefire import runner_private_files as private_files_module
 from bluefire import windows_file_access_managed_evidence as managed_evidence
 from bluefire import windows_file_access_managed_result as managed_result
 from bluefire import windows_file_access_managed_session as managed_session
@@ -25,8 +27,8 @@ from bluefire.runner_client import (
     execution_task_identity,
     runner_watchdog_control_root,
 )
-from bluefire.runner_durable_result import DurableRunnerResult
-from bluefire.runner_private_files import _windows_extended_path
+from bluefire.runner_durable_result import DurableRunnerResult, runner_pending_result_path
+from bluefire.runner_private_files import _PinnedPrivateDirectory, _windows_extended_path
 from bluefire.runner_transport import (
     AuthenticatedRunnerServer,
     AuthenticatedRunnerTransportError,
@@ -69,6 +71,80 @@ def _local_path(path: Path) -> Path:
     return _windows_extended_path(path) if os.name == "nt" else path
 
 
+def _observe_windows_rename(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[str], list[tuple[object, object, str]]]:
+    native_rename = private_files_module._windows_rename_descriptor
+    calls: list[str] = []
+    failures: list[tuple[object, object, str]] = []
+
+    def checked_rename(descriptor: int, root_descriptor: int, target_name: str) -> None:
+        calls.append(target_name)
+        try:
+            native_rename(descriptor, root_descriptor, target_name)
+        except FileExistsError:
+            raise
+        except OSError as exc:
+            failures.append((exc.errno, getattr(exc, "winerror", None), type(exc).__name__))
+            raise
+
+    monkeypatch.setattr(private_files_module, "_windows_rename_descriptor", checked_rename)
+    return calls, failures
+
+
+def _fail_with_windows_rename_diagnostic(
+    failures: list[tuple[object, object, str]],
+    error: RunnerTransportError,
+) -> None:
+    if not failures:
+        raise error
+    errno, winerror, error_type = failures[-1]
+    pytest.fail(
+        "Windows handle-relative managed result promotion failed after production normalization "
+        f"(error_type={error_type}, errno={errno!r}, winerror={winerror!r})"
+    )
+
+
+def _windows_path_units(path: Path) -> int:
+    return len(os.fspath(path).encode("utf-16-le", errors="surrogatepass")) // 2
+
+
+def _assert_short_publication_paths(
+    destination: Path,
+    task_id: str,
+    owned_root: Path,
+) -> Path:
+    pending = runner_pending_result_path(destination, task_id)
+    parent = destination.parent
+    lengths = {
+        "parent": _windows_path_units(parent),
+        "staging": _windows_path_units(parent / (".t-" + "0" * 12)),
+        "final": _windows_path_units(destination),
+        "pending": _windows_path_units(pending),
+    }
+    namespace = parent.name
+    assert len(namespace) == 40 and all(character in "0123456789abcdef" for character in namespace)
+    assert parent.parent == owned_root / ".bluefire-runner-results"
+    assert destination.name == hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:40] + ".json"
+    expected_parent = (
+        _windows_path_units(owned_root) + 1 + len(".bluefire-runner-results") + 1 + len(namespace)
+    )
+    assert lengths == {
+        "parent": expected_parent,
+        "staging": expected_parent + 16,
+        "final": expected_parent + 46,
+        "pending": expected_parent + 90,
+    }
+    if not (
+        lengths["parent"] < 160
+        and lengths["staging"] < 180
+        and lengths["final"] < 220
+        and lengths["pending"] < 240
+    ):
+        pytest.skip(f"short Windows managed result root is unavailable: {lengths}")
+    return pending
+
+
 def _managed_server(
     tmp_path: Path,
     manifest: dict,
@@ -105,9 +181,7 @@ def _insert_running_managed_task(
     effect_dispatched: int = 1,
 ) -> None:
     enrollment = load_local_enrollment(enrollment_root, secret_provider=provider)
-    binding = enrollment_binding(
-        enrollment, str(enrollment.metadata["client_fingerprint"])
-    )
+    binding = enrollment_binding(enrollment, str(enrollment.metadata["client_fingerprint"]))
     now = time.time_ns()
     payload = canonical_json_bytes(
         {
@@ -233,14 +307,79 @@ def _promote_managed_result(
 ) -> None:
     publisher = object.__new__(SubprocessRustRunner)
     publisher._durable_results = _GeneratedPromotion()
-    assert publisher._commit_managed_correction_result(
-        result,
-        manifest,
-        profile,
-        task_id=str(descriptor.value["task_id"]),
-        durable_result_path=destination,
-    ) == result
+    assert (
+        publisher._commit_managed_correction_result(
+            result,
+            manifest,
+            profile,
+            task_id=str(descriptor.value["task_id"]),
+            durable_result_path=destination,
+        )
+        == result
+    )
     assert _local_path(destination).read_bytes() == canonical_json_bytes(result) + b"\n"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native managed result promotion")
+def test_managed_terminal_result_uses_real_short_native_publication(
+    execution,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    descriptor, result, manifest, profile = _managed_values(execution)
+    server, provider, root = _managed_server(tmp_path, manifest, profile)
+    task_id = str(descriptor.value["task_id"])
+    expected = canonical_json_bytes(result) + b"\n"
+    with server:
+        _insert_running_managed_task(server, root, provider, descriptor, manifest, profile)
+        destination = server.durable_result_path(task_id)
+        pending = _assert_short_publication_paths(destination, task_id, tmp_path)
+        service_guard = server._result_root_guards[-1]
+        assert service_guard.path == destination.parent
+        watchdog_guard = _PinnedPrivateDirectory(
+            destination.parent,
+            expected_identity=service_guard.directory_identity(),
+            expected_mount_identity=service_guard.directory_mount_identity(),
+        )
+        watchdog_guard.__enter__()
+        publisher = object.__new__(SubprocessRustRunner)
+        publisher._durable_result_guard = watchdog_guard
+        publisher._durable_results = DurableRunnerResult(parent_guard=watchdog_guard)
+        calls, failures = _observe_windows_rename(monkeypatch)
+
+        try:
+            assert (
+                publisher._commit_managed_correction_result(
+                    result,
+                    manifest,
+                    profile,
+                    task_id=task_id,
+                    durable_result_path=destination,
+                )
+                == result
+            )
+        except RunnerTransportError as exc:
+            _fail_with_windows_rename_diagnostic(failures, exc)
+        finally:
+            watchdog_guard.close()
+
+        assert calls == [destination.name]
+        assert failures == []
+        assert _local_path(destination).read_bytes() == expected
+        assert not _local_path(pending).exists()
+        assert set(os.listdir(_local_path(destination.parent))) == {destination.name}
+        service_guard.authorize_cleanup_entry(
+            destination.name,
+            maximum=server.max_frame_bytes,
+        )
+
+        recovered = server._reconcile_execute_task(task_id)
+        repeated = server._reconcile_execute_task(task_id)
+
+    assert recovered == {"state": "completed", "result": result, "receipt_ids": []}
+    assert repeated == recovered
+    _local_path(destination).unlink()
+    assert os.listdir(_local_path(destination.parent)) == []
 
 
 def _insert_running_legacy_task(
@@ -251,9 +390,7 @@ def _insert_running_legacy_task(
     profile: dict,
 ) -> None:
     enrollment = load_local_enrollment(enrollment_root, secret_provider=provider)
-    binding = enrollment_binding(
-        enrollment, str(enrollment.metadata["client_fingerprint"])
-    )
+    binding = enrollment_binding(enrollment, str(enrollment.metadata["client_fingerprint"]))
     task_id, request_hash = execution_task_identity(manifest, profile)
     now = time.time_ns()
     with server._database(write=True) as connection:
@@ -381,9 +518,7 @@ def _acknowledgement(descriptor, ready, receipt_document):
         "ready_digest": ready_payload["ready_digest"],
         "ack_nonce": receipt_document["ack_nonce"],
         "persisted_consume_receipt": receipt_document,
-        "persisted_consume_digest": managed_session.persisted_consume_digest(
-            receipt_document
-        ),
+        "persisted_consume_digest": managed_session.persisted_consume_digest(receipt_document),
     }
 
 
@@ -441,16 +576,12 @@ def test_promoted_managed_result_recovers_exact_terminal_cleanup_states(
     descriptor, result, manifest, profile = _managed_values(execution)
     server, provider, root = _managed_server(tmp_path, manifest, profile)
     with server:
-        _insert_running_managed_task(
-            server, root, provider, descriptor, manifest, profile
-        )
+        _insert_running_managed_task(server, root, provider, descriptor, manifest, profile)
         assert len(canonical_json_bytes(result)) <= server.max_frame_bytes
         assert server._validated_execute_result(result, manifest, profile) == result
         destination = server.durable_result_path(str(descriptor.value["task_id"]))
         _promote_managed_result(destination, descriptor, result, manifest, profile)
-        control_root = _write_stale_managed_control(
-            server, descriptor, manifest, profile
-        )
+        control_root = _write_stale_managed_control(server, descriptor, manifest, profile)
         for name in (
             "config.json",
             "session.json",
@@ -487,19 +618,13 @@ def test_completed_recovery_retries_cleanup_after_status_publication(
     descriptor, result, manifest, profile = _managed_values(execution)
     server, provider, root = _managed_server(tmp_path, manifest, profile)
     enrollment = load_local_enrollment(root, secret_provider=provider)
-    binding = enrollment_binding(
-        enrollment, str(enrollment.metadata["client_fingerprint"])
-    )
+    binding = enrollment_binding(enrollment, str(enrollment.metadata["client_fingerprint"]))
     task_id = str(descriptor.value["task_id"])
     with server:
-        _insert_running_managed_task(
-            server, root, provider, descriptor, manifest, profile
-        )
+        _insert_running_managed_task(server, root, provider, descriptor, manifest, profile)
         destination = server.durable_result_path(task_id)
         _promote_managed_result(destination, descriptor, result, manifest, profile)
-        control_root = _write_stale_managed_control(
-            server, descriptor, manifest, profile
-        )
+        control_root = _write_stale_managed_control(server, descriptor, manifest, profile)
         changed_session = {**descriptor.value, "session_nonce": "e" * 64}
         (_local_path(control_root) / "session.json").write_bytes(
             canonical_json_bytes(changed_session) + b"\n"
@@ -543,14 +668,10 @@ def test_promoted_managed_result_never_removes_drifted_stale_controls(
     descriptor, result, manifest, profile = _managed_values(execution)
     server, provider, root = _managed_server(tmp_path, manifest, profile)
     with server:
-        _insert_running_managed_task(
-            server, root, provider, descriptor, manifest, profile
-        )
+        _insert_running_managed_task(server, root, provider, descriptor, manifest, profile)
         destination = server.durable_result_path(str(descriptor.value["task_id"]))
         _promote_managed_result(destination, descriptor, result, manifest, profile)
-        control_root = _write_stale_managed_control(
-            server, descriptor, manifest, profile
-        )
+        control_root = _write_stale_managed_control(server, descriptor, manifest, profile)
         changed_session = {**descriptor.value, "session_nonce": "f" * 64}
         (_local_path(control_root) / "session.json").write_bytes(
             canonical_json_bytes(changed_session) + b"\n"
@@ -570,9 +691,7 @@ def test_stopped_ledger_audit_accepts_exact_managed_row_and_rejects_drift(
     state_path = server.state_path
     enrollment = load_local_enrollment(root, secret_provider=provider)
     with server:
-        _insert_running_managed_task(
-            server, root, provider, descriptor, manifest, profile
-        )
+        _insert_running_managed_task(server, root, provider, descriptor, manifest, profile)
 
     assert audit_runner_ledger(state_path, enrollment) == {
         "schema_version": "bluefire.runner-ledger-audit.v1",
@@ -585,9 +704,7 @@ def test_stopped_ledger_audit_accepts_exact_managed_row_and_rejects_drift(
     }
 
     with sqlite3.connect(state_path) as connection:
-        raw = connection.execute(
-            "SELECT execute_payload_json FROM transport_tasks"
-        ).fetchone()[0]
+        raw = connection.execute("SELECT execute_payload_json FROM transport_tasks").fetchone()[0]
         decoded = json.loads(bytes(raw).decode("utf-8"))
         decoded["windows_correction_session"]["expected_binding"] = {
             **decoded["windows_correction_session"]["expected_binding"],
@@ -631,9 +748,7 @@ def test_stopped_ledger_audit_still_accepts_legacy_execute_row(tmp_path: Path) -
     state_path = server.state_path
     enrollment = load_local_enrollment(root, secret_provider=provider)
     with server:
-        _insert_running_legacy_task(
-            server, root, provider, manifest, profile
-        )
+        _insert_running_legacy_task(server, root, provider, manifest, profile)
 
     assert audit_runner_ledger(state_path, enrollment) == {
         "schema_version": "bluefire.runner-ledger-audit.v1",
@@ -646,9 +761,7 @@ def test_stopped_ledger_audit_still_accepts_legacy_execute_row(tmp_path: Path) -
     }
 
 
-def test_cancellation_committed_before_ack_releases_no_begin(
-    execution, tmp_path: Path
-) -> None:
+def test_cancellation_committed_before_ack_releases_no_begin(execution, tmp_path: Path) -> None:
     descriptor, result, manifest, profile = _managed_values(execution)
     ready = execution.state.remote_client.ready
     receipt_document = execution.state.remote_client.consume_receipt
@@ -660,9 +773,7 @@ def test_cancellation_committed_before_ack_releases_no_begin(
         result,
         hold_cancel=True,
     )
-    server, provider, root = _managed_server(
-        tmp_path, manifest, profile, runner=runner
-    )
+    server, provider, root = _managed_server(tmp_path, manifest, profile, runner=runner)
     with server:
         _insert_running_managed_task(
             server,
@@ -685,9 +796,7 @@ def test_cancellation_committed_before_ack_releases_no_begin(
                     request,
                     {
                         "original_task_id": descriptor.value["task_id"],
-                        "original_request_hash": descriptor.value[
-                            "transport_request_hash"
-                        ],
+                        "original_request_hash": descriptor.value["transport_request_hash"],
                     },
                     binding,
                 )
@@ -738,9 +847,7 @@ def test_direct_runner_result_requires_the_original_managed_session(
         receipt_document["ack_nonce"],
         changed_result,
     )
-    server, provider, root = _managed_server(
-        tmp_path, manifest, profile, runner=runner
-    )
+    server, provider, root = _managed_server(tmp_path, manifest, profile, runner=runner)
     with server:
         _insert_running_managed_task(
             server,
