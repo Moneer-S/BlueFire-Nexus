@@ -24,6 +24,7 @@ from types import TracebackType
 from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol, Type
 
 from .application_errors import public_job_failure
+from .domain_errors import JobCancelled
 
 
 class JobState(str, Enum):
@@ -102,10 +103,6 @@ class JobNotManaged(JobRuntimeError):
 
 class JobWaitTimeout(JobRuntimeError):
     """Raised when a caller's bounded wait expires."""
-
-
-class JobCancelled(Exception):
-    """Cooperative cancellation signal raised at a callback checkpoint."""
 
 
 @dataclass(frozen=True, slots=True)

@@ -835,8 +835,7 @@ def test_retained_run_checkpoint_cancellation_recovers_locally_without_dispatch(
     assert child["progress"]["pre_dispatch_failure"]["request_index"] == 0
     remaining_reserved = jobs.read(identifier)["remaining"]
     assert remaining_reserved == {
-        key: remaining_before[key] - value
-        for key, value in results.phase_budget("inspect").items()
+        key: remaining_before[key] - value for key, value in results.phase_budget("inspect").items()
     }
     recovered = jobs.recover(identifier)
     operation = recovered["workflow"]["progress"]["operations"][-1]
@@ -902,8 +901,7 @@ def test_owner_stop_race_admission_refusal_recovers_local_no_dispatch(workspace,
     assert stopped["workflow"]["progress"]["stopped"] is True
     remaining_reserved = jobs.read(identifier)["remaining"]
     assert remaining_reserved == {
-        key: remaining_before[key] - value
-        for key, value in results.phase_budget("inspect").items()
+        key: remaining_before[key] - value for key, value in results.phase_budget("inspect").items()
     }
     recovered = jobs.recover(identifier)
     operation = recovered["workflow"]["progress"]["operations"][-1]
@@ -936,9 +934,7 @@ def test_saved_deadline_refusal_recovers_local_no_dispatch(workspace, monkeypatc
     monkeypatch.setattr(records, "retain_run", retain_then_block)
     child, _ = submit(jobs, identifier, "inspect", wait=False)
     assert retained.wait(5)
-    clock[0] = timestamp(child["request"]["requests"][0]["deadline"]) + timedelta(
-        microseconds=1
-    )
+    clock[0] = timestamp(child["request"]["requests"][0]["deadline"]) + timedelta(microseconds=1)
     release.set()
     child = wait_for_ad_job(jobs.controller, child["job_id"])
 
@@ -947,8 +943,7 @@ def test_saved_deadline_refusal_recovers_local_no_dispatch(workspace, monkeypatc
     assert child["progress"]["pre_dispatch_failure"]["request_index"] == 0
     remaining_reserved = jobs.read(identifier)["remaining"]
     assert remaining_reserved == {
-        key: remaining_before[key] - value
-        for key, value in results.phase_budget("inspect").items()
+        key: remaining_before[key] - value for key, value in results.phase_budget("inspect").items()
     }
     recovered = jobs.recover(identifier)
     operation = recovered["workflow"]["progress"]["operations"][-1]

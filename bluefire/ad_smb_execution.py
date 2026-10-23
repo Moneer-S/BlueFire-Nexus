@@ -16,7 +16,7 @@ from .ad_smb_installed import InstalledEnvironment, load_installed
 from .ad_smb_receiver_results import context
 from .ad_smb_results import execution_manifest, now, original_context, validate_execution
 from .ad_smb_workspace_results import project_original
-from .job_runtime import JobCancelled
+from .domain_errors import JobCancelled
 from .runner_transport_errors import RunnerTransportError
 from .runner_trust import RunnerTrustError
 from .util import content_hash

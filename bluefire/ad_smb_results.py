@@ -555,9 +555,7 @@ def validate_execution(request: Mapping[str, Any], value: Any) -> dict[str, Any]
     return _validate_execution(request, value)
 
 
-def validate_controller_local_execution(
-    request: Mapping[str, Any], value: Any
-) -> dict[str, Any]:
+def validate_controller_local_execution(request: Mapping[str, Any], value: Any) -> dict[str, Any]:
     """Validate only the no-dispatch projection admitted by a durable controller marker."""
     row = _validate_execution(request, value, allow_controller_local=True)
     if row["provenance"] != "controller_local":
@@ -711,9 +709,7 @@ def outcome(
         if observations:
             distinct = len({row["local_authentication_id"] for row in observations}) == len(
                 observations
-            ) and not old_luids.intersection(
-                row["local_authentication_id"] for row in observations
-            )
+            ) and not old_luids.intersection(row["local_authentication_id"] for row in observations)
     elif phase in {"harden", "rollback"}:
         known = known and all(
             row["state"] in {"readback_matched", "not_attempted"} for row in observations
