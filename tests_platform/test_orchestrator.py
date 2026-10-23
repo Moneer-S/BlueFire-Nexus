@@ -1364,8 +1364,12 @@ def test_transport_failure_discovers_fsynced_receipt_and_forces_cleanup(
 
 
 @pytest.mark.parametrize("failure_kind", ["parent", "watchdog", "unknown", "durable", "pending"])
+@pytest.mark.parametrize("fixture_platform", ["windows", "linux", "macos"])
 def test_transport_failure_retains_finite_reason_without_changing_failed_outcome(
-    tmp_path: Path, failure_kind: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_kind: str,
+    fixture_platform: str,
 ) -> None:
     from bluefire.runner_transport import AuthenticatedRunnerClient, AuthenticatedRunnerServer
     from bluefire.runner_transport_errors import (
@@ -1375,6 +1379,10 @@ def test_transport_failure_retains_finite_reason_without_changing_failed_outcome
     )
     from bluefire.runner_trust import create_local_enrollment
     from bluefire.secret_store import InMemorySecretProvider
+
+    # Model each supported planner contract without changing the real host's native APIs.
+    monkeypatch.setattr("bluefire.orchestrator.current_platform", lambda: fixture_platform)
+    monkeypatch.setattr("bluefire.runner_contracts.current_platform", lambda: fixture_platform)
 
     if failure_kind == "parent":
         failure = RunnerTransportError("Runner watchdog exited before readiness")
@@ -1396,9 +1404,14 @@ def test_transport_failure_retains_finite_reason_without_changing_failed_outcome
         reason = "other_transport"
 
     class FailedRunner(StructuredFakeRunner):
+        def inventory(self) -> Mapping[str, Any]:
+            return {**super().inventory(), "platform": fixture_platform}
+
         def execute(
             self, manifest: Mapping[str, Any], profile: Mapping[str, Any]
         ) -> Mapping[str, Any]:
+            assert manifest["platform"] == profile["platform"] == fixture_platform
+            self.calls.append((dict(manifest), dict(profile)))
             raise failure
 
     scenario = load_scenario(SCENARIO_PATH)
@@ -1412,8 +1425,9 @@ def test_transport_failure_retains_finite_reason_without_changing_failed_outcome
         allowed_profile_ids=[profile.id],
         secret_provider=provider,
     )
+    runner = FailedRunner()
     with AuthenticatedRunnerServer(
-        trust, FailedRunner(), tmp_path / "transport.sqlite3", secret_provider=provider
+        trust, runner, tmp_path / "transport.sqlite3", secret_provider=provider
     ) as server:
         host, port = server.server_address
         client = AuthenticatedRunnerClient(
@@ -1437,6 +1451,8 @@ def test_transport_failure_retains_finite_reason_without_changing_failed_outcome
                 target_scope=FULL_TARGET_SCOPE,
             ),
         )
+    assert len(runner.calls) == 1
+    assert runner.calls[0][0]["action_id"] == "sandbox.fixture.create.v1"
     row = _rows_by_step(result)["create_fixture"]
     assert row["status"] == "failed"
     assert row["execution_disposition"] == "execute"
