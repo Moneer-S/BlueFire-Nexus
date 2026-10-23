@@ -56,6 +56,40 @@ fn compiled_contracts_have_real_canonical_digests_and_no_dispatch() {
         assert_eq!(document.as_object().unwrap().len(), 10);
         assert!(crate::actions::find_action(role.binding().adapter_id).is_none());
     }
+    let expected_payload_contract = json!({
+        "schema_version": "bluefire.owned-service-installation-contract.v1",
+        "role": "payload",
+        "adapter_id": "owned.service.payload.v1",
+        "adapter_version": "1.0.0",
+        "tool_id": "owned.service.payload.binary.v1",
+        "platform": "linux",
+        "architectures": ["x86_64", "aarch64"],
+        "inspection": {
+            "path": "root-owned-nofollow-components",
+            "executable": "bounded-elf-without-special-bits-or-capabilities",
+            "identity": "exact-version-size-sha256",
+            "recheck": "retained-handles-and-shared-monotonic-deadline"
+        },
+        "dispatch": "unregistered",
+        "identity": {
+            "project": "bluefire-runner",
+            "version": "3.0.0-rc2",
+            "authority": "authenticated-current-runner-bytes-and-size",
+            "entrypoint": "owned-service-payload",
+            "duration_seconds": {"minimum": 1, "maximum": 120}
+        }
+    });
+    assert_eq!(Role::Payload.contract(), expected_payload_contract);
+    assert_eq!(
+        canonical_hash(&expected_payload_contract),
+        "sha256:58529f5cb0b902ac330dd93721637fa1685beec27cab4e6d0052ee3cb2405ae8"
+    );
+    let mut previous_payload_contract = expected_payload_contract;
+    previous_payload_contract["identity"]["version"] = json!("3.0.0");
+    assert_eq!(
+        canonical_hash(&previous_payload_contract),
+        "sha256:60bb8f6cd6e6b796bd1a7039b1e38c793faeb89f088302730f05da6f89d965e7"
+    );
     assert!(crate::actions::find_action(crate::service_admission::SERVICE_ACTION_ID).is_none());
     assert!(crate::reviewed_chmod_builds::verify(&manager()).is_err());
     assert_eq!(
@@ -110,6 +144,9 @@ fn payload_requires_current_runner_version_bytes_and_size() {
         .is_err());
     assert!(Role::Payload.validate(&baseline, (&digest, 4097)).is_err());
     let mut changed = baseline.clone();
+    changed.tool_version = "3.0.0".into();
+    assert!(Role::Payload.validate(&changed, (&digest, 4096)).is_err());
+    changed = baseline.clone();
     changed.tool_version = format!("{}-unreviewed", env!("CARGO_PKG_VERSION"));
     assert!(Role::Payload.validate(&changed, (&digest, 4096)).is_err());
     changed = baseline;
