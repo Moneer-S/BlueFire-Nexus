@@ -1,5 +1,9 @@
 .compare-page { container: compare-workspace / inline-size; gap: 12px; }
 .compare-page > .page-header { min-height: 38px; }
+.compare-page .compare-empty-history { border: 1px solid var(--line-strong); border-radius: 8px; background: radial-gradient(ellipse at top right, color-mix(in srgb, var(--blue) 10%, transparent), transparent 65%), var(--surface); }
+.compare-page .compare-empty-history > .empty-state { min-height: 0; place-content: start; justify-items: start; padding: 20px 22px; text-align: left; }
+.compare-page .compare-empty-history strong { font-size: 1.12rem; line-height: 1.35; }
+.compare-page .compare-empty-history p { max-width: 60ch; margin: 7px 0 15px; font-size: .84rem; line-height: 1.5; }
 .compare-page .saved-comparison-link { min-width: 0; }
 .compare-page .saved-comparison-link > span { width: 100%; }
 .compare-page .saved-comparison-link strong { line-height: 1.45; overflow-wrap: anywhere; }
