@@ -36,13 +36,52 @@ async function visibleNodesInsideCanvas(page: Page) {
   });
 }
 
+async function expectPaintedOutcomeRoutes(page: Page) {
+  const expected = demoScenario.edges.map((edge, index) => ({
+    id: `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`,
+    pathCount: 1, finitePath: true, nonzeroLength: true, painted: true, visibleAncestors: true,
+    finiteBounds: true, dashed: edge.outcome !== "success",
+  })).sort((left, right) => left.id.localeCompare(right.id));
+  const routes = page.locator(".react-flow__edge");
+  await expect(routes).toHaveCount(expected.length);
+  // Straight SVG paths may have a zero-width or zero-height box despite a
+  // visible stroke. Check their saved identities and painted geometry directly.
+  await expect.poll(() => routes.evaluateAll(edges => edges.map(edge => {
+    const paths = edge.querySelectorAll<SVGPathElement>(".react-flow__edge-path");
+    const path = paths[0];
+    const style = path ? getComputedStyle(path) : undefined;
+    const box = path?.getBoundingClientRect();
+    const d = path?.getAttribute("d");
+    let length = Number.NaN;
+    try { length = path?.getTotalLength() ?? Number.NaN; } catch { /* Invalid geometry fails the assertion. */ }
+    let visibleAncestors = Boolean(path);
+    for (let ancestor: Element | null = path ?? null; ancestor; ancestor = ancestor.parentElement) {
+      const ancestorStyle = getComputedStyle(ancestor);
+      if (ancestorStyle.display === "none" || ["hidden", "collapse"].includes(ancestorStyle.visibility)
+        || Number(ancestorStyle.opacity) === 0) visibleAncestors = false;
+    }
+    const strokeWidth = Number.parseFloat(style?.strokeWidth ?? "");
+    return {
+      id: edge.getAttribute("data-id") ?? "", pathCount: paths.length,
+      finitePath: Boolean(d && !/NaN|Infinity/.test(d)), nonzeroLength: Number.isFinite(length) && length > 0,
+      painted: Boolean(style && style.stroke !== "none" && style.stroke !== "transparent"
+        && !/rgba\([^)]*,\s*0(?:\.0*)?\)$/.test(style.stroke)
+        && Number.isFinite(strokeWidth) && strokeWidth > 0 && Number(style.strokeOpacity) > 0),
+      visibleAncestors,
+      finiteBounds: Boolean(box && [box.x, box.y, box.width, box.height].every(Number.isFinite)
+        && box.width >= 0 && box.height >= 0 && (box.width > 0 || box.height > 0)),
+      dashed: Boolean(style && style.strokeDasharray !== "none"),
+    };
+  }).sort((left, right) => left.id.localeCompare(right.id)))).toEqual(expected);
+}
+
 test("opens at readable focus, keeps an explicit whole-path overview, and preserves the operator viewport", async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.goto("./#/builder");
   const canvas = page.getByLabel("Scenario graph canvas");
   await expect(page.getByRole("heading", { name: "Endpoint control validation", level: 1 })).toBeVisible();
   await expect(page.locator(".react-flow__node:visible")).toHaveCount(demoScenario.steps.length);
-  await expect(page.locator(".react-flow__edge:visible")).toHaveCount(demoScenario.edges.length);
+  await expectPaintedOutcomeRoutes(page);
   await expect(page.getByRole("navigation", { name: "Focused connected path" })).toHaveCount(0);
   await expect(page.locator(".graph-disclosure")).toHaveCount(0);
   const initial = await viewport(page);
@@ -122,8 +161,18 @@ test("selecting a rightmost visible step keeps it beside its details without cha
   await page.goto("./#/builder");
   const canvas = page.getByLabel("Scenario graph canvas");
   await expect(page.locator(".react-flow__node:visible")).toHaveCount(demoScenario.steps.length);
+  await viewOptions(page, true);
+  await page.getByRole("button", { name: "Focus selected step" }).click();
+  await viewOptions(page, false);
+  await expect.poll(async () => (await viewport(page)).zoom).toBeCloseTo(1, 5);
+  // Exercise the readable band below 100% through the actual operator control.
+  await page.getByRole("button", { name: /^Zoom out$/i }).click();
+  await expect.poll(async () => (await viewport(page)).zoom).toBeCloseTo(1 / 1.2, 5);
   await finishLayout(page);
   const before = await viewport(page);
+  expect(before.zoom).toBeGreaterThanOrEqual(0.8);
+  expect(before.zoom).toBeLessThan(1);
+  const savedBefore = await page.evaluate(() => localStorage.getItem("bluefire.local.scenario.v1"));
   const rightmost = await canvas.locator(".react-flow__node:visible").evaluateAll(elements => {
     const boundary = elements[0]!.closest(".graph-canvas")!.getBoundingClientRect();
     return elements.map(element => ({ id: (element as HTMLElement).dataset.id!, box: element.getBoundingClientRect() }))
@@ -132,6 +181,7 @@ test("selecting a rightmost visible step keeps it beside its details without cha
   });
   // Use the observed data identity, rather than a fixture-specific step order.
   const selected = canvas.locator(`.react-flow__node[data-id="${rightmost}"]`);
+  await expect(selected.locator(".flow-node")).not.toHaveClass(/\bselected\b/);
   await selected.click();
   await expect(page.locator(".inspector-panel")).toBeVisible();
   await expect.poll(() => selected.evaluate(element => {
@@ -140,4 +190,5 @@ test("selecting a rightmost visible step keeps it beside its details without cha
     return box.left >= boundary.left && box.right <= boundary.right && box.top >= boundary.top && box.bottom <= boundary.bottom;
   })).toBe(true);
   expect((await viewport(page)).zoom).toBeCloseTo(before.zoom, 5);
+  expect(await page.evaluate(() => localStorage.getItem("bluefire.local.scenario.v1"))).toBe(savedBefore);
 });

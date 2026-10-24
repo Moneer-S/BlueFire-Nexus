@@ -16,7 +16,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import "./Builder.css";
 import { guaranteedInputSources, stepParameterSummary } from "../lib/graph-authoring";
 import { ParameterField } from "../components/ParameterField";
-import { branchLabels, focusedGraphLayout, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, graphBoundsViewport, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, readableGraphViewport, revealGraphContext, type ScenarioGraph } from "../lib/graph-view";
+import { branchLabels, focusedGraphLayout, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, graphBoundsViewport, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, readableGraphViewport, revealGraphContext, type GraphViewport, type ScenarioGraph } from "../lib/graph-view";
 import { api } from "../lib/api";
 import { defaultGraphView, readWorkingGraphView, writeWorkingGraphView } from "../lib/graph-view-retention";
 import { initialParameterValue, shouldInitializeParameter } from "../lib/parameters";
@@ -106,11 +106,13 @@ const BehaviorNode = memo(function BehaviorNode({ id, data, selected }: NodeProp
 const nodeTypes = { behavior: BehaviorNode };
 const edgeTypes = { outcomeRoute: BuilderRouteEdge };
 const minimumGraphZoom = 0.005;
+const minimumReadableGraphZoom = 0.8;
 const deleteKeys = ["Backspace", "Delete"];
 const connectionLineStyle = { stroke: "#38a8ff", strokeWidth: 2 };
 const proOptions = { hideAttribution: true };
 const miniMapStyle = { width: 132, height: 80 };
 const rightRouteGutter = 72;
+const sameViewport = (left: GraphViewport, right: GraphViewport) => left.zoom === right.zoom && Math.abs(left.x - right.x) < 0.001 && Math.abs(left.y - right.y) < 0.001;
 
 export function BuilderPage() {
   const { scenario } = useProduct();
@@ -201,7 +203,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   }, [review, scenario, selectedId, viewMode, allBranches, expandedBranches, focusedSection, inspectorOpen, routesOpen, showInputs]);
   const [graphZoom, setGraphZoom] = useState(1);
   const [miniMapOpen, setMiniMapOpen] = useState(false);
-  const summaryZoom = graphZoom < 0.8;
+  const summaryZoom = graphZoom < minimumReadableGraphZoom;
   const sections = useMemo(() => graphSections(visibleGraph.ordered, graph.edges, graph.start), [visibleGraph, graph.edges, graph.start]);
   // Route edits can renumber groups. Resolve the selected step's group before
   // hiding nodes; explicit group changes move the selection in showSection.
@@ -217,6 +219,17 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     const usesFallback = generated && node.position.x === generated.x && node.position.y === generated.y;
     return { ...node, position: projected && usesFallback ? projected : node.position, hidden: !shownIds.has(node.id), selected: node.selected && shownIds.has(node.id) };
   }), [fallbackLayout, focusedLayout, nodes, shownIds]);
+  const routeNodeData = useMemo(() => {
+    // Selection changes node records, but only data or port changes invalidate cards.
+    const cache = new WeakMap<BehaviorNodeData, BehaviorNodeData>();
+    return (data: BehaviorNodeData, routeIn: Position, routeOut: Position) => {
+      const previous = cache.get(data);
+      if (previous?.routeIn === routeIn && previous.routeOut === routeOut) return previous;
+      const next = { ...data, routeIn, routeOut };
+      cache.set(data, next);
+      return next;
+    };
+  }, []);
   const displayNodes = useMemo(() => projectedNodes.map(node => {
     const incoming = graph.edges.find(edge => edge.to_step === node.id && edge.outcome === "success");
     const outgoing = graph.edges.find(edge => edge.from_step === node.id && edge.outcome === "success");
@@ -224,10 +237,13 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     const after = projectedNodes.find(item => item.id === outgoing?.to_step);
     const routeIn = before && Math.abs(before.position.x - node.position.x) < 1 && before.position.y < node.position.y ? Position.Top : Position.Left;
     const routeOut = after && Math.abs(after.position.x - node.position.x) < 1 && after.position.y > node.position.y ? Position.Bottom : Position.Right;
-    return { ...node, data: { ...node.data, routeIn, routeOut } };
-  }), [graph.edges, projectedNodes]);
+    return { ...node, data: routeNodeData(node.data, routeIn, routeOut) };
+  }), [graph.edges, projectedNodes, routeNodeData]);
   // Selection updates React Flow's node records, but does not invalidate routes.
   const routeGeometry = useMemo(() => JSON.stringify(displayNodes.filter(node => !node.hidden).map(node => ({ id: node.id, ...node.position, width: node.measured?.width ?? GRAPH_NODE_WIDTH, height: node.measured?.height ?? GRAPH_NODE_HEIGHT }))), [displayNodes]);
+  const geometryRevision = useRef(0);
+  // Moving a card invalidates resize recovery without panning underneath a drag.
+  useEffect(() => { geometryRevision.current += 1; }, [routeGeometry]);
   const routeObstacles = useMemo<RouteObstacle[]>(() => JSON.parse(routeGeometry) as RouteObstacle[], [routeGeometry]);
   const routedData = useMemo(() => new Map(edgeDefinitions.map(edge => [edge.id, edge.data ? { ...edge.data, obstacles: routeObstacles } : undefined])), [edgeDefinitions, routeObstacles]);
   const edgeIsShown = useCallback((edge: FlowEdge) => shownIds.has(edge.source) && shownIds.has(edge.target) && (edge.data?.kind !== "artifact" || showInputs) && (edge.data?.kind !== "route" || edge.data.outcome === "success" || allBranches || expandedBranches.has(edge.source)), [allBranches, expandedBranches, showInputs, shownIds]);
@@ -305,7 +321,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   const clipboard = useRef<ScenarioStep | undefined>(undefined); const flow = useReactFlow<BehaviorFlowNode, FlowEdge>();
   const nodesInitialized = useNodesInitialized();
   const initialFrameDone = useRef(false);
-  const frameStep = useCallback((id: string, mode: "start" | "readable" | "reveal", duration = 0) => {
+  const frameStep = useCallback((id: string, mode: "start" | "readable" | "reveal", duration = 0, preferred?: GraphViewport) => {
     const canvas = graphCanvas.current;
     const node = flow.getNode(id);
     if (!canvas || !node || node.hidden || !canvas.clientWidth || !canvas.clientHeight) return false;
@@ -319,9 +335,9 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
       const neighbor = flow.getNode(neighborId);
       return neighbor && !neighbor.hidden ? [{ ...neighbor.position, width: neighbor.measured?.width ?? GRAPH_NODE_WIDTH, height: neighbor.measured?.height ?? GRAPH_NODE_HEIGHT }] : [];
     });
-    const next = mode === "reveal" ? revealGraphContext(current, bounds, neighbors, frame) : readableGraphViewport(bounds, frame, mode === "start");
-    if (next !== current) void flow.setViewport(next, { duration: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? 0 : duration });
-    return true;
+    const next = mode === "reveal" ? revealGraphContext(preferred ?? current, bounds, neighbors, frame) : readableGraphViewport(bounds, frame, mode === "start");
+    if (!sameViewport(next, current)) void flow.setViewport(next, { duration: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? 0 : duration });
+    return next;
   }, [allBranches, expandedBranches, flow, graph.edges]);
   const fitNodes = useCallback((ids: readonly string[], duration = 0, readable = false) => {
     const canvas = graphCanvas.current;
@@ -334,10 +350,10 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     });
     const viewport = graphBoundsViewport(bounds, { width: canvas.clientWidth, height: canvas.clientHeight }, 48, 1);
     if (!viewport) return false;
-    if (readable && viewport.zoom < 0.72) {
+    if (readable && viewport.zoom < minimumReadableGraphZoom) {
       // A scheduled group change may still capture the previous selection.
       const anchor = ids.includes(selectedId) ? selectedId : ids.includes(scenario.start) ? scenario.start : ids[0];
-      return anchor ? frameStep(anchor, "start", duration) : false;
+      return anchor ? Boolean(frameStep(anchor, "start", duration)) : false;
     }
     void flow.setViewport(viewport, { duration: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? 0 : duration });
     return true;
@@ -359,7 +375,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   useEffect(() => {
     if (!selectionToReveal || selectionToReveal !== selectedId || !inspectorOpen || !nodesInitialized || viewMode !== "graph") return;
     const frame = requestAnimationFrame(() => {
-      if (frameStep(selectionToReveal, flow.getZoom() < 0.8 ? "readable" : "reveal")) setSelectionToReveal("");
+      if (frameStep(selectionToReveal, flow.getZoom() < minimumReadableGraphZoom ? "readable" : "reveal")) setSelectionToReveal("");
     });
     return () => cancelAnimationFrame(frame);
   }, [flow, frameStep, inspectorOpen, nodesInitialized, selectedId, selectionToReveal, viewMode]);
@@ -368,17 +384,36 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     const canvas = graphCanvas.current;
     if (!canvas || !nodesInitialized || viewMode !== "graph") return;
     let pending = 0;
+    let previousFrame = { width: canvas.clientWidth, height: canvas.clientHeight };
+    let recovery: { original: GraphViewport; applied: GraphViewport; geometryRevision: number } | undefined;
     const reveal = () => {
       cancelAnimationFrame(pending);
-      pending = requestAnimationFrame(() => { if (initialFrameDone.current && selectedId) frameStep(selectedId, "reveal"); });
+      pending = requestAnimationFrame(() => {
+        const frame = { width: canvas.clientWidth, height: canvas.clientHeight };
+        if (initialFrameDone.current && selectedId) {
+          const current = flow.getViewport();
+          // A later operator pan, zoom, focus, or card move owns the view from then on.
+          if (recovery && (!sameViewport(current, recovery.applied) || recovery.geometryRevision !== geometryRevision.current)) recovery = undefined;
+          const grew = frame.width > previousFrame.width || frame.height > previousFrame.height;
+          const shrank = frame.width < previousFrame.width || frame.height < previousFrame.height;
+          const next = frameStep(selectedId, "reveal", 0, grew ? recovery?.original : undefined);
+          if (next) {
+            if (recovery) recovery.applied = next;
+            else if (shrank && !sameViewport(next, current)) recovery = { original: current, applied: next, geometryRevision: geometryRevision.current };
+            if (recovery && sameViewport(next, recovery.original)) recovery = undefined;
+          }
+        }
+        previousFrame = frame;
+      });
     };
-    // The graph owns its space. Resizing an inspector, dock, or window may hide
-    // the selection, but is not a request to refit every node or change zoom.
+    // Shrinking a pane may temporarily hide context. Recover only that automatic
+    // pan when space returns; a new selection or geometry starts a fresh scope.
+    // Every reveal retains the current zoom and clamps to the available canvas.
     const observer = new ResizeObserver(reveal);
     observer.observe(canvas);
     reveal();
     return () => { observer.disconnect(); cancelAnimationFrame(pending); };
-  }, [frameStep, nodesInitialized, selectedId, viewMode]);
+  }, [flow, frameStep, nodesInitialized, selectedId, viewMode]);
 
   const selectionForGraphRefresh = useRef(selectedId);
   // Graph edits can add and select a node together. Keep that committed selection

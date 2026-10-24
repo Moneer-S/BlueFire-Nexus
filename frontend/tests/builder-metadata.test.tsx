@@ -1,6 +1,6 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { NodeProps, ReactFlowProps } from "@xyflow/react";
 import { MemoryRouter } from "react-router-dom";
@@ -13,7 +13,7 @@ import { ProductProvider, useProduct } from "../src/state/ProductContext";
 import type { Scenario, ScenarioEdge } from "../src/types";
 
 const nodeRenders = vi.hoisted(() => [] as string[]);
-const renderedGraphs = vi.hoisted(() => [] as Pick<ReactFlowProps, "nodes" | "edges">[]);
+const renderedGraphs = vi.hoisted(() => [] as Pick<ReactFlowProps, "nodes" | "edges" | "onNodesChange">[]);
 beforeEach(() => { nodeRenders.length = 0; renderedGraphs.length = 0; });
 vi.mock("@xyflow/react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@xyflow/react")>();
@@ -21,7 +21,7 @@ vi.mock("@xyflow/react", async (importOriginal) => {
   return {
     ...actual,
     ReactFlow: (props: ReactFlowProps) => {
-      renderedGraphs.push({ nodes: props.nodes, edges: props.edges });
+      renderedGraphs.push({ nodes: props.nodes, edges: props.edges, onNodesChange: props.onNodesChange });
       let nodeTypes = props.nodeTypes;
       if (nodeTypes?.behavior) {
         if (!measuredTypes.has(nodeTypes)) {
@@ -254,6 +254,8 @@ describe("Builder metadata and graph updates", () => {
     await user.click(screen.getByRole("button", { name: "Move first step in context" }));
     await waitFor(() => expect(renderedGraphs.at(-1)!.nodes![0]!.position).toEqual({ x: 902, y: 301 }));
     expect(renderedGraphs.at(-1)!.nodes!.find((node) => node.id === selectedId)!.selected).toBe(true);
+    await user.click(screen.getByLabelText("View options", { selector: "summary" }));
+    await user.click(screen.getByRole("button", { name: "Focus on success path" }));
     await user.click(screen.getByRole("button", { name: "Clear routes in context" }));
     await waitFor(() => expect(renderedGraphs.at(-1)!.edges!.filter((edge) => edge.data?.kind === "route")).toHaveLength(0));
     await user.click(screen.getByRole("button", { name: "Change start in context" }));
@@ -262,5 +264,28 @@ describe("Builder metadata and graph updates", () => {
     expect(persisted.title).toBe(demoScenario.title);
     expect(persisted.start).toBe(demoScenario.steps[1]!.id);
     expect(persisted.edges).toEqual([]);
+  });
+
+  it("refreshes moved connection handles without replacing unchanged node data", async () => {
+    const steps = demoScenario.steps.slice(0, 3).map(step => ({ ...structuredClone(step), inputs: {} }));
+    const scenario = {
+      ...structuredClone(demoScenario), steps, start: steps[0]!.id,
+      edges: steps.slice(1).map((step, index) => ({ from_step: steps[index]!.id, outcome: "success" as const, to_step: step.id })),
+      layout: Object.fromEntries(steps.map((step, index) => [step.id, { x: 48, y: 48 + index * 200 }])),
+    };
+    renderBuilder(scenario);
+    await screen.findByRole("textbox", { name: "Experiment name" });
+    const original = renderedGraphs.at(-1)!;
+    expect(original.nodes![0]!.data.routeOut).toBe("bottom");
+    expect(original.nodes![1]!.data.routeIn).toBe("top");
+
+    act(() => original.onNodesChange?.([{ id: steps[0]!.id, type: "position", position: { x: 902, y: 301 }, dragging: true }]));
+    const moved = renderedGraphs.at(-1)!;
+    expect(moved.nodes![0]!.data.routeOut).toBe("right");
+    expect(moved.nodes![1]!.data.routeIn).toBe("left");
+    expect(moved.nodes![0]!.data).not.toBe(original.nodes![0]!.data);
+    expect(moved.nodes![1]!.data).not.toBe(original.nodes![1]!.data);
+    expect(moved.nodes![2]!.data).toBe(original.nodes![2]!.data);
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).layout).toEqual(scenario.layout);
   });
 });

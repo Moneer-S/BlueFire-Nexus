@@ -67,6 +67,7 @@ function ComparisonWorkspace() {
   const selected = comparisonContext.runIds;
   const selectionKey = JSON.stringify(selected);
   const snapshotId = searchParams.get("snapshot") ?? "";
+  const [keepSavedHistoryOpen, setKeepSavedHistoryOpen] = useState(false);
   const runsQuery = useQuery({ queryKey: ["runs"], queryFn: api.runs }); const catalogQuery = useQuery({ queryKey: ["catalog"], queryFn: api.catalog }); const client = useQueryClient();
   const savedComparisonsQuery = useQuery({ queryKey: ["comparison-snapshots"], queryFn: api.comparisonSnapshots, enabled: !DEMO_MODE });
   const savedSnapshotQuery = useQuery({
@@ -285,6 +286,7 @@ function ComparisonWorkspace() {
   const loadedSnapshot = snapshotId && savedSnapshotQuery.data?.snapshot_id === snapshotId ? savedSnapshotQuery.data : undefined;
   const displayedComparison = loadedSnapshot?.comparison ?? (!snapshotId && comparisonReady && comparison && JSON.stringify(comparison.summaries.map(run => run.run_id)) === selectionKey ? comparison : undefined);
   const openSavedSnapshot = (snapshot: { snapshot_id: string; run_ids: string[] }) => {
+    setKeepSavedHistoryOpen(true);
     comparisonGeneration.current += 1;
     setComparison(undefined);
     setSearchParams((current) => {
@@ -299,7 +301,7 @@ function ComparisonWorkspace() {
     && loadedSnapshot.source_integrity.runs.every((run) => run.status === "verified"));
   const detectorEvaluationRunIds = loadedSnapshot?.comparison.run_ids ?? selected;
   return <div className="page compare-page"><PageHeader title="Compare runs" actions={<Button variant="secondary" onClick={() => runsQuery.refetch()}><RotateCcw/>Refresh history</Button>} />
-    {!DEMO_MODE ? <details className="saved-comparisons-browser" open={!displayedComparison}><summary>Saved comparisons</summary><Panel className="saved-comparisons-panel"><PanelHeader title="Saved comparisons" actions={<IconButton label="Reload saved comparisons" onClick={() => { void savedComparisonsQuery.refetch(); if (snapshotId) void savedSnapshotQuery.refetch(); }} disabled={savedComparisonsQuery.isFetching || savedSnapshotQuery.isFetching}><RotateCcw aria-hidden="true"/></IconButton>} />
+    {!DEMO_MODE ? <details className="saved-comparisons-browser" open={!displayedComparison || keepSavedHistoryOpen} onToggle={event => { if (!event.currentTarget.open) setKeepSavedHistoryOpen(false); }}><summary>Saved comparisons</summary><Panel className="saved-comparisons-panel"><PanelHeader title="Saved comparisons" actions={<IconButton label="Reload saved comparisons" onClick={() => { void savedComparisonsQuery.refetch(); if (snapshotId) void savedSnapshotQuery.refetch(); }} disabled={savedComparisonsQuery.isFetching || savedSnapshotQuery.isFetching}><RotateCcw aria-hidden="true"/></IconButton>} />
       {savedComparisonsQuery.isError ? <p className="workspace-note">Saved comparison history is unavailable.</p> : savedComparisonsQuery.isPending ? <LoadingState label="Loading saved comparisons"/> : savedComparisonsQuery.data.snapshots.length ? <ul className="saved-comparisons-list">{savedComparisonsQuery.data.snapshots.map((item) => {
         const labels = item.run_ids.map((runId, index) => `${runId === item.baseline_run_id ? "Baseline" : `Compared run ${index}`}: ${savedRunName(runId)}`);
         return <li key={item.snapshot_id}>

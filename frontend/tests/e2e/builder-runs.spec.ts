@@ -7,6 +7,45 @@ async function viewOptions(page: Page, open: boolean) {
   }
 }
 
+async function expectPaintedOutcomeRoutes(page: Page) {
+  const expected = demoScenario.edges.map((edge, index) => ({
+    id: `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`,
+    pathCount: 1, finitePath: true, nonzeroLength: true, painted: true, visibleAncestors: true,
+    finiteBounds: true, dashed: edge.outcome !== "success",
+  })).sort((left, right) => left.id.localeCompare(right.id));
+  const routes = page.locator(".react-flow__edge");
+  await expect(routes).toHaveCount(expected.length);
+  // Straight SVG paths may have a zero-width or zero-height box despite a
+  // visible stroke. Check their saved identities and painted geometry directly.
+  await expect.poll(() => routes.evaluateAll(edges => edges.map(edge => {
+    const paths = edge.querySelectorAll<SVGPathElement>(".react-flow__edge-path");
+    const path = paths[0];
+    const style = path ? getComputedStyle(path) : undefined;
+    const box = path?.getBoundingClientRect();
+    const d = path?.getAttribute("d");
+    let length = Number.NaN;
+    try { length = path?.getTotalLength() ?? Number.NaN; } catch { /* Invalid geometry fails the assertion. */ }
+    let visibleAncestors = Boolean(path);
+    for (let ancestor: Element | null = path ?? null; ancestor; ancestor = ancestor.parentElement) {
+      const ancestorStyle = getComputedStyle(ancestor);
+      if (ancestorStyle.display === "none" || ["hidden", "collapse"].includes(ancestorStyle.visibility)
+        || Number(ancestorStyle.opacity) === 0) visibleAncestors = false;
+    }
+    const strokeWidth = Number.parseFloat(style?.strokeWidth ?? "");
+    return {
+      id: edge.getAttribute("data-id") ?? "", pathCount: paths.length,
+      finitePath: Boolean(d && !/NaN|Infinity/.test(d)), nonzeroLength: Number.isFinite(length) && length > 0,
+      painted: Boolean(style && style.stroke !== "none" && style.stroke !== "transparent"
+        && !/rgba\([^)]*,\s*0(?:\.0*)?\)$/.test(style.stroke)
+        && Number.isFinite(strokeWidth) && strokeWidth > 0 && Number(style.strokeOpacity) > 0),
+      visibleAncestors,
+      finiteBounds: Boolean(box && [box.x, box.y, box.width, box.height].every(Number.isFinite)
+        && box.width >= 0 && box.height >= 0 && (box.width > 0 || box.height > 0)),
+      dashed: Boolean(style && style.strokeDasharray !== "none"),
+    };
+  }).sort((left, right) => left.id.localeCompare(right.id)))).toEqual(expected);
+}
+
 test("builder supports add, undo, redo, filtering, and keyboard shortcuts", async ({ page }) => {
   const consoleErrors: string[] = [];
   page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()); });
@@ -45,7 +84,7 @@ test("builder workspace exposes commands, layout, focus, legend, panels, and con
   await expect(page.locator(".palette-panel")).toBeHidden();
   await expect(page.locator(".inspector-panel")).toBeHidden();
   await expect(page.locator(".react-flow__node:visible")).toHaveCount(demoScenario.steps.length);
-  await expect(page.locator(".react-flow__edge:visible")).toHaveCount(demoScenario.edges.length);
+  await expectPaintedOutcomeRoutes(page);
   await expect(page.getByRole("navigation", { name: "Focused connected path" })).toHaveCount(0);
   const draftBefore = await page.evaluate(() => window.localStorage.getItem("bluefire.local.scenario.v1"));
   await viewOptions(page, true);

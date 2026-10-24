@@ -484,6 +484,7 @@ describe("product application", () => {
     renderApp("/builder");
     await user.click(await screen.findByRole("button", { name: "Add step" }));
     await user.click(await screen.findByRole("button", { name: /Typed enum review/ }));
+    await user.click(screen.getByRole("tab", { name: "Parameters" }));
 
     const evidenceBasis = await screen.findByRole("combobox", { name: "Evidence basis" }) as HTMLSelectElement;
     expect(evidenceBasis.selectedOptions[0]).toHaveTextContent("hypothesis");
@@ -519,6 +520,7 @@ describe("product application", () => {
     renderApp("/builder");
     await user.click(await screen.findByRole("button", { name: "Add step" }));
     await user.click(await screen.findByRole("button", { name: /Typed enum review/ }));
+    await user.click(screen.getByRole("tab", { name: "Parameters" }));
     const sampleCount = await screen.findByRole("combobox", { name: "Sample count" });
     const strictMatch = screen.getByRole("combobox", { name: "Strict match" });
     const labelSet = screen.getByRole("combobox", { name: "Label set" });
@@ -548,6 +550,7 @@ describe("product application", () => {
     const view = renderApp("/builder");
     await user.click(await screen.findByRole("button", { name: "Add step" }));
     await user.click(await screen.findByRole("button", { name: /Typed enum review/ }));
+    await user.click(screen.getByRole("tab", { name: "Parameters" }));
     const optionalInteger = await screen.findByRole("spinbutton", { name: "Zero default" });
     const optionalNumber = screen.getByRole("spinbutton", { name: "Optional number" });
     const requiredInteger = screen.getByRole("spinbutton", { name: "Positive integer" });
@@ -1696,7 +1699,7 @@ describe("product application", () => {
 
   it("routes legacy drafting into the shared Assistant without replacing the working graph", async () => {
     renderApp("/ai-planner");
-    expect(await screen.findByRole("complementary", { name: "Experiment assistant" })).toBeVisible();
+    expect(await screen.findByRole("complementary", { name: "BlueFire Assistant" })).toBeVisible();
     expect(screen.getByRole("textbox", { name: "What would you like to do?" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Generate registered draft" })).not.toBeInTheDocument();
     expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).endsWith("/ai/drafts"))).toBe(false);
