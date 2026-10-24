@@ -37,7 +37,10 @@ it("publishes selected step and dirty graph while keeping new experiments explic
   expect(details.closest("details")).not.toHaveAttribute("open");
   expect(purpose).not.toBeVisible();
   expect(screen.getByText("Change this step’s parameters. Review before saving a separate experiment; nothing runs.")).toBeVisible();
+  expect(screen.getByLabelText("AI mode")).not.toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Assistant settings" }));
   expect(screen.getByRole("combobox", { name: "AI mode" })).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Assistant settings" }));
   const objective = screen.getByRole("textbox", { name: "What would you like to do?" });
   await userEvent.click(objective);
   await userEvent.paste("Keep six records");
@@ -47,8 +50,8 @@ it("publishes selected step and dirty graph while keeping new experiments explic
   await userEvent.click(details);
   expect(purpose).not.toBeVisible();
   expect(objective).toHaveValue("Keep six records");
-  const scopeDetails = screen.getByText("Available actions and evidence scope");
-  expect(screen.getByRole("button", { name: "Start work" }).compareDocumentPosition(scopeDetails) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.getByText("Available actions and evidence scope")).not.toBeVisible();
+  expect(screen.getByRole("button", { name: "Start work" }).closest(".assistant-body")).toBeNull();
   expect(submit).not.toHaveBeenCalled();
   const name = screen.getByRole("textbox", { name: "Experiment name" });
   await userEvent.clear(name);

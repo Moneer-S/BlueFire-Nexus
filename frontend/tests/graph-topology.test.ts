@@ -196,6 +196,42 @@ describe("card-aware routing", () => {
       for (const [index, point] of route.points.slice(1).entries()) for (const card of obstacles) expect(segmentCrossesObstacle(route.points[index]!, point, card)).toBe(false);
     }
   });
+  it("keeps conditional lanes outside their source in a compact row gap with protruding handles", () => {
+    const source = { id: "collection", x: 373, y: 435.1875, width: 220, height: 104 };
+    const target = { id: "cleanup", x: source.x, y: source.y + source.height + 44, width: 220, height: 104 };
+    const obstacles = [source, target];
+    const routes = [.6, .8].map((port, index) => expectClear({
+      source: { x: source.x + source.width + 4.5, y: source.y + source.height * port },
+      target: { x: target.x + 20, y: target.y - 4.5 },
+      sourceId: source.id, targetId: target.id, sourceSide: "right", targetSide: "top", obstacles, lane: index + 1,
+    }));
+    const lanes = routes.map(route => {
+      for (const [index, point] of route.points.slice(1).entries()) for (const card of obstacles) {
+        expect(segmentCrossesObstacle(route.points[index]!, point, card)).toBe(false);
+      }
+      const exit = route.points.slice(1).find((point, index) => point.x === route.points[index]!.x && point.y !== route.points[index]!.y)!;
+      expect(exit).toBeDefined();
+      expect(exit.x).toBeGreaterThan(source.x + source.width + 14);
+      expect(route.payloadLabel).toBeDefined();
+      return exit.x;
+    });
+    expect(Math.abs(lanes[1]! - lanes[0]!)).toBeGreaterThanOrEqual(12);
+  });
+  it("routes the compact conditional join around an unrelated manually positioned card", () => {
+    const source = { id: "collection", x: 373, y: 435.1875, width: 220, height: 104 };
+    const target = { id: "cleanup", x: source.x, y: source.y + source.height + 44, width: 220, height: 104 };
+    const obstacles = [source, target, { id: "saved-neighbor", x: 620, y: 535, width: 100, height: 100 }];
+    for (const [index, port] of [.6, .8].entries()) {
+      const route = expectClear({
+        source: { x: source.x + source.width + 4.5, y: source.y + source.height * port },
+        target: { x: target.x + 20, y: target.y - 4.5 },
+        sourceId: source.id, targetId: target.id, sourceSide: "right", targetSide: "top", obstacles, lane: index + 1,
+      });
+      for (const [index, point] of route.points.slice(1).entries()) for (const card of obstacles) {
+        expect(segmentCrossesObstacle(route.points[index]!, point, card)).toBe(false);
+      }
+    }
+  });
   it("takes a clear side channel past an unrelated card", () => {
     const route = expectClear({ source: { x: 145, y: 220 }, target: { x: 226, y: 600 }, sourceId: "start", targetId: "end", obstacles: cards });
     expect(route.points.some(point => point.x < 100 || point.x > 352)).toBe(true);

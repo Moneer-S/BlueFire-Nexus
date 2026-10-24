@@ -621,7 +621,7 @@ describe("product application", () => {
     expect(reviewLink).toHaveAttribute("href", `/runs/${encodeURIComponent(run.run_id)}`);
     await user.click(reviewLink);
     expect(await screen.findByRole("heading", { name: run.scenario_title, level: 1 })).toBeVisible();
-    expect(screen.getByRole("link", { name: "Back to run workspace" })).toHaveAttribute("href", "/runs");
+    expect(screen.getByRole("link", { name: "Run history" })).toHaveAttribute("href", "/runs");
     const rawSummary = screen.getByText("Raw reproducibility metadata");
     expect(rawSummary.closest("details")).not.toHaveAttribute("open");
     const detailCalls = () => vi.mocked(fetch).mock.calls.filter(([input]) => String(input).endsWith(`/runs/${encodeURIComponent(run.run_id)}`)).length;

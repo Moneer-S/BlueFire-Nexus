@@ -1,4 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
+import { demoScenario } from "../../src/lib/demo";
+
+async function viewOptions(page: Page, open: boolean) {
+  if (await page.locator("details.graph-options").evaluate(element => (element as HTMLDetailsElement).open) !== open) {
+    await page.getByLabel("View options", { exact: true }).click();
+  }
+}
 
 async function viewport(page: Page) {
   return page.locator(".react-flow__viewport").evaluate((element) => {
@@ -34,37 +41,23 @@ test("opens at readable focus, keeps an explicit whole-path overview, and preser
   await page.goto("./#/builder");
   const canvas = page.getByLabel("Scenario graph canvas");
   await expect(page.getByRole("heading", { name: "Endpoint control validation", level: 1 })).toBeVisible();
-  await expect(page.locator(".react-flow__node:visible")).toHaveCount(3);
-  await expect(page.locator(".graph-group-count")).toHaveText("3 of 7 steps");
-  await expect(page.locator(".graph-disclosure")).not.toContainText("steps shown");
-  await expect(page.locator(".graph-disclosure")).toContainText(/routes hidden.*Review run includes the whole experiment/);
-  await expect(page.locator(".graph-group-connections")).not.toHaveAttribute("open");
-  await page.locator(".graph-group-connections > summary").click();
-  await expect(page.getByText(/To: .*On success/)).toBeVisible();
-  await page.locator(".graph-group-connections > summary").click();
-  await expect(page.locator(".graph-group-connections")).not.toHaveAttribute("open");
+  await expect(page.locator(".react-flow__node:visible")).toHaveCount(demoScenario.steps.length);
+  await expect(page.locator(".react-flow__edge:visible")).toHaveCount(demoScenario.edges.length);
+  await expect(page.getByRole("navigation", { name: "Focused connected path" })).toHaveCount(0);
+  await expect(page.locator(".graph-disclosure")).toHaveCount(0);
   const initial = await viewport(page);
   expect(initial.zoom).toBeGreaterThanOrEqual(0.8);
   const initiallySelected = canvas.locator(".flow-node.selected");
   await expect(initiallySelected).toBeVisible();
   await expect.poll(() => selectedInsideCanvas(page), { message: "Initial selected step remains readable and inside the canvas" }).toBe(true);
-  await expect.poll(() => visibleNodesInsideCanvas(page), { message: "Every node in the initial group stays inside the canvas" }).toBe(true);
-
-  await page.getByRole("combobox", { name: "Step group" }).selectOption("all");
-  await expect(page.locator(".react-flow__node:visible")).toHaveCount(6);
+  const savedBeforeViewChanges = await page.evaluate(() => localStorage.getItem("bluefire.local.scenario.v1"));
   await page.getByRole("button", { name: "Fit visible graph" }).click();
-  await expect.poll(() => canvas.evaluate((element) => {
-    const boundary = element.getBoundingClientRect();
-    return Array.from(element.querySelectorAll<HTMLElement>(".react-flow__node"))
-      .filter((node) => getComputedStyle(node).display !== "none" && getComputedStyle(node).visibility !== "hidden")
-      .filter((node) => {
-        const box = node.getBoundingClientRect();
-        return box.width <= 0 || box.height <= 0 || box.left < boundary.left - 1 || box.top < boundary.top - 1 || box.right > boundary.right + 1 || box.bottom > boundary.bottom + 1;
-      }).map((node) => node.dataset.id);
-  }), { message: "Explicit overview contains every step on the visible path" }).toEqual([]);
+  await expect.poll(() => visibleNodesInsideCanvas(page), { message: "Explicit overview contains every step and branch" }).toBe(true);
   const overview = await viewport(page);
   expect(overview.zoom).toBeLessThan(initial.zoom);
+  await viewOptions(page, true);
   await page.getByRole("button", { name: "Focus selected step" }).click();
+  await viewOptions(page, false);
   await expect.poll(async () => (await viewport(page)).zoom).toBeGreaterThan(overview.zoom);
   await expect.poll(() => selectedInsideCanvas(page)).toBe(true);
 
@@ -83,6 +76,7 @@ test("opens at readable focus, keeps an explicit whole-path overview, and preser
   await finishLayout(page);
   const chosen = await viewport(page);
   expect(chosen.zoom).toBeCloseTo(zoomed.zoom, 5);
+  expect(await page.evaluate(() => localStorage.getItem("bluefire.local.scenario.v1"))).toBe(savedBeforeViewChanges);
 
   const name = page.getByRole("textbox", { name: "Experiment name" });
   await name.fill("My manually framed experiment");
@@ -116,23 +110,26 @@ test("step details use the full available inspector height", async ({ page }) =>
     return Math.abs(panel.bottom - element.getBoundingClientRect().bottom);
   })).toBeLessThanOrEqual(3);
   await page.setViewportSize({ width: 1366, height: 768 });
-  const section = body.locator(":scope > section").nth(1);
+  const section = body.locator('[role="tabpanel"]:visible > section').nth(1);
   await expect(section).toHaveCSS("padding-top", "13px");
   await expect(section).toHaveCSS("padding-bottom", "13px");
   await expect(section).toHaveCSS("border-right-width", "0px");
   await expect(section).toHaveCSS("border-bottom-width", "1px");
 });
 
-test("selecting a rightmost step keeps it visible beside its details without changing zoom", async ({ page }) => {
+test("selecting a rightmost visible step keeps it beside its details without changing zoom", async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.goto("./#/builder");
   const canvas = page.getByLabel("Scenario graph canvas");
-  await expect(page.locator(".react-flow__node:visible")).toHaveCount(3);
+  await expect(page.locator(".react-flow__node:visible")).toHaveCount(demoScenario.steps.length);
   await finishLayout(page);
   const before = await viewport(page);
-  const rightmost = await canvas.locator(".react-flow__node:visible").evaluateAll(elements => elements
-    .map(element => ({ id: (element as HTMLElement).dataset.id!, right: element.getBoundingClientRect().right }))
-    .sort((left, right) => right.right - left.right)[0]!.id);
+  const rightmost = await canvas.locator(".react-flow__node:visible").evaluateAll(elements => {
+    const boundary = elements[0]!.closest(".graph-canvas")!.getBoundingClientRect();
+    return elements.map(element => ({ id: (element as HTMLElement).dataset.id!, box: element.getBoundingClientRect() }))
+      .filter(({ box }) => box.left >= boundary.left && box.right <= boundary.right && box.top >= boundary.top && box.bottom <= boundary.bottom)
+      .sort((left, right) => right.box.right - left.box.right)[0]!.id;
+  });
   // Use the observed data identity, rather than a fixture-specific step order.
   const selected = canvas.locator(`.react-flow__node[data-id="${rightmost}"]`);
   await selected.click();

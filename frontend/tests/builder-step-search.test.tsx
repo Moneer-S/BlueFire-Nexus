@@ -63,7 +63,7 @@ afterEach(() => {
 function renderWorkspace(initial: Scenario = demoScenario, review?: GraphEditorDraft) {
   const scenario = structuredClone(initial);
   localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(scenario));
-  sessionStorage.removeItem(`bluefire.working-graph-view.v1:${scenario.id}`);
+  sessionStorage.removeItem(`bluefire.working-graph-view.v2:${scenario.id}`);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(["catalog"], demoCatalog);
   render(<QueryClientProvider client={client}><Tooltip.Provider><MemoryRouter><ProductProvider><GraphWorkspace behaviors={demoCatalog.behaviors} actions={demoActions} review={review} /></ProductProvider></MemoryRouter></Tooltip.Provider></QueryClientProvider>);
@@ -78,7 +78,7 @@ async function searchFor(user: ReturnType<typeof userEvent.setup>, query: string
 }
 
 describe("Builder graph step search", () => {
-  it("reveals and selects a disconnected step by exact ID in its group without changing the scenario", async () => {
+  it("reveals and selects a disconnected step by exact ID on the whole canvas without changing the scenario", async () => {
     const scenario = structuredClone(demoScenario);
     const orphan = { ...structuredClone(scenario.steps[0]!), id: "orphan_step" };
     scenario.steps.push(orphan);
@@ -87,7 +87,7 @@ describe("Builder graph step search", () => {
     const user = userEvent.setup();
     await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
 
-    expect(screen.queryByRole("button", { name: "Select orphan_step" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Select orphan_step" })).toBeInTheDocument();
     let dialog = await searchFor(user, "fallback");
     await user.click(within(dialog).getByRole("button", { name: /Use approved local fallback.*fallback/ }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Select fallback" })).toHaveAttribute("aria-pressed", "true"));
@@ -98,9 +98,9 @@ describe("Builder graph step search", () => {
     await user.click(within(dialog).getByRole("button", { name: /Step 8 · orphan_step/ }));
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Select orphan_step" })).toHaveAttribute("aria-pressed", "true"));
-    expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue("2");
+    expect(state.props.nodes?.every(node => !node.hidden)).toBe(true);
     expect(state.props.nodes?.find(node => node.id === "orphan_step")?.hidden).toBe(false);
-    await waitFor(() => expect(state.viewport).toEqual({ x: -860, y: -675, zoom: 1 }));
+    await waitFor(() => expect(state.viewport).toEqual({ x: -860, y: -652, zoom: 1 }));
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(saved);
     expect(state.props.edges?.filter(edge => edge.data?.kind === "route").map(edge => edge.id)).toEqual(saved.edges.map((edge, index) => `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`));
     expect(state.props.nodes?.find(node => node.id === "orphan_step")?.position).toEqual(saved.layout?.orphan_step);
@@ -149,7 +149,6 @@ describe("Builder graph step search", () => {
     renderWorkspace();
     const readScenario = () => JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!);
     const stepCount = () => readScenario().steps.length as number;
-    await user.selectOptions(screen.getByRole("combobox", { name: "Step group" }), "all");
     await user.click(screen.getByRole("button", { name: "Auto-layout" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Undo" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "Select place_fixture" }));

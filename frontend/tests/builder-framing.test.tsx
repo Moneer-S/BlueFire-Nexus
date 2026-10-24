@@ -98,8 +98,8 @@ describe("Builder viewport controls", () => {
     resizeCanvas(400, 300);
     await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
     expect(state.viewport.zoom).toBe(1.2);
-    expect(state.viewport.x).toBeCloseTo(54.4);
-    expect(state.viewport.y).toBeCloseTo(38.4);
+    expect(state.viewport.x).toBeCloseTo(30.4);
+    expect(state.viewport.y).toBeCloseTo(50);
     const adjusted = { ...state.viewport };
     flow.setViewport.mockClear();
     resizeCanvas(1000, 480);
@@ -116,13 +116,29 @@ describe("Builder viewport controls", () => {
     const target = scenario.steps[1]!;
     fireEvent.click(screen.getByRole("button", { name: `Select ${target.id}` }));
     await waitFor(() => expect(state.viewport.zoom).toBe(1));
-    expect(state.viewport).toEqual({ x: 167, y: -209, zoom: 1 });
+    expect(state.viewport).toEqual({ x: 167, y: -186, zoom: 1 });
     state.viewport = { x: 2, y: 3, zoom: 0.4 };
+    fireEvent.click(screen.getByLabelText("View options", { selector: "summary" }));
     fireEvent.click(screen.getByRole("button", { name: "Focus selected step" }));
-    expect(state.viewport).toEqual({ x: 167, y: -209, zoom: 1 });
+    expect(state.viewport).toEqual({ x: 167, y: -186, zoom: 1 });
   });
 
-  it("frames long graphs in display-only groups without changing saved positions or execution edges", async () => {
+  it("keeps conditional route labels inside the canvas when the inspector or Assistant narrows it", async () => {
+    const scenario = renderBuilder();
+    await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Select transport" }));
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    const position = scenario.layout!.transport!;
+    state.viewport = { x: 150, y: -position.y + 70, zoom: 1 };
+    flow.setViewport.mockClear();
+    resizeCanvas(400, 300);
+    await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
+    expect(state.viewport.zoom).toBe(1);
+    expect(state.viewport.x + position.x + 220).toBeLessThanOrEqual(304);
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).layout).toEqual(scenario.layout);
+  });
+
+  it("keeps a nine-step plan connected and readable without changing saved positions or execution edges", async () => {
     const scenario = structuredClone(demoScenario);
     const template = structuredClone(scenario.steps[0]!);
     scenario.steps = Array.from({ length: 9 }, (_, index) => ({ ...structuredClone(template), id: `focus_step_${index + 1}`, inputs: {} }));
@@ -131,56 +147,26 @@ describe("Builder viewport controls", () => {
     scenario.start = scenario.steps[0]!.id;
     scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success" as Outcome, to_step: step.id }));
     delete scenario.adaptive_execution;
-    sessionStorage.removeItem(`bluefire.working-graph-view.v1:${scenario.id}`);
+    sessionStorage.clear();
     const rendered = renderBuilder(scenario);
     await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
-    expect(screen.getByRole("navigation", { name: "Experiment step groups" })).toBeVisible();
-    const group = screen.getByRole("combobox", { name: "Step group" });
-    expect(group.querySelectorAll("option")).toHaveLength(4);
-    expect(screen.getAllByRole("button", { name: /^Select focus_step_/ })).toHaveLength(3);
-    const connections = screen.getByText("Group connections").closest("details")!;
-    expect(connections).not.toHaveAttribute("open");
-    expect(connections.querySelector('[aria-label="Conditional execution routes"]')).not.toBeVisible();
-    fireEvent.click(connections.querySelector("summary")!);
-    expect(screen.getByText(/To: .*On success/)).toBeVisible();
-    const dependencies = screen.getByText("Data dependencies (2)").closest("details")!;
-    expect(dependencies.querySelector("summary")).toBeVisible();
-    fireEvent.click(dependencies.querySelector("summary")!);
-    expect(screen.getByText("Place deterministic fixture · Step 1 · records → Place deterministic fixture · Step 4 · Archived")).toBeVisible();
-    expect(screen.getByText("Place deterministic fixture · Step 2 · bundle → Place deterministic fixture · Step 8 · Report")).toBeVisible();
-
-    fireEvent.change(group, { target: { value: "1" } });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Select focus_step_4" })).toBeVisible());
-    expect(screen.queryByRole("button", { name: "Select focus_step_1" })).not.toBeInTheDocument();
-    expect(screen.getByText("Data dependencies (1)")).toBeVisible();
-    expect(screen.getByText("Place deterministic fixture · Step 1 · records → Place deterministic fixture · Step 4 · Archived")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Next group" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Step group" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^Select focus_step_/ })).toHaveLength(9);
+    expect(state.viewport.zoom).toBeGreaterThanOrEqual(0.72);
     expect(state.props.edges?.filter(edge => edge.data?.kind === "route")).toHaveLength(scenario.edges.length);
     expect(state.props.edges?.filter(edge => edge.data?.kind === "artifact")).toHaveLength(2);
     expect(state.props.nodes?.map(node => [node.id, node.position])).toEqual(rendered.steps.map(step => [step.id, rendered.layout![step.id]]));
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).layout).toEqual(rendered.layout);
 
-    fireEvent.change(group, { target: { value: "all" } });
-    await waitFor(() => expect(screen.getAllByRole("button", { name: /^Select focus_step_/ })).toHaveLength(9));
+    fireEvent.click(screen.getByRole("button", { name: "Select focus_step_8" }));
+    await waitFor(() => expect(state.viewport.zoom).toBeGreaterThanOrEqual(0.72));
     fireEvent.click(screen.getByRole("button", { name: "Steps" }));
-    const selectedOrder = () => screen.getByRole("list", { name: "Experiment steps" })
-      .querySelector('button[aria-pressed="true"] .step-number')?.textContent;
-    expect(selectedOrder()).toBe("4");
-    const stepEight = [...screen.getByRole("list", { name: "Experiment steps" }).querySelectorAll("button")]
-      .find(button => button.querySelector(".step-number")?.textContent === "8");
-    expect(stepEight).toBeDefined();
-    fireEvent.click(stepEight!);
+    expect(screen.getByRole("list", { name: "Experiment steps" }).querySelector('button[aria-pressed="true"] .step-number')?.textContent).toBe("8");
     fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Step group" }), { target: { value: "2" } });
-    fireEvent.click(screen.getByRole("button", { name: "Steps" }));
-    expect(selectedOrder()).toBe("8");
-    fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Step group" }), { target: { value: "0" } });
-    fireEvent.click(screen.getByRole("button", { name: "Steps" }));
-    expect(selectedOrder()).toBe("1");
-    fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Step group" }), { target: { value: "all" } });
-    fireEvent.click(screen.getByRole("button", { name: "Steps" }));
-    expect(selectedOrder()).toBe("1");
+    expect(screen.getAllByRole("button", { name: /^Select focus_step_/ })).toHaveLength(9);
+    fireEvent.click(screen.getByRole("button", { name: "Fit visible graph" }));
+    expect(state.viewport.zoom).toBeLessThan(0.72);
     expect(state.props.edges?.filter(edge => edge.data?.kind === "route").map(edge => edge.id)).toEqual(scenario.edges.map((edge, index) => `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`));
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).edges).toEqual(scenario.edges);
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).steps).toEqual(scenario.steps);
@@ -195,14 +181,84 @@ describe("Builder viewport controls", () => {
     scenario.start = scenario.steps[0]!.id;
     scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success" as Outcome, to_step: step.id }));
     delete scenario.adaptive_execution;
+    scenario.edges.push({ from_step: "duplicate_step_2", outcome: "blocked", to_step: "duplicate_step_4" });
     renderBuilder(scenario);
-
+    fireEvent.click(screen.getByLabelText("View options", { selector: "summary" }));
     const group = screen.getByRole("combobox", { name: "Step group" });
-    fireEvent.change(group, { target: { value: "1" } });
+    fireEvent.change(group, { target: { value: "2" } });
     fireEvent.click(screen.getByText("Group connections").closest("details")!.querySelector("summary")!);
     const dependencies = screen.getByText("Data dependencies (2)").closest("details")!;
     fireEvent.click(dependencies.querySelector("summary")!);
     expect(screen.getByText("Place deterministic fixture · Step 1 · records → Place deterministic fixture · Step 4 · Archived")).toBeVisible();
     expect(screen.getByText("Place deterministic fixture · Step 2 · records → Place deterministic fixture · Step 5 · Archived")).toBeVisible();
+  });
+
+  it("keeps an 82-step connected group and whole-plan navigation readable while retaining explicit overview", async () => {
+    const scenario = structuredClone(demoScenario);
+    const template = structuredClone(scenario.steps[0]!);
+    scenario.steps = Array.from({ length: 84 }, (_, index) => ({ ...structuredClone(template), id: `long_step_${index + 1}`, inputs: {} }));
+    scenario.start = scenario.steps[0]!.id;
+    scenario.edges = scenario.steps.slice(1, 83).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success" as Outcome, to_step: step.id }));
+    scenario.edges.push({ from_step: scenario.start, outcome: "blocked", to_step: "long_step_84" });
+    delete scenario.adaptive_execution;
+    const rendered = renderBuilder(scenario);
+    await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
+    fireEvent.click(screen.getByLabelText("View options", { selector: "summary" }));
+    const group = screen.getByRole("combobox", { name: "Step group" });
+    const longGroup = screen.getByRole("option", { name: /82 steps$/ }) as HTMLOptionElement;
+
+    const expectReadableSelection = (id: string) => {
+      const node = state.props.nodes?.find(item => item.id === id);
+      if (!node) throw new Error("The selected graph node is missing");
+      expect(node.hidden).toBe(false);
+      expect(node.selected).toBe(true);
+      expect(state.viewport.zoom).toBeGreaterThanOrEqual(0.72);
+      const x = state.viewport.x + node.position.x * state.viewport.zoom;
+      const y = state.viewport.y + node.position.y * state.viewport.zoom;
+      expect(x).toBeGreaterThanOrEqual(0);
+      expect(y).toBeGreaterThanOrEqual(0);
+      expect(x + 220 * state.viewport.zoom).toBeLessThanOrEqual(width);
+      expect(y + 104 * state.viewport.zoom).toBeLessThanOrEqual(height);
+    };
+    const navigate = async (action: () => void) => {
+      flow.setViewport.mockClear();
+      action();
+      await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
+    };
+
+    // Enter from a selection outside the long group, including its old viewport.
+    fireEvent.click(screen.getByRole("button", { name: "Fit visible graph" }));
+    expect(state.viewport.zoom).toBeLessThan(0.72);
+    await navigate(() => fireEvent.change(group, { target: { value: longGroup.value } }));
+    expect(screen.getAllByRole("button", { name: /^Select long_step_/ })).toHaveLength(82);
+    expectReadableSelection("long_step_2");
+
+    await navigate(() => fireEvent.click(screen.getByRole("button", { name: "Arrange visible group" })));
+    expectReadableSelection("long_step_2");
+    const arranged = JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!) as Scenario;
+    expect(arranged.layout).not.toEqual(rendered.layout);
+    expect(arranged.layout!.long_step_1).toEqual(rendered.layout!.long_step_1);
+    expect(arranged.layout!.long_step_84).toEqual(rendered.layout!.long_step_84);
+    expect(arranged.steps).toEqual(rendered.steps);
+    expect(arranged.edges).toEqual(rendered.edges);
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(state.props.nodes?.map(node => [node.id, node.position])).toEqual(rendered.steps.map(step => [step.id, rendered.layout![step.id]])));
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
+
+    fireEvent.click(screen.getByRole("button", { name: "Select long_step_80" }));
+    await waitFor(() => expectReadableSelection("long_step_80"));
+    fireEvent.click(screen.getByRole("button", { name: "Fit visible graph" }));
+    expect(state.viewport.zoom).toBeLessThan(0.72);
+    await navigate(() => fireEvent.click(screen.getByRole("button", { name: "Return to whole plan" })));
+    expect(screen.getAllByRole("button", { name: /^Select long_step_/ })).toHaveLength(84);
+    expectReadableSelection("long_step_80");
+
+    await navigate(() => fireEvent.change(group, { target: { value: longGroup.value } }));
+    fireEvent.click(screen.getByRole("button", { name: "Fit visible graph" }));
+    expect(state.viewport.zoom).toBeLessThan(0.72);
+    await navigate(() => fireEvent.click(screen.getByRole("button", { name: "Show all branches" })));
+    expect(screen.getAllByRole("button", { name: /^Select long_step_/ })).toHaveLength(84);
+    expectReadableSelection("long_step_80");
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
   });
 });

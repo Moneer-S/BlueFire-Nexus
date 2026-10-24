@@ -1,6 +1,6 @@
 import { objectiveLabel, runLabel } from "../lib/run-presentation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, GitCompareArrows, RotateCcw, Search, ShieldAlert, ShieldCheck } from "lucide-react";
+import { ArrowUpRight, CheckCircle2, Download, Eye, GitBranch, GitCompareArrows, RotateCcw, Search, ShieldAlert, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, buildReplayPayload, DEMO_MODE, type ReplayPreparation } from "../lib/api";
@@ -298,8 +298,8 @@ function ComparisonWorkspace() {
     && loadedSnapshot.source_integrity.runs.length === loadedSnapshot.comparison.run_ids.length
     && loadedSnapshot.source_integrity.runs.every((run) => run.status === "verified"));
   const detectorEvaluationRunIds = loadedSnapshot?.comparison.run_ids ?? selected;
-  return <div className="page compare-page"><PageHeader title="Compare runs" actions={<><Link className="button button-ghost button-medium" to="/compare?receiver=1">Test a lab receiver control</Link><Link className="button button-ghost button-medium" to="/file-access">Test effective file access</Link><Button variant="secondary" onClick={() => runsQuery.refetch()}><RotateCcw/>Refresh history</Button></>} />
-    {!DEMO_MODE ? <Panel className="saved-comparisons-panel"><PanelHeader title="Saved comparisons" actions={<IconButton label="Reload saved comparisons" onClick={() => { void savedComparisonsQuery.refetch(); if (snapshotId) void savedSnapshotQuery.refetch(); }} disabled={savedComparisonsQuery.isFetching || savedSnapshotQuery.isFetching}><RotateCcw aria-hidden="true"/></IconButton>} />
+  return <div className="page compare-page"><PageHeader title="Compare runs" actions={<Button variant="secondary" onClick={() => runsQuery.refetch()}><RotateCcw/>Refresh history</Button>} />
+    {!DEMO_MODE ? <details className="saved-comparisons-browser" open={!displayedComparison}><summary>Saved comparisons</summary><Panel className="saved-comparisons-panel"><PanelHeader title="Saved comparisons" actions={<IconButton label="Reload saved comparisons" onClick={() => { void savedComparisonsQuery.refetch(); if (snapshotId) void savedSnapshotQuery.refetch(); }} disabled={savedComparisonsQuery.isFetching || savedSnapshotQuery.isFetching}><RotateCcw aria-hidden="true"/></IconButton>} />
       {savedComparisonsQuery.isError ? <p className="workspace-note">Saved comparison history is unavailable.</p> : savedComparisonsQuery.isPending ? <LoadingState label="Loading saved comparisons"/> : savedComparisonsQuery.data.snapshots.length ? <ul className="saved-comparisons-list">{savedComparisonsQuery.data.snapshots.map((item) => {
         const labels = item.run_ids.map((runId, index) => `${runId === item.baseline_run_id ? "Baseline" : `Compared run ${index}`}: ${savedRunName(runId)}`);
         return <li key={item.snapshot_id}>
@@ -316,7 +316,7 @@ function ComparisonWorkspace() {
       })}</ul> : <p className="workspace-note">No saved comparisons yet.</p>}
       {snapshotId && savedSnapshotQuery.isError ? <ErrorState title="Saved comparison unavailable" error={savedSnapshotQuery.error} retry={() => void savedSnapshotQuery.refetch()} /> : null}
       {snapshotId && savedSnapshotQuery.isPending ? <LoadingState label="Opening saved comparison"/> : null}
-    </Panel> : null}
+    </Panel></details> : null}
     {comparisonContext.invalid ? <Callout tone="warning" title="Comparison selection unavailable"><p>This link has an invalid or oversized selection. Clear it and choose the runs and detector revisions again.</p><Button onClick={() => setSearchParams(current => writeComparisonContext(current, { runIds: [], baselineId: "", revisedId: "" }))}>Clear comparison selection</Button></Callout> : null}
     {!snapshotId && unavailableRuns.length ? <Callout tone="warning" title="Selected runs unavailable"><p>{unavailableRuns.length} selected run record{unavailableRuns.length === 1 ? " is" : "s are"} missing or ambiguous in the available history. Refresh history or remove them before comparing; no other run has been substituted.</p><Button onClick={() => setSearchParams(current => writeComparisonContext(current, { runIds: selected.filter(id => !unavailableRuns.includes(id)), baselineId: "", revisedId: "" }))}>Remove unavailable selections</Button></Callout> : null}
     {!snapshotId && comparisonContext.explicit && !comparisonContext.invalid && !displayedComparison ? <p className="workspace-note">Comparison selection restored. Choose Compare selected to load results.</p> : null}
@@ -340,6 +340,7 @@ function ComparisonWorkspace() {
         {!variantReady && sourceId ? <Callout tone="warning" title="Replay variant incomplete">{strategy === "from_node" ? "Choose a restart step." : strategy === "swap" ? "Choose a step and its replacement method." : strategy === "setup" ? "Change an environment or AI setting, or record the defense change made in your lab." : "Change at least one step parameter."}</Callout> : null}{localError ? <Callout tone="danger" title="Replay refused">{localError}</Callout> : replayMutation.isSuccess && replayMutation.data.kind === "legacy" ? <Callout tone="success" title="Replay created"><code>{replayMutation.data.run.run_id}</code> is lineage-linked to <code>{replayMutation.variables?.sourceId}</code>.{linkedSource === replayMutation.variables?.sourceId && linkedReplay === replayMutation.data.run.run_id ? " The source and replay are selected for comparison." : " Your current source selection was preserved."}</Callout> : null}<Button variant="primary" className="button-full" onClick={requestReplay} disabled={!sourceId || !detailQuery.isSuccess || !variantReady || replayMutation.isPending || Boolean(execute && !reviewReady)}>{replayMutation.isPending ? "Submitting replay" : execute ? "Continue to approval" : "Create Simulate replay"}</Button></fieldset>{uncertainSubmission ? <Callout tone="warning" title="Check this submission before starting another replay"><p>The response for original run <code>{uncertainSubmission.sourceId}</code> could not be confirmed. Retrying uses the same saved job identity and reviewed request, including after a reload.</p><details><summary>Saved replay request</summary><pre>{JSON.stringify(uncertainSubmission.payload, null, 2)}</pre></details><Button disabled={replayMutation.isPending || resolutionMutation.isPending} onClick={() => replayMutation.mutate(uncertainSubmission)}>Retry same submission</Button><Link className="button button-secondary button-medium" to={`/runs?job=job-${uncertainSubmission.submissionId.replaceAll("-", "")}`}>View submission status</Link><p>If no job was created, close this request to edit and prepare again. If a job already exists, BlueFire opens that saved job and leaves it unchanged.</p><Button disabled={replayMutation.isPending || resolutionMutation.isPending} onClick={() => resolutionMutation.mutate(uncertainSubmission)}>{resolutionMutation.isPending ? "Checking and closing request" : "Close request and start again"}</Button></Callout> : null}</div></Panel>
     </div>
     </details>
+    <details className="comparison-next-steps"><summary>Other tests</summary><div><Link className="button button-ghost button-medium" to="/compare?receiver=1">Test a lab receiver control</Link><Link className="button button-ghost button-medium" to="/file-access">Test effective file access</Link></div></details>
     <MethodComparison sourceId={sourceId} runs={runsQuery.data.runs} catalog={catalogQuery.data} />
   </div>;
 }
@@ -382,8 +383,17 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {} }: { c
   const baseline = comparison.summaries.find((item) => item.run_id === comparison.baseline_run_id) ?? comparison.summaries[0];
   const changed = comparison.deltas.filter(hasMaterialDelta).length;
   const hasS3Projection = comparison.s3_access !== undefined;
-  const comparedRunLabel = (runId: string) => `${runId === comparison.baseline_run_id ? "Baseline" : `Variant ${comparison.summaries.findIndex(item => item.run_id === runId)}`} · ${names[runId] ?? "Run"}`;
-  const runReference = (runId: string) => <small className="comparison-run-reference">{createdAt[runId] ? <time dateTime={createdAt[runId]}>{formatRunTimestamp(createdAt[runId]!)}</time> : "Timestamp not reported"} · <code title={runId}>{shortId(runId)}</code></small>;
+  const comparedRuns = comparison.summaries.filter(item => item.run_id !== baseline?.run_id);
+  const orderedRuns = baseline ? [baseline, ...comparedRuns] : comparison.summaries;
+  const comparedRunLabel = (runId: string) => {
+    if (runId === baseline?.run_id) return "Baseline";
+    const index = comparedRuns.findIndex(item => item.run_id === runId);
+    return index < 0 ? "Run" : `Compared run ${index + 1}`;
+  };
+  const runReference = (runId: string) => <small className="comparison-run-reference">{createdAt[runId] ? <time dateTime={createdAt[runId]}>{formatRunTimestamp(createdAt[runId]!)}</time> : "Timestamp not reported"}</small>;
+  const pathChanges = comparison.deltas.filter(delta => delta.first_path_divergence !== null && delta.first_path_divergence !== undefined && delta.first_path_divergence >= 0).length;
+  const cleanupUnknown = orderedRuns.filter(summary => typeof summary.cleanup_success !== "boolean").length;
+  const conclusion = changed ? "Recorded changes found" : hasS3Projection ? "Review the saved read outcomes" : "No meaningful recorded change";
   const [reportUrl, setReportUrl] = useState<string>();
   const reportContent = useMemo(() => comparisonReport(comparison, names, createdAt), [comparison, names, createdAt]);
   useEffect(() => {
@@ -392,33 +402,39 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {} }: { c
     return () => URL.revokeObjectURL(url);
   }, [reportContent]);
   return <div className="comparison-results">
-    <Panel className="comparison-outcomes">
-      <PanelHeader eyebrow="Recorded comparison" title="Baseline and compared runs" detail="Review objective, observations, path, and cleanup separately. A stopped step alone does not establish target prevention." actions={reportUrl ? <a className="button button-secondary button-medium" href={reportUrl} download="bluefire-comparison.md">Download report</a> : null} />
-      {baseline ? <div className="compare-story" role="group" aria-label="Comparison run order">
-        <div className="compare-story-run"><Badge tone="info">Baseline</Badge><Link to={runReviewPath(baseline.run_id)}>{names[baseline.run_id] ?? "Run"}</Link><small>{baseline.mode ? sentence(baseline.mode) : "Mode not reported"}</small>{runReference(baseline.run_id)}</div>
-        <span className="compare-story-arrow" aria-hidden="true">→</span>
-        <div className="compare-story-variants">{comparison.summaries.filter((item) => item.run_id !== baseline.run_id).map((item, index) => <div className="compare-story-run" key={item.run_id}><Badge>Compared run {index + 1}</Badge><Link to={runReviewPath(item.run_id)}>{names[item.run_id] ?? "Run"}</Link><small>{item.mode ? sentence(item.mode) : "Mode not reported"}</small>{runReference(item.run_id)}</div>)}</div>
-      </div> : null}
-      <div className="comparison-context"><span><strong>{comparison.run_ids.length}</strong> runs reviewed</span><span><strong>{changed}</strong> with meaningful recorded changes</span><span>{hasS3Projection ? "S3 saved read results are shown separately below." : changed ? "Recorded differences appear below." : "No meaningful change reported against the baseline."}</span></div>
-      <div className="table-scroll" role="region" aria-label="Compared run outcomes" tabIndex={0}>
-        <table><caption>Recorded outcomes for the selected runs. Missing values remain unreported.</caption><thead><tr><th scope="col">Run</th><th scope="col">Mode</th><th scope="col">Objective</th><th scope="col">Observed artifacts</th><th scope="col">Evidence gaps</th><th scope="col">First stopped step</th><th scope="col">Cleanup</th></tr></thead>
-          <tbody>{comparison.summaries.map((summary, index) => <tr key={summary.run_id}>
-            <th scope="row"><Link to={runReviewPath(summary.run_id)} aria-label={summary.run_id === comparison.baseline_run_id ? "Review baseline run summary" : `Review compared run ${index} summary`}>{names[summary.run_id] ?? "Run"}</Link><small>{summary.run_id === comparison.baseline_run_id ? "Comparison baseline" : `Compared run ${index}`}</small>{runReference(summary.run_id)}</th>
-            <td>{sentence(summary.mode ?? "not_reported")}</td>
-            <td>{objectiveLabel(summary.objective_reached, summary.mode)}</td>
-            <td>{reportedArrayCount(summary.evidence_details?.observed_artifacts, "artifact")}</td>
-            <td>{reportedArrayCount(summary.evidence_details?.evidence_gaps, "gap")}</td>
-            <td>{summary.first_blocked_step ? <span title={summary.first_blocked_step}>{sentence(summary.first_blocked_step)}</span> : "None recorded"}</td>
-            <td>{summary.cleanup_success === false ? "Needs attention" : summary.cleanup_success === true ? (summary.mode === "simulate" ? "No real effects" : "Complete") : "Not reported"}</td>
-          </tr>)}</tbody>
-        </table>
-      </div>
-      <details className="comparison-identity"><summary>Comparison record</summary><code>{comparison.comparison_id}</code><p>Baseline: {baseline?.run_id ?? comparison.baseline_run_id}</p></details>
-    </Panel>
+    <section className="comparison-conclusion" aria-label="Comparison conclusion">
+      <div className="comparison-conclusion-icon"><GitCompareArrows aria-hidden="true" /></div>
+      <div className="comparison-conclusion-copy"><p className="eyebrow">Recorded comparison</p><h2>{conclusion}</h2>{hasS3Projection ? <p>S3 saved read results are shown separately below.</p> : changed ? <p>Compare the actual path, observed evidence, and cleanup against the baseline.</p> : null}</div>
+      <div className="comparison-conclusion-metrics"><div><strong>{changed}</strong><span>with meaningful recorded changes</span></div><div><strong>{pathChanges}</strong><span>recorded path changes</span></div><div><strong>{cleanupUnknown}</strong><span>cleanup results unreported</span></div></div>
+    </section>
+    <section className="comparison-run-overview" role="group" aria-label="Comparison run order">
+      <header className="comparison-section-heading"><h2>Baseline and compared runs</h2><div className="comparison-run-actions"><span>{comparison.run_ids.length} runs reviewed</span>{reportUrl ? <a className="button button-secondary button-small comparison-download" href={reportUrl} download="bluefire-comparison.md"><Download aria-hidden="true"/>Download report</a> : null}</div></header>
+      <div className="compare-story">{orderedRuns.map(summary => <article className="compare-story-run" key={summary.run_id} aria-label={`${comparedRunLabel(summary.run_id)} result`}>
+        <header><Badge tone={summary.run_id === baseline?.run_id ? "info" : "neutral"}>{comparedRunLabel(summary.run_id)}</Badge><span>{summary.mode === "simulate" ? "Simulate · synthetic" : summary.mode ? sentence(summary.mode) : "Mode not reported"}</span></header>
+        <h3><Link to={runReviewPath(summary.run_id)}>{names[summary.run_id] ?? "Run"}<ArrowUpRight aria-hidden="true"/></Link></h3>{runReference(summary.run_id)}
+        <div className="compare-run-objective"><span>Objective</span><strong data-state={typeof summary.objective_reached !== "boolean" ? "unknown" : summary.objective_reached ? "achieved" : "unmet"}>{objectiveLabel(summary.objective_reached, summary.mode)}</strong></div>
+        <footer><span><GitBranch aria-hidden="true"/>{summary.path.length} recorded steps</span><span><Eye aria-hidden="true"/>{reportedArrayCount(summary.evidence_details?.observed_artifacts, "artifact")}</span><details className="comparison-run-record"><summary>Run record</summary><code>{summary.run_id}</code></details></footer>
+      </article>)}</div>
+    </section>
     {comparison.s3_access ? <S3AccessComparisonResults result={comparison.s3_access} /> : null}
-    <section className="comparison-paths" aria-label="Recorded run paths"><header><div><p className="eyebrow">Actual recorded sequence</p><h2>Paths taken</h2></div><p>Selection order does not establish a fresh retest or a changed environment. Review each run's recorded lineage and observations.</p></header>
-    <div className="compare-lanes">{comparison.summaries.map((summary, laneIndex) => <article key={summary.run_id}>
-      <header><Badge tone={laneIndex === 0 ? "info" : "neutral"}>{laneIndex === 0 ? "Baseline" : `Compared run ${laneIndex}`}</Badge><Link to={runReviewPath(summary.run_id)} aria-label={`Review ${laneIndex === 0 ? "baseline" : `compared run ${laneIndex}`} execution lane`}>{names[summary.run_id] ?? "Run"}</Link></header>
+    <div className="comparison-main-grid">
+    <Panel className="comparison-outcomes"><PanelHeader title="Recorded outcomes" detail="Objective, observations, and cleanup are separate results." />
+      <div className="table-scroll" role="region" aria-label="Compared run outcomes" tabIndex={0}>
+        <table><caption className="sr-only">Recorded outcomes for the selected runs. Missing values remain unreported.</caption><thead><tr><th scope="col">Result</th>{orderedRuns.map(summary => <th scope="col" key={summary.run_id}><Link to={runReviewPath(summary.run_id)} aria-label={summary.run_id === baseline?.run_id ? "Review baseline run summary" : `Review ${comparedRunLabel(summary.run_id).toLowerCase()} summary`}>{comparedRunLabel(summary.run_id)}<ArrowUpRight aria-hidden="true"/></Link></th>)}</tr></thead>
+          <tbody>
+            <tr><th scope="row">Mode</th>{orderedRuns.map(summary => <td key={summary.run_id}>{sentence(summary.mode ?? "not_reported")}</td>)}</tr>
+            <tr><th scope="row">Objective</th>{orderedRuns.map(summary => <td key={summary.run_id}>{objectiveLabel(summary.objective_reached, summary.mode)}</td>)}</tr>
+            <tr><th scope="row">Observed artifacts</th>{orderedRuns.map(summary => <td key={summary.run_id}>{reportedArrayCount(summary.evidence_details?.observed_artifacts, "artifact")}</td>)}</tr>
+            <tr><th scope="row">Evidence gaps</th>{orderedRuns.map(summary => <td key={summary.run_id}>{reportedArrayCount(summary.evidence_details?.evidence_gaps, "gap")}</td>)}</tr>
+            <tr><th scope="row">First stopped step</th>{orderedRuns.map(summary => <td key={summary.run_id}>{summary.first_blocked_step ? <span title={summary.first_blocked_step}>{sentence(summary.first_blocked_step)}</span> : "None recorded"}</td>)}</tr>
+            <tr><th scope="row">Cleanup</th>{orderedRuns.map(summary => <td key={summary.run_id}>{comparisonCleanup(summary)}</td>)}</tr>
+          </tbody>
+        </table>
+      </div><p className="comparison-boundary-note">A stopped step alone does not establish target prevention.</p>
+    </Panel>
+    <section className="comparison-paths" aria-label="Recorded run paths"><header className="comparison-section-heading"><h2>Paths taken</h2><GitBranch aria-hidden="true"/></header>
+    <div className="compare-lanes">{orderedRuns.map((summary) => <article key={summary.run_id}>
+      <header><Link to={runReviewPath(summary.run_id)} aria-label={`Review ${comparedRunLabel(summary.run_id).toLowerCase()} execution lane`}>{comparedRunLabel(summary.run_id)}<ArrowUpRight aria-hidden="true"/></Link><small>{summary.path.length} steps</small></header>
       {summary.path.length ? <ol>{summary.path.map((step, index) => <li key={`${step}-${index}`} data-status={summary.outcomes[step] === "success" ? "succeeded" : summary.outcomes[step]}><span>{String(index + 1).padStart(2, "0")}</span><strong title={step}>{sentence(step)}</strong><small>{sentence(summary.outcomes[step] ?? "unknown")}</small></li>)}</ol> : <p className="comparison-no-path">No path steps were reported.</p>}
       {summary.replay_lineage?.defense_change_declared ? <p className="comparison-change-note">Defense change declared; not independently verified.</p> : null}
       <details className="comparison-run-details"><summary>Run context and technical details</summary><DataList items={[
@@ -445,6 +461,13 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {} }: { c
         { label: "Counterfactual path", value: formatList(summary.counterfactual_steps, "None recorded") },
       ]} /></details>
     </article>)}</div></section>
+    </div>
+    <p className="comparison-provenance-note">Selection order does not establish a fresh retest or a changed environment. Review each run's recorded lineage and observations.</p>
+    <div className="comparison-support-grid">
+      <section className="comparison-support-card" aria-label="Changes between runs"><header><GitCompareArrows aria-hidden="true"/><h2>What changed</h2></header>{comparison.deltas.length ? comparison.deltas.map(delta => <article key={delta.to_run_id}><h3>{comparedRunLabel(delta.to_run_id)}</h3><ul>{comparisonChangeNotes(delta).map(note => <li key={note}>{note}</li>)}</ul></article>) : <p>No comparison delta was reported.</p>}</section>
+      <section className="comparison-support-card" aria-label="Supporting observations"><header><Eye aria-hidden="true"/><h2>Supporting observations</h2></header>{orderedRuns.map(summary => <article key={summary.run_id}><h3>{comparedRunLabel(summary.run_id)}</h3><p>{Array.isArray(summary.evidence_details?.observed_artifacts) ? `${reportedArrayCount(summary.evidence_details.observed_artifacts, "artifact")} independently observed.` : "Independently observed artifacts not reported."}</p><small>{summary.mode === "simulate" ? "Run outcomes are synthetic." : "Runner-reported outcomes remain separate."}</small><p className="comparison-observation-types"><strong>{summary.mode === "simulate" ? "Synthetic step telemetry" : "Step-reported telemetry"}</strong>: {Array.isArray(summary.telemetry) ? formatList(summary.telemetry, "None recorded") : "Not reported"}</p></article>)}</section>
+      <section className="comparison-support-card" aria-label="Cleanup and unknowns"><header><ShieldAlert aria-hidden="true"/><h2>Cleanup and unknowns</h2></header>{orderedRuns.map(summary => <article key={summary.run_id}><h3>{comparedRunLabel(summary.run_id)}<span data-state={summary.cleanup_success === false ? "attention" : "neutral"}>{comparisonCleanup(summary)}</span></h3><p>{Array.isArray(summary.evidence_details?.evidence_gaps) ? summary.evidence_details.evidence_gaps.length ? `${reportedArrayCount(summary.evidence_details.evidence_gaps, "gap")} recorded.` : "No evidence gaps recorded." : "Evidence gaps not reported."}</p>{summary.evidence_details?.evidence_gaps?.length ? <ul>{summary.evidence_details.evidence_gaps.map((gap, index) => <li key={index}>{typeof gap.reason === "string" ? sentence(gap.reason) : "Recorded evidence gap"}</li>)}</ul> : null}</article>)}</section>
+    </div>
     <details className="comparison-detail"><summary>Detailed changes in evidence, policy, and runtime</summary>
     <div className="delta-grid">{comparison.deltas.map((delta) => {
       const assessment = delta.assessment ?? (hasMaterialDelta(delta) ? "material_change" : "no_material_change");
@@ -482,10 +505,28 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {} }: { c
       </Panel>;
     })}</div>
     </details>
+    <details className="comparison-identity"><summary>Comparison record</summary><code>{comparison.comparison_id}</code><p>Baseline: {baseline?.run_id ?? comparison.baseline_run_id}</p></details>
   </div>;
 }
 
 type ComparisonDeltaItem = ComparisonResponse["deltas"][number];
+
+function comparisonCleanup(summary: ComparisonResponse["summaries"][number]) {
+  return summary.cleanup_success === false ? "Needs attention" : summary.cleanup_success === true ? (summary.mode === "simulate" ? "No real effects" : "Complete") : "Not reported";
+}
+
+function comparisonChangeNotes(delta: ComparisonDeltaItem): string[] {
+  const notes: string[] = [];
+  if (delta.first_path_divergence !== null && delta.first_path_divergence !== undefined && delta.first_path_divergence >= 0) notes.push(`Path diverges at step ${delta.first_path_divergence + 1}.`);
+  if (delta.dimensions?.implementation?.changed) notes.push("Implementation changed.");
+  if (delta.material_configuration_changed) notes.push("Run configuration changed.");
+  if (delta.objective_changed) notes.push("Objective result changed.");
+  if (delta.first_blocked_changed) notes.push("First stopped step changed.");
+  if (delta.cleanup_changed) notes.push("Cleanup result changed.");
+  if (delta.evidence_detail_delta?.observed_artifacts_added?.length || delta.evidence_detail_delta?.observed_artifacts_removed?.length || delta.evidence_detail_delta?.observed_artifacts_changed?.length) notes.push("Observed artifacts changed.");
+  if (!notes.length) notes.push(hasMaterialDelta(delta) ? "Recorded changes are available in the detailed comparison." : "No meaningful recorded change.");
+  return notes;
+}
 
 function assessmentTone(value: string): "neutral" | "success" | "warning" | "danger" {
   return value === "improved" ? "success" : value === "regressed" ? "danger" : value === "no_material_change" ? "neutral" : "warning";

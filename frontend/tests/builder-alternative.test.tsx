@@ -101,7 +101,7 @@ describe("Builder alternative method selection", () => {
     expect(await screen.findByText("Experiment validated", { exact: true })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Use Whole-file collection for this step" }));
     expect(draft()).toEqual(swapped);
-    expect(screen.getByText(/is the primary method for this step/)).toHaveTextContent("Whole-file collection is the primary method for this step.");
+    expect(within(screen.getByRole("article", { name: "Primary method" })).getByText("Whole-file collection")).toBeVisible();
     expect(screen.queryByText(/is saved with this experiment/)).not.toBeInTheDocument();
     expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(swapped);
     expect(screen.getByText("Not validated", { exact: true })).toBeVisible();

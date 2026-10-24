@@ -3,9 +3,8 @@ import type { Outcome, Scenario, ScenarioStep } from "../types";
 
 export type ScenarioGraph = Pick<Scenario, "steps" | "edges" | "start" | "layout">;
 
-export const GRAPH_SECTION_SIZE = 3;
 export const GRAPH_NODE_WIDTH = 220;
-export const GRAPH_NODE_HEIGHT = 150;
+export const GRAPH_NODE_HEIGHT = 104;
 
 export type GraphViewport = { x: number; y: number; zoom: number };
 export type GraphFrame = { width: number; height: number };
@@ -41,8 +40,7 @@ export function graphBoundsViewport(nodes: readonly GraphNodeBounds[], frame: Gr
 }
 
 /** Reveal only the obscured distance. Panel changes never reset user zoom. */
-export function revealGraphNode(viewport: GraphViewport, node: GraphNodeBounds, frame: GraphFrame): GraphViewport {
-  const margin = 24;
+export function revealGraphNode(viewport: GraphViewport, node: GraphNodeBounds, frame: GraphFrame, margin = 48): GraphViewport {
   const shift = (start: number, size: number, extent: number) => {
     if (size > extent - margin * 2) return (extent - size) / 2 - start;
     return start < margin ? margin - start : start + size > extent - margin ? extent - margin - start - size : 0;
@@ -52,13 +50,55 @@ export function revealGraphNode(viewport: GraphViewport, node: GraphNodeBounds, 
   return x || y ? { ...viewport, x: viewport.x + x, y: viewport.y + y } : viewport;
 }
 
-/** Reading-order groups are a view, never scenario nodes or execution phases. */
-export function graphSections(steps: readonly ScenarioStep[]) {
-  if (steps.length <= GRAPH_SECTION_SIZE) return [{ title: "All steps", steps: [...steps] }];
-  return Array.from({ length: Math.ceil(steps.length / GRAPH_SECTION_SIZE) }, (_, index) => ({
-    title: `Steps ${index * GRAPH_SECTION_SIZE + 1}–${Math.min((index + 1) * GRAPH_SECTION_SIZE, steps.length)}`,
-    steps: steps.slice(index * GRAPH_SECTION_SIZE, (index + 1) * GRAPH_SECTION_SIZE),
-  }));
+/** Keep nearby causes and destinations visible when they fit at the operator's zoom. */
+export function revealGraphContext(viewport: GraphViewport, selected: GraphNodeBounds, neighbors: readonly GraphNodeBounds[], frame: GraphFrame): GraphViewport {
+  if (!neighbors.length) return revealGraphNode(viewport, selected, frame);
+  const cards = [selected, ...neighbors];
+  const x = Math.min(...cards.map(card => card.x));
+  const y = Math.min(...cards.map(card => card.y));
+  const width = Math.max(...cards.map(card => card.x + card.width)) - x;
+  const height = Math.max(...cards.map(card => card.y + card.height)) - y;
+  if (width * viewport.zoom > frame.width - 48 || height * viewport.zoom > frame.height - 48) return revealGraphNode(viewport, selected, frame);
+  return revealGraphNode(viewport, { x, y, width, height }, frame, 24);
+}
+
+/** Maximal connected paths, split at decisions and joins. These are view groups, never execution phases. */
+export function graphSections(steps: readonly ScenarioStep[], edges: ScenarioGraph["edges"] = [], start?: string) {
+  const byId = new Map(steps.map(step => [step.id, step]));
+  const ordinals = new Map(steps.map((step, index) => [step.id, index + 1]));
+  const incoming = new Map(steps.map(step => [step.id, new Set<string>()]));
+  const outgoing = new Map(steps.map(step => [step.id, new Set<string>()]));
+  for (const edge of edges) if (byId.has(edge.from_step) && byId.has(edge.to_step)) {
+    outgoing.get(edge.from_step)!.add(edge.to_step);
+    incoming.get(edge.to_step)!.add(edge.from_step);
+  }
+  if (!steps.length || !edges.length) return [{ title: "All steps", steps: [...steps] }];
+  const entry = byId.get(start ?? "") ?? steps.find(step => incoming.get(step.id)!.size === 0);
+  const pathStarts = steps.filter(step => {
+    const predecessors = incoming.get(step.id)!;
+    if (predecessors.size !== 1) return true;
+    return outgoing.get(predecessors.values().next().value!)!.size !== 1;
+  });
+  const assigned = new Set<string>();
+  const groups: { title: string; steps: ScenarioStep[] }[] = [];
+  // Seed from topology before array order. Anchor the real entry point so a
+  // returning route cannot hide it inside a join group; leftovers cover cycles.
+  for (const first of [...(entry ? [entry] : []), ...pathStarts, ...steps]) {
+    if (assigned.has(first.id)) continue;
+    const group = [first];
+    assigned.add(first.id);
+    let current = first;
+    while (outgoing.get(current.id)?.size === 1) {
+      const nextId = [...outgoing.get(current.id)!][0]!;
+      if (assigned.has(nextId) || incoming.get(nextId)?.size !== 1) break;
+      const next = byId.get(nextId)!;
+      group.push(next); assigned.add(nextId); current = next;
+    }
+    const ordinal = ordinals.get(first.id)!;
+    const title = groups.length === 0 ? "Main path" : incoming.get(first.id)!.size > 1 ? `Join at step ${ordinal}` : incoming.get(first.id)!.size ? `Branch at step ${ordinal}` : `Disconnected path at step ${ordinal}`;
+    groups.push({ title, steps: group });
+  }
+  return groups.length === 1 ? [{ ...groups[0]!, title: "All steps" }] : groups;
 }
 
 export const branchLabels: Record<Outcome, string> = {
@@ -118,6 +158,22 @@ export function initialGraphLayout(scenario: ScenarioGraph, preserveSaved = fals
     const position = topology.node(step.id);
     return [step.id, { x: position.x! - GRAPH_NODE_WIDTH / 2, y: position.y! - GRAPH_NODE_HEIGHT / 2 }];
   }));
+  // A small single success chain can use a compact, at-most-three-row overview.
+  // Longer chains retain the continuous left-to-right flow and focus navigation.
+  // Connections still determine order; failure and data routes remain intact.
+  // Saved coordinates are restored below, so opening a graph never moves them.
+  const successEdges = scenario.edges.filter(edge => edge.outcome === "success");
+  const successPath = graphView(scenario, false).ordered;
+  const sequential = successPath.length === ordered.length && successEdges.length === ordered.length - 1
+    && successPath.every((step, index) => index === successPath.length - 1
+      ? !successEdges.some(edge => edge.from_step === step.id)
+      : successEdges.filter(edge => edge.from_step === step.id).length === 1 && successEdges.some(edge => edge.from_step === step.id && edge.to_step === successPath[index + 1]!.id));
+  if (sequential && ordered.length > 3 && ordered.length <= 9) {
+    const rows = Math.ceil(Math.sqrt(ordered.length));
+    successPath.forEach((step, index) => {
+      positions[step.id] = { x: 32 + Math.floor(index / rows) * (GRAPH_NODE_WIDTH + 88), y: 32 + (index % rows) * (GRAPH_NODE_HEIGHT + 44) };
+    });
+  }
   if (!preserveSaved) return positions;
   const occupied = ordered.flatMap(step => scenario.layout?.[step.id] ? [scenario.layout[step.id]!] : []);
   for (const step of ordered) {

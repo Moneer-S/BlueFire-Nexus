@@ -9,6 +9,7 @@ import { demoCatalog, demoScenario } from "../src/lib/demo";
 import { BuilderPage } from "../src/pages/Builder";
 import { ProductProvider, useProduct } from "../src/state/ProductContext";
 import type { Scenario } from "../src/types";
+import { builderOptions } from "./helpers/builder-options";
 
 const initial: Scenario = { ...structuredClone(demoScenario), layout: Object.fromEntries(demoScenario.steps.map((step, i) => [step.id, { x: 13 + i * 17, y: 29 + i * 41 }])) };
 const replacement: Scenario = { ...structuredClone(initial), id: "externally-loaded-experiment", title: "Loaded experiment", purpose: "Preserve the external graph", steps: initial.steps.map((step) => ({ ...structuredClone(step), parameters: { ...step.parameters, operator_note: "loaded value" } })) };
@@ -44,9 +45,12 @@ describe("Builder draft and validation identity", () => {
       edges: Array.from({ length: 5 }, (_, index) => ({ from_step: `group-step-${index}`, outcome: "success" as const, to_step: `group-step-${index + 1}` })),
       layout: { "group-step-0": { x: 900, y: 700 }, "group-step-1": { x: 1200, y: 300 } },
     };
+    scenario.edges.push({ from_step: "group-step-1", outcome: "blocked", to_step: "group-step-3" });
     const user = setup(scenario);
+    await builderOptions(user);
     const group = await screen.findByRole("combobox", { name: "Step group" });
-    await user.selectOptions(group, "1");
+    await user.selectOptions(group, "2");
+    await builderOptions(user, false);
     const arrange = await screen.findByRole("button", { name: "Arrange visible group" });
     await user.click(arrange);
     const arranged = graph().layout!;
@@ -64,7 +68,7 @@ describe("Builder draft and validation identity", () => {
     const user = setup();
     await user.click(screen.getByRole("button", { name: "Validate" }));
     expect(validate.mock.calls[0]![0]).toEqual(initial);
-    await user.click(screen.getByRole("button", { name: "Arrange visible group" }));
+    await user.click(screen.getByRole("button", { name: "Auto-layout" }));
     const edited = graph();
     expect(edited).not.toEqual(initial);
     await act(async () => {
@@ -102,7 +106,7 @@ describe("Builder draft and validation identity", () => {
     vi.spyOn(api, "validate").mockReturnValue(pending.promise);
     const user = setup();
     await user.click(screen.getByRole("button", { name: "Validate" }));
-    await user.click(screen.getByRole("button", { name: "Arrange visible group" }));
+    await user.click(screen.getByRole("button", { name: "Auto-layout" }));
     expect(screen.getByRole("button", { name: "Undo" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Load external scenario" }));
     expect(graph()).toEqual(replacement);
@@ -111,7 +115,7 @@ describe("Builder draft and validation identity", () => {
     await act(async () => pending.resolve({ valid: true, issues: [] }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Validate" })).toBeEnabled());
     expect(screen.getByText("Not validated", { exact: true })).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Arrange visible group" }));
+    await user.click(screen.getByRole("button", { name: "Auto-layout" }));
     const edited = graph();
     expect(edited).not.toEqual(replacement);
     expect(edited.steps).toEqual(replacement.steps);

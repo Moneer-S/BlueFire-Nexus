@@ -5,7 +5,7 @@ test("Assistant stays beside or below the work when a desktop window is constrai
   await page.goto("./#/detection-lab");
   const trigger = page.getByRole("button", { name: /^Assistant$/ });
   await trigger.click();
-  const assistant = page.getByRole("complementary", { name: "Experiment assistant" });
+  const assistant = page.getByRole("complementary", { name: "BlueFire Assistant" });
   const close = assistant.getByRole("button", { name: "Close assistant" });
   for (const viewport of [{ width: 1366, height: 768 }, { width: 1024, height: 768 }, { width: 910, height: 512 }]) {
     await page.setViewportSize(viewport);
@@ -43,7 +43,7 @@ test("Assistant stays reachable on laptop and narrow screens and returns keyboar
     expect(bounds.x).toBeGreaterThanOrEqual(0);
     expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
     await trigger.click();
-    const dialog = page.getByRole("complementary", { name: "Experiment assistant" });
+    const dialog = page.getByRole("complementary", { name: "BlueFire Assistant" });
     await expect(dialog).toBeVisible();
     await expect(dialog.getByText(/This preview cannot run assistant operations/)).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Start work" })).toBeDisabled();

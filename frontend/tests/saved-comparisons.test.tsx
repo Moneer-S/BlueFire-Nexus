@@ -59,6 +59,9 @@ it("saves a new comparison, reopens it, and reloads with GET only", async () => 
   await waitFor(() => expect(read).toHaveBeenCalledWith("snapshot-a"));
   expect(compare).toHaveBeenCalledOnce();
 
+  const savedBrowser = screen.getByText("Saved comparisons", { selector: "summary" });
+  expect(savedBrowser.closest("details")).not.toHaveAttribute("open");
+  await user.click(savedBrowser);
   await user.click(screen.getByRole("button", { name: "Reload saved comparisons" }));
   await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
   expect(compare).toHaveBeenCalledOnce();

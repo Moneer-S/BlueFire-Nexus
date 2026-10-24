@@ -414,6 +414,7 @@ try {
     .then(response => ({ response }), () => ({ timedOut: true })));
   await page.goto(`${origin}/#/builder`, { waitUntil: "domcontentloaded" });
   await ensureAssistantOpen();
+  await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
   const mode = page.getByRole("combobox", { name: /^(AI mode|Assistant mode)\b/ });
   await mode.selectOption("assist");
   await page.getByRole("combobox", { name: "Provider", exact: true }).selectOption(providerId);
@@ -448,6 +449,7 @@ try {
   assert.deepEqual(expectedContext.bounds, { max_nodes: 8, max_edges: 16 });
   assert.ok(digest(expectedContext.context_digest));
   report.checks.push("graph_level_new_experiment_context_selected_without_step_edit");
+  await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
   stage = "provider-configured-screenshot";
   await captureAssistantView("assistant-provider-configured");
   await page.getByRole("textbox", { name: "What would you like to do?", exact: true }).fill("Build a two-step fixture experiment for review.");

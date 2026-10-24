@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ArrowRight, CheckCircle2, CircleDashed, FileLock2, FolderLock, RefreshCw, ShieldCheck } from "lucide-react";
 import { compositionJobId, compositionJobValid, FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK } from "../lib/composition";
@@ -21,6 +21,7 @@ export function FileAccessPage() {
   const [review, setReview] = useState<FileAccessReviewRequest>();
   const [now, setNow] = useState(Date.now());
   const locked = useRef(false);
+  const requirementsRef = useRef<HTMLDetailsElement>(null);
   const restoredNavigation = useRef(false);
   const pendingOwner = pending ? pending.body.review.control_owner_id ?? pending.id : reconciliation?.control_owner_id ?? "";
   const fileAccessPath = (values: Record<string, string>, remove: string[] = ["operation"]) => {
@@ -143,6 +144,13 @@ export function FileAccessPage() {
   const availabilityDetail = windowsSetup ? currentWindowsSetup ? taskAccess ? "Save the verified setup or open its saved control to review the next allowed operation." : "The protected setup can be saved, but baseline reads and other file-access operations cannot run. Saving setup does not enable task access."
     : "The last setup observation is no longer current. Existing controls and evidence remain available."
     : taskAccess ? "The prepared session is current. Review the next allowed operation before it runs; saved controls retain its results." : status.data?.problem?.message ?? "No current verified enrollment is available. Saved work is retained.";
+  const startGuidance = localError ? "Resolve the saved-operation warning before starting new work. Existing evidence stays available."
+    : !statusCurrent ? "Check current setup before preparing a new test. You can still inspect saved work."
+      : !taskAccess ? "Task access is unavailable. Review the environment requirements, or open saved work to inspect its original test."
+        : windowsSetup && currentWindowsSetup ? "Use Save verified setup above, then open its saved control to review the next allowed operation."
+          : macOSEnrollment && macOSReady ? "Use Save original workspace setup above, then open its saved control."
+            : canCreate ? "Use Review generated resource above to prepare a new test, or reopen saved work."
+              : "Open saved work to review its next allowed operation. This session offers no new resource setup action.";
   return <div className="page file-access-page">
     <PageHeader title="Effective file access" description="Test identity access, preserve application access, and compare fresh results." actions={<Button disabled={status.isFetching || control.isFetching || operation.isFetching} onClick={refresh}><RefreshCw />Refresh state</Button>} />
     <ObjectiveContext expected="file-access" />
@@ -166,12 +174,12 @@ export function FileAccessPage() {
           {!owner && canCreate ? <Button variant="primary" disabled={!ready || blocked} onClick={() => setReview({ operation: "create", control_owner_id: null })}><FileLock2 />Review generated resource</Button> : null}
         </div>
         {!taskAccess ? <>
-          <p className="file-access-retention-note">Rechecking setup does not replace saved controls, replay operations, or discard evidence.</p>
-          <FileAccessDetails title="Task access requirements">
+          <FileAccessDetails title="Task access requirements" detailsRef={requirementsRef}>
             <p>{windowsSetup ? "Task access requires the original disposable Windows host, its matching packaged runner, a current protected setup, and the original owner's non-elevated session. Saving a receipt cannot supply missing native task access."
               : macOSStatus ? "Task access requires the original protected macOS workspace, prepared owner and reader identities, and its live private channel. A saved control cannot recreate that workspace."
               : "Task access requires an explicitly prepared disposable environment with separate owner and test identities, a generated resource, and a current protected session. This page does not provision that environment."}</p>
             <p>Do not repeat setup to recover an uncertain operation. Preserve the original environment and inspect its saved operation and cleanup state.</p>
+            <p className="file-access-retention-note">Rechecking setup does not replace saved controls, replay operations, or discard evidence.</p>
             <div className="file-access-setup-guides">
               {!macOSStatus ? <a href="https://github.com/Moneer-S/BlueFire-Nexus/blob/main/docs/WINDOWS_FILE_ACCESS_BASELINE.md" target="_blank" rel="noreferrer">Windows setup guide <ArrowRight aria-hidden="true" /></a> : null}
               {!windowsSetup ? <a href="https://github.com/Moneer-S/BlueFire-Nexus/blob/main/docs/MACOS_FILE_ACCESS.md" target="_blank" rel="noreferrer">macOS workspace requirements <ArrowRight aria-hidden="true" /></a> : null}
@@ -192,10 +200,22 @@ export function FileAccessPage() {
       ]} /></FileAccessDetails> : null}
       {setupImport.error ? <ErrorState title="Setup save was not confirmed" error={setupImport.error} /> : null}
     </section>
-    <section className="file-access-section file-access-saved" aria-label="Saved file-access controls"><div className="file-access-heading"><div><h2>Saved access work</h2><p>Reopen the original control and its recorded operations.</p></div>{list.data && !list.error ? <span className="file-access-count">{list.data.controls.length} saved</span> : null}</div>
+    <div className="file-access-workspace">
+    <section className="file-access-section file-access-saved" aria-label="Saved file-access controls"><div className="file-access-heading"><div><h2>Saved access work</h2><p>Reopen a test and its recorded operations.</p></div>{list.data && !list.error ? <span className="file-access-count">{list.data.controls.length} saved</span> : null}</div>
       {list.error ? <ErrorState error={list.error} /> : list.isPending ? <LoadingState label="Opening saved controls" /> : <div className="file-access-list">{list.data?.controls.map(item => { const label = item.platform === "windows" ? "Windows" : item.platform === "macos" ? "macOS" : "Generated records"; const purpose = savedAccessPurpose(item.status, item.platform); return <div key={item.control_owner_id} className={owner === item.control_owner_id ? "is-selected" : undefined}><Link aria-label={`${purpose}, ${label}, ${sentence(item.status)}, revision ${item.revision}, reference ${item.control_owner_id.slice(-8)}`} aria-current={owner === item.control_owner_id ? "page" : undefined} to={fileAccessPath({ control: item.control_owner_id })}><FileLock2 aria-hidden="true" /><span><strong>{purpose}</strong><small>{label} / revision {item.revision}</small></span><span className="file-access-saved-state">{sentence(item.status)}<ArrowRight aria-hidden="true" /></span></Link><details><summary>Control reference</summary><code>{item.control_owner_id}</code></details></div>; })}{!list.data?.controls.length ? <div className="file-access-empty"><FolderLock aria-hidden="true" /><div><h3>No saved control is available yet</h3><p>Saved setups and retained generated resources appear here.</p></div></div> : null}</div>}
       {owner ? <Link to={fileAccessPath({}, ["control", "operation"])}>Enrollment and resource review</Link> : null}
     </section>
+    <div className="file-access-work-detail">
+    {!owner && !pending && !reconciliation && !operationId && !displayedReview ? <section className="file-access-next" aria-labelledby="file-access-next-heading">
+      <span className="file-access-next-icon"><FileLock2 aria-hidden="true" /></span>
+      <div><h2 id="file-access-next-heading">{taskAccess ? "Review an access test" : "Prepare task access"}</h2><p>{startGuidance}</p>
+        {!taskAccess && status.data && !status.error ? <Button size="small" variant="secondary" className="file-access-requirements-action" onClick={() => {
+          const details = requirementsRef.current;
+          if (details) { details.open = true; details.querySelector("summary")?.focus(); details.scrollIntoView({ block: "nearest" }); }
+        }}>Review task access requirements<ArrowRight aria-hidden="true" /></Button> : null}
+      </div>
+      <FileAccessDetails title="How access validation works"><ol><li><span>1</span><div><strong>Establish the baseline</strong><p>Record actual owner and non-owner reads.</p></div></li><li><span>2</span><div><strong>Review the change</strong><p>Keep its scope, approval, and original recovery state together.</p></div></li><li><span>3</span><div><strong>Retest and compare</strong><p>Distinguish new read results from saved evidence.</p></div></li></ol><p className="file-access-next-note">Available operations depend on the selected platform and saved control. Open saved work to see its next allowed action.</p></FileAccessDetails>
+    </section> : null}
     {pending ? <Callout title="Operation confirmation pending"><p>{macOSStatus || macOSFileAccessControlIdValid(pending.body.review.control_owner_id) ? "The original request is retained for status checks only in this workspace. No operation is replayed." : "The original request is retained. Resubmission uses its unchanged identity, not a new operation. No automatic effect retry is performed."}</p><details><summary>Original submission reference</summary><code>{pending.id}</code></details>
       {operationId !== pending.id ? <Link to={fileAccessPath({ control: pending.body.review.control_owner_id ?? pending.id, operation: pending.id })}>Open pending operation</Link> : <div className="file-access-actions"><Button disabled={operation.isFetching || write.isPending} onClick={() => { void operation.refetch(); }}><RefreshCw />Check saved operation</Button>{statusCurrent && !macOSStatus && !macOSFileAccessControlIdValid(pending.body.review.control_owner_id) ? <Button disabled={write.isPending || locked.current} onClick={() => { if (!locked.current) { locked.current = true; write.mutate(pending); } }}>Resubmit original request</Button> : null}</div>}
     </Callout> : null}
@@ -215,13 +235,15 @@ export function FileAccessPage() {
     {macOSStatus && control.data && control.data.platform !== "macos" ? <Callout title="Saved control is read-only">This control belongs to another prepared platform. Its history remains available, but its operations are unavailable in this macOS workspace.</Callout> : null}
     {owner ? !fileAccessControlIdValid(owner) ? <ErrorState error={new Error("This control link is incomplete.")} /> : control.error ? <ErrorState title="Retained control unavailable" error={control.error} retry={() => { void control.refetch(); }} /> : control.data?.platform === "windows" ? <SavedWindowsSetup control={control.data} disabled={blocked || control.isFetching || !statusCurrent || Boolean(macOSStatus)} baselineReviewAvailable={statusCurrent && currentWindowsSetup && status.data?.available === true && status.data.setup?.enrollment_id === control.data.provenance.enrollment_id && status.data.setup?.enrollment_digest === control.data.provenance.enrollment_digest} fileAccessPath={fileAccessPath} onReview={setReview} /> : control.data?.platform === "macos" ? <SavedMacOSControl control={control.data} disabled={blocked || control.isFetching || !macOSReady} fileAccessPath={fileAccessPath} onReview={setReview} /> : control.data ? <RetainedFileAccess control={control.data} disabled={blocked || control.isFetching || !statusCurrent} readOnly={Boolean(macOSStatus) || !statusCurrent} ready={ready} fileAccessPath={fileAccessPath} onReview={setReview} /> : <LoadingState label="Opening retained file-access control" /> : null}
     {displayedReview ? <FileAccessReview key={`${displayedReview.control_owner_id}:${displayedReview.operation}`} request={displayedReview} expectedControlDigest={control.data?.platform === "macos" || control.data?.schema_version === "bluefire.windows-file-access-control.v3" ? control.data.control_digest : undefined} expectedEnrollmentDigest={control.data?.platform === "macos" ? macOSEnrollment?.enrollment_digest : undefined} disabled={blocked || !reviewAvailable} onSubmit={send} onClose={() => setReview(undefined)} /> : null}
+    </div>
+    </div>
   </div>;
 }
 
 type FileAccessPath = (values: Record<string, string>, remove?: string[]) => string;
 
-function FileAccessDetails({ title, children }: { title: string; children: ReactNode }) {
-  return <details className="file-access-details"><summary>{title}</summary><div>{children}</div></details>;
+function FileAccessDetails({ title, children, detailsRef }: { title: string; children: ReactNode; detailsRef?: RefObject<HTMLDetailsElement | null> }) {
+  return <details ref={detailsRef} className="file-access-details"><summary>{title}</summary><div>{children}</div></details>;
 }
 
 function savedAccessPurpose(status: string, platform?: string) {

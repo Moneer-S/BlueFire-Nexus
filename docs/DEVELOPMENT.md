@@ -148,7 +148,7 @@ VITE_DEMO_MODE=false PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
   pnpm exec playwright test --config playwright.onboarding.config.ts graph-scale-production.spec.ts
 ```
 
-The 1440x900 and 390x844 viewports cover focused/full graph and ordered-step transitions,
+The 1440x900 and 1366x768 viewports cover focused/full graph and ordered-step transitions,
 retained full-graph reload and an unchanged serialized draft. Each timing series retains
 one warmup and five measured samples; p50/p95 use nearest rank, so p95 is the maximum of
 five samples. Transition timings include Playwright actions and assertions through two

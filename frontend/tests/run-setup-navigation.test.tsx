@@ -149,7 +149,7 @@ it.each([false, true])("keeps the saved durable approval review ahead of setup (
 
 it("keeps a historical run review intact when its URL also contains a setup hint", async () => {
   const { config, nonReads } = mount(`/runs/${demoRuns[0]!.run_id}?setup=execute#guided-execute`, "simulate");
-  await screen.findByRole("link", { name: "Back to run workspace" });
+  await screen.findByRole("link", { name: "Run history" });
   expect(screen.queryByRole("radio")).not.toBeInTheDocument();
   expect(config().mode).toBe("simulate");
   expect(nonReads()).toEqual([]);

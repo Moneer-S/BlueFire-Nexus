@@ -20,10 +20,15 @@ const original: DetectionResource = { kind: "detections", id, status: "parsed", 
   parser_backend: { name: "SQLite bounded executor", version: "3.46" }, validation: { query_sha256: query, converted_query: source, source_rule_executed: true, execution_backend: "SQLite", execution_backend_version: "3.46", last_execution: { fixture_ids: ["observed-one", "observed-two"], matched_fixture_ids: ["observed-two"] }, unsupported_fields: [] },
 } };
 function Location() { return <output data-testid="location">{useLocation().search}</output>; }
-function setup(candidates = [structuredClone(original)], ready = true, sourceRun?: RunRecord) {
+function setup(candidates = [structuredClone(original)], ready = true, sourceRun?: RunRecord, additionalRuns: RunRecord[] = []) {
+  const runs = sourceRun ? [sourceRun, ...additionalRuns] : [];
   vi.spyOn(api, "catalog").mockResolvedValue(demoCatalog);
-  vi.spyOn(api, "runs").mockResolvedValue({ schema_version: "v1", unavailable_run_count: 0, runs: sourceRun ? [sourceRun] : [] });
-  if (sourceRun) vi.spyOn(api, "runDetail").mockResolvedValue(sourceRun);
+  vi.spyOn(api, "runs").mockResolvedValue({ schema_version: "v1", unavailable_run_count: 0, runs });
+  if (sourceRun) vi.spyOn(api, "runDetail").mockImplementation(async runId => {
+    const run = runs.find(item => item.run_id === runId);
+    if (!run) throw new Error("The requested test run is unavailable.");
+    return run;
+  });
   const detectionList = vi.spyOn(api, "detections").mockResolvedValue({ schema_version: "v1", candidates });
   vi.spyOn(api, "resources").mockResolvedValue({ schema_version: "v1", kind: "research-sources", resources: [] });
   vi.spyOn(api, "detectionHealth").mockResolvedValue({ schema_version: "v1", ready, persistence_ready: true, candidate_resources: candidates.length, invalid_candidate_resources: 0, languages: { sqlite: { ready, authoritative: true, backend: "SQLite bounded executor" }, sigma: { ready, authoritative: true, backend: "pySigma" } }, limits: { source_bytes: 262144, fixture_bytes: 1048576, fixtures_per_action: 128, evidence_per_action: 256, notes_per_action: 64 } });
@@ -244,5 +249,86 @@ it.each([
   expect(screen.getByText(/This candidate is part of an immutable run\./)).toHaveClass("run-linked-description");
   if (demo === true) expect(save).toBeDisabled();
   else expect(save).toBeEnabled();
+  expect(action).not.toHaveBeenCalled(); expect(revise).not.toHaveBeenCalled(); expect(evaluate).not.toHaveBeenCalled();
+});
+
+it("preserves keyboard focus when switching run-linked candidates", async () => {
+  const first: RunRecord = { ...structuredClone(demoRuns[0]!), run_id: "run-20261021T000000Z-aaaaaaaaaaaaaaaa", is_demo: false,
+    evidence: { records: [] }, detections: { candidates: [{ ...structuredClone(original.document), title: "First source rule" }] } };
+  const second: RunRecord = { ...structuredClone(first), run_id: "run-20261021T000001Z-bbbbbbbbbbbbbbbb",
+    detections: { candidates: [{ ...structuredClone(original.document), candidate_id: childId, title: "Second source rule" }] } };
+  const { user, action, revise, evaluate } = setup([], true, first, [second]);
+  await screen.findByRole("heading", { name: "First source rule" });
+  const selector = screen.getByRole("combobox", { name: "Detection source run" });
+  await user.click(selector);
+  await user.keyboard("{ArrowDown}");
+  expect(selector).toHaveFocus();
+  // Native select keyboard changes emit change; jsdom does not implement that default action.
+  fireEvent.change(selector, { target: { value: second.run_id } });
+  await screen.findByRole("heading", { name: "Second source rule" });
+  expect(screen.getByRole("combobox", { name: "Detection source run" })).toBe(selector);
+  expect(selector).toHaveValue(second.run_id);
+  expect(selector).toHaveFocus();
+  await user.tab();
+  expect(screen.getByRole("link", { name: "Review source run" })).toHaveFocus();
+  expect(action).not.toHaveBeenCalled(); expect(revise).not.toHaveBeenCalled(); expect(evaluate).not.toHaveBeenCalled();
+});
+
+it("distinguishes similarly named sources by their visible recorded time and run reference", async () => {
+  const longName = "Collection comparison with the same deliberately long descriptive source name";
+  const first: RunRecord = { ...structuredClone(demoRuns[0]!), run_id: "run-20261023T110501Z-aaaaaaaaaaaaaaaa", is_demo: false,
+    scenario: undefined, scenario_title: longName, created_at: "2026-10-23T11:05:01.000Z", evidence: { records: [] }, detections: { candidates: [] } };
+  const second: RunRecord = { ...structuredClone(first), run_id: "run-20261023T110609Z-bbbbbbbbbbbbbbbb", created_at: "2026-10-23T11:06:09.000Z" };
+  const { user, action, revise, evaluate } = setup([structuredClone(original)], true, first, [second]);
+  const reference = await screen.findByRole("link", { name: "Review source run" });
+  expect(reference).toHaveAttribute("href", `/runs/${first.run_id}`);
+  expect(reference).toHaveAttribute("title", expect.stringContaining(longName));
+  expect(within(reference).getByText(first.run_id.slice(-8), { exact: true })).toBeVisible();
+  expect(reference.querySelector("time")).toHaveAttribute("datetime", first.created_at);
+  await user.selectOptions(screen.getByRole("combobox", { name: "Detection source run" }), second.run_id);
+  await waitFor(() => expect(screen.getByRole("link", { name: "Review source run" })).toHaveAttribute("href", `/runs/${second.run_id}`));
+  const current = screen.getByRole("link", { name: "Review source run" });
+  expect(current).toHaveAttribute("title", expect.stringContaining(longName));
+  expect(within(current).getByText(second.run_id.slice(-8), { exact: true })).toBeVisible();
+  expect(within(current).queryByText(first.run_id.slice(-8), { exact: true })).not.toBeInTheDocument();
+  expect(current.querySelector("time")).toHaveAttribute("datetime", second.created_at);
+  expect(action).not.toHaveBeenCalled(); expect(revise).not.toHaveBeenCalled(); expect(evaluate).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("distinguishes missing evidence from an explicitly empty inventory (reported: %s)", async reported => {
+  const sourceRun: RunRecord = { ...structuredClone(demoRuns[0]!), run_id: "run-20261021T000000Z-aaaaaaaaaaaaaaaa", is_demo: false,
+    evidence: reported ? { records: [] } : undefined, detections: { candidates: [structuredClone(original.document)] } };
+  const { user, action, revise, evaluate } = setup([], true, sourceRun);
+  const panel = (await screen.findByRole("heading", { name: "Source records" })).closest(".source-records-panel") as HTMLElement;
+  expect(within(panel).getByText(reported ? "0" : "Not reported", { exact: true })).toBeVisible();
+  expect(within(panel).getByText(reported ? "This run has no retained evidence records." : "This run did not report an evidence record inventory.")).toBeVisible();
+  expect(within(panel).queryByRole("button", { name: /^Inspect source record/ })).not.toBeInTheDocument();
+  expect(within(panel).queryByLabelText("Selected source record")).not.toBeInTheDocument();
+  const observationLabel = reported ? "0 independent observations" : "Independent observations not reported";
+  expect(within(screen.getByLabelText("Selected source eligibility")).getByText(observationLabel, { exact: true })).toBeVisible();
+  await user.click(screen.getByText(observationLabel, { exact: true }));
+  if (reported) expect(screen.getByText("Inspect source evidence (0)", { selector: "summary" })).toBeVisible();
+  else {
+    expect(screen.getByText("Observed evidence not reported")).toBeVisible();
+    expect(screen.queryByText("Inspect source evidence (0)", { selector: "summary" })).not.toBeInTheDocument();
+    expect(screen.queryByText("No evidence records", { exact: true })).not.toBeInTheDocument();
+  }
+  expect(action).not.toHaveBeenCalled(); expect(revise).not.toHaveBeenCalled(); expect(evaluate).not.toHaveBeenCalled();
+});
+
+it("keeps the inspected source record when a different candidate is selected", async () => {
+  const sourceRun: RunRecord = { ...structuredClone(demoRuns[0]!), run_id: "run-20261021T000000Z-aaaaaaaaaaaaaaaa", is_demo: false,
+    evidence: { records: [{ evidence_id: "first-record", provenance: "synthetic", summary: "First generated record" }, { evidence_id: "second-record", provenance: "synthetic", summary: "Second generated record" }] },
+    detections: { candidates: [{ ...structuredClone(original.document), title: "First source rule" }, { ...structuredClone(original.document), candidate_id: childId, title: "Second source rule" }] } };
+  const { user, action, revise, evaluate } = setup([], true, sourceRun);
+  await screen.findByRole("heading", { name: "First source rule" });
+  const record = screen.getByRole("button", { name: "Inspect source record 2: Second generated record" });
+  await user.click(record);
+  expect(screen.getByLabelText("Selected source record")).toHaveTextContent('"evidence_id": "second-record"');
+  await user.click(screen.getByRole("button", { name: /^Second source rule · Revision/ }));
+  await screen.findByRole("heading", { name: "Second source rule" });
+  expect(screen.getByRole("button", { name: "Inspect source record 2: Second generated record" })).toBe(record);
+  expect(record).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByLabelText("Selected source record")).toHaveTextContent('"evidence_id": "second-record"');
   expect(action).not.toHaveBeenCalled(); expect(revise).not.toHaveBeenCalled(); expect(evaluate).not.toHaveBeenCalled();
 });

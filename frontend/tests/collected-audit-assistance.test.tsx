@@ -63,6 +63,7 @@ it.each(["assist", "auto"] as const)("explains the exact collected review in %s 
   await waitFor(() => expect(get).toHaveBeenCalledWith(selected));
   expect(screen.getByText("Authenticated source retrieval. Integrity and delivery completeness are not established. Explanation only; no cloud operations or changes.")).toBeInTheDocument();
   expect(submit).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Assistant settings" }));
   await user.selectOptions(screen.getByLabelText("AI mode"), autonomy);
   await user.selectOptions(screen.getByLabelText("Provider"), provider.provider_id);
   await user.type(screen.getByLabelText("What would you like to do?"), "Explain the collected evidence.");
@@ -93,6 +94,7 @@ it("releases collected audit selection ownership on leaving the detail", async (
   await user.click(await screen.findByRole("button", { name: /Collected audit/ }));
   await user.click(await screen.findByRole("button", { name: "Explain review" }));
   await waitFor(() => expect(get).toHaveBeenCalledWith(selected));
+  await user.click(screen.getByRole("button", { name: "Assistant settings" }));
   await user.selectOptions(screen.getByLabelText("AI mode"), "assist");
   await user.selectOptions(screen.getByLabelText("Provider"), provider.provider_id);
   const draft = "Explain the collection limits.";

@@ -50,6 +50,7 @@ it.each(["assist", "auto"] as const)("opens the actual saved audit in %s and ret
   expect(screen.getByText("Operator-imported evidence. Collection is not independently verified. Explanation only; no cloud operations or changes.")).toBeInTheDocument();
   expect(submit).not.toHaveBeenCalled();
   expect(screen.queryByLabelText("Development activity")).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Assistant settings" }));
   await user.selectOptions(screen.getByLabelText("AI mode"), autonomy);
   await user.selectOptions(screen.getByLabelText("Provider"), provider.provider_id);
   await user.type(screen.getByLabelText("What would you like to do?"), "Explain the missing evidence.");
@@ -82,6 +83,7 @@ it("ends audit selection ownership when leaving its detail without losing the dr
   await user.click((await screen.findAllByRole("button", { name: /Baseline reads.*Probe/ }))[0]!);
   await user.click(await screen.findByRole("button", { name: "Explain review" }));
   await waitFor(() => expect(get).toHaveBeenCalledWith(selected));
+  await user.click(screen.getByRole("button", { name: "Assistant settings" }));
   await user.selectOptions(screen.getByLabelText("AI mode"), "assist");
   await user.selectOptions(screen.getByLabelText("Provider"), provider.provider_id);
   const draft = "Explain the unresolved collection evidence.";

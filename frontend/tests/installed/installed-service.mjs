@@ -226,7 +226,7 @@ async function visibleGraphTitles(selectedOnly = false) {
   const selector = selectedOnly ? ".react-flow__node:visible:has(.flow-node.selected)" : ".react-flow__node:visible";
   return page.locator(selector).evaluateAll(nodes => nodes.map(node => {
     const card = node.querySelector(".flow-node");
-    const title = card?.querySelector(":scope > strong");
+    const title = card?.querySelector(".node-title > strong");
     if (!card || !title) return { title: "", fitsCard: false, fitsWidth: false };
     const cardBox = card.getBoundingClientRect();
     const titleBox = title.getBoundingClientRect();
@@ -239,20 +239,67 @@ async function visibleGraphTitles(selectedOnly = false) {
   }));
 }
 
-function expectedCrossGroupBindings(visibleIds) {
-  const steps = reviewedScenarioDocument.steps;
-  const identities = new Set();
-  const labels = [];
-  for (const consumer of steps) {
-    for (const [input, binding] of Object.entries(consumer.inputs ?? {})) {
-      if (visibleIds.has(consumer.id) === visibleIds.has(binding.from_step)) continue;
-      const identity = JSON.stringify([binding.from_step, consumer.id, input, binding.artifact]);
-      if (identities.has(identity)) continue;
-      identities.add(identity);
-      labels.push({ artifact: binding.artifact, input: input.replaceAll("_", " ").replace(/^./, value => value.toUpperCase()) });
+async function renderedGraphEdges(prefix) {
+  return page.locator(`.react-flow__edge[data-id^="${prefix}"]`).evaluateAll(edges => edges.map(edge => {
+    const paths = edge.querySelectorAll(".react-flow__edge-path");
+    const path = paths[0];
+    if (!path) return { id: edge.getAttribute("data-id"), pathCount: 0, visible: false };
+    const style = getComputedStyle(path), box = path.getBoundingClientRect();
+    let ancestorsVisible = true;
+    for (let element = path; element; element = element.parentElement) {
+      const ancestorStyle = getComputedStyle(element);
+      if (ancestorStyle.display === "none" || ["hidden", "collapse"].includes(ancestorStyle.visibility) || Number(ancestorStyle.opacity) === 0) ancestorsVisible = false;
     }
+    let length = null;
+    try { length = path.getTotalLength(); } catch { /* Invalid path geometry is reported below. */ }
+    const d = path.getAttribute("d");
+    const strokeVisible = style.stroke !== "none" && style.stroke !== "transparent"
+      && !/rgba\([^)]*,\s*0(?:\.0*)?\)$/.test(style.stroke)
+      && Number.parseFloat(style.strokeWidth) > 0 && Number(style.strokeOpacity) > 0;
+    return {
+      id: edge.getAttribute("data-id"), pathCount: paths.length,
+      finitePath: Boolean(d && !/NaN|Infinity/.test(d)),
+      length, width: box.width, height: box.height,
+      // A painted vertical or horizontal SVG path can have one zero-sized axis.
+      visible: ancestorsVisible && strokeVisible && [box.x, box.y, box.width, box.height].every(Number.isFinite)
+        && box.width >= 0 && box.height >= 0 && (box.width > 0 || box.height > 0),
+      strokeVisible, dashed: style.strokeDasharray !== "none",
+    };
+  }));
+}
+
+async function assertRenderedGraphEdges(prefix, expectedIds, outcomes) {
+  const rendered = await renderedGraphEdges(prefix);
+  report.graph_edge_probe = { kind: outcomes ? "outcome_routes" : "input_connections", expected_count: expectedIds.length, actual_count: rendered.length };
+  assert.equal(rendered.length, expectedIds.length, "Every expected graph connection must have exactly one edge group");
+  const actualIds = rendered.map(edge => edge.id);
+  report.graph_edge_probe.identities_match = sameStructure([...actualIds].sort(), [...expectedIds].sort());
+  assert.deepEqual([...actualIds].sort(), [...expectedIds].sort(), "Rendered connections must retain exactly the saved endpoints and meanings");
+  for (const [index, id] of expectedIds.entries()) {
+    const edge = rendered.find(item => item.id === id);
+    report.graph_edge_probe = { ...report.graph_edge_probe, checked_index: index, path_count: edge.pathCount,
+      finite_path: edge.finitePath === true, length: Number.isFinite(edge.length) ? edge.length : null,
+      width: Number.isFinite(edge.width) ? edge.width : null, height: Number.isFinite(edge.height) ? edge.height : null,
+      visible: edge.visible, stroke_visible: edge.strokeVisible === true,
+      dashed: edge.dashed, ...(outcomes ? { expected_dashed: outcomes[index] !== "success" } : {}) };
+    assert.equal(edge.pathCount, 1, "Each saved connection must have one rendered path");
+    assert.ok(edge.finitePath && Number.isFinite(edge.length) && edge.length > 0, "Every saved connection must have finite nonzero path geometry");
+    assert.equal(edge.visible, true, "Every saved connection must have a painted visible path, including straight routes");
+    if (outcomes) assert.equal(edge.dashed, outcomes[index] !== "success", "Fallback and partial routes must remain visually distinct from success routes");
   }
-  return labels;
+  delete report.graph_edge_probe;
+}
+
+async function graphOptions(open) {
+  if (await page.locator("details.graph-options").evaluate(element => element.open) !== open) {
+    await page.getByLabel("View options", { exact: true }).click();
+  }
+}
+
+async function graphMenuAction(name) {
+  await graphOptions(true);
+  await page.getByRole("button", { name, exact: true }).click();
+  await graphOptions(false);
 }
 
 async function waitForGraphFrame(selectedOnly) {
@@ -489,7 +536,7 @@ try {
   await page.getByRole("button", { name: "Open this version for editing", exact: true }).click();
   await page.locator(".react-flow__node").first().waitFor();
   await page.getByLabel("Experiment name", { exact: true }).fill(`${title} reviewed`);
-  await page.getByRole("button", { name: "Arrange visible group", exact: true }).click();
+  await page.getByRole("button", { name: "Auto-layout", exact: true }).click();
   await page.getByRole("button", { name: "Undo", exact: true }).click();
   await page.getByRole("button", { name: "Redo", exact: true }).click();
   const saveResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/scenario-versions" && response.request().method() === "POST");
@@ -517,7 +564,7 @@ try {
   assert.ok(sameStructure(withoutLayout(workingScenario), reviewedScenarioDocument), "Working export must match the saved canonical document");
   assert.ok(hasOwnedScenarioLayout(workingScenario), "Working export must retain only owned finite layout positions");
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Export", exact: true }).click();
+  await graphMenuAction("Export");
   const download = await downloadPromise;
   assert.equal(download.suggestedFilename(), `${ownedScenarioId}.json`);
   const stream = await download.createReadStream();
@@ -536,47 +583,49 @@ try {
   secrets.fill("");
   report.checks.push("working_graph_json_export_preserves_canonical_document_and_layout_without_credentials");
 
-  stage = "graph-default-group";
-  assert.equal(await page.getByRole("combobox", { name: "Step group", exact: true }).inputValue(), "0");
-  for (const viewport of [{ width: 1366, height: 768 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
-    await page.setViewportSize(viewport);
-    await page.getByRole("button", { name: "Fit visible graph", exact: true }).click();
-    await waitForGraphFrame(false);
-    const visibleNodes = await page.locator(".react-flow__node:visible").count();
-    assert.equal(visibleNodes, 3);
-    const zoom = Number.parseInt(await page.getByLabel("Graph zoom", { exact: true }).textContent() ?? "0", 10);
-    assert.ok(zoom >= 80, `Default three-step group is too small at ${viewport.width}px (${zoom}%)`);
-    const titles = await visibleGraphTitles();
-    assert.equal(titles.length, 3);
-    assert.ok(titles.every(title => title.title && title.fitsCard && title.fitsWidth), "Default group titles must fit their cards");
-    const visibleNodeIds = await page.locator(".react-flow__node:visible").evaluateAll(nodes => nodes.map(node => node.getAttribute("data-id")));
-    assert.ok(visibleNodeIds.every(id => id && reviewedScenarioDocument.steps.some(step => step.id === id)), "Visible graph nodes must map to saved step IDs");
-    const visibleIds = new Set(visibleNodeIds);
-    const crossingRoutes = reviewedScenarioDocument.edges.filter(edge => visibleIds.has(edge.from_step) !== visibleIds.has(edge.to_step));
-    assert.ok(crossingRoutes.length > 0, "Fixture must retain a conditional route across the visible group boundary");
-    const groupConnections = page.locator(".graph-group-connections");
-    assert.equal(await groupConnections.getAttribute("open"), null, "Group connections should be collapsed initially");
-    await groupConnections.locator(":scope > summary").click();
-    const boundaryText = await page.locator('.graph-group-boundaries[aria-label="Conditional execution routes"]').innerText();
-    for (const outcome of new Set(crossingRoutes.map(edge => edge.outcome))) {
-      const label = { success: "On success", partial: "When partly complete", blocked: "When blocked", failed: "On failure" }[outcome];
-      assert.ok(label && boundaryText.includes(label), `Conditional route boundary is missing ${outcome}`);
-    }
-    const bindings = expectedCrossGroupBindings(visibleIds);
-    assert.ok(bindings.length > 0, "Fixture must retain an artifact binding across the visible group boundary");
-    const dependencyDetails = page.locator(".graph-data-boundaries");
-    assert.equal(await dependencyDetails.locator("summary").innerText(), `Data dependencies (${bindings.length})`);
-    await dependencyDetails.locator("summary").click();
-    const dependencyText = await dependencyDetails.innerText();
-    for (const binding of bindings) {
-      assert.ok(dependencyText.includes(binding.artifact), `Artifact boundary is missing ${binding.artifact}`);
-      assert.ok(dependencyText.includes(binding.input), `Artifact boundary is missing input ${binding.input}`);
-    }
-    await dependencyDetails.locator("summary").click();
-    await groupConnections.locator(":scope > summary").click();
-    await capture(`graph-default-group-${viewport.width}x${viewport.height}`);
+  stage = "graph-connected-plan-scope";
+  assert.equal(await page.getByRole("navigation", { name: "Focused connected path", exact: true }).count(), 0);
+  stage = "graph-connected-plan-node-count";
+  assert.equal(await page.locator(".react-flow__node:visible").count(), reviewedScenarioDocument.steps.length);
+  stage = "graph-connected-plan-outcome-routes";
+  const expectedRoutes = reviewedScenarioDocument.edges.map((route, index) => `route-${route.from_step}-${route.outcome}-${route.to_step}-${index}`);
+  await assertRenderedGraphEdges("route-", expectedRoutes, reviewedScenarioDocument.edges.map(route => route.outcome));
+  const expectedBindings = reviewedScenarioDocument.steps.flatMap(consumer => Object.entries(consumer.inputs ?? {}).map(([input, binding]) => `artifact-${binding.from_step}-${binding.artifact}-${consumer.id}-${input}`));
+  stage = "graph-connected-plan-input-connections";
+  await graphOptions(true);
+  await page.getByLabel("Show input connections", { exact: true }).check();
+  await graphOptions(false);
+  await assertRenderedGraphEdges("artifact-", expectedBindings);
+  stage = "graph-connected-plan-readable-routes";
+  await page.getByRole("button", { name: "Show route list", exact: true }).click();
+  const routeButtons = page.getByRole("list", { name: "Visible routes", exact: true }).getByRole("button");
+  assert.equal(await routeButtons.count(), reviewedScenarioDocument.edges.length);
+  for (const [index, route] of reviewedScenarioDocument.edges.entries()) {
+    const routeText = await routeButtons.nth(index).innerText();
+    const outcome = { success: "On success", partial: "When partly complete", blocked: "When blocked", failed: "On failure" }[route.outcome];
+    assert.ok(routeText.includes(outcome) && routeText.includes(route.from_step) && routeText.includes(route.to_step), "Route meaning and endpoints must remain available in the readable route list");
   }
-  report.checks.push("readable_default_group_desktop_framing");
+  await page.getByRole("button", { name: "Close route list", exact: true }).click();
+  await graphOptions(true);
+  await page.getByLabel("Show input connections", { exact: true }).uncheck();
+  await graphOptions(false);
+  for (const viewport of [{ width: 1366, height: 768 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
+    stage = `graph-connected-plan-focus-${viewport.width}x${viewport.height}`;
+    await page.setViewportSize(viewport);
+    await graphMenuAction("Focus selected step");
+    await waitForGraphFrame(true);
+    const visibleNodes = await page.locator(".react-flow__node:visible").count();
+    assert.equal(visibleNodes, reviewedScenarioDocument.steps.length);
+    const zoom = Number.parseInt(await page.getByLabel("Graph zoom", { exact: true }).textContent() ?? "0", 10);
+    assert.ok(zoom >= 80, `The selected step must be readable at ${viewport.width}px (${zoom}%)`);
+    const titles = await visibleGraphTitles(true);
+    assert.equal(titles.length, 1);
+    assert.ok(titles.every(title => title.title && title.fitsCard && title.fitsWidth), "Focused titles must fit their cards");
+    const visibleNodeIds = await page.locator(".react-flow__node:visible").evaluateAll(nodes => nodes.map(node => node.getAttribute("data-id")));
+    assert.deepEqual(visibleNodeIds.sort(), reviewedScenarioDocument.steps.map(step => step.id).sort(), "All saved steps remain in the navigable canvas");
+    await capture(`graph-connected-plan-${viewport.width}x${viewport.height}`);
+  }
+  report.checks.push("whole_plan_routes_dependencies_and_readable_selection_at_desktop_sizes");
   await page.setViewportSize({ width: 1440, height: 900 });
 
   stage = "graph-interaction";
@@ -584,7 +633,6 @@ try {
   await page.getByRole("textbox", { name: "Search palette", exact: true }).fill("collect");
   assert.ok(await page.locator(".palette-list button").count() > 0);
   await page.getByRole("button", { name: "Add step", exact: true }).click();
-  await page.getByRole("combobox", { name: "Step group", exact: true }).selectOption("all");
   await page.getByRole("button", { name: "Steps", exact: true }).click();
   stage = "graph-select-ordered-step";
   await page.locator(".ordered-steps button").filter({ has: page.locator("strong").filter({ hasText: /^Collect selected records \(native JSONL\)$/ }) }).click();
@@ -598,7 +646,7 @@ try {
     await page.getByRole("button", { name: "Fit visible graph", exact: true }).click();
     await waitForGraphFrame(false);
     await capture(`graph-overview-${viewport.width}x${viewport.height}`);
-    await page.getByRole("button", { name: "Focus selected step", exact: true }).click();
+    await graphMenuAction("Focus selected step");
     await page.waitForFunction(() => Number.parseInt(document.querySelector('[aria-label="Graph zoom"]')?.textContent ?? "0", 10) >= 80);
     await waitForGraphFrame(true);
     const selectedTitle = await visibleGraphTitles(true);
@@ -627,9 +675,12 @@ try {
   for (const viewport of [{ width: 1024, height: 768 }, { width: 910, height: 512 }]) {
     stage = `graph-constrained-${viewport.width}x${viewport.height}`;
     await page.setViewportSize(viewport);
-    for (const name of ["Fit visible graph", "Steps", "Canvas", "Focus selected step", "Hide node inspector"]) {
+    for (const name of ["Fit visible graph", "Steps", "Canvas", "Hide node inspector"]) {
       await reachableGraphElement(page.getByRole("button", { name, exact: true }), name);
     }
+    await graphOptions(true);
+    await reachableGraphElement(page.getByRole("button", { name: "Focus selected step", exact: true }), "Focus selected step");
+    await graphOptions(false);
     await page.getByRole("button", { name: "Hide node inspector", exact: true }).click();
     const showInspector = page.getByRole("button", { name: "Show node inspector", exact: true });
     await reachableGraphElement(showInspector, "Show node inspector");
@@ -641,7 +692,7 @@ try {
     const selectedStep = page.locator('.ordered-steps button[aria-pressed="true"]');
     assert.match(await selectedStep.innerText(), /Collect selected records \(native JSONL\)/);
     await page.getByRole("button", { name: "Canvas", exact: true }).click();
-    await page.getByRole("button", { name: "Focus selected step", exact: true }).click();
+    await graphMenuAction("Focus selected step");
     await waitForGraphFrame(true);
     const zoom = Number.parseInt(await page.getByLabel("Graph zoom", { exact: true }).textContent() ?? "0", 10);
     assert.ok(zoom >= 80, "Selected step must retain a readable focused scale");
@@ -760,6 +811,11 @@ try {
   const sourceCount = Number((await sourceSummary.innerText()).match(/^(\d+) independent observations/)?.[1]);
   assert.equal(sourceCount, 0);
   report.source_observation_count = sourceCount;
+  const sourceEligibility = page.getByLabel("Selected source eligibility", { exact: true });
+  await sourceEligibility.getByText("Synthetic simulation", { exact: true }).waitFor();
+  await sourceEligibility.getByText("Source details", { exact: true }).click();
+  await sourceEligibility.getByText("Run-linked records may inform a hypothesis, but cannot support observed exercise.", { exact: true }).waitFor();
+  await sourceEligibility.getByText("Source details", { exact: true }).click();
   const sourceRun = await api("/runs/" + firstRunId);
   assert.equal(sourceRun.run_id, firstRunId);
   assert.equal(sourceRun.mode, "simulate");
@@ -877,8 +933,8 @@ try {
     name: "detection-lab",
     heading: "Detection Lab",
     controls: [
-      { label: "Detection source run", locator: page.getByRole("combobox", { name: /^Detection source run\b/ }), textFits: false },
-      { label: "Source evidence", locator: sourceSummary, textFits: true },
+      { label: "Detection source run", locator: page.getByRole("combobox", { name: /^Detection source run\b/ }), textFits: false, bringIntoView: true },
+      { label: "Source evidence", locator: sourceSummary, textFits: true, bringIntoView: true },
     ],
   });
 
@@ -910,6 +966,10 @@ try {
   report.objective_continuity.comparison_snapshot_id = report.comparison_snapshot_id;
   report.objective_continuity.comparison_run_ids = [...savedComparison.comparison.run_ids];
   await page.goto(`${origin}/#/compare`);
+  const comparisonHistory = page.locator("details.saved-comparisons-browser");
+  const comparisonHistorySummary = comparisonHistory.locator(":scope > summary");
+  await comparisonHistorySummary.waitFor();
+  if (!await comparisonHistory.evaluate(element => element.open)) await comparisonHistorySummary.click();
   await page.locator(`button[data-snapshot-id=${JSON.stringify(report.comparison_snapshot_id)}]`).click();
   await page.getByRole("region", { name: "Comparison results", exact: true }).waitFor();
   assert.match(new URL(page.url()).hash, new RegExp(`snapshot=${report.comparison_snapshot_id}`));
@@ -917,16 +977,37 @@ try {
   assert.deepEqual(reopenedComparison.comparison.run_ids, ownedRunIds);
   assert.deepEqual(reopenedComparison.source_bindings.map(binding => binding.run_id), ownedRunIds);
   report.checks.push("saved_comparison_reopened_with_exact_scenario_objective_and_plan_run_lineage");
+  stage = "comparison-reload-saved-history";
+  if (!await comparisonHistory.evaluate(element => element.open)) await comparisonHistorySummary.click();
+  const historyReloadResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/comparison-snapshots" && response.request().method() === "GET");
+  const snapshotReloadResponse = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/comparison-snapshots/${report.comparison_snapshot_id}` && response.request().method() === "GET");
+  await comparisonHistory.getByRole("button", { name: "Reload saved comparisons", exact: true }).click();
+  const reloadedHistory = await (await historyReloadResponse).json();
+  const reloadedSnapshot = await (await snapshotReloadResponse).json();
+  const reloadedHistoryItem = reloadedHistory.snapshots.find(item => item.snapshot_id === report.comparison_snapshot_id);
+  assert.ok(reloadedHistoryItem);
+  assert.deepEqual(reloadedHistoryItem.run_ids, ownedRunIds);
+  assert.equal(reloadedSnapshot.snapshot_id, report.comparison_snapshot_id);
+  assert.deepEqual(reloadedSnapshot.comparison.run_ids, ownedRunIds);
+  assert.deepEqual(reloadedSnapshot.source_bindings.map(binding => binding.run_id), ownedRunIds);
+  assert.equal(reloadedSnapshot.source_integrity?.status, "verified");
+  assert.match(new URL(page.url()).hash, new RegExp(`snapshot=${report.comparison_snapshot_id}`));
+  if (await comparisonHistory.evaluate(element => element.open)) await comparisonHistorySummary.click();
+  await page.getByRole("region", { name: "Comparison conclusion", exact: true }).waitFor();
+  report.checks.push("saved_comparison_history_reload_preserves_selected_snapshot_and_source_integrity");
   await capture("reopened-saved-comparison");
   await captureResponsiveSurface({
     name: "comparison",
     heading: "Compare runs",
-    controls: [{ label: "Refresh history", locator: page.getByRole("button", { name: "Refresh history", exact: true }), textFits: true }],
+    controls: [{ label: "Saved comparisons", locator: comparisonHistorySummary, textFits: true }],
   });
 
   stage = "environments-load-overview";
   await page.goto(`${origin}/#/environments`);
   await page.getByRole("heading", { name: "Environments", exact: true }).waitFor();
+  for (const name of ["Environment access", "Workspace connections"]) {
+    await page.getByRole("heading", { name, exact: true }).waitFor();
+  }
   for (const name of ["Cloud access", "File access", "Directory access", "Execution configuration", "Model access"]) {
     await page.getByRole("region", { name, exact: true }).waitFor();
   }
@@ -944,11 +1025,22 @@ try {
   });
 
   stage = "file-access-open-unavailable-view";
-  await page.getByRole("button", { name: "Show more tools", exact: true }).click();
-  await page.getByRole("link", { name: "File access", exact: true }).click();
+  await page.getByRole("link", { name: "Open file access", exact: true }).click();
   await page.getByRole("heading", { name: "Effective file access", exact: true }).waitFor();
-  await page.getByRole("region", { name: "File-access enrollment", exact: true }).waitFor();
+  const fileReadiness = page.getByRole("region", { name: "File-access enrollment", exact: true });
+  await fileReadiness.waitFor();
   await page.getByText("Execution unavailable", { exact: true }).waitFor();
+  const fileStatus = await api("/file-access/status");
+  assert.equal(fileStatus.available, false);
+  const taskReadiness = fileReadiness.locator(".file-access-readiness-facts > div").filter({ has: page.getByText("Task access", { exact: true }) });
+  assert.equal(await taskReadiness.locator("dd").innerText(), "Unavailable");
+  await page.getByRole("heading", { name: "Saved access work", exact: true }).waitFor();
+  const requirements = page.getByText("Task access requirements", { exact: true });
+  await page.getByRole("button", { name: "Review task access requirements", exact: true }).click();
+  assert.equal(await requirements.evaluate(element => element.closest("details").open), true);
+  assert.equal(await requirements.evaluate(element => element === document.activeElement), true);
+  await requirements.click();
+  report.checks.push("unavailable_file_access_opens_existing_requirements_without_authorizing_work");
   await capture("file-access-unavailable");
   report.checks.push("file_access_unavailable_state_opened_without_authorizing_work");
   await captureResponsiveSurface({
@@ -965,23 +1057,35 @@ try {
   const previousSelection = page.getByRole("region", { name: "Previous selection", exact: true });
   await previousSelection.waitFor();
   stage = "assistant-set-off-mode";
+  await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
   const mode = page.getByRole("combobox", { name: /^(AI mode|Assistant mode)\b/ });
   await mode.selectOption("off");
   assert.equal(await page.getByRole("button", { name: /^Start work/ }).isDisabled(), true);
+  await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
   stage = "assistant-capture-detached";
   await capture("assistant-detached");
   report.checks.push("detached_assistant_keeps_previous_selection_non_actionable");
   await captureResponsiveSurface({
     name: "docked-assistant",
-    heading: "Experiment assistant",
+    heading: "BlueFire Assistant",
     scrollRoot: ".assistant-body",
     controls: [
       { label: "Close assistant", locator: page.getByRole("button", { name: "Close assistant", exact: true }), textFits: false },
       { label: "Reopen source", locator: page.getByRole("link", { name: "Reopen source", exact: true }), textFits: true, bringIntoView: true, withinScroll: true },
+      { label: "Assistant settings", locator: page.getByRole("button", { name: "Assistant settings", exact: true }), textFits: false },
+      { label: "Message", locator: page.getByRole("textbox", { name: "What would you like to do?", exact: true }), textFits: false },
+      { label: "Start work", locator: page.getByRole("button", { name: /^Start work/ }), textFits: false },
+    ],
+  });
+  await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
+  await captureResponsiveSurface({
+    name: "docked-assistant-settings",
+    heading: "BlueFire Assistant",
+    scrollRoot: ".assistant-body",
+    controls: [
       { label: "AI mode", locator: mode, textFits: false, bringIntoView: true, withinScroll: true },
       { label: "Provider", locator: page.getByRole("combobox", { name: /^(Provider|Assistant provider)\b/ }), textFits: false, bringIntoView: true, withinScroll: true },
-      { label: "Message", locator: page.getByRole("textbox", { name: "What would you like to do?", exact: true }), textFits: false, bringIntoView: true, withinScroll: true },
-      { label: "Start work", locator: page.getByRole("button", { name: /^Start work/ }), textFits: true, bringIntoView: true, withinScroll: true },
+      { label: "Close assistant", locator: page.getByRole("button", { name: "Close assistant", exact: true }), textFits: false },
     ],
   });
 
@@ -1001,7 +1105,12 @@ try {
   report.status = "passed";
 } catch (error) {
   report.status = "failed_or_incomplete";
-  report.errors.push({ stage, kind: "journey-failed", error_type: error instanceof Error ? error.name : "unknown" });
+  const assertion = error instanceof assert.AssertionError ? {
+    operator: ["==", "===", "deepStrictEqual", "notDeepStrictEqual", "notStrictEqual", "fail"].includes(error.operator) ? error.operator : "assertion",
+    ...(typeof error.actual === "boolean" || Number.isFinite(error.actual) ? { actual: error.actual } : {}),
+    ...(typeof error.expected === "boolean" || Number.isFinite(error.expected) ? { expected: error.expected } : {}),
+  } : undefined;
+  report.errors.push({ stage, kind: "journey-failed", error_type: error instanceof Error ? error.name : "unknown", ...(assertion ? { assertion } : {}) });
   if (connected && stage.startsWith("graph-")) {
     report.graph_failure_geometry = await page.evaluate(() => {
       const geometry = element => {
