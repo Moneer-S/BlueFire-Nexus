@@ -346,6 +346,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   const nodesInitialized = useNodesInitialized();
   const initialFrameDone = useRef(false);
   const framedFocusMode = useRef(focusMode);
+  const framedViewMode = useRef(viewMode);
   const frameStep = useCallback((id: string, mode: "start" | "readable" | "reveal", duration = 0, preferred?: GraphViewport) => {
     const canvas = graphCanvas.current;
     const node = flow.getNode(id);
@@ -402,10 +403,12 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   }, [flow, frameStep, inspectorOpen, nodesInitialized, selectedId, selectionToReveal, viewMode]);
 
   useEffect(() => {
+    if (viewMode !== "graph") { framedViewMode.current = viewMode; return; }
     const canvas = graphCanvas.current;
-    if (!canvas || !nodesInitialized || viewMode !== "graph") return;
-    let focusTransition = framedFocusMode.current !== focusMode;
+    if (!canvas || !nodesInitialized) return;
+    let navigationTransition = framedFocusMode.current !== focusMode || framedViewMode.current !== viewMode;
     framedFocusMode.current = focusMode;
+    framedViewMode.current = viewMode;
     const main = focusMode ? null : canvas.closest("main");
     const scrollPosition = () => ({ top: main?.scrollTop ?? 0, left: main?.scrollLeft ?? 0 });
     const sameScroll = (left: ReturnType<typeof scrollPosition>, right: ReturnType<typeof scrollPosition>) => Math.abs(left.top - right.top) < 1 && Math.abs(left.left - right.left) < 1;
@@ -431,12 +434,12 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
         const mainHeight = main?.clientHeight ?? 0;
         const mainWidth = main?.clientWidth ?? 0;
         const canvasSize = { width: canvas.clientWidth, height: canvas.clientHeight };
-        const revealFromFocus = focusTransition;
-        focusTransition = false;
+        const revealFromNavigation = navigationTransition;
+        navigationTransition = false;
         const needsInitialFrame = !initialFrameDone.current && nodes.length > 0;
-        // Focus mode replaces the observer after layout has already changed.
-        // That explicit navigation still needs one reveal at the current zoom.
-        if (!needsInitialFrame && !revealFromFocus && mainHeight === previousMainHeight && mainWidth === previousMainWidth && canvasSize.width === previousCanvas.width && canvasSize.height === previousCanvas.height) return;
+        // Returning from Steps or changing focus mode replaces the observer
+        // after layout has settled. Reveal that navigation once at current zoom.
+        if (!needsInitialFrame && !revealFromNavigation && mainHeight === previousMainHeight && mainWidth === previousMainWidth && canvasSize.width === previousCanvas.width && canvasSize.height === previousCanvas.height) return;
         const mainShrank = mainHeight < previousMainHeight;
         const mainGrew = mainHeight > previousMainHeight;
         if (needsInitialFrame) {
@@ -460,7 +463,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
             interrupted = true;
           } else if (!(grew && interrupted)) {
             const originalScroll = scrollPosition();
-            if (main && mainHeight > 0 && (mainShrank || revealFromFocus)) {
+            if (main && mainHeight > 0 && (mainShrank || revealFromNavigation)) {
               // A stacked dock can shrink main without resizing the canvas. Reveal
               // its toolbar once instead of leaving the graph below the title rows.
               revealCanvasToolbar(canvas);

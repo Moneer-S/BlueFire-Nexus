@@ -177,6 +177,48 @@ describe("Builder viewport controls", () => {
     expect(flow.setViewport).toHaveBeenCalledOnce();
   });
 
+  it("reveals a step selected in Steps when returning to an unchanged Canvas without changing zoom", async () => {
+    width = 650; height = 380;
+    const scenario = structuredClone(demoScenario);
+    const template = structuredClone(scenario.steps[0]!);
+    scenario.steps = ["before", "selected", "after"].map(id => ({ ...structuredClone(template), id, inputs: {} }));
+    scenario.start = "before";
+    scenario.edges = [{ from_step: "before", outcome: "success", to_step: "selected" }, ...(["success", "blocked", "failed"] as const).map(outcome => ({ from_step: "selected", outcome, to_step: "after" }))];
+    delete scenario.adaptive_execution;
+    const rendered = renderBuilder(scenario, { before: { x: 48, y: 48 }, selected: { x: 900, y: 48 }, after: { x: 1200, y: 48 } });
+    await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
+    const chosen = { x: 24, y: 44, zoom: 0.8 };
+    state.viewport = chosen;
+    act(() => state.props.onMove?.(new MouseEvent("mousemove"), chosen));
+    flow.setViewport.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Steps" }));
+    const row = screen.getByRole("list", { name: "Experiment steps" }).querySelector<HTMLButtonElement>('button[data-step-id="selected"]');
+    if (!row) throw new Error("The target step row is missing");
+    const revealRow = vi.spyOn(row, "scrollIntoView");
+    fireEvent.click(row);
+    expect(row).toHaveAttribute("aria-pressed", "true");
+    expect(revealRow).toHaveBeenCalled();
+    expect(state.viewport).toEqual(chosen);
+    expect(flow.setViewport).not.toHaveBeenCalled();
+    expect(chosen.x + rendered.layout!.selected!.x * chosen.zoom).toBeGreaterThan(width);
+
+    fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    await waitFor(() => expectReadableSelection("selected"));
+    expect(state.viewport.zoom).toBe(chosen.zoom);
+    expect(state.viewport.x + (rendered.layout!.selected!.x + 220 + 72) * chosen.zoom).toBeLessThanOrEqual(width);
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
+
+    const manual = { ...state.viewport, x: state.viewport.x - 120 };
+    state.viewport = manual;
+    act(() => state.props.onMove?.(new MouseEvent("mousemove"), manual));
+    flow.setViewport.mockClear();
+    resizeCanvas(width, height);
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(state.viewport).toEqual(manual);
+    expect(flow.setViewport).not.toHaveBeenCalled();
+  });
+
   it("keeps user zoom across resizes and recovers a temporary shrink pan when space returns", async () => {
     renderBuilder();
     await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
