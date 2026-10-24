@@ -733,14 +733,14 @@ try {
     await page.getByRole("combobox", { name: /^Environment profile\b/ }).selectOption("sandbox-simulate.v1");
     stage = "simulate-preflight";
     const preflightResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/runs/preflight" && response.request().method() === "POST");
-    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await page.getByRole("button", { name: "Check run", exact: true }).click();
     const preflight = await (await preflightResponse).json();
     assert.equal(preflight.ready, true);
     assert.equal(preflight.plan?.scenario_id, ownedScenarioId);
     assert.equal(preflight.plan?.scenario_digest, ownedScenarioVersion.digest);
     assert.equal(preflight.plan?.objective, objectiveQuestion);
     stage = "simulate-submit";
-    await page.getByRole("button", { name: "Submit Simulate job", exact: true }).click();
+    await page.getByRole("button", { name: "Start simulation", exact: true }).click();
     stage = "simulate-wait-for-review";
     const review = page.getByRole("button", { name: "Review", exact: true });
     await review.waitFor({ timeout: 90_000 });

@@ -309,7 +309,7 @@
 .context-rail-section > h3 { margin: 0; font-size: .82rem; }
 .context-rail-section p { margin: 0; color: var(--muted-strong); font-size: .7rem; line-height: 1.6; overflow-wrap: anywhere; }
 .context-rail-section .data-list { gap: 0; margin: 0; }
-.context-rail-section .data-list > div { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.context-rail-section .data-list > div { grid-template-columns: minmax(90px, 1fr) minmax(0, 1.3fr); gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line); }
 .context-rail-section .data-list dt,
 .context-rail-section .data-list dd { font-size: .69rem; line-height: 1.5; overflow-wrap: anywhere; }
 .context-rail-link { display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; color: var(--blue-soft); font-size: .72rem; font-weight: 600; text-decoration: none; }

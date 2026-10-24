@@ -41,7 +41,7 @@ it.each([
   const collector = screen.getByRole("checkbox", { name: /Collection contents/ });
   expect(collector).toBeChecked();
   expect(screen.getByText(`staged/collection/bundle.${extension}`)).toBeVisible();
-  const preflight = screen.getByRole("button", { name: /^Run preflight$/ });
+  const preflight = screen.getByRole("button", { name: /^Check run$/ });
   await waitFor(() => expect(preflight).toBeEnabled());
   await user.click(preflight);
   await waitFor(() => expect(requests).toHaveLength(1));

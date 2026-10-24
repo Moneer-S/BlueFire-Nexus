@@ -112,7 +112,7 @@ async function edit(user: ReturnType<typeof userEvent.setup>) {
   // Replace the full SQL document as a user pasting an edited rule would.
   await user.paste(edited);
   await user.type(screen.getByRole("textbox", { name: "Reason for source revision" }), "Inspect contents observations");
-  expect(screen.getByText("Draft source not validated")).toBeVisible();
+  expect(screen.getByText("Unvalidated edits")).toBeVisible();
 }
 
 it("edits SQL directly, saves a parsed child and opens the selected run without fixture or metadata input", async () => {
@@ -174,7 +174,7 @@ it("offers an editable SQLite starter without claiming validation or sending it 
   expect(editor).toHaveValue("SELECT fixture_id FROM logs\nWHERE artifact_type = 'file_observation'\n  AND path LIKE '%staged/%'");
   await user.type(editor, "{End}{Enter}LIMIT 1");
   expect(editor).toHaveValue("SELECT fixture_id FROM logs\nWHERE artifact_type = 'file_observation'\n  AND path LIKE '%staged/%'\nLIMIT 1");
-  expect(screen.getByText("Draft source not validated")).toBeVisible();
+  expect(screen.getByText("Unvalidated edits")).toBeVisible();
   expect(screen.getByRole("button", { name: "Validate source" })).toBeEnabled();
   expect(action).not.toHaveBeenCalled();
 });
@@ -215,7 +215,7 @@ it("preserves the edited source and selected parent after validation is refused"
   expect(await screen.findByText(/Edited source did not validate/)).toBeVisible();
   expect(screen.getByRole("textbox", { name: /sqlite source/i })).toHaveValue(edited);
   expect(screen.getByRole("heading", { name: "Baseline SQL" })).toBeVisible();
-  expect(screen.getByText("Draft source not validated")).toBeVisible();
+  expect(screen.getByText("Unvalidated edits")).toBeVisible();
   expect(candidates).toHaveLength(2);
   expect(candidates[0]).toEqual(parent);
 });

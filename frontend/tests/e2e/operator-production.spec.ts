@@ -486,15 +486,15 @@ test("production operator UI completes authoring, management, run, replay, and c
   await expect(requestedAccess.getByRole("checkbox", { name: "Export local", exact: true })).not.toBeChecked();
   await expect(observations).toContainText("Simulate produces synthetic records. Independent file observations are available during Execute.");
   const preflightResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/runs/preflight" && response.request().method() === "POST");
-  await page.getByRole("button", { name: "Run preflight" }).click();
+  await page.getByRole("button", { name: "Check run" }).click();
   const preflightReport = await (await preflightResponse).json() as JsonObject;
   expect(preflightReport.ready).toBe(true);
-  await expect(page.getByText("Canonical preflight ready")).toBeVisible();
+  await expect(page.getByText("Ready to simulate")).toBeVisible();
   await expect(page.getByLabel("Canonical preflight plan")).toContainText("What this run will do");
   completed.push("run_production_preflight");
 
   const submissionResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/runs" && response.request().method() === "POST");
-  await page.getByRole("button", { name: "Submit Simulate job" }).click();
+  await page.getByRole("button", { name: "Start simulation" }).click();
   const submission = await (await submissionResponse).json() as JsonObject;
   expect(submission.schema_version).toBe("bluefire.run-job-submission.v1");
   const reviewLatest = page.getByRole("button", { name: "Review", exact: true });

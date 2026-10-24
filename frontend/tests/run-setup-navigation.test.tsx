@@ -188,7 +188,7 @@ it.each(["mode", "scope"] as const)("honors a manual %s edit made while setup aw
   }
   const edited = config();
   await act(async () => { resolveInventory([]); });
-  await waitFor(() => expect(screen.getByRole("button", { name: "Run preflight" })).toBeEnabled());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Check run" })).toBeEnabled());
   expect(config()).toEqual(edited);
   expect(simulate).toBeChecked();
   expect(nonReads()).toEqual([]);
@@ -197,7 +197,7 @@ it.each(["mode", "scope"] as const)("honors a manual %s edit made while setup aw
 it("keeps idle setup and history useful without an empty live console", async () => {
   mount("/runs", "simulate");
   await screen.findByRole("heading", { name: "Run history" });
-  await waitFor(() => expect(screen.getByRole("button", { name: "Run preflight" })).toBeEnabled());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Check run" })).toBeEnabled());
   expect(screen.queryByRole("heading", { name: "No active run" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Pause" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
@@ -222,7 +222,7 @@ it.each(["simulate", "execute"] as const)("applies a %s setup arrival after the 
   await screen.findByRole("radio", { name: new RegExp(`^${opposite}`, "i") });
   expect(config().mode).toBe(opposite);
   expect(window.localStorage.getItem("bluefire.local.active-job-id.v1")).toBe(staleStoredJobId);
-  expect(screen.getByRole("button", { name: "Run preflight" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Check run" })).toBeDisabled();
   await act(async () => { settle(missingStoredJob()); });
   await waitFor(() => expect(screen.getByRole("radio", { name: new RegExp(`^${mode}`, "i") })).toBeChecked());
   expect(window.localStorage.getItem("bluefire.local.active-job-id.v1")).toBeNull();
@@ -246,7 +246,7 @@ it.each(["mode", "scope"] as const)("preserves a manual %s choice while the stal
   }
   const edited = config();
   await act(async () => { settle(missingStoredJob()); });
-  await waitFor(() => expect(screen.getByRole("button", { name: "Run preflight" })).toBeEnabled());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Check run" })).toBeEnabled());
   expect(window.localStorage.getItem("bluefire.local.active-job-id.v1")).toBeNull();
   expect(config()).toEqual(edited);
   expect(nonReads()).toEqual([]);
@@ -261,7 +261,7 @@ it.each([[500, "service_unavailable"], [404, "unresolved_endpoint"]] as const)("
   await screen.findByText("Stored job lookup did not resolve.");
   expect(window.localStorage.getItem("bluefire.local.active-job-id.v1")).toBe(staleStoredJobId);
   expect(config().mode).toBe("simulate");
-  expect(screen.getByRole("button", { name: "Run preflight" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Check run" })).toBeDisabled();
   expect(nonReads()).toEqual([]);
 });
 
@@ -287,7 +287,7 @@ it("does not replay setup after a freshly validated stored job later disappears"
   expect(config().mode).toBe("simulate");
   lookup.response = Promise.resolve(missingStoredJob());
   await act(async () => { await client.refetchQueries({ queryKey: ["job", staleStoredJobId], exact: true }); });
-  await waitFor(() => expect(screen.getByRole("button", { name: "Run preflight" })).toBeEnabled());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Check run" })).toBeEnabled());
   expect(window.localStorage.getItem("bluefire.local.active-job-id.v1")).toBeNull();
   expect(config().mode).toBe("simulate");
   expect(nonReads()).toEqual([]);

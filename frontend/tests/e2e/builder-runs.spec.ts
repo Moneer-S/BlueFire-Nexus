@@ -300,7 +300,7 @@ test("Execute approval cannot bypass canonical review and legacy authority is sc
   await expect(page.getByRole("button", { name: "Create approval-gated job" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Approve and release job" })).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Run preflight" }).click();
+  await page.getByRole("button", { name: "Check run" }).click();
   await expect(page.getByText("Demo mode previews Execute configuration but never dispatches runner effects.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Create approval-gated job" })).toBeDisabled();
 
