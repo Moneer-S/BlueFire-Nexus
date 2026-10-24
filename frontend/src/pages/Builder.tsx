@@ -16,7 +16,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import "./Builder.css";
 import { guaranteedInputSources, stepParameterSummary } from "../lib/graph-authoring";
 import { ParameterField } from "../components/ParameterField";
-import { branchLabels, focusedGraphLayout, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, graphBoundsViewport, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, readableGraphViewport, revealGraphContext, type GraphViewport, type ScenarioGraph } from "../lib/graph-view";
+import { branchLabels, focusedGraphLayout, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, graphBoundsViewport, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, readableGraphViewport, revealGraphContext, type GraphFrame, type GraphViewport, type ScenarioGraph } from "../lib/graph-view";
 import { api } from "../lib/api";
 import { defaultGraphView, readWorkingGraphView, writeWorkingGraphView } from "../lib/graph-view-retention";
 import { initialParameterValue, shouldInitializeParameter } from "../lib/parameters";
@@ -113,6 +113,30 @@ const proOptions = { hideAttribution: true };
 const miniMapStyle = { width: 132, height: 80 };
 const rightRouteGutter = 72;
 const sameViewport = (left: GraphViewport, right: GraphViewport) => left.zoom === right.zoom && Math.abs(left.x - right.x) < 0.001 && Math.abs(left.y - right.y) < 0.001;
+
+function visibleCanvasFrame(canvas: HTMLElement): GraphFrame {
+  const frame = { x: 0, y: 0, width: canvas.clientWidth, height: canvas.clientHeight };
+  const main = canvas.closest(".builder-focus") ? null : canvas.closest("main");
+  const bounds = canvas.getBoundingClientRect(), scrollport = main?.getBoundingClientRect();
+  if (!bounds.width || !bounds.height) return { ...frame, width: 0, height: 0 };
+  const left = bounds.left + canvas.clientLeft, top = bounds.top + canvas.clientTop;
+  const scrollLeft = (scrollport?.left ?? 0) + (main?.clientLeft ?? 0);
+  const scrollTop = (scrollport?.top ?? 0) + (main?.clientTop ?? 0);
+  const visibleLeft = Math.max(left, scrollLeft, 0);
+  const visibleTop = Math.max(top, scrollTop, 0);
+  const right = Math.min(left + frame.width, scrollLeft + (main?.clientWidth ?? window.innerWidth), window.innerWidth);
+  const bottom = Math.min(top + frame.height, scrollTop + (main?.clientHeight ?? window.innerHeight), window.innerHeight);
+  return { x: visibleLeft - left, y: visibleTop - top, width: Math.max(0, right - visibleLeft), height: Math.max(0, bottom - visibleTop) };
+}
+
+function revealCanvasToolbar(canvas: HTMLElement) {
+  const main = canvas.closest(".builder-focus") ? null : canvas.closest("main");
+  if (!main?.clientHeight) return;
+  const toolbar = canvas.closest(".graph-panel")?.querySelector(".graph-topbar");
+  const scrollport = main.getBoundingClientRect();
+  const distance = toolbar ? toolbar.getBoundingClientRect().top - scrollport.top - main.clientTop - 8 : 0;
+  if (distance > 0 && canvas.getBoundingClientRect().bottom > scrollport.top + main.clientTop + main.clientHeight) main.scrollTop += distance;
+}
 
 export function BuilderPage() {
   const { scenario } = useProduct();
@@ -321,6 +345,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   const clipboard = useRef<ScenarioStep | undefined>(undefined); const flow = useReactFlow<BehaviorFlowNode, FlowEdge>();
   const nodesInitialized = useNodesInitialized();
   const initialFrameDone = useRef(false);
+  const framedFocusMode = useRef(focusMode);
   const frameStep = useCallback((id: string, mode: "start" | "readable" | "reveal", duration = 0, preferred?: GraphViewport) => {
     const canvas = graphCanvas.current;
     const node = flow.getNode(id);
@@ -328,7 +353,8 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     const hasRightRoutes = graph.edges.some(edge => edge.from_step === id && (edge.outcome === "success" ? node.data.routeOut !== Position.Bottom : allBranches || expandedBranches.has(id)));
     // Reserve label width in graph units so it stays clear at operator zoom.
     const bounds = { ...node.position, width: (node.measured?.width ?? GRAPH_NODE_WIDTH) + (hasRightRoutes ? rightRouteGutter : 0), height: node.measured?.height ?? GRAPH_NODE_HEIGHT };
-    const frame = { width: canvas.clientWidth, height: canvas.clientHeight };
+    const frame = visibleCanvasFrame(canvas);
+    if (!frame.width || !frame.height) return false;
     const current = flow.getViewport();
     const neighborIds = new Set(graph.edges.flatMap(edge => edge.from_step === id ? [edge.to_step] : edge.to_step === id ? [edge.from_step] : []));
     const neighbors = [...neighborIds].flatMap(neighborId => {
@@ -348,7 +374,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
       const hasRightRoutes = graph.edges.some(edge => edge.from_step === id && (edge.outcome === "success" ? node.data.routeOut !== Position.Bottom : allBranches || expandedBranches.has(id)));
       return [{ ...node.position, width: (node.measured?.width ?? GRAPH_NODE_WIDTH) + (hasRightRoutes ? rightRouteGutter : 0), height: node.measured?.height ?? GRAPH_NODE_HEIGHT }];
     });
-    const viewport = graphBoundsViewport(bounds, { width: canvas.clientWidth, height: canvas.clientHeight }, 48, 1);
+    const viewport = graphBoundsViewport(bounds, visibleCanvasFrame(canvas), 48, 1);
     if (!viewport) return false;
     if (readable && viewport.zoom < minimumReadableGraphZoom) {
       // A scheduled group change may still capture the previous selection.
@@ -358,11 +384,6 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     void flow.setViewport(viewport, { duration: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? 0 : duration });
     return true;
   }, [allBranches, expandedBranches, flow, frameStep, graph.edges, scenario.start, selectedId]);
-  useEffect(() => {
-    if (initialFrameDone.current || !nodesInitialized || viewMode !== "graph" || !nodes.length) return;
-    initialFrameDone.current = fitNodes(shownSteps.map(step => step.id), 0, true);
-  }, [fitNodes, nodesInitialized, nodes.length, shownSteps, viewMode]);
-
   useEffect(() => {
     if (!selectionToReveal || selectionToReveal !== selectedId || !inspectorOpen || viewMode !== "steps") return;
     const row = [...(orderedSteps.current?.querySelectorAll<HTMLButtonElement>("button[data-step-id]") ?? [])]
@@ -383,37 +404,97 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   useEffect(() => {
     const canvas = graphCanvas.current;
     if (!canvas || !nodesInitialized || viewMode !== "graph") return;
+    let focusTransition = framedFocusMode.current !== focusMode;
+    framedFocusMode.current = focusMode;
+    const main = focusMode ? null : canvas.closest("main");
+    const scrollPosition = () => ({ top: main?.scrollTop ?? 0, left: main?.scrollLeft ?? 0 });
+    const sameScroll = (left: ReturnType<typeof scrollPosition>, right: ReturnType<typeof scrollPosition>) => Math.abs(left.top - right.top) < 1 && Math.abs(left.left - right.left) < 1;
     let pending = 0;
-    let previousFrame = { width: canvas.clientWidth, height: canvas.clientHeight };
-    let recovery: { original: GraphViewport; applied: GraphViewport; geometryRevision: number } | undefined;
+    let previousFrame = visibleCanvasFrame(canvas);
+    let previousCanvas = { width: canvas.clientWidth, height: canvas.clientHeight };
+    let previousMainWidth = main?.clientWidth ?? 0;
+    let previousMainHeight = main?.clientHeight ?? 0;
+    let lastScroll = scrollPosition();
+    let interrupted = false;
+    let recovery: { original: GraphViewport; applied: GraphViewport; geometryRevision: number; originalScroll: ReturnType<typeof scrollPosition>; mainHeight: number } | undefined;
+    const onScroll = () => {
+      const current = scrollPosition();
+      if (sameScroll(current, lastScroll)) return;
+      lastScroll = current;
+      recovery = undefined;
+      interrupted = true;
+    };
     const reveal = () => {
       cancelAnimationFrame(pending);
       pending = requestAnimationFrame(() => {
-        const frame = { width: canvas.clientWidth, height: canvas.clientHeight };
-        if (initialFrameDone.current && selectedId) {
+        const frame = visibleCanvasFrame(canvas);
+        const mainHeight = main?.clientHeight ?? 0;
+        const mainWidth = main?.clientWidth ?? 0;
+        const canvasSize = { width: canvas.clientWidth, height: canvas.clientHeight };
+        const revealFromFocus = focusTransition;
+        focusTransition = false;
+        const needsInitialFrame = !initialFrameDone.current && nodes.length > 0;
+        // Focus mode replaces the observer after layout has already changed.
+        // That explicit navigation still needs one reveal at the current zoom.
+        if (!needsInitialFrame && !revealFromFocus && mainHeight === previousMainHeight && mainWidth === previousMainWidth && canvasSize.width === previousCanvas.width && canvasSize.height === previousCanvas.height) return;
+        const mainShrank = mainHeight < previousMainHeight;
+        const mainGrew = mainHeight > previousMainHeight;
+        if (needsInitialFrame) {
+          // Opening Build into an already stacked dock has no resize transition.
+          // Establish usable graph space before accepting its first frame.
+          if (frame.height < GRAPH_NODE_HEIGHT + 96) revealCanvasToolbar(canvas);
+          lastScroll = scrollPosition();
+          initialFrameDone.current = fitNodes(shownSteps.map(step => step.id), 0, true);
+        } else if (initialFrameDone.current && selectedId) {
           const current = flow.getViewport();
           // A later operator pan, zoom, focus, or card move owns the view from then on.
-          if (recovery && (!sameViewport(current, recovery.applied) || recovery.geometryRevision !== geometryRevision.current)) recovery = undefined;
-          const grew = frame.width > previousFrame.width || frame.height > previousFrame.height;
-          const shrank = frame.width < previousFrame.width || frame.height < previousFrame.height;
-          const next = frameStep(selectedId, "reveal", 0, grew ? recovery?.original : undefined);
-          if (next) {
-            if (recovery) recovery.applied = next;
-            else if (shrank && !sameViewport(next, current)) recovery = { original: current, applied: next, geometryRevision: geometryRevision.current };
-            if (recovery && sameViewport(next, recovery.original)) recovery = undefined;
+          if (recovery && (!sameViewport(current, recovery.applied) || recovery.geometryRevision !== geometryRevision.current)) {
+            recovery = undefined;
+            interrupted = true;
+          }
+          const grew = mainGrew || frame.width > previousFrame.width || frame.height > previousFrame.height;
+          const shrank = mainShrank || frame.width < previousFrame.width || frame.height < previousFrame.height;
+          if (shrank && !grew) interrupted = false;
+          if (flow.getNode(selectedId)?.dragging) {
+            recovery = undefined;
+            interrupted = true;
+          } else if (!(grew && interrupted)) {
+            const originalScroll = scrollPosition();
+            if (main && mainHeight > 0 && (mainShrank || revealFromFocus)) {
+              // A stacked dock can shrink main without resizing the canvas. Reveal
+              // its toolbar once instead of leaving the graph below the title rows.
+              revealCanvasToolbar(canvas);
+              lastScroll = scrollPosition();
+            } else if (main && mainGrew && recovery && mainHeight >= recovery.mainHeight) {
+              main.scrollTop = recovery.originalScroll.top;
+              main.scrollLeft = recovery.originalScroll.left;
+              lastScroll = scrollPosition();
+            }
+            const next = frameStep(selectedId, "reveal", 0, grew ? recovery?.original : undefined);
+            if (next) {
+              if (recovery) recovery.applied = next;
+              else if (shrank && (!sameViewport(next, current) || !sameScroll(originalScroll, lastScroll))) {
+                recovery = { original: current, applied: next, geometryRevision: geometryRevision.current, originalScroll, mainHeight: previousMainHeight };
+              }
+              if (recovery && sameViewport(next, recovery.original) && sameScroll(lastScroll, recovery.originalScroll)) recovery = undefined;
+            }
           }
         }
-        previousFrame = frame;
+        previousFrame = visibleCanvasFrame(canvas);
+        previousCanvas = canvasSize;
+        previousMainWidth = mainWidth;
+        previousMainHeight = mainHeight;
       });
     };
     // Shrinking a pane may temporarily hide context. Recover only that automatic
-    // pan when space returns; a new selection or geometry starts a fresh scope.
-    // Every reveal retains the current zoom and clamps to the available canvas.
+    // scroll/pan when space returns. Scrolling itself never triggers a reveal.
+    // Every reveal retains the current zoom and uses the visible canvas origin.
     const observer = new ResizeObserver(reveal);
     observer.observe(canvas);
+    if (main) { observer.observe(main); main.addEventListener("scroll", onScroll, { passive: true }); }
     reveal();
-    return () => { observer.disconnect(); cancelAnimationFrame(pending); };
-  }, [flow, frameStep, nodesInitialized, selectedId, viewMode]);
+    return () => { observer.disconnect(); main?.removeEventListener("scroll", onScroll); cancelAnimationFrame(pending); };
+  }, [fitNodes, flow, focusMode, frameStep, nodes.length, nodesInitialized, selectedId, shownSteps, viewMode]);
 
   const selectionForGraphRefresh = useRef(selectedId);
   // Graph edits can add and select a node together. Keep that committed selection

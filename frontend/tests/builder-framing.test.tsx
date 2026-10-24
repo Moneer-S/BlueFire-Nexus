@@ -34,25 +34,41 @@ vi.mock("@xyflow/react", async (importOriginal) => {
 
 let width = 1000;
 let height = 480;
+let mainHeight: number | undefined;
 const observers = new Set<ResizeObserverCallback>();
 const originalResizeObserver = globalThis.ResizeObserver;
 class CanvasResizeObserver {
   constructor(private callback: ResizeObserverCallback) {}
-  observe(target: Element) { if (target.classList.contains("graph-canvas")) observers.add(this.callback); }
+  observe(target: Element) { if (target.classList.contains("graph-canvas") || target.id === "main-content") observers.add(this.callback); }
   unobserve() {}
   disconnect() { observers.delete(this.callback); }
 }
 
 beforeEach(() => {
   width = 1000; height = 480;
+  mainHeight = undefined;
   state.viewport = { x: 0, y: 0, zoom: 1 };
   flow.setViewport.mockClear().mockImplementation(async (viewport: Viewport) => { state.viewport = viewport; return true; });
   flow.fitView.mockClear();
   globalThis.ResizeObserver = CanvasResizeObserver;
-  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function(this: HTMLElement) { return this.classList.contains("graph-canvas") ? width : 0; });
-  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function(this: HTMLElement) { return this.classList.contains("graph-canvas") ? height : 0; });
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function(this: HTMLElement) { return this.classList.contains("graph-canvas") ? width : this.id === "main-content" ? mainHeight === undefined ? width : 744 : 0; });
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function(this: HTMLElement) { return this.classList.contains("graph-canvas") ? height : this.id === "main-content" ? mainHeight ?? height : 0; });
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function(this: HTMLElement) {
+    if (mainHeight === undefined) {
+      if (this.id === "main-content" || this.classList.contains("graph-canvas")) return new DOMRect(0, 0, width, height);
+      if (this.classList.contains("graph-topbar")) return new DOMRect(0, -44, width, 44);
+      return new DOMRect();
+    }
+    const main = this.closest("main");
+    const scrollTop = main?.scrollTop ?? 0;
+    if (this.id === "main-content") return new DOMRect(216, 60, 744, mainHeight);
+    const focused = Boolean(this.closest(".builder-focus"));
+    if (this.classList.contains("graph-canvas")) return new DOMRect(focused ? 0 : 232, focused ? 44 : 254 - scrollTop, width, height);
+    if (this.classList.contains("graph-topbar")) return new DOMRect(focused ? 0 : 232, focused ? 0 : 210 - scrollTop, width, 44);
+    return new DOMRect();
+  });
 });
-afterEach(() => { globalThis.ResizeObserver = originalResizeObserver; observers.clear(); });
+afterEach(() => { globalThis.ResizeObserver = originalResizeObserver; observers.clear(); vi.unstubAllGlobals(); });
 
 function renderBuilder(initial: Scenario = demoScenario, layout?: Scenario["layout"]) {
   const scenario = structuredClone(initial);
@@ -60,13 +76,39 @@ function renderBuilder(initial: Scenario = demoScenario, layout?: Scenario["layo
   localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(scenario));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(["catalog"], demoCatalog);
-  render(<QueryClientProvider client={client}><Tooltip.Provider><MemoryRouter><ProductProvider><BuilderPage /></ProductProvider></MemoryRouter></Tooltip.Provider></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><Tooltip.Provider><MemoryRouter><ProductProvider><main id="main-content"><BuilderPage /></main></ProductProvider></MemoryRouter></Tooltip.Provider></QueryClientProvider>);
   return scenario;
 }
 
 function resizeCanvas(nextWidth: number, nextHeight: number) {
   width = nextWidth; height = nextHeight;
   act(() => { observers.forEach(callback => callback([], {} as ResizeObserver)); });
+}
+
+function resizeMain(nextHeight: number) {
+  mainHeight = nextHeight;
+  act(() => { observers.forEach(callback => callback([], {} as ResizeObserver)); });
+}
+
+async function renderScrollportBuilder() {
+  width = 390; height = 320; mainHeight = 540;
+  vi.stubGlobal("innerWidth", 960);
+  vi.stubGlobal("innerHeight", 600);
+  const scenario = structuredClone(demoScenario);
+  scenario.steps = ["before", "selected", "after"].map(id => ({ ...structuredClone(scenario.steps[0]!), id, inputs: {} }));
+  scenario.start = "before";
+  scenario.edges = [{ from_step: "before", outcome: "success", to_step: "selected" }, ...(["success", "blocked", "failed"] as const).map(outcome => ({ from_step: "selected", outcome, to_step: "after" }))];
+  delete scenario.adaptive_execution;
+  const rendered = renderBuilder(scenario, Object.fromEntries(scenario.steps.map((step, index) => [step.id, { x: 48, y: 32 + index * 148 }])));
+  await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
+  fireEvent.click(screen.getByRole("button", { name: "Select selected" }));
+  await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+  state.viewport = { x: 1, y: -50, zoom: 1 };
+  flow.setViewport.mockClear();
+  const main = screen.getByRole("main");
+  const canvas = main.querySelector<HTMLElement>(".graph-canvas");
+  if (!canvas) throw new Error("The Builder canvas is missing");
+  return { rendered, main, canvas };
 }
 
 function expectReadableSelection(id: string) {
@@ -154,6 +196,153 @@ describe("Builder viewport controls", () => {
     resizeCanvas(1000, 480);
     await waitFor(() => expect(state.viewport).toEqual(original));
     expect(flow.setViewport).toHaveBeenCalledOnce();
+  });
+
+  it("reveals selected route context when only the main scrollport shrinks and restores its owned adjustment", async () => {
+    const { rendered, main, canvas } = await renderScrollportBuilder();
+    const original = { ...state.viewport };
+    resizeMain(270);
+    await waitFor(() => expect(main.scrollTop).toBe(142));
+    expect(canvas.clientHeight).toBe(320);
+    expect(state.viewport.zoom).toBe(1);
+    const selected = rendered.layout!.selected!;
+    const bounds = canvas.getBoundingClientRect(), pane = main.getBoundingClientRect();
+    expect(bounds.top + state.viewport.y + selected.y).toBeGreaterThanOrEqual(pane.top);
+    expect(bounds.top + state.viewport.y + selected.y + 104 + 44).toBeLessThanOrEqual(pane.bottom);
+    expect(state.viewport.x + selected.x).toBeGreaterThanOrEqual(48);
+    expect(state.viewport.x + selected.x + 220 + 72).toBeLessThanOrEqual(canvas.clientWidth - 48);
+    expect(main.querySelector(".graph-topbar")!.getBoundingClientRect().top).toBe(pane.top + 8);
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
+
+    flow.setViewport.mockClear();
+    resizeMain(270);
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(flow.setViewport).not.toHaveBeenCalled();
+    resizeMain(540);
+    await waitFor(() => expect(main.scrollTop).toBe(0));
+    expect(state.viewport).toEqual(original);
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
+  });
+
+  it.each(["scroll", "pan", "zoom", "drag"] as const)("preserves an operator %s after revealing a stacked Assistant context", async (change) => {
+    const { rendered, main } = await renderScrollportBuilder();
+    resizeMain(270);
+    await waitFor(() => expect(main.scrollTop).toBe(142));
+    if (change === "scroll") {
+      main.scrollTop = 300;
+      fireEvent.scroll(main);
+    } else if (change === "drag") {
+      act(() => state.props.onNodesChange?.([{ id: "selected", type: "position", position: { x: 700, y: 180 }, dragging: true }]));
+    } else {
+      state.viewport = { ...state.viewport, ...(change === "pan" ? { x: -400 } : { zoom: 1.3 }) };
+      act(() => state.props.onMove?.(new MouseEvent("mousemove"), state.viewport));
+    }
+    const chosen = { ...state.viewport }, chosenScroll = main.scrollTop;
+    flow.setViewport.mockClear();
+    resizeMain(270);
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(state.viewport).toEqual(chosen);
+    expect(main.scrollTop).toBe(chosenScroll);
+    expect(flow.setViewport).not.toHaveBeenCalled();
+    resizeMain(540);
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(state.viewport).toEqual(chosen);
+    expect(main.scrollTop).toBe(chosenScroll);
+    expect(flow.setViewport).not.toHaveBeenCalled();
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
+  });
+
+  it("frames full-screen focus against the window without scrolling its underlying main pane", async () => {
+    const { main } = await renderScrollportBuilder();
+    resizeMain(270);
+    await waitFor(() => expect(main.scrollTop).toBe(142));
+    fireEvent.click(screen.getByRole("button", { name: "Enter graph focus mode" }));
+    resizeCanvas(960, 556);
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    fireEvent.click(screen.getByLabelText("View options", { selector: "summary" }));
+    fireEvent.click(screen.getByRole("button", { name: "Focus selected step" }));
+    expect(state.viewport.zoom).toBe(1);
+    expect(state.viewport.y + 180 + 104 / 2).toBe(556 / 2);
+    expect(main.scrollTop).toBe(142);
+    const focused = { ...state.viewport };
+    flow.setViewport.mockClear();
+    resizeMain(200);
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(state.viewport).toEqual(focused);
+    expect(main.scrollTop).toBe(142);
+    expect(flow.setViewport).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a collapsed measured main pane as a visible canvas", async () => {
+    const { main } = await renderScrollportBuilder();
+    const original = { ...state.viewport };
+    resizeMain(0);
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    fireEvent.click(screen.getByRole("button", { name: "Fit visible graph" }));
+    expect(state.viewport).toEqual(original);
+    expect(main.scrollTop).toBe(0);
+    expect(flow.setViewport).not.toHaveBeenCalled();
+  });
+
+  it("reveals the selection once when full-screen exits after the narrow layout has already been measured", async () => {
+    const { rendered, main, canvas } = await renderScrollportBuilder();
+    resizeMain(270);
+    await waitFor(() => expect(main.scrollTop).toBe(142));
+    width = 960; height = 556;
+    fireEvent.click(screen.getByRole("button", { name: "Enter graph focus mode" }));
+    fireEvent.click(screen.getByLabelText("View options", { selector: "summary" }));
+    fireEvent.click(screen.getByRole("button", { name: "Focus selected step" }));
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    const selected = rendered.layout!.selected!;
+    expect(state.viewport.x + selected.x + 220 + 72).toBeGreaterThan(390);
+    const zoom = state.viewport.zoom;
+
+    // The DOM uses its narrow dimensions before the replacement effect runs;
+    // no later ResizeObserver size change is needed to complete this navigation.
+    width = 390; height = 320;
+    flow.setViewport.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Exit graph focus mode" }));
+    await waitFor(() => expect(flow.setViewport).toHaveBeenCalledOnce());
+    const visible = canvas.getBoundingClientRect(), pane = main.getBoundingClientRect();
+    expect(state.viewport.zoom).toBe(zoom);
+    expect(state.viewport.x + selected.x).toBeGreaterThanOrEqual(0);
+    expect(state.viewport.x + selected.x + 220 + 72).toBeLessThanOrEqual(canvas.clientWidth);
+    expect(visible.top + state.viewport.y + selected.y).toBeGreaterThanOrEqual(pane.top);
+    expect(visible.top + state.viewport.y + selected.y + 104).toBeLessThanOrEqual(pane.bottom);
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
+    const restored = { ...state.viewport };
+    flow.setViewport.mockClear();
+    resizeMain(270);
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(state.viewport).toEqual(restored);
+    expect(flow.setViewport).not.toHaveBeenCalled();
+  });
+
+  it("initializes a readable graph when Build opens inside an already clipped main pane", async () => {
+    width = 390; height = 320; mainHeight = 270;
+    vi.stubGlobal("innerWidth", 960);
+    vi.stubGlobal("innerHeight", 600);
+    const rendered = renderBuilder();
+    await waitFor(() => expect(flow.setViewport).toHaveBeenCalledOnce());
+    const main = screen.getByRole("main");
+    const canvas = main.querySelector<HTMLElement>(".graph-canvas");
+    if (!canvas) throw new Error("The Builder canvas is missing");
+    expect(main.scrollTop).toBe(142);
+    expectReadableSelection(rendered.start);
+    const selected = rendered.layout![rendered.start]!;
+    const bounds = canvas.getBoundingClientRect(), pane = main.getBoundingClientRect();
+    expect(bounds.top + state.viewport.y + selected.y * state.viewport.zoom).toBeGreaterThanOrEqual(pane.top);
+    expect(bounds.top + state.viewport.y + (selected.y + 104) * state.viewport.zoom).toBeLessThanOrEqual(pane.bottom);
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
+
+    const chosen = { x: -400, y: -200, zoom: 1.2 };
+    state.viewport = chosen;
+    act(() => state.props.onMove?.(new MouseEvent("mousemove"), chosen));
+    flow.setViewport.mockClear();
+    resizeMain(270);
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(state.viewport).toEqual(chosen);
+    expect(flow.setViewport).not.toHaveBeenCalled();
   });
 
   it.each(["pan", "zoom"] as const)("preserves an operator %s after an automatic canvas adjustment", async (change) => {

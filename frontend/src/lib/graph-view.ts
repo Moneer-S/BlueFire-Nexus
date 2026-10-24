@@ -7,7 +7,7 @@ export const GRAPH_NODE_WIDTH = 220;
 export const GRAPH_NODE_HEIGHT = 104;
 
 export type GraphViewport = { x: number; y: number; zoom: number };
-export type GraphFrame = { width: number; height: number };
+export type GraphFrame = { width: number; height: number; x?: number; y?: number };
 export type GraphNodeBounds = { x: number; y: number; width: number; height: number };
 
 /** Opening a long path must not make every card an unreadable miniature. */
@@ -15,8 +15,8 @@ export function readableGraphViewport(node: GraphNodeBounds, frame: GraphFrame, 
   const margin = 24;
   const zoom = Math.max(0.1, Math.min(1, (frame.width - margin * 2) / node.width, (frame.height - margin * 2) / node.height));
   return {
-    x: frame.width / 2 - (node.x + node.width / 2) * zoom,
-    y: atStart ? margin - node.y * zoom : frame.height / 2 - (node.y + node.height / 2) * zoom,
+    x: (frame.x ?? 0) + frame.width / 2 - (node.x + node.width / 2) * zoom,
+    y: (frame.y ?? 0) + (atStart ? margin - node.y * zoom : frame.height / 2 - (node.y + node.height / 2) * zoom),
     zoom,
   };
 }
@@ -33,8 +33,8 @@ export function graphBoundsViewport(nodes: readonly GraphNodeBounds[], frame: Gr
   const zoom = Math.min(maxZoom, (frame.width - padding * 2) / width, (frame.height - padding * 2) / height);
   if (!Number.isFinite(zoom) || zoom <= 0) return undefined;
   return {
-    x: frame.width / 2 - (left + width / 2) * zoom,
-    y: frame.height / 2 - (top + height / 2) * zoom,
+    x: (frame.x ?? 0) + frame.width / 2 - (left + width / 2) * zoom,
+    y: (frame.y ?? 0) + frame.height / 2 - (top + height / 2) * zoom,
     zoom,
   };
 }
@@ -45,8 +45,8 @@ export function revealGraphNode(viewport: GraphViewport, node: GraphNodeBounds, 
     if (size > extent - margin * 2) return (extent - size) / 2 - start;
     return start < margin ? margin - start : start + size > extent - margin ? extent - margin - start - size : 0;
   };
-  const x = shift(viewport.x + node.x * viewport.zoom, node.width * viewport.zoom, frame.width);
-  const y = shift(viewport.y + node.y * viewport.zoom, node.height * viewport.zoom, frame.height);
+  const x = shift(viewport.x + node.x * viewport.zoom - (frame.x ?? 0), node.width * viewport.zoom, frame.width);
+  const y = shift(viewport.y + node.y * viewport.zoom - (frame.y ?? 0), node.height * viewport.zoom, frame.height);
   return x || y ? { ...viewport, x: viewport.x + x, y: viewport.y + y } : viewport;
 }
 

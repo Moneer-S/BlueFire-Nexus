@@ -64,7 +64,7 @@
 @media (max-width: 1180px) { .workspace-content.assistant-open { grid-template-columns: minmax(0, 1fr) 320px; } .workspace-search-location { display: none; } }
 @media (max-width: 1050px) { .workspace-content.assistant-open { grid-template-columns: minmax(0, 1fr); } #assistant-dock { position: static; height: min(65dvh, 600px); border-top: 1px solid var(--line); } .experiment-assistant { border-left: 0; } }
 @media (min-width: 901px) and (max-width: 1050px) {
-  .workspace-content.assistant-open { height: calc(100dvh - var(--topbar-height)); grid-template-rows: minmax(0, 40%) minmax(0, 1fr); }
+  .workspace-content.assistant-open { height: calc(100dvh - var(--topbar-height)); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
   .workspace-content.assistant-open > main { min-height: 0; overflow: auto; overscroll-behavior: contain; }
   .workbench-shell .workspace-content.assistant-open > #main-content:has(.workbench-builder) { height: 100%; min-height: 0; max-height: 100%; overflow: auto; }
   .workspace-content.assistant-open > #assistant-dock { height: auto; }

@@ -44,13 +44,45 @@ function namedRun(run: RunRecord, name: string): RunRecord {
 
 afterEach(() => vi.restoreAllMocks());
 
+it("shows one history header and puts reload before saved rows in keyboard order", async () => {
+  const user = userEvent.setup();
+  mocks();
+  const compare = vi.spyOn(api, "compare");
+  mount("/compare");
+  const summary = await screen.findByText("Saved comparisons", { selector: "summary" });
+  const history = summary.closest("details")!;
+  expect(screen.getAllByText("Saved comparisons")).toHaveLength(1);
+  await screen.findAllByRole("button", { name: /^Open saved comparison\./ });
+  const firstRow = snapshotButton("snapshot-a");
+  const reload = screen.getByRole("button", { name: "Reload saved comparisons" });
+  await waitFor(() => expect(reload).toBeEnabled());
+
+  await user.click(summary);
+  expect(history).not.toHaveAttribute("open");
+  expect(reload).not.toBeVisible();
+  expect(firstRow).not.toBeVisible();
+  await user.click(summary);
+  expect(history).toHaveAttribute("open");
+  expect(summary).toHaveFocus();
+  await user.tab();
+  expect(reload).toHaveFocus();
+  await user.tab();
+  expect(firstRow).toHaveFocus();
+  await user.tab({ shift: true });
+  expect(reload).toHaveFocus();
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(api.comparisonSnapshots).toHaveBeenCalledTimes(2));
+  expect(history).toHaveAttribute("open");
+  expect(compare).not.toHaveBeenCalled();
+});
+
 it("saves a new comparison, reopens it, and reloads with GET only", async () => {
   const user = userEvent.setup();
   mocks();
   const compare = vi.spyOn(api, "compare").mockResolvedValue({ ...structuredClone(original), saved_snapshot: { snapshot_id: "snapshot-a", digest: "snapshot-a-digest", created_at: "2026-10-18T12:00:00Z" } });
   const read = vi.spyOn(api, "comparisonSnapshot").mockResolvedValue(saved("snapshot-a"));
   mount("/compare");
-  await screen.findByRole("heading", { name: "Saved comparisons" });
+  await screen.findByText("Saved comparisons", { selector: "summary" });
   const boxes = screen.getAllByRole("checkbox");
   await user.click(boxes[0]!);
   await user.click(boxes[1]!);

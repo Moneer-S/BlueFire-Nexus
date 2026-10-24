@@ -65,6 +65,20 @@ describe("readable graph framing", () => {
     expect(next.y + node.y + node.height).toBe(252);
   });
 
+  it("uses the visible canvas origin after its top and left scroll out of view", () => {
+    const selected = { x: 500, y: 180, width: 292, height: 104 };
+    const frame = { x: 32, y: 120, width: 420, height: 260 };
+    const viewport = { x: -450, y: -160, zoom: 1 };
+    const revealed = revealGraphContext(viewport, selected, [], frame);
+    expect(revealed.zoom).toBe(viewport.zoom);
+    expect(revealed.x + selected.x).toBe(frame.x + 48);
+    expect(revealed.y + selected.y).toBe(frame.y + 48);
+    const centered = readableGraphViewport(selected, frame);
+    expect(centered.x + (selected.x + selected.width / 2) * centered.zoom).toBe(frame.x + frame.width / 2);
+    expect(centered.y + (selected.y + selected.height / 2) * centered.zoom).toBe(frame.y + frame.height / 2);
+    expect(graphBoundsViewport([selected], frame)).toEqual(centered);
+  });
+
   it("never changes operator zoom when a selected card is larger than the canvas", () => {
     const viewport = { x: 37, y: 92, zoom: 1.6 };
     const next = revealGraphNode(viewport, node, { width: 300, height: 240 });
