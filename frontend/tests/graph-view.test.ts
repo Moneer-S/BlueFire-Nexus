@@ -15,17 +15,65 @@ function branchedScenario(): Scenario {
 }
 
 describe("experiment presentation", () => {
-  it("groups a large path without losing step identity or cross-section bindings", () => {
+  it("keeps a long connected path whole instead of paging every three steps", () => {
     const steps = Array.from({ length: 25 }, (_, index): ScenarioStep => ({ ...structuredClone(demoScenario.steps[0]!), id: `step_${index}`, inputs: index ? { files: { from_step: `step_${index - 1}`, artifact: "files" } } : {} }));
     const serialized = JSON.stringify(steps);
-    const sections = graphSections(steps);
-    expect(sections.map((section) => section.title)).toEqual(["Steps 1–3", "Steps 4–6", "Steps 7–9", "Steps 10–12", "Steps 13–15", "Steps 16–18", "Steps 19–21", "Steps 22–24", "Steps 25–25"]);
+    const edges = steps.slice(1).map((step, index) => ({ from_step: steps[index]!.id, outcome: "success" as const, to_step: step.id }));
+    const sections = graphSections(steps, edges);
+    expect(sections.map((section) => section.title)).toEqual(["All steps"]);
     expect(sections.flatMap((section) => section.steps)).toEqual(steps);
-    expect(sections[1]?.steps[0]).toBe(steps[3]);
-    expect(sections[1]?.steps[0]?.inputs.files).toEqual({ from_step: "step_2", artifact: "files" });
+    expect(sections[0]?.steps[3]).toBe(steps[3]);
+    expect(sections[0]?.steps[3]?.inputs.files).toEqual({ from_step: "step_2", artifact: "files" });
     expect(JSON.stringify(steps)).toBe(serialized);
     expect(graphSections(steps.slice(0, 3))).toHaveLength(1);
-    expect(graphSections(steps.slice(0, 12))).toHaveLength(4);
+    expect(graphSections(steps.slice(0, 12))).toHaveLength(1);
+  });
+  it("offers focus groups at actual decisions and joins, preserving every step and binding", () => {
+    const scenario = branchedScenario();
+    const before = structuredClone(scenario);
+    const sections = graphSections(scenario.steps, scenario.edges, scenario.start);
+    expect(sections.map(section => section.steps.map(step => step.id))).toEqual([["first"], ["normal"], ["alternative"], ["cleanup"], ["detached"]]);
+    expect(sections.find(section => section.steps[0]?.id === "cleanup")?.title).toBe("Join at step 4");
+    expect(sections.flatMap(section => section.steps)).toEqual(scenario.steps);
+    expect(scenario).toEqual(before);
+  });
+  it("keeps a connected path whole when saved steps are not in route order", () => {
+    const steps = ["cleanup", "root", "mid"].map((id): ScenarioStep => ({ ...structuredClone(demoScenario.steps[0]!), id, inputs: {} }));
+    const edges: Scenario["edges"] = [{ from_step: "root", outcome: "success", to_step: "mid" }, { from_step: "mid", outcome: "success", to_step: "cleanup" }];
+    const before = structuredClone({ steps, edges });
+    for (const start of [undefined, "root"]) {
+      const sections = graphSections(steps, edges, start);
+      expect(sections.map(section => section.title)).toEqual(["All steps"]);
+      expect(sections[0]?.steps).toEqual([steps[1], steps[2], steps[0]]);
+      expect(sections[0]?.steps[0]).toBe(steps[1]);
+    }
+    expect({ steps, edges }).toEqual(before);
+  });
+  it("anchors the actual entry and preserves branch boundaries with a reordered saved graph", () => {
+    const scenario = branchedScenario();
+    scenario.steps = [scenario.steps[3]!, scenario.steps[2]!, scenario.steps[0]!, scenario.steps[4]!, scenario.steps[1]!];
+    const before = structuredClone(scenario);
+    const sections = graphSections(scenario.steps, scenario.edges, scenario.start);
+    expect(sections[0]?.title).toBe("Main path");
+    expect(sections[0]?.steps.map(step => step.id)).toEqual(["first"]);
+    expect(sections.find(section => section.steps[0]?.id === "cleanup")?.title).toBe("Join at step 1");
+    expect(sections.flatMap(section => section.steps).map(step => step.id).sort()).toEqual(scenario.steps.map(step => step.id).sort());
+    expect(sections.flatMap(section => section.steps).every(step => scenario.steps.includes(step))).toBe(true);
+    expect(scenario).toEqual(before);
+  });
+  it("retains an empty view group when the current projection has no visible steps", () => {
+    expect(graphSections([], demoScenario.edges, "missing")).toEqual([{ title: "All steps", steps: [] }]);
+  });
+  it("packs a nine-step success chain in both dimensions without changing saved coordinates or execution", () => {
+    const steps = Array.from({ length: 9 }, (_, index) => ({ ...structuredClone(demoScenario.steps[0]!), id: `step_${index}`, inputs: {} }));
+    const scenario = { ...structuredClone(demoScenario), steps, start: steps[0]!.id, edges: steps.slice(1).map((step, index) => ({ from_step: steps[index]!.id, outcome: "success" as const, to_step: step.id })), layout: { step_0: { x: 910, y: 600 } } };
+    const before = structuredClone(scenario);
+    const compact = initialGraphLayout(scenario);
+    expect(new Set(Object.values(compact).map(position => position.x)).size).toBeGreaterThan(1);
+    expect(new Set(Object.values(compact).map(position => position.y)).size).toBeGreaterThan(1);
+    expect(Math.max(...Object.values(compact).map(position => position.x))).toBeLessThan(800);
+    expect(initialGraphLayout(scenario, true).step_0).toEqual(scenario.layout.step_0);
+    expect(scenario).toEqual(before);
   });
   it("focuses the success path while retaining hidden inputs, branches, and saved positions", () => {
     const scenario = branchedScenario(); const serialized = JSON.stringify(scenario);

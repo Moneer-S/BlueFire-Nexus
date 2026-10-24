@@ -37,7 +37,7 @@ it.each(["Validate", "Save version"] as const)("shows an actionable %s refusal a
   expect(feedback).toHaveAttribute("role", "alert");
   expect(within(feedback).getByText(/Place deterministic fixture \(step 13\): This step cannot be reached.*Connect a route/)).toBeVisible();
   expect(screen.queryByText("Check the highlighted steps")).not.toBeInTheDocument();
-  expect(view.container.querySelector('.react-flow__node[data-id="step_13"]')).toBeNull();
+  expect(view.container.querySelector('.react-flow__node[data-id="step_13"]')).toBeInTheDocument();
   if (action === "Save version") {
     expect(save).toHaveBeenCalledExactlyOnceWith(before);
     expect(validate).not.toHaveBeenCalled();
@@ -53,7 +53,7 @@ it.each(["Validate", "Save version"] as const)("shows an actionable %s refusal a
   await waitFor(() => expect(screen.getByTestId("rf__node-step_13")).toHaveClass("selected"));
   expect(screen.getByTestId("rf__node-step_13").querySelector(".flow-node")).toHaveClass("invalid");
   expect(screen.getByLabelText(/^Step ID/)).toHaveValue("step_13");
-  expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue("all");
+  expect(screen.queryByRole("navigation", { name: "Focused connected path" })).not.toBeInTheDocument();
   expect(graph()).toEqual(JSON.parse(JSON.stringify(before)));
 }, 15000);
 

@@ -271,11 +271,22 @@ def test_builder_exposes_resizable_panels_and_optional_graph_detail(tmp_path: Pa
     assert 'aria-label="Experiment steps"' in source
     assert "graphView(graph, allBranches, expandedBranches)" in source
     assert "[scenario.steps, scenario.edges, scenario.start, scenario.layout]" in source
-    assert "scenario.steps.length - shownIds.size" in source
-    assert "graphSections(visibleGraph.ordered)" in source
+    # Connected-path focus is optional presentation, with a visible whole-plan return.
+    assert "graphSections(visibleGraph.ordered, graph.edges, graph.start)" in source
+    assert 'aria-label="Step group"' in source
+    assert '<option value="all">All steps</option>' in source
+    assert 'aria-label="Focused connected path"' in source
+    assert "{shownIds.size} of {scenario.steps.length} steps" in source
+    assert 'onClick={() => showSection("all")}>Return to whole plan' in source
     assert "Review run includes the whole experiment." in source
+    # View projections must not become the saved, exported, or validated scenario.
+    assert "validateMutation.mutate(structuredClone(scenario))" in source
+    assert "saveMutation.mutate(structuredClone(scenario))" in source
+    assert "JSON.stringify(scenario, null, 2)" in source
     assert 'edge.data?.kind !== "artifact" || showInputs' in source
-    assert "<h3>Method</h3>" in source
+    assert 'role="tablist" aria-label="Selected step details"' in source
+    assert "<h3>Selected method</h3>" in source
+    assert "<h3>Expected evidence</h3>" in source
     assert "<h3>Required input</h3>" in source
     assert "<h3>Next step</h3>" in source
 

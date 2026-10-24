@@ -58,7 +58,7 @@ it.each(["baseline", "protected", "restored"] as const)("reviews and releases th
   await ready();
   expect(approvalCheckbox()).not.toBeChecked();
   expect(screen.getByRole("button", { name: "Approve and release job" })).toBeDisabled();
-  expect(screen.queryByRole("button", { name: "Run preflight" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Check run" })).not.toBeInTheDocument();
   expect(screen.queryByText(/Review a new run/)).not.toBeInTheDocument();
   confirm(); fireEvent.click(screen.getByRole("button", { name: "Approve and release job" }));
   await waitFor(() => expect(view.approve).toHaveBeenCalledExactlyOnceWith(view.selected.job_id, "Reviewer"));

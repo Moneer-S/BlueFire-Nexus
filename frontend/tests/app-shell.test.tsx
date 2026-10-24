@@ -101,7 +101,15 @@ describe("workbench navigation", () => {
     expect(document.body.style.overflow).toBe("hidden");
     within(drawer).getByRole("button", { name: "Show more tools" }).focus();
     await user.keyboard("{Tab}");
+    const connectionDetails = within(drawer).getByText("Connection details", { selector: "summary" });
+    expect(connectionDetails).toHaveFocus();
+    // user-event does not synthesize native summary activation from Enter.
+    await user.click(connectionDetails);
+    expect(connectionDetails.closest("details")).toHaveAttribute("open");
+    await user.keyboard("{Tab}");
     expect(within(drawer).getByRole("link", { name: "BlueFire Nexus home" })).toHaveFocus();
+    await user.keyboard("{Shift>}{Tab}{/Shift}");
+    expect(connectionDetails).toHaveFocus();
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(opener).toHaveFocus();

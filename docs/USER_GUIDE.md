@@ -253,7 +253,7 @@ The graph's adapted action needs a scope reference missing from the operator req
 
 ### Approval required
 
-Run preflight, review the exact request, and approve that request. Do not reuse an old approval after changing parameters, action, profile, or scope.
+Check run, review the exact request, and approve that request. Do not reuse an old approval after changing parameters, action, profile, or scope.
 
 ### Provider unavailable
 

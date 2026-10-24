@@ -10,6 +10,7 @@ import { demoCatalog, demoScenario } from "../src/lib/demo";
 import { BuilderPage } from "../src/pages/Builder";
 import { ProductProvider, useProduct } from "../src/state/ProductContext";
 import type { Behavior, Scenario, ScenarioStep } from "../src/types";
+import { builderOptions } from "./helpers/builder-options";
 
 // Observe the real internal handle lookup; keep the real canvas and node renderer.
 vi.mock("@xyflow/react", async (importOriginal) => {
@@ -100,6 +101,7 @@ it("refreshes same-size reused nodes' handle IDs and order so the new artifact e
   client.setQueryData(["catalog"], catalog);
   vi.spyOn(api, "catalog").mockResolvedValue(catalog);
   render(<QueryClientProvider client={client}><Tooltip.Provider><MemoryRouter><ProductProvider><ReplaceGraph /><BuilderPage /></ProductProvider></MemoryRouter></Tooltip.Provider></QueryClientProvider>);
+  await builderOptions(user);
   await user.click(await screen.findByRole("checkbox", { name: "Show input connections" }));
   const sourceCard = screen.getByTestId("rf__node-source");
   const sinkCard = screen.getByTestId("rf__node-sink");

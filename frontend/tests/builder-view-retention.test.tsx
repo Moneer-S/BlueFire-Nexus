@@ -11,9 +11,9 @@ import { defaultGraphView } from "../src/lib/graph-view-retention";
 import { BuilderPage } from "../src/pages/Builder";
 import { ProductProvider, useProduct } from "../src/state/ProductContext";
 import type { Scenario } from "../src/types";
-import { builderOptions } from "./helpers/builder-options";
+import { builderOptions, focusSuccessPath } from "./helpers/builder-options";
 
-const key = `bluefire.working-graph-view.v1:${demoScenario.id}`;
+const key = `bluefire.working-graph-view.v2:${demoScenario.id}`;
 const graphKey = "bluefire.local.scenario.v1";
 function Navigation() {
   const { scenario, setScenario } = useProduct();
@@ -70,7 +70,6 @@ function labelButton(name: string) {
 it("restores a selected branch, Steps view and inspector on navigation and browser remount without changing the graph", async () => {
   const { user, remount, validate, save } = setup();
   await user.click(viewButton("Steps"));
-  await user.click(textButton("Show all branches"));
   await user.click(branchButton());
   expect(branchButton()).toHaveAttribute("aria-pressed", "true");
   await user.click(navigationLink("Leave editor"));
@@ -84,7 +83,7 @@ it("restores a selected branch, Steps view and inspector on navigation and brows
   expect(validate).not.toHaveBeenCalled(); expect(save).not.toHaveBeenCalled();
   // Hiding a branch still clears selection and cannot make Delete act on it.
   const confirm = vi.spyOn(window, "confirm");
-  await user.click(textButton("Focus on success path"));
+  await focusSuccessPath(user);
   await builderOptions(user);
   const deleteButton = screen.getByLabelText("Delete selected node", { selector: "button" });
   expect(deleteButton).toBeVisible();
@@ -95,6 +94,7 @@ it("restores a selected branch, Steps view and inspector on navigation and brows
 
 it("retains individually expanded branches and a closed inspector without selecting the next experiment", async () => {
   const { user, remount } = setup();
+  await focusSuccessPath(user);
   await user.click(viewButton("Steps"));
   const list = within(screen.getByRole("list", { name: "Experiment steps" }));
   const branchSource = demoScenario.steps.find(step => demoScenario.edges.some(edge => edge.from_step === step.id && edge.to_step === "fallback"))!;
@@ -113,18 +113,36 @@ it("retains individually expanded branches and a closed inspector without select
   expect(screen.queryByRole("list", { name: "Experiment steps" })).not.toBeInTheDocument();
 });
 
-it("restores the selected section on the actual canvas after remount", async () => {
+it("restores a connected branch focus after remount", async () => {
   const scenario: Scenario = { ...structuredClone(demoScenario), start: "step_1", steps: Array.from({ length: 17 }, (_, index) => ({ ...structuredClone(demoScenario.steps[0]!), id: `step_${index + 1}` })), edges: [], layout: undefined };
   scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success", to_step: step.id }));
+  scenario.edges.push({ from_step: "step_2", outcome: "blocked", to_step: "step_4" });
   const { user, remount } = setup(scenario);
-  await user.click(within(screen.getByLabelText("Experiment step groups")).getByRole("button", { name: "Next group" }));
-  expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue("1");
+  await builderOptions(user);
+  await user.selectOptions(screen.getByRole("combobox", { name: "Step group" }), "2");
+  await builderOptions(user, false);
+  expect(screen.getByRole("navigation", { name: "Focused connected path" })).toHaveTextContent("Join at step 4");
   remount();
-  expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue("1");
+  expect(screen.getByRole("navigation", { name: "Focused connected path" })).toHaveTextContent("Join at step 4");
   expect(document.querySelector('.react-flow__node[data-id="step_4"]')).toBeInTheDocument();
   await builderOptions(user);
+  expect(screen.getByRole("combobox", { name: "Step group" })).toHaveValue("2");
   expect(labelButton("Copy selected node")).toBeEnabled();
   expect(JSON.parse(localStorage.getItem(graphKey)!)).toEqual(scenario);
+});
+
+it("retires legacy numeric pages while retaining the selected step and leaving the saved graph untouched", () => {
+  const selected = demoScenario.steps[3]!;
+  const legacyKey = `bluefire.working-graph-view.v1:${demoScenario.id}`;
+  const record = JSON.stringify({ scenarioId: demoScenario.id, view: { ...defaultGraphView(demoScenario), selected: { id: selected.id, behavior: selected.behavior_id }, section: 1 } });
+  sessionStorage.setItem(legacyKey, record);
+  setup();
+  expect(screen.queryByRole("navigation", { name: "Focused connected path" })).not.toBeInTheDocument();
+  expect(document.querySelectorAll(".react-flow__node")).toHaveLength(demoScenario.steps.length);
+  expect(document.querySelector(`.react-flow__node[data-id="${selected.id}"]`)).toHaveClass("selected");
+  expect(sessionStorage.getItem(legacyKey)).toBe(record);
+  expect(sessionStorage.getItem(key)).toBeNull();
+  assertGraphUnchanged();
 });
 
 it.each(["unknown-step", "wrong-behavior", "wrong-scenario", "malformed", "oversized"])("ignores %s view storage without changing graph edges or input bindings", (kind) => {
@@ -144,7 +162,6 @@ it("keeps step selection usable when browser view storage is unavailable", async
   const { user } = setup();
   const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("Storage unavailable"); });
   await user.click(viewButton("Steps"));
-  await user.click(textButton("Show all branches"));
   await user.click(branchButton());
   expect(branchButton()).toHaveAttribute("aria-pressed", "true");
   expect(write).toHaveBeenCalled(); assertGraphUnchanged();
@@ -173,7 +190,6 @@ it.each(["saved", "proposal"])("does not restore or replace the working view whi
   expect(view.getByRole("button", { name: "Canvas" })).toHaveAttribute("aria-pressed", "true");
   expect(screen.queryByRole("button", { name: "Close step details" })).not.toBeInTheDocument();
   await user.click(viewButton("Steps"));
-  await user.click(textButton("Show all branches"));
   await user.click(branchButton());
   expect(read.mock.calls.some(([item]) => item === key)).toBe(false);
   expect(write.mock.calls.some(([item]) => item === key)).toBe(false);

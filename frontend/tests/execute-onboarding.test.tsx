@@ -121,12 +121,12 @@ describe("guided local Execute onboarding", () => {
     expect(await within(guide).findByRole("button", { name: "Load starter example" })).toBeEnabled();
 
     await applyExampleSettings(user, guide);
-    expect(await within(guide).findByRole("button", { name: "Run preflight" })).toBeEnabled();
+    expect(await within(guide).findByRole("button", { name: "Check run" })).toBeEnabled();
     expect(screen.getByRole("radio", { name: /Execute/ })).toBeChecked();
     expect(screen.getByRole("combobox", { name: "Environment profile" })).toHaveValue(GUIDED_EXECUTE_PROFILE_ID);
     expect(screen.getByRole("checkbox", { name: /Files in the selected workspace/ })).toBeChecked();
 
-    await user.click(within(guide).getByRole("button", { name: "Run preflight" }));
+    await user.click(within(guide).getByRole("button", { name: "Check run" }));
     expect(await screen.findByRole("region", { name: "Canonical preflight plan" })).toBeVisible();
     expect(screen.queryByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: /Prepared operator label/ })).not.toBeInTheDocument();
@@ -195,7 +195,7 @@ describe("guided local Execute onboarding", () => {
     await user.click(await screen.findByRole("radio", { name: /Execute/ }));
     const guide = await screen.findByRole("region", { name: "Guided local Execute" });
     await applyExampleSettings(user, guide);
-    await user.click(within(guide).getByRole("button", { name: "Run preflight" }));
+    await user.click(within(guide).getByRole("button", { name: "Check run" }));
     await user.click(await within(guide).findByRole("button", { name: "Create approval-gated job" }));
 
     const durableReview = await screen.findByRole("checkbox", { name: /I approve this exact immutable job envelope once/ });
@@ -226,14 +226,14 @@ describe("guided local Execute onboarding", () => {
     await user.click(await screen.findByRole("radio", { name: /Execute/ }));
     const guide = await screen.findByRole("region", { name: "Guided local Execute" });
     await applyExampleSettings(user, guide);
-    await user.click(within(guide).getByRole("button", { name: "Run preflight" }));
+    await user.click(within(guide).getByRole("button", { name: "Check run" }));
     await user.click(screen.getByText("Environment and scope references"));
     const targetScope = screen.getByRole("textbox", { name: /Target scope/ });
     await user.clear(targetScope);
     await user.type(targetScope, "sandbox.changed");
     resolvePreflight(json(preflight));
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run preflight" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Check run" })).toBeEnabled());
     expect(screen.getByRole("button", { name: "Create approval-gated job" })).toBeDisabled();
     expect(screen.queryByRole("region", { name: "Complete Execute approval envelope" })).not.toBeInTheDocument();
   });

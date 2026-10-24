@@ -32,8 +32,24 @@ const clearance = 14;
 const lead = 28;
 const distance = (a: RoutePoint, b: RoutePoint) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
 const same = (a: RoutePoint, b: RoutePoint) => a.x === b.x && a.y === b.y;
-function portLead(point: RoutePoint, side: PortSide): RoutePoint {
-  return { x: point.x + (side === "right" ? lead : side === "left" ? -lead : 0), y: point.y + (side === "bottom" ? lead : side === "top" ? -lead : 0) };
+function portLead(point: RoutePoint, side: PortSide, obstacles: readonly RouteObstacle[], ownId: string | undefined, length = lead): RoutePoint {
+  const horizontal = side === "left" || side === "right";
+  const forward = side === "right" || side === "bottom";
+  for (const rect of obstacles) {
+    if (rect.id === ownId) continue;
+    const across = horizontal ? point.y : point.x;
+    const low = (horizontal ? rect.y : rect.x) - clearance;
+    const high = (horizontal ? rect.y + rect.height : rect.x + rect.width) + clearance;
+    if (across <= low || across >= high) continue;
+    const boundary = horizontal
+      ? forward ? rect.x - clearance : rect.x + rect.width + clearance
+      : forward ? rect.y - clearance : rect.y + rect.height + clearance;
+    const gap = (boundary - (horizontal ? point.x : point.y)) * (forward ? 1 : -1);
+    // A top handle extends above its card. In a compact row gap, a fixed lead
+    // can enter the preceding card's clearance and trap every channel search.
+    if (gap >= 0) length = Math.min(length, gap);
+  }
+  return { x: point.x + (side === "right" ? length : side === "left" ? -length : 0), y: point.y + (side === "bottom" ? length : side === "top" ? -length : 0) };
 }
 function simplify(points: RoutePoint[]): RoutePoint[] {
   const result: RoutePoint[] = [];
@@ -111,9 +127,13 @@ function findChannel(start: RoutePoint, end: RoutePoint, obstacles: readonly Rou
 
 /** Routes use measured, visible card bounds and never move nodes or modify execution edges. */
 export function routePath({ source, target, sourceId, targetId, sourceSide = "bottom", targetSide = "top", obstacles = [], lane = 0, labelWidth = 90 }: RouteGeometry) {
-  const start = portLead(source, sourceSide), end = portLead(target, targetSide);
   const offset = 12 * lane;
   const vertical = sourceSide === "bottom" || sourceSide === "top";
+  const targetVertical = targetSide === "bottom" || targetSide === "top";
+  // Perpendicular arrivals need separate outward lanes before they turn back
+  // toward a top/bottom join; their middle channel can lie inside the source.
+  const start = portLead(source, sourceSide, obstacles, sourceId, lead + (vertical !== targetVertical ? offset : 0));
+  const end = portLead(target, targetSide, obstacles, targetId);
   // Opposing exits must not share a lane: a dashed fallback would otherwise
   // obscure the primary route beneath their common source card.
   const direction = Math.sign(vertical ? end.x - start.x : end.y - start.y);

@@ -110,21 +110,23 @@ it.each([
   expect(within(targets).getByText(expected)).toBeVisible();
 });
 
-it("keeps unknown objective and missing observation metadata distinct from prevention and zero", () => {
+it("keeps unknown objective and missing observation metadata distinct from prevention and zero", async () => {
   render(<RunReview run={run({ objective_reached: undefined, evidence: undefined, status: "interrupted", steps: [] })} catalog={demoCatalog}/>);
   const outcome = within(screen.getByRole("region", { name: "Recorded run outcome" }));
   expect(outcome.getByRole("heading", { name: "Not established" })).toBeVisible();
   expect(outcome.getByText("Not reported")).toBeVisible();
   expect(outcome.getByText("None recorded")).toBeVisible();
+  await userEvent.setup().click(outcome.getByText("Result details"));
   expect(outcome.getByText("This does not establish that the path completed.")).toBeVisible();
   expect(outcome.queryByText(/0 observed|prevented|path completed without/i)).not.toBeInTheDocument();
 });
 
-it("qualifies synthetic success and exposes an explicit zero observation count", () => {
+it("qualifies synthetic success and exposes an explicit zero observation count", async () => {
   render(<RunReview run={run({ mode: "simulate", objective_reached: true, evidence: { records: [] }, cleanup: true })} catalog={demoCatalog}/>);
   const outcome = within(screen.getByRole("region", { name: "Recorded run outcome" }));
   expect(outcome.getByRole("heading", { name: "Achieved (synthetic)" })).toBeVisible();
   expect(outcome.getByText("0 observed records")).toBeVisible();
+  await userEvent.setup().click(outcome.getByText("Result details"));
   expect(outcome.getByText("Simulate does not perform lab effects.")).toBeVisible();
 });
 

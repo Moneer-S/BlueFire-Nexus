@@ -25,7 +25,10 @@ it("does not turn an unavailable run history into an empty history", async () =>
   mount();
   expect(await screen.findByText("Run history unavailable")).toBeVisible();
   expect(screen.queryByText("No runs have been recorded.")).not.toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "Working draft" })).toBeVisible();
+  expect(screen.getByRole("heading", { name: "Example plan" })).toBeVisible();
+  expect(screen.getByText("Built-in example")).toBeVisible();
+  expect(screen.getByRole("link", { name: "Open example plan" })).toHaveAttribute("href", "/builder");
+  expect(screen.queryByRole("heading", { name: "Working draft" })).not.toBeInTheDocument();
 });
 it("retries only failed run history and replaces the unavailable state with a real empty result", async () => {
   vi.mocked(api.runs).mockRejectedValueOnce(new Error("History request failed")).mockResolvedValue({ runs: [], unavailable_run_count: 0 });
@@ -63,6 +66,18 @@ it("opens the exact experiment in the library without replacing the current draf
   expect(await screen.findByRole("link", {name:"Open in library"})).toHaveAttribute("href", "/scenarios?selected=" + encodeURIComponent(demoScenario.id));
   expect(screen.queryByText("Active experiment")).not.toBeInTheDocument();
   expect(screen.queryByRole("heading", {name:"Readiness"})).not.toBeInTheDocument();
+});
+
+it("distinguishes a retained working draft from the built-in example without renaming it", async () => {
+  const draft = { ...structuredClone(demoScenario), title: "My collection review" };
+  localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(draft));
+  mount();
+  expect(screen.getByRole("heading", { name: "Working draft" })).toBeVisible();
+  expect(screen.getByRole("heading", { name: draft.title })).toBeVisible();
+  expect(screen.queryByRole("heading", { name: "Example plan" })).not.toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Continue editing" })).toHaveAttribute("href", "/builder");
+  expect(screen.getByText("Unsaved changes")).toBeVisible();
+  expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(draft);
 });
 
 it("reports unreadable records without claiming there are no runs", async () => {

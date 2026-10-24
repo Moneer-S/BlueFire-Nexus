@@ -1,7 +1,8 @@
 import type { Scenario } from "../types";
 import { graphSections, graphView } from "./graph-view";
 
-const prefix = "bluefire.working-graph-view.v1:";
+const prefix = "bluefire.working-graph-view.v2:";
+const legacyPrefix = "bluefire.working-graph-view.v1:";
 const maximumBytes = 32768;
 type StepReference = { id: string; behavior: string };
 export type WorkingGraphView = {
@@ -19,7 +20,7 @@ export function defaultGraphView(scenario: Scenario): WorkingGraphView {
   const step = scenario.steps.find(item => item.id === scenario.start) ?? scenario.steps[0];
   return { selected: step ? { id: step.id, behavior: step.behavior_id } : null,
     mode: window.matchMedia?.("(max-width: 760px)")?.matches ? "steps" : "graph",
-    allBranches: false, expanded: [], section: 0, inspector: false, routes: false, inputs: false };
+    allBranches: true, expanded: [], section: null, inspector: false, routes: false, inputs: false };
 }
 
 function reference(value: unknown, scenario: Scenario): value is StepReference {
@@ -33,7 +34,8 @@ function reference(value: unknown, scenario: Scenario): value is StepReference {
 export function readWorkingGraphView(scenario: Scenario): WorkingGraphView {
   const fallback = defaultGraphView(scenario);
   try {
-    const raw = sessionStorage.getItem(prefix + scenario.id);
+    const current = sessionStorage.getItem(prefix + scenario.id);
+    const raw = current ?? sessionStorage.getItem(legacyPrefix + scenario.id);
     if (!raw || raw.length > maximumBytes) return fallback;
     const record: unknown = JSON.parse(raw);
     if (!record || typeof record !== "object" || Array.isArray(record)) return fallback;
@@ -47,13 +49,16 @@ export function readWorkingGraphView(scenario: Scenario): WorkingGraphView {
       || new Set(value.expanded.map(item => item.id)).size !== value.expanded.length
       || !(value.section === null || (Number.isSafeInteger(value.section) && Number(value.section) >= 0))) return fallback;
     const view = value as WorkingGraphView;
+    // Retain the operator's selection and disclosures while retiring the old
+    // automatic three-step pages. New focus groups follow actual topology.
+    if (!current) view.section = null;
     let projection = graphView(scenario, view.allBranches, new Set(view.expanded.map(item => item.id)));
     // A legitimate retained step may have moved to a different branch or section.
     if (view.selected && !projection.visible.has(view.selected.id)) {
       view.allBranches = true;
       projection = graphView(scenario, true);
     }
-    const sections = graphSections(projection.ordered);
+    const sections = graphSections(projection.ordered, scenario.edges, scenario.start);
     const selectedSection = sections.findIndex(section => section.steps.some(step => step.id === view.selected?.id));
     if (view.section !== null) view.section = selectedSection >= 0 ? selectedSection : Math.min(view.section, sections.length - 1);
     return view;

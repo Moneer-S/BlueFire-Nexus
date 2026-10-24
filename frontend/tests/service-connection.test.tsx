@@ -59,11 +59,25 @@ it("detects stopped service on a terminal page, preserves cached work and reconn
 
 it.each([401, 403])("reports unavailable browser session (%s) without renewing credentials or losing the current result", async (status) => {
   const fetcher = vi.fn().mockResolvedValueOnce(success()).mockResolvedValue(new Response(null, { status }));
-  vi.stubGlobal("fetch", fetcher); mount(); await flush(); await flush(15_010);
-  expect(screen.getAllByText("Session unavailable").length).toBeGreaterThan(0);
-  expect(screen.getByText(/Relaunch with bluefire ui/)).toBeVisible(); expect(screen.getByText("Retained comparison result")).toBeVisible();
+  vi.stubGlobal("fetch", fetcher); const view = mount(); await flush(); await flush(15_010);
+  expect(screen.getByText("Session unavailable", { selector: "strong" })).toBeVisible();
+  expect(screen.getByText("Retained comparison result")).toBeVisible();
   expect(screen.queryByText("Connected")).not.toBeInTheDocument();
-  expect(fetcher.mock.calls.every(([, options]) => options.method === "GET" && !new Headers(options.headers).has("X-BlueFire-Browser-Bootstrap"))).toBe(true);
+  const details = screen.getByText("Connection details", { selector: "summary" });
+  expect(details).toBeVisible(); expect(details.closest("details")).not.toHaveAttribute("open");
+  expect(screen.getByText(/Relaunch with bluefire ui/)).not.toBeVisible();
+  expect(screen.getByRole("button", { name: "Check connection" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Check connection" })).toBeEnabled();
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  fireEvent.click(details); await flush();
+  expect(details.closest("details")).toHaveAttribute("open");
+  expect(screen.getByText(/Relaunch with bluefire ui/)).toBeVisible();
+  expect(screen.getByText("Retained comparison result")).toBeVisible();
+  expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(view.draft);
+  expect(view.client.getQueryData(["catalog"])).toEqual(demoCatalog);
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(fetcher.mock.calls.every(([url, options]) => url === "/api/v1/session" && options.method === "GET" && options.body === undefined && !new Headers(options.headers).has("X-BlueFire-Browser-Bootstrap"))).toBe(true);
+  expect(view.catalog).not.toHaveBeenCalled(); expect(view.scenarios).not.toHaveBeenCalled();
 });
 
 it("expires the connection indication when foreground checks pause and rechecks on return", async () => {

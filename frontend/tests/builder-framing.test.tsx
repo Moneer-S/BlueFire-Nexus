@@ -1,6 +1,6 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactFlowProps, Viewport } from "@xyflow/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,7 +27,7 @@ vi.mock("@xyflow/react", async (importOriginal) => {
     useReactFlow: () => flow,
     ReactFlow: (props: ReactFlowProps) => {
       state.props = props;
-      return <div>{props.nodes?.filter(node => !node.hidden).map(node => <button key={node.id} onClick={event => props.onNodeClick?.(event, node)}>Select {node.id}</button>)}</div>;
+      return <div aria-label="Rendered graph steps">{props.nodes?.filter(node => !node.hidden).map(node => <button key={node.id} onClick={event => props.onNodeClick?.(event, node)}>Select {node.id}</button>)}</div>;
     },
   };
 });
@@ -54,9 +54,9 @@ beforeEach(() => {
 });
 afterEach(() => { globalThis.ResizeObserver = originalResizeObserver; observers.clear(); });
 
-function renderBuilder(initial: Scenario = demoScenario) {
+function renderBuilder(initial: Scenario = demoScenario, layout?: Scenario["layout"]) {
   const scenario = structuredClone(initial);
-  scenario.layout = Object.fromEntries(scenario.steps.map((step, index) => [step.id, { x: 48, y: 48 + index * 276 }]));
+  scenario.layout = layout ?? Object.fromEntries(scenario.steps.map((step, index) => [step.id, { x: 48, y: 48 + index * 276 }]));
   localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(scenario));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(["catalog"], demoCatalog);
@@ -67,6 +67,55 @@ function renderBuilder(initial: Scenario = demoScenario) {
 function resizeCanvas(nextWidth: number, nextHeight: number) {
   width = nextWidth; height = nextHeight;
   act(() => { observers.forEach(callback => callback([], {} as ResizeObserver)); });
+}
+
+function expectReadableSelection(id: string) {
+  const node = state.props.nodes?.find(item => item.id === id);
+  if (!node) throw new Error("The selected graph node is missing");
+  expect(node.hidden).toBe(false);
+  expect(node.selected).toBe(true);
+  expect(state.viewport.zoom).toBeGreaterThanOrEqual(0.8);
+  const x = state.viewport.x + node.position.x * state.viewport.zoom;
+  const y = state.viewport.y + node.position.y * state.viewport.zoom;
+  expect(x).toBeGreaterThanOrEqual(0);
+  expect(y).toBeGreaterThanOrEqual(0);
+  expect(x + 220 * state.viewport.zoom).toBeLessThanOrEqual(width);
+  expect(y + 104 * state.viewport.zoom).toBeLessThanOrEqual(height);
+}
+
+async function navigateReadable(action: () => void, selectedId: string, visibleSteps: number) {
+  action();
+  // A group can retain the same readable frame. Await its scheduled framing,
+  // then check the committed view rather than requiring a redundant setter.
+  await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+  await waitFor(() => {
+    expectReadableSelection(selectedId);
+    expect(state.props.nodes?.filter(node => !node.hidden)).toHaveLength(visibleSteps);
+  });
+}
+
+async function focusLongGroup() {
+  const scenario = structuredClone(demoScenario);
+  const template = structuredClone(scenario.steps[0]!);
+  scenario.steps = Array.from({ length: 84 }, (_, index) => ({ ...structuredClone(template), id: `long_step_${index + 1}`, inputs: {} }));
+  scenario.start = scenario.steps[0]!.id;
+  scenario.edges = scenario.steps.slice(1, 83).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success" as Outcome, to_step: step.id }));
+  scenario.edges.push({ from_step: scenario.start, outcome: "blocked", to_step: "long_step_84" });
+  delete scenario.adaptive_execution;
+  const rendered = renderBuilder(scenario);
+  await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
+  fireEvent.click(screen.getByLabelText("View options", { selector: "summary" }));
+  const controls = within(screen.getByLabelText("Graph workspace controls"));
+  const group = screen.getByLabelText("Step group");
+  const longGroupValue = (within(group).getByRole("option", { name: /82 steps$/ }) as HTMLOptionElement).value;
+  const fit = controls.getByRole("button", { name: "Fit visible graph" });
+
+  // Enter from a selection outside the long group, including its old viewport.
+  fireEvent.click(fit);
+  expect(state.viewport.zoom).toBeLessThan(0.72);
+  await navigateReadable(() => fireEvent.change(group, { target: { value: longGroupValue } }), "long_step_2", 82);
+  expect(state.props.nodes?.filter(node => !node.hidden)).toHaveLength(82);
+  return { rendered, controls, group, longGroupValue, fit };
 }
 
 describe("Builder viewport controls", () => {
@@ -86,10 +135,11 @@ describe("Builder viewport controls", () => {
     expect(flow.setViewport).toHaveBeenCalledOnce();
   });
 
-  it("keeps user zoom across panel and window resizes, moving only an obscured selection", async () => {
+  it("keeps user zoom across resizes and recovers a temporary shrink pan when space returns", async () => {
     renderBuilder();
     await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
-    state.viewport = { x: 120, y: 50, zoom: 1.2 };
+    const original = { x: 120, y: 50, zoom: 1.2 };
+    state.viewport = original;
     flow.setViewport.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Show node inspector" }));
     resizeCanvas(710, 440);
@@ -98,14 +148,90 @@ describe("Builder viewport controls", () => {
     resizeCanvas(400, 300);
     await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
     expect(state.viewport.zoom).toBe(1.2);
-    expect(state.viewport.x).toBeCloseTo(54.4);
-    expect(state.viewport.y).toBeCloseTo(38.4);
+    expect(state.viewport.x).toBeCloseTo(30.4);
+    expect(state.viewport.y).toBeCloseTo(50);
+    flow.setViewport.mockClear();
+    resizeCanvas(1000, 480);
+    await waitFor(() => expect(state.viewport).toEqual(original));
+    expect(flow.setViewport).toHaveBeenCalledOnce();
+  });
+
+  it.each(["pan", "zoom"] as const)("preserves an operator %s after an automatic canvas adjustment", async (change) => {
+    renderBuilder();
+    await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
+    state.viewport = { x: 120, y: 50, zoom: 1.2 };
+    resizeCanvas(400, 300);
+    await waitFor(() => expect(state.viewport.x).toBeCloseTo(30.4));
+    const chosen = { ...state.viewport, ...(change === "pan" ? { x: state.viewport.x - 15 } : { zoom: 1.3 }) };
+    state.viewport = chosen;
+    act(() => state.props.onMove?.(new MouseEvent("mousemove"), chosen));
+    flow.setViewport.mockClear();
+    resizeCanvas(1000, 480);
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(state.viewport).toEqual(chosen);
+    expect(flow.setViewport).not.toHaveBeenCalled();
+  });
+
+  it("does not pan underneath a dragged card or restore stale context after the geometry changes", async () => {
+    const rendered = renderBuilder();
+    await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
+    state.viewport = { x: 120, y: 50, zoom: 1.2 };
+    resizeCanvas(400, 300);
+    await waitFor(() => expect(state.viewport.x).toBeCloseTo(30.4));
     const adjusted = { ...state.viewport };
     flow.setViewport.mockClear();
+
+    // Cross the current canvas edge, then move back inside the future larger pane.
+    // Drag previews update the card, not the saved layout or operator viewport.
+    for (const x of [700, 100]) {
+      act(() => state.props.onNodesChange?.([{ id: rendered.start, type: "position", position: { x, y: 48 }, dragging: true }]));
+      await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+      expect(state.props.nodes?.find(node => node.id === rendered.start)).toMatchObject({ position: { x, y: 48 }, dragging: true });
+      expect(state.viewport).toEqual(adjusted);
+      expect(flow.setViewport).not.toHaveBeenCalled();
+    }
+
     resizeCanvas(1000, 480);
     await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
     expect(state.viewport).toEqual(adjusted);
     expect(flow.setViewport).not.toHaveBeenCalled();
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
+  });
+
+  it("recovers preceding cards after a dock round trip at the same zoom and saved positions", async () => {
+    const scenario = structuredClone(demoScenario);
+    const template = structuredClone(scenario.steps[0]!);
+    scenario.steps = Array.from({ length: 9 }, (_, index) => ({ ...structuredClone(template), id: `context_step_${index + 1}`, inputs: {} }));
+    scenario.start = scenario.steps[0]!.id;
+    scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success" as Outcome, to_step: step.id }));
+    scenario.edges.push({ from_step: "context_step_8", outcome: "blocked", to_step: "context_step_9" }, { from_step: "context_step_8", outcome: "failed", to_step: "context_step_9" });
+    delete scenario.adaptive_execution;
+    const layout = Object.fromEntries(scenario.steps.map((step, index) => [step.id, { x: 32 + Math.floor(index / 3) * 308, y: 32 + (index % 3) * 148 }]));
+    width = 870; height = 602;
+    const rendered = renderBuilder(scenario, layout);
+    await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Select context_step_8" }));
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    state.viewport = { x: -94, y: 69, zoom: 1 };
+
+    resizeCanvas(530, 606);
+    await waitFor(() => expect(state.viewport.x).toBeCloseTo(-434));
+    resizeCanvas(456, 474);
+    await waitFor(() => expect(state.viewport.x).toBeCloseTo(-508));
+    expect(state.viewport.x + layout.context_step_6!.x).toBeLessThan(0);
+    resizeCanvas(796, 470);
+    await waitFor(() => expect(state.viewport.x + layout.context_step_6!.x).toBeGreaterThanOrEqual(24));
+    expect(state.viewport.zoom).toBe(1);
+    for (const step of rendered.steps.slice(3)) {
+      const position = layout[step.id]!;
+      expect(state.viewport.x + position.x).toBeGreaterThanOrEqual(24);
+      expect(state.viewport.x + position.x + 220).toBeLessThanOrEqual(width - 24);
+      expect(state.viewport.y + position.y).toBeGreaterThanOrEqual(24);
+      expect(state.viewport.y + position.y + 104).toBeLessThanOrEqual(height - 24);
+    }
+    expect(state.viewport.x + layout.context_step_8!.x + 220 + 72).toBeLessThanOrEqual(width - 24);
+    expect(state.props.nodes?.find(node => node.id === "context_step_8")?.selected).toBe(true);
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
   });
 
   it("opens an overview selection at readable scale and uses the resized canvas to focus the selected step", async () => {
@@ -116,13 +242,29 @@ describe("Builder viewport controls", () => {
     const target = scenario.steps[1]!;
     fireEvent.click(screen.getByRole("button", { name: `Select ${target.id}` }));
     await waitFor(() => expect(state.viewport.zoom).toBe(1));
-    expect(state.viewport).toEqual({ x: 167, y: -209, zoom: 1 });
+    expect(state.viewport).toEqual({ x: 167, y: -186, zoom: 1 });
     state.viewport = { x: 2, y: 3, zoom: 0.4 };
+    fireEvent.click(screen.getByLabelText("View options", { selector: "summary" }));
     fireEvent.click(screen.getByRole("button", { name: "Focus selected step" }));
-    expect(state.viewport).toEqual({ x: 167, y: -209, zoom: 1 });
+    expect(state.viewport).toEqual({ x: 167, y: -186, zoom: 1 });
   });
 
-  it("frames long graphs in display-only groups without changing saved positions or execution edges", async () => {
+  it("keeps conditional route labels inside the canvas when the inspector or Assistant narrows it", async () => {
+    const scenario = renderBuilder();
+    await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Select transport" }));
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    const position = scenario.layout!.transport!;
+    state.viewport = { x: 150, y: -position.y + 70, zoom: 1 };
+    flow.setViewport.mockClear();
+    resizeCanvas(400, 300);
+    await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
+    expect(state.viewport.zoom).toBe(1);
+    expect(state.viewport.x + position.x + 220).toBeLessThanOrEqual(304);
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).layout).toEqual(scenario.layout);
+  });
+
+  it("keeps a nine-step plan connected and readable without changing saved positions or execution edges", async () => {
     const scenario = structuredClone(demoScenario);
     const template = structuredClone(scenario.steps[0]!);
     scenario.steps = Array.from({ length: 9 }, (_, index) => ({ ...structuredClone(template), id: `focus_step_${index + 1}`, inputs: {} }));
@@ -131,56 +273,26 @@ describe("Builder viewport controls", () => {
     scenario.start = scenario.steps[0]!.id;
     scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success" as Outcome, to_step: step.id }));
     delete scenario.adaptive_execution;
-    sessionStorage.removeItem(`bluefire.working-graph-view.v1:${scenario.id}`);
+    sessionStorage.clear();
     const rendered = renderBuilder(scenario);
     await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
-    expect(screen.getByRole("navigation", { name: "Experiment step groups" })).toBeVisible();
-    const group = screen.getByRole("combobox", { name: "Step group" });
-    expect(group.querySelectorAll("option")).toHaveLength(4);
-    expect(screen.getAllByRole("button", { name: /^Select focus_step_/ })).toHaveLength(3);
-    const connections = screen.getByText("Group connections").closest("details")!;
-    expect(connections).not.toHaveAttribute("open");
-    expect(connections.querySelector('[aria-label="Conditional execution routes"]')).not.toBeVisible();
-    fireEvent.click(connections.querySelector("summary")!);
-    expect(screen.getByText(/To: .*On success/)).toBeVisible();
-    const dependencies = screen.getByText("Data dependencies (2)").closest("details")!;
-    expect(dependencies.querySelector("summary")).toBeVisible();
-    fireEvent.click(dependencies.querySelector("summary")!);
-    expect(screen.getByText("Place deterministic fixture · Step 1 · records → Place deterministic fixture · Step 4 · Archived")).toBeVisible();
-    expect(screen.getByText("Place deterministic fixture · Step 2 · bundle → Place deterministic fixture · Step 8 · Report")).toBeVisible();
-
-    fireEvent.change(group, { target: { value: "1" } });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Select focus_step_4" })).toBeVisible());
-    expect(screen.queryByRole("button", { name: "Select focus_step_1" })).not.toBeInTheDocument();
-    expect(screen.getByText("Data dependencies (1)")).toBeVisible();
-    expect(screen.getByText("Place deterministic fixture · Step 1 · records → Place deterministic fixture · Step 4 · Archived")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Next group" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Step group" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^Select focus_step_/ })).toHaveLength(9);
+    expect(state.viewport.zoom).toBeGreaterThanOrEqual(0.72);
     expect(state.props.edges?.filter(edge => edge.data?.kind === "route")).toHaveLength(scenario.edges.length);
     expect(state.props.edges?.filter(edge => edge.data?.kind === "artifact")).toHaveLength(2);
     expect(state.props.nodes?.map(node => [node.id, node.position])).toEqual(rendered.steps.map(step => [step.id, rendered.layout![step.id]]));
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).layout).toEqual(rendered.layout);
 
-    fireEvent.change(group, { target: { value: "all" } });
-    await waitFor(() => expect(screen.getAllByRole("button", { name: /^Select focus_step_/ })).toHaveLength(9));
+    fireEvent.click(screen.getByRole("button", { name: "Select focus_step_8" }));
+    await waitFor(() => expect(state.viewport.zoom).toBeGreaterThanOrEqual(0.72));
     fireEvent.click(screen.getByRole("button", { name: "Steps" }));
-    const selectedOrder = () => screen.getByRole("list", { name: "Experiment steps" })
-      .querySelector('button[aria-pressed="true"] .step-number')?.textContent;
-    expect(selectedOrder()).toBe("4");
-    const stepEight = [...screen.getByRole("list", { name: "Experiment steps" }).querySelectorAll("button")]
-      .find(button => button.querySelector(".step-number")?.textContent === "8");
-    expect(stepEight).toBeDefined();
-    fireEvent.click(stepEight!);
+    expect(screen.getByRole("list", { name: "Experiment steps" }).querySelector('button[aria-pressed="true"] .step-number')?.textContent).toBe("8");
     fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Step group" }), { target: { value: "2" } });
-    fireEvent.click(screen.getByRole("button", { name: "Steps" }));
-    expect(selectedOrder()).toBe("8");
-    fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Step group" }), { target: { value: "0" } });
-    fireEvent.click(screen.getByRole("button", { name: "Steps" }));
-    expect(selectedOrder()).toBe("1");
-    fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Step group" }), { target: { value: "all" } });
-    fireEvent.click(screen.getByRole("button", { name: "Steps" }));
-    expect(selectedOrder()).toBe("1");
+    expect(screen.getAllByRole("button", { name: /^Select focus_step_/ })).toHaveLength(9);
+    fireEvent.click(screen.getByRole("button", { name: "Fit visible graph" }));
+    expect(state.viewport.zoom).toBeLessThan(0.72);
     expect(state.props.edges?.filter(edge => edge.data?.kind === "route").map(edge => edge.id)).toEqual(scenario.edges.map((edge, index) => `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`));
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).edges).toEqual(scenario.edges);
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).steps).toEqual(scenario.steps);
@@ -195,14 +307,51 @@ describe("Builder viewport controls", () => {
     scenario.start = scenario.steps[0]!.id;
     scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success" as Outcome, to_step: step.id }));
     delete scenario.adaptive_execution;
+    scenario.edges.push({ from_step: "duplicate_step_2", outcome: "blocked", to_step: "duplicate_step_4" });
     renderBuilder(scenario);
-
+    fireEvent.click(screen.getByLabelText("View options", { selector: "summary" }));
     const group = screen.getByRole("combobox", { name: "Step group" });
-    fireEvent.change(group, { target: { value: "1" } });
+    fireEvent.change(group, { target: { value: "2" } });
     fireEvent.click(screen.getByText("Group connections").closest("details")!.querySelector("summary")!);
     const dependencies = screen.getByText("Data dependencies (2)").closest("details")!;
     fireEvent.click(dependencies.querySelector("summary")!);
     expect(screen.getByText("Place deterministic fixture · Step 1 · records → Place deterministic fixture · Step 4 · Archived")).toBeVisible();
     expect(screen.getByText("Place deterministic fixture · Step 2 · records → Place deterministic fixture · Step 5 · Archived")).toBeVisible();
+  });
+
+  it("keeps an 82-step connected group and whole-plan navigation readable while retaining explicit overview", async () => {
+    const { rendered, group, longGroupValue, fit } = await focusLongGroup();
+    const graphSteps = within(screen.getByLabelText("Rendered graph steps"));
+    await navigateReadable(() => fireEvent.click(graphSteps.getByText("Select long_step_80")), "long_step_80", 82);
+    fireEvent.click(fit);
+    expect(state.viewport.zoom).toBeLessThan(0.72);
+    await navigateReadable(() => fireEvent.click(screen.getByText("Return to whole plan", { selector: "button" })), "long_step_80", 84);
+    expect(state.props.nodes?.filter(node => !node.hidden)).toHaveLength(84);
+
+    const wholePlanViewport = { ...state.viewport };
+    await navigateReadable(() => fireEvent.change(group, { target: { value: longGroupValue } }), "long_step_80", 82);
+    expect(group).toHaveValue(longGroupValue);
+    expect(state.viewport).toEqual(wholePlanViewport);
+    fireEvent.click(fit);
+    expect(state.viewport.zoom).toBeLessThan(0.72);
+    await navigateReadable(() => fireEvent.click(screen.getByText("Show all branches", { selector: "button" })), "long_step_80", 84);
+    expect(state.props.nodes?.filter(node => !node.hidden)).toHaveLength(84);
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
+  });
+
+  it("arranges an 82-step group readably and restores all saved positions with Undo", async () => {
+    const { rendered, controls, fit } = await focusLongGroup();
+    fireEvent.click(fit);
+    expect(state.viewport.zoom).toBeLessThan(0.72);
+    await navigateReadable(() => fireEvent.click(controls.getByRole("button", { name: "Arrange visible group" })), "long_step_2", 82);
+    const arranged = JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!) as Scenario;
+    expect(arranged.layout).not.toEqual(rendered.layout);
+    expect(arranged.layout!.long_step_1).toEqual(rendered.layout!.long_step_1);
+    expect(arranged.layout!.long_step_84).toEqual(rendered.layout!.long_step_84);
+    expect(arranged.steps).toEqual(rendered.steps);
+    expect(arranged.edges).toEqual(rendered.edges);
+    fireEvent.click(controls.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(state.props.nodes?.map(node => [node.id, node.position])).toEqual(rendered.steps.map(step => [step.id, rendered.layout![step.id]])));
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
   });
 });

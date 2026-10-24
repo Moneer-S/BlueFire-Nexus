@@ -7,7 +7,7 @@ import {
   type Connection, type EdgeChange, type Node, type NodeChange, type NodeProps,
 } from "@xyflow/react";
 import {
-  ArrowRight, Check, ChevronLeft, ChevronRight, Clipboard, Command as CommandIcon, Copy, Download, Filter, GitBranch, LayoutGrid, Maximize2, Minimize2,
+  ArrowRight, Check, Clipboard, Command as CommandIcon, Copy, Download, FileText, Filter, GitBranch, LayoutGrid, Maximize2, Minimize2, MoreHorizontal,
   PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Redo2, RotateCcw,
   ListOrdered, Network, Plus, ScanSearch, Search, Trash2, Undo2, X,
 } from "lucide-react";
@@ -16,7 +16,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import "./Builder.css";
 import { guaranteedInputSources, stepParameterSummary } from "../lib/graph-authoring";
 import { ParameterField } from "../components/ParameterField";
-import { branchLabels, focusedGraphLayout, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, GRAPH_SECTION_SIZE, graphBoundsViewport, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, readableGraphViewport, revealGraphNode, type ScenarioGraph } from "../lib/graph-view";
+import { branchLabels, focusedGraphLayout, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, graphBoundsViewport, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, readableGraphViewport, revealGraphContext, type GraphViewport, type ScenarioGraph } from "../lib/graph-view";
 import { api } from "../lib/api";
 import { defaultGraphView, readWorkingGraphView, writeWorkingGraphView } from "../lib/graph-view-retention";
 import { initialParameterValue, shouldInitializeParameter } from "../lib/parameters";
@@ -40,9 +40,9 @@ import type { ActionDefinition, Behavior, Outcome, Scenario, ScenarioStep } from
 import { Badge, Button, EmptyState, ErrorState, Field, IconButton, LoadingState, Panel, PanelHeader, sentence } from "../components/Primitives";
 
 const outcomes: Outcome[] = ["success", "partial", "blocked", "failed"];
-const outcomeColors: Record<Outcome, string> = { success: "#45d39d", partial: "#f7b84b", blocked: "#ff7145", failed: "#ff6e79" };
+const outcomeColors: Record<Outcome, string> = { success: "#8dabc4", partial: "#d9b364", blocked: "#dc9066", failed: "#dc7f8b" };
 
-interface BehaviorNodeData extends Record<string, unknown> { step: ScenarioStep; behavior?: Behavior; invalid?: boolean; method?: string; }
+interface BehaviorNodeData extends Record<string, unknown> { step: ScenarioStep; behavior?: Behavior; invalid?: boolean; method?: string; ordinal: number; routeIn?: Position; routeOut?: Position; }
 type BehaviorFlowNode = Node<BehaviorNodeData, "behavior">;
 type FlowEdge = BuilderFlowEdge;
 
@@ -54,7 +54,7 @@ function renameAdaptiveExecutionStep(policy: AdaptiveExecution, previousId: stri
 }
 
 function behaviorNode(step: ScenarioStep, behavior: Behavior | undefined, index: number, scenario: ScenarioGraph, fallbackLayout: NonNullable<Scenario["layout"]>, invalid = false): BehaviorFlowNode {
-  return { id: step.id, type: "behavior", position: scenario.layout?.[step.id] ?? fallbackLayout[step.id] ?? { x: 48, y: 48 + index * (GRAPH_NODE_HEIGHT + 96) }, data: { step, behavior, invalid } };
+  return { id: step.id, type: "behavior", position: scenario.layout?.[step.id] ?? fallbackLayout[step.id] ?? { x: 48, y: 48 + index * (GRAPH_NODE_HEIGHT + 96) }, data: { step, behavior, invalid, ordinal: index + 1 } };
 }
 
 function flowEdges(scenario: ScenarioGraph, behaviors: Map<string, Behavior>): FlowEdge[] {
@@ -80,6 +80,7 @@ const BehaviorNode = memo(function BehaviorNode({ id, data, selected }: NodeProp
   const handleSignature = JSON.stringify([
     behavior?.inputs.slice(0, 4).map((input) => input.name) ?? [],
     behavior?.outputs.slice(0, 4).map((output) => output.name) ?? [],
+    data.routeIn, data.routeOut,
   ]);
   const measuredHandles = useRef({ id, signature: handleSignature });
   // React Flow measures new nodes. Only changed handles need an explicit refresh
@@ -90,23 +91,28 @@ const BehaviorNode = memo(function BehaviorNode({ id, data, selected }: NodeProp
     updateNodeInternals(id);
   }, [id, handleSignature, updateNodeInternals]);
   return <article className={`flow-node tier-${behavior?.safety_tier ?? "safe"} ${selected ? "selected" : ""} ${data.invalid ? "invalid" : ""}`}>
-    <Handle type="target" position={Position.Left} id="route:in" className="route-handle route-in" title="Continue from another step" />
+    <Handle type="target" position={data.routeIn ?? Position.Left} id="route:in" className="route-handle route-in" style={data.routeIn === Position.Top ? { left: 20 } : undefined} title="Continue from another step" />
     {(behavior?.inputs ?? []).slice(0, 4).map((input, index, items) => <Handle key={input.name} type="target" position={Position.Top} id={`in:${input.name}`} className="typed-handle input-handle" style={{ left: `${((index + 1) / (items.length + 1)) * 100}%` }} title={`Requires ${inputTypeLabel(input.type)}: ${inputLabel(input.name)}`} />)}
-    <header><span>{data.invalid ? "Needs attention" : behavior?.execution_state === "metadata_only" ? "Research only" : behavior?.execution_state === "simulation" ? "Simulation step" : "Executable step"}</span></header>
-    <strong title={displayTitle(behavior?.title ?? "Unavailable step")}>{displayTitle(behavior?.title ?? "Unavailable step")}</strong>
+    <header><span className="node-order">Step {data.ordinal}</span>{data.invalid || behavior?.execution_state !== "action" ? <span className={`node-kind ${data.invalid ? "attention" : ""}`}>{data.invalid ? "Needs attention" : behavior?.execution_state === "simulation" ? "Simulation" : "Research only"}</span> : null}</header>
+    <div className="node-title"><span className="node-icon"><FileText aria-hidden="true"/></span><strong title={displayTitle(behavior?.title ?? "Unavailable step")}>{displayTitle(behavior?.title ?? "Unavailable step")}</strong></div>
     {data.method ? <p className="node-context" title={`Run override: ${displayTitle(data.method)}`}>Run override: {displayTitle(data.method)}</p> : null}
-    {stepParameterSummary(data.step, behavior) ? <p className="node-context" title={stepParameterSummary(data.step, behavior)}>{stepParameterSummary(data.step, behavior)}</p> : null}
+    {!data.method && stepParameterSummary(data.step, behavior) ? <p className="node-context" title={stepParameterSummary(data.step, behavior)}>{stepParameterSummary(data.step, behavior)}</p> : null}
+    <footer>{data.step.alternates.length ? <span><GitBranch/>{data.step.alternates.length} saved {data.step.alternates.length === 1 ? "alternative" : "alternatives"}</span> : <span>{behavior?.platforms.map(inputLabel).join(" · ")}</span>}</footer>
     {(behavior?.outputs ?? []).slice(0, 4).map((output, index, items) => <Handle key={output.name} type="source" position={Position.Bottom} id={`out:${output.name}`} className="typed-handle output-handle" style={{ left: `${((index + 1) / (items.length + 1)) * 100}%` }} title={`Produces ${inputTypeLabel(output.type)}: ${inputLabel(output.name)}`} />)}
-    <div className="route-handles">{outcomes.map((outcome, index) => <Handle key={outcome} type="source" position={Position.Right} id={`route:${outcome}`} className={`route-handle route-${outcome}`} style={{ top: `${20 + index * 20}%` }} title={branchLabels[outcome]} />)}</div>
+    <div className="route-handles">{outcomes.map((outcome, index) => <Handle key={outcome} type="source" position={outcome === "success" ? data.routeOut ?? Position.Right : Position.Right} id={`route:${outcome}`} className={`route-handle route-${outcome}`} style={outcome === "success" && data.routeOut === Position.Bottom ? { left: 20 } : { top: `${20 + index * 20}%` }} title={branchLabels[outcome]} />)}</div>
   </article>;
 });
 
 const nodeTypes = { behavior: BehaviorNode };
 const edgeTypes = { outcomeRoute: BuilderRouteEdge };
 const minimumGraphZoom = 0.005;
+const minimumReadableGraphZoom = 0.8;
 const deleteKeys = ["Backspace", "Delete"];
 const connectionLineStyle = { stroke: "#38a8ff", strokeWidth: 2 };
 const proOptions = { hideAttribution: true };
+const miniMapStyle = { width: 132, height: 80 };
+const rightRouteGutter = 72;
+const sameViewport = (left: GraphViewport, right: GraphViewport) => left.zoom === right.zoom && Math.abs(left.x - right.x) < 0.001 && Math.abs(left.y - right.y) < 0.001;
 
 export function BuilderPage() {
   const { scenario } = useProduct();
@@ -196,21 +202,48 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     writeWorkingGraphView(scenario, view);
   }, [review, scenario, selectedId, viewMode, allBranches, expandedBranches, focusedSection, inspectorOpen, routesOpen, showInputs]);
   const [graphZoom, setGraphZoom] = useState(1);
-  const summaryZoom = graphZoom < 0.8;
-  const sections = useMemo(() => graphSections(visibleGraph.ordered), [visibleGraph]);
-  const sectionIndex = Math.min(focusedSection ?? 0, sections.length - 1);
+  const [miniMapOpen, setMiniMapOpen] = useState(false);
+  const summaryZoom = graphZoom < minimumReadableGraphZoom;
+  const sections = useMemo(() => graphSections(visibleGraph.ordered, graph.edges, graph.start), [visibleGraph, graph.edges, graph.start]);
+  // Route edits can renumber groups. Resolve the selected step's group before
+  // hiding nodes; explicit group changes move the selection in showSection.
+  const selectedSection = sections.findIndex(section => section.steps.some(step => step.id === selectedId));
+  const sectionIndex = focusedSection !== null && selectedSection >= 0 ? selectedSection : Math.min(focusedSection ?? 0, sections.length - 1);
   const shownSteps = viewMode === "graph" && focusedSection !== null ? sections[sectionIndex]!.steps : visibleGraph.ordered;
   const shownIds = useMemo(() => new Set(shownSteps.map((step) => step.id)), [shownSteps]);
   const focusedGroup = viewMode === "graph" && focusedSection !== null && sections.length > 1;
   const focusedLayout = useMemo(() => focusedGroup ? focusedGraphLayout(graph, shownSteps.map(step => step.id)) : undefined, [focusedGroup, graph, shownSteps]);
-  const displayNodes = useMemo(() => nodes.map((node) => {
+  const projectedNodes = useMemo(() => nodes.map((node) => {
     const generated = fallbackLayout[node.id];
     const projected = focusedLayout?.[node.id];
     const usesFallback = generated && node.position.x === generated.x && node.position.y === generated.y;
     return { ...node, position: projected && usesFallback ? projected : node.position, hidden: !shownIds.has(node.id), selected: node.selected && shownIds.has(node.id) };
   }), [fallbackLayout, focusedLayout, nodes, shownIds]);
+  const routeNodeData = useMemo(() => {
+    // Selection changes node records, but only data or port changes invalidate cards.
+    const cache = new WeakMap<BehaviorNodeData, BehaviorNodeData>();
+    return (data: BehaviorNodeData, routeIn: Position, routeOut: Position) => {
+      const previous = cache.get(data);
+      if (previous?.routeIn === routeIn && previous.routeOut === routeOut) return previous;
+      const next = { ...data, routeIn, routeOut };
+      cache.set(data, next);
+      return next;
+    };
+  }, []);
+  const displayNodes = useMemo(() => projectedNodes.map(node => {
+    const incoming = graph.edges.find(edge => edge.to_step === node.id && edge.outcome === "success");
+    const outgoing = graph.edges.find(edge => edge.from_step === node.id && edge.outcome === "success");
+    const before = projectedNodes.find(item => item.id === incoming?.from_step);
+    const after = projectedNodes.find(item => item.id === outgoing?.to_step);
+    const routeIn = before && Math.abs(before.position.x - node.position.x) < 1 && before.position.y < node.position.y ? Position.Top : Position.Left;
+    const routeOut = after && Math.abs(after.position.x - node.position.x) < 1 && after.position.y > node.position.y ? Position.Bottom : Position.Right;
+    return { ...node, data: routeNodeData(node.data, routeIn, routeOut) };
+  }), [graph.edges, projectedNodes, routeNodeData]);
   // Selection updates React Flow's node records, but does not invalidate routes.
   const routeGeometry = useMemo(() => JSON.stringify(displayNodes.filter(node => !node.hidden).map(node => ({ id: node.id, ...node.position, width: node.measured?.width ?? GRAPH_NODE_WIDTH, height: node.measured?.height ?? GRAPH_NODE_HEIGHT }))), [displayNodes]);
+  const geometryRevision = useRef(0);
+  // Moving a card invalidates resize recovery without panning underneath a drag.
+  useEffect(() => { geometryRevision.current += 1; }, [routeGeometry]);
   const routeObstacles = useMemo<RouteObstacle[]>(() => JSON.parse(routeGeometry) as RouteObstacle[], [routeGeometry]);
   const routedData = useMemo(() => new Map(edgeDefinitions.map(edge => [edge.id, edge.data ? { ...edge.data, obstacles: routeObstacles } : undefined])), [edgeDefinitions, routeObstacles]);
   const edgeIsShown = useCallback((edge: FlowEdge) => shownIds.has(edge.source) && shownIds.has(edge.target) && (edge.data?.kind !== "artifact" || showInputs) && (edge.data?.kind !== "route" || edge.data.outcome === "success" || allBranches || expandedBranches.has(edge.source)), [allBranches, expandedBranches, showInputs, shownIds]);
@@ -262,9 +295,9 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     };
   }, [behaviorMap, focusedSection, scenario.edges, scenario.steps, sectionIndex, sections.length, shownIds]);
   useEffect(() => {
-    const index = visibleGraph.ordered.findIndex((step) => step.id === selectedId);
-    if (focusedSection !== null && sections.length > 1 && index >= 0) setFocusedSection(Math.floor(index / GRAPH_SECTION_SIZE));
-  }, [focusedSection, sections.length, selectedId, visibleGraph]);
+    const index = sections.findIndex(section => section.steps.some(step => step.id === selectedId));
+    if (focusedSection !== null && sections.length > 1 && index >= 0) setFocusedSection(index);
+  }, [focusedSection, sections, selectedId]);
   const graphCanvas = useRef<HTMLDivElement>(null);
   const orderedSteps = useRef<HTMLOListElement>(null);
   const [selectionToReveal, setSelectionToReveal] = useState("");
@@ -276,7 +309,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     const index = scenario.steps.findIndex(step => step.id === id);
     if (index < 0) return;
     setAllBranches(true);
-    if (viewMode === "graph") setFocusedSection(scenario.steps.length > GRAPH_SECTION_SIZE ? Math.floor(index / GRAPH_SECTION_SIZE) : null);
+    if (viewMode === "graph") setFocusedSection(null);
     selectStep(id);
   }, [scenario.steps, selectStep, viewMode]);
   const onSelectionChange = useCallback(({ nodes: selection }: { nodes: BehaviorFlowNode[] }) => setSelectedId(selection.at(-1)?.id ?? ""), []);
@@ -284,36 +317,50 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   const togglePalette = () => { setPaletteOpen((open) => !open); setInspectorOpen(false); };
   const toggleInspector = () => { setInspectorOpen((open) => !open); setPaletteOpen(false); };
   const inspectorToggleId = useId();
-  const [paletteWidth, setPaletteWidth] = useState(290); const [inspectorWidth, setInspectorWidth] = useState(330);
+  const [paletteWidth, setPaletteWidth] = useState(290); const [inspectorWidth, setInspectorWidth] = useState(310);
   const clipboard = useRef<ScenarioStep | undefined>(undefined); const flow = useReactFlow<BehaviorFlowNode, FlowEdge>();
   const nodesInitialized = useNodesInitialized();
   const initialFrameDone = useRef(false);
-  const frameStep = useCallback((id: string, mode: "start" | "readable" | "reveal", duration = 0) => {
+  const frameStep = useCallback((id: string, mode: "start" | "readable" | "reveal", duration = 0, preferred?: GraphViewport) => {
     const canvas = graphCanvas.current;
     const node = flow.getNode(id);
     if (!canvas || !node || node.hidden || !canvas.clientWidth || !canvas.clientHeight) return false;
-    const bounds = { ...node.position, width: node.measured?.width ?? GRAPH_NODE_WIDTH, height: node.measured?.height ?? GRAPH_NODE_HEIGHT };
+    const hasRightRoutes = graph.edges.some(edge => edge.from_step === id && (edge.outcome === "success" ? node.data.routeOut !== Position.Bottom : allBranches || expandedBranches.has(id)));
+    // Reserve label width in graph units so it stays clear at operator zoom.
+    const bounds = { ...node.position, width: (node.measured?.width ?? GRAPH_NODE_WIDTH) + (hasRightRoutes ? rightRouteGutter : 0), height: node.measured?.height ?? GRAPH_NODE_HEIGHT };
     const frame = { width: canvas.clientWidth, height: canvas.clientHeight };
     const current = flow.getViewport();
-    const next = mode === "reveal" ? revealGraphNode(current, bounds, frame) : readableGraphViewport(bounds, frame, mode === "start");
-    if (next !== current) void flow.setViewport(next, { duration: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? 0 : duration });
-    return true;
-  }, [flow]);
-  const fitNodes = useCallback((ids: readonly string[], duration = 0) => {
+    const neighborIds = new Set(graph.edges.flatMap(edge => edge.from_step === id ? [edge.to_step] : edge.to_step === id ? [edge.from_step] : []));
+    const neighbors = [...neighborIds].flatMap(neighborId => {
+      const neighbor = flow.getNode(neighborId);
+      return neighbor && !neighbor.hidden ? [{ ...neighbor.position, width: neighbor.measured?.width ?? GRAPH_NODE_WIDTH, height: neighbor.measured?.height ?? GRAPH_NODE_HEIGHT }] : [];
+    });
+    const next = mode === "reveal" ? revealGraphContext(preferred ?? current, bounds, neighbors, frame) : readableGraphViewport(bounds, frame, mode === "start");
+    if (!sameViewport(next, current)) void flow.setViewport(next, { duration: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? 0 : duration });
+    return next;
+  }, [allBranches, expandedBranches, flow, graph.edges]);
+  const fitNodes = useCallback((ids: readonly string[], duration = 0, readable = false) => {
     const canvas = graphCanvas.current;
     if (!canvas || !canvas.clientWidth || !canvas.clientHeight) return false;
     const bounds = ids.flatMap(id => {
       const node = flow.getNode(id);
-      return node && !node.hidden ? [{ ...node.position, width: node.measured?.width ?? GRAPH_NODE_WIDTH, height: node.measured?.height ?? GRAPH_NODE_HEIGHT }] : [];
+      if (!node || node.hidden) return [];
+      const hasRightRoutes = graph.edges.some(edge => edge.from_step === id && (edge.outcome === "success" ? node.data.routeOut !== Position.Bottom : allBranches || expandedBranches.has(id)));
+      return [{ ...node.position, width: (node.measured?.width ?? GRAPH_NODE_WIDTH) + (hasRightRoutes ? rightRouteGutter : 0), height: node.measured?.height ?? GRAPH_NODE_HEIGHT }];
     });
-    const viewport = graphBoundsViewport(bounds, { width: canvas.clientWidth, height: canvas.clientHeight }, 24, 1);
+    const viewport = graphBoundsViewport(bounds, { width: canvas.clientWidth, height: canvas.clientHeight }, 48, 1);
     if (!viewport) return false;
+    if (readable && viewport.zoom < minimumReadableGraphZoom) {
+      // A scheduled group change may still capture the previous selection.
+      const anchor = ids.includes(selectedId) ? selectedId : ids.includes(scenario.start) ? scenario.start : ids[0];
+      return anchor ? Boolean(frameStep(anchor, "start", duration)) : false;
+    }
     void flow.setViewport(viewport, { duration: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? 0 : duration });
     return true;
-  }, [flow]);
+  }, [allBranches, expandedBranches, flow, frameStep, graph.edges, scenario.start, selectedId]);
   useEffect(() => {
     if (initialFrameDone.current || !nodesInitialized || viewMode !== "graph" || !nodes.length) return;
-    initialFrameDone.current = fitNodes(shownSteps.map(step => step.id));
+    initialFrameDone.current = fitNodes(shownSteps.map(step => step.id), 0, true);
   }, [fitNodes, nodesInitialized, nodes.length, shownSteps, viewMode]);
 
   useEffect(() => {
@@ -328,7 +375,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   useEffect(() => {
     if (!selectionToReveal || selectionToReveal !== selectedId || !inspectorOpen || !nodesInitialized || viewMode !== "graph") return;
     const frame = requestAnimationFrame(() => {
-      if (frameStep(selectionToReveal, flow.getZoom() < 0.8 ? "readable" : "reveal")) setSelectionToReveal("");
+      if (frameStep(selectionToReveal, flow.getZoom() < minimumReadableGraphZoom ? "readable" : "reveal")) setSelectionToReveal("");
     });
     return () => cancelAnimationFrame(frame);
   }, [flow, frameStep, inspectorOpen, nodesInitialized, selectedId, selectionToReveal, viewMode]);
@@ -337,17 +384,36 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     const canvas = graphCanvas.current;
     if (!canvas || !nodesInitialized || viewMode !== "graph") return;
     let pending = 0;
+    let previousFrame = { width: canvas.clientWidth, height: canvas.clientHeight };
+    let recovery: { original: GraphViewport; applied: GraphViewport; geometryRevision: number } | undefined;
     const reveal = () => {
       cancelAnimationFrame(pending);
-      pending = requestAnimationFrame(() => { if (initialFrameDone.current && selectedId) frameStep(selectedId, "reveal"); });
+      pending = requestAnimationFrame(() => {
+        const frame = { width: canvas.clientWidth, height: canvas.clientHeight };
+        if (initialFrameDone.current && selectedId) {
+          const current = flow.getViewport();
+          // A later operator pan, zoom, focus, or card move owns the view from then on.
+          if (recovery && (!sameViewport(current, recovery.applied) || recovery.geometryRevision !== geometryRevision.current)) recovery = undefined;
+          const grew = frame.width > previousFrame.width || frame.height > previousFrame.height;
+          const shrank = frame.width < previousFrame.width || frame.height < previousFrame.height;
+          const next = frameStep(selectedId, "reveal", 0, grew ? recovery?.original : undefined);
+          if (next) {
+            if (recovery) recovery.applied = next;
+            else if (shrank && !sameViewport(next, current)) recovery = { original: current, applied: next, geometryRevision: geometryRevision.current };
+            if (recovery && sameViewport(next, recovery.original)) recovery = undefined;
+          }
+        }
+        previousFrame = frame;
+      });
     };
-    // The graph owns its space. Resizing an inspector, dock, or window may hide
-    // the selection, but is not a request to refit every node or change zoom.
+    // Shrinking a pane may temporarily hide context. Recover only that automatic
+    // pan when space returns; a new selection or geometry starts a fresh scope.
+    // Every reveal retains the current zoom and clamps to the available canvas.
     const observer = new ResizeObserver(reveal);
     observer.observe(canvas);
     reveal();
     return () => { observer.disconnect(); cancelAnimationFrame(pending); };
-  }, [frameStep, nodesInitialized, selectedId, viewMode]);
+  }, [flow, frameStep, nodesInitialized, selectedId, viewMode]);
 
   const selectionForGraphRefresh = useRef(selectedId);
   // Graph edits can add and select a node together. Keep that committed selection
@@ -477,7 +543,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     applyScenario(next);
     if (deletedNodeIds.includes(selectedId)) {
       const remaining = graphView(next, allBranches, expandedBranches).ordered;
-      const remainingSections = graphSections(remaining);
+      const remainingSections = graphSections(remaining, next.edges, next.start);
       const nextSection = Math.min(sectionIndex, remainingSections.length - 1);
       const candidates = viewMode === "graph" && focusedSection !== null ? remainingSections[nextSection]!.steps : remaining;
       const replacementId = candidates.find((step) => shownIds.has(step.id))?.id ?? candidates[0]?.id ?? "";
@@ -581,7 +647,11 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
       setNodes((items) => items.map((node) => ({ ...node, selected: node.id === nextSelection.id })));
     }
     setInspectorOpen(false); setPaletteOpen(false);
-    window.requestAnimationFrame(() => { fitNodes(targetSection?.steps.map(step => step.id) ?? visibleGraph.ordered.map(step => step.id), 180); });
+    window.requestAnimationFrame(() => { fitNodes(targetSection?.steps.map(step => step.id) ?? visibleGraph.ordered.map(step => step.id), 180, true); });
+  };
+  const showAllBranches = () => {
+    setAllBranches(true); setFocusedSection(null);
+    window.requestAnimationFrame(() => { fitNodes(scenario.steps.map(step => step.id), 180, true); });
   };
   const fitSelection = () => { if (selectedId) frameStep(selectedId, "readable", 180); };
   const autoLayoutLabel = focusedGroup ? "Arrange visible group" : "Auto-layout";
@@ -591,10 +661,10 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
       const groupLayout = focusedGraphLayout(graph, shownSteps.map(step => step.id), true) ?? {};
       applyScenario({ ...scenario, layout: { ...scenario.layout, ...groupLayout } });
       setCompatibility("Visible group arranged by its connections. Use Undo to restore its positions.");
-      window.setTimeout(() => { fitNodes(shownSteps.map(step => step.id), 180); }, 0);
+      window.setTimeout(() => { fitNodes(shownSteps.map(step => step.id), 180, true); }, 0);
     } else {
       applyScenario({ ...scenario, layout: initialGraphLayout(scenario) }); setCompatibility("Steps arranged by their connections. Use Undo to restore your positions.");
-      window.setTimeout(() => { frameStep(selectedId || scenario.start, "readable", 180); }, 0);
+      window.setTimeout(() => { fitNodes(shownSteps.map(step => step.id), 180, true); }, 0);
     }
   };
   const runCommand = (action: () => void) => { setCommandPaletteOpen(false); action(); };
@@ -614,10 +684,10 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
 
   const displayedValidation = validationState === "idle" && review?.validated ? "valid" : validationState;
   return <div className={`page builder-page workbench-builder ${focusMode ? "builder-focus" : ""} ${showInputs ? "show-inputs" : ""} ${summaryZoom ? "graph-summary-zoom" : ""}`} onPointerDownCapture={() => { viewInteracted.current = true; }} onClickCapture={() => { viewInteracted.current = true; }} onKeyDownCapture={(event) => { viewInteracted.current = true; keyboard(event); }}>
-    <header className="page-header builder-header"><div className="builder-heading"><h1 aria-label={displayTitle(scenario.title)}><input className="builder-name-input" aria-label="Experiment name" disabled={review?.readOnly} value={scenario.title} onChange={(event) => applyScenario({ ...scenario, title: event.target.value }, false)} /></h1>{review?.description ? <p>{review.description}</p> : null}</div><div className="page-actions builder-actions"><Badge tone={review?.readOnly ? "neutral" : dirty ? "warning" : "neutral"} dot>{review?.statusLabel ?? (dirty ? "Unsaved changes" : "Working copy")}</Badge><IconButton label="Undo" onClick={undo} disabled={review?.readOnly || historyIndex <= 0}><Undo2/></IconButton><IconButton label="Redo" onClick={redo} disabled={review?.readOnly || historyIndex >= history.length - 1}><Redo2/></IconButton><Button variant="secondary" onClick={() => { const url = URL.createObjectURL(new Blob([JSON.stringify(scenario, null, 2)], { type: "application/json" })); const link = document.createElement("a"); link.href = url; link.download = `${scenario.id}.json`; link.click(); URL.revokeObjectURL(url); }}><Download/>Export</Button><Button variant="secondary" onClick={() => validateMutation.mutate(structuredClone(scenario))} disabled={validateMutation.isPending}><Check/>Validate</Button>{review ? review.controls : <><Button variant="secondary" onClick={saveVersion} disabled={saveMutation.isPending}>{saveMutation.isPending ? "Saving version" : "Save version"}</Button><Link className="button button-primary button-medium" to="/runs?prepare=1">Review run<ArrowRight/></Link></>}</div></header>
+    <header className="page-header builder-header"><div className="builder-heading"><h1 aria-label={displayTitle(scenario.title)}><input className="builder-name-input" aria-label="Experiment name" disabled={review?.readOnly} value={scenario.title} onChange={(event) => applyScenario({ ...scenario, title: event.target.value }, false)} /></h1><p title={review?.description ?? scenario.purpose}>{review?.description ?? scenario.purpose}</p></div><div className="page-actions builder-actions"><Button variant="secondary" onClick={() => validateMutation.mutate(structuredClone(scenario))} disabled={validateMutation.isPending}><Check/>Validate</Button>{review ? review.controls : <><Button variant="secondary" onClick={saveVersion} disabled={saveMutation.isPending}>{saveMutation.isPending ? "Saving version" : "Save version"}</Button><Link className="button button-primary button-medium" to="/runs?prepare=1">Review run<ArrowRight/></Link></>}</div></header>
     {review?.details}
     <AdaptiveRepair scenario={scenario} behaviors={behaviorMap} actions={actionMap} overrides={runConfig.actionImplementations} onSelect={selectStep} onChange={applyScenario} readOnly={review?.readOnly} />
-    <div className="experiment-summary"><details open={purposeOpen} onToggle={(event) => setPurposeOpen(event.currentTarget.open)}><summary>{scenario.purpose.trim() ? "Experiment purpose" : "Describe the experiment question"}</summary><Field label="Experiment question" hint="What do you want to learn or verify? Required before saving."><textarea aria-label="Experiment question" ref={purposeInput} rows={2} disabled={review?.readOnly} value={scenario.purpose} required aria-invalid={purposeMissing && !scenario.purpose.trim()} onChange={(event) => { setPurposeMissing(false); applyScenario({ ...scenario, purpose: event.target.value }, false); }} placeholder="Describe the behavior, observation or detection you want to test." /></Field></details>{!review ? <div className="builder-assistance-actions"><Button variant="ghost" size="small" onClick={() => assistant?.setOpen(true)} disabled={!assistant}>Plan with Assistant</Button><Link className="button button-ghost button-small" to="/scenarios">Browse examples</Link></div> : null}</div>
+    <div className="experiment-summary"><div className="experiment-facts"><span><Network/>{scenario.steps.length} steps</span><span><GitBranch/>{scenario.edges.filter(edge => edge.outcome !== "success").length} conditional routes</span><Badge tone={review?.readOnly ? "neutral" : dirty ? "warning" : "neutral"} dot>{review?.statusLabel ?? (dirty ? "Unsaved changes" : "Working copy")}</Badge><Badge tone={displayedValidation === "valid" ? "success" : displayedValidation === "invalid" ? "danger" : "neutral"}>{displayedValidation === "valid" ? "Ready for review" : displayedValidation === "invalid" ? "Needs attention" : "Not validated"}</Badge></div><details className="purpose-editor" open={purposeOpen} onToggle={(event) => setPurposeOpen(event.currentTarget.open)}><summary>{scenario.purpose.trim() ? "Experiment purpose" : "Describe the experiment question"}</summary><Field label="Experiment question" hint="What do you want to learn or verify? Required before saving."><textarea aria-label="Experiment question" ref={purposeInput} rows={2} disabled={review?.readOnly} value={scenario.purpose} required aria-invalid={purposeMissing && !scenario.purpose.trim()} onChange={(event) => { setPurposeMissing(false); applyScenario({ ...scenario, purpose: event.target.value }, false); }} placeholder="Describe the behavior, observation or detection you want to test." /></Field></details>{!review ? <div className="builder-assistance-actions"><Button variant="ghost" size="small" onClick={() => assistant?.setOpen(true)} disabled={!assistant}>Plan with Assistant</Button><Link className="button button-ghost button-small" to="/scenarios">Browse examples</Link></div> : null}</div>
     {compatibility ? <div className={`compatibility-banner ${compatibility.error ? "error" : ""}`} role={compatibility.error ? "alert" : "status"}><GitBranch/>{compatibility.message}<button onClick={() => setCompatibility(undefined)} aria-label="Dismiss compatibility message">×</button></div> : null}
     <div className="graph-review-editor">
     <div className={`builder-layout ${paletteOpen ? "" : "palette-hidden"} ${inspectorOpen ? "" : "inspector-hidden"}`} style={{ "--palette-width": `${paletteWidth}px`, "--inspector-width": `${inspectorWidth}px` } as CSSProperties}>
@@ -626,28 +696,30 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
         <div className="graph-topbar">
           <div className="graph-view-actions" aria-label="Graph workspace controls">
             <IconButton label={paletteOpen ? "Hide behavior palette" : "Show behavior palette"} aria-pressed={paletteOpen} onClick={togglePalette}>{paletteOpen ? <PanelLeftClose/> : <PanelLeftOpen/>}</IconButton><IconButton label="Add step" aria-pressed={paletteOpen} onClick={togglePalette}><Plus/></IconButton><div className="view-toggle" aria-label="Experiment view"><button aria-pressed={viewMode === "graph"} onClick={() => setViewMode("graph")}><Network/>Canvas</button><button aria-pressed={viewMode === "steps"} onClick={() => setViewMode("steps")}><ListOrdered/>Steps</button></div>
-            <IconButton label={autoLayoutLabel} onClick={autoLayout} disabled={review?.readOnly || !nodes.length}><LayoutGrid/></IconButton>
+            <div className="graph-history"><IconButton label="Undo" onClick={undo} disabled={review?.readOnly || historyIndex <= 0}><Undo2/></IconButton><IconButton label="Redo" onClick={redo} disabled={review?.readOnly || historyIndex >= history.length - 1}><Redo2/></IconButton></div>
+            <Button className="graph-auto-layout" size="small" variant="ghost" aria-label={autoLayoutLabel} onClick={autoLayout} disabled={review?.readOnly || !nodes.length}><LayoutGrid/><span>{autoLayoutLabel}</span></Button>
             <IconButton label="Fit visible graph" onClick={fitGraph} disabled={!nodes.length}><ScanSearch/></IconButton>
             <BuilderStepSearch steps={scenario.steps} behaviors={behaviorMap} onSelect={revealSearchResult} />
-            <IconButton label="Focus selected step" onClick={fitSelection} disabled={!selected}><Maximize2/></IconButton>
-            <output className="graph-scale" aria-label="Graph zoom">{Math.round(graphZoom * 100)}%{summaryZoom ? " · Overview" : ""}</output>
-            <span className="graph-validation-state"><Badge tone={displayedValidation === "valid" ? "success" : displayedValidation === "invalid" ? "danger" : "neutral"}>{displayedValidation === "valid" ? "Ready for review" : displayedValidation === "invalid" ? "Needs attention" : "Not validated"}</Badge></span>
+            <output className="graph-scale" aria-label="Graph zoom">{Math.round(graphZoom * 100)}%</output>
             <div className="graph-utility-actions">
+            {viewMode === "graph" ? <IconButton id={routesToggleId} label={routesOpen ? "Hide route list" : "Show route list"} aria-pressed={routesOpen} onClick={() => { setRoutesOpen(value => !value); if (!routesOpen) { setInspectorOpen(false); setPaletteOpen(false); } }}><GitBranch/></IconButton> : null}
             <IconButton id={inspectorToggleId} label={inspectorOpen ? "Hide node inspector" : "Show node inspector"} aria-pressed={inspectorOpen} onClick={toggleInspector}>{inspectorOpen ? <PanelRightClose/> : <PanelRightOpen/>}</IconButton>
             <IconButton label={focusMode ? "Exit graph focus mode" : "Enter graph focus mode"} aria-pressed={focusMode} onClick={() => setFocusMode((active) => !active)}>{focusMode ? <Minimize2/> : <Maximize2/>}</IconButton>
-            <IconButton label="Commands" onClick={() => setCommandPaletteOpen(true)}><CommandIcon/></IconButton>
-            <details className="graph-options"><summary>View options</summary><div>
+            <details className="graph-options"><summary aria-label="View options"><MoreHorizontal/><span className="sr-only">View options</span></summary><div>
+            <div className="graph-option-actions"><Button variant="ghost" size="small" onClick={fitSelection} disabled={!selected}><Maximize2/>Focus selected step</Button><Button variant="ghost" size="small" onClick={() => setCommandPaletteOpen(true)}><CommandIcon/>Commands</Button><Button size="small" variant="ghost" onClick={() => { const url = URL.createObjectURL(new Blob([JSON.stringify(scenario, null, 2)], { type: "application/json" })); const link = document.createElement("a"); link.href = url; link.download = `${scenario.id}.json`; link.click(); URL.revokeObjectURL(url); }}><Download/>Export</Button></div>
             <div className="graph-edit-actions" role="group" aria-label="Selection tools"><IconButton label="Copy selected node" onClick={copySelected} disabled={!selected}><Copy/></IconButton><IconButton label="Paste node" onClick={paste} disabled={review?.readOnly || !clipboard.current}><Clipboard/></IconButton><IconButton label="Duplicate selected node" onClick={duplicateSelected} disabled={review?.readOnly || !selected}><RotateCcw/></IconButton><IconButton label="Delete selected node" onClick={() => { if (selected) void flow.deleteElements({ nodes: [{ id: selected.id }] }); }} disabled={review?.readOnly || !selected}><Trash2/></IconButton></div>
             <label className="check-row"><input type="checkbox" checked={allBranches} onChange={(event) => setAllBranches(event.target.checked)}/>Show all branches and disconnected steps</label>
             <label className="check-row"><input type="checkbox" checked={showInputs} onChange={(event) => setShowInputs(event.target.checked)}/>Show input connections</label>
+            {allBranches ? <Button variant="ghost" size="small" onClick={() => { setAllBranches(false); setFocusedSection(null); }}>Focus on success path</Button> : null}
+            {viewMode === "graph" && sections.length > 1 ? <Field label="Focus a connected path" hint="Optional view grouping. Review run always includes the whole experiment."><select aria-label="Step group" value={focusedSection === null ? "all" : sectionIndex} onChange={event => showSection(event.target.value)}><option value="all">All steps</option>{sections.map((section, index) => <option key={index} value={index}>{section.title} · {section.steps.length} steps</option>)}</select></Field> : null}
             <label className="panel-width-control"><span>Palette width</span><input aria-label="Behavior palette width" type="range" min="220" max="420" step="10" value={paletteWidth} disabled={!paletteOpen} onChange={(event) => setPaletteWidth(Number(event.target.value))}/><output>{paletteWidth}px</output></label>
             <label className="panel-width-control"><span>Inspector width</span><input aria-label="Node inspector width" type="range" min="260" max="480" step="10" value={inspectorWidth} disabled={!inspectorOpen} onChange={(event) => setInspectorWidth(Number(event.target.value))}/><output>{inspectorWidth}px</output></label></div></details>
             </div>
             {focusMode ? <span className="focus-hint">Esc to exit</span> : null}
           </div>
         </div>
-        {viewMode === "graph" && sections.length > 1 ? <nav className="graph-sections" aria-label="Experiment step groups"><IconButton label="Previous group" disabled={focusedSection === null || sectionIndex === 0} onClick={() => showSection(String(sectionIndex - 1))}><ChevronLeft/></IconButton><label><span className="sr-only">Display group</span><select aria-label="Step group" value={focusedSection === null ? "all" : sectionIndex} onChange={(event) => showSection(event.target.value)}>{sections.map((section, index) => <option key={index} value={index}>{section.title}</option>)}<option value="all">All steps</option></select></label><IconButton label="Next group" disabled={focusedSection === null || sectionIndex === sections.length - 1} onClick={() => showSection(String(sectionIndex + 1))}><ChevronRight/></IconButton><span className="graph-group-count">{shownIds.size} of {scenario.steps.length} steps</span>{groupBoundaries ? <details className="graph-group-connections"><summary>Group connections</summary><div><span className="graph-group-boundaries" aria-label="Conditional execution routes">{groupBoundaries.incoming.length ? `From: ${groupBoundaries.incoming.join(", ")}` : groupBoundaries.first ? "Entry group" : "No incoming route"}{groupBoundaries.outgoing.length ? ` · To: ${groupBoundaries.outgoing.join(", ")}` : ""}</span>{groupBoundaries.artifactCount ? <details className="graph-data-boundaries"><summary>Data dependencies ({groupBoundaries.artifactCount})</summary><div>{groupBoundaries.incomingArtifacts.length ? <section><strong>Inputs from other groups</strong><ul>{groupBoundaries.incomingArtifacts.map(item => <li key={`in-${item.identity}`}>{item.label}</li>)}</ul></section> : null}{groupBoundaries.outgoingArtifacts.length ? <section><strong>Outputs used by other groups</strong><ul>{groupBoundaries.outgoingArtifacts.map(item => <li key={`out-${item.identity}`}>{item.label}</li>)}</ul></section> : null}</div></details> : null}</div></details> : null}</nav> : null}
-        <div className="graph-disclosure" role="status"><span>{viewMode === "graph" && sections.length > 1 ? "" : `${shownIds.size} of ${scenario.steps.length} steps shown${scenario.steps.length - shownIds.size ? ` · ${scenario.steps.length - shownIds.size} hidden` : ""} · `}{hiddenBranches} routes hidden. Review run includes the whole experiment.</span><button onClick={() => { setAllBranches((value) => !value); if (!allBranches) { setRoutesOpen(true); setInspectorOpen(false); setPaletteOpen(false); } }}>{allBranches ? "Focus on success path" : "Show all branches"}</button>{viewMode === "graph" ? <button id={routesToggleId} aria-expanded={routesOpen} onClick={() => { setRoutesOpen((value) => !value); if (!routesOpen) { setInspectorOpen(false); setPaletteOpen(false); } }}>{routesOpen ? "Hide route list" : "Show route list"}</button> : null}{selected && scenario.edges.some((edge) => edge.from_step === selected.id && edge.outcome !== "success") && !allBranches ? <button onClick={() => setExpandedBranches((previous) => { const next = new Set(previous); if (next.has(selected.id)) next.delete(selected.id); else next.add(selected.id); return next; })}>{expandedBranches.has(selected.id) ? "Collapse selected branches" : "Expand selected branches"}</button> : null}</div>
+        {viewMode === "graph" && focusedGroup ? <nav className="graph-sections" aria-label="Focused connected path"><span>{sections[sectionIndex]!.title} · {shownIds.size} of {scenario.steps.length} steps</span><Button size="small" variant="ghost" onClick={() => showSection("all")}>Return to whole plan</Button>{groupBoundaries ? <details className="graph-group-connections"><summary>Group connections</summary><div><span className="graph-group-boundaries" aria-label="Conditional execution routes">{groupBoundaries.incoming.length ? `From: ${groupBoundaries.incoming.join(", ")}` : groupBoundaries.first ? "Entry group" : "No incoming route"}{groupBoundaries.outgoing.length ? ` · To: ${groupBoundaries.outgoing.join(", ")}` : ""}</span>{groupBoundaries.artifactCount ? <details className="graph-data-boundaries"><summary>Data dependencies ({groupBoundaries.artifactCount})</summary><div>{groupBoundaries.incomingArtifacts.length ? <section><strong>Inputs from other groups</strong><ul>{groupBoundaries.incomingArtifacts.map(item => <li key={`in-${item.identity}`}>{item.label}</li>)}</ul></section> : null}{groupBoundaries.outgoingArtifacts.length ? <section><strong>Outputs used by other groups</strong><ul>{groupBoundaries.outgoingArtifacts.map(item => <li key={`out-${item.identity}`}>{item.label}</li>)}</ul></section> : null}</div></details> : null}</div></details> : null}</nav> : null}
+        {!allBranches || hiddenBranches || shownIds.size < scenario.steps.length ? <div className="graph-disclosure" role="status"><span>{shownIds.size} of {scenario.steps.length} steps shown · {hiddenBranches} routes hidden. Review run includes the whole experiment.</span><button onClick={showAllBranches}>Show all branches</button>{selected && scenario.edges.some((edge) => edge.from_step === selected.id && edge.outcome !== "success") && !allBranches ? <button onClick={() => setExpandedBranches((previous) => { const next = new Set(previous); if (next.has(selected.id)) next.delete(selected.id); else next.add(selected.id); return next; })}>{expandedBranches.has(selected.id) ? "Collapse selected branches" : "Expand selected branches"}</button> : null}</div> : null}
         {viewMode === "steps" ? <ol ref={orderedSteps} className="ordered-steps" aria-label="Experiment steps">{visibleGraph.ordered.map((step, index) => { const behavior = behaviorMap.get(step.behavior_id); return <li key={step.id}><button data-step-id={step.id} aria-pressed={selectedId === step.id} onClick={() => selectStep(step.id)}><span className="step-number">{index + 1}</span><span><strong>{displayTitle(behavior?.title ?? "Unavailable step")}</strong><small>{behavior?.purpose}</small><span className="step-routes">{scenario.edges.filter((edge) => edge.from_step === step.id).map((edge) => <em key={edge.outcome}>{branchLabels[edge.outcome]} → {behaviorMap.get(scenario.steps.find((item) => item.id === edge.to_step)?.behavior_id ?? "")?.title ? displayTitle(behaviorMap.get(scenario.steps.find((item) => item.id === edge.to_step)?.behavior_id ?? "")!.title) : edge.to_step}</em>)}</span></span><Badge>{behavior?.execution_state === "action" ? "Executable" : behavior?.execution_state === "simulation" ? "Simulated" : "Research"}</Badge></button></li>; })}</ol> : null}
         <div className={`graph-stage ${routesOpen ? "routes-open" : ""}`} hidden={viewMode !== "graph"}>
         <div ref={graphCanvas} className="graph-canvas" tabIndex={0} aria-label="Scenario graph canvas" onKeyDown={(event) => {
@@ -656,13 +728,14 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
           if (id && visibleRoutes.some((edge) => edge.id === id)) { event.preventDefault(); selectRoute(id); }
         }} onPointerDown={(event) => { const target = event.target as HTMLElement; if (!target.closest("button, input, select, textarea")) event.currentTarget.focus(); }} onDragOver={(event) => { if (event.dataTransfer.types.includes("application/x-bluefire-behavior")) event.preventDefault(); }} onDrop={drop}>
         <ReactFlow<BehaviorFlowNode, FlowEdge> nodes={displayNodes} edges={displayEdges} nodesDraggable={!review?.readOnly && !deletion.summary} nodesConnectable={!review?.readOnly && !deletion.summary} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onEdgeClick={onEdgeClick} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={onNodeClick} onSelectionChange={onSelectionChange} onMove={onMove} onNodeDragStop={onNodeDragStop} onDelete={onDelete} onBeforeDelete={confirmDelete} onConnect={onConnect} minZoom={minimumGraphZoom} maxZoom={1.6} deleteKeyCode={review?.readOnly || deletion.summary ? null : deleteKeys} connectionLineStyle={connectionLineStyle} proOptions={proOptions}>
-          <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="rgba(117,198,255,.18)"/>{allBranches && scenario.steps.length > 12 ? <MiniMap pannable zoomable nodeColor={(node) => { const behavior = behaviorMap.get((node.data as BehaviorNodeData).step.behavior_id); return behavior?.safety_tier === "restricted" ? "#ff6e79" : behavior?.safety_tier === "controlled" ? "#f7b84b" : "#38a8ff"; }} maskColor="rgba(5,9,19,.74)"/> : null}<Controls showInteractive={false}/>
+          <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="rgba(117,198,255,.12)"/>{scenario.steps.length > 3 && miniMapOpen ? <MiniMap style={miniMapStyle} position="bottom-left" pannable zoomable nodeColor={(node) => node.selected ? "var(--blue)" : "var(--muted)"} bgColor="var(--ink-950)" maskColor="color-mix(in srgb, var(--ink-1000) 72%, transparent)"/> : null}<Controls position="bottom-right" showInteractive={false}/>
         </ReactFlow>{!nodes.length ? <div className="graph-empty-overlay"><GitBranch/><strong>Add the first step</strong><span>Choose a method to begin designing this experiment.</span><Button variant="primary" disabled={review?.readOnly} onClick={() => { setPaletteOpen(true); setInspectorOpen(false); }}>Add first step</Button></div> : null}</div>
         {routesOpen ? <BuilderRoutes routes={visibleRoutes} total={scenario.edges.length} selected={selectedRoute} readOnly={Boolean(review?.readOnly)} select={selectRoute} inspect={(source) => { selectStep(source); setRoutesOpen(false); window.requestAnimationFrame(() => document.getElementById(inspectorToggleId)?.focus()); }} remove={(id) => { void flow.deleteElements({ edges: [{ id }] }); }} close={() => { setRoutesOpen(false); document.getElementById(routesToggleId)?.focus(); }} /> : null}
         </div>
+        {viewMode === "graph" ? <footer className="graph-key"><div className="graph-legend" aria-label="Connection types"><span><i className="legend-success"/>Success</span><span><i className="legend-conditional"/>Conditional</span><span><i className="legend-data"/>Data</span></div>{scenario.steps.length > 3 ? <button type="button" className="graph-overview-toggle" aria-pressed={miniMapOpen} onClick={() => setMiniMapOpen(open => !open)}><LayoutGrid aria-hidden="true"/>{miniMapOpen ? "Hide overview" : "Overview map"}</button> : null}</footer> : null}
         <GraphValidationFeedback state={displayedValidation} findings={validationIssues} stepCount={scenario.steps.length} routeCount={scenario.edges.length} readOnly={review?.readOnly} name={id => graphStepName(scenario, behaviorMap, id)} onSelect={id => { setAllBranches(true); setFocusedSection(null); selectStep(id); }} />
       </Panel>
-      <Panel className="inspector-panel" hidden={!inspectorOpen}>{inspectorOpen ? <><PanelHeader eyebrow="Step details" title={displayTitle(selectedBehavior?.title ?? "Select a step")} actions={<IconButton label="Close step details" onClick={() => { setInspectorOpen(false); document.getElementById(inspectorToggleId)?.focus(); }}><X/></IconButton>} />{selected && selectedBehavior ? <fieldset className="graph-review-editor" disabled={review?.readOnly}><Inspector scenario={scenario} step={selected} behavior={selectedBehavior} behaviors={behaviorMap} actions={actionMap} onAlternative={useAlternative} updateStep={updateStep} updateScenario={applyScenario} renameStep={renameStep} selectedAction={runConfig.actionImplementations?.[selected.id] ?? ""} allowRunOverride={!review} onAction={(actionId) => { const next = { ...(runConfig.actionImplementations ?? {}) }; if (actionId) next[selected.id] = actionId; else delete next[selected.id]; setRunConfig({ ...runConfig, actionImplementations: next }); }} /></fieldset> : <EmptyState title="Select a step" description="Select a step on the canvas or in the list to choose its method, inputs, and branches." />}</> : null}</Panel>
+      <Panel className="inspector-panel" hidden={!inspectorOpen}>{inspectorOpen ? <><header className="inspector-header"><span className="inspector-step-icon"><FileText/></span><div><h2>{displayTitle(selectedBehavior?.title ?? "Select a step")}</h2><p>{selected ? `Step ${scenario.steps.indexOf(selected) + 1} · ${selectedBehavior?.execution_state === "action" ? "Method" : selectedBehavior?.execution_state === "simulation" ? "Simulation" : "Research only"}` : "Method, evidence, and parameters"}</p></div><IconButton label="Close step details" onClick={() => { setInspectorOpen(false); document.getElementById(inspectorToggleId)?.focus(); }}><X/></IconButton></header>{selected && selectedBehavior ? <Inspector scenario={scenario} step={selected} behavior={selectedBehavior} behaviors={behaviorMap} actions={actionMap} readOnly={Boolean(review?.readOnly)} onAlternative={useAlternative} updateStep={updateStep} updateScenario={applyScenario} renameStep={renameStep} selectedAction={runConfig.actionImplementations?.[selected.id] ?? ""} allowRunOverride={!review} onAction={(actionId) => { const next = { ...(runConfig.actionImplementations ?? {}) }; if (actionId) next[selected.id] = actionId; else delete next[selected.id]; setRunConfig({ ...runConfig, actionImplementations: next }); }} /> : <EmptyState title="Select a step" description="Select a step on the canvas or in the list to choose its method, inputs, and branches." />}</> : null}</Panel>
     </div>
     </div>
     <GraphDeleteDialog summary={deletion.summary} confirm={deletion.confirm} cancel={deletion.cancel} restoreFocus={deletion.restoreFocus} />
@@ -690,14 +763,32 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   </div>;
 }
 
-function Inspector({ scenario, step, behavior, behaviors, actions, updateStep, updateScenario, renameStep, selectedAction, allowRunOverride, onAction, onAlternative }: { scenario: Scenario; step: ScenarioStep; behavior: Behavior; behaviors: Map<string, Behavior>; actions: Map<string, ActionDefinition>; updateStep: (id: string, update: (step: ScenarioStep) => ScenarioStep) => void; updateScenario: (scenario: Scenario) => void; renameStep: (previousId: string, nextId: string, scenario: Scenario) => void; selectedAction: string; allowRunOverride: boolean; onAction: (id: string) => void; onAlternative: (stepId: string, behaviorId: string) => void }) {
+function Inspector({ scenario, step, behavior, behaviors, actions, readOnly, updateStep, updateScenario, renameStep, selectedAction, allowRunOverride, onAction, onAlternative }: { scenario: Scenario; step: ScenarioStep; behavior: Behavior; behaviors: Map<string, Behavior>; actions: Map<string, ActionDefinition>; readOnly: boolean; updateStep: (id: string, update: (step: ScenarioStep) => ScenarioStep) => void; updateScenario: (scenario: Scenario) => void; renameStep: (previousId: string, nextId: string, scenario: Scenario) => void; selectedAction: string; allowRunOverride: boolean; onAction: (id: string) => void; onAlternative: (stepId: string, behaviorId: string) => void }) {
+  const [tab, setTab] = useState<"method" | "evidence" | "parameters">("method");
+  const tabId = useId();
+  const tabs = ["method", "evidence", "parameters"] as const;
   const sources = guaranteedInputSources(scenario, step.id);
   const outputs = scenario.steps.flatMap((source) => (behaviors.get(source.behavior_id)?.outputs ?? []).map((output) => ({ source, output }))).filter((item) => sources.has(item.source.id));
   const changeId = (id: string) => { if (!/^[a-z][a-z0-9_]*$/.test(id) || scenario.steps.some((item) => item.id === id && item.id !== step.id)) return; renameStep(step.id, id, { ...scenario, ...(scenario.adaptive_execution ? { adaptive_execution: renameAdaptiveExecutionStep(scenario.adaptive_execution, step.id, id) } : {}), start: scenario.start === step.id ? id : scenario.start, steps: scenario.steps.map((item) => item.id === step.id ? { ...item, id } : { ...item, inputs: Object.fromEntries(Object.entries(item.inputs).map(([name, binding]) => [name, binding.from_step === step.id ? { ...binding, from_step: id } : binding])) }), edges: scenario.edges.map((edge) => ({ ...edge, from_step: edge.from_step === step.id ? id : edge.from_step, to_step: edge.to_step === step.id ? id : edge.to_step })), layout: Object.fromEntries(Object.entries(scenario.layout ?? {}).map(([key, value]) => [key === step.id ? id : key, value])) }); };
-  return <div className="inspector-body"><section><div className="chip-list"><Badge tone={behavior.safety_tier === "restricted" ? "danger" : behavior.safety_tier === "controlled" ? "warning" : "success"}>{behavior.safety_tier}</Badge>{behavior.platforms.map((item) => <Badge key={item}>{item}</Badge>)}</div><p>{behavior.purpose}</p></section>
-    <section><h3>Method</h3><p><strong>{displayTitle(behavior.title)}</strong> is the primary method for this step. Choose an alternative below to change the reusable step.</p><Field label="Run method override" hint={!allowRunOverride ? "Adopt this reviewed experiment before choosing a run override." : behavior.action_ids.length ? "Optional for the current run. Retained across Simulate and Execute; reviewed for compatibility and approval before execution. It is not part of the saved experiment." : "This step has no executable method. Choose a supported alternative to execute it."}><select aria-label="Run method override" value={selectedAction} onChange={(event) => onAction(event.target.value)} disabled={!allowRunOverride || !behavior.action_ids.length}><option value="">Recommended at run review</option>{behavior.action_ids.map((id) => <option key={id} value={id}>{actions.get(id)?.title ? displayTitle(actions.get(id)!.title) : id}{actions.get(id)?.platforms.length ? ` · ${actions.get(id)!.platforms.join(" / ")}` : ""}</option>)}</select></Field></section>
-    {(behavior.compatible_behaviors?.length || step.alternates.length) ? <section><h3>Alternatives</h3><p>Save compatible methods for reuse, or choose a different primary method now. Configure an adaptive retry below to permit changes during execution.</p>{[...new Set([...(behavior.compatible_behaviors ?? []), ...step.alternates])].filter((id) => id !== behavior.id).map((id) => <div className="alternative-method" key={id}><label className="check-row"><input type="checkbox" checked={step.alternates.includes(id)} onChange={(event) => updateStep(step.id, (next) => ({ ...next, alternates: event.target.checked ? [...next.alternates, id] : next.alternates.filter((value) => value !== id) }))}/><span>{behaviors.get(id)?.title ? displayTitle(behaviors.get(id)!.title) : id}</span></label><p>{behaviors.get(id)?.purpose ?? "This method is unavailable in the loaded catalog."}</p><Button size="small" variant="secondary" disabled={!behaviors.has(id)} onClick={() => onAlternative(step.id, id)} aria-label={`Use ${behaviors.get(id)?.title ? displayTitle(behaviors.get(id)!.title) : id} for this step`}>Use this method</Button></div>)}</section> : null}
+  return <div className="inspector-editor"><div className="inspector-tabs" role="tablist" aria-label="Selected step details">{tabs.map((item, index) => <button key={item} id={`${tabId}-${item}`} role="tab" type="button" aria-selected={tab === item} aria-controls={`${tabId}-${item}-panel`} tabIndex={tab === item ? 0 : -1} onClick={() => setTab(item)} onKeyDown={event => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    setTab(tabs[next]!); event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("[role=tab]")[next]?.focus();
+  }}>{sentence(item)}</button>)}</div><fieldset className="graph-review-editor inspector-fields" disabled={readOnly}><div className="inspector-body">
+    <div role="tabpanel" id={`${tabId}-method-panel`} aria-labelledby={`${tabId}-method`} hidden={tab !== "method"}>
+    <section><h3>Selected method</h3><article className="method-card current-method" aria-label="Primary method"><div className="method-card-heading"><FileText/><strong>{displayTitle(behavior.title)}</strong><Badge tone="info">Primary</Badge></div><p>{behavior.purpose}</p><div className="chip-list"><Badge tone={behavior.safety_tier === "restricted" ? "danger" : behavior.safety_tier === "controlled" ? "warning" : "success"}>{sentence(behavior.safety_tier)}</Badge>{behavior.platforms.map(item => <Badge key={item}>{inputLabel(item)}</Badge>)}</div></article></section>
+    {(behavior.compatible_behaviors?.length || step.alternates.length) ? <section><h3>Alternative methods</h3>{[...new Set([...(behavior.compatible_behaviors ?? []), ...step.alternates])].filter(id => id !== behavior.id).map(id => <article className="method-card alternative-method" key={id}><strong>{behaviors.get(id)?.title ? displayTitle(behaviors.get(id)!.title) : id}</strong><p>{behaviors.get(id)?.purpose ?? "This method is unavailable in the loaded catalog."}</p><div className="chip-list">{behaviors.get(id)?.platforms.map(item => <Badge key={item}>{inputLabel(item)}</Badge>)}</div><Button size="small" variant="primary" disabled={!behaviors.has(id)} onClick={() => onAlternative(step.id, id)} aria-label={`Use ${behaviors.get(id)?.title ? displayTitle(behaviors.get(id)!.title) : id} for this step`}>Use this method<ArrowRight/></Button><label className="check-row"><input type="checkbox" aria-label={behaviors.get(id)?.title ? displayTitle(behaviors.get(id)!.title) : id} checked={step.alternates.includes(id)} onChange={event => updateStep(step.id, next => ({ ...next, alternates: event.target.checked ? [...next.alternates, id] : next.alternates.filter(value => value !== id) }))}/><span>Keep as a saved alternative</span></label></article>)}<p>Saved alternatives are available for reuse. Adaptive retry choices separately control changes during execution.</p></section> : null}
+    <section><Field label="Run method override" hint={!allowRunOverride ? "Adopt this reviewed experiment before choosing a run override." : behavior.action_ids.length ? "Optional for this run, across Simulate and Execute. Reviewed for compatibility and approval before execution; not saved with the experiment." : "This step has no executable method. Choose a supported alternative to execute it."}><select aria-label="Run method override" value={selectedAction} onChange={event => onAction(event.target.value)} disabled={!allowRunOverride || !behavior.action_ids.length}><option value="">Recommended at run review</option>{behavior.action_ids.map(id => <option key={id} value={id}>{actions.get(id)?.title ? displayTitle(actions.get(id)!.title) : id}{actions.get(id)?.platforms.length ? ` · ${actions.get(id)!.platforms.join(" / ")}` : ""}</option>)}</select></Field></section>
     <AdaptiveMethodEditor key={`${step.id}:${JSON.stringify(scenario.adaptive_execution)}:${selectedAction}`} scenario={scenario} step={step} behaviors={behaviors} actions={actions} selectedAction={selectedAction} onChange={updateScenario} />
+    </div>
+    <div role="tabpanel" id={`${tabId}-evidence-panel`} aria-labelledby={`${tabId}-evidence`} hidden={tab !== "evidence"}>
+      <section><h3>Expected evidence</h3><p>These are the method’s expected outputs and observations. Run results distinguish runner-reported evidence from independent observations.</p>{behavior.outputs.length ? <ul className="evidence-contracts">{behavior.outputs.map(output => <li key={output.name}><FileText/><span><strong>{inputLabel(output.name)}</strong><small>{inputTypeLabel(output.type)}{output.multiple ? " · Multiple items" : ""}</small></span></li>)}</ul> : <p>This method declares no output artifacts.</p>}</section>
+      <section><h3>Expected observations</h3>{behavior.telemetry.length ? <div className="chip-list">{behavior.telemetry.map(item => <Badge key={item} tone="info">{item}</Badge>)}</div> : <p>No observation types are declared for this method.</p>}{behavior.detection_hints.length ? <ul>{behavior.detection_hints.map(hint => <li key={hint}>{hint}</li>)}</ul> : null}</section>
+      {behavior.limitations.length ? <section><h3>Evidence limitations</h3><ul>{behavior.limitations.map(limitation => <li key={limitation}>{limitation}</li>)}</ul></section> : null}
+      <Link className="button button-secondary button-small evidence-run-link" to="/runs">Open run results<ArrowRight/></Link>
+    </div>
+    <div role="tabpanel" id={`${tabId}-parameters-panel`} aria-labelledby={`${tabId}-parameters`} hidden={tab !== "parameters"}>
     <section><h3>Required input</h3>{behavior.inputs.length ? behavior.inputs.map((input) => {
       const options = outputs.filter(({ output }) => output.type === input.type && Boolean(output.multiple) === Boolean(input.multiple));
       const binding = step.inputs[input.name];
@@ -707,9 +798,9 @@ function Inspector({ scenario, step, behavior, behaviors, actions, updateStep, u
       return <Field key={input.name} label={inputLabel(input.name)} hint={hint}><select aria-label={inputLabel(input.name)} aria-invalid={invalidBinding} value={selectedValue} onChange={(event) => updateStep(step.id, (next) => { if (!event.target.value) { delete next.inputs[input.name]; return next; } const [from_step, artifact] = event.target.value.split(":", 2); return { ...next, inputs: { ...next.inputs, [input.name]: { from_step: from_step!, artifact: artifact! } } }; })}><option value="">{input.required ? "Choose compatible output" : "No input"}</option>{invalidBinding ? <option value={selectedValue} disabled>Current connection needs attention</option> : null}{options.map(({ source, output }) => <option key={`${source.id}:${output.name}`} value={`${source.id}:${output.name}`}>{behaviors.get(source.behavior_id)?.title ? displayTitle(behaviors.get(source.behavior_id)!.title) : source.id} · {inputLabel(output.name)}</option>)}</select></Field>;
     }) : <p>This step needs no input from another step.</p>}</section>
     <section><h3>Parameters</h3>{behavior.parameters.length ? behavior.parameters.map((spec) => <ParameterField key={spec.name} behaviorId={step.behavior_id} spec={spec} value={step.parameters[spec.name]} onChange={(value) => updateStep(step.id, (next) => ({ ...next, parameters: updateParameter(next.parameters, spec.name, value) }))} />) : <p>No configurable parameters.</p>}</section>
-    <section><h3>Next step</h3>{outcomes.map((outcome) => { const edge = scenario.edges.find((item) => item.from_step === step.id && item.outcome === outcome); return <Field key={outcome} label={branchLabels[outcome]}><select value={edge?.to_step ?? ""} onChange={(event) => updateScenario({ ...scenario, edges: [...scenario.edges.filter((item) => !(item.from_step === step.id && item.outcome === outcome)), ...(event.target.value ? [{ from_step: step.id, outcome, to_step: event.target.value }] : [])] })}><option value="">End path</option>{scenario.steps.filter((item) => item.id !== step.id).map((item) => <option key={item.id} value={item.id}>{behaviors.get(item.behavior_id)?.title ? displayTitle(behaviors.get(item.behavior_id)!.title) : item.id}</option>)}</select></Field>; })}</section>
-    <details className="step-technical-details"><summary>Technical details</summary><Field label="Step ID" hint="Changing this also updates connected steps."><input value={step.id} onChange={(event) => changeId(event.target.value)} pattern="[a-z][a-z0-9_]*" /></Field><p><code>{behavior.id}</code></p><h3>Expected observations</h3><div className="chip-list">{behavior.telemetry.map((item) => <Badge key={item} tone="info">{item}</Badge>)}</div></details>
-  </div>;
+    </div>
+    <details className="step-technical-details"><summary>Routes and step details</summary><p>The primary method is saved with this step. A run override applies only to the current run and is reviewed before execution.</p><section><h3>Next step</h3>{outcomes.map((outcome) => { const edge = scenario.edges.find((item) => item.from_step === step.id && item.outcome === outcome); return <Field key={outcome} label={branchLabels[outcome]}><select value={edge?.to_step ?? ""} onChange={(event) => updateScenario({ ...scenario, edges: [...scenario.edges.filter((item) => !(item.from_step === step.id && item.outcome === outcome)), ...(event.target.value ? [{ from_step: step.id, outcome, to_step: event.target.value }] : [])] })}><option value="">End path</option>{scenario.steps.filter((item) => item.id !== step.id).map((item) => <option key={item.id} value={item.id}>{behaviors.get(item.behavior_id)?.title ? displayTitle(behaviors.get(item.behavior_id)!.title) : item.id}</option>)}</select></Field>; })}</section><Field label="Step ID" hint="Changing this also updates connected steps."><input value={step.id} onChange={(event) => changeId(event.target.value)} pattern="[a-z][a-z0-9_]*" /></Field><p><code>{behavior.id}</code></p></details>
+  </div></fieldset></div>;
 }
 
 function updateParameter(parameters: Record<string, unknown>, name: string, value: unknown) {
