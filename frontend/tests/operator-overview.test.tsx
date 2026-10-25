@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -84,4 +84,35 @@ it("reports unreadable records without claiming there are no runs", async () => 
   vi.mocked(api.runs).mockResolvedValue({ runs: [], unavailable_run_count: 2 }); mount();
   expect(await screen.findByText(/2 run records are unavailable/)).toBeVisible();
   expect(screen.queryByText("No runs have been recorded.")).not.toBeInTheDocument();
+});
+
+it("shows recorded objective outcomes separately from completed process status without changing review links", async () => {
+  const cases = [
+    { title: "Simulated objective reached", mode: "simulate", reached: true, label: "Achieved (synthetic)" },
+    { title: "Executed objective reached", mode: "execute", reached: true, label: "Achieved" },
+    { title: "Completed without objective", mode: "execute", reached: false, label: "Not achieved" },
+    { title: "Completed without reported result", mode: "simulate", reached: undefined, label: "Not established" },
+  ] as const;
+  const runs = cases.map((item, index) => ({ ...structuredClone(demoRuns[0]!),
+    run_id: `run-20261025T120000Z-${String(index).padStart(16, "0")}`,
+    scenario: undefined, presentation: undefined, scenario_title: item.title,
+    mode: item.mode, status: "completed", objective_reached: item.reached,
+  }));
+  const before = structuredClone(runs);
+  vi.mocked(api.runs).mockResolvedValue({ runs, unavailable_run_count: 0 });
+  mount();
+  const recent = within(await screen.findByRole("region", { name: "Recent outcomes" }));
+  expect(await recent.findByRole("columnheader", { name: "Outcome" })).toBeVisible();
+  for (const [index, item] of cases.entries()) {
+    const link = recent.getByRole("link", { name: item.title });
+    expect(link).toHaveAttribute("href", `/runs/${runs[index]!.run_id}`);
+    const row = within(link.closest("tr")!);
+    const outcome = within(row.getAllByRole("cell")[2]!);
+    expect(outcome.getByText(item.label, { exact: true })).toBeVisible();
+    expect(outcome.getByText("Completed", { exact: true })).toBeVisible();
+    expect(outcome.getByText("Run status:", { exact: true })).toHaveClass("sr-only");
+    expect(row.getByText(item.mode === "simulate" ? "Simulate" : "Execute", { exact: true })).toBeVisible();
+  }
+  expect(api.runs).toHaveBeenCalledTimes(1);
+  expect(runs).toEqual(before);
 });

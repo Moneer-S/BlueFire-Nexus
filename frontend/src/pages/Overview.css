@@ -76,6 +76,9 @@
 .recent-work-name a { color: var(--text); font-size: .75rem; font-weight: 550; line-height: 1.45; text-decoration: none; overflow-wrap: anywhere; }
 .recent-work-name small { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 4px; color: var(--muted); font-size: .65rem; }
 .recent-work-table time { color: var(--muted-strong); font-size: .67rem; line-height: 1.5; }
+.recent-work-outcome { position: relative; display: grid; gap: 4px; line-height: 1.45; overflow-wrap: anywhere; }
+.recent-work-outcome strong { font-size: .74rem; font-weight: 550; }
+.recent-work-outcome small { color: var(--muted); font-size: .65rem; }
 .recent-work-table .badge { font-size: .62rem; white-space: normal; }
 .recent-work-name .badge { padding: 1px 5px; font-size: .58rem; }
 .work-object-list { list-style: none; margin: 0; padding: 0; }

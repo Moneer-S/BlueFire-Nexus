@@ -101,7 +101,7 @@ test("builder workspace exposes commands, layout, focus, legend, panels, and con
 
   await page.getByRole("button", { name: "Auto-layout" }).click();
   await expect(page.getByText("Steps arranged by their connections. Use Undo to restore your positions.")).toBeVisible();
-  await page.getByRole("button", { name: "Fit visible graph" }).click();
+  await page.getByRole("button", { name: "Fit view", exact: true }).click();
   await viewOptions(page, true);
   await page.getByRole("button", { name: "Focus selected step" }).click();
   await expect(page.getByRole("button", { name: "Commands", exact: true })).toBeVisible();
@@ -114,7 +114,7 @@ test("builder workspace exposes commands, layout, focus, legend, panels, and con
   const commandDialog = page.getByRole("dialog", { name: "Builder commands" });
   await expect(commandDialog).toBeVisible();
   await expect(commandDialog.locator(".builder-command-list > button")).toHaveCount(9);
-  for (const action of ["Auto-layout", "Fit visible graph", "Focus selected step", "Show behavior palette", "Show node inspector", "Exit graph focus mode", "Validate graph", "Undo", "Redo"]) await expect(commandDialog.getByRole("button", { name: new RegExp(`^${action}`) })).toBeVisible();
+  for (const action of ["Auto-layout", "Fit view", "Focus selected step", "Show behavior palette", "Show node inspector", "Exit graph focus mode", "Validate graph", "Undo", "Redo"]) await expect(commandDialog.getByRole("button", { name: new RegExp(`^${action}`) })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(commandDialog).toBeHidden();
   await expect(page.locator(".builder-page")).toHaveClass(/builder-focus/);

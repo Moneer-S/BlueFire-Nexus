@@ -491,7 +491,7 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {}, catal
         <header><Badge tone={summary.run_id === baseline?.run_id ? "info" : "neutral"}>{comparedRunLabel(summary.run_id)}</Badge><span>{summary.mode === "simulate" ? "Simulate · synthetic" : summary.mode ? sentence(summary.mode) : "Mode not reported"}</span></header>
         <h3><Link to={runReviewPath(summary.run_id)}>{names[summary.run_id] ?? "Run"}<ArrowUpRight aria-hidden="true"/></Link></h3>{runReference(summary.run_id)}
         <div className="compare-run-objective"><span>Objective</span><strong data-state={typeof summary.objective_reached !== "boolean" ? "unknown" : summary.objective_reached ? "achieved" : "unmet"}>{objectiveLabel(summary.objective_reached, summary.mode)}</strong></div>
-        <footer><span><GitBranch aria-hidden="true"/>{summary.path.length} recorded {pathUnit(summary)}</span><span><Eye aria-hidden="true"/>{reportedArrayCount(summary.evidence_details?.observed_artifacts, "artifact")}</span><details className="comparison-run-record"><summary>Run record</summary><code>{summary.run_id}</code></details></footer>
+        <footer><span><GitBranch aria-hidden="true"/>{summary.path.length} recorded {pathUnit(summary)}</span><span><Eye aria-hidden="true"/>{reportedArrayCount(summary.evidence_details?.observed_artifacts, "observed artifact")}</span><details className="comparison-run-record"><summary>Run record</summary><code>{summary.run_id}</code></details></footer>
       </article>)}</div>
     </section>
     {comparison.s3_access ? <S3AccessComparisonResults result={comparison.s3_access} /> : null}

@@ -153,3 +153,22 @@ it("retains legacy summaries and does not turn missing evidence or invalid confi
   expect(screen.getByText(/Reported confidence: Not reported/)).toBeVisible();
   expect(screen.queryByText("File metadata observed")).not.toBeInTheDocument();
 });
+
+it("explains a recognized simulation projection while keeping its provenance and limitations", async () => {
+  const record: EvidenceRecord = { schema_version: "bluefire.evidence.v1", evidence_id: "projected-workspace",
+    provenance: "synthetic", producer: "simulation-registry.v1", confidence: 1,
+    content: { simulation_id: "simulation.sandbox.fixture.create.v1", side_effects_started: false,
+      artifacts: { workspace: { type: "artifact.sandbox.workspace.v1", format: "jsonl", record_count: 8 } } },
+    limitations: ["Synthetic projection only; no host effect occurred."] };
+  const before = structuredClone(record);
+  render(<EvidenceRecords records={[record]}/>);
+  expect(screen.getByText("Simulation projected 8 sample records in JSONL format.")).toBeVisible();
+  expect(screen.getByText("Synthetic")).toBeVisible();
+  expect(screen.getByText(record.limitations![0]!)).toBeVisible();
+  expect(screen.getByText(/Reported confidence: 100%/)).not.toBeVisible();
+  expect(screen.queryByText("Records inspected")).not.toBeInTheDocument();
+  await userEvent.setup().click(screen.getByText("Evidence identity and provenance"));
+  expect(screen.getByText(/Reported confidence: 100%/)).toBeVisible();
+  expect(screen.getByText(/Reported confidence: 100%/)).toHaveTextContent("not a measure of detection accuracy or coverage");
+  expect(record).toEqual(before);
+});

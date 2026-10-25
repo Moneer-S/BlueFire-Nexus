@@ -45,7 +45,7 @@ it("keeps a saved canvas inspectable while preventing deletion and mutation affo
   await builderOptions(userEvent);
   for (const name of ["Delete selected node", "Duplicate selected node", "Paste node", "Auto-layout"]) expect(screen.getByRole("button", { name })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Copy selected node" })).toBeEnabled();
-  expect(screen.getByRole("button", { name: "Fit visible graph" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Fit view" })).toBeEnabled();
   await builderOptions(userEvent, false);
   await userEvent.click(screen.getByRole("button", { name: "Steps" }));
   const steps = within(screen.getByRole("list", { name: "Experiment steps" })).getAllByRole("button");

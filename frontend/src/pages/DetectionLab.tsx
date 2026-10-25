@@ -11,7 +11,10 @@ import { api, ApiError } from "../lib/api";
 import { detectionDraftIdentity, useDetectionDraft } from "../state/useDetectionDraft";
 import { syntheticSelectionExample } from "../lib/detection-fixtures";
 import { runLabel } from "../lib/run-presentation";
+import { recordedEvidenceLabels } from "../lib/run-progress-presentation";
+import { simulationProjectionSummary } from "../lib/evidence-projection-summary";
 import { DetectionRunEvaluations } from "../components/DetectionRunEvaluations";
+import { DetectionValidationSummary } from "../components/DetectionValidationSummary";
 import { DetectionAIRevision } from "../components/DetectionAIRevision";
 import { DetectionAICreation } from "../components/DetectionAICreation";
 import { PermissionConditionControl, isLegacyPermissionSelection, isPermissionCondition, permissionConditionForSelection, permissionPredictedFields, permissionSelection, type PermissionCondition } from "../components/PermissionConditionControl";
@@ -624,7 +627,7 @@ function DetectionRegistryPage() {
       /> : <div className="candidate-workspace"><Panel><DetectionAIRevision sourceRun={sourceRun} providers={catalogQuery.data.ai.providers ?? emptyAIProviders} defaultProvider={catalogQuery.data.ai.active_provider} manualEdits={false} /><EmptyState icon={<FlaskConical />} title={selectedId ? "Detector unavailable" : "Select a candidate"} description={selectedId ? "The requested detector is not available in this registry or source run. Select an available detector from the list." : "Inspect lifecycle evidence, fixtures, fields, immutable revisions, and reviewed public baselines."} /></Panel></div>}
       <aside className="detection-context-rail" aria-label="Selected detector context">
         {sourceContext}
-        {sourceRun ? <SourceRecordsPanel key={sourceRun.run_id} run={sourceRun} /> : null}
+        {sourceRun ? <SourceRecordsPanel key={sourceRun.run_id} run={sourceRun} catalog={catalogQuery.data} /> : null}
         {/* Only candidate actions remount with a draft; source controls and inspection stay stable. */}
         <div className="candidate-context-actions" ref={setContextActionsHost} />
       </aside>
@@ -652,31 +655,41 @@ function SourceRunEvidence({ run }: { run: RunRecord }) {
   </>;
 }
 
-function sourceRecordLabel(record: EvidenceRecord, index: number) {
+function sourceRecordLabel(record: EvidenceRecord, index: number, run: RunRecord, catalog: CatalogResponse) {
   const description = record.summary?.trim() || record.kind?.trim();
   if (description) return displayTitle(description);
+  const { name } = recordedEvidenceLabels(record, catalog, run);
+  if (name !== "Unattributed evidence") return name;
   const kind = record.content?.artifact_type ?? record.content?.observation_kind;
   return typeof kind === "string" && kind.trim() ? sentence(kind) : `Evidence record ${index + 1}`;
 }
 
-function SourceRecordsPanel({ run }: { run: RunRecord }) {
+function SourceRecordsPanel({ run, catalog }: { run: RunRecord; catalog: CatalogResponse }) {
   const records = sourceEvidenceRecords(run);
   const [inspectedIndex, setInspectedIndex] = useState(0);
   const selectedIndex = records && inspectedIndex < records.length ? inspectedIndex : 0;
   const selected = records?.[selectedIndex];
+  const summary = selected ? selected.summary?.trim()
+    || (typeof selected.content?.summary === "string" ? selected.content.summary.trim() : undefined)
+    || simulationProjectionSummary(selected) : undefined;
   return <Panel className="source-records-panel">
     <header className="context-panel-heading"><h3>Source records</h3><span>{records?.length ?? "Not reported"}</span></header>
     {!records ? <p className="source-record-empty">This run did not report an evidence record inventory.</p> : records.length ? <>
       <div className="source-record-list" aria-label="Source evidence records">{records.map((record, index) => <button
         key={record.evidence_id ?? record.id ?? index}
-        aria-label={`Inspect source record ${index + 1}: ${sourceRecordLabel(record, index)}`}
+        aria-label={`Inspect source record ${index + 1}: ${sourceRecordLabel(record, index, run, catalog)}`}
         aria-pressed={selectedIndex === index}
         onClick={() => setInspectedIndex(index)}
-      ><FileText aria-hidden="true" /><span><strong>{sourceRecordLabel(record, index)}</strong><small>{sentence(record.provenance)} · {record.producer ?? "Producer not reported"}</small></span></button>)}</div>
-      {selected ? <details className="source-record-detail" open>
-        <summary>Record details <span>{selectedIndex + 1} of {records.length}</span></summary>
-        <pre aria-label="Selected source record">{JSON.stringify(selected, null, 2)}</pre>
-      </details> : null}
+      ><FileText aria-hidden="true" /><span><strong>{sourceRecordLabel(record, index, run, catalog)}</strong><small>{sentence(record.provenance)}</small></span></button>)}</div>
+      {selected ? <div className="source-record-preview" aria-label="Selected record overview">
+        <header><Badge tone={selected.provenance === "observed" ? "success" : "info"}>{sentence(selected.provenance)}</Badge><span>{selectedIndex + 1} of {records.length}</span></header>
+        {summary ? <p>{summary}</p> : <p className="source-record-no-summary">No summary recorded. Inspect the retained record for its fields.</p>}
+        {selected.limitations?.length ? <details className="source-record-limitations" key={selected.evidence_id ?? selected.id ?? selectedIndex} open><summary>Recorded limitations ({selected.limitations.length})</summary><ul>{selected.limitations.map((limitation, index) => <li key={index}>{limitation}</li>)}</ul></details> : null}
+        <details className="source-record-detail">
+          <summary>Inspect retained record</summary>
+          <pre aria-label="Selected source record">{JSON.stringify(selected, null, 2)}</pre>
+        </details>
+      </div> : null}
     </> : <p className="source-record-empty">This run has no retained evidence records.</p>}
   </Panel>;
 }
@@ -873,6 +886,7 @@ function CandidateWorkspace({
       <span className="candidate-heading-icon"><ShieldQuestion aria-hidden="true" /></span>
       <div><h2>{candidate.title ? displayTitle(candidate.title) : candidate.resolvedId}</h2><div className="candidate-heading-meta"><span>{languageLabel(language)} · {candidateVersionLabel(candidate)}</span><Badge tone={candidate.state === "rejected" ? "danger" : candidate.state === "hypothesis" ? "neutral" : candidate.state === "benign_evaluated" ? "info" : "success"}>{lifecycleLabel(candidate.state)}</Badge></div></div>
     </header>
+    <DetectionValidationSummary resource={resource} selectedId={candidate.resolvedId} sourceEdited={source !== defaults.source || selectionJson !== defaults.selectionJson || logsourceJson !== defaults.logsourceJson || structuredPending} onFixtures={() => setTab("fixtures")} />
     <div className="workspace-tabs" role="tablist" aria-label="Detection candidate details">{(["candidate", "evaluations", "revisions", "fixtures", "observed", "history"] as const).map((item) => <button role="tab" aria-selected={tab === item} onClick={() => setTab(item)} key={item}>{item === "evaluations" ? "Run evaluations" : item === "candidate" && querySource ? "Rule" : sentence(item)}</button>)}</div>
     <div className="candidate-body">
       <div className="candidate-main">

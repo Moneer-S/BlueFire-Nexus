@@ -98,7 +98,7 @@ for (const width of [1100, 640]) {
     expect(before!.height).toBeLessThanOrEqual(560);
     if (width > 760) expect(before!.x + before!.width).toBeLessThanOrEqual(dock!.x + 1);
     else expect(before!.y + before!.height).toBeLessThanOrEqual(dock!.y + 1);
-    await page.getByRole("button", { name: "Fit visible graph", exact: true }).click();
+    await page.getByRole("button", { name: "Fit view", exact: true }).click();
     await expect.poll(() => canvas.evaluate((element) => {
       const boundary = element.getBoundingClientRect();
       return [...element.querySelectorAll<HTMLElement>(".react-flow__node")].filter((node) => {

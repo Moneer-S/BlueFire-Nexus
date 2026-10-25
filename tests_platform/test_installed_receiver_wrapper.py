@@ -203,6 +203,7 @@ def clean_wrapper_report() -> dict[str, object]:
         **{key: True for key in _RUNTIME_PROCESS_CLEANUP_KEYS},
         "temporary_state_removed": True,
         "receiver_retained_redaction_driver_passed": True,
+        "cleanup_errors": [],
     }
 
 
@@ -389,4 +390,20 @@ def test_cleanup_confirmation_requires_boolean_true() -> None:
     report = clean_wrapper_report()
     report["receiver_driver_cleanup_confirmed"] = 1
     assert not _runtime_process_cleanup_confirmed(report)
+    assert not _receiver_retained_redaction_accepted(report)
+
+
+@pytest.mark.parametrize("cleanup_errors", [["receiver_http_shutdown"], None, "", {}, False])
+def test_cleanup_errors_block_acceptance_without_blocking_safe_removal(cleanup_errors) -> None:
+    report = clean_wrapper_report()
+    report["cleanup_errors"] = cleanup_errors
+    assert _runtime_process_cleanup_confirmed(report)
+    assert _runtime_cleanup_confirmed(report)
+    assert not _receiver_retained_redaction_accepted(report)
+
+
+def test_cleanup_error_confirmation_is_required_for_acceptance() -> None:
+    report = clean_wrapper_report()
+    del report["cleanup_errors"]
+    assert _runtime_process_cleanup_confirmed(report)
     assert not _receiver_retained_redaction_accepted(report)

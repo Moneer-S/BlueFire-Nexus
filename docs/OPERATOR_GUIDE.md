@@ -8,7 +8,7 @@ when reopening the application.
 ## 1. Choose and edit an experiment
 
 Open **Experiments**, search for a procedure, and read its purpose and requirements. For a
-first Simulate walkthrough, choose **Endpoint Lab — Redacted Benign Collection**. Use
+first Simulate walkthrough, choose **Collect redacted samples**. Use
 **Duplicate** to make a working copy, then open **Build** and give it a useful experiment name.
 
 Inspect the steps on the canvas or switch to **Steps**. Select a step to inspect its method,

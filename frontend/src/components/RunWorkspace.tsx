@@ -1,4 +1,5 @@
 import { EvidenceRecords } from "./EvidenceRecords";
+import { RunStepEvidence } from "./RunStepEvidence";
 import { useRetainedRun } from "../state/useRetainedRun";
 import { RunnerInventoryRecovery } from "./ExecuteRunnerReadiness";
 import { RunNameControl, CopyRunId } from "../components/RunNameControl";
@@ -681,7 +682,10 @@ export function RunReview({ run, catalog, showObjective = true }: { run: RunReco
                 <div className="run-step-heading"><strong>{labels.name}</strong><Badge tone={step.execution_disposition === "counterfactual" ? "violet" : statusTone(step.status)}>{stepOutcomeLabel(step, run.mode)}</Badge></div>
                 <div className="run-step-metadata">
                   {method ? <small>{method}</small> : null}
-                  <details><summary>{step.evidence_ids?.length ? <><span className="run-step-evidence"><FileSearch aria-hidden="true"/>{step.evidence_ids.length} linked evidence {step.evidence_ids.length === 1 ? "record" : "records"}</span><span className="run-step-metadata-divider" aria-hidden="true"> · </span></> : null}<span className="run-step-detail-label">Step details</span></summary><DataList items={[{ label: "Step", value: step.step_id }, { label: "Method", value: step.action_id ?? step.simulation_id ?? "Not reported" }, { label: "Disposition", value: sentence(step.execution_disposition ?? "not reported") }, { label: "Evidence references", value: step.evidence_ids?.join(", ") || "None recorded" }]} /></details>
+                </div>
+                <div className="run-step-actions">
+                  <RunStepEvidence run={run} step={step} name={labels.name} catalog={catalog}/>
+                  <details className="run-step-technical"><summary>Step details</summary><DataList items={[{ label: "Step", value: step.step_id }, { label: "Method", value: step.action_id ?? step.simulation_id ?? "Not reported" }, { label: "Disposition", value: sentence(step.execution_disposition ?? "not reported") }, { label: "Evidence references", value: step.evidence_ids?.join(", ") || "None recorded" }]} /></details>
                 </div>
                 {step.error?.message ? <p className="run-step-error">{step.error.message}</p> : null}
               </div>

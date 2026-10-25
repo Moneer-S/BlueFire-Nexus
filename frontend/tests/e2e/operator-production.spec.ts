@@ -284,7 +284,7 @@ test("production operator UI completes authoring, management, run, replay, and c
   await page.getByRole("button", { name: "Undo" }).click();
   // Adding a step reveals it; Undo preserves that viewport. Frame the restored
   // graph through the operator control before selecting its first node again.
-  await page.getByRole("button", { name: "Fit visible graph", exact: true }).click();
+  await page.getByRole("button", { name: "Fit view", exact: true }).click();
   await nodes.first().click();
   await page.getByText("View options", { exact: true }).click();
   await expect(page.getByRole("group", { name: "Selection tools" })).toBeVisible();

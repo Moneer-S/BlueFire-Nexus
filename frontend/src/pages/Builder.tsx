@@ -18,6 +18,7 @@ import { guaranteedInputSources, stepParameterSummary } from "../lib/graph-autho
 import { ParameterField } from "../components/ParameterField";
 import { BuilderEvidenceTray } from "../components/BuilderEvidenceTray";
 import { connectedRunBands } from "../lib/connected-run-bands";
+import { graphNodeTitle } from "../lib/graph-node-title";
 import { branchLabels, focusedGraphLayout, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, graphBoundsViewport, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, readableGraphViewport, revealGraphContext, type GraphFrame, type GraphViewport, type ScenarioGraph } from "../lib/graph-view";
 import { api } from "../lib/api";
 import { defaultGraphView, readWorkingGraphView, writeWorkingGraphView } from "../lib/graph-view-retention";
@@ -78,6 +79,7 @@ function flowEdges(scenario: ScenarioGraph, behaviors: Map<string, Behavior>): F
 
 const BehaviorNode = memo(function BehaviorNode({ id, data, selected }: NodeProps<BehaviorFlowNode>) {
   const behavior = data.behavior;
+  const title = graphNodeTitle(displayTitle(behavior?.title ?? "Unavailable step"), behavior?.execution_state, data.invalid);
   const updateNodeInternals = useUpdateNodeInternals();
   const handleSignature = JSON.stringify([
     behavior?.inputs.slice(0, 4).map((input) => input.name) ?? [],
@@ -92,11 +94,11 @@ const BehaviorNode = memo(function BehaviorNode({ id, data, selected }: NodeProp
     measuredHandles.current = { id, signature: handleSignature };
     updateNodeInternals(id);
   }, [id, handleSignature, updateNodeInternals]);
-  return <article className={`flow-node tier-${behavior?.safety_tier ?? "safe"} ${selected ? "selected" : ""} ${data.invalid ? "invalid" : ""}`}>
+  return <article className={`flow-node tier-${behavior?.safety_tier ?? "safe"} ${selected ? "selected" : ""} ${data.invalid ? "invalid" : ""}`} aria-label={title.method ? title.fullTitle : undefined}>
     <Handle type="target" position={data.routeIn ?? Position.Left} id="route:in" className="route-handle route-in" style={data.routeIn === Position.Top ? { left: 20 } : undefined} title="Continue from another step" />
     {(behavior?.inputs ?? []).slice(0, 4).map((input, index, items) => <Handle key={input.name} type="target" position={Position.Top} id={`in:${input.name}`} className="typed-handle input-handle" style={{ left: `${((index + 1) / (items.length + 1)) * 100}%` }} title={`Requires ${inputTypeLabel(input.type)}: ${inputLabel(input.name)}`} />)}
-    <header><span className="node-order">Step {data.ordinal}</span>{data.invalid || behavior?.execution_state !== "action" ? <span className={`node-kind ${data.invalid ? "attention" : ""}`}>{data.invalid ? "Needs attention" : behavior?.execution_state === "simulation" ? "Simulation" : "Research only"}</span> : null}</header>
-    <div className="node-title"><span className="node-icon"><FileText aria-hidden="true"/></span><strong title={displayTitle(behavior?.title ?? "Unavailable step")}>{displayTitle(behavior?.title ?? "Unavailable step")}</strong></div>
+    <header><span className="node-order">Step {data.ordinal}</span>{data.invalid || behavior?.execution_state !== "action" ? <span className={`node-kind ${data.invalid ? "attention" : ""}`}>{data.invalid ? "Needs attention" : behavior?.execution_state === "simulation" ? "Simulation" : "Research only"}</span> : title.method ? <span className="node-method" title={title.method}>{title.method}</span> : null}</header>
+    <div className="node-title"><span className="node-icon"><FileText aria-hidden="true"/></span><strong title={title.fullTitle}>{title.title}</strong></div>
     {data.method ? <p className="node-context" title={`Run override: ${displayTitle(data.method)}`}>Run override: {displayTitle(data.method)}</p> : null}
     {!data.method && stepParameterSummary(data.step, behavior) ? <p className="node-context" title={stepParameterSummary(data.step, behavior)}>{stepParameterSummary(data.step, behavior)}</p> : null}
     <footer>{data.step.alternates.length ? <span><GitBranch/>{data.step.alternates.length} saved {data.step.alternates.length === 1 ? "alternative" : "alternatives"}</span> : <span>{behavior?.platforms.map(inputLabel).join(" · ")}</span>}</footer>
@@ -850,7 +852,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
             <IconButton label={paletteOpen ? "Hide behavior palette" : "Show behavior palette"} aria-pressed={paletteOpen} onClick={togglePalette}>{paletteOpen ? <PanelLeftClose/> : <PanelLeftOpen/>}</IconButton><IconButton label="Add step" aria-pressed={paletteOpen} onClick={togglePalette}><Plus/></IconButton><div className="view-toggle" aria-label="Experiment view"><button aria-pressed={viewMode === "graph"} onClick={() => setViewMode("graph")}><Network/>Canvas</button><button aria-pressed={viewMode === "steps"} onClick={() => setViewMode("steps")}><ListOrdered/>Steps</button></div>
             <div className="graph-history"><IconButton label="Undo" onClick={undo} disabled={review?.readOnly || historyIndex <= 0}><Undo2/></IconButton><IconButton label="Redo" onClick={redo} disabled={review?.readOnly || historyIndex >= history.length - 1}><Redo2/></IconButton></div>
             <Button className="graph-auto-layout" size="small" variant="ghost" aria-label={autoLayoutLabel} onClick={autoLayout} disabled={review?.readOnly || !nodes.length}><LayoutGrid/><span>{autoLayoutLabel}</span></Button>
-            <IconButton label="Fit visible graph" onClick={fitGraph} disabled={!nodes.length}><ScanSearch/></IconButton>
+            <Button className="graph-fit-view" size="small" variant="ghost" aria-label="Fit view" onClick={fitGraph} disabled={!nodes.length}><ScanSearch/><span>Fit view</span></Button>
             <BuilderStepSearch steps={scenario.steps} behaviors={behaviorMap} onSelect={revealSearchResult} />
             <output className="graph-scale" aria-label="Graph zoom">{Math.round(graphZoom * 100)}%</output>
             <div className="graph-utility-actions">
@@ -858,6 +860,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
             <IconButton id={inspectorToggleId} label={inspectorOpen ? "Hide node inspector" : "Show node inspector"} aria-pressed={inspectorOpen} onClick={toggleInspector}>{inspectorOpen ? <PanelRightClose/> : <PanelRightOpen/>}</IconButton>
             <IconButton label={focusMode ? "Exit graph focus mode" : "Enter graph focus mode"} aria-pressed={focusMode} onClick={() => setFocusMode((active) => !active)}>{focusMode ? <Minimize2/> : <Maximize2/>}</IconButton>
             <details className="graph-options"><summary aria-label="View options"><MoreHorizontal/><span className="sr-only">View options</span></summary><div>
+            <div className="graph-compacted-tools"><Button size="small" variant="ghost" onClick={autoLayout} disabled={review?.readOnly || !nodes.length}><LayoutGrid/>{autoLayoutLabel}</Button><output aria-label="Graph zoom">Zoom {Math.round(graphZoom * 100)}%</output></div>
             <div className="graph-option-actions"><Button variant="ghost" size="small" onClick={fitSelection} disabled={!selected}><Maximize2/>Focus selected step</Button><Button variant="ghost" size="small" onClick={() => setCommandPaletteOpen(true)}><CommandIcon/>Commands</Button><Button size="small" variant="ghost" onClick={() => { const url = URL.createObjectURL(new Blob([JSON.stringify(scenario, null, 2)], { type: "application/json" })); const link = document.createElement("a"); link.href = url; link.download = `${scenario.id}.json`; link.click(); URL.revokeObjectURL(url); }}><Download/>Export</Button></div>
             <div className="graph-edit-actions" role="group" aria-label="Selection tools"><IconButton label="Copy selected node" onClick={copySelected} disabled={!selected}><Copy/></IconButton><IconButton label="Paste node" onClick={paste} disabled={review?.readOnly || !clipboard.current}><Clipboard/></IconButton><IconButton label="Duplicate selected node" onClick={duplicateSelected} disabled={review?.readOnly || !selected}><RotateCcw/></IconButton><IconButton label="Delete selected node" onClick={() => { if (selected) void flow.deleteElements({ nodes: [{ id: selected.id }] }); }} disabled={review?.readOnly || !selected}><Trash2/></IconButton></div>
             <label className="check-row"><input type="checkbox" checked={allBranches} onChange={(event) => setAllBranches(event.target.checked)}/>Show all branches and disconnected steps</label>
@@ -901,7 +904,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
           <Dialog.Close asChild><button className="dialog-close" aria-label="Close Builder commands"><X/></button></Dialog.Close>
           <div className="builder-command-list">
             <button onClick={() => runCommand(autoLayout)} disabled={review?.readOnly || !nodes.length}><LayoutGrid/><span><strong>{autoLayoutLabel}</strong><small>{focusedGroup ? "Arrange only the visible group by its connections." : "Arrange steps by their connections."}</small></span></button>
-            <button onClick={() => runCommand(fitGraph)} disabled={!nodes.length}><ScanSearch/><span><strong>Fit visible graph</strong><small>Show an overview of the visible path.</small></span></button>
+            <button onClick={() => runCommand(fitGraph)} disabled={!nodes.length}><ScanSearch/><span><strong>Fit view</strong><small>Show an overview of the visible path.</small></span></button>
             <button onClick={() => runCommand(fitSelection)} disabled={!selected}><ScanSearch/><span><strong>Focus selected step</strong><small>Frame the selected node at a readable scale.</small></span></button>
             <button onClick={() => runCommand(togglePalette)}>{paletteOpen ? <PanelLeftClose/> : <PanelLeftOpen/>}<span><strong>{paletteOpen ? "Hide behavior palette" : "Show behavior palette"}</strong><small>Toggle the registered behavior catalog.</small></span></button>
             <button onClick={() => runCommand(toggleInspector)}>{inspectorOpen ? <PanelRightClose/> : <PanelRightOpen/>}<span><strong>{inspectorOpen ? "Hide node inspector" : "Show node inspector"}</strong><small>Toggle selected-node configuration.</small></span></button>

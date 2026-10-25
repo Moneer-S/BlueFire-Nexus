@@ -315,14 +315,47 @@ def _resolve_receiver_driver(
     return driver, guards, deadline
 
 
+def _stop_http_server(server, thread, label: str, cleanup_errors: list[str]) -> tuple[bool, bool]:
+    """Stop a serving thread before closing its listening socket."""
+    thread_started = thread is not None and thread.ident is not None
+    if thread_started:
+        if thread.is_alive():
+            try:
+                server.shutdown()
+            except Exception:
+                cleanup_errors.append(f"{label}_shutdown")
+        else:
+            cleanup_errors.append(f"{label}_thread_already_stopped")
+        try:
+            thread.join(timeout=10)
+        except Exception:
+            cleanup_errors.append(f"{label}_join")
+    thread_stopped = thread is None or not thread.is_alive()
+    server_closed = False
+    if thread_stopped:
+        try:
+            server.server_close()
+            server_closed = True
+        except Exception:
+            cleanup_errors.append(f"{label}_close")
+    else:
+        cleanup_errors.append(f"{label}_close_deferred_thread_alive")
+    return thread_stopped, server_closed
+
+
 _RUNTIME_PROCESS_CLEANUP_KEYS = (
     "browser_process_group_stopped",
     "assistant_process_group_stopped",
     "receiver_process_group_stopped",
     "fixture_thread_stopped",
+    "fixture_http_server_closed",
     "service_thread_stopped",
+    "http_server_closed",
     "assistant_service_thread_stopped",
+    "assistant_http_server_closed",
+    "service_closed",
     "receiver_service_closed",
+    "receiver_http_server_closed",
     "receiver_service_thread_stopped",
     "receiver_driver_cleanup_confirmed",
 )
@@ -339,9 +372,11 @@ def _runtime_cleanup_confirmed(report: dict[str, object]) -> bool:
 
 
 def _receiver_retained_redaction_accepted(report: dict[str, object]) -> bool:
-    return report.get(
-        "receiver_retained_redaction_driver_passed"
-    ) is True and _runtime_cleanup_confirmed(report)
+    return (
+        report.get("receiver_retained_redaction_driver_passed") is True
+        and _runtime_cleanup_confirmed(report)
+        and report.get("cleanup_errors") == []
+    )
 
 
 def _fixture_outputs() -> dict[str, dict[str, object]]:
@@ -584,7 +619,7 @@ class LocalGraphFixture:
         self.release_called = False
         self.failed = False
         self.server = Server(("127.0.0.1", 0), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=False)
 
     @property
     def port(self) -> int:
@@ -597,12 +632,33 @@ class LocalGraphFixture:
     def start(self) -> None:
         self.thread.start()
 
-    def close(self) -> bool:
+    def close(self) -> tuple[bool, bool, list[str]]:
         self.release.set()
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(timeout=5)
-        return not self.thread.is_alive()
+        cleanup_errors: list[str] = []
+        thread_stopped, server_closed = _stop_http_server(
+            self.server, self.thread, "fixture_http", cleanup_errors
+        )
+        return thread_stopped, server_closed, cleanup_errors
+
+
+def _close_fixture_for_report(
+    fixture: LocalGraphFixture,
+    report: dict[str, object],
+    cleanup_errors: list[str],
+) -> None:
+    try:
+        thread_stopped, server_closed, fixture_errors = fixture.close()
+    except (OSError, RuntimeError):
+        report["fixture_thread_stopped"] = False
+        report["fixture_http_server_closed"] = False
+        report["status"] = "failed_or_incomplete"
+        cleanup_errors.append("assistant_fixture")
+        return
+    report["fixture_thread_stopped"] = thread_stopped
+    report["fixture_http_server_closed"] = server_closed
+    cleanup_errors.extend(fixture_errors)
+    if fixture.failed or fixture_errors or not thread_stopped or not server_closed:
+        report["status"] = "failed_or_incomplete"
 
 
 def stop_group(process: subprocess.Popen[bytes]) -> bool:
@@ -737,7 +793,7 @@ def main() -> int:
     server = create_server(
         service, host="127.0.0.1", port=0, browser_bootstrap_capability=capability
     )
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=False)
     child = None
     assistant_child = None
     assistant_capability = ""
@@ -760,6 +816,14 @@ def main() -> int:
         "live_model_inference": False,
         "assistant_process_group_stopped": True,
         "fixture_thread_stopped": True,
+        "fixture_http_server_closed": True,
+        "http_server_closed": False,
+        "assistant_http_server_closed": True,
+        "assistant_service_thread_stopped": True,
+        "service_closed": False,
+        "receiver_http_server_closed": True,
+        "receiver_service_closed": False,
+        "receiver_service_thread_stopped": True,
     }
     thread.start()
     try:
@@ -786,7 +850,9 @@ def main() -> int:
                 port=0,
                 browser_bootstrap_capability=assistant_capability,
             )
-            assistant_thread = threading.Thread(target=assistant_server.serve_forever, daemon=True)
+            assistant_thread = threading.Thread(
+                target=assistant_server.serve_forever, daemon=False
+            )
             assistant_thread.start()
             assistant_child = subprocess.Popen(
                 [
@@ -844,7 +910,9 @@ def main() -> int:
                 port=0,
                 browser_bootstrap_capability=receiver_capability,
             )
-            receiver_thread = threading.Thread(target=receiver_server.serve_forever, daemon=True)
+            receiver_thread = threading.Thread(
+                target=receiver_server.serve_forever, daemon=False
+            )
             receiver_thread.start()
             receiver_child = subprocess.Popen(
                 [
@@ -913,37 +981,26 @@ def main() -> int:
         except (OSError, subprocess.TimeoutExpired):
             cleanup_errors.append("receiver_browser_process_group")
         if fixture is not None:
-            try:
-                report["fixture_thread_stopped"] = fixture.close()
-                if fixture.failed:
-                    report["status"] = "failed_or_incomplete"
-            except (OSError, RuntimeError):
-                report["fixture_thread_stopped"] = False
-                cleanup_errors.append("assistant_fixture")
+            _close_fixture_for_report(fixture, report, cleanup_errors)
         if assistant_server is not None:
-            for name, operation in (
-                ("assistant_http_shutdown", assistant_server.shutdown),
-                ("assistant_http_close", assistant_server.server_close),
-            ):
-                try:
-                    operation()
-                except Exception:
-                    cleanup_errors.append(name)
-            if assistant_thread is not None:
-                assistant_thread.join(timeout=10)
-        report["assistant_service_thread_stopped"] = (
-            assistant_thread is None or not assistant_thread.is_alive()
-        ) and not cleanup_errors
+            (
+                report["assistant_service_thread_stopped"],
+                report["assistant_http_server_closed"],
+            ) = _stop_http_server(
+                assistant_server, assistant_thread, "assistant_http", cleanup_errors
+            )
         if receiver_server is not None:
-            for name, operation in (
-                ("receiver_http_shutdown", receiver_server.shutdown),
-                ("receiver_http_close", receiver_server.server_close),
-            ):
-                try:
-                    operation()
-                except Exception:
-                    cleanup_errors.append(name)
-        if receiver_service is not None:
+            (
+                report["receiver_service_thread_stopped"],
+                report["receiver_http_server_closed"],
+            ) = _stop_http_server(
+                receiver_server, receiver_thread, "receiver_http", cleanup_errors
+            )
+        if (
+            receiver_service is not None
+            and report["receiver_service_thread_stopped"]
+            and report["receiver_http_server_closed"]
+        ):
             try:
                 receiver_service.close()
                 report["receiver_service_closed"] = True
@@ -951,23 +1008,25 @@ def main() -> int:
                 report["receiver_service_closed"] = False
                 cleanup_errors.append("receiver_service_close")
         else:
-            report["receiver_service_closed"] = True
-        if receiver_thread is not None:
-            receiver_thread.join(timeout=10)
-        report["receiver_service_thread_stopped"] = (
-            receiver_thread is None or not receiver_thread.is_alive()
-        ) and not cleanup_errors
-        for name, operation in (
-            ("http_shutdown", server.shutdown),
-            ("http_close", server.server_close),
-            ("service_close", service.close),
+            if receiver_service is None:
+                report["receiver_service_closed"] = True
+            else:
+                cleanup_errors.append("receiver_service_close_deferred")
+        (
+            report["service_thread_stopped"],
+            report["http_server_closed"],
+        ) = _stop_http_server(server, thread, "http", cleanup_errors)
+        if (
+            report["service_thread_stopped"]
+            and report["http_server_closed"]
+            and report["assistant_service_thread_stopped"]
+            and report["assistant_http_server_closed"]
         ):
             try:
-                operation()
+                service.close()
+                report["service_closed"] = True
             except Exception:
-                cleanup_errors.append(name)
-        thread.join(timeout=10)
-        report["service_thread_stopped"] = not thread.is_alive() and not cleanup_errors
+                cleanup_errors.append("service_close")
         os.chdir(output)
         if _runtime_process_cleanup_confirmed(report):
             try:
@@ -975,10 +1034,12 @@ def main() -> int:
             except OSError:
                 cleanup_errors.append("temporary_state")
         report["temporary_state_removed"] = not runtime.exists()
-        report["receiver_native_retained_redaction"] = _receiver_retained_redaction_accepted(report)
         report["cleanup_errors"] = cleanup_errors
-        if not _runtime_cleanup_confirmed(report):
+        report["receiver_native_retained_redaction"] = _receiver_retained_redaction_accepted(report)
+        if cleanup_errors or not _runtime_cleanup_confirmed(report):
             report["status"] = "failed_or_incomplete"
+        # Close the receipt before returning; non-daemon service threads then
+        # keep a failed harness under the workflow timeout if any thread lives.
         write_new(output / "receipt.json", report)
         print(json.dumps(report, sort_keys=True))
     return 0 if report["status"] == "passed" else 1

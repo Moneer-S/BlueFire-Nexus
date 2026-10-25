@@ -453,6 +453,43 @@ def _runtime_removal_allowed(report: dict[str, object]) -> bool:
     )
 
 
+def _cleanup_qualified(report: dict[str, object]) -> bool:
+    return (
+        _runtime_removal_allowed(report)
+        and report.get("service_shutdown_succeeded") is True
+    )
+
+
+def _stop_http_server(server, thread, thread_started: bool) -> tuple[bool, bool, bool]:
+    """Return thread-stopped, shutdown-succeeded, and socket-closed states."""
+    if server is None:
+        return thread is None or not thread.is_alive(), True, True
+    shutdown_succeeded = not thread_started
+    if thread_started:
+        if thread.is_alive():
+            try:
+                server.shutdown()
+                shutdown_succeeded = True
+            except Exception:
+                shutdown_succeeded = False
+    if thread is None or not thread_started:
+        thread_stopped = True
+    else:
+        try:
+            thread.join(timeout=10)
+            thread_stopped = not thread.is_alive()
+        except Exception:
+            thread_stopped = False
+    server_closed = False
+    if thread_stopped:
+        try:
+            server.server_close()
+            server_closed = True
+        except Exception:
+            server_closed = False
+    return thread_stopped, shutdown_succeeded, server_closed
+
+
 def _witness_control_tree_removed(sandbox: Path) -> bool:
     """Remove only the exact private witness tree after its processes have stopped."""
     try:
@@ -729,6 +766,7 @@ def main() -> int:
         "driver_process_exited": False,
         "driver_input_writer_stopped": True,
         "service_thread_stopped": False,
+        "service_shutdown_succeeded": False,
         "service_http_server_closed": False,
         "service_closed": False,
         "managed_runner_stopped": False,
@@ -845,7 +883,9 @@ def main() -> int:
             service, host="127.0.0.1", port=0, browser_bootstrap_capability=capability
         )
         service_thread = threading.Thread(
-            target=server.serve_forever, name="installed-cancel-service"
+            target=server.serve_forever,
+            name="installed-cancel-service",
+            daemon=False,
         )
         service_thread.start()
         service_thread_started = True
@@ -1041,35 +1081,23 @@ def main() -> int:
                 except Exception:
                     report["managed_runner_stopped"] = False
 
-            if server is None:
-                report["service_http_server_closed"] = True
-            else:
-                if service_thread_started:
-                    try:
-                        server.shutdown()
-                    except Exception:
-                        report["service_thread_stopped"] = False
-                try:
-                    server.server_close()
-                    report["service_http_server_closed"] = True
-                except Exception:
-                    report["service_http_server_closed"] = False
-
-            if service_thread is None or not service_thread_started:
-                report["service_thread_stopped"] = True
-            else:
-                try:
-                    service_thread.join(timeout=10)
-                    report["service_thread_stopped"] = not service_thread.is_alive()
-                except Exception:
-                    report["service_thread_stopped"] = False
+            (
+                report["service_thread_stopped"],
+                report["service_shutdown_succeeded"],
+                report["service_http_server_closed"],
+            ) = _stop_http_server(server, service_thread, service_thread_started)
 
             if service is not None:
-                try:
-                    service.close()
-                    report["service_closed"] = True
-                except Exception:
-                    report["service_closed"] = False
+                if (
+                    report["managed_runner_stopped"] is True
+                    and report["service_thread_stopped"] is True
+                    and report["service_http_server_closed"] is True
+                ):
+                    try:
+                        service.close()
+                        report["service_closed"] = True
+                    except Exception:
+                        report["service_closed"] = False
 
             if report.get("witness_process_handles_stopped") is not True:
                 try:
@@ -1101,7 +1129,11 @@ def main() -> int:
                 report["temporary_runtime_removed"] = not runtime.exists()
             except Exception:
                 report["temporary_runtime_removed"] = False
-            if not report["temporary_runtime_removed"] or not _runtime_removal_allowed(report):
+            if (
+                not report["temporary_runtime_removed"]
+                or not _runtime_removal_allowed(report)
+                or not _cleanup_qualified(report)
+            ):
                 report["status"] = "failed_or_incomplete"
             try:
                 _write_receipt(output / "receipt.json", report)

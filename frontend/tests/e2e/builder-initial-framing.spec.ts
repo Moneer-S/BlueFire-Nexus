@@ -90,7 +90,7 @@ test("opens at readable focus, keeps an explicit whole-path overview, and preser
   await expect(initiallySelected).toBeVisible();
   await expect.poll(() => selectedInsideCanvas(page), { message: "Initial selected step remains readable and inside the canvas" }).toBe(true);
   const savedBeforeViewChanges = await page.evaluate(() => localStorage.getItem("bluefire.local.scenario.v1"));
-  await page.getByRole("button", { name: "Fit visible graph" }).click();
+  await page.getByRole("button", { name: "Fit view", exact: true }).click();
   await expect.poll(() => visibleNodesInsideCanvas(page), { message: "Explicit overview contains every step and branch" }).toBe(true);
   const overview = await viewport(page);
   expect(overview.zoom).toBeLessThan(initial.zoom);
