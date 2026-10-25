@@ -120,7 +120,7 @@ it("keeps unknown cleanup and unavailable projection distinct from task-level no
   expect(screen.getByRole("region", { name: "S3 access comparison" })).toHaveTextContent("Cleanup: Unknown");
   expect(screen.getByRole("region", { name: "S3 access comparison" })).toHaveTextContent("Cleanup unresolved");
   expect(screen.getByText(/S3 saved read results are shown separately/)).toBeVisible();
-  expect(screen.getByText(/with meaningful recorded changes/)).toBeVisible();
+  expect(screen.getByText(/compared runs changed/)).toBeVisible();
   expect(screen.queryByText("No meaningful change reported against the baseline.")).not.toBeInTheDocument();
 
   const unavailable = projection("missing_context");

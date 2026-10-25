@@ -108,7 +108,7 @@ it("leads with recorded changes and uses short run roles after the identifying c
   const conclusion = screen.getByRole("region", { name: "Comparison conclusion" });
   const runCards = screen.getByRole("group", { name: "Comparison run order" });
   expect(conclusion.compareDocumentPosition(runCards) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(within(conclusion).getByRole("heading", { name: "Recorded changes found" })).toBeVisible();
+  expect(within(conclusion).getByRole("heading", { name: "Different simulated objective results" })).toBeVisible();
   expect(screen.getAllByText("Original collection with a long experiment name")).toHaveLength(1);
   expect(screen.getAllByText("Revised collection with a different long experiment name")).toHaveLength(1);
   expect(screen.getByRole("link", { name: "Review baseline run summary" })).toHaveAttribute("href", `/runs/${encodeURIComponent(baseline.run_id)}`);

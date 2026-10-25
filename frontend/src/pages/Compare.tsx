@@ -9,6 +9,7 @@ import { checkedComparisonResponse } from "../lib/s3-comparison";
 import { hasReplayExtent, readPendingReplay, storePendingReplay, clearPendingReplay, settleReplayResolution } from "../lib/replay-submission";
 import { sameJson } from "../lib/replay-review";
 import { comparisonReport } from "../lib/comparison-report";
+import { comparisonConclusion } from "../lib/comparison-conclusion";
 import { recordedStepLabels } from "../lib/run-progress-presentation";
 import { sourceRunParam } from "../lib/run-handoffs";
 import { clearComparisonContext, MAX_COMPARISON_RUNS, readComparisonContext, writeComparisonContext } from "../lib/comparison-context";
@@ -453,7 +454,6 @@ function comparisonStepPresentation(summary: RecordedComparisonSummary, catalog?
 export function ComparisonResult({ comparison, names = {}, createdAt = {}, catalog, runs = [] }: { comparison: ComparisonResponse; names?: Record<string, string>; createdAt?: Record<string, string | undefined>; catalog?: CatalogResponse; runs?: RunRecord[] }) {
   const baseline = comparison.summaries.find((item) => item.run_id === comparison.baseline_run_id) ?? comparison.summaries[0];
   const changed = comparison.deltas.filter(hasMaterialDelta).length;
-  const hasS3Projection = comparison.s3_access !== undefined;
   const comparedRuns = comparison.summaries.filter(item => item.run_id !== baseline?.run_id);
   const orderedRuns = baseline ? [baseline, ...comparedRuns] : comparison.summaries;
   const stepPresentations = new Map<string, ReturnType<typeof comparisonStepPresentation>>(orderedRuns.map(summary => {
@@ -469,7 +469,9 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {}, catal
   const runReference = (runId: string) => <small className="comparison-run-reference">{createdAt[runId] ? <time dateTime={createdAt[runId]}>{formatRunTimestamp(createdAt[runId]!)}</time> : "Timestamp not reported"}</small>;
   const pathChanges = comparison.deltas.filter(delta => delta.first_path_divergence !== null && delta.first_path_divergence !== undefined && delta.first_path_divergence >= 0).length;
   const cleanupUnknown = orderedRuns.filter(summary => typeof summary.cleanup_success !== "boolean").length;
-  const conclusion = changed ? "Recorded changes found" : hasS3Projection ? "Review the saved read outcomes" : "No meaningful recorded change";
+  const conclusion = comparisonConclusion(comparison, stepPresentations);
+  const firstDifferenceIndex = (runId: string) => conclusion.differences.find(difference => difference.comparedRunId === runId)?.index
+    ?? (orderedRuns.length === 2 ? conclusion.differences.find(difference => difference.baselineRunId === runId)?.index : undefined);
   const [reportUrl, setReportUrl] = useState<string>();
   const reportContent = useMemo(() => comparisonReport(comparison, names, createdAt), [comparison, names, createdAt]);
   useEffect(() => {
@@ -480,8 +482,8 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {}, catal
   return <div className="comparison-results">
     <section className="comparison-conclusion" aria-label="Comparison conclusion">
       <div className="comparison-conclusion-icon"><GitCompareArrows aria-hidden="true" /></div>
-      <div className="comparison-conclusion-copy"><p className="eyebrow">Recorded comparison</p><h2>{conclusion}</h2>{hasS3Projection ? <p>S3 saved read results are shown separately below.</p> : changed ? <p>Compare the actual path, observed evidence, and cleanup against the baseline.</p> : null}</div>
-      <div className="comparison-conclusion-metrics"><div><strong>{changed}</strong><span>with meaningful recorded changes</span></div><div><strong>{pathChanges}</strong><span>recorded path changes</span></div><div><strong>{cleanupUnknown}</strong><span>cleanup results unreported</span></div></div>
+      <div className="comparison-conclusion-copy"><p className="eyebrow">Recorded comparison</p><h2>{conclusion.title}</h2><p>{conclusion.detail}</p></div>
+      <div className="comparison-conclusion-metrics"><div><strong>{changed}</strong><span>compared runs changed</span></div><div><strong>{pathChanges}</strong><span>compared paths changed</span></div><div><strong>{cleanupUnknown}</strong><span>runs with cleanup unreported</span></div></div>
     </section>
     <section className="comparison-run-overview" role="group" aria-label="Comparison run order">
       <header className="comparison-section-heading"><h2>Baseline and compared runs</h2><div className="comparison-run-actions"><span>{comparison.run_ids.length} runs reviewed</span>{reportUrl ? <a className="button button-secondary button-small comparison-download" href={reportUrl} download="bluefire-comparison.md"><Download aria-hidden="true"/>Download report</a> : null}</div></header>
@@ -516,7 +518,10 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {}, catal
       <header><Link to={runReviewPath(summary.run_id)} aria-label={`Review ${comparedRunLabel(summary.run_id).toLowerCase()} execution lane`}>{comparedRunLabel(summary.run_id)}<ArrowUpRight aria-hidden="true"/></Link><small>{summary.path.length} {pathUnit(summary)}</small></header>
       {summary.path.length ? <ol>{summary.path.map((step, index) => {
         const labels = stepPresentations.get(summary.run_id)!.path[index]!;
-        return <li key={`${step}-${index}`} data-status={labels.repeated ? "not_reported" : summary.outcomes[step] === "success" ? "succeeded" : summary.outcomes[step]}><span>{String(index + 1).padStart(2, "0")}</span><strong title={step}>{labels.name}{labels.method ? <><br/><small>{labels.method}</small></> : null}</strong><small>{labels.repeated ? "Unreported" : sentence(summary.outcomes[step] ?? "unknown")}</small></li>;
+        const firstDifference = firstDifferenceIndex(summary.run_id) === index;
+        return <li key={`${step}-${index}`} className={firstDifference ? "comparison-first-difference" : undefined}
+          style={firstDifference ? { background: "color-mix(in srgb, var(--blue) 6%, transparent)" } : undefined}
+          data-status={labels.repeated ? "not_reported" : summary.outcomes[step] === "success" ? "succeeded" : summary.outcomes[step]}><span>{String(index + 1).padStart(2, "0")}</span><strong title={step}>{firstDifference ? <><small style={{ color: "var(--blue-soft)" }}>{orderedRuns.length > 2 ? "First recorded difference from baseline" : "First recorded difference"}</small><br/></> : null}{labels.name}{labels.method ? <><br/><small>{labels.method}</small></> : null}</strong><small>{labels.repeated ? "Unreported" : sentence(summary.outcomes[step] ?? "unknown")}</small></li>;
       })}</ol> : <p className="comparison-no-path">No path steps were reported.</p>}
       {pathUnit(summary) === "attempts" ? <p className="field-note">Individual attempt results were not recorded.</p> : null}
       {summary.replay_lineage?.defense_change_declared ? <p className="comparison-change-note">Defense change declared; not independently verified.</p> : null}
