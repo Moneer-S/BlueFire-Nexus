@@ -91,7 +91,7 @@
 
 .detection-page .candidate-list {
   position: sticky;
-  top: 18px;
+  top: calc(var(--topbar-height, 60px) + 18px);
   min-width: 0;
   padding: 14px 10px 10px;
   background: linear-gradient(155deg, var(--surface), var(--ink-900));
@@ -188,6 +188,7 @@
 .candidate-context-actions:empty { display: none; }
 .candidate-editor-panel { min-width: 0; overflow: hidden; }
 .candidate-heading {
+  scroll-margin-block-start: calc(var(--topbar-height, 60px) + 16px);
   display: grid;
   grid-template-columns: 40px minmax(0, 1fr);
   align-items: center;
