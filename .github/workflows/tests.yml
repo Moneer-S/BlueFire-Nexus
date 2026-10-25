@@ -437,6 +437,7 @@ jobs:
 
       - name: Verify real installed Linux service and packaged browser UI
         if: matrix.platform == 'linux'
+        timeout-minutes: 17
         shell: bash
         run: |
           cp tools/verify_installed_browser.py "$RUNNER_TEMP/verify_installed_browser.py"
