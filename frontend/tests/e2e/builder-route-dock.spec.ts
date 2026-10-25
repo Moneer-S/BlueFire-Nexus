@@ -52,6 +52,45 @@ for (const width of [1100, 640]) {
     await settle(page);
     expect(await zoom(page)).toBeCloseTo(zoomBeforeDock, 5);
     await expect.poll(() => selectedStepIsInCanvas(page)).toBe(true);
+    let persistedScenario: Scenario = scenario;
+    if (width === 640) {
+      const selected = canvas.locator(".flow-node.selected");
+      const selectedId = await selected.evaluate((element) => element.closest<HTMLElement>(".react-flow__node")?.dataset.id ?? null);
+      const card = await selected.boundingBox();
+      const canvasBounds = await canvas.boundingBox();
+      expect(selectedId).toBeTruthy();
+      expect(card).not.toBeNull();
+      expect(canvasBounds).not.toBeNull();
+      const viewportBeforeCommittedDrag = await viewport(page);
+      const originX = card!.x + card!.width / 2;
+      const originY = card!.y + card!.height / 2;
+      const targetX = originX + 24;
+      const targetY = originY + 24;
+      expect(targetX).toBeGreaterThanOrEqual(canvasBounds!.x + 40);
+      expect(targetX).toBeLessThanOrEqual(canvasBounds!.x + canvasBounds!.width - 40);
+      expect(targetY).toBeGreaterThanOrEqual(canvasBounds!.y + 40);
+      expect(targetY).toBeLessThanOrEqual(canvasBounds!.y + canvasBounds!.height - 40);
+      await page.mouse.move(originX, originY);
+      await page.mouse.down();
+      await page.mouse.move(targetX, targetY, { steps: 8 });
+      await page.mouse.up();
+      await expect.poll(async () => page.evaluate((id) => {
+        const draft = JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!) as Scenario;
+        return draft.layout?.[id]?.y;
+      }, selectedId!)).not.toBe(scenario.layout?.[selectedId!]?.y);
+      await settle(page);
+      expect(await viewport(page)).toBe(viewportBeforeCommittedDrag);
+      const savedAfterDrag = await page.evaluate(() => JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!) as Scenario);
+      const { layout: savedLayout, ...savedContent } = savedAfterDrag;
+      const { layout: originalLayout, ...originalContent } = scenario;
+      expect(savedContent).toEqual(originalContent);
+      expect(Object.keys(savedLayout ?? {}).sort()).toEqual(Object.keys(originalLayout ?? {}).sort());
+      for (const id of Object.keys(originalLayout ?? {})) {
+        if (id !== selectedId) expect(savedLayout?.[id]).toEqual(originalLayout?.[id]);
+      }
+      expect(savedLayout?.[selectedId!]).not.toEqual(originalLayout?.[selectedId!]);
+      persistedScenario = savedAfterDrag;
+    }
     // The route list must scroll in a bounded dock, never expand the canvas to its full contents.
     const dock = await routes.boundingBox();
     const before = await canvas.boundingBox();
@@ -84,6 +123,6 @@ for (const width of [1100, 640]) {
     await expect(page.getByRole("button", { name: "Focus selected step" })).toBeDisabled();
     await viewOptions(page, false);
     await expect(canvas.locator(".flow-node.selected")).toHaveCount(0);
-    expect(await page.evaluate(() => JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!))).toEqual(scenario);
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!))).toEqual(persistedScenario);
   });
 }

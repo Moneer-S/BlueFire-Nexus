@@ -414,6 +414,41 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     return () => cancelAnimationFrame(frame);
   }, [flow, frameStep, inspectorOpen, nodesInitialized, selectedId, selectionToReveal, viewMode]);
 
+  const routeDockWasOpen = useRef(routesOpen);
+  const routeDockRevealPending = useRef(false);
+  const routeDockOpeningRevision = useRef<number | null>(null);
+  useEffect(() => {
+    const opened = routesOpen && !routeDockWasOpen.current;
+    routeDockWasOpen.current = routesOpen;
+    if (!routesOpen) { routeDockRevealPending.current = false; routeDockOpeningRevision.current = null; return; }
+    if (opened) {
+      routeDockRevealPending.current = true;
+      routeDockOpeningRevision.current = operatorViewportRevision.current;
+    }
+    if (!routeDockRevealPending.current || viewMode !== "graph" || !selectedId || !nodesInitialized) return;
+    const canvas = graphCanvas.current;
+    const node = flow.getNode(selectedId);
+    if (!canvas || !node || node.hidden || !canvas.clientWidth || !canvas.clientHeight) return;
+    const id = selectedId;
+    const openingRevision = routeDockOpeningRevision.current;
+    if (openingRevision === null) return;
+    // Consume only this false-to-true opening after layout is valid. Later graph
+    // refreshes cannot reclaim a viewport the operator has panned or dragged.
+    const frame = requestAnimationFrame(() => {
+      if (!routeDockRevealPending.current || !routesOpen) return;
+      if (operatorViewportRevision.current !== openingRevision) {
+        routeDockRevealPending.current = false;
+        routeDockOpeningRevision.current = null;
+        return;
+      }
+      const current = flow.getNode(id);
+      if (!current || current.hidden || !canvas.clientWidth || !canvas.clientHeight) return;
+      if (current.dragging) { routeDockRevealPending.current = false; routeDockOpeningRevision.current = null; return; }
+      if (frameStep(id, "reveal")) { routeDockRevealPending.current = false; routeDockOpeningRevision.current = null; }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [flow, frameStep, nodesInitialized, routesOpen, selectedId, viewMode]);
+
   const resizeOwnership = useRef<{
     scenarioId: string; selectedId: string; focusMode: boolean; operatorRevision: number; interrupted: boolean;
     recovery?: { original: GraphViewport; applied: GraphViewport; geometryRevision: number; originalScroll: { top: number; left: number }; mainHeight: number };
