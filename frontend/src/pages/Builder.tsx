@@ -470,7 +470,6 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     const scrollPosition = () => ({ top: main?.scrollTop ?? 0, left: main?.scrollLeft ?? 0 });
     const sameScroll = (left: ReturnType<typeof scrollPosition>, right: ReturnType<typeof scrollPosition>) => Math.abs(left.top - right.top) < 1 && Math.abs(left.left - right.left) < 1;
     let pending = 0;
-    let previousFrame = visibleCanvasFrame(canvas);
     let previousCanvas = { width: canvas.clientWidth, height: canvas.clientHeight };
     let previousMainWidth = main?.clientWidth ?? 0;
     let previousMainHeight = main?.clientHeight ?? 0;
@@ -495,8 +494,10 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
         // Returning from Steps or changing focus mode replaces the observer
         // after layout has settled. Reveal that navigation once at current zoom.
         if (!needsInitialFrame && !revealFromNavigation && mainHeight === previousMainHeight && mainWidth === previousMainWidth && canvasSize.width === previousCanvas.width && canvasSize.height === previousCanvas.height) return;
-        const mainShrank = mainHeight < previousMainHeight;
-        const mainGrew = mainHeight > previousMainHeight;
+        const mainHeightShrank = mainHeight < previousMainHeight;
+        const mainHeightGrew = mainHeight > previousMainHeight;
+        const mainWidthShrank = mainWidth < previousMainWidth;
+        const mainWidthGrew = mainWidth > previousMainWidth;
         if (ownership.operatorRevision !== operatorViewportRevision.current) {
           ownership.operatorRevision = operatorViewportRevision.current;
           ownership.recovery = undefined;
@@ -515,25 +516,30 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
             ownership.recovery = undefined;
             ownership.interrupted = true;
           }
-          const grew = mainGrew || frame.width > previousFrame.width || frame.height > previousFrame.height;
-          const shrank = mainShrank || frame.width < previousFrame.width || frame.height < previousFrame.height;
-          if (shrank && !grew) ownership.interrupted = false;
+          // Classify the measured container sizes, not the visible intersection:
+          // scrolling can move that intersection without contracting the canvas.
+          const grew = mainHeightGrew || mainWidthGrew || canvasSize.width > previousCanvas.width || canvasSize.height > previousCanvas.height;
+          const shrank = mainHeightShrank || mainWidthShrank || canvasSize.width < previousCanvas.width || canvasSize.height < previousCanvas.height;
+          // A contraction wins when one axis shrinks while another grows. It can
+          // clip selected context, so reveal at the current zoom even after an
+          // operator action; pure growth still respects interrupted ownership.
+          if (shrank) ownership.interrupted = false;
           if (flow.getNode(selectedId)?.dragging) {
             ownership.recovery = undefined;
             ownership.interrupted = true;
           } else if (!(grew && ownership.interrupted)) {
             const originalScroll = scrollPosition();
-            if (main && mainHeight > 0 && (mainShrank || revealFromNavigation)) {
+            if (main && mainHeight > 0 && (mainHeightShrank || revealFromNavigation)) {
               // A stacked dock can shrink main without resizing the canvas. Reveal
               // its toolbar once instead of leaving the graph below the title rows.
               revealCanvasToolbar(canvas);
               lastScroll = scrollPosition();
-            } else if (main && mainGrew && ownership.recovery && mainHeight >= ownership.recovery.mainHeight) {
+            } else if (main && mainHeightGrew && !shrank && ownership.recovery && mainHeight >= ownership.recovery.mainHeight) {
               main.scrollTop = ownership.recovery.originalScroll.top;
               main.scrollLeft = ownership.recovery.originalScroll.left;
               lastScroll = scrollPosition();
             }
-            const next = frameStep(selectedId, "reveal", 0, grew ? ownership.recovery?.original : undefined);
+            const next = frameStep(selectedId, "reveal", 0, grew && !shrank ? ownership.recovery?.original : undefined);
             if (next) {
               if (ownership.recovery) ownership.recovery.applied = next;
               else if (shrank && (!sameViewport(next, current) || !sameScroll(originalScroll, lastScroll))) {
@@ -543,7 +549,6 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
             }
           }
         }
-        previousFrame = visibleCanvasFrame(canvas);
         previousCanvas = canvasSize;
         previousMainWidth = mainWidth;
         previousMainHeight = mainHeight;

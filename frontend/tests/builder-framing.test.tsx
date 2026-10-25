@@ -281,6 +281,37 @@ describe("Builder viewport controls", () => {
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual({ ...rendered, title: "Context refreshed" });
   });
 
+  it("reveals conditional route bounds on mixed contraction without reclaiming ownership on later growth", async () => {
+    const { rendered, canvas } = await renderScrollportBuilder();
+    fireEvent.click(screen.getByLabelText("View options", { selector: "summary" }));
+    fireEvent.click(screen.getByRole("button", { name: "Focus selected step" }));
+    const selected = rendered.layout!.selected!;
+    expect(state.viewport.zoom).toBe(1);
+    expect(state.viewport.x + selected.x + 220 + 72).toBeLessThanOrEqual(canvas.clientWidth);
+
+    // Assistant opening can narrow the canvas while closing Step evidence grows
+    // it vertically; ResizeObserver may deliver these axes in one callback.
+    flow.setViewport.mockClear();
+    resizeCanvas(300, 400);
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(flow.setViewport).toHaveBeenCalledOnce();
+    expect(state.viewport.zoom).toBe(1);
+    expect(state.viewport.x + selected.x).toBeGreaterThanOrEqual(0);
+    expect(state.viewport.x + selected.x + 220 + 72).toBeLessThanOrEqual(canvas.clientWidth);
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
+
+    // A later pure expansion must keep the operator's explicit pan.
+    const chosen = { ...state.viewport, x: state.viewport.x - 24 };
+    state.viewport = chosen;
+    act(() => state.props.onMove?.(new MouseEvent("mousemove"), chosen));
+    flow.setViewport.mockClear();
+    resizeCanvas(390, 400);
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(state.viewport).toEqual(chosen);
+    expect(flow.setViewport).not.toHaveBeenCalled();
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
+  });
+
   it.each(["scroll", "pan", "zoom", "drag"] as const)("preserves an operator %s after revealing a stacked Assistant context", async (change) => {
     const { rendered, main } = await renderScrollportBuilder();
     resizeMain(270);
@@ -534,7 +565,7 @@ describe("Builder viewport controls", () => {
     resizeCanvas(456, 474);
     await waitFor(() => expect(state.viewport.x).toBeCloseTo(-508));
     expect(state.viewport.x + layout.context_step_6!.x).toBeLessThan(0);
-    resizeCanvas(796, 470);
+    resizeCanvas(796, 474);
     await waitFor(() => expect(state.viewport.x + layout.context_step_6!.x).toBeGreaterThanOrEqual(24));
     expect(state.viewport.zoom).toBe(1);
     for (const step of rendered.steps.slice(3)) {
