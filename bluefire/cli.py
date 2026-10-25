@@ -170,6 +170,15 @@ def _parser() -> argparse.ArgumentParser:
     windows_pair_setup.add_argument(
         "--confirm-create-local-reader", action="store_true", required=True
     )
+    macos_file_setup = runner_commands.add_parser(
+        "macos-file-setup",
+        help="Start the explicit root-owned macOS generated-file workspace",
+    )
+    macos_file_setup.add_argument(
+        "--confirm-create-generated-workspace", action="store_true", required=True
+    )
+    macos_file_setup.add_argument("--port", type=int, default=0)
+    macos_file_setup.add_argument("--no-browser", action="store_true")
     runner_commands.add_parser("revoke", help="Revoke stopped runner trust")
     runner_remove = runner_commands.add_parser(
         "remove", help="Remove revoked trust and reconciled runner state"
@@ -571,6 +580,16 @@ def _execute(
             else setup_windows_file_baseline_local
         )
         return setup(args.profile)
+    if args.command == "runner" and args.runner_command == "macos-file-setup":
+        if args.confirm_create_generated_workspace is not True:
+            raise ValueError("macOS local setup requires explicit generated-workspace confirmation.")
+        if any(
+            value is not None for value in (args.config, args.runs_dir, config, ai_provider_access)
+        ):
+            raise ValueError("macOS local setup uses only the fixed protected product state.")
+        from .macos_file_access_local import run_local_supervisor
+
+        return run_local_supervisor(port=args.port, no_browser=args.no_browser)
     if args.command == "s3":
         from .s3_access_setup_cli import execute as execute_s3_setup
 
@@ -1043,6 +1062,8 @@ def main(
         "windows-file-baseline-setup",
     ):
         return 0 if isinstance(result, Mapping) and result.get("publication") == "complete" else 4
+    if args.command == "runner" and args.runner_command == "macos-file-setup":
+        return 0 if isinstance(result, Mapping) and result.get("status") == "stopped_cleanly" else 4
     return 0
 
 
