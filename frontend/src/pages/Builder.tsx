@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   applyEdgeChanges, applyNodeChanges, Background, BackgroundVariant, Controls, Handle, MarkerType,
-  MiniMap, Position, ReactFlow, ReactFlowProvider, useNodesInitialized, useReactFlow, useUpdateNodeInternals,
+  MiniMap, Position, ReactFlow, ReactFlowProvider, ViewportPortal, useNodesInitialized, useReactFlow, useUpdateNodeInternals,
   type Connection, type EdgeChange, type Node, type NodeChange, type NodeProps,
 } from "@xyflow/react";
 import {
@@ -16,6 +16,8 @@ import { Link, useSearchParams } from "react-router-dom";
 import "./Builder.css";
 import { guaranteedInputSources, stepParameterSummary } from "../lib/graph-authoring";
 import { ParameterField } from "../components/ParameterField";
+import { BuilderEvidenceTray } from "../components/BuilderEvidenceTray";
+import { connectedRunBands } from "../lib/connected-run-bands";
 import { branchLabels, focusedGraphLayout, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, graphBoundsViewport, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, readableGraphViewport, revealGraphContext, type GraphFrame, type GraphViewport, type ScenarioGraph } from "../lib/graph-view";
 import { api } from "../lib/api";
 import { defaultGraphView, readWorkingGraphView, writeWorkingGraphView } from "../lib/graph-view-retention";
@@ -269,6 +271,10 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   // Moving a card invalidates resize recovery without panning underneath a drag.
   useEffect(() => { geometryRevision.current += 1; }, [routeGeometry]);
   const routeObstacles = useMemo<RouteObstacle[]>(() => JSON.parse(routeGeometry) as RouteObstacle[], [routeGeometry]);
+  const runBands = useMemo(() => {
+    const ordinals = new Map(scenario.steps.map((step, index) => [step.id, index + 1]));
+    return connectedRunBands(routeObstacles.map(card => ({ ...card, ordinal: ordinals.get(card.id) ?? 0 })), graph.edges, { padding: 22 });
+  }, [graph.edges, routeObstacles, scenario.steps]);
   const routedData = useMemo(() => new Map(edgeDefinitions.map(edge => [edge.id, edge.data ? { ...edge.data, obstacles: routeObstacles } : undefined])), [edgeDefinitions, routeObstacles]);
   const edgeIsShown = useCallback((edge: FlowEdge) => shownIds.has(edge.source) && shownIds.has(edge.target) && (edge.data?.kind !== "artifact" || showInputs) && (edge.data?.kind !== "route" || edge.data.outcome === "success" || allBranches || expandedBranches.has(edge.source)), [allBranches, expandedBranches, showInputs, shownIds]);
   const selectedRouteId = edges.find((edge) => edge.selected && edge.data?.kind === "route" && edgeIsShown(edge))?.id;
@@ -834,11 +840,13 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
           if (id && visibleRoutes.some((edge) => edge.id === id)) { event.preventDefault(); selectRoute(id); }
         }} onPointerDown={(event) => { const target = event.target as HTMLElement; if (!target.closest("button, input, select, textarea")) event.currentTarget.focus(); }} onDragOver={(event) => { if (event.dataTransfer.types.includes("application/x-bluefire-behavior")) event.preventDefault(); }} onDrop={drop}>
         <ReactFlow<BehaviorFlowNode, FlowEdge> nodes={displayNodes} edges={displayEdges} nodesDraggable={!review?.readOnly && !deletion.summary} nodesConnectable={!review?.readOnly && !deletion.summary} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onEdgeClick={onEdgeClick} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={onNodeClick} onSelectionChange={onSelectionChange} onMove={onMove} onNodeDragStop={onNodeDragStop} onDelete={onDelete} onBeforeDelete={confirmDelete} onConnect={onConnect} minZoom={minimumGraphZoom} maxZoom={1.6} deleteKeyCode={review?.readOnly || deletion.summary ? null : deleteKeys} connectionLineStyle={connectionLineStyle} proOptions={proOptions}>
+          {runBands.length ? <ViewportPortal><svg className="graph-run-bands" aria-hidden="true" width="1" height="1">{runBands.map(band => <g key={band.id} className={band.stepIds.includes(selectedId) ? "selected" : undefined}><rect x={band.x} y={band.y} width={band.width} height={band.height} rx="10"/><text x={band.x + 12} y={band.y + 15}>{band.label}</text></g>)}</svg></ViewportPortal> : null}
           <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="rgba(117,198,255,.12)"/>{scenario.steps.length > 3 && miniMapOpen ? <MiniMap style={miniMapStyle} position="bottom-left" pannable zoomable nodeColor={(node) => node.selected ? "var(--blue)" : "var(--muted)"} bgColor="var(--ink-950)" maskColor="color-mix(in srgb, var(--ink-1000) 72%, transparent)"/> : null}<Controls position="bottom-right" showInteractive={false} onZoomIn={claimViewport} onZoomOut={claimViewport} onFitView={claimViewport}/>
         </ReactFlow>{!nodes.length ? <div className="graph-empty-overlay"><GitBranch/><strong>Add the first step</strong><span>Choose a method to begin designing this experiment.</span><Button variant="primary" disabled={review?.readOnly} onClick={() => { setPaletteOpen(true); setInspectorOpen(false); }}>Add first step</Button></div> : null}</div>
         {routesOpen ? <BuilderRoutes routes={visibleRoutes} total={scenario.edges.length} selected={selectedRoute} readOnly={Boolean(review?.readOnly)} select={selectRoute} inspect={(source) => { selectStep(source); setRoutesOpen(false); window.requestAnimationFrame(() => document.getElementById(inspectorToggleId)?.focus()); }} remove={(id) => { void flow.deleteElements({ edges: [{ id }] }); }} close={() => { setRoutesOpen(false); document.getElementById(routesToggleId)?.focus(); }} /> : null}
         </div>
         {viewMode === "graph" ? <footer className="graph-key"><div className="graph-legend" aria-label="Connection types"><span><i className="legend-success"/>Success</span><span><i className="legend-conditional"/>Conditional</span><span><i className="legend-data"/>Data</span></div>{scenario.steps.length > 3 ? <button type="button" className="graph-overview-toggle" aria-pressed={miniMapOpen} onClick={() => setMiniMapOpen(open => !open)}><LayoutGrid aria-hidden="true"/>{miniMapOpen ? "Hide overview" : "Overview map"}</button> : null}</footer> : null}
+        {viewMode === "graph" ? <BuilderEvidenceTray key={scenario.id} step={selected} ordinal={selected ? scenario.steps.indexOf(selected) + 1 : undefined} behavior={selectedBehavior} /> : null}
         <GraphValidationFeedback state={displayedValidation} findings={validationIssues} stepCount={scenario.steps.length} routeCount={scenario.edges.length} readOnly={review?.readOnly} name={id => graphStepName(scenario, behaviorMap, id)} onSelect={id => { setAllBranches(true); setFocusedSection(null); selectStep(id); }} />
       </Panel>
       <Panel className="inspector-panel" hidden={!inspectorOpen}>{inspectorOpen ? <><header className="inspector-header"><span className="inspector-step-icon"><FileText/></span><div><h2>{displayTitle(selectedBehavior?.title ?? "Select a step")}</h2><p>{selected ? `Step ${scenario.steps.indexOf(selected) + 1} · ${selectedBehavior?.execution_state === "action" ? "Method" : selectedBehavior?.execution_state === "simulation" ? "Simulation" : "Research only"}` : "Method, evidence, and parameters"}</p></div><IconButton label="Close step details" onClick={() => { setInspectorOpen(false); document.getElementById(inspectorToggleId)?.focus(); }}><X/></IconButton></header>{selected && selectedBehavior ? <Inspector scenario={scenario} step={selected} behavior={selectedBehavior} behaviors={behaviorMap} actions={actionMap} readOnly={Boolean(review?.readOnly)} onAlternative={useAlternative} updateStep={updateStep} updateScenario={applyScenario} renameStep={renameStep} selectedAction={runConfig.actionImplementations?.[selected.id] ?? ""} allowRunOverride={!review} onAction={(actionId) => { const next = { ...(runConfig.actionImplementations ?? {}) }; if (actionId) next[selected.id] = actionId; else delete next[selected.id]; setRunConfig({ ...runConfig, actionImplementations: next }); }} /> : <EmptyState title="Select a step" description="Select a step on the canvas or in the list to choose its method, inputs, and branches." />}</> : null}</Panel>

@@ -73,6 +73,11 @@
 .workbench-builder .graph-sections small { color: var(--muted); font-size: .68rem; }
 .workbench-builder .graph-canvas { flex: 1; height: auto; min-height: 220px; }
 .workbench-builder .graph-canvas[hidden] { display: none; }
+.workbench-builder .graph-run-bands { position: absolute; inset: 0 auto auto 0; overflow: visible; pointer-events: none; z-index: -1; }
+.workbench-builder .graph-run-bands rect { fill: color-mix(in srgb, var(--blue) 3%, transparent); stroke: var(--line-strong); stroke-width: 1; stroke-dasharray: 3 5; }
+.workbench-builder .graph-run-bands text { fill: var(--muted); font-family: inherit; font-size: 10px; font-weight: 550; }
+.workbench-builder .graph-run-bands .selected rect { fill: color-mix(in srgb, var(--blue) 5%, transparent); stroke: color-mix(in srgb, var(--blue) 45%, var(--line)); }
+.workbench-builder .graph-run-bands .selected text { fill: var(--blue-soft); }
 .workbench-builder .graph-stage { display: flex; flex: 1; min-height: 220px; min-width: 0; }
 .workbench-builder .graph-stage[hidden] { display: none; }
 .workbench-builder .graph-stage > .graph-canvas { min-width: 0; }
