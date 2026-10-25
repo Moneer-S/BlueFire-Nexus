@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState, PageHeader, sentence } from "../components/Primitives";
 import { ObjectiveContext } from "../components/ObjectiveContext";
+import { useRememberDefensiveWork } from "../state/activeDefensiveWork";
 import { clearS3Pending, clearS3Stop, confirmsS3Pending, phaseName, readS3Pending, readS3Stops, s3Api, s3JobId, s3ReviewCurrent, s3StageAvailable, storeS3Pending, storeS3Stop, validS3Job, type S3Exercise, type S3Operation, type S3Pending, type S3Phase, type S3Review } from "../lib/s3-access";
 import { auditBudgetKeys, type AuditStageReview, type AuditWorkspace } from "../lib/s3-audit-workspace";
 import { writeComparisonContext } from "../lib/comparison-context";
@@ -32,6 +33,7 @@ export function S3AccessPage() {
   const environment = useQuery({ queryKey: ["s3-environments"], queryFn: s3Api.environments, retry: false });
   const list = useQuery({ queryKey: ["s3-exercises"], queryFn: s3Api.list, retry: false });
   const exercise = useQuery({ queryKey: ["s3-exercise", owner], queryFn: () => s3Api.read(owner), enabled: validS3Job(owner), retry: false, refetchInterval: query => query.state.data?.active_job && !query.state.data.saved_result_recovery_available ? 2000 : false });
+  useRememberDefensiveWork("cloud", exercise.isSuccess && exercise.data?.workflow_job_id === owner ? owner : undefined);
   const exerciseParams = (next: string) => {
     const value = new URLSearchParams(params);
     if (next !== owner) {

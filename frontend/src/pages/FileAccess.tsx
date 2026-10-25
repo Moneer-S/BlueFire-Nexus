@@ -7,6 +7,7 @@ import { checkedFileAccessControl, checkedFileAccessList, checkedFileAccessOpera
 import { FileAccessReview } from "../components/FileAccessReview";
 import { FileAccessReconciliation } from "../components/FileAccessReconciliation";
 import { ObjectiveContext } from "../components/ObjectiveContext";
+import { useRememberDefensiveWork } from "../state/activeDefensiveWork";
 import { WindowsFileAccessCorrection } from "../components/WindowsFileAccessCorrection";
 import { Badge, Button, Callout, DataList, ErrorState, LoadingState, PageHeader, sentence } from "../components/Primitives";
 import "./FileAccess.css";
@@ -38,6 +39,7 @@ export function FileAccessPage() {
   const list = useQuery({ queryKey: ["file-access-list"], queryFn: async () => checkedFileAccessList(await fileAccessApi.list()), retry: false });
   const control = useQuery({ queryKey: ["file-access-control", owner], queryFn: async () => checkedFileAccessControl(await fileAccessApi.control(owner), owner), enabled: fileAccessControlIdValid(owner), retry: false, refetchInterval: state => state.state.data && (state.state.data.platform === "windows" ? state.state.data.task_usage_state === "unresolved" : state.state.data.usage_state !== "settled") ? 1500 : false });
   const operation = useQuery({ queryKey: ["file-access-operation", operationId, owner], queryFn: async () => checkedFileAccessOperation(await fileAccessApi.operation(operationId), operationId, owner), enabled: compositionJobValid(operationId), retry: false, refetchInterval: state => state.state.data && fileAccessJobActive(state.state.data.job) ? 1500 : false });
+  useRememberDefensiveWork("file", control.isSuccess && control.data?.control_owner_id === owner ? owner : undefined);
   useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer); }, []);
   useEffect(() => {
     if (restoredNavigation.current) return;

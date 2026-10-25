@@ -9,37 +9,35 @@ frontend build tools.
 <a id="download-the-candidate"></a>
 ## Download the prerelease
 
-When published, download `SHA256SUMS` and the matching wheel from the [3.0.0-rc2 GitHub
-release](https://github.com/Moneer-S/BlueFire-Nexus/releases/tag/v3.0.0-rc2). Until those
-assets are available, use the [tests workflow](https://github.com/Moneer-S/BlueFire-Nexus/actions/workflows/tests.yml)
-to find a successful run for the exact source commit of the candidate you intend to install;
-download its wheel artifact and do not use an artifact from another commit. GitHub may require
-sign-in to download CI artifacts. Use the exact wheel filename for the platform:
+Download `SHA256SUMS` and the matching wheel from the published [3.0.0-rc2 GitHub release](https://github.com/Moneer-S/BlueFire-Nexus/releases/tag/v3.0.0-rc2). The links below download the exact platform asset.
 
 | Computer | Wheel |
 |---|---|
-| Windows x86-64 | `bluefire_nexus-3.0.0rc2-py3-none-win_amd64.whl` |
-| Linux x86-64 | `bluefire_nexus-3.0.0rc2-py3-none-linux_x86_64.whl` |
-| macOS Intel | `bluefire_nexus-3.0.0rc2-py3-none-macosx_11_0_x86_64.whl` |
-| macOS Apple Silicon | `bluefire_nexus-3.0.0rc2-py3-none-macosx_11_0_arm64.whl` |
+| Windows x86-64 | [`bluefire_nexus-3.0.0rc2-py3-none-win_amd64.whl`](https://github.com/Moneer-S/BlueFire-Nexus/releases/download/v3.0.0-rc2/bluefire_nexus-3.0.0rc2-py3-none-win_amd64.whl) |
+| Linux x86-64 | [`bluefire_nexus-3.0.0rc2-py3-none-linux_x86_64.whl`](https://github.com/Moneer-S/BlueFire-Nexus/releases/download/v3.0.0-rc2/bluefire_nexus-3.0.0rc2-py3-none-linux_x86_64.whl) |
+| macOS Intel | [`bluefire_nexus-3.0.0rc2-py3-none-macosx_11_0_x86_64.whl`](https://github.com/Moneer-S/BlueFire-Nexus/releases/download/v3.0.0-rc2/bluefire_nexus-3.0.0rc2-py3-none-macosx_11_0_x86_64.whl) |
+| macOS Apple Silicon | [`bluefire_nexus-3.0.0rc2-py3-none-macosx_11_0_arm64.whl`](https://github.com/Moneer-S/BlueFire-Nexus/releases/download/v3.0.0-rc2/bluefire_nexus-3.0.0rc2-py3-none-macosx_11_0_arm64.whl) |
 
-For published release assets, `SHA256SUMS` has one digest paired with each exact wheel
+For published release assets, [`SHA256SUMS`](https://github.com/Moneer-S/BlueFire-Nexus/releases/download/v3.0.0-rc2/SHA256SUMS) has one digest paired with each exact wheel
 filename. Calculate the matching wheel's SHA-256 and compare it with the row carrying that
-exact filename: use
-`Get-FileHash <wheel> -Algorithm SHA256` in PowerShell, `sha256sum <wheel>` on Linux, or
+exact filename: use `Get-FileHash <wheel> -Algorithm SHA256` in PowerShell, `sha256sum <wheel>` on Linux, or
 `shasum -a 256 <wheel>` on macOS. These unsigned checksums detect an asset mismatch; they do
 not independently attest publisher identity. Do not use an Intel wheel on Apple Silicon or
 vice versa. The `macosx_11_0` wheel tag is a compatibility tag, not evidence that every macOS
 11 or newer version was validated. Hosted native smoke coverage is on Intel macOS 15 and Apple
 Silicon macOS 26; check requirements for the particular method and local OS.
 
+### Separate development-build option
+
+For a development build, use the [tests workflow](https://github.com/Moneer-S/BlueFire-Nexus/actions/workflows/tests.yml) and choose a successful run for the exact source commit you want to install. Download the wheel artifact from that run; do not use an artifact from another commit. GitHub may require sign-in to download CI artifacts. Development-build artifacts are separate from the published RC2 release and do not use its `SHA256SUMS`. UI changes from a development artifact are not part of the published RC2 wheels.
+
 Create a `bluefire-v3` directory with a `wheels` subdirectory, and put `SHA256SUMS` in
-`bluefire-v3` when provided. A GitHub release downloads the wheel directly: move that intact
-`.whl` into `bluefire-v3/wheels`. A CI artifact downloads as a ZIP: extract that archive, locate
-the matching `.whl` inside its nested folders, and move the intact wheel into the same `wheels`
-subdirectory. Do not extract the `.whl` itself. For an unpublished CI candidate, the release
-`SHA256SUMS` may not yet be available. Open a terminal in `bluefire-v3` and run the commands
-below.
+`bluefire-v3` for release assets. A GitHub release link downloads the wheel directly: move that
+intact `.whl` into `bluefire-v3/wheels`. A development-build CI artifact downloads as a ZIP:
+extract that archive, locate the matching `.whl` inside its nested folders, and move the intact
+wheel into the same `wheels` subdirectory. Do not extract the `.whl` itself. The published
+`SHA256SUMS` applies only to release assets, not development-build artifacts. Open a terminal in
+`bluefire-v3` and run the commands below.
 
 ## Install and open
 

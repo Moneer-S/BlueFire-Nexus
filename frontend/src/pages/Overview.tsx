@@ -9,6 +9,8 @@ import { api, DEMO_MODE } from "../lib/api";
 import { useProduct } from "../state/ProductContext";
 import { Badge, Button, ErrorState, formatDate, LoadingState, PageHeader, sentence } from "../components/Primitives";
 import { SavedDefensiveWork } from "../components/SavedDefensiveWork";
+import { ActiveWorkResume } from "../components/ActiveWorkResume";
+import { useActiveDefensiveWork } from "../state/activeDefensiveWork";
 import "./Overview.css";
 
 export function OverviewPage() {
@@ -16,6 +18,7 @@ export function OverviewPage() {
   const runs = useQuery({ queryKey: ["runs"], queryFn: api.runs });
   const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog, staleTime: 60_000 });
   const { scenario, scenarioIsSeededFallback, dirty, runConfig } = useProduct();
+  const activeWork = useActiveDefensiveWork();
   const recent = runs.data?.runs.slice(0, 4);
   const unavailable = runs.data?.unavailable_run_count ?? 0;
   const historyIsEmpty = runs.isSuccess && runs.data?.runs.length === 0 && unavailable === 0;
@@ -28,27 +31,27 @@ export function OverviewPage() {
   const selectedProfile = profiles.find(profile => profile.id === runConfig.profileId && profile.mode === runConfig.mode);
 
   return <div className="page overview-page">
-    <PageHeader title="Overview" description="Continue your work and review recorded results." actions={<><Link className="button button-secondary button-medium" to="/scenarios">Open experiments</Link><Link className={`button button-${scenarioIsSeededFallback ? "primary" : "secondary"} button-medium`} to="/getting-started">Start an objective<ArrowRight aria-hidden="true"/></Link></>} />
+    <PageHeader title="Overview" description="Continue your work and review recorded results." actions={<><Link className="button button-secondary button-medium" to="/scenarios">Open experiments</Link><Link className={`button button-${scenarioIsSeededFallback && (!activeWork || DEMO_MODE) ? "primary" : "secondary"} button-medium`} to="/getting-started">Start an objective<ArrowRight aria-hidden="true"/></Link></>} />
     {DEMO_MODE ? <p className="workspace-note overview-demo-note" role="status">Demo workspace · synthetic results · Execute previews have no effects.</p> : null}
 
-    <section className="active-work" aria-labelledby="working-copy-heading">
+    {activeWork && !DEMO_MODE ? <ActiveWorkResume reference={activeWork} /> : <section className="active-work" aria-labelledby="working-copy-heading">
       <div className="active-work-content">
         <div className="active-work-heading"><span className="active-work-symbol"><Boxes aria-hidden="true"/></span><div><h2 id="working-copy-heading">{scenarioIsSeededFallback ? "Example plan" : "Working draft"}</h2><h3>{displayTitle(scenario.title)}</h3></div></div>
         <div className="active-work-state"><Badge tone={scenarioIsSeededFallback ? "neutral" : dirty ? "warning" : "info"}>{scenarioIsSeededFallback ? "Built-in example" : dirty ? "Unsaved changes" : "No unsaved changes"}</Badge><span>{scenarioIsSeededFallback ? "A starting point for your own objective" : "Your current plan in Builder"}</span></div>
         {scenario.purpose ? <p className="active-work-purpose">{scenario.purpose}</p> : null}
         <ul className="active-work-facts" aria-label="Plan contents"><li><Network aria-hidden="true"/>{scenario.steps.length} steps</li><li><GitBranch aria-hidden="true"/>{scenario.edges.length} outcome routes</li><li><Boxes aria-hidden="true"/>{dataBindings} data bindings</li></ul>
         <div className="active-work-actions"><Link className="button button-primary" to="/builder">{scenarioIsSeededFallback ? "Open example plan" : "Continue editing"}<ArrowRight aria-hidden="true"/></Link><Link className="button button-secondary" to="/runs?prepare=1">Review run</Link></div>
-        {latestRun ? <Link className="active-work-latest" to={`/runs/${encodeURIComponent(latestRun.run_id)}`}>{runs.isError ? "Last loaded" : "Latest recorded"} {latestRun.mode === "simulate" ? "simulation" : "execution"}: {sentence(latestRun.status)}<ArrowRight aria-hidden="true"/></Link> : null}
+        {latestRun ? <Link className="active-work-latest" to={`/runs/${encodeURIComponent(latestRun.run_id)}`}>{runs.isError ? "Last loaded" : "Latest recorded"} {latestRun.mode === "simulate" ? "simulation" : "execution"}: {objectiveLabel(latestRun.objective_reached, latestRun.mode)}<small>Run status: {sentence(latestRun.status)}</small><ArrowRight aria-hidden="true"/></Link> : null}
       </div>
       <div className="active-work-plan"><header><h3>Plan at a glance</h3><Link to="/builder">Open graph<ArrowRight aria-hidden="true"/></Link></header><ul>{planSteps.map(step => {
         const conditionalRoutes = scenario.edges.filter(edge => edge.from_step === step.id && edge.outcome !== "success").length;
         return <li key={step.id}><span className={step.id === scenario.start ? "plan-entry" : undefined}><Network aria-hidden="true"/></span><div><strong>{displayTitle(behaviorTitles.get(step.behavior_id) ?? step.behavior_id)}</strong><small>{step.id === scenario.start ? "Starting step" : conditionalRoutes ? `${conditionalRoutes} conditional ${conditionalRoutes === 1 ? "route" : "routes"}` : "Planned method"}</small></div></li>;
       })}</ul>{scenario.steps.length > planSteps.length ? <Link className="active-work-more" to="/builder">View all {scenario.steps.length} steps<ArrowRight aria-hidden="true"/></Link> : null}</div>
-    </section>
+    </section>}
 
     <div className={`overview-dashboard${historyIsEmpty ? " is-history-empty" : ""}`}>
       <section className="work-section overview-run-context" aria-labelledby="run-context-heading">
-        <header className="work-section-heading"><h2 id="run-context-heading">Run context</h2></header>
+        <header className="work-section-heading"><h2 id="run-context-heading">{activeWork && !DEMO_MODE ? "Working draft settings" : "Run context"}</h2></header>
         <dl className="overview-context-facts">
           <div><dt><Play aria-hidden="true"/>Run mode</dt><dd>{sentence(runConfig.mode)}<small>AI during the run: {sentence(runConfig.autonomy)}</small></dd></div>
           <div><dt><Server aria-hidden="true"/>Environment</dt><dd>{catalog.isPending ? "Checking profiles…" : catalog.isError ? "Catalog unavailable" : selectedProfile ? profileChoiceLabel(selectedProfile.id, profiles) : "Choose a profile"}<small>{catalog.isError ? "Your profile selection is retained." : selectedProfile ? "Configured profile · check readiness in Runs" : "Review available profiles before running."}</small></dd></div>

@@ -435,3 +435,143 @@ for (const viewport of viewports) {
     await qualifyViewport(page, browser, viewport);
   });
 }
+
+test("offline branch, join and returning retry remain inspectable with reduced motion", async ({ page, browser }) => {
+  // Reuse graph-view.test.ts's branchedScenario topology and saved entry position.
+  // Zero-input catalog steps keep this a valid presentation fixture; no run is dispatched.
+  const template = demoScenario.steps.find(step => step.behavior_id === behaviorId)!;
+  const scenario = parseScenarioDocument({ ...structuredClone(demoScenario),
+    id: "graph.loop-join.offline.v1", title: "Graph loop and join visual qualification",
+    purpose: "Inspect a saved branch, join and returning retry without executing a method.",
+    start: "first", steps: ["first", "normal", "alternative", "cleanup", "detached"].map(id => ({ ...structuredClone(template), id, inputs: {} })),
+    edges: [
+      { from_step: "first", outcome: "success", to_step: "normal" },
+      { from_step: "first", outcome: "blocked", to_step: "alternative" },
+      { from_step: "normal", outcome: "success", to_step: "cleanup" },
+      { from_step: "alternative", outcome: "success", to_step: "cleanup" },
+      { from_step: "cleanup", outcome: "failed", to_step: "first" },
+    ], layout: { first: { x: 915, y: 21 } },
+  });
+  const expectedDraft = JSON.stringify(scenario);
+  const { session, state } = await syntheticSession(page, scenario);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.addInitScript(({ scenarioJson, scenarioId, session, behaviorId }) => {
+    localStorage.setItem("bluefire.local.scenario.v1", scenarioJson);
+    sessionStorage.setItem("bluefire.browser-session.v1", session);
+    sessionStorage.setItem(`bluefire.working-graph-view.v2:${scenarioId}`, JSON.stringify({ scenarioId,
+      view: { selected: { id: "first", behavior: behaviorId }, mode: "graph", allBranches: true,
+        expanded: [], section: null, inspector: false, routes: false, inputs: false } }));
+  }, { scenarioJson: expectedDraft, scenarioId: scenario.id, session, behaviorId });
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await page.goto("./#/builder");
+  await expect(page.getByRole("heading", { name: scenario.title, exact: true, level: 1 })).toBeVisible();
+  expect(await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches)).toBe(true);
+  await expect(page.locator(".react-flow__node:visible")).toHaveCount(5);
+  await expect(page.locator(".react-flow__edge:visible")).toHaveCount(5);
+  const readDraft = () => page.evaluate(() => localStorage.getItem("bluefire.local.scenario.v1"));
+  expect(await readDraft()).toBe(expectedDraft);
+
+  const fit = page.getByRole("button", { name: "Fit view", exact: true });
+  const assertWholeGraphFits = async () => expect.poll(() => page.locator(".react-flow__node:visible").evaluateAll(nodes => {
+    const canvas = document.querySelector(".graph-canvas")!.getBoundingClientRect();
+    return nodes.length === 5 && nodes.every(node => {
+      const box = node.getBoundingClientRect();
+      return box.width > 0 && box.height > 0 && box.left >= canvas.left - 1 && box.right <= canvas.right + 1
+        && box.top >= canvas.top - 1 && box.bottom <= canvas.bottom + 1;
+    });
+  })).toBe(true);
+  await fit.focus(); await fit.press("Enter");
+  await assertWholeGraphFits();
+
+  await page.getByRole("button", { name: "Show route list", exact: true }).click();
+  const routes = page.getByRole("list", { name: "Visible routes", exact: true });
+  await expect(routes.getByRole("button")).toHaveCount(5);
+  const retryId = "route-cleanup-failed-first-4";
+  const retry = routes.locator(`button[data-route="${retryId}"]`);
+  await retry.focus(); await retry.press("Enter");
+  await expect(retry).toHaveAttribute("aria-pressed", "true");
+  await expect(retry).toContainText("On failure");
+  await expect(retry).toContainText("cleanup → first");
+  await expect(page.locator(`.react-flow__edge[data-id="${retryId}"]`)).toHaveClass(/selected/);
+  await page.getByRole("button", { name: "Close route list", exact: true }).click();
+  await fit.focus(); await fit.press("Enter");
+  await assertWholeGraphFits();
+  await stableFrames(page);
+  const routing = await page.locator(".react-flow__edge:visible").evaluateAll((edges, definitions) => {
+    const cards = [...document.querySelectorAll<HTMLElement>(".react-flow__node")]
+      .filter(card => getComputedStyle(card).display !== "none" && getComputedStyle(card).visibility !== "hidden");
+    const endpoints = new Map(definitions.map(edge => [edge.id, edge]));
+    return edges.map(edge => {
+      const path = edge.querySelector<SVGPathElement>(".react-flow__edge-path")!;
+      const length = path.getTotalLength(), matrix = path.getScreenCTM()!;
+      const id = edge.getAttribute("data-id") ?? "";
+      let intersections = 0;
+      for (let index = 1; index < 256; index += 1) {
+        const point = path.getPointAtLength(length * index / 256).matrixTransform(matrix);
+        for (const card of cards) {
+          const cardId = card.getAttribute("data-id")!;
+          // Endpoint cards are joined through handles; inspect only unrelated cards.
+          if (cardId === endpoints.get(id)?.source || cardId === endpoints.get(id)?.target) continue;
+          const box = card.getBoundingClientRect();
+          if (point.x > box.left + 1 && point.x < box.right - 1 && point.y > box.top + 1 && point.y < box.bottom - 1) intersections += 1;
+        }
+      }
+      return { id, path_count: edge.querySelectorAll(".react-flow__edge-path").length,
+        length, obstructed: Boolean(edge.querySelector('[data-route-obstructed="true"]')), unrelated_card_intersections: intersections,
+        path: path.getAttribute("d") };
+    });
+  }, scenario.edges.map((edge, index) => ({ id: `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`, source: edge.from_step, target: edge.to_step })));
+  expect(routing.map(route => route.id).sort()).toEqual(scenario.edges.map((edge, index) => `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`).sort());
+  expect(routing.every(route => route.path_count === 1 && Number.isFinite(route.length) && route.length > 0
+    && !route.obstructed && route.unrelated_card_intersections === 0)).toBe(true);
+  const wholeGeometry = await capture(page, "graph-loop-join-reduced-overview-1366");
+  expect(await readDraft()).toBe(expectedDraft);
+
+  await page.getByRole("button", { name: "Find step", exact: true }).click();
+  const search = page.getByRole("dialog", { name: "Find a step in this experiment", exact: true });
+  await search.getByRole("textbox", { name: "Find a step", exact: true }).fill("cleanup");
+  const result = search.getByRole("button").filter({ has: page.locator("code", { hasText: /\bcleanup$/ }) });
+  await expect(result).toHaveCount(1);
+  await result.focus(); await result.press("Enter");
+  await expect(page.locator('.react-flow__node[data-id="cleanup"]')).toHaveClass(/selected/);
+  await expectReadableSelection(page);
+  await page.getByRole("button", { name: "Steps", exact: true }).click();
+  const steps = page.getByRole("list", { name: "Experiment steps", exact: true });
+  await expect(steps.locator(":scope > li")).toHaveCount(5);
+  await expect(steps.locator('button[data-step-id="cleanup"]')).toHaveAttribute("aria-pressed", "true");
+  const alternative = steps.locator('button[data-step-id="alternative"]');
+  await alternative.focus(); await alternative.press("Enter");
+  await page.getByRole("button", { name: "Canvas", exact: true }).click();
+  await expect(page.locator('.react-flow__node[data-id="alternative"]')).toHaveClass(/selected/);
+  await expectReadableSelection(page);
+  await viewOptions(page, true);
+  await page.getByRole("button", { name: "Focus selected step", exact: true }).click();
+  await viewOptions(page, false);
+  const motionFrames = await page.evaluate(() => new Promise<string[]>(resolve => {
+    const frames: string[] = [];
+    const sample = () => {
+      frames.push(document.querySelector(".react-flow__viewport")?.getAttribute("style") ?? "");
+      if (frames.length === 8) resolve(frames); else requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  }));
+  expect(motionFrames.every(Boolean)).toBe(true);
+  expect(new Set(motionFrames).size).toBe(1);
+  await expectReadableSelection(page);
+  const focusedGeometry = await capture(page, "graph-loop-join-reduced-focused-1366");
+  expect(await readDraft()).toBe(expectedDraft);
+  expect(state.effects).toEqual([]);
+  expect({ unexpected: state.unexpected, websockets: state.websockets, pageErrors: state.pageErrors, consoleErrors: state.consoleErrors })
+    .toEqual({ unexpected: 0, websockets: 0, pageErrors: 0, consoleErrors: 0 });
+  writeFileSync(join(output, "graph-loop-join-reduced-report.json"), `${JSON.stringify({
+    proof: "synthetic-production-bundle-loop-join-reduced-motion-ui-only", real_service: false,
+    browser: { engine: "chromium", version: browser.version() },
+    bundle: ["app.js", "index.html", "styles.css"].map(name => { const bytes = readFileSync(join(bundle, name)); return { name, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }; }),
+    workload: { scenario, canonical_graph_sha256: createHash("sha256").update(canonicalJson(scenario)).digest("hex") },
+    reduced_motion: { media_matches: true, viewport_frames: motionFrames, distinct_viewport_frames: 1 },
+    geometry: { overview: wholeGeometry, focused: focusedGeometry }, routing,
+    checks: ["five_saved_steps_and_five_exact_routes", "returning_failure_route_keyboard_selected", "join_and_retry_paths_clear_of_unrelated_cards",
+      "keyboard_fit_whole_graph", "keyboard_exact_id_search", "steps_and_canvas_share_selection", "focus_readable_without_intermediate_animation", "saved_document_and_positions_unchanged"],
+    effect_audit: { ...state, serialized_draft_unchanged: true },
+  }, null, 2)}\n`, { flag: "wx" });
+});

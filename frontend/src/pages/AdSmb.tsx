@@ -4,6 +4,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { ArrowRight, ChevronLeft, ChevronRight, ClipboardCheck, FileSearch, History, Plus, RefreshCw, Square, Undo2, X } from "lucide-react";
 import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState, PageHeader, formatDate, sentence } from "../components/Primitives";
 import { ObjectiveContext } from "../components/ObjectiveContext";
+import { useRememberDefensiveWork } from "../state/activeDefensiveWork";
 import { adConfirmed, adJobId, adJobValid, adPhaseCurrent, adPhaseLabels, adReadinessLabels, adSmbApi, checkedAdEnvironments, checkedAdList, checkedAdReview, checkedAdWorkflow, clearAdPending, readAdPending, storeAdPending, type AdAuditEvent, type AdBudget, type AdChange, type AdEnvironment, type AdNormalizedAudit, type AdOperation, type AdPending, type AdPhase, type AdReview, type AdWorkflow } from "../lib/ad-smb";
 import "./AdSmb.css";
 
@@ -29,6 +30,7 @@ export function AdSmbPage() {
   const saved = useQuery({ queryKey: ["ad-smb-workflows"], queryFn: async () => checkedAdList(await adSmbApi.list()), retry: false });
   const workflow = useQuery({ queryKey: ["ad-smb-workflow", owner], queryFn: async () => checkedAdWorkflow(await adSmbApi.workflow(owner), owner), enabled: adJobValid(owner), retry: false, refetchInterval: query => query.state.data?.pending ? 1500 : false });
   const value = workflow.error ? undefined : workflow.data;
+  useRememberDefensiveWork("domain", workflow.isSuccess && value?.id === owner ? owner : undefined);
   useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer); }, []);
   const cancelReads = async () => { await Promise.all([client.cancelQueries({ queryKey: ["ad-smb-workflow"] }), client.cancelQueries({ queryKey: ["ad-smb-workflows"] })]); };
   const refresh = async () => {
