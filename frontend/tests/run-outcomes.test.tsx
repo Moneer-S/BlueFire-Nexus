@@ -214,7 +214,7 @@ it("presents actual alternate attempts and keeps simulated continuations distinc
   const entries = path.getAllByRole("listitem");
   expect(within(entries[0]!).getByText(alternate.title)).toBeVisible();
   expect(within(entries[0]!).getByText("Reported success")).toBeVisible();
-  expect(within(entries[0]!).getByText("1 linked evidence record")).toBeVisible();
+  expect(within(entries[0]!).getByText("1 linked record")).toBeVisible();
   expect(within(entries[1]!).getByText("Simulated continuation")).toBeVisible();
   expect(within(entries[1]!).queryByText("Reported success")).not.toBeInTheDocument();
 });
@@ -226,4 +226,30 @@ it("does not promote cleanup success to rollback or legitimate-use proof", async
   await userEvent.setup().click(cleanup.getByText("Recorded cleanup details"));
   expect(cleanup.getByText("Outstanding effects")).toBeVisible();
   expect(cleanup.getByText("0")).toBeVisible();
+});
+
+it("opens only the selected step's linked evidence and preserves unavailable references", async () => {
+  const user = userEvent.setup();
+  const record = run({ steps: [{ step_id: "collect", status: "success", evidence_ids: ["observed", "synthetic", "missing"] }], evidence: { records: [
+    { evidence_id: "observed", step_id: "collect", provenance: "observed", summary: "The observer counted generated records." },
+    { evidence_id: "synthetic", step_id: "collect", provenance: "synthetic", summary: "The simulator predicted a result." },
+    { evidence_id: "unlinked", step_id: "collect", provenance: "executed", summary: "This record is not linked to this attempt." },
+  ] } });
+  const before = structuredClone(record);
+  render(<RunReview run={record} catalog={demoCatalog}/>);
+  const path = within(screen.getByRole("region", { name: "Recorded step outcomes" }));
+  expect(path.getByRole("group", { name: "Evidence for Collect" })).not.toBeVisible();
+  await user.click(path.getByText("Inspect evidence"));
+  const preview = within(path.getByRole("group", { name: "Evidence for Collect" }));
+  expect(preview.getByText("Observed")).toBeVisible();
+  expect(preview.getByText("Synthetic")).toBeVisible();
+  expect(preview.getByText("The observer counted generated records.")).toBeVisible();
+  expect(preview.getByText("The simulator predicted a result.")).toBeVisible();
+  expect(preview.queryByText("This record is not linked to this attempt.")).not.toBeInTheDocument();
+  expect(preview.getByText(/1 linked record is unavailable/)).toBeVisible();
+  await user.click(path.getByText("Step details"));
+  expect(path.getByText("observed, synthetic, missing")).toBeVisible();
+  await user.click(path.getByText("Inspect evidence"));
+  expect(path.getByRole("group", { name: "Evidence for Collect" })).not.toBeVisible();
+  expect(record).toEqual(before);
 });
