@@ -230,9 +230,20 @@ async function visibleGraphTitles(selectedOnly = false) {
     if (!card || !title) return { title: "", fitsCard: false, fitsWidth: false };
     const cardBox = card.getBoundingClientRect();
     const titleBox = title.getBoundingClientRect();
+    const method = card.querySelector(".node-method");
+    const methodBox = method?.getBoundingClientRect();
+    const primary = title.textContent?.trim() ?? "";
+    const qualifier = method?.textContent?.trim() ?? "";
+    const fullTitle = title.getAttribute("title") ?? "";
+    const identityPreserved = fullTitle === [primary, qualifier].filter(Boolean).join(" ");
+    const methodFits = !method || Boolean(methodBox && methodBox.width > 0 && methodBox.height > 0
+      && methodBox.left >= cardBox.left - 1 && methodBox.right <= cardBox.right + 1
+      && methodBox.top >= cardBox.top - 1 && methodBox.bottom <= cardBox.bottom + 1
+      && method.scrollWidth <= method.clientWidth + 1
+      && getComputedStyle(method).visibility === "visible" && Number(getComputedStyle(method).opacity) > 0);
     return {
-      title: title.textContent?.trim() ?? "",
-      fitsCard: titleBox.left >= cardBox.left - 1 && titleBox.right <= cardBox.right + 1
+      title: identityPreserved ? fullTitle : "", primary, qualifier,
+      fitsCard: methodFits && titleBox.left >= cardBox.left - 1 && titleBox.right <= cardBox.right + 1
         && titleBox.top >= cardBox.top - 1 && titleBox.bottom <= cardBox.bottom + 1,
       fitsWidth: title.scrollWidth <= title.clientWidth + 1,
     };
@@ -692,6 +703,8 @@ try {
     const selectedTitle = await visibleGraphTitles(true);
     assert.equal(selectedTitle.length, 1);
     assert.equal(selectedTitle[0].title, "Collect selected records (native JSONL)");
+    assert.equal(selectedTitle[0].primary, "Collect selected records");
+    assert.equal(selectedTitle[0].qualifier, "(native JSONL)");
     assert.ok(selectedTitle[0].fitsCard && selectedTitle[0].fitsWidth, "Long behavior title must fit the focused card");
     await capture(`graph-focused-${viewport.width}x${viewport.height}`);
   }

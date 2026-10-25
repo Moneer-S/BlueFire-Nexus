@@ -18,6 +18,7 @@ import { guaranteedInputSources, stepParameterSummary } from "../lib/graph-autho
 import { ParameterField } from "../components/ParameterField";
 import { BuilderEvidenceTray } from "../components/BuilderEvidenceTray";
 import { connectedRunBands } from "../lib/connected-run-bands";
+import { graphNodeTitle } from "../lib/graph-node-title";
 import { branchLabels, focusedGraphLayout, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, graphBoundsViewport, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, readableGraphViewport, revealGraphContext, type GraphFrame, type GraphViewport, type ScenarioGraph } from "../lib/graph-view";
 import { api } from "../lib/api";
 import { defaultGraphView, readWorkingGraphView, writeWorkingGraphView } from "../lib/graph-view-retention";
@@ -78,6 +79,7 @@ function flowEdges(scenario: ScenarioGraph, behaviors: Map<string, Behavior>): F
 
 const BehaviorNode = memo(function BehaviorNode({ id, data, selected }: NodeProps<BehaviorFlowNode>) {
   const behavior = data.behavior;
+  const title = graphNodeTitle(displayTitle(behavior?.title ?? "Unavailable step"), behavior?.execution_state, data.invalid);
   const updateNodeInternals = useUpdateNodeInternals();
   const handleSignature = JSON.stringify([
     behavior?.inputs.slice(0, 4).map((input) => input.name) ?? [],
@@ -92,11 +94,11 @@ const BehaviorNode = memo(function BehaviorNode({ id, data, selected }: NodeProp
     measuredHandles.current = { id, signature: handleSignature };
     updateNodeInternals(id);
   }, [id, handleSignature, updateNodeInternals]);
-  return <article className={`flow-node tier-${behavior?.safety_tier ?? "safe"} ${selected ? "selected" : ""} ${data.invalid ? "invalid" : ""}`}>
+  return <article className={`flow-node tier-${behavior?.safety_tier ?? "safe"} ${selected ? "selected" : ""} ${data.invalid ? "invalid" : ""}`} aria-label={title.method ? title.fullTitle : undefined}>
     <Handle type="target" position={data.routeIn ?? Position.Left} id="route:in" className="route-handle route-in" style={data.routeIn === Position.Top ? { left: 20 } : undefined} title="Continue from another step" />
     {(behavior?.inputs ?? []).slice(0, 4).map((input, index, items) => <Handle key={input.name} type="target" position={Position.Top} id={`in:${input.name}`} className="typed-handle input-handle" style={{ left: `${((index + 1) / (items.length + 1)) * 100}%` }} title={`Requires ${inputTypeLabel(input.type)}: ${inputLabel(input.name)}`} />)}
-    <header><span className="node-order">Step {data.ordinal}</span>{data.invalid || behavior?.execution_state !== "action" ? <span className={`node-kind ${data.invalid ? "attention" : ""}`}>{data.invalid ? "Needs attention" : behavior?.execution_state === "simulation" ? "Simulation" : "Research only"}</span> : null}</header>
-    <div className="node-title"><span className="node-icon"><FileText aria-hidden="true"/></span><strong title={displayTitle(behavior?.title ?? "Unavailable step")}>{displayTitle(behavior?.title ?? "Unavailable step")}</strong></div>
+    <header><span className="node-order">Step {data.ordinal}</span>{data.invalid || behavior?.execution_state !== "action" ? <span className={`node-kind ${data.invalid ? "attention" : ""}`}>{data.invalid ? "Needs attention" : behavior?.execution_state === "simulation" ? "Simulation" : "Research only"}</span> : title.method ? <span className="node-method" title={title.method}>{title.method}</span> : null}</header>
+    <div className="node-title"><span className="node-icon"><FileText aria-hidden="true"/></span><strong title={title.fullTitle}>{title.title}</strong></div>
     {data.method ? <p className="node-context" title={`Run override: ${displayTitle(data.method)}`}>Run override: {displayTitle(data.method)}</p> : null}
     {!data.method && stepParameterSummary(data.step, behavior) ? <p className="node-context" title={stepParameterSummary(data.step, behavior)}>{stepParameterSummary(data.step, behavior)}</p> : null}
     <footer>{data.step.alternates.length ? <span><GitBranch/>{data.step.alternates.length} saved {data.step.alternates.length === 1 ? "alternative" : "alternatives"}</span> : <span>{behavior?.platforms.map(inputLabel).join(" · ")}</span>}</footer>

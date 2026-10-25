@@ -324,11 +324,37 @@ it("keeps the inspected source record when a different candidate is selected", a
   await screen.findByRole("heading", { name: "First source rule" });
   const record = screen.getByRole("button", { name: "Inspect source record 2: Second generated record" });
   await user.click(record);
+  expect(within(screen.getByLabelText("Selected record overview")).getByText("Second generated record", { exact: true })).toBeVisible();
+  expect(screen.getByLabelText("Selected source record")).not.toBeVisible();
+  const retainedRecord = within(screen.getByLabelText("Selected record overview")).getByText("Inspect retained record", { selector: "summary" });
+  await user.click(retainedRecord);
+  expect(screen.getByLabelText("Selected source record")).toBeVisible();
   expect(screen.getByLabelText("Selected source record")).toHaveTextContent('"evidence_id": "second-record"');
   await user.click(screen.getByRole("button", { name: /^Second source rule · Revision/ }));
   await screen.findByRole("heading", { name: "Second source rule" });
   expect(screen.getByRole("button", { name: "Inspect source record 2: Second generated record" })).toBe(record);
   expect(record).toHaveAttribute("aria-pressed", "true");
   expect(screen.getByLabelText("Selected source record")).toHaveTextContent('"evidence_id": "second-record"');
+  expect(action).not.toHaveBeenCalled(); expect(revise).not.toHaveBeenCalled(); expect(evaluate).not.toHaveBeenCalled();
+});
+
+it("names source records from saved step context and presents recognized projections without changing the record", async () => {
+  const behavior = demoCatalog.behaviors.find(item => item.id === "sandbox.fixture.create.v1")!;
+  const sourceRun: RunRecord = { ...structuredClone(demoRuns[0]!), run_id: "run-20261021T000000Z-aaaaaaaaaaaaaaaa", is_demo: false,
+    steps: [{ step_id: "create_fixture", status: "success", behavior_id: behavior.id, simulation_id: behavior.simulation_id, evidence_ids: ["fixture-projection"] }],
+    evidence: { records: [{ schema_version: "bluefire.evidence.v1", evidence_id: "fixture-projection", producer: "simulation-registry.v1", provenance: "synthetic",
+      content: { simulation_id: "simulation.sandbox.fixture.create.v1", side_effects_started: false, artifacts: { workspace: { type: "artifact.sandbox.workspace.v1", format: "jsonl", record_count: 8 } } },
+      limitations: ["Synthetic projection only; no host effect occurred."] }] }, detections: { candidates: [structuredClone(original.document)] } };
+  const before = structuredClone(sourceRun);
+  const { user, action, revise, evaluate } = setup([], true, sourceRun);
+  const row = await screen.findByRole("button", { name: `Inspect source record 1: ${behavior.title}` });
+  expect(within(row).getByText("Synthetic", { exact: true })).toBeVisible();
+  expect(row).not.toHaveTextContent("simulation-registry.v1");
+  const overview = screen.getByLabelText("Selected record overview");
+  expect(within(overview).getByText("Simulation projected 8 sample records in JSONL format.")).toBeVisible();
+  expect(within(overview).getByText("Synthetic projection only; no host effect occurred.")).toBeVisible();
+  await user.click(within(overview).getByText("Inspect retained record", { selector: "summary" }));
+  expect(JSON.parse(screen.getByLabelText("Selected source record").textContent!)).toEqual(before.evidence!.records![0]);
+  expect(sourceRun).toEqual(before);
   expect(action).not.toHaveBeenCalled(); expect(revise).not.toHaveBeenCalled(); expect(evaluate).not.toHaveBeenCalled();
 });
