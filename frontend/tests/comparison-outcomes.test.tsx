@@ -126,6 +126,9 @@ it("keeps missing observations and cleanup visible beside explicit zero evidence
   comparison.summaries[1]!.evidence_details = { observed_artifacts: [], evidence_gaps: [] };
   comparison.summaries[1]!.cleanup_success = false;
   render(<MemoryRouter><ComparisonResult comparison={comparison} /></MemoryRouter>);
+  const runOrder = within(screen.getByRole("group", { name: "Comparison run order" }));
+  expect(within(runOrder.getByRole("article", { name: "Baseline result" }).querySelector("footer")!).getByText("Not reported", { exact: true })).toBeVisible();
+  expect(within(runOrder.getByRole("article", { name: "Compared run 1 result" }).querySelector("footer")!).getByText("0 observed artifacts", { exact: true })).toBeVisible();
   const observations = within(screen.getByRole("region", { name: "Supporting observations" }));
   expect(observations.getByText("Independently observed artifacts not reported.")).toBeVisible();
   expect(observations.getByText("0 artifacts independently observed.")).toBeVisible();
