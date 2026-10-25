@@ -167,7 +167,14 @@
 }
 @media (min-width: 901px) and (max-width: 1050px) and (max-height: 650px) {
   .assistant-body { min-height: 72px; }
-  .assistant-message-field textarea { height: 50px; min-height: 50px; }
+  /* The bottom dock shares its height with the selected work: keep idle controls on one row. */
+  .assistant-composer { padding-block: 7px 6px; }
+  .assistant-composer form { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+  .assistant-message-field { min-width: 0; }
+  .assistant-message-field textarea { height: 50px; min-height: 50px; padding-block: 5px; }
+  .assistant-send-row { gap: 10px; padding: 0 8px; }
+  .assistant-send-row > span { max-width: 120px; line-height: 1.4; }
+  .assistant-composer .assistant-configuration { padding-top: 6px; }
   .assistant-setup-note[data-ai-off="true"] { display: none; }
 }
 @media (min-width: 901px) and (max-width: 1050px) and (max-height: 550px) {
