@@ -302,6 +302,38 @@ async function graphMenuAction(name) {
   await graphOptions(false);
 }
 
+
+async function graphZoomPercent(waitUntilReadable = false) {
+  // Both responsive outputs reflect graphZoom; this named primary output is unique
+  // even when compact CSS moves its visible presentation into View options.
+  const selector = '.graph-view-actions > output.graph-scale[aria-label="Graph zoom"]';
+  const indicator = page.locator(selector);
+  const count = await indicator.count();
+  report.graph_zoom_probe = { primary_indicator_count: count };
+  assert.equal(count, 1, "Graph zoom must have exactly one primary state indicator");
+  if (waitUntilReadable) {
+    await page.waitForFunction(selector => {
+      const matches = document.querySelectorAll(selector);
+      if (matches.length !== 1) return false;
+      const text = matches[0].textContent?.trim() ?? "";
+      if (!/^(?:0|[1-9][0-9]{0,2})%$/.test(text)) return false;
+      const percent = Number(text.slice(0, -1));
+      return Number.isInteger(percent) && percent >= 80 && percent <= 160;
+    }, selector);
+  }
+  const text = (await indicator.textContent() ?? "").trim();
+  const validFormat = /^(?:0|[1-9][0-9]{0,2})%$/.test(text);
+  report.graph_zoom_probe.valid_format = validFormat;
+  assert.ok(validFormat, "Primary graph zoom must be a whole percentage");
+  const percent = Number(text.slice(0, -1));
+  const withinBounds = Number.isInteger(percent) && percent >= 0 && percent <= 160;
+  report.graph_zoom_probe.within_bounds = withinBounds;
+  assert.ok(withinBounds, "Primary graph zoom must fit the configured viewport range");
+  report.graph_zoom_probe.percent = percent;
+  delete report.graph_zoom_probe;
+  return percent;
+}
+
 async function waitForGraphFrame(selectedOnly) {
   await page.waitForFunction(selected => {
     const canvas = document.querySelector(".graph-canvas");
@@ -612,12 +644,16 @@ try {
   for (const viewport of [{ width: 1366, height: 768 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
     stage = `graph-connected-plan-focus-${viewport.width}x${viewport.height}`;
     await page.setViewportSize(viewport);
+    stage = `graph-connected-plan-focus-${viewport.width}x${viewport.height}-focus`;
     await graphMenuAction("Focus selected step");
+    stage = `graph-connected-plan-focus-${viewport.width}x${viewport.height}-frame`;
     await waitForGraphFrame(true);
     const visibleNodes = await page.locator(".react-flow__node:visible").count();
     assert.equal(visibleNodes, reviewedScenarioDocument.steps.length);
-    const zoom = Number.parseInt(await page.getByLabel("Graph zoom", { exact: true }).textContent() ?? "0", 10);
+    stage = `graph-connected-plan-focus-${viewport.width}x${viewport.height}-zoom`;
+    const zoom = await graphZoomPercent();
     assert.ok(zoom >= 80, `The selected step must be readable at ${viewport.width}px (${zoom}%)`);
+    stage = `graph-connected-plan-focus-${viewport.width}x${viewport.height}-titles`;
     const titles = await visibleGraphTitles(true);
     assert.equal(titles.length, 1);
     assert.ok(titles.every(title => title.title && title.fitsCard && title.fitsWidth), "Focused titles must fit their cards");
@@ -646,9 +682,13 @@ try {
     await page.getByRole("button", { name: "Fit view", exact: true }).click();
     await waitForGraphFrame(false);
     await capture(`graph-overview-${viewport.width}x${viewport.height}`);
+    stage = `graph-focused-${viewport.width}x${viewport.height}-focus`;
     await graphMenuAction("Focus selected step");
-    await page.waitForFunction(() => Number.parseInt(document.querySelector('[aria-label="Graph zoom"]')?.textContent ?? "0", 10) >= 80);
+    stage = `graph-focused-${viewport.width}x${viewport.height}-zoom`;
+    await graphZoomPercent(true);
+    stage = `graph-focused-${viewport.width}x${viewport.height}-frame`;
     await waitForGraphFrame(true);
+    stage = `graph-focused-${viewport.width}x${viewport.height}-titles`;
     const selectedTitle = await visibleGraphTitles(true);
     assert.equal(selectedTitle.length, 1);
     assert.equal(selectedTitle[0].title, "Collect selected records (native JSONL)");
@@ -692,10 +732,14 @@ try {
     const selectedStep = page.locator('.ordered-steps button[aria-pressed="true"]');
     assert.match(await selectedStep.innerText(), /Collect selected records \(native JSONL\)/);
     await page.getByRole("button", { name: "Canvas", exact: true }).click();
+    stage = `graph-constrained-${viewport.width}x${viewport.height}-focus`;
     await graphMenuAction("Focus selected step");
+    stage = `graph-constrained-${viewport.width}x${viewport.height}-frame`;
     await waitForGraphFrame(true);
-    const zoom = Number.parseInt(await page.getByLabel("Graph zoom", { exact: true }).textContent() ?? "0", 10);
+    stage = `graph-constrained-${viewport.width}x${viewport.height}-zoom`;
+    const zoom = await graphZoomPercent();
     assert.ok(zoom >= 80, "Selected step must retain a readable focused scale");
+    stage = `graph-constrained-${viewport.width}x${viewport.height}-titles`;
     const selectedNode = page.locator(".react-flow__node:visible:has(.flow-node.selected)");
     assert.equal(await selectedNode.count(), 1);
     // Port handles extend outside the node; title fit is checked separately.
