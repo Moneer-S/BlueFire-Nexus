@@ -292,7 +292,7 @@ async function qualifyViewport(page: Page, browser: Browser, viewport: { width: 
 
   const selectedBeforeOverview = await page.locator(".react-flow__node.selected").getAttribute("data-id");
   expect(selectedBeforeOverview).not.toBeNull();
-  await page.getByRole("button", { name: "Fit visible graph", exact: true }).click();
+  await page.getByRole("button", { name: "Fit view", exact: true }).click();
   await expect(page.locator(".react-flow__node:visible")).toHaveCount(nodeCount);
   await expect(page.locator(".react-flow__edge:visible")).toHaveCount(edgeCount);
   await expect.poll(() => page.locator(".react-flow__node:visible").evaluateAll(nodes => {
@@ -404,7 +404,7 @@ async function qualifyViewport(page: Page, browser: Browser, viewport: { width: 
       remount_timer: "document navigation timing from navigation start through Playwright stable graph assertions and two animation frames; includes app/session/catalog/scenario startup and browser-clock gaps, not isolated React render time",
       harness_overhead: "UI transition samples include Playwright action and locator assertion round trips; retained remount samples use document navigation elapsed time and exclude synthetic code entry",
       focus_transition: "Connected-path selection and Return to whole plan automatically retain a readable selected card and title; navigation samples contain no manual focus action",
-      explicit_overview: "Fit visible graph separately places all 128 nodes inside the canvas while retaining 256 routes at an intentionally reduced scale; Focus selected step restores readable framing before continuing, outside transition timing samples",
+      explicit_overview: "Fit view separately places all 128 nodes inside the canvas while retaining 256 routes at an intentionally reduced scale; Focus selected step restores readable framing before continuing, outside transition timing samples",
       percentile_method: "nearest-rank",
     },
     retained_initial_full_graph_mount_ms: initialGraphMountMs,

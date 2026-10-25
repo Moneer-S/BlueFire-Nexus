@@ -643,7 +643,7 @@ try {
   await page.locator(".inspector-panel:not([hidden])").waitFor();
   for (const viewport of [{ width: 1366, height: 768 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
     await page.setViewportSize(viewport);
-    await page.getByRole("button", { name: "Fit visible graph", exact: true }).click();
+    await page.getByRole("button", { name: "Fit view", exact: true }).click();
     await waitForGraphFrame(false);
     await capture(`graph-overview-${viewport.width}x${viewport.height}`);
     await graphMenuAction("Focus selected step");
@@ -675,7 +675,7 @@ try {
   for (const viewport of [{ width: 1024, height: 768 }, { width: 910, height: 512 }]) {
     stage = `graph-constrained-${viewport.width}x${viewport.height}`;
     await page.setViewportSize(viewport);
-    for (const name of ["Fit visible graph", "Steps", "Canvas", "Hide node inspector"]) {
+    for (const name of ["Fit view", "Steps", "Canvas", "Hide node inspector"]) {
       await reachableGraphElement(page.getByRole("button", { name, exact: true }), name);
     }
     await graphOptions(true);
@@ -686,7 +686,7 @@ try {
     await reachableGraphElement(showInspector, "Show node inspector");
     await showInspector.click();
     await page.locator(".inspector-panel:not([hidden])").waitFor();
-    await page.getByRole("button", { name: "Fit visible graph", exact: true }).click();
+    await page.getByRole("button", { name: "Fit view", exact: true }).click();
     await waitForGraphFrame(false);
     await page.getByRole("button", { name: "Steps", exact: true }).click();
     const selectedStep = page.locator('.ordered-steps button[aria-pressed="true"]');

@@ -161,7 +161,7 @@ async function focusLongGroup() {
   const controls = within(screen.getByLabelText("Graph workspace controls"));
   const group = screen.getByLabelText("Step group");
   const longGroupValue = (within(group).getByRole("option", { name: /82 steps$/ }) as HTMLOptionElement).value;
-  const fit = controls.getByRole("button", { name: "Fit visible graph" });
+  const fit = controls.getByRole("button", { name: "Fit view" });
 
   // Enter from a selection outside the long group, including its old viewport.
   fireEvent.click(fit);
@@ -184,7 +184,7 @@ describe("Builder viewport controls", () => {
     expect(state.viewport).toEqual(initialViewport);
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).layout).toEqual(scenario.layout);
     flow.setViewport.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "Fit visible graph" }));
+    fireEvent.click(within(screen.getByLabelText("Graph workspace controls")).getByRole("button", { name: "Fit view" }));
     expect(flow.setViewport).toHaveBeenCalledOnce();
   });
 
@@ -435,7 +435,7 @@ describe("Builder viewport controls", () => {
     const original = { ...state.viewport };
     resizeMain(0);
     await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
-    fireEvent.click(screen.getByRole("button", { name: "Fit visible graph" }));
+    fireEvent.click(within(screen.getByLabelText("Graph workspace controls")).getByRole("button", { name: "Fit view" }));
     expect(state.viewport).toEqual(original);
     expect(main.scrollTop).toBe(0);
     expect(flow.setViewport).not.toHaveBeenCalled();
@@ -637,7 +637,7 @@ describe("Builder viewport controls", () => {
     expect(screen.getByRole("list", { name: "Experiment steps" }).querySelector('button[aria-pressed="true"] .step-number')?.textContent).toBe("8");
     fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
     expect(screen.getAllByRole("button", { name: /^Select focus_step_/ })).toHaveLength(9);
-    fireEvent.click(screen.getByRole("button", { name: "Fit visible graph" }));
+    fireEvent.click(within(screen.getByLabelText("Graph workspace controls")).getByRole("button", { name: "Fit view" }));
     expect(state.viewport.zoom).toBeLessThan(0.72);
     expect(state.props.edges?.filter(edge => edge.data?.kind === "route").map(edge => edge.id)).toEqual(scenario.edges.map((edge, index) => `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`));
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).edges).toEqual(scenario.edges);

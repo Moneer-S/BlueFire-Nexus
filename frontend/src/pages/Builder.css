@@ -45,6 +45,8 @@
 .workbench-builder .graph-view-actions { padding-top: 0; gap: 4px; }
 .workbench-builder .graph-view-actions .icon-button { width: 30px; height: 30px; min-height: 30px; flex: 0 0 30px; }
 .workbench-builder .graph-view-actions .button { min-height: 30px; padding: 5px 7px; font-size: .7rem; }
+.workbench-builder .graph-view-actions .graph-fit-view { flex: 0 0 auto; white-space: nowrap; }
+.workbench-builder .graph-compacted-tools { display: none; }
 .workbench-builder .graph-history { display: flex; gap: 0; margin-inline: 2px; padding-inline: 3px; border-inline: 1px solid var(--line); }
 .workbench-builder .graph-scale { min-width: 36px; color: var(--muted-strong); font-size: .6875rem; font-variant-numeric: tabular-nums; white-space: nowrap; text-align: center; }
 .workbench-builder .graph-validation-state { margin-left: 3px; }
@@ -288,6 +290,8 @@
 .workbench-builder .graph-overview-toggle svg { width: 12px; height: 12px; }
 .workbench-builder .graph-overview-toggle:hover, .workbench-builder .graph-overview-toggle[aria-pressed="true"] { color: var(--blue-soft); background: var(--surface); }
 @container builder-workspace (min-width: 701px) and (max-width: 1000px) {
+  .workbench-builder .graph-auto-layout, .workbench-builder .graph-scale { display: none; }
+  .workbench-builder .graph-compacted-tools { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .workbench-builder .graph-view-actions { gap: 2px; }
   .workbench-builder .graph-view-actions .icon-button { width: 26px; height: 28px; min-height: 28px; flex-basis: 26px; }
   .workbench-builder .graph-history { margin: 0; padding-inline: 2px; }
