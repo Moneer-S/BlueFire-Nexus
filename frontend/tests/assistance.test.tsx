@@ -40,15 +40,50 @@ function mount(value = selection, client = new QueryClient({ defaultOptions: { q
   const view = render(tree(value));
   return { ...view, client, changeSelection: (next: AssistanceSelection) => view.rerender(tree(next)), setPublished: (published: boolean) => view.rerender(tree(value, published)), changeProvider: (next: AssistantProvider) => { model = next; view.rerender(tree(value)); } };
 }
-async function open() { const trigger = screen.getByRole("button", { name: /^Assistant/ }); if (trigger.getAttribute("aria-expanded") !== "true") await userEvent.setup().click(trigger); }
+async function open() { const trigger = screen.getByRole("button", { name: /^Assistant(?::|$)/ }); if (trigger.getAttribute("aria-expanded") !== "true") await userEvent.setup().click(trigger); }
 async function compose() {
   const user = userEvent.setup();
   await open();
+  await user.click(screen.getByRole("button", { name: "Assistant settings" }));
   await user.selectOptions(screen.getByLabelText("AI mode"), "assist");
   await user.selectOptions(screen.getByLabelText("Provider"), provider.provider_id);
   await user.type(screen.getByLabelText("What would you like to do?"), request().message);
   return user;
 }
+
+it("keeps setup secondary and lets a contextual starter draft without sending work", async () => {
+  vi.spyOn(api, "assistanceContext").mockResolvedValue(context);
+  const submit = vi.spyOn(api, "submitAssistance").mockImplementation(async body => envelope(body));
+  vi.spyOn(api, "assistanceTurn").mockImplementation(async () => envelope(readAssistanceReceipt()!));
+  mount(); await open();
+  await screen.findByText(selection.title);
+  const user = userEvent.setup();
+  const settings = screen.getByRole("button", { name: "Assistant settings" });
+  expect(settings).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByLabelText("AI mode")).not.toBeVisible();
+  expect(screen.getByRole("button", { name: "Start work" }).closest(".assistant-body")).toBeNull();
+  await user.click(screen.getByRole("button", { name: /Improve this rule Revise and evaluate/ }));
+  const draft = screen.getByRole("textbox", { name: "What would you like to do?" });
+  expect(draft).toHaveValue("Improve this rule from the selected run, then evaluate the revision I approve.");
+  expect(draft).toHaveFocus();
+  expect(submit).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Start work" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Choose model" }));
+  expect(settings).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getByText("Destination", { selector: "dt" })).toBeVisible();
+  expect(screen.getByText("Authorization", { selector: "dt" })).toBeVisible();
+  await user.selectOptions(screen.getByRole("combobox", { name: "Provider" }), provider.provider_id);
+  await user.selectOptions(screen.getByRole("combobox", { name: "AI mode" }), "assist");
+  await user.click(settings);
+  expect(draft).toHaveValue("Improve this rule from the selected run, then evaluate the revision I approve.");
+  await user.click(screen.getByRole("button", { name: "Start work" }));
+  const review = await screen.findByRole("link", { name: "Review rule revision" });
+  expect(review.closest(".assistant-body")).toBeNull();
+  expect(screen.getByRole("button", { name: "Stop this operation" }).closest(".assistant-body")).toBeNull();
+  expect(screen.getByRole("region", { name: "Captured request context" })).toHaveTextContent("Source rule and evidence");
+  expect(settings).toHaveAttribute("aria-expanded", "false");
+  expect(submit).toHaveBeenCalledTimes(1);
+});
 
 const graphContext: AssistanceContext = { schema_version: "bluefire.assistance-context.v1", context_digest: digest,
   selected: { kind: "graph", base_scenario: null }, capabilities: [{ id: "graph.propose_and_validate", title: "Plan and validate an experiment", available: true, supported_autonomy: ["assist", "auto"], reason: "Saving requires your review.", native_path: "/builder" }], limitations: ["Creates a separate experiment; no execution."] };
@@ -82,6 +117,7 @@ it("opens the shared Assistant from Builder and retains a graph request without 
   expect(submit).not.toHaveBeenCalled();
   expect(screen.getByRole("button", { name: "Start work" })).toBeDisabled();
   expect(screen.queryByLabelText("Development activity")).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Assistant settings" }));
   await user.selectOptions(screen.getByLabelText("AI mode"), "auto");
   await user.selectOptions(screen.getByLabelText("Provider"), provider.provider_id);
   await user.type(screen.getByLabelText("What would you like to do?"), "Discover the owned lab and collect its test records.");
@@ -129,6 +165,7 @@ it("keeps Off silent, retrieves context only on opening, and submits one exact b
   expect(screen.getByRole("button", { name: "Start work" })).toBeDisabled();
   expect(submit).not.toHaveBeenCalled();
   const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Assistant settings" }));
   await user.selectOptions(screen.getByLabelText("AI mode"), "assist");
   await user.selectOptions(screen.getByLabelText("Provider"), provider.provider_id);
   await user.type(screen.getByLabelText("What would you like to do?"), request().message);
@@ -166,6 +203,7 @@ it("retains an unowned selection and draft without fetching or submitting until 
   await open();
   await screen.findByText(selection.title);
   const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Assistant settings" }));
   await user.selectOptions(screen.getByLabelText("AI mode"), "assist");
   await user.selectOptions(screen.getByLabelText("Provider"), provider.provider_id);
   const draft = "Keep this draft while I inspect another page.";
@@ -204,7 +242,8 @@ it("restores native review after reload without submitting again and returns foc
   await userEvent.setup().click(await screen.findByRole("link", { name: "Review rule revision" }));
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(screen.getByTestId("location")).toHaveTextContent("ai_job=job-rule");
-  expect(screen.getByRole("complementary", { name: "Experiment assistant" })).toBeVisible();
+  expect(screen.getByRole("complementary", { name: "BlueFire Assistant" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Review Assistant settings" })).toHaveTextContent(provider.provider_id);
   await userEvent.setup().click(screen.getByRole("button", { name: "Close assistant" }));
   expect(screen.getByRole("button", { name: /^Assistant/ })).toHaveFocus();
   expect(submit).not.toHaveBeenCalled();
@@ -468,6 +507,7 @@ it("retains the saved graph and exact runtime settings independently of Assistan
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(<QueryClientProvider client={client}><MemoryRouter><ProductProvider><AssistanceProvider><SavedRunSelection /><ExperimentAssistant providers={[provider]} /></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>);
   const user = userEvent.setup(); await open();
+  await user.click(screen.getByRole("button", { name: "Assistant settings" }));
   await user.selectOptions(screen.getByLabelText("Assistant mode"), "assist");
   await user.selectOptions(screen.getByLabelText("Assistant provider"), provider.provider_id);
   await user.type(screen.getByLabelText("What would you like to do?"), "Run this version and inspect its observations.");

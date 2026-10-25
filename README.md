@@ -23,9 +23,9 @@ BlueFire Nexus is an open-source, AI-first security experimentation and defense-
 
 Connect behavior steps into an experiment, inspect the recorded outcome, then carry a run into detection work or compare it with another result. The optional AI Assistant works alongside the same workspace; manual editing and simulation remain available without an AI provider.
 
-![BlueFire Nexus Overview workspace](docs/assets/screenshots/desktop-workspace.png)
+![BlueFire Nexus Overview with saved experiments and results](docs/assets/screenshots/desktop-workspace.png)
 
-Watch the [AI-Off synthetic simulation workflow](docs/assets/screenshots/desktop-workflow.webm). These screenshots and the recording come from an installed RC2 candidate using the packaged interface included in this prerelease. The recording shows actual workspace interactions with generated data and AI-Off simulation, edited for length. It does not demonstrate native execution or live model inference.
+Watch the [AI-Off synthetic simulation workflow](docs/assets/screenshots/desktop-workflow.webm). This continuous recording follows actual interactions in an installed RC2 candidate: a saved graph and collection-method alternative, an Assistant request draft, simulation review, synthetic rule checks, and a saved JSONL-versus-TAR comparison. It uses generated data with AI Off. It does not demonstrate native execution, live model inference, or a changed-environment defense retest.
 
 ## Get started
 
@@ -89,9 +89,11 @@ Choose the steps, how each step runs, and what happens next if it succeeds, fail
 
 Reopen an exact saved version without replacing it, or export the working experiment as JSON.
 
+![Connected experiment with readable steps and conditional routes](docs/assets/screenshots/desktop-graph.png)
+
 Work directly in the editor or use the Assistant to draft and revise the plan. From Build, the Assistant can use the current graph and selected-step context. Proposed graph changes remain reviewable before you apply them.
 
-![An experiment open in the Build workspace](docs/assets/screenshots/desktop-graph.png)
+![Selected step with its inspector and AI-Off Assistant request draft](docs/assets/screenshots/desktop-assistant.png)
 
 ## Follow the run
 
@@ -109,11 +111,11 @@ Prevention, detection, execution success, and legitimate-use outcomes are separa
 
 Use **Detection Lab** to bring in a run as the evidence source, write a rule, and inspect matching records alongside examples that should not match. Save revised rules without losing earlier versions or evaluation results. **Compare** keeps run comparisons tied to selected runs, compares detector evaluations separately, and lets you revisit saved comparison snapshots. Download a report for a selected comparison.
 
-![A run-linked candidate and its synthetic source context in Detection Lab](docs/assets/screenshots/detection-lab.png)
+![A run-linked detection rule and its synthetic source evidence](docs/assets/screenshots/detection-lab.png)
 
 Repeat the experiment or change a method, then open **Compare** to see the differences between runs. Compare rule evaluations separately to see which records each revision matched. Export the results when you need to share or investigate them further.
 
-![The Compare workspace with two selected AI-Off simulation runs](docs/assets/screenshots/compare.png)
+![Recorded JSONL and TAR collection paths compared across two AI-Off simulations](docs/assets/screenshots/compare.png)
 
 ## Work with your model
 

@@ -62,6 +62,7 @@ it("keeps Off silent and publishes one exact graph, scope and runtime-Off reques
   expect(screen.getByRole("button", { name: "Start work" })).toBeDisabled();
   expect(submit).not.toHaveBeenCalled();
   const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Assistant settings" }));
   await user.selectOptions(screen.getByLabelText("Assistant mode"), "auto");
   await user.selectOptions(screen.getByLabelText("Assistant provider"), provider.provider_id);
   await user.type(screen.getByLabelText("What would you like to do?"), fixture.request.message);
@@ -98,6 +99,7 @@ it("keeps pending publication from racing a not-found GET and recovers a lost re
   const get = vi.spyOn(api, "assistanceTurn").mockImplementation(async () => fixture.envelope(readAssistanceReceipt() as ReceiverAssistanceRequest));
   mount(fixture.request.selection); await open();
   const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Assistant settings" }));
   await user.selectOptions(screen.getByLabelText("Assistant mode"), "assist");
   await user.selectOptions(screen.getByLabelText("Assistant provider"), provider.provider_id);
   await user.type(screen.getByLabelText("What would you like to do?"), fixture.request.message);

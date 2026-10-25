@@ -84,10 +84,29 @@ it("offers only producers guaranteed on all paths and keeps an invalid existing 
   renderBuilder(scenario);
   await user.click(await screen.findByRole("button", { name: "Steps" }));
   await user.click(within(screen.getByRole("list", { name: "Experiment steps" })).getByRole("button", { name: /^4 Stage selected records/ }));
+  await user.click(screen.getByRole("tab", { name: "Parameters" }));
   const records = screen.getByRole("combobox", { name: "Records" });
   expect(records).toHaveValue("discover:records");
   expect(records).toHaveAttribute("aria-invalid", "true");
   expect(within(records).getByRole("option", { name: "Current connection needs attention" })).toBeDisabled();
   expect(screen.getByText(/This connection is not guaranteed on every path/)).toBeVisible();
   expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(before);
+});
+
+it("separates method, expected evidence, and parameters without changing the draft when switching tabs", async () => {
+  const user = userEvent.setup();
+  renderBuilder();
+  await user.click(await screen.findByRole("button", { name: "Steps" }));
+  await user.click(within(screen.getByRole("list", { name: "Experiment steps" })).getAllByRole("button")[0]!);
+  expect(screen.getByRole("tab", { name: "Method" })).toHaveAttribute("aria-selected", "true");
+  await user.click(screen.getByRole("tab", { name: "Evidence" }));
+  const evidence = within(screen.getByRole("tabpanel", { name: "Evidence" }));
+  expect(evidence.getByText("Workspace")).toBeVisible();
+  expect(evidence.getByText(/Run results distinguish runner-reported evidence from independent observations/)).toBeVisible();
+  expect(evidence.getByRole("link", { name: "Open run results" })).toHaveAttribute("href", "/runs");
+  await user.keyboard("{ArrowRight}");
+  expect(screen.getByRole("tab", { name: "Parameters" })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("tabpanel", { name: "Parameters" })).toBeVisible();
+  expect(screen.getByRole("spinbutton", { name: /Record count/i })).toHaveValue(8);
+  expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(demoScenario);
 });

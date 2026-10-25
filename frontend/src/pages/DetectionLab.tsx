@@ -3,8 +3,9 @@ import "./DetectionRevisionReview.css";
 import "./DetectionLab.css";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Beaker, CheckCircle2, Code2, FileCheck2, FlaskConical, Plus, Search, ShieldQuestion } from "lucide-react";
+import { ArrowUpRight, Beaker, CheckCircle2, Code2, Database, FileCheck2, FileText, FlaskConical, Plus, Search, ShieldQuestion } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
 import { detectionDraftIdentity, useDetectionDraft } from "../state/useDetectionDraft";
@@ -31,6 +32,7 @@ import type {
   DetectionSetDelta,
   DetectionTuneRequest,
   DetectionSourceRevisionRequest,
+  EvidenceRecord,
   ManagedResource,
   PublicBaselineReference,
   RunRecord,
@@ -60,7 +62,7 @@ function revisionLabel(candidate: DetectionCandidate) {
 }
 function QueryEvaluator({ language, ready }: { language: string; ready?: boolean }) {
   if (!["sqlite", "sigma"].includes(language)) return null;
-  return <p><strong>Evaluator: SQLite</strong> · {ready === undefined ? "Availability not reported" : ready ? "Ready" : "Unavailable"}. {language === "sigma" ? "Sigma rules are converted with pySigma before evaluation. " : ""}Queries evaluate normalized evidence locally; file contents are available only when the run collected them.</p>;
+  return <p className="query-evaluator"><strong>Evaluator: SQLite</strong> · {ready === undefined ? "Availability not reported" : ready ? "Ready" : "Unavailable"}. {language === "sigma" ? "Sigma rules are converted with pySigma before evaluation. " : ""}Queries evaluate normalized evidence locally; file contents are available only when the run collected them.</p>;
 }
 const baselineRelationships = new Set(["imported", "adapted", "inspired", "comparative"]);
 const baselineReviews = new Set(["reviewed", "conditional", "prohibited"]);
@@ -78,6 +80,25 @@ function candidateNoticeTitle(candidate: DetectionResource) {
 }
 
 type CandidateView = DetectionCandidate & { resolvedId: string; resourceId?: string; runId?: string; demo?: boolean; sourceMode?: RunRecord["mode"] };
+
+function candidateOriginLabel(candidate: CandidateView) {
+  return candidate.runId ? sourceTypeLabel(candidate.sourceMode, candidate.demo) : candidate.resourceId ? "Saved rule" : "Candidate";
+}
+
+function candidateVersionLabel(candidate: DetectionCandidate) {
+  return Number.isSafeInteger(candidate.revision) && candidate.revision! > 0 ? `v${candidate.revision}` : "Unversioned";
+}
+
+function sourceEvidenceRecords(run: RunRecord): EvidenceRecord[] | undefined {
+  const records = run.evidence?.records;
+  return Array.isArray(records) ? records : undefined;
+}
+
+function sourceObservationLabel(run: RunRecord) {
+  if (!sourceEvidenceRecords(run)) return "Independent observations not reported";
+  const count = sourceObservedRecords(run).length;
+  return `${count} independent observation${count === 1 ? "" : "s"}`;
+}
 
 function sourceTypeLabel(mode: RunRecord["mode"] | undefined, demo?: boolean) {
   if (demo === true) return "Synthetic demo";
@@ -121,6 +142,15 @@ function candidateWorkspaceTabBinding(candidate: CandidateView) {
 function sourceRunLabel(run: RunRecord) {
   const date = run.created_at || run.finalized_at;
   return `${runLabel(run)} \u00b7 ${sentence(run.mode ?? "mode_not_reported")} \u00b7 ${date && Number.isFinite(Date.parse(date)) ? new Date(date).toLocaleString() : "Date unavailable"}`;
+}
+
+function SourceRunReference({ run }: { run: RunRecord }) {
+  const date = run.created_at || run.finalized_at;
+  const recordedAt = date && Number.isFinite(Date.parse(date)) ? date : undefined;
+  return <Link className="source-run-reference" aria-label="Review source run" title={sourceRunLabel(run)} to={`/runs/${encodeURIComponent(run.run_id)}`}>
+    {recordedAt ? <time dateTime={recordedAt}>{new Date(recordedAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })}</time> : <span>Date unavailable</span>}
+    <span className="source-run-short-reference">{run.run_id.slice(-8)}</span><ArrowUpRight aria-hidden="true" />
+  </Link>;
 }
 type LifecycleAction = "parse" | "exercise-fixtures" | "exercise-observed" | "evaluate-benign" | "reject";
 
@@ -241,7 +271,7 @@ function DetectionCreationPage() {
     <section className="detection-context" aria-label="Source run and evidence">
       {jobId === undefined ? <Field label="Detection source run"><select value={runId} onChange={(event) => setParams(new URLSearchParams({ create: "1", ...(event.target.value ? { run: event.target.value } : {}) }))}><option value="">Choose a run to bring in its evidence</option>{runId && !runs.data?.runs.some((run) => run.run_id === runId) ? <option value={runId}>{source.data ? sourceRunLabel(source.data) : "Selected source run \u00b7 Date unavailable"}</option> : null}{runs.data?.runs.map((run) => <option key={run.run_id} value={run.run_id}>{sourceRunLabel(run)}</option>)}</select></Field> : <p>{source.data ? runLabel(source.data) : "The saved proposal retains its original source run."}</p>}
       {runs.error && jobId === undefined ? <ErrorState title="Run list unavailable" error={runs.error} retry={() => { void runs.refetch(); }} /> : null}
-      {source.error ? <ErrorState title="Source evidence unavailable" error={source.error} retry={() => { void source.refetch(); }} /> : source.data ? <><Link to={`/runs/${encodeURIComponent(runId)}`}>Review source run</Link><details className="detection-source-details"><summary>{sourceObservedRecords(source.data).length} independent observations · inspect source evidence</summary><SourceRunEvidence run={source.data} /></details></> : null}
+      {source.error ? <ErrorState title="Source evidence unavailable" error={source.error} retry={() => { void source.refetch(); }} /> : source.data ? <><Link to={`/runs/${encodeURIComponent(runId)}`}>Review source run</Link><details className="detection-source-details"><summary>{sourceObservationLabel(source.data)} · inspect source evidence</summary><SourceRunEvidence run={source.data} /></details></> : null}
     </section>
     <DetectionAICreation runId={runId} jobId={jobId ?? undefined} selection={selection} />
   </div>;
@@ -249,6 +279,7 @@ function DetectionCreationPage() {
 
 function DetectionRegistryPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const [contextActionsHost, setContextActionsHost] = useState<HTMLDivElement | null>(null);
   const evaluationHandoff = detectionEvaluationHandoff(searchParams);
   const handoffRequested = searchParams.has("view");
   const cancelEvaluationHandoff = () => setSearchParams(old => { const next = new URLSearchParams(old); next.delete("view"); return next; }, { replace: true });
@@ -450,7 +481,7 @@ function DetectionRegistryPage() {
     resourceId: resource.id,
   }));
   const sourceRun = evaluationHandoff && sourceQuery.data?.run_id !== evaluationHandoff.runId ? undefined : sourceQuery.data;
-  const independentObservationCount = sourceRun ? sourceObservedRecords(sourceRun).length : undefined;
+  const independentObservationCount = sourceRun && sourceEvidenceRecords(sourceRun) ? sourceObservedRecords(sourceRun).length : undefined;
   const linked: CandidateView[] = sourceRun ? (sourceRun.detections?.candidates ?? []).map((candidate, index) => ({
     ...candidate,
     resolvedId: runCandidateKey(sourceRun.run_id, candidate.candidate_id ?? candidate.id ?? String(index)),
@@ -482,29 +513,32 @@ function DetectionRegistryPage() {
   const manualLanguageAvailable = manualRuleLanguages.some(([value]) => value === language);
   const manualCanSave = Boolean(title.trim()) && title.length <= 200 && manualBehaviorAvailable && manualLanguageAvailable && manualDefinition !== null && !retainedInternalPending;
 
-  return <div className="page detection-page">
-    <PageHeader title="Detection Lab" actions={<div className="detection-create-action">
+  const sourceContext = <Panel className="context-rail-section source-context-panel">
+    <header className="context-panel-heading"><Database aria-hidden="true" /><h3>Evidence &amp; context</h3></header>
+    <section className="detection-context" aria-label="Source run and evidence">
+      <Field label="Detection source run"><select value={sourceRunId} title={sourceRun ? runLabel(sourceRun) : undefined} onChange={(event) => { const run = event.target.value; setSearchParams((old) => { const next = new URLSearchParams(old); next.delete("view"); if (selected?.resourceId) { next.set("candidate", selected.resourceId); next.set("candidate_scope", "registry"); } else { next.delete("candidate"); next.delete("candidate_scope"); } if (run) next.set("run", run); else next.delete("run"); return next; }); }}><option value="">Choose a run to bring in its evidence</option>{sourceRunId && !runsQuery.data.runs.some((run) => run.run_id === sourceRunId) ? <option value={sourceRunId}>Selected source run · Date unavailable</option> : null}{runsQuery.data.runs.map((run) => <option key={run.run_id} value={run.run_id}>{sourceRunLabel(run)}</option>)}</select></Field>
+      {sourceRun ? <SourceRunReference run={sourceRun} /> : null}
       <div className="detection-create-source" aria-live="polite" aria-label="Selected source eligibility">
-        {sourceRun ? <>
-          <strong>{runLabel(sourceRun)}</strong>
-          <span>{sourceTypeLabel(sourceRun.mode, sourceRun.is_demo)} · {sourceRun.run_id.slice(-8)}</span>
-          <span>{independentObservationCount} independent observation{independentObservationCount === 1 ? "" : "s"}</span>
-          {independentObservationCount === 0 ? <small>Run-linked records may inform a hypothesis, but cannot support observed exercise.</small> : null}
-        </> : sourceRunId ? <span>{sourceQuery.isError ? "Source eligibility unavailable" : "Loading selected source eligibility"}</span> : <span>No source run selected</span>}
+        {sourceRun ? <><strong>{sourceTypeLabel(sourceRun.mode, sourceRun.is_demo)}</strong><details><summary>Source details</summary><strong>{runLabel(sourceRun)}</strong><span>Run reference · {sourceRun.run_id.slice(-8)}</span><DataList items={[
+          { label: "Run state", value: sentence(sourceRun.status ?? "not reported") },
+          { label: "Evidence records", value: sourceRun.evidence?.records?.length ?? "Not reported" },
+        ]} />{independentObservationCount === undefined ? <small>The run did not report its evidence inventory. Eligible observations cannot be established.</small> : independentObservationCount === 0 ? <small>Run-linked records may inform a hypothesis, but cannot support observed exercise.</small> : null}<p className="context-rail-note">Available evidence does not mean this detector has been evaluated on the run.</p></details>{!sourceQuery.isError ? <details className="detection-source-details"><summary><span>{sourceObservationLabel(sourceRun)}</span> · inspect source evidence</summary><SourceRunEvidence run={sourceRun} /></details> : null}</> : sourceRunId ? <span>{sourceQuery.isError ? "Source eligibility unavailable" : "Loading selected source eligibility"}</span> : <span>No source run selected</span>}
       </div>
+      {sourceRunId && sourceQuery.isPending ? <LoadingState label="Loading source run evidence" /> : sourceQuery.isError ? <ErrorState title="Source run unavailable" error={sourceQuery.error} retry={() => { void sourceQuery.refetch(); }} /> : null}
+      {!sourceRun ? <p className="context-rail-note">Choose a source run to inspect its evidence.</p> : null}
+    </section>
+    {!sourceRun ? <p className="context-rail-note">Available evidence does not mean this detector has been evaluated on the run.</p> : null}
+  </Panel>;
+
+  return <div className="page detection-page">
+    <PageHeader title="Detection Lab" description="Build rules, inspect evidence, and measure what they detect." actions={<div className="detection-create-action">
       <Link className="button button-secondary button-medium" to={detectionCreationPath(sourceRunId)}>Create from run evidence</Link>
+      <Button variant="primary" onClick={() => setManualOpen(true)} aria-expanded={manualOpen || !candidates.length} aria-controls="detection-new-rule"><Plus />New detection</Button>
     </div>} />
     {handoffRequested && candidatesQuery.isError ? <ErrorState title="Detection registry unavailable" error={candidatesQuery.error} retry={() => { void candidatesQuery.refetch(); }} /> : null}
     {notice ? <Callout title="Detection update">{notice}</Callout> : null}
-    <section className="detection-context" aria-label="Source run and evidence">
-      <div className="detection-context-controls">
-        <Field label="Detection source run"><select value={sourceRunId} onChange={(event) => { const run = event.target.value; setSearchParams((old) => { const next = new URLSearchParams(old); next.delete("view"); if (selected?.resourceId) { next.set("candidate", selected.resourceId); next.set("candidate_scope", "registry"); } else { next.delete("candidate"); next.delete("candidate_scope"); } if (run) next.set("run", run); else next.delete("run"); return next; }); }}><option value="">Choose a run to bring in its evidence</option>{sourceRunId && !runsQuery.data.runs.some((run) => run.run_id === sourceRunId) ? <option value={sourceRunId}>Selected source run · Date unavailable</option> : null}{runsQuery.data.runs.map((run) => <option key={run.run_id} value={run.run_id}>{sourceRunLabel(run)}</option>)}</select></Field>
-        {sourceRun ? <Link className="button button-secondary" to={`/runs/${encodeURIComponent(sourceRun.run_id)}`}>Review source run</Link> : null}
-      </div>
-      {sourceRunId && sourceQuery.isPending ? <LoadingState label="Loading source run evidence" /> : sourceQuery.isError ? <ErrorState title="Source run unavailable" error={sourceQuery.error} retry={() => { void sourceQuery.refetch(); }} /> : sourceRun ? <details className="detection-source-details"><summary>{sourceObservedRecords(sourceRun).length} independent observations · inspect source evidence</summary><SourceRunEvidence run={sourceRun} /></details> : null}
-    </section>
     <div className="detection-tools">
-      <details open={manualOpen || !candidates.length} onToggle={event => setManualOpen(event.currentTarget.open)}>
+      <details id="detection-new-rule" open={manualOpen || !candidates.length} onToggle={event => setManualOpen(event.currentTarget.open)}>
         <summary>New rule</summary>
         <Panel>
         <PanelHeader title="Start a rule draft" detail="Choose the behavior and query language, then edit and validate its source." />
@@ -556,12 +590,13 @@ function DetectionRegistryPage() {
     </div>
     <div className="detection-layout">
       <Panel className="candidate-list">
-        <div className="candidate-list-heading"><strong>Detectors</strong><span>{filtered.length} shown</span></div>
-        <div className="history-search"><Search /><input aria-label="Search detection candidates" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search candidate, behavior, language" /></div>
-        <div>{filtered.map((item) => <button key={item.resolvedId} aria-label={`${item.title ? displayTitle(item.title) : item.resolvedId} · ${revisionLabel(item)} · ${languageLabel(item.target_language ?? item.language ?? "unknown")} · ${lifecycleLabel(item.state)}`} aria-pressed={selected?.resolvedId === item.resolvedId} className={selected?.resolvedId === item.resolvedId ? "selected" : ""} onClick={() => { setSearchParams(old => { const next = new URLSearchParams(old); next.delete("view"); next.set("candidate", item.candidate_id ?? item.id ?? item.resolvedId); if (item.resourceId) next.set("candidate_scope", "registry"); else { next.delete("candidate_scope"); if (item.runId) next.set("run", item.runId); } return next; }); comparisonMutation.reset(); }}><span className="candidate-icon"><ShieldQuestion /></span><span><strong>{item.title ? displayTitle(item.title) : item.resolvedId}</strong><small>{revisionLabel(item)} · {languageLabel(item.target_language ?? item.language ?? "unknown")}</small><small>{displayTitle(catalogQuery.data.behaviors.find(behavior => behavior.id === item.behavior_id)?.title ?? "Behavior not recorded")}</small></span><span><Badge tone={item.state === "rejected" ? "danger" : item.state === "hypothesis" ? "neutral" : item.state === "benign_evaluated" ? "info" : "success"}>{lifecycleLabel(item.state)}</Badge>{item.runId ? <Badge tone={item.demo === true || item.sourceMode === "simulate" ? "violet" : "info"}>{sourceTypeLabel(item.sourceMode, item.demo)}</Badge> : null}</span></button>)}</div>
+        <div className="candidate-list-heading"><strong>Detection candidates</strong><span>{filtered.length}</span></div>
+        <div className="history-search"><Search aria-hidden="true" /><input aria-label="Search detection candidates" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search candidates…" /></div>
+        <div className="candidate-list-items">{filtered.map((item) => <button key={item.resolvedId} aria-label={`${item.title ? displayTitle(item.title) : item.resolvedId} · ${revisionLabel(item)} · ${languageLabel(item.target_language ?? item.language ?? "unknown")} · ${lifecycleLabel(item.state)} · ${candidateOriginLabel(item)}`} aria-pressed={selected?.resolvedId === item.resolvedId} className={selected?.resolvedId === item.resolvedId ? "selected" : ""} onClick={() => { setSearchParams(old => { const next = new URLSearchParams(old); next.delete("view"); next.set("candidate", item.candidate_id ?? item.id ?? item.resolvedId); if (item.resourceId) next.set("candidate_scope", "registry"); else { next.delete("candidate_scope"); if (item.runId) next.set("run", item.runId); } return next; }); comparisonMutation.reset(); }}><span className="candidate-icon"><FileText aria-hidden="true" /></span><span className="candidate-list-copy"><strong>{item.title ? displayTitle(item.title) : item.resolvedId}</strong></span><span className="candidate-list-state"><span className="candidate-list-origin"><span>{candidateOriginLabel(item)}</span><small>{candidateVersionLabel(item)}</small></span><Badge tone={item.state === "rejected" ? "danger" : item.state === "hypothesis" ? "neutral" : item.state === "benign_evaluated" ? "info" : "success"}>{lifecycleLabel(item.state)}</Badge></span></button>)}</div>
         {!filtered.length ? <EmptyState title="No candidates" description="Create a hypothesis or complete a run that generates detection research records." /> : null}
       </Panel>
-      {handoffRequested && !handoffIdentityMatches ? <Panel>{candidatesQuery.isFetching ? <LoadingState label="Checking requested saved revision" /> : <Callout tone="warning" title="Requested saved revision unavailable">The comparison link must identify one available saved revision. It may be missing, ambiguous or unsupported; no other candidate has been substituted.</Callout>}<Button onClick={cancelEvaluationHandoff}>Leave comparison setup</Button></Panel> : selected ? <CandidateWorkspace
+      <div className="detection-workspace">
+      {handoffRequested && !handoffIdentityMatches ? <div className="candidate-workspace"><Panel>{candidatesQuery.isFetching ? <LoadingState label="Checking requested saved revision" /> : <Callout tone="warning" title="Requested saved revision unavailable">The comparison link must identify one available saved revision. It may be missing, ambiguous or unsupported; no other candidate has been substituted.</Callout>}<Button onClick={cancelEvaluationHandoff}>Leave comparison setup</Button></Panel></div> : selected ? <CandidateWorkspace
         key={candidateDraftBinding(selected, candidatesQuery.data.candidates.find(item => item.id === selected.resourceId))}
         candidate={selected}
         resource={candidatesQuery.data.candidates.find((item) => item.id === selected.resourceId)}
@@ -569,6 +604,7 @@ function DetectionRegistryPage() {
         finalizedRuns={finalizedRuns}
         sourceRunId={sourceRunId}
         sourceRun={sourceRun}
+        contextActionsHost={contextActionsHost}
         evaluationHandoff={evaluationHandoff ? { runId: evaluationHandoff.runId, ready: handoffSourceReady } : undefined}
         onCancelEvaluationHandoff={cancelEvaluationHandoff}
         ai={catalogQuery.data.ai}
@@ -585,14 +621,21 @@ function DetectionRegistryPage() {
         onRevision={(kind, body) => selected.resourceId && revisionMutation.mutate({ id: selected.resourceId, kind, body, navigation: manualNavigationRef.current })}
         onSourceRevision={(body) => selected.resourceId && sourceRevisionMutation.mutate({ id: selected.resourceId, selection: activeSelection.current, body })}
         onCompare={(candidateId) => selected.resourceId && comparisonMutation.mutate({ baselineId: selected.resourceId, candidateId, sources: structuredClone(lineage.filter(item => item.resourceId === selected.resourceId || item.resourceId === candidateId)), navigation: manualNavigation })}
-      /> : <Panel><DetectionAIRevision sourceRun={sourceRun} providers={catalogQuery.data.ai.providers ?? emptyAIProviders} defaultProvider={catalogQuery.data.ai.active_provider} manualEdits={false} /><EmptyState icon={<FlaskConical />} title={selectedId ? "Detector unavailable" : "Select a candidate"} description={selectedId ? "The requested detector is not available in this registry or source run. Select an available detector from the list." : "Inspect lifecycle evidence, fixtures, fields, immutable revisions, and reviewed public baselines."} /></Panel>}
+      /> : <div className="candidate-workspace"><Panel><DetectionAIRevision sourceRun={sourceRun} providers={catalogQuery.data.ai.providers ?? emptyAIProviders} defaultProvider={catalogQuery.data.ai.active_provider} manualEdits={false} /><EmptyState icon={<FlaskConical />} title={selectedId ? "Detector unavailable" : "Select a candidate"} description={selectedId ? "The requested detector is not available in this registry or source run. Select an available detector from the list." : "Inspect lifecycle evidence, fixtures, fields, immutable revisions, and reviewed public baselines."} /></Panel></div>}
+      <aside className="detection-context-rail" aria-label="Selected detector context">
+        {sourceContext}
+        {sourceRun ? <SourceRecordsPanel key={sourceRun.run_id} run={sourceRun} /> : null}
+        {/* Only candidate actions remount with a draft; source controls and inspection stay stable. */}
+        <div className="candidate-context-actions" ref={setContextActionsHost} />
+      </aside>
+      </div>
     </div>
   </div>;
 }
 
 function SourceRunEvidence({ run }: { run: RunRecord }) {
-  const records = run.evidence?.records ?? [];
-  const counts = records.reduce<Record<string, number>>((result, record) => {
+  const records = sourceEvidenceRecords(run);
+  const counts = (records ?? []).reduce<Record<string, number>>((result, record) => {
     result[record.provenance] = (result[record.provenance] ?? 0) + 1;
     return result;
   }, {});
@@ -601,12 +644,41 @@ function SourceRunEvidence({ run }: { run: RunRecord }) {
       { label: "Source run", value: <code>{run.run_id}</code> },
       { label: "Run mode", value: `${sentence(run.mode ?? "not_reported")}${run.is_demo ? " · Demo" : ""}` },
       { label: "Run-linked candidates", value: run.detections?.candidates?.length ?? 0 },
-      { label: "Evidence by provenance", value: Object.entries(counts).map(([kind, count]) => `${sentence(kind)}: ${count}`).join(" · ") || "No evidence records" },
+      { label: "Evidence by provenance", value: records ? Object.entries(counts).map(([kind, count]) => `${sentence(kind)}: ${count}`).join(" · ") || "No evidence records" : "Not reported" },
     ]} />
     <Callout title="Source evidence stays distinct">Run-linked lifecycle and match results describe this source run. Internal structured matcher results retain internal semantics; they do not establish deployment or execution in an external detection engine. Saving a definition starts the registry workflow separately.</Callout>
-    {!sourceObservedRecords(run).length ? <Callout tone="warning" title="Observed exercise unavailable">This source has no eligible independently observed records. Synthetic, executed, and counterfactual records cannot substitute for observed evidence.</Callout> : null}
-    <details><summary>Inspect source evidence ({records.length})</summary><div className="structured-list">{records.map((record, index) => <article key={record.evidence_id ?? record.id ?? index}><strong>{record.evidence_id ?? record.id ?? `Record ${index + 1}`}</strong><Badge tone={record.provenance === "observed" ? "info" : "neutral"}>{sentence(record.provenance)}</Badge><small>{record.producer ?? "Producer not reported"}{record.step_id ? ` · ${record.step_id}` : ""}</small><pre>{JSON.stringify(record, null, 2)}</pre></article>)}</div></details>
+    {!records ? <Callout tone="warning" title="Observed evidence not reported">The run did not report its evidence inventory. Eligible observations cannot be established.</Callout> : !sourceObservedRecords(run).length ? <Callout tone="warning" title="Observed exercise unavailable">This source has no eligible independently observed records. Synthetic, executed, and counterfactual records cannot substitute for observed evidence.</Callout> : null}
+    {records ? <details><summary>Inspect source evidence ({records.length})</summary><div className="structured-list">{records.map((record, index) => <article key={record.evidence_id ?? record.id ?? index}><strong>{record.evidence_id ?? record.id ?? `Record ${index + 1}`}</strong><Badge tone={record.provenance === "observed" ? "info" : "neutral"}>{sentence(record.provenance)}</Badge><small>{record.producer ?? "Producer not reported"}{record.step_id ? ` · ${record.step_id}` : ""}</small><pre>{JSON.stringify(record, null, 2)}</pre></article>)}</div></details> : null}
   </>;
+}
+
+function sourceRecordLabel(record: EvidenceRecord, index: number) {
+  const description = record.summary?.trim() || record.kind?.trim();
+  if (description) return displayTitle(description);
+  const kind = record.content?.artifact_type ?? record.content?.observation_kind;
+  return typeof kind === "string" && kind.trim() ? sentence(kind) : `Evidence record ${index + 1}`;
+}
+
+function SourceRecordsPanel({ run }: { run: RunRecord }) {
+  const records = sourceEvidenceRecords(run);
+  const [inspectedIndex, setInspectedIndex] = useState(0);
+  const selectedIndex = records && inspectedIndex < records.length ? inspectedIndex : 0;
+  const selected = records?.[selectedIndex];
+  return <Panel className="source-records-panel">
+    <header className="context-panel-heading"><h3>Source records</h3><span>{records?.length ?? "Not reported"}</span></header>
+    {!records ? <p className="source-record-empty">This run did not report an evidence record inventory.</p> : records.length ? <>
+      <div className="source-record-list" aria-label="Source evidence records">{records.map((record, index) => <button
+        key={record.evidence_id ?? record.id ?? index}
+        aria-label={`Inspect source record ${index + 1}: ${sourceRecordLabel(record, index)}`}
+        aria-pressed={selectedIndex === index}
+        onClick={() => setInspectedIndex(index)}
+      ><FileText aria-hidden="true" /><span><strong>{sourceRecordLabel(record, index)}</strong><small>{sentence(record.provenance)} · {record.producer ?? "Producer not reported"}</small></span></button>)}</div>
+      {selected ? <details className="source-record-detail" open>
+        <summary>Record details <span>{selectedIndex + 1} of {records.length}</span></summary>
+        <pre aria-label="Selected source record">{JSON.stringify(selected, null, 2)}</pre>
+      </details> : null}
+    </> : <p className="source-record-empty">This run has no retained evidence records.</p>}
+  </Panel>;
 }
 
 function CandidateWorkspace({
@@ -616,6 +688,7 @@ function CandidateWorkspace({
   finalizedRuns,
   sourceRunId,
   sourceRun,
+  contextActionsHost,
   evaluationHandoff,
   onCancelEvaluationHandoff,
   ai,
@@ -639,6 +712,7 @@ function CandidateWorkspace({
   finalizedRuns: RunRecord[];
   sourceRunId: string;
   sourceRun?: RunRecord;
+  contextActionsHost: HTMLDivElement | null;
   evaluationHandoff?: { runId: string; ready: boolean };
   onCancelEvaluationHandoff: () => void;
   ai: CatalogResponse["ai"];
@@ -793,32 +867,28 @@ function CandidateWorkspace({
     URL.revokeObjectURL(url);
   };
 
-  return <Panel className="candidate-workspace" data-active-tab={tab}>
-    <PanelHeader title={candidate.title ? displayTitle(candidate.title) : candidate.resolvedId} detail={`${languageLabel(language)} · ${revisionLabel(candidate)}`} actions={<Badge tone={candidate.state === "rejected" ? "danger" : candidate.state === "hypothesis" ? "neutral" : candidate.state === "benign_evaluated" ? "info" : "success"}>{lifecycleLabel(candidate.state)}</Badge>} />
+  return <div className="candidate-workspace" data-active-tab={tab}>
+    <Panel className="candidate-editor-panel">
+    <header className="candidate-heading">
+      <span className="candidate-heading-icon"><ShieldQuestion aria-hidden="true" /></span>
+      <div><h2>{candidate.title ? displayTitle(candidate.title) : candidate.resolvedId}</h2><div className="candidate-heading-meta"><span>{languageLabel(language)} · {candidateVersionLabel(candidate)}</span><Badge tone={candidate.state === "rejected" ? "danger" : candidate.state === "hypothesis" ? "neutral" : candidate.state === "benign_evaluated" ? "info" : "success"}>{lifecycleLabel(candidate.state)}</Badge></div></div>
+    </header>
     <div className="workspace-tabs" role="tablist" aria-label="Detection candidate details">{(["candidate", "evaluations", "revisions", "fixtures", "observed", "history"] as const).map((item) => <button role="tab" aria-selected={tab === item} onClick={() => setTab(item)} key={item}>{item === "evaluations" ? "Run evaluations" : item === "candidate" && querySource ? "Rule" : sentence(item)}</button>)}</div>
     <div className="candidate-body">
       <div className="candidate-main">
       {draftWarning ? <p role="alert">{draftWarning}</p> : draftChanged ? <p role="status">Unsaved inputs. {draft.retained ? "Draft kept in this browser tab." : "Inputs are not a saved rule."}</p> : null}
-      <div className="candidate-draft-tools"><Button variant="ghost" size="small" onClick={exportDraft}>Export local inputs</Button>
-      <Dialog.Root open={discardOpen} onOpenChange={setDiscardOpen}>
-        <Dialog.Trigger asChild><Button variant="ghost" size="small" disabled={lifecyclePending || revisionPending}>Discard local inputs</Button></Dialog.Trigger>
-        <Dialog.Portal><Dialog.Overlay className="dialog-overlay"/><Dialog.Content className="dialog-content">
-          <Dialog.Title>Discard inputs for this revision?</Dialog.Title><Dialog.Description>Reset this candidate's source, research reasons, tuning and fixture inputs to its saved definition. Saved rules and other candidate drafts stay intact.</Dialog.Description>
-          <div className="dialog-actions"><Dialog.Close asChild><Button>Keep editing</Button></Dialog.Close><Button variant="danger" onClick={() => { draft.discard(); observed.discard(); discardWorkspaceTab(); updateWorkspaceTab("tab", "candidate"); setLocalError(undefined); setDiscardOpen(false); }}>Discard these inputs</Button></div>
-        </Dialog.Content></Dialog.Portal>
-      </Dialog.Root></div>
-      <DetectionAIRevision resource={resource} sourceRun={sourceRun} providers={ai.providers ?? emptyAIProviders} defaultProvider={ai.active_provider} manualEdits={sourceChanged} />
       {!persisted ? <Callout title="Run-linked record"><p className="run-linked-description">This candidate is part of an immutable run. Save its definition as a separate hypothesis to use lifecycle or revision actions.</p><div className="run-linked-action"><Button size="small" onClick={onSaveLinked} disabled={saveLinkedPending || candidate.demo || !candidate.behavior_id || !candidate.selection || !candidate.logsource}>{saveLinkedPending ? "Saving hypothesis" : "Save hypothesis from run"}</Button></div></Callout> : null}
       {localError ? <Callout tone="danger" title="Input refused locally">{localError}</Callout> : null}
       {tab === "candidate" ? <>
-        <div className="editor-header"><span><Code2 />Candidate source</span><Badge tone={authoritativeParsed ? "success" : "warning"}>{sourceChanged ? "Draft source not validated" : authoritativeParsed ? "Authoritatively parsed" : "Not authoritative validation"}</Badge></div>
-        {querySource ? <><QueryEvaluator language={language} ready={backend?.ready} /><p>Validate the source, then evaluate the saved rule against run evidence to measure its matches.</p></> : null}
+        <section className="candidate-source-panel" aria-label="Rule source editor">
+        <div className="editor-header"><span><Code2 aria-hidden="true" />Detection rule</span><Badge tone={authoritativeParsed ? "success" : "warning"}>{sourceChanged ? "Unvalidated edits" : authoritativeParsed ? "Source parsed" : "Source not validated"}</Badge></div>
         {language === "sqlite" && !source.trim() && canParse ? <div className="query-starter"><p>SQLite queries read normalized evidence from <code>logs</code>; <code>fixture_id</code> identifies each record. Start with a staged-file example, then adjust its fields to the evidence in your source run. The example has not been validated or evaluated.</p><Button size="small" disabled={lifecyclePending} onClick={() => setSource("SELECT fixture_id FROM logs\nWHERE artifact_type = 'file_observation'\n  AND path LIKE '%staged/%'")}>Insert SQLite starter</Button></div> : null}
-        {language === "internal" ? <pre className="rule-editor">{code}</pre> : <Field label={`${languageLabel(language)} source`} hint={canReviseSource ? "Saving creates a new parsed revision. The selected revision and its evaluations remain unchanged." : "Checks this rule source locally. Evaluating run evidence is a separate step."}><textarea rows={10} value={source} onChange={(event) => setSource(event.target.value)} disabled={(!canParse && !canReviseSource) || lifecyclePending || revisionPending} /></Field>}
+        {language === "internal" ? <pre className="rule-editor">{code}</pre> : <Field className="candidate-source-field" label={`${languageLabel(language)} source`} hint={canReviseSource ? "Saving creates a new parsed revision. The selected revision and its evaluations remain unchanged." : "Checks this rule source locally. Evaluating run evidence is a separate step."}><textarea spellCheck={false} rows={12} value={source} onChange={(event) => setSource(event.target.value)} disabled={(!canParse && !canReviseSource) || lifecyclePending || revisionPending} /></Field>}
         {canReviseSource ? <Field label="Reason for source revision"><input value={revisionReason} onChange={(event) => setRevisionReason(event.target.value)} maxLength={1000} disabled={revisionPending} /></Field> : null}
         {querySource && !backend?.ready ? <Callout tone="warning" title="Query backend unavailable">Install the reviewed backend shown in Detection backend health before validating this source. No revision can be validated while it is unavailable.</Callout> : null}
-        <div className="candidate-actions">{canReviseSource ? <Button size="small" onClick={() => onSourceRevision({ source, reason: revisionReason.trim() })} disabled={!sourceChanged || !source.trim() || !revisionReason.trim() || revisionPending || lifecyclePending || !backend?.ready}>{revisionPending ? "Validating source revision" : "Validate and save new revision"}</Button> : <Button size="small" onClick={() => onAction("parse", language === "internal" ? {} : { source })} disabled={!canParse || lifecyclePending || (language !== "internal" && !source) || (querySource && !backend?.ready)}>Validate source</Button>}{querySource ? <Button size="small" onClick={() => setTab("evaluations")} disabled={!persisted || candidate.state === "hypothesis" || candidate.state === "rejected" || revisionPending}>Evaluate actual runs</Button> : null}<Button size="small" variant="danger" onClick={() => onAction("reject", { reason, notes: [] })} disabled={!canReject || lifecyclePending || !reason.trim()}>Reject</Button></div>
-        <Field label="Rejection reason" hint="Required only for explicit terminal rejection."><input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={1000} disabled={!canReject} /></Field>
+        <div className="candidate-actions">{canReviseSource ? <Button variant="primary" size="small" onClick={() => onSourceRevision({ source, reason: revisionReason.trim() })} disabled={!sourceChanged || !source.trim() || !revisionReason.trim() || revisionPending || lifecyclePending || !backend?.ready}>{revisionPending ? "Validating source revision" : "Validate and save new revision"}</Button> : <Button variant="primary" size="small" onClick={() => onAction("parse", language === "internal" ? {} : { source })} disabled={!canParse || lifecyclePending || (language !== "internal" && !source) || (querySource && !backend?.ready)}>Validate source</Button>}{querySource ? <Button size="small" onClick={() => setTab("evaluations")} disabled={!persisted || candidate.state === "hypothesis" || candidate.state === "rejected" || revisionPending}>Evaluate actual runs</Button> : null}</div>
+        {querySource ? <QueryEvaluator language={language} ready={backend?.ready} /> : null}
+        </section>
         <details><summary>Rule identity and parser details</summary><DataList items={[
           { label: "Candidate ID", value: <code>{candidate.candidate_id ?? candidate.id ?? candidate.resolvedId}</code> },
           { label: "Immutable revision", value: revisionLabel(candidate) },
@@ -830,7 +900,8 @@ function CandidateWorkspace({
           { label: "Parser", value: candidate.parser_backend?.name ?? backend?.backend ?? "Not run" },
           { label: "Parser version", value: candidate.parser_backend?.version ?? backend?.version ?? "Not reported" },
         ]} /></details>
-        {["sigma", "sqlite"].includes(language) && Object.keys(queryValidation).length ? <>
+        {["sigma", "sqlite"].includes(language) && Object.keys(queryValidation).length ? <section className="candidate-validation-record">
+          <header><h3>Validation record</h3><span>Saved checks</span></header>
           <p>These fields describe lifecycle checks. Saved Run evaluations report their own query execution and results separately.</p>
           <DataList items={[
             { label: "Conversion backend", value: [queryValidation.conversion_backend, queryValidation.conversion_backend_version].filter((item): item is string => typeof item === "string").join(" · ") || "Native bounded SQLite" },
@@ -842,8 +913,9 @@ function CandidateWorkspace({
             { label: "Matched records", value: stringList(lastExecution?.matched_fixture_ids) },
           ]} />
           <details><summary>Query source and identity</summary><DataList items={[{ label: "Converted query digest", value: typeof queryValidation.query_sha256 === "string" ? <code>{queryValidation.query_sha256}</code> : "Not reported" }]} />{typeof queryValidation.converted_query === "string" ? <pre>{queryValidation.converted_query}</pre> : null}</details>
-        </> : null}
-        <PublicBaselineList baselines={candidate.public_baselines ?? []} sourcesById={sourcesById} empty="No reviewed public comparison baseline is pinned to this revision." />
+        </section> : null}
+        <details className="candidate-reference-details"><summary>Public comparison baselines · {candidate.public_baselines?.length ?? 0}</summary><PublicBaselineList baselines={candidate.public_baselines ?? []} sourcesById={sourcesById} empty="No reviewed public comparison baseline is pinned to this revision." /></details>
+        <details className="candidate-rejection"><summary>Reject this rule</summary><Field label="Rejection reason" hint="Required only for explicit terminal rejection."><input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={1000} disabled={!canReject} /></Field><Button size="small" variant="danger" onClick={() => onAction("reject", { reason, notes: [] })} disabled={!canReject || lifecyclePending || !reason.trim()}>Reject</Button></details>
       </> : tab === "revisions" ? <RevisionWorkspace
         candidate={candidate}
         persisted={persisted}
@@ -898,7 +970,7 @@ function CandidateWorkspace({
         </> : <Field label="Benign fixtures JSON" hint="Use representative benign examples; a benign label cannot suppress a measured match."><textarea rows={8} value={benign} onChange={(event) => setBenign(event.target.value)} disabled={!canBenign || lifecyclePending} /></Field>}
         <Field label="Benign evaluation notes"><textarea rows={3} value={notes} onChange={(event) => setNotes(event.target.value)} disabled={!canBenign} /></Field>
         <Button size="small" onClick={() => submitFixtures("evaluate-benign")} disabled={!canBenign || lifecyclePending || benignPending || !benign.trim() || !notes.trim()}><CheckCircle2 />Evaluate benign fixtures</Button>
-        <div className="fixture-grid"><article><Beaker /><strong>Malicious fixtures</strong><Badge tone={candidate.malicious_fixtures?.length ? "success" : "neutral"}>{candidate.malicious_fixtures?.length ?? 0} retained</Badge></article><article><CheckCircle2 /><strong>Benign fixtures</strong><Badge tone={candidate.benign_fixtures?.length ? "success" : "neutral"}>{candidate.benign_fixtures?.length ?? 0} retained</Badge></article></div>
+        <section aria-label="Saved fixtures"><h4>Saved fixtures</h4><p>These records belong to the selected revision. The fields above are local evaluation inputs.</p><div className="fixture-grid"><article><Beaker /><strong>Malicious fixtures</strong><Badge tone={candidate.malicious_fixtures?.length ? "success" : "neutral"}>{candidate.malicious_fixtures?.length ?? 0} retained</Badge></article><article><CheckCircle2 /><strong>Benign fixtures</strong><Badge tone={candidate.benign_fixtures?.length ? "success" : "neutral"}>{candidate.benign_fixtures?.length ?? 0} retained</Badge></article></div></section>
       </> : tab === "observed" ? <>
         <Callout title="Immutable observed evidence only">The control plane verifies the finalized run bundle and independently observed provenance. Evidence content cannot be pasted here.{!["internal", "sigma", "sqlite"].includes(language) ? " This language has no normalized observed-JSON evaluator." : ""}</Callout>
         <Field label="Finalized run"><select value={runId} onChange={(event) => { setRunId(event.target.value); setEvidenceIds(""); }} disabled={!canObserved}><option value="">Select run</option>{runId && !finalizedRuns.some((run) => run.run_id === runId) ? <option value={runId}>{runId}</option> : null}{finalizedRuns.map((run) => <option key={run.run_id} value={run.run_id}>{run.run_id}</option>)}</select></Field>
@@ -908,40 +980,29 @@ function CandidateWorkspace({
         <DataList items={[{ label: "Observed evidence IDs", value: candidate.observed_evidence_ids?.join(", ") || "None" }, { label: "Predicted fields", value: candidate.predicted_fields?.join(", ") || "None" }, { label: "Observed fields", value: candidate.observed_fields?.join(", ") || "None" }, { label: "Field drift", value: candidate.field_drift ? driftText(candidate.field_drift) : "Not measured" }]} />
         {candidate.field_drift ? <details><summary>Show raw field drift</summary><pre>{JSON.stringify(candidate.field_drift, null, 2)}</pre></details> : null}
       </> : <div className="structured-list">{candidate.lifecycle_history?.length ? candidate.lifecycle_history.map((item, index) => <article key={item.sequence ?? index}><strong>{item.sequence ?? index + 1}. {sentence(item.action ?? "transition")}</strong><span>{lifecycleLabel(item.from_state ?? item.prior_state ?? "new")} → {lifecycleLabel(item.to_state ?? item.current_state ?? candidate.state)} · {sentence(item.outcome ?? "recorded")}</span><small>{item.recorded_at ?? item.timestamp ?? "Timestamp not reported"}{item.run_id ? ` · ${item.run_id}` : ""}</small></article>) : <EmptyState title="No lifecycle history" description="Run-linked legacy candidates may not include explicit durable lifecycle rows." />}</div>}
+      <DetectionAIRevision resource={resource} sourceRun={sourceRun} providers={ai.providers ?? emptyAIProviders} defaultProvider={ai.active_provider} manualEdits={sourceChanged} />
+      <div className="candidate-draft-tools"><Button variant="ghost" size="small" onClick={exportDraft}>Export local inputs</Button>
+      <Dialog.Root open={discardOpen} onOpenChange={setDiscardOpen}>
+        <Dialog.Trigger asChild><Button variant="ghost" size="small" disabled={lifecyclePending || revisionPending}>Discard local inputs</Button></Dialog.Trigger>
+        <Dialog.Portal><Dialog.Overlay className="dialog-overlay"/><Dialog.Content className="dialog-content">
+          <Dialog.Title>Discard inputs for this revision?</Dialog.Title><Dialog.Description>Reset this candidate's source, research reasons, tuning and fixture inputs to its saved definition. Saved rules and other candidate drafts stay intact.</Dialog.Description>
+          <div className="dialog-actions"><Dialog.Close asChild><Button>Keep editing</Button></Dialog.Close><Button variant="danger" onClick={() => { draft.discard(); observed.discard(); discardWorkspaceTab(); updateWorkspaceTab("tab", "candidate"); setLocalError(undefined); setDiscardOpen(false); }}>Discard these inputs</Button></div>
+        </Dialog.Content></Dialog.Portal>
+      </Dialog.Root></div>
       </div>
-      <aside className="detection-context-rail" aria-label="Selected detector context">
-        <section className="context-rail-section">
-          <p className="eyebrow">SOURCE CONTEXT</p>
-          {sourceRun ? <>
-            <h3>{runLabel(sourceRun)}</h3>
-            <p className="context-run-meta">{sourceTypeLabel(sourceRun.mode, sourceRun.is_demo)}</p>
-            <DataList items={[
-              { label: "Run state", value: sentence(sourceRun.status ?? "not reported") },
-              { label: "Observed records", value: sourceObservedRecords(sourceRun).length },
-              { label: "Evidence records", value: sourceRun.evidence?.records?.length ?? "Not reported" },
-            ]} />
-            <Link className="context-rail-link" to={`/runs/${encodeURIComponent(sourceRun.run_id)}`}>Review source run</Link>
-          </> : sourceRunId ? <>
-            <h3>No source evidence available</h3>
-            <p>The selected source run is still loading or could not be read. No evidence summary is available.</p>
-          </> : <>
-            <h3>No source run selected</h3>
-            <p>Run evidence is not attached to this selection. Choose a source run above to inspect its evidence context.</p>
-          </>}
-          <p className="context-rail-note">Available evidence does not mean this detector has been evaluated on the run.</p>
-        </section>
-        <section className="context-rail-section">
-          <p className="eyebrow">REVIEW PATHS</p>
+    </div>
+    </Panel>
+      {contextActionsHost ? createPortal(<Panel className="context-rail-section">
+          <header className="context-panel-heading"><FileCheck2 aria-hidden="true" /><h3>Review this rule</h3></header>
           <div className="context-rail-actions">
             <Button size="small" onClick={() => setTab("evaluations")}>Open run evaluations</Button>
             <Button size="small" onClick={() => setTab("revisions")}>Review rule revisions</Button>
             <Button size="small" onClick={() => setTab("observed")} disabled={!canObserved}>Inspect observed evidence</Button>
           </div>
           <p className="context-rail-note">Parser and fixture checks are lifecycle evidence. Retained run evaluations show their own engine execution and measured result.</p>
-        </section>
-      </aside>
-    </div>
-  </Panel>;
+          <p className="context-rail-note">Evaluating a rule uses saved evidence. A fresh execution is a separate run from Build.</p>
+        </Panel>, contextActionsHost) : null}
+  </div>;
 }
 
 function RevisionWorkspace({

@@ -85,6 +85,7 @@ def _write_asset(
     build_info_padding=0,
     build_info_layout="purelib",
     runner_layout="purelib",
+    runner_member_path: str | None = None,
     ui_member_change=None,
 ):
     platform, architecture, executable = TARGETS[tag]
@@ -98,7 +99,7 @@ def _write_asset(
         else "bluefire/native"
     )
     manifest_path = f"{native_root}/runner-manifest.json"
-    executable_path = f"{native_root}/{executable}"
+    executable_path = runner_member_path or f"{native_root}/{executable}"
     manifest_version = native_version or native_runner_version(version)
     manifest = {
         "schema_version": "bluefire.native-runner-package.v1",
@@ -397,6 +398,23 @@ def test_build_identity_must_share_the_native_manifest_package_root(tmp_path):
     )
 
     with pytest.raises(ValueError, match="different package roots"):
+        build_release_asset_outputs(
+            tmp_path,
+            version=VERSION,
+            source_revision=SOURCE_REVISION,
+            expected_tags=(TAGS[0],),
+        )
+
+
+def test_native_runner_must_share_the_canonical_manifest_directory(tmp_path):
+    # RECORD and the inspection report still bind the misplaced runner's exact bytes.
+    _write_asset(
+        tmp_path,
+        TAGS[0],
+        runner_member_path=f"bluefire_nexus-{VERSION}.dist-info/shadow/bluefire/native/bluefire-runner",
+    )
+
+    with pytest.raises(ValueError, match="must share the canonical native manifest directory"):
         build_release_asset_outputs(
             tmp_path,
             version=VERSION,

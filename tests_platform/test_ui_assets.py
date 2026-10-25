@@ -225,7 +225,7 @@ def test_run_ui_separates_preview_preferences_from_canonical_preflight() -> None
         assert copy in configuration
     for copy in (
         "Browser draft & configuration details",
-        "Canonical preflight",
+        "Resolved preflight details",
         "Plan digest",
         "sent for exact binding",
         "Builder handoff",

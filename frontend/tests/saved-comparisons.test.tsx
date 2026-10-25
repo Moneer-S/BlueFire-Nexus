@@ -44,13 +44,133 @@ function namedRun(run: RunRecord, name: string): RunRecord {
 
 afterEach(() => vi.restoreAllMocks());
 
+it("leads empty history with a start action and restores run choices after refresh", async () => {
+  const user = userEvent.setup();
+  mocks();
+  vi.mocked(api.runs).mockResolvedValue({ schema_version: "v1", runs: [], unavailable_run_count: 0 });
+  vi.mocked(api.comparisonSnapshots).mockResolvedValue({ snapshots: [] });
+  const compare = vi.spyOn(api, "compare");
+  const replay = vi.spyOn(api, "prepareReplay");
+  mount("/compare");
+  const empty = await screen.findByRole("region", { name: "No run records" });
+  expect(within(empty).getByText("No run records", { exact: true })).toBeVisible();
+  expect(within(empty).getByRole("link", { name: "Start an experiment" })).toHaveAttribute("href", "/getting-started");
+  expect(within(empty).getByText(/Simulate is available without a lab/)).toBeVisible();
+  const summary = screen.getByText("Saved comparisons", { selector: "summary" });
+  expect(empty.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  await waitFor(() => expect(summary.closest("details")).not.toHaveAttribute("open"));
+  expect(screen.queryByRole("textbox", { name: "Search run history" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("combobox", { name: "Source run" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Compare selected" })).not.toBeInTheDocument();
+  await user.click(summary);
+  expect(screen.getByText("No saved comparisons yet.")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Reload saved comparisons" })).toBeEnabled();
+
+  vi.mocked(api.runs).mockResolvedValue({ schema_version: "v1", runs: demoRuns, unavailable_run_count: 0 });
+  await user.click(screen.getByRole("button", { name: "Refresh history" }));
+  expect(await screen.findByRole("textbox", { name: "Search run history" })).toBeVisible();
+  expect(screen.queryByRole("region", { name: "No run records" })).not.toBeInTheDocument();
+  expect(screen.getAllByRole("checkbox")).toHaveLength(demoRuns.length);
+  expect(screen.getByRole("combobox", { name: "Source run" })).toBeVisible();
+  expect(compare).not.toHaveBeenCalled();
+  expect(replay).not.toHaveBeenCalled();
+});
+
+it("keeps saved comparisons available when no current run records remain", async () => {
+  const user = userEvent.setup();
+  mocks();
+  vi.mocked(api.runs).mockResolvedValue({ schema_version: "v1", runs: [], unavailable_run_count: 0 });
+  const compare = vi.spyOn(api, "compare");
+  const read = vi.spyOn(api, "comparisonSnapshot").mockResolvedValue(saved("snapshot-a", {
+    status: "unavailable", runs: runIds.map(run_id => ({ run_id, status: "missing" })),
+  }));
+  mount("/compare");
+  await screen.findByRole("region", { name: "No run records" });
+  await screen.findAllByRole("button", { name: /^Open saved comparison\./ });
+  expect(snapshotButton("snapshot-a")).toBeVisible();
+  await user.click(snapshotButton("snapshot-a"));
+  expect(await screen.findByRole("region", { name: "Comparison results" })).toBeVisible();
+  expect(screen.getByText(/shown as saved and was not recomputed/)).toBeVisible();
+  expect(screen.queryByRole("region", { name: "No run records" })).not.toBeInTheDocument();
+  expect(read).toHaveBeenCalledWith("snapshot-a");
+  expect(compare).not.toHaveBeenCalled();
+});
+
+it("does not present excluded run records as a new empty workspace", async () => {
+  mocks();
+  vi.mocked(api.runs).mockResolvedValue({ schema_version: "v1", runs: [], unavailable_run_count: 2 });
+  mount("/compare");
+  expect(await screen.findByText("Unavailable run records excluded")).toBeVisible();
+  expect(screen.queryByText("No run records", { exact: true })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Start an experiment" })).not.toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Search run history" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Compare selected" })).toBeDisabled();
+});
+
+it("keeps a linked replay source reachable when the history list is empty", async () => {
+  mocks();
+  vi.mocked(api.runs).mockResolvedValue({ schema_version: "v1", runs: [], unavailable_run_count: 0 });
+  const source = demoRuns[0]!;
+  const read = vi.spyOn(api, "runDetail").mockResolvedValue(source);
+  mount(`/compare?source=${encodeURIComponent(source.run_id)}`);
+  expect(await screen.findByRole("combobox", { name: "Source run" })).toHaveValue(source.run_id);
+  expect(screen.getByText("Selected runs unavailable")).toBeVisible();
+  expect(screen.queryByText("No run records", { exact: true })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Remove unavailable selections" })).toBeVisible();
+  await waitFor(() => expect(screen.getByRole("button", { name: "Create Simulate replay" })).toBeEnabled());
+  expect(read).toHaveBeenCalledWith(source.run_id);
+});
+
+it("distinguishes an unmatched history search from an empty workspace", async () => {
+  const user = userEvent.setup();
+  mocks();
+  mount("/compare");
+  await user.type(await screen.findByRole("textbox", { name: "Search run history" }), "no matching saved record");
+  expect(screen.getByText("No matching runs", { exact: true })).toBeVisible();
+  expect(screen.queryByText("No run records", { exact: true })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Start an experiment" })).not.toBeInTheDocument();
+  expect(screen.getByRole("combobox", { name: "Source run" })).toBeVisible();
+});
+
+it("shows one history header and puts reload before saved rows in keyboard order", async () => {
+  const user = userEvent.setup();
+  mocks();
+  const compare = vi.spyOn(api, "compare");
+  mount("/compare");
+  const summary = await screen.findByText("Saved comparisons", { selector: "summary" });
+  const history = summary.closest("details")!;
+  expect(screen.getAllByText("Saved comparisons")).toHaveLength(1);
+  await screen.findAllByRole("button", { name: /^Open saved comparison\./ });
+  const firstRow = snapshotButton("snapshot-a");
+  const reload = screen.getByRole("button", { name: "Reload saved comparisons" });
+  await waitFor(() => expect(reload).toBeEnabled());
+
+  await user.click(summary);
+  expect(history).not.toHaveAttribute("open");
+  expect(reload).not.toBeVisible();
+  expect(firstRow).not.toBeVisible();
+  await user.click(summary);
+  expect(history).toHaveAttribute("open");
+  expect(summary).toHaveFocus();
+  await user.tab();
+  expect(reload).toHaveFocus();
+  await user.tab();
+  expect(firstRow).toHaveFocus();
+  await user.tab({ shift: true });
+  expect(reload).toHaveFocus();
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(api.comparisonSnapshots).toHaveBeenCalledTimes(2));
+  expect(history).toHaveAttribute("open");
+  expect(compare).not.toHaveBeenCalled();
+});
+
 it("saves a new comparison, reopens it, and reloads with GET only", async () => {
   const user = userEvent.setup();
   mocks();
   const compare = vi.spyOn(api, "compare").mockResolvedValue({ ...structuredClone(original), saved_snapshot: { snapshot_id: "snapshot-a", digest: "snapshot-a-digest", created_at: "2026-10-18T12:00:00Z" } });
   const read = vi.spyOn(api, "comparisonSnapshot").mockResolvedValue(saved("snapshot-a"));
   mount("/compare");
-  await screen.findByRole("heading", { name: "Saved comparisons" });
+  await screen.findByText("Saved comparisons", { selector: "summary" });
   const boxes = screen.getAllByRole("checkbox");
   await user.click(boxes[0]!);
   await user.click(boxes[1]!);
@@ -59,6 +179,18 @@ it("saves a new comparison, reopens it, and reloads with GET only", async () => 
   await waitFor(() => expect(read).toHaveBeenCalledWith("snapshot-a"));
   expect(compare).toHaveBeenCalledOnce();
 
+  const savedBrowser = screen.getByText("Saved comparisons", { selector: "summary" });
+  const history = savedBrowser.closest("details")!;
+  await waitFor(() => expect(history).not.toHaveAttribute("open"));
+  await user.click(savedBrowser);
+  await user.click(snapshotButton("snapshot-a"));
+  expect(history).toHaveAttribute("open");
+  expect(snapshotButton("snapshot-a")).toHaveAttribute("aria-current", "page");
+  expect(read).toHaveBeenCalledOnce();
+  await user.click(savedBrowser);
+  expect(history).not.toHaveAttribute("open");
+  await user.click(savedBrowser);
+  expect(history).toHaveAttribute("open");
   await user.click(screen.getByRole("button", { name: "Reload saved comparisons" }));
   await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
   expect(compare).toHaveBeenCalledOnce();
@@ -73,6 +205,40 @@ it("opens a missing-source snapshot as historical evidence without recomputing",
   mount("/compare?snapshot=snapshot-a");
   expect(await screen.findByText(/shown as saved and was not recomputed/)).toBeVisible();
   expect(screen.getByRole("region", { name: "Comparison results" })).toBeVisible();
+  expect(screen.getByText("Saved comparisons", { selector: "summary" }).closest("details")).not.toHaveAttribute("open");
+  expect(compare).not.toHaveBeenCalled();
+});
+
+it("keeps saved history visible after an explicit async selection without stealing later focus", async () => {
+  const user = userEvent.setup();
+  mocks();
+  let resolveFirst!: (result: SavedComparisonSnapshot) => void;
+  let resolveSecond!: (result: SavedComparisonSnapshot) => void;
+  const first = new Promise<SavedComparisonSnapshot>(resolve => { resolveFirst = resolve; });
+  const second = new Promise<SavedComparisonSnapshot>(resolve => { resolveSecond = resolve; });
+  const read = vi.spyOn(api, "comparisonSnapshot").mockImplementation(id => id === "snapshot-a" ? first : second);
+  const compare = vi.spyOn(api, "compare");
+  mount("/compare");
+  await screen.findAllByRole("button", { name: /^Open saved comparison\./ });
+  const history = screen.getByText("Saved comparisons", { selector: "summary" }).closest("details")!;
+  const firstButton = snapshotButton("snapshot-a");
+  await user.click(firstButton);
+  expect(firstButton).toHaveFocus();
+  await act(async () => { resolveFirst(saved("snapshot-a")); await first; });
+  await screen.findByRole("region", { name: "Comparison results" });
+  expect(history).toHaveAttribute("open");
+  expect(firstButton).toBeVisible();
+  expect(firstButton).toHaveFocus();
+
+  await user.click(snapshotButton("snapshot-b"));
+  const otherControl = screen.getByRole("button", { name: "Refresh history" });
+  await user.click(otherControl);
+  await act(async () => { resolveSecond(saved("snapshot-b")); await second; });
+  await screen.findByRole("region", { name: "Comparison results" });
+  expect(snapshotButton("snapshot-b")).toHaveAttribute("aria-current", "page");
+  expect(history).toHaveAttribute("open");
+  expect(otherControl).toHaveFocus();
+  expect(read).toHaveBeenCalledTimes(2);
   expect(compare).not.toHaveBeenCalled();
 });
 

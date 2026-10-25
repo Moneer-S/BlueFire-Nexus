@@ -209,6 +209,7 @@ async function main() {
   const assistant = page.locator("#experiment-assistant");
   if (!(await assistant.isVisible())) await page.getByRole("button", { name: /^Assistant(?::|$)/ }).click();
   await assistant.waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
   await page.getByRole("combobox", { name: /^(AI mode|Assistant mode)\b/ }).selectOption("assist");
   await page.getByRole("combobox", { name: "Provider", exact: true }).selectOption(providerId);
   const contextResponse = await contextRead;
@@ -221,6 +222,7 @@ async function main() {
   assert.equal(postedGraphSelection?.base_scenario, null);
   assert.deepEqual(expectedContext.selected, { kind: "graph", base_scenario: null });
   assert.equal(graphContextPosts, 1); assert.equal(graphContextGets, 1);
+  await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
   const submitResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/assistance/turns" && response.request().method() === "POST");
   await page.getByRole("textbox", { name: "What would you like to do?", exact: true }).fill("Cancel the held local fixture request for recovery verification.");
   await page.getByRole("button", { name: "Start work", exact: true }).click();

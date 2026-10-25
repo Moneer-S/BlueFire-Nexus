@@ -62,7 +62,7 @@ the newly compiled Cargo output, separate from the package staging destination:
 ```bash
 python3.12 -m venv .build-venv
 . .build-venv/bin/activate
-python -m pip install 'setuptools>=83' wheel 'PyYAML>=6.0.1,<7' 'cryptography>=50,<51' 'PyNaCl>=1.5,<2'
+python -m pip install 'setuptools>=84.1.0' wheel 'PyYAML>=6.0.1,<7' 'cryptography>=50,<51' 'PyNaCl>=1.5,<2'
 rustup target add x86_64-unknown-linux-musl
 export CARGO_TARGET_DIR="$PWD/runner/target"
 python tools/build_native_runner.py --target x86_64-unknown-linux-musl

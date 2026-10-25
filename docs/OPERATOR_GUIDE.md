@@ -28,8 +28,8 @@ the name. A profile contains permissions and limits; it is not the lab itself. S
 not start a runner or perform external behavior effects. The profile's technical ID is
 available under **Environment and scope references**.
 
-Choose **Run preflight**. Check the resolved steps, profile, scope, and cleanup. When the plan
-is ready, choose **Submit Simulate job** and follow its progress to the saved result. A job
+Choose **Check run**. Check the resolved steps, profile, scope, and cleanup. When the plan
+is ready, choose **Start simulation** and follow its progress to the saved result. A job
 waiting for input or cancellation is not a completed run.
 
 In **Runs**, open the result by its display name and creation time. **Rename run** saves a

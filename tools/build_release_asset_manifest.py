@@ -388,6 +388,9 @@ def _inspect_wheel(
         )
         executable = "bluefire-runner.exe" if platform == "windows" else "bluefire-runner"
         executable_names = verifier._native_runner_members(names, executable)
+        expected_executable = manifest_names[0].removesuffix("runner-manifest.json") + executable
+        if executable_names != [expected_executable]:
+            raise ValueError("native runner must share the canonical native manifest directory")
         if manifest["schema_version"] != "bluefire.native-runner-package.v1":
             raise ValueError("native runner manifest schema is unsupported")
         if (

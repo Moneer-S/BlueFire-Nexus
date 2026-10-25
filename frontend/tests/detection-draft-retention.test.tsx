@@ -58,7 +58,7 @@ async function edit(user: ReturnType<typeof userEvent.setup>) {
   // Replace the full SQL document as a user pasting an edited rule would.
   await user.paste(edited);
   await user.click(screen.getByRole("textbox", { name: "Reason for source revision" })); await user.paste("Inspect contents observations");
-  expect(screen.getByText("Draft source not validated")).toBeVisible();
+  expect(screen.getByText("Unvalidated edits")).toBeVisible();
 }
 
 it("retains source, reasons, tuning and fixtures across candidate changes and routine navigation", async () => {

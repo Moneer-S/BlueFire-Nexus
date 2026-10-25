@@ -32,7 +32,7 @@ jobs:
 
       - name: Install maintained package and tools
         run: |
-          python -m pip install --upgrade pip "setuptools==83.0.0"
+          python -m pip install --upgrade pip "setuptools==84.1.0"
           python -m pip install -e ".[dev,detections]"
 
       - name: Scan Git history and working tree

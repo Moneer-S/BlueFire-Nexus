@@ -9,7 +9,7 @@ import type { Scenario } from "../../src/types";
 const output = process.env.BLUEFIRE_S3_BROWSER_OUTPUT!;
 const bundle = process.env.BLUEFIRE_S3_BROWSER_BUNDLE!;
 const origin = `http://127.0.0.1:${process.env.BLUEFIRE_S3_BROWSER_PORT}`;
-const viewports = [{ width: 1440, height: 900 }, { width: 390, height: 844 }];
+const viewports = [{ width: 1440, height: 900 }, { width: 1366, height: 768 }];
 const nodeCount = 128;
 const edgeCount = 256;
 const maximumGraphBytes = 65_536;
@@ -131,6 +131,53 @@ async function stableFrames(page: Page) {
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 }
 
+async function viewOptions(page: Page, open: boolean) {
+  if (await page.locator("details.graph-options").evaluate(element => (element as HTMLDetailsElement).open) !== open) {
+    await page.getByLabel("View options", { exact: true }).click();
+  }
+}
+
+async function expectReadableSelection(page: Page) {
+  await expect(page.locator(".flow-node.selected")).toHaveCount(1);
+  await expect.poll(() => page.locator(".flow-node.selected").evaluate(node => {
+    const card = node.getBoundingClientRect(), canvas = node.closest(".graph-canvas")!.getBoundingClientRect();
+    const title = node.querySelector<HTMLElement>(".node-title > strong");
+    const titleBox = title?.getBoundingClientRect();
+    return {
+      readableScale: card.width >= 176 && card.height > 0,
+      withinCanvas: card.left >= canvas.left - 1 && card.right <= canvas.right + 1
+        && card.top >= canvas.top - 1 && card.bottom <= canvas.bottom + 1,
+      readableTitle: Boolean(title?.textContent?.trim() && titleBox && title.scrollWidth <= title.clientWidth + 1
+        && titleBox.left >= card.left - 1 && titleBox.right <= card.right + 1
+        && titleBox.top >= card.top - 1 && titleBox.bottom <= card.bottom + 1),
+    };
+  })).toEqual({ readableScale: true, withinCanvas: true, readableTitle: true });
+}
+
+async function focusConnectedTail(page: Page) {
+  const previousSelection = await page.locator(".react-flow__node.selected").getAttribute("data-id");
+  await viewOptions(page, true);
+  // The last branch rejoins at zero-based step 46. Its 82-step continuation is
+  // a connected path in this fixture, not a numeric page of arbitrary size.
+  await page.getByLabel("Step group", { exact: true }).selectOption({ label: "Join at step 47 · 82 steps" });
+  await expect(page.locator(".react-flow__node:visible")).toHaveCount(82);
+  await expect(page.locator(".react-flow__edge:visible")).toHaveCount(81);
+  await viewOptions(page, false);
+  const expectedSelection = previousSelection && Number(previousSelection.slice(-3)) >= 46 ? previousSelection : "scale_step_046";
+  await expect(page.locator(".react-flow__node.selected")).toHaveAttribute("data-id", expectedSelection);
+  await expectReadableSelection(page);
+}
+
+async function showWholePlan(page: Page) {
+  const selected = await page.locator(".react-flow__node.selected").getAttribute("data-id");
+  expect(selected).not.toBeNull();
+  await page.getByRole("button", { name: "Return to whole plan", exact: true }).click();
+  await expect(page.locator(".react-flow__node:visible")).toHaveCount(nodeCount);
+  await expect(page.locator(".react-flow__edge:visible")).toHaveCount(edgeCount);
+  await expect(page.locator(".react-flow__node.selected")).toHaveAttribute("data-id", selected!);
+  await expectReadableSelection(page);
+}
+
 async function finishMeasure(page: Page, start: string, end: string): Promise<number> {
   return page.evaluate(async ({ start, end }) => {
     await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
@@ -160,6 +207,8 @@ async function capture(page: Page, name: string) {
   const geometry = await page.evaluate(() => {
     const canvas = document.querySelector<HTMLElement>(".graph-canvas");
     const list = document.querySelector<HTMLElement>(".ordered-steps");
+    const selected = canvas?.querySelector<HTMLElement>(".flow-node.selected");
+    const selectedBox = selected?.getBoundingClientRect();
     return {
       viewport: { width: innerWidth, height: innerHeight },
       documentWidth: document.documentElement.clientWidth,
@@ -168,6 +217,9 @@ async function capture(page: Page, name: string) {
       listWidth: list?.clientWidth ?? null,
       listScrollWidth: list?.scrollWidth ?? null,
       listScrollHeight: list?.scrollHeight ?? null,
+      selectedCardWidth: selectedBox?.width ?? null,
+      selectedCardHeight: selectedBox?.height ?? null,
+      zoomPercent: canvas ? Number.parseInt(document.querySelector('[aria-label="Graph zoom"]')?.textContent ?? "", 10) : null,
     };
   });
   expect(geometry.documentScroll).toBeLessThanOrEqual(geometry.documentWidth);
@@ -202,7 +254,7 @@ async function qualifyViewport(page: Page, browser: Browser, viewport: { width: 
     if (sessionStorage.getItem("bluefire.graph-scale-fixture-seeded") === "true") return;
     localStorage.setItem("bluefire.local.scenario.v1", scenarioJson);
     sessionStorage.setItem("bluefire.browser-session.v1", session);
-    sessionStorage.setItem(`bluefire.working-graph-view.v1:${scenarioId}`, JSON.stringify({
+    sessionStorage.setItem(`bluefire.working-graph-view.v2:${scenarioId}`, JSON.stringify({
       scenarioId,
       view: {
         selected: { id: "scale_step_000", behavior: behaviorId }, mode: "graph", allBranches: true,
@@ -219,10 +271,7 @@ async function qualifyViewport(page: Page, browser: Browser, viewport: { width: 
   await expect(page.locator(".react-flow__edge:visible")).toHaveCount(edgeCount);
   const initialGraphMountMs = await navigationToStableGraphMs(page);
 
-  await page.getByLabel("Step group").selectOption("0");
-  await page.getByRole("button", { name: "Focus on success path", exact: true }).click();
-  await expect(page.locator(".react-flow__node:visible")).toHaveCount(3);
-  await expect(page.locator(".react-flow__edge:visible")).toHaveCount(2);
+  await focusConnectedTail(page);
   await stableFrames(page);
   const focusedGeometry = await capture(page, `graph-scale-focused-${viewport.width}`);
   const expectedDraft = scenarioJson;
@@ -235,14 +284,37 @@ async function qualifyViewport(page: Page, browser: Browser, viewport: { width: 
   };
   const geometries: Record<string, unknown> = { focused: focusedGeometry };
 
-  const showAll = page.getByRole("button", { name: "Show all branches", exact: true });
   await beginMeasure(page, "warmup-focused-to-full-start");
-  await showAll.click();
-  await page.getByLabel("Step group").selectOption("all");
-  await expect(page.locator(".react-flow__node:visible")).toHaveCount(nodeCount);
-  await expect(page.locator(".react-flow__edge:visible")).toHaveCount(edgeCount);
+  await showWholePlan(page);
   measures.focused_to_full_graph.push(await finishMeasure(page, "warmup-focused-to-full-start", "warmup-focused-to-full-end"));
   geometries.full_graph = await capture(page, `graph-scale-full-${viewport.width}`);
+  expect(await readDraft()).toBe(expectedDraft);
+
+  const selectedBeforeOverview = await page.locator(".react-flow__node.selected").getAttribute("data-id");
+  expect(selectedBeforeOverview).not.toBeNull();
+  await page.getByRole("button", { name: "Fit visible graph", exact: true }).click();
+  await expect(page.locator(".react-flow__node:visible")).toHaveCount(nodeCount);
+  await expect(page.locator(".react-flow__edge:visible")).toHaveCount(edgeCount);
+  await expect.poll(() => page.locator(".react-flow__node:visible").evaluateAll(nodes => {
+    const canvas = document.querySelector(".graph-canvas")!.getBoundingClientRect();
+    return nodes.every(node => {
+      const card = node.getBoundingClientRect();
+      return card.width > 0 && card.height > 0 && card.left >= canvas.left - 1 && card.right <= canvas.right + 1
+        && card.top >= canvas.top - 1 && card.bottom <= canvas.bottom + 1;
+    });
+  })).toBe(true);
+  await expect(page.locator(".react-flow__node.selected")).toHaveAttribute("data-id", selectedBeforeOverview!);
+  expect(await page.locator(".flow-node.selected").evaluate(node => node.getBoundingClientRect().width)).toBeLessThan(176);
+  geometries.explicit_overview = await capture(page, `graph-scale-explicit-overview-${viewport.width}`);
+  expect(await readDraft()).toBe(expectedDraft);
+  await viewOptions(page, true);
+  await page.getByRole("button", { name: "Focus selected step", exact: true }).click();
+  await viewOptions(page, false);
+  await expectReadableSelection(page);
+  await expect(page.locator(".react-flow__node.selected")).toHaveAttribute("data-id", selectedBeforeOverview!);
+  await expect(page.locator(".react-flow__node:visible")).toHaveCount(nodeCount);
+  await expect(page.locator(".react-flow__edge:visible")).toHaveCount(edgeCount);
+  geometries.readable_after_explicit_overview = await capture(page, `graph-scale-overview-restored-${viewport.width}`);
   expect(await readDraft()).toBe(expectedDraft);
 
   await beginMeasure(page, "warmup-full-to-steps-start");
@@ -251,20 +323,17 @@ async function qualifyViewport(page: Page, browser: Browser, viewport: { width: 
   measures.full_graph_to_ordered_steps.push(await finishMeasure(page, "warmup-full-to-steps-start", "warmup-full-to-steps-end"));
   geometries.ordered_steps = await capture(page, `graph-scale-steps-${viewport.width}`);
   expect(await readDraft()).toBe(expectedDraft);
+  await page.locator('.ordered-steps button[data-step-id="scale_step_127"]').click();
 
   await page.getByRole("button", { name: "Canvas", exact: true }).click();
   await expect(page.locator(".react-flow__node:visible")).toHaveCount(nodeCount);
+  await expect(page.locator('.react-flow__node[data-id="scale_step_127"]')).toHaveClass(/selected/);
+  await page.getByRole("button", { name: "Hide node inspector", exact: true }).click();
   await beginMeasure(page, "warmup-full-to-focus-start");
-  await page.getByRole("button", { name: "Focus on success path", exact: true }).click();
-  await page.getByLabel("Step group").selectOption("0");
-  await expect(page.locator(".react-flow__node:visible")).toHaveCount(3);
-  await expect(page.locator(".react-flow__edge:visible")).toHaveCount(2);
+  await focusConnectedTail(page);
   measures.full_graph_to_focused_section.push(await finishMeasure(page, "warmup-full-to-focus-start", "warmup-full-to-focus-end"));
 
-  await page.getByRole("button", { name: "Show all branches", exact: true }).click();
-  await page.getByLabel("Step group").selectOption("all");
-  await expect(page.locator(".react-flow__node:visible")).toHaveCount(nodeCount);
-  await expect(page.locator(".react-flow__edge:visible")).toHaveCount(edgeCount);
+  await showWholePlan(page);
   await expect(page.getByRole("button", { name: "Steps", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Steps", exact: true }).click();
   await expect(page.getByRole("list", { name: "Experiment steps" }).locator(":scope > li")).toHaveCount(nodeCount);
@@ -272,18 +341,12 @@ async function qualifyViewport(page: Page, browser: Browser, viewport: { width: 
 
   for (let iteration = 1; iteration <= measuredCount; iteration += 1) {
     await beginMeasure(page, `full-to-focus-${iteration}-start`);
-    await page.getByRole("button", { name: "Focus on success path", exact: true }).click();
-    await page.getByLabel("Step group").selectOption("0");
-    await expect(page.locator(".react-flow__node:visible")).toHaveCount(3);
-    await expect(page.locator(".react-flow__edge:visible")).toHaveCount(2);
+    await focusConnectedTail(page);
     measures.full_graph_to_focused_section.push(await finishMeasure(page, `full-to-focus-${iteration}-start`, `full-to-focus-${iteration}-end`));
     expect(await readDraft()).toBe(expectedDraft);
 
     await beginMeasure(page, `focus-to-full-${iteration}-start`);
-    await page.getByRole("button", { name: "Show all branches", exact: true }).click();
-    await page.getByLabel("Step group").selectOption("all");
-    await expect(page.locator(".react-flow__node:visible")).toHaveCount(nodeCount);
-    await expect(page.locator(".react-flow__edge:visible")).toHaveCount(edgeCount);
+    await showWholePlan(page);
     measures.focused_to_full_graph.push(await finishMeasure(page, `focus-to-full-${iteration}-start`, `focus-to-full-${iteration}-end`));
     expect(await readDraft()).toBe(expectedDraft);
 
@@ -295,7 +358,7 @@ async function qualifyViewport(page: Page, browser: Browser, viewport: { width: 
 
     await page.getByRole("button", { name: "Canvas", exact: true }).click();
     await expect(page.locator(".react-flow__node:visible")).toHaveCount(nodeCount);
-    const retainedView = await page.evaluate(key => sessionStorage.getItem(key), `bluefire.working-graph-view.v1:${fixture.scenario.id}`);
+    const retainedView = await page.evaluate(key => sessionStorage.getItem(key), `bluefire.working-graph-view.v2:${fixture.scenario.id}`);
     const parsedView = retainedView ? JSON.parse(retainedView) as { view?: { section?: number | null; allBranches?: boolean } } : null;
     expect(parsedView?.view).toMatchObject({ section: null, allBranches: true });
     await page.reload({ waitUntil: "domcontentloaded" });
@@ -326,6 +389,7 @@ async function qualifyViewport(page: Page, browser: Browser, viewport: { width: 
       canonical_graph_sha256: fixture.canonicalSha256,
       behavior_id: behaviorId,
       behavior_inputs: 0,
+      focus_group: { meaning: "connected continuation after the final join", first_step: "scale_step_046", nodes: 82, outcome_edges: 81 },
     },
     browser: { engine: "chromium", version: browser.version() },
     bundle: ["app.js", "index.html", "styles.css"].map(name => {
@@ -339,6 +403,8 @@ async function qualifyViewport(page: Page, browser: Browser, viewport: { width: 
       timer: "in-page performance.mark/measure around Playwright UI action through two animation frames after stable DOM assertions",
       remount_timer: "document navigation timing from navigation start through Playwright stable graph assertions and two animation frames; includes app/session/catalog/scenario startup and browser-clock gaps, not isolated React render time",
       harness_overhead: "UI transition samples include Playwright action and locator assertion round trips; retained remount samples use document navigation elapsed time and exclude synthetic code entry",
+      focus_transition: "Connected-path selection and Return to whole plan automatically retain a readable selected card and title; navigation samples contain no manual focus action",
+      explicit_overview: "Fit visible graph separately places all 128 nodes inside the canvas while retaining 256 routes at an intentionally reduced scale; Focus selected step restores readable framing before continuing, outside transition timing samples",
       percentile_method: "nearest-rank",
     },
     retained_initial_full_graph_mount_ms: initialGraphMountMs,
