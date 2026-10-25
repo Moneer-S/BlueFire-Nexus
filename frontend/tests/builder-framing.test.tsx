@@ -1,7 +1,7 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { ReactFlowProps, Viewport } from "@xyflow/react";
+import type { ControlProps, ReactFlowProps, Viewport } from "@xyflow/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { demoCatalog, demoScenario } from "../src/lib/demo";
@@ -15,6 +15,8 @@ const flow = vi.hoisted(() => ({
   getViewport: () => state.viewport,
   getZoom: () => state.viewport.zoom,
   setViewport: vi.fn(async (viewport: Viewport) => { state.viewport = viewport; return true; }),
+  zoomIn: vi.fn(async () => true),
+  zoomOut: vi.fn(async () => true),
   fitView: vi.fn(async () => true),
   screenToFlowPosition: vi.fn(),
   deleteElements: vi.fn(),
@@ -25,9 +27,16 @@ vi.mock("@xyflow/react", async (importOriginal) => {
     ...actual,
     useNodesInitialized: () => true,
     useReactFlow: () => flow,
+    // Controls executes its default action before the public callback; its viewport
+    // update has no native move event even though a person pressed the button.
+    Controls: (props: ControlProps) => <div aria-label="Canvas viewport controls">
+      <button onClick={() => { void flow.zoomIn(); props.onZoomIn?.(); }}>Zoom in</button>
+      <button onClick={() => { void flow.zoomOut(); props.onZoomOut?.(); }}>Zoom out</button>
+      <button onClick={() => { void flow.fitView(); props.onFitView?.(); }}>Fit view</button>
+    </div>,
     ReactFlow: (props: ReactFlowProps) => {
       state.props = props;
-      return <div aria-label="Rendered graph steps">{props.nodes?.filter(node => !node.hidden).map(node => <button key={node.id} onClick={event => props.onNodeClick?.(event, node)}>Select {node.id}</button>)}</div>;
+      return <><div aria-label="Rendered graph steps">{props.nodes?.filter(node => !node.hidden).map(node => <button key={node.id} onClick={event => props.onNodeClick?.(event, node)}>Select {node.id}</button>)}</div>{props.children}</>;
     },
   };
 });
@@ -49,6 +58,8 @@ beforeEach(() => {
   mainHeight = undefined;
   state.viewport = { x: 0, y: 0, zoom: 1 };
   flow.setViewport.mockClear().mockImplementation(async (viewport: Viewport) => { state.viewport = viewport; return true; });
+  flow.zoomIn.mockReset().mockResolvedValue(true);
+  flow.zoomOut.mockReset().mockResolvedValue(true);
   flow.fitView.mockClear();
   globalThis.ResizeObserver = CanvasResizeObserver;
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function(this: HTMLElement) { return this.classList.contains("graph-canvas") ? width : this.id === "main-content" ? mainHeight === undefined ? width : 744 : 0; });
@@ -234,6 +245,8 @@ describe("Builder viewport controls", () => {
     expect(state.viewport.zoom).toBe(1.2);
     expect(state.viewport.x).toBeCloseTo(30.4);
     expect(state.viewport.y).toBeCloseTo(50);
+    // Automatic restoration reports a null source event and must not claim the view.
+    act(() => state.props.onMove?.(null, state.viewport));
     flow.setViewport.mockClear();
     resizeCanvas(1000, 480);
     await waitFor(() => expect(state.viewport).toEqual(original));
@@ -260,10 +273,12 @@ describe("Builder viewport controls", () => {
     resizeMain(270);
     await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
     expect(flow.setViewport).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByRole("textbox", { name: "Experiment name" }), { target: { value: "Context refreshed" } });
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
     resizeMain(540);
     await waitFor(() => expect(main.scrollTop).toBe(0));
     expect(state.viewport).toEqual(original);
-    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual({ ...rendered, title: "Context refreshed" });
   });
 
   it.each(["scroll", "pan", "zoom", "drag"] as const)("preserves an operator %s after revealing a stacked Assistant context", async (change) => {
@@ -292,6 +307,75 @@ describe("Builder viewport controls", () => {
     expect(main.scrollTop).toBe(chosenScroll);
     expect(flow.setViewport).not.toHaveBeenCalled();
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
+  });
+
+  it.each([true, false])("preserves a committed card drag and native pan when the stacked Assistant closes (automatic reveal: %s)", async (automaticReveal) => {
+    const { rendered, main, canvas } = await renderScrollportBuilder();
+    if (automaticReveal) {
+      resizeMain(270);
+      await waitFor(() => expect(main.scrollTop).toBe(142));
+    } else {
+      // Open without an automatic adjustment to recover. A native pan still owns the view.
+      resizeMain(530);
+      await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+      expect(main.scrollTop).toBe(0);
+    }
+    const position = { x: 110, y: 196 };
+    act(() => state.props.onNodesChange?.([{ id: "selected", type: "position", position, dragging: true }]));
+    act(() => state.props.onNodesChange?.([{ id: "selected", type: "position", position, dragging: false }]));
+    const moved = state.props.nodes?.find(node => node.id === "selected");
+    if (!moved) throw new Error("The dragged node is missing");
+    act(() => state.props.onNodeDragStop?.(new MouseEvent("mouseup"), moved, [moved]));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!).layout.selected).toEqual(position));
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(state.props.nodes?.find(node => node.id === "selected")).toMatchObject({ position, selected: true });
+
+    const chosen = { x: -700, y: -400, zoom: state.viewport.zoom };
+    state.viewport = chosen;
+    act(() => state.props.onMove?.(new MouseEvent("mousemove"), chosen));
+    // Refresh the same selected graph again after the operator takes ownership.
+    fireEvent.change(screen.getByRole("textbox", { name: "Experiment name" }), { target: { value: "Moved selection" } });
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    const chosenScroll = main.scrollTop;
+    const canvasSize = { width: canvas.clientWidth, height: canvas.clientHeight };
+    flow.setViewport.mockClear();
+    resizeMain(540);
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect({ width: canvas.clientWidth, height: canvas.clientHeight }).toEqual(canvasSize);
+    expect(state.viewport).toEqual(chosen);
+    expect(main.scrollTop).toBe(chosenScroll);
+    expect(flow.setViewport).not.toHaveBeenCalled();
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual({ ...rendered, title: "Moved selection", layout: { ...rendered.layout, selected: position } });
+  });
+
+  it.each(["Zoom in", "Zoom out", "Fit view"])("preserves an explicit %s control choice without automatic recovery when the stacked Assistant closes", async (label) => {
+    const { rendered, main, canvas } = await renderScrollportBuilder();
+    resizeMain(530);
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(main.scrollTop).toBe(0);
+    expect(flow.setViewport).not.toHaveBeenCalled();
+    const chosen = { x: -400, y: -250, zoom: label === "Zoom in" ? 1.2 : label === "Zoom out" ? 0.8 : 0.3 };
+    const action = label === "Zoom in" ? flow.zoomIn : label === "Zoom out" ? flow.zoomOut : flow.fitView;
+    action.mockImplementationOnce(async () => {
+      state.viewport = chosen;
+      state.props.onMove?.(null, chosen);
+      return true;
+    });
+    fireEvent.click(within(screen.getByLabelText("Canvas viewport controls")).getByRole("button", { name: label }));
+    expect(action).toHaveBeenCalledOnce();
+    expect(state.viewport).toEqual(chosen);
+    fireEvent.change(screen.getByRole("textbox", { name: "Experiment name" }), { target: { value: "Control choice retained" } });
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    const canvasSize = { width: canvas.clientWidth, height: canvas.clientHeight };
+    flow.setViewport.mockClear();
+    resizeMain(540);
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect({ width: canvas.clientWidth, height: canvas.clientHeight }).toEqual(canvasSize);
+    expect(state.viewport).toEqual(chosen);
+    expect(main.scrollTop).toBe(0);
+    expect(flow.setViewport).not.toHaveBeenCalled();
+    expect(action).toHaveBeenCalledOnce();
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual({ ...rendered, title: "Control choice retained" });
   });
 
   it("frames full-screen focus against the window without scrolling its underlying main pane", async () => {

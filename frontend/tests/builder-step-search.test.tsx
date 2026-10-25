@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GraphWorkspace } from "../src/pages/Builder";
 import { demoActions, demoCatalog, demoScenario } from "../src/lib/demo";
+import { GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH } from "../src/lib/graph-view";
 import type { GraphEditorDraft } from "../src/lib/graph-assistance";
 import type { Scenario } from "../src/types";
 import { ProductProvider } from "../src/state/ProductContext";
@@ -37,6 +38,10 @@ vi.mock("@xyflow/react", async (importOriginal) => {
 const originalResizeObserver = globalThis.ResizeObserver;
 const originalScrollIntoView = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
 const scrollIntoView = vi.fn();
+let visibleCanvasGeometry = false;
+function testRect(width: number, height: number): DOMRect {
+  return { x: 0, y: 0, left: 0, top: 0, right: width, bottom: height, width, height, toJSON: () => ({}) } as DOMRect;
+}
 class CanvasResizeObserver {
   constructor(private callback: ResizeObserverCallback) {}
   observe(target: Element) { if (target.classList.contains("graph-canvas")) this.callback([], {} as ResizeObserver); }
@@ -50,10 +55,14 @@ beforeEach(() => {
   Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
   flow.setViewport.mockClear().mockImplementation(async (viewport: Viewport) => { state.viewport = viewport; return true; });
   globalThis.ResizeObserver = CanvasResizeObserver;
-  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function(this: HTMLElement) { return this.classList.contains("graph-canvas") ? 900 : 0; });
-  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function(this: HTMLElement) { return this.classList.contains("graph-canvas") ? 480 : 0; });
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function(this: HTMLElement) { return this.classList.contains("graph-canvas") || (visibleCanvasGeometry && this.tagName === "MAIN") ? 900 : 0; });
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function(this: HTMLElement) { return this.classList.contains("graph-canvas") || (visibleCanvasGeometry && this.tagName === "MAIN") ? 480 : 0; });
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function(this: HTMLElement) {
+    return visibleCanvasGeometry && (this.classList.contains("graph-canvas") || this.tagName === "MAIN") ? testRect(900, 480) : testRect(0, 0);
+  });
 });
 afterEach(() => {
+  visibleCanvasGeometry = false;
   globalThis.ResizeObserver = originalResizeObserver;
   if (originalScrollIntoView) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView);
   else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
@@ -83,6 +92,7 @@ describe("Builder graph step search", () => {
     const orphan = { ...structuredClone(scenario.steps[0]!), id: "orphan_step" };
     scenario.steps.push(orphan);
     scenario.layout = { ...(scenario.layout ?? {}), orphan_step: { x: 1200, y: 840 } };
+    visibleCanvasGeometry = true;
     const saved = renderWorkspace(scenario);
     const user = userEvent.setup();
     await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
@@ -99,8 +109,19 @@ describe("Builder graph step search", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Select orphan_step" })).toHaveAttribute("aria-pressed", "true"));
     expect(state.props.nodes?.every(node => !node.hidden)).toBe(true);
-    expect(state.props.nodes?.find(node => node.id === "orphan_step")?.hidden).toBe(false);
+    const selected = state.props.nodes?.find(node => node.id === "orphan_step");
+    expect(selected?.hidden).toBe(false);
     await waitFor(() => expect(state.viewport).toEqual({ x: -860, y: -652, zoom: 1 }));
+    const selectedRect = {
+      left: state.viewport.x + selected!.position.x * state.viewport.zoom,
+      top: state.viewport.y + selected!.position.y * state.viewport.zoom,
+      right: state.viewport.x + (selected!.position.x + GRAPH_NODE_WIDTH) * state.viewport.zoom,
+      bottom: state.viewport.y + (selected!.position.y + GRAPH_NODE_HEIGHT) * state.viewport.zoom,
+    };
+    expect(selectedRect.left).toBeGreaterThanOrEqual(0);
+    expect(selectedRect.top).toBeGreaterThanOrEqual(0);
+    expect(selectedRect.right).toBeLessThanOrEqual(900);
+    expect(selectedRect.bottom).toBeLessThanOrEqual(480);
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(saved);
     expect(state.props.edges?.filter(edge => edge.data?.kind === "route").map(edge => edge.id)).toEqual(saved.edges.map((edge, index) => `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`));
     expect(state.props.nodes?.find(node => node.id === "orphan_step")?.position).toEqual(saved.layout?.orphan_step);

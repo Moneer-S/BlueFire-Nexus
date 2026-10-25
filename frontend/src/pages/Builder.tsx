@@ -337,7 +337,13 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     selectStep(id);
   }, [scenario.steps, selectStep, viewMode]);
   const onSelectionChange = useCallback(({ nodes: selection }: { nodes: BehaviorFlowNode[] }) => setSelectedId(selection.at(-1)?.id ?? ""), []);
-  const onMove = useCallback((_: unknown, viewport: { zoom: number }) => setGraphZoom(Math.round(viewport.zoom * 100) / 100), []);
+  const operatorViewportRevision = useRef(0);
+  const claimViewport = useCallback(() => { operatorViewportRevision.current += 1; }, []);
+  const onMove = useCallback((event: unknown, viewport: { zoom: number }) => {
+    // React Flow reports automatic viewport updates with a null event.
+    if (event) claimViewport();
+    setGraphZoom(Math.round(viewport.zoom * 100) / 100);
+  }, [claimViewport]);
   const togglePalette = () => { setPaletteOpen((open) => !open); setInspectorOpen(false); };
   const toggleInspector = () => { setInspectorOpen((open) => !open); setPaletteOpen(false); };
   const inspectorToggleId = useId();
@@ -402,10 +408,20 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     return () => cancelAnimationFrame(frame);
   }, [flow, frameStep, inspectorOpen, nodesInitialized, selectedId, selectionToReveal, viewMode]);
 
+  const resizeOwnership = useRef<{
+    scenarioId: string; selectedId: string; focusMode: boolean; operatorRevision: number; interrupted: boolean;
+    recovery?: { original: GraphViewport; applied: GraphViewport; geometryRevision: number; originalScroll: { top: number; left: number }; mainHeight: number };
+  } | undefined>(undefined);
   useEffect(() => {
-    if (viewMode !== "graph") { framedViewMode.current = viewMode; return; }
+    if (viewMode !== "graph") { framedViewMode.current = viewMode; resizeOwnership.current = undefined; return; }
     const canvas = graphCanvas.current;
     if (!canvas || !nodesInitialized) return;
+    // Committing a card move refreshes graph callbacks and replaces this observer.
+    // Keep the operator's ownership and any automatic recovery for the same selection.
+    if (!resizeOwnership.current || resizeOwnership.current.scenarioId !== scenario.id || resizeOwnership.current.selectedId !== selectedId || resizeOwnership.current.focusMode !== focusMode) {
+      resizeOwnership.current = { scenarioId: scenario.id, selectedId, focusMode, operatorRevision: operatorViewportRevision.current, interrupted: false };
+    }
+    const ownership = resizeOwnership.current;
     let navigationTransition = framedFocusMode.current !== focusMode || framedViewMode.current !== viewMode;
     framedFocusMode.current = focusMode;
     framedViewMode.current = viewMode;
@@ -418,14 +434,12 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     let previousMainWidth = main?.clientWidth ?? 0;
     let previousMainHeight = main?.clientHeight ?? 0;
     let lastScroll = scrollPosition();
-    let interrupted = false;
-    let recovery: { original: GraphViewport; applied: GraphViewport; geometryRevision: number; originalScroll: ReturnType<typeof scrollPosition>; mainHeight: number } | undefined;
     const onScroll = () => {
       const current = scrollPosition();
       if (sameScroll(current, lastScroll)) return;
       lastScroll = current;
-      recovery = undefined;
-      interrupted = true;
+      ownership.recovery = undefined;
+      ownership.interrupted = true;
     };
     const reveal = () => {
       cancelAnimationFrame(pending);
@@ -442,6 +456,11 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
         if (!needsInitialFrame && !revealFromNavigation && mainHeight === previousMainHeight && mainWidth === previousMainWidth && canvasSize.width === previousCanvas.width && canvasSize.height === previousCanvas.height) return;
         const mainShrank = mainHeight < previousMainHeight;
         const mainGrew = mainHeight > previousMainHeight;
+        if (ownership.operatorRevision !== operatorViewportRevision.current) {
+          ownership.operatorRevision = operatorViewportRevision.current;
+          ownership.recovery = undefined;
+          ownership.interrupted = true;
+        }
         if (needsInitialFrame) {
           // Opening Build into an already stacked dock has no resize transition.
           // Establish usable graph space before accepting its first frame.
@@ -451,35 +470,35 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
         } else if (initialFrameDone.current && selectedId) {
           const current = flow.getViewport();
           // A later operator pan, zoom, focus, or card move owns the view from then on.
-          if (recovery && (!sameViewport(current, recovery.applied) || recovery.geometryRevision !== geometryRevision.current)) {
-            recovery = undefined;
-            interrupted = true;
+          if (ownership.recovery && (!sameViewport(current, ownership.recovery.applied) || ownership.recovery.geometryRevision !== geometryRevision.current)) {
+            ownership.recovery = undefined;
+            ownership.interrupted = true;
           }
           const grew = mainGrew || frame.width > previousFrame.width || frame.height > previousFrame.height;
           const shrank = mainShrank || frame.width < previousFrame.width || frame.height < previousFrame.height;
-          if (shrank && !grew) interrupted = false;
+          if (shrank && !grew) ownership.interrupted = false;
           if (flow.getNode(selectedId)?.dragging) {
-            recovery = undefined;
-            interrupted = true;
-          } else if (!(grew && interrupted)) {
+            ownership.recovery = undefined;
+            ownership.interrupted = true;
+          } else if (!(grew && ownership.interrupted)) {
             const originalScroll = scrollPosition();
             if (main && mainHeight > 0 && (mainShrank || revealFromNavigation)) {
               // A stacked dock can shrink main without resizing the canvas. Reveal
               // its toolbar once instead of leaving the graph below the title rows.
               revealCanvasToolbar(canvas);
               lastScroll = scrollPosition();
-            } else if (main && mainGrew && recovery && mainHeight >= recovery.mainHeight) {
-              main.scrollTop = recovery.originalScroll.top;
-              main.scrollLeft = recovery.originalScroll.left;
+            } else if (main && mainGrew && ownership.recovery && mainHeight >= ownership.recovery.mainHeight) {
+              main.scrollTop = ownership.recovery.originalScroll.top;
+              main.scrollLeft = ownership.recovery.originalScroll.left;
               lastScroll = scrollPosition();
             }
-            const next = frameStep(selectedId, "reveal", 0, grew ? recovery?.original : undefined);
+            const next = frameStep(selectedId, "reveal", 0, grew ? ownership.recovery?.original : undefined);
             if (next) {
-              if (recovery) recovery.applied = next;
+              if (ownership.recovery) ownership.recovery.applied = next;
               else if (shrank && (!sameViewport(next, current) || !sameScroll(originalScroll, lastScroll))) {
-                recovery = { original: current, applied: next, geometryRevision: geometryRevision.current, originalScroll, mainHeight: previousMainHeight };
+                ownership.recovery = { original: current, applied: next, geometryRevision: geometryRevision.current, originalScroll, mainHeight: previousMainHeight };
               }
-              if (recovery && sameViewport(next, recovery.original) && sameScroll(lastScroll, recovery.originalScroll)) recovery = undefined;
+              if (ownership.recovery && sameViewport(next, ownership.recovery.original) && sameScroll(lastScroll, ownership.recovery.originalScroll)) ownership.recovery = undefined;
             }
           }
         }
@@ -497,7 +516,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     if (main) { observer.observe(main); main.addEventListener("scroll", onScroll, { passive: true }); }
     reveal();
     return () => { observer.disconnect(); main?.removeEventListener("scroll", onScroll); cancelAnimationFrame(pending); };
-  }, [fitNodes, flow, focusMode, frameStep, nodes.length, nodesInitialized, selectedId, shownSteps, viewMode]);
+  }, [fitNodes, flow, focusMode, frameStep, nodes.length, nodesInitialized, scenario.id, selectedId, shownSteps, viewMode]);
 
   const selectionForGraphRefresh = useRef(selectedId);
   // Graph edits can add and select a node together. Keep that committed selection
@@ -612,7 +631,10 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     const allowed = changes.filter(change => change.type === "remove" ? deletionAllowsRemoval("edges", change.id) : !(review?.readOnly || deletionPending()) || change.type === "select");
     setEdges(items => applyEdgeChanges(allowed, items));
   }, [review?.readOnly, deletionAllowsRemoval, deletionPending]);
-  const onNodeDragStop = (_: unknown, node: BehaviorFlowNode) => applyScenario({ ...scenario, layout: { ...scenario.layout, [node.id]: { x: Math.round(node.position.x), y: Math.round(node.position.y) } } });
+  const onNodeDragStop = (_: unknown, node: BehaviorFlowNode) => {
+    claimViewport();
+    applyScenario({ ...scenario, layout: { ...scenario.layout, [node.id]: { x: Math.round(node.position.x), y: Math.round(node.position.y) } } });
+  };
   const onDelete = ({ nodes: deletedNodes, edges: deletedEdges }: { nodes: BehaviorFlowNode[]; edges: FlowEdge[] }) => {
     if (review?.readOnly || !consumeDeletion({ nodes: deletedNodes, edges: deletedEdges })) return;
     const deletedNodeIds = deletedNodes.map((node) => node.id);
@@ -720,7 +742,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   const platforms = [...new Set(behaviors.flatMap((item) => item.platforms))].sort();
 
   const drop = (event: DragEvent<HTMLDivElement>) => { event.preventDefault(); const id = event.dataTransfer.getData("application/x-bluefire-behavior"); const behavior = behaviorMap.get(id); if (!behavior) return; addBehavior(behavior, flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })); };
-  const fitGraph = () => { fitNodes(shownSteps.map(step => step.id), 250); };
+  const fitGraph = () => { claimViewport(); fitNodes(shownSteps.map(step => step.id), 250); };
   const showSection = (value: string) => {
     const targetSection = value === "all" ? undefined : sections[Number(value)];
     setFocusedSection(value === "all" ? null : Number(value));
@@ -737,7 +759,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     setAllBranches(true); setFocusedSection(null);
     window.requestAnimationFrame(() => { fitNodes(scenario.steps.map(step => step.id), 180, true); });
   };
-  const fitSelection = () => { if (selectedId) frameStep(selectedId, "readable", 180); };
+  const fitSelection = () => { if (selectedId) { claimViewport(); frameStep(selectedId, "readable", 180); } };
   const autoLayoutLabel = focusedGroup ? "Arrange visible group" : "Auto-layout";
   const autoLayout = () => {
     if (review?.readOnly || !scenario.steps.length) return;
@@ -812,7 +834,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
           if (id && visibleRoutes.some((edge) => edge.id === id)) { event.preventDefault(); selectRoute(id); }
         }} onPointerDown={(event) => { const target = event.target as HTMLElement; if (!target.closest("button, input, select, textarea")) event.currentTarget.focus(); }} onDragOver={(event) => { if (event.dataTransfer.types.includes("application/x-bluefire-behavior")) event.preventDefault(); }} onDrop={drop}>
         <ReactFlow<BehaviorFlowNode, FlowEdge> nodes={displayNodes} edges={displayEdges} nodesDraggable={!review?.readOnly && !deletion.summary} nodesConnectable={!review?.readOnly && !deletion.summary} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onEdgeClick={onEdgeClick} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={onNodeClick} onSelectionChange={onSelectionChange} onMove={onMove} onNodeDragStop={onNodeDragStop} onDelete={onDelete} onBeforeDelete={confirmDelete} onConnect={onConnect} minZoom={minimumGraphZoom} maxZoom={1.6} deleteKeyCode={review?.readOnly || deletion.summary ? null : deleteKeys} connectionLineStyle={connectionLineStyle} proOptions={proOptions}>
-          <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="rgba(117,198,255,.12)"/>{scenario.steps.length > 3 && miniMapOpen ? <MiniMap style={miniMapStyle} position="bottom-left" pannable zoomable nodeColor={(node) => node.selected ? "var(--blue)" : "var(--muted)"} bgColor="var(--ink-950)" maskColor="color-mix(in srgb, var(--ink-1000) 72%, transparent)"/> : null}<Controls position="bottom-right" showInteractive={false}/>
+          <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="rgba(117,198,255,.12)"/>{scenario.steps.length > 3 && miniMapOpen ? <MiniMap style={miniMapStyle} position="bottom-left" pannable zoomable nodeColor={(node) => node.selected ? "var(--blue)" : "var(--muted)"} bgColor="var(--ink-950)" maskColor="color-mix(in srgb, var(--ink-1000) 72%, transparent)"/> : null}<Controls position="bottom-right" showInteractive={false} onZoomIn={claimViewport} onZoomOut={claimViewport} onFitView={claimViewport}/>
         </ReactFlow>{!nodes.length ? <div className="graph-empty-overlay"><GitBranch/><strong>Add the first step</strong><span>Choose a method to begin designing this experiment.</span><Button variant="primary" disabled={review?.readOnly} onClick={() => { setPaletteOpen(true); setInspectorOpen(false); }}>Add first step</Button></div> : null}</div>
         {routesOpen ? <BuilderRoutes routes={visibleRoutes} total={scenario.edges.length} selected={selectedRoute} readOnly={Boolean(review?.readOnly)} select={selectRoute} inspect={(source) => { selectStep(source); setRoutesOpen(false); window.requestAnimationFrame(() => document.getElementById(inspectorToggleId)?.focus()); }} remove={(id) => { void flow.deleteElements({ edges: [{ id }] }); }} close={() => { setRoutesOpen(false); document.getElementById(routesToggleId)?.focus(); }} /> : null}
         </div>
