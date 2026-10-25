@@ -12,6 +12,7 @@ import { detectionDraftIdentity, useDetectionDraft } from "../state/useDetection
 import { syntheticSelectionExample } from "../lib/detection-fixtures";
 import { runLabel } from "../lib/run-presentation";
 import { DetectionRunEvaluations } from "../components/DetectionRunEvaluations";
+import { DetectionValidationSummary } from "../components/DetectionValidationSummary";
 import { DetectionAIRevision } from "../components/DetectionAIRevision";
 import { DetectionAICreation } from "../components/DetectionAICreation";
 import { PermissionConditionControl, isLegacyPermissionSelection, isPermissionCondition, permissionConditionForSelection, permissionPredictedFields, permissionSelection, type PermissionCondition } from "../components/PermissionConditionControl";
@@ -873,6 +874,7 @@ function CandidateWorkspace({
       <span className="candidate-heading-icon"><ShieldQuestion aria-hidden="true" /></span>
       <div><h2>{candidate.title ? displayTitle(candidate.title) : candidate.resolvedId}</h2><div className="candidate-heading-meta"><span>{languageLabel(language)} · {candidateVersionLabel(candidate)}</span><Badge tone={candidate.state === "rejected" ? "danger" : candidate.state === "hypothesis" ? "neutral" : candidate.state === "benign_evaluated" ? "info" : "success"}>{lifecycleLabel(candidate.state)}</Badge></div></div>
     </header>
+    <DetectionValidationSummary resource={resource} selectedId={candidate.resolvedId} sourceEdited={source !== defaults.source || selectionJson !== defaults.selectionJson || logsourceJson !== defaults.logsourceJson || structuredPending} onFixtures={() => setTab("fixtures")} />
     <div className="workspace-tabs" role="tablist" aria-label="Detection candidate details">{(["candidate", "evaluations", "revisions", "fixtures", "observed", "history"] as const).map((item) => <button role="tab" aria-selected={tab === item} onClick={() => setTab(item)} key={item}>{item === "evaluations" ? "Run evaluations" : item === "candidate" && querySource ? "Rule" : sentence(item)}</button>)}</div>
     <div className="candidate-body">
       <div className="candidate-main">
