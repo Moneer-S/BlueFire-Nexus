@@ -429,6 +429,16 @@ async function captureActiveHome(card, viewport, projection) {
     document.getElementById("main-content")?.scrollTo({ top: 0, left: 0, behavior: "instant" });
   });
   await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+  // Retain the real frame before assertions so a geometry failure is reviewable.
+  // A saved frame is evidence, not a passing visual qualification.
+  const documentGeometry = await page.evaluate(() => ({ width: innerWidth, height: innerHeight,
+    document_width: document.documentElement.clientWidth, scroll_width: document.documentElement.scrollWidth }));
+  const name = `receiver-home-active-${viewport.width}x${viewport.height}`;
+  const image = await page.screenshot({ fullPage: false, animations: "disabled", mask: [page.locator('input[type="password"]')] });
+  writeFileSync(join(output, `${name}.png`), image, { flag: "wx", mode: 0o600 });
+  const capture = { name, sha256: createHash("sha256").update(image).digest("hex"), viewport_kind: "responsive_viewport",
+    geometry: documentGeometry, elements: [], owner_job_id: projection.owner_job_id, layout_verified: false };
+  report.screenshots.push(capture);
   const targets = [
     ["heading", card.getByRole("heading", { name: "Active objective", exact: true })],
     ["title", card.locator(".active-work-heading h3")],
@@ -443,6 +453,7 @@ async function captureActiveHome(card, viewport, projection) {
     ["evidence_source", card.locator(".active-objective-evidence > dl > div").nth(3)],
   ];
   const elements = [];
+  capture.elements = elements;
   for (const [label, locator] of targets) {
     assert.equal(await locator.count(), 1);
     await locator.waitFor({ state: "visible" });
@@ -462,10 +473,19 @@ async function captureActiveHome(card, viewport, projection) {
           top = Math.max(top, bounds.top + borderTop); bottom = Math.min(bottom, bounds.bottom - borderBottom - scrollbar);
         }
       }
-      const samples = [[box.left + 2, box.top + 2], [box.right - 2, box.top + 2], [box.left + 2, box.bottom - 2],
-        [box.right - 2, box.bottom - 2], [box.left + box.width / 2, box.top + box.height / 2]];
+      // Rounded corners are outside the element's hit surface. Check its
+      // painted interior, while retaining the complete clipping/text checks.
+      const style = getComputedStyle(element);
+      const radius = Math.max(...[style.borderTopLeftRadius, style.borderTopRightRadius,
+        style.borderBottomLeftRadius, style.borderBottomRightRadius].map(value => parseFloat(value) || 0));
+      const insetX = Math.min(box.width / 2, Math.max(2, radius + 1));
+      const insetY = Math.min(box.height / 2, Math.max(2, radius + 1));
+      const samples = [[box.left + insetX, box.top + insetY], [box.right - insetX, box.top + insetY],
+        [box.left + insetX, box.bottom - insetY], [box.right - insetX, box.bottom - insetY],
+        [box.left + box.width / 2, box.top + box.height / 2]];
       return { left: box.left, right: box.right, top: box.top, bottom: box.bottom, width: box.width, height: box.height,
         clip: { left, right, top, bottom }, text_fits: element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1,
+        hit_samples: samples, corner_radius: radius,
         owned_hits: samples.map(([x, y]) => { const hit = document.elementFromPoint(x, y); return Boolean(hit && (hit === element || element.contains(hit))); }) };
     });
     report.home_layout_probe = { viewport, element: label, geometry };
@@ -475,14 +495,8 @@ async function captureActiveHome(card, viewport, projection) {
     assert.ok(geometry.owned_hits.every(Boolean), "Active objective content must be unobscured");
     elements.push({ label, ...geometry });
   }
-  const documentGeometry = await page.evaluate(() => ({ width: innerWidth, height: innerHeight,
-    document_width: document.documentElement.clientWidth, scroll_width: document.documentElement.scrollWidth }));
   assert.ok(documentGeometry.scroll_width <= documentGeometry.document_width + 1, "Home must not overflow horizontally");
-  const name = `receiver-home-active-${viewport.width}x${viewport.height}`;
-  const image = await page.screenshot({ fullPage: false, animations: "disabled", mask: [page.locator('input[type="password"]')] });
-  writeFileSync(join(output, `${name}.png`), image, { flag: "wx", mode: 0o600 });
-  report.screenshots.push({ name, sha256: createHash("sha256").update(image).digest("hex"), viewport_kind: "responsive_viewport",
-    geometry: documentGeometry, elements, owner_job_id: projection.owner_job_id });
+  capture.layout_verified = true;
   report.checks.push(`active_objective_readable_at_${viewport.width}x${viewport.height}`);
   delete report.home_layout_probe;
 }
@@ -1093,6 +1107,7 @@ try {
   }, { origin: ORIGIN, profile: PROFILE, timeout: remainingMs() }, { timeout: 45_000 });
   runnerStarted = false;
   report.cleanup.runner_stopped = true;
+  report.runner_final_state = { state: "stopped", source: "authenticated_status_poll_after_stop" };
   report.checks.push("managed_runner_stopped_through_ui");
 
   const finalOwner = await appApi(`/receiver-defense/jobs/${receiverJobId}`);
@@ -1108,6 +1123,8 @@ try {
   assert.equal(finalOriginal.control?.receiver_state, "stopped");
   assert.ok(finalOriginal.phases.every((item) => item.status === "completed"
     && item.cleanup.receiver === "verified_closed" && item.cleanup.run === "complete"));
+  // Keep completed execution and shutdown evidence even if later UI checks fail.
+  report.owner_status = finalOwner.status;
 
   stage = "home-linked-reference";
   await waitRememberedWork(linkedOwnerId);
@@ -1172,7 +1189,6 @@ try {
   report.home_resume.working_draft_sha256 = createHash("sha256").update(draftBeforeHome.draft).digest("hex");
   report.checks.push("show_working_draft_clears_navigation_preference_without_changing_draft");
 
-  report.owner_status = finalOwner.status;
   report.request_counts = counts;
   assert.equal(report.blocked_requests.length, 0);
   assert.equal(report.errors.length, 0);

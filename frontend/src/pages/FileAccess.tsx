@@ -1,13 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { ArrowRight, CheckCircle2, CircleDashed, FileLock2, FolderLock, RefreshCw, ShieldCheck } from "lucide-react";
+import { ArrowRight, CheckCircle2, CircleDashed, FileLock2, FolderLock, MessageSquareText, RefreshCw, ShieldCheck } from "lucide-react";
 import { compositionJobId, compositionJobValid, FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK } from "../lib/composition";
 import { checkedFileAccessControl, checkedFileAccessList, checkedFileAccessOperation, checkedFileAccessStatus, clearFileAccessPending, fileAccessApi, fileAccessCompositionPack, fileAccessConfirmed, fileAccessControlIdValid, fileAccessJobActive, fileAccessOperationLabels, macOSFileAccessControlIdValid, readFileAccessPending, readFileAccessReconciliationPending, storeFileAccessPending, type FileAccessObservation, type FileAccessPending, type FileAccessReviewRequest, type FileAccessSubmission, type LinuxFileAccessControl, type MacOSFileAccessControl, type WindowsFileAccessControl, type WindowsPairedFileAccessControl, type WindowsSetupFileAccessControl } from "../lib/file-access";
 import { FileAccessReview } from "../components/FileAccessReview";
 import { FileAccessReconciliation } from "../components/FileAccessReconciliation";
 import { ObjectiveContext } from "../components/ObjectiveContext";
 import { useRememberDefensiveWork } from "../state/activeDefensiveWork";
+import { useAssistancePanel, usePublishFileAccessSelection } from "../state/AssistanceContext";
+import type { FileAccessAssistanceSelection } from "../lib/file-access-assistance";
 import { WindowsFileAccessCorrection } from "../components/WindowsFileAccessCorrection";
 import { Badge, Button, Callout, DataList, ErrorState, LoadingState, PageHeader, sentence } from "../components/Primitives";
 import "./FileAccess.css";
@@ -38,6 +40,11 @@ export function FileAccessPage() {
   const statusCurrent = !status.isFetching && !status.isPending && !status.error;
   const list = useQuery({ queryKey: ["file-access-list"], queryFn: async () => checkedFileAccessList(await fileAccessApi.list()), retry: false });
   const control = useQuery({ queryKey: ["file-access-control", owner], queryFn: async () => checkedFileAccessControl(await fileAccessApi.control(owner), owner), enabled: fileAccessControlIdValid(owner), retry: false, refetchInterval: state => state.state.data && (state.state.data.platform === "windows" ? state.state.data.task_usage_state === "unresolved" : state.state.data.usage_state !== "settled") ? 1500 : false });
+  const assistancePanel = useAssistancePanel();
+  const fileAssistanceSelection = useMemo<FileAccessAssistanceSelection | undefined>(() => control.isSuccess && !control.isFetching && control.data && control.data.control_owner_id === owner
+    ? { kind: "file_access_control", control_owner_id: control.data.control_owner_id, control_revision: control.data.revision, control_digest: control.data.control_digest }
+    : undefined, [control.data, control.isSuccess, control.isFetching, owner]);
+  usePublishFileAccessSelection(fileAssistanceSelection, "Saved file-access control");
   const operation = useQuery({ queryKey: ["file-access-operation", operationId, owner], queryFn: async () => checkedFileAccessOperation(await fileAccessApi.operation(operationId), operationId, owner), enabled: compositionJobValid(operationId), retry: false, refetchInterval: state => state.state.data && fileAccessJobActive(state.state.data.job) ? 1500 : false });
   useRememberDefensiveWork("file", control.isSuccess && control.data?.control_owner_id === owner ? owner : undefined);
   useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer); }, []);
@@ -235,6 +242,7 @@ export function FileAccessPage() {
       { label: "Observed content", value: <code>{observation.sha256}</code> }, { label: "Source binding", value: <code>{observation.source_digest}</code> },
     ]} /></FileAccessDetails></section> : null}
     {macOSStatus && control.data && control.data.platform !== "macos" ? <Callout title="Saved control is read-only">This control belongs to another prepared platform. Its history remains available, but its operations are unavailable in this macOS workspace.</Callout> : null}
+    {fileAssistanceSelection ? <div className="file-access-actions"><Button variant="secondary" onClick={() => assistancePanel?.setOpen(true)}><MessageSquareText aria-hidden="true" />Explain saved control</Button></div> : null}
     {owner ? !fileAccessControlIdValid(owner) ? <ErrorState error={new Error("This control link is incomplete.")} /> : control.error ? <ErrorState title="Retained control unavailable" error={control.error} retry={() => { void control.refetch(); }} /> : control.data?.platform === "windows" ? <SavedWindowsSetup control={control.data} disabled={blocked || control.isFetching || !statusCurrent || Boolean(macOSStatus)} baselineReviewAvailable={statusCurrent && currentWindowsSetup && status.data?.available === true && status.data.setup?.enrollment_id === control.data.provenance.enrollment_id && status.data.setup?.enrollment_digest === control.data.provenance.enrollment_digest} fileAccessPath={fileAccessPath} onReview={setReview} /> : control.data?.platform === "macos" ? <SavedMacOSControl control={control.data} disabled={blocked || control.isFetching || !macOSReady} fileAccessPath={fileAccessPath} onReview={setReview} /> : control.data ? <RetainedFileAccess control={control.data} disabled={blocked || control.isFetching || !statusCurrent} readOnly={Boolean(macOSStatus) || !statusCurrent} ready={ready} fileAccessPath={fileAccessPath} onReview={setReview} /> : <LoadingState label="Opening retained file-access control" /> : null}
     {displayedReview ? <FileAccessReview key={`${displayedReview.control_owner_id}:${displayedReview.operation}`} request={displayedReview} expectedControlDigest={control.data?.platform === "macos" || control.data?.schema_version === "bluefire.windows-file-access-control.v3" ? control.data.control_digest : undefined} expectedEnrollmentDigest={control.data?.platform === "macos" ? macOSEnrollment?.enrollment_digest : undefined} disabled={blocked || !reviewAvailable} onSubmit={send} onClose={() => setReview(undefined)} /> : null}
     </div>

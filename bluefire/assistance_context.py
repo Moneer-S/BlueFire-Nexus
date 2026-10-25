@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+from http import HTTPStatus
 from typing import Any, Mapping, Protocol
 from urllib.parse import urlencode
 
 from .ai_assistance import COMPARE, REVISE
 from .ai_provider_access import AIProviderAccess
+from .application_errors import APIError
 from .assistance_audit_context import KIND as AUDIT_KIND
+from .assistance_audit_context import context as audit_context
+from .assistance_audit_context import selection as audit_selection
+from .assistance_file_access_context import KIND as FILE_ACCESS_KIND
+from .assistance_file_access_context import context as file_access_context
+from .assistance_file_access_context import selection as file_access_selection
 from .assistance_receiver_context import KINDS as RECEIVER_KINDS
 from .assistance_runs import AssistanceRunJobs
 from .collection_methods import COLLECTION_METHODS
@@ -24,6 +31,8 @@ from .product_store import ProductStore
 from .registry import BehaviorRegistry
 from .util import content_hash
 
+ANALYSIS_KINDS = frozenset({AUDIT_KIND, FILE_ACCESS_KIND})
+
 
 class AssistanceContext(Protocol):
     """Existing capability services borrowed without importing the composition facade."""
@@ -36,6 +45,7 @@ class AssistanceContext(Protocol):
     assistance_receiver: Any
     receiver_defense: Any
     s3_access: Any
+    file_access: Any
     method_comparison: MethodComparisonJobs
     product_store: ProductStore
     registry: BehaviorRegistry
@@ -62,6 +72,7 @@ def submitted(request: Mapping[str, Any]) -> Mapping[str, Any]:
         "saved_scenario",
         "run_detection",
         AUDIT_KIND,
+        FILE_ACCESS_KIND,
         *RECEIVER_KINDS,
     }:
         return request
@@ -74,7 +85,15 @@ def submitted(request: Mapping[str, Any]) -> Mapping[str, Any]:
 def is_graph(request: Mapping[str, Any]) -> bool:
     return bool(
         request.get("selection", {}).get("kind")
-        in {"graph", "saved_graph", "saved_scenario", "run_detection", AUDIT_KIND, *RECEIVER_KINDS}
+        in {
+            "graph",
+            "saved_graph",
+            "saved_scenario",
+            "run_detection",
+            AUDIT_KIND,
+            FILE_ACCESS_KIND,
+            *RECEIVER_KINDS,
+        }
     )
 
 
@@ -84,6 +103,40 @@ def is_receiver(request):
 
 def is_audit(request):
     return request.get("selection", {}).get("kind") == AUDIT_KIND
+
+
+def is_file_access(request):
+    return request.get("selection", {}).get("kind") == FILE_ACCESS_KIND
+
+
+def is_analysis_only(request):
+    return request.get("selection", {}).get("kind") in ANALYSIS_KINDS
+
+
+def analysis_selection(value):
+    """Validate the exact saved binding without flattening the durable selection."""
+    return (file_access_selection if value.get("kind") == FILE_ACCESS_KIND else audit_selection)(
+        value
+    )
+
+
+def analysis_context(service, chosen):
+    """Reuse the read-only source adapters for capability-free explanations."""
+    return (file_access_context if chosen.get("kind") == FILE_ACCESS_KIND else audit_context)(
+        service, chosen
+    )
+
+
+def fresh_analysis_context(service, chosen, captured):
+    """Revalidate before provider use/publication while preserving the captured document."""
+    current = analysis_context(service, chosen)
+    if current != captured:
+        raise APIError(
+            HTTPStatus.CONFLICT,
+            "assistance_turn_refused",
+            "The selected saved analysis context changed.",
+        )
+    return current
 
 
 def is_creation(request: Mapping[str, Any]) -> bool:

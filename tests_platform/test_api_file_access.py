@@ -156,3 +156,64 @@ def test_file_access_does_not_add_unsupported_http_methods():
             status, _, _ = request(server, method, PREFIX + "operations", body={})
             assert status == 405
             assert service.calls == []
+
+
+@pytest.mark.parametrize("owner", [JOB_ID, WINDOWS_CONTROL, MACOS_CONTROL])
+def test_saved_control_assistance_context_keeps_read_guards(owner):
+    suffix = PREFIX + f"controls/{owner}/assistant-context"
+    service = StubService()
+    service.file_access_assistance_context = lambda identifier: service.calls.append(
+        ("file_access_assistance_context", identifier)
+    ) or {"saved": True}
+    with running_server(service) as (server, _):
+        status, _, payload = request(server, "GET", suffix)
+        assert status == 200 and json_body(payload) == {"saved": True}
+        assert service.calls == [("file_access_assistance_context", owner)]
+        service.calls.clear()
+        for method, tail, authenticated, expected in (
+            ("GET", "", False, 401),
+            ("GET", "?_saved_only=true", True, 400),
+            ("GET", "#authority", True, 400),
+            ("POST", "", True, 405),
+        ):
+            status, _, _ = request(
+                server,
+                method,
+                suffix + tail,
+                body={} if method == "POST" else None,
+                authenticated=authenticated,
+            )
+            assert status == expected and service.calls == []
+
+
+def test_actual_saved_control_assistance_http_is_minimized_and_does_not_probe(
+    tmp_path, monkeypatch
+):
+    from bluefire import macos_file_access_control
+    from bluefire.service import BlueFireService
+
+    store = ProductStore(tmp_path / "saved.sqlite3")
+    imported = store.import_macos_file_access_setup(
+        {"schema_version": "bluefire.macos-file-access-setup.v1", "binding": binding()}, now_ms=1000
+    )
+    owner = imported["control_owner_id"]
+    source = SimpleNamespace(product_store=store)
+    source.file_access = FileAccessControl(source, clock=lambda: 1000)
+    monkeypatch.setattr(
+        macos_file_access_control,
+        "endpoint",
+        lambda *_: pytest.fail("Read contacted native endpoint"),
+    )
+    service = StubService()
+    service.file_access_assistance_context = (
+        lambda identifier: BlueFireService.file_access_assistance_context(source, identifier)
+    )
+    before = store.path.read_bytes()
+    with running_server(service) as (server, _):
+        status, _, payload = request(server, "GET", PREFIX + f"controls/{owner}/assistant-context")
+    value = json_body(payload)
+    assert status == 200 and value["analysis_only"] is True and value["capabilities"] == []
+    assert value["selected"]["control_owner_id"] == owner
+    assert value["reference_summary"]["readiness"] == "not_assessed"
+    assert value["reference_summary"]["baseline"] == {"recorded": False}
+    assert store.path.read_bytes() == before

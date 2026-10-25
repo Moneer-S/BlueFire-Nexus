@@ -290,7 +290,9 @@
 .workbench-builder .graph-overview-toggle { display: flex; align-items: center; gap: 5px; min-height: 25px; padding: 3px 4px; border: 0; border-radius: 3px; color: var(--muted-strong); background: transparent; font: inherit; font-size: .625rem; }
 .workbench-builder .graph-overview-toggle svg { width: 12px; height: 12px; }
 .workbench-builder .graph-overview-toggle:hover, .workbench-builder .graph-overview-toggle[aria-pressed="true"] { color: var(--blue-soft); background: var(--surface); }
-@container builder-workspace (min-width: 701px) and (max-width: 1000px) {
+/* Docking Assistant can narrow the workspace below the inspector breakpoint.
+   Keep the same compact controls there so View options stays reachable. */
+@container builder-workspace (max-width: 1000px) {
   .workbench-builder .graph-auto-layout, .workbench-builder .graph-scale { display: none; }
   .workbench-builder .graph-compacted-tools { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .workbench-builder .graph-view-actions { gap: 2px; }

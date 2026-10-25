@@ -110,14 +110,15 @@ def context(service, operation, owner_id, now_ms):
     }
 
 
-def projection(service, view, now_ms) -> dict[str, Any]:
+def projection(service, view, now_ms, *, _saved_only=False) -> dict[str, Any]:
     control = view["document"]
     pending = view["pending_operation"] or not view["usages_settled"]
     live = False
-    try:
-        live = endpoint(service).review_context("baseline")["binding"] == control["binding"]
-    except (OSError, RuntimeError, ValueError, ProductStoreError):
-        pass
+    if not _saved_only:
+        try:
+            live = endpoint(service).review_context("baseline")["binding"] == control["binding"]
+        except (OSError, RuntimeError, ValueError, ProductStoreError):
+            pass
     binding = control["binding"]
     return {
         "schema_version": "bluefire.file-access-control.v1",

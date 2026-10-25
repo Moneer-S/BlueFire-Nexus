@@ -11,12 +11,16 @@ from urllib.parse import urlencode
 from .ai_assistance import COMPARE, CREATE, REVISE, message_text, suggest_plan
 from .ai_wire import AIProviderCancelled, AIProviderError
 from .application_errors import APIError
-from .assistance_audit_context import KIND as AUDIT_KIND
-from .assistance_audit_context import context as audit_context
-from .assistance_audit_context import selection as audit_selection
-from .assistance_context import LIMITATIONS, AssistanceContext
+from .assistance_context import (
+    ANALYSIS_KINDS,
+    LIMITATIONS,
+    AssistanceContext,
+    analysis_context,
+    analysis_selection,
+    fresh_analysis_context,
+)
 from .assistance_context import context as selected_context
-from .assistance_context import is_audit as is_audit
+from .assistance_context import is_analysis_only as is_analysis_only
 from .assistance_context import is_creation as is_creation
 from .assistance_context import is_graph as is_graph
 from .assistance_context import is_receiver as is_receiver
@@ -69,11 +73,10 @@ class ExperimentAssistance:
         request = submitted(request)
         if is_receiver(request):
             return dict(self.service.assistance_receiver.fresh(job))
-        if is_audit(request):
-            current = audit_context(self.service, request["selection"])
-            if current != job["request"]["context"]:
-                raise fail("The selected saved audit context changed.")
-            return dict(current)
+        if is_analysis_only(request):
+            return fresh_analysis_context(
+                self.service, request["selection"], job["request"]["context"]
+            )
         current = (
             (
                 self.service.assistance_runs.context(request["selection"])
@@ -115,18 +118,11 @@ class ExperimentAssistance:
             chosen = request["selection"]
             if not isinstance(chosen, Mapping) or not isinstance(chosen.get("kind"), str):
                 raise fail("Select a typed graph or detector context.")
-            if chosen.get("kind") in {
-                "graph",
-                "saved_graph",
-                "saved_scenario",
-                "run_detection",
-                AUDIT_KIND,
-                *RECEIVER_KINDS,
-            }:
+            if is_graph(request):
                 try:
                     (
-                        audit_selection
-                        if chosen["kind"] == AUDIT_KIND
+                        analysis_selection
+                        if chosen["kind"] in ANALYSIS_KINDS
                         else (
                             receiver_selection
                             if chosen["kind"] in RECEIVER_KINDS
@@ -223,8 +219,8 @@ class ExperimentAssistance:
             }
             try:
                 context = (
-                    audit_context(self.service, request["selection"])
-                    if is_audit(request)
+                    analysis_context(self.service, request["selection"])
+                    if is_analysis_only(request)
                     else (
                         self.service.assistance_receiver.context(request["selection"])
                         if is_receiver(request)
@@ -306,9 +302,9 @@ class ExperimentAssistance:
                 message=submitted["message"],
                 cancel=ctx.cancellation_event,
             )
-            if is_audit(submitted):
+            if is_analysis_only(submitted):
                 if proposal["plan"]:
-                    raise fail("Saved audit explanation has no dispatch capability.")
+                    raise fail("Saved analysis explanation has no dispatch capability.")
                 # Publish read-only answers only after the final binding checks.
                 self._advance(ctx.job_id)
                 return JobResult(progress={**proposal, "planning_complete": True})
@@ -344,9 +340,9 @@ class ExperimentAssistance:
         self._fresh(parent)
         self._provider(parent)
         selected_request = submitted(parent["request"]["submitted_request"])
-        if is_audit(selected_request):
+        if is_analysis_only(selected_request):
             if parent["progress"].get("plan"):
-                raise fail("Saved audit explanation cannot dispatch an operation.")
+                raise fail("Saved analysis explanation cannot dispatch an operation.")
             return
         if is_receiver(selected_request):
             self.service.assistance_receiver.advance(parent, recovery=recovery)
@@ -840,7 +836,7 @@ class ExperimentAssistance:
                         },
                     )
             elif (
-                is_audit(request["submitted_request"])
+                is_analysis_only(request["submitted_request"])
                 and not progress["plan"]
                 and parent["state"] == "completed"
             ):

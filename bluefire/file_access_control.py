@@ -330,7 +330,7 @@ class FileAccessControl:
             ],
         }
 
-    def control(self, owner_id: str) -> dict[str, Any]:
+    def control(self, owner_id: str, *, _saved_only: bool = False) -> dict[str, Any]:
         view = self.store.get_file_access_control(owner_id)
         document = view["document"]
         from . import macos_file_access_control as macos_control
@@ -338,7 +338,9 @@ class FileAccessControl:
         from .windows_file_access_context import is_control, projection
 
         if macos.is_control(document):
-            return macos_control.projection(self.service, view, self.clock())
+            return macos_control.projection(
+                self.service, view, self.clock(), _saved_only=_saved_only
+            )
         if is_control(document):
             return projection(self.service, document, self.clock())
         binding, baseline = document["binding"], document["baseline"]
