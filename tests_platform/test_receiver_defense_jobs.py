@@ -448,6 +448,8 @@ class _PublicationDiagnostic:
         ("test_receiver_defense_jobs.py", "execute_task"): "synthetic_dispatch",
         ("test_receiver_defense_jobs.py", "hold_final_publication"): "publication_wait",
     }
+    location_sites = {"replay_body"}
+    max_location_offset = 4096
     connection_sites = {
         "with self._lock:": "store_lock",
         "pinned_regular_file_identity(": "identity_check",
@@ -555,6 +557,7 @@ class _PublicationDiagnostic:
                 return {"state": "not_live", "sites": [], "truncated": False}
             sites = []
             store_subsite = None
+            location = None
             for _ in range(32):
                 if frame is None:
                     break
@@ -565,10 +568,19 @@ class _PublicationDiagnostic:
                     sites.append(site)
                 if site == "store_connection" and store_subsite is None:
                     store_subsite = self.connection_subsite(frame)
+                if site in self.location_sites and location is None:
+                    first_line = getattr(code, "co_firstlineno", None)
+                    line_offset = frame.f_lineno - first_line if type(first_line) is int else None
+                    if type(line_offset) is int and 0 <= line_offset <= self.max_location_offset:
+                        # A source-relative offset is useful for this fixed frame
+                        # without exposing a path, code name, or frame locals.
+                        location = {"site": site, "line_offset": line_offset}
                 frame = frame.f_back
             result = {"state": "live", "sites": sites, "truncated": frame is not None}
             if store_subsite is not None:
                 result["store_subsite"] = store_subsite
+            if location is not None:
+                result["location"] = location
             return result
         except Exception:
             return {"state": "unavailable", "sites": [], "truncated": False}
@@ -736,6 +748,41 @@ def test_publication_stack_sample_is_bounded_and_never_prints_frame_values(monke
         "sites": [],
         "truncated": False,
     }
+
+
+def test_publication_stack_reports_only_bounded_allowlisted_source_offset(monkeypatch, capsys):
+    diagnostic = _PublicationDiagnostic()
+    code = BlueFireService._replay_locked.__code__
+    diagnostic._worker_threads["restored"] = 123456789
+    frame = SimpleNamespace(
+        f_code=code,
+        f_lineno=code.co_firstlineno + 17,
+        f_back=None,
+        f_locals={"PRIVATE_FRAME_VALUE": "PRIVATE_FRAME_VALUE"},
+    )
+    monkeypatch.setattr(sys, "_current_frames", lambda: {123456789: frame})
+
+    stack = diagnostic.worker_stack("restored")
+    assert stack == {
+        "state": "live",
+        "sites": ["replay_body"],
+        "truncated": False,
+        "location": {"site": "replay_body", "line_offset": 17},
+    }
+    assert "PRIVATE_FRAME_VALUE" not in json.dumps(stack)
+    controller = SimpleNamespace(_condition=threading.Lock(), _controls={})
+    diagnostic.report(controller, "PRIVATE_JOB_ID", "restored")
+    output = capsys.readouterr().out
+    assert "PRIVATE_" not in output and code.co_filename not in output
+    assert "_replay_locked" not in output
+    report = json.loads(output.removeprefix("Receiver publication diagnostic: "))
+    assert report["worker_stack"]["location"] == {
+        "site": "replay_body",
+        "line_offset": 17,
+    }
+
+    frame.f_lineno = code.co_firstlineno + diagnostic.max_location_offset + 1
+    assert "location" not in diagnostic.worker_stack("restored")
 
 
 @pytest.mark.parametrize(
