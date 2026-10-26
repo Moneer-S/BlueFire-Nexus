@@ -1,0 +1,18 @@
+.active-objective-context { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 14px; margin: 16px 0; }
+.active-objective-context dt, .active-objective-change > span { color: var(--muted); font-size: .68rem; line-height: 1.5; }
+.active-objective-context dd { margin: 4px 0 0; color: var(--text-soft); font-size: .79rem; line-height: 1.5; overflow-wrap: anywhere; }
+.active-objective-change { margin: 0 0 18px; padding: 12px 14px; border-left: 2px solid var(--blue); background: color-mix(in srgb, var(--blue) 5%, transparent); border-radius: 0 6px 6px 0; }
+.active-objective-change p { margin: 4px 0 0; font-size: .77rem; color: var(--text-soft); line-height: 1.6; overflow-wrap: anywhere; }
+.active-objective-state { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-top: 14px; color: var(--muted); font-size: .68rem; }
+.active-objective-state .button { min-height: 28px; padding: 4px 7px; font-size: .68rem; }
+.active-objective-evidence > dl { display: grid; gap: 0; margin: 12px 0; }
+.active-objective-evidence > dl > div { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.active-objective-evidence dt { color: var(--muted); font-size: .68rem; }
+.active-objective-evidence dd { margin: 4px 0 0; font-size: .8rem; font-weight: 550; color: var(--text-soft); line-height: 1.5; overflow-wrap: anywhere; }
+.active-objective-evidence dd[data-tone="positive"] { color: var(--green); }
+.active-objective-evidence dd[data-tone="caution"] { color: var(--amber); }
+.active-objective-evidence nav { display: flex; flex-wrap: wrap; gap: 9px 16px; }
+.active-objective-evidence nav a { display: inline-flex; align-items: center; gap: 6px; color: var(--blue-soft); font-size: .71rem; line-height: 1.5; text-decoration: none; }
+.active-objective-evidence nav svg { width: 13px; height: 13px; }
+.active-objective-evidence > p { color: var(--muted); font-size: .75rem; line-height: 1.6; }
+@container overview (max-width: 430px) { .active-objective-context { grid-template-columns: minmax(0, 1fr); } }

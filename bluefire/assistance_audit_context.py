@@ -1,5 +1,7 @@
 """Read-only, minimized saved-audit context with no dispatch capabilities."""
 
+from typing import Any, Mapping
+
 from .product_store_errors import ProductStoreError
 from .s3_access_contract import S3AccessError, digest, exact
 from .s3_access_results import job_id
@@ -95,7 +97,7 @@ def _collected_summary(review):
     return summary
 
 
-def _document(chosen, summary, limitations):
+def _document(chosen, summary, limitations) -> Mapping[str, Any]:
     document = {
         "schema_version": "bluefire.assistance-context.v1",
         "selected": chosen,
@@ -124,7 +126,7 @@ def selection(value):
         raise ProductStoreError("Select one exact saved audit review.") from exc
 
 
-def context(service, value):
+def context(service, value) -> Mapping[str, Any]:
     chosen = selection(value)
     try:
         review = read_review(service.s3_access, chosen["workflow_job_id"], chosen["review_id"])
