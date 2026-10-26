@@ -1077,6 +1077,15 @@ def main(
                 ):
                     error["setup_site"] = setup_site
                     error["setup_offset"] = setup_offset
+                observation = getattr(exc, "safe_setup_observation", None)
+                diagnostics = getattr(module, "_setup_failure_diagnostics", None)
+                valid_observation = getattr(diagnostics, "valid_startup_observation_payload", None)
+                if (
+                    type(observation) is dict
+                    and callable(valid_observation)
+                    and valid_observation(observation)
+                ):
+                    error["startup_observation"] = dict(observation)
         _json({"error": error})
         return 2
     except KeyboardInterrupt:

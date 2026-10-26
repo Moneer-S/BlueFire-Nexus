@@ -76,6 +76,7 @@ class MacOSSetupFailure(RuntimeError):
         *,
         setup_site: str | None = None,
         setup_offset: int | None = None,
+        startup_observation: dict[str, Any] | None = None,
     ) -> None:
         if stage not in MACOS_SETUP_DIAGNOSTIC_STAGES:
             raise ValueError("unknown macOS setup diagnostic stage")
@@ -89,11 +90,18 @@ class MacOSSetupFailure(RuntimeError):
             raise ValueError("unknown macOS setup diagnostic site")
         if setup_site is None and setup_offset is not None:
             raise ValueError("macOS setup diagnostic offset requires a known site")
+        if startup_observation is not None and (
+            stage != "namespace_creation"
+            or not _setup_failure_diagnostics.valid_startup_observation_payload(startup_observation)
+        ):
+            raise ValueError("unknown macOS startup observation diagnostic")
         super().__init__(message)
         self.safe_setup_stage = stage
         if setup_site is not None:
             self.safe_setup_site = setup_site
             self.safe_setup_offset = setup_offset
+        if startup_observation is not None:
+            self.safe_setup_observation = dict(startup_observation)
 
 
 def _at_setup_stage(
@@ -111,6 +119,11 @@ def _at_setup_stage(
         raise
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
         diagnostic = None
+        startup_observation = (
+            _setup_failure_diagnostics.startup_observation_from_exception(exc)
+            if stage == "namespace_creation"
+            else None
+        )
         if failure_site is not None:
             try:
                 candidate = failure_site(exc)
@@ -127,9 +140,17 @@ def _at_setup_stage(
             ):
                 diagnostic = candidate
         if diagnostic is None:
-            raise MacOSSetupFailure(stage, str(exc)) from None
+            raise MacOSSetupFailure(
+                stage,
+                str(exc),
+                startup_observation=startup_observation,
+            ) from None
         raise MacOSSetupFailure(
-            stage, str(exc), setup_site=diagnostic[0], setup_offset=diagnostic[1]
+            stage,
+            str(exc),
+            setup_site=diagnostic[0],
+            setup_offset=diagnostic[1],
+            startup_observation=startup_observation,
         ) from None
 
 

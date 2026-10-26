@@ -404,7 +404,7 @@ def test_namespace_creation_failure_site_is_fixed_stage_scoped_and_deepest():
     assert failure.safe_setup_offset == 121
     with pytest.raises(ValueError, match="unknown macOS setup diagnostic site"):
         local.MacOSSetupFailure(
-            "namespace_creation", "safe", setup_site="namespace_worker_start", setup_offset=122
+            "namespace_creation", "safe", setup_site="namespace_worker_start", setup_offset=133
         )
     with pytest.raises(ValueError, match="unknown macOS setup diagnostic site"):
         local.MacOSSetupFailure(
@@ -414,6 +414,102 @@ def test_namespace_creation_failure_site_is_fixed_stage_scoped_and_deepest():
         local.MacOSSetupFailure(
             "package_import_custody", "safe", setup_site="namespace_worker_start", setup_offset=121
         )
+
+
+def test_startup_observation_summary_is_finite_capped_and_private():
+    diagnostics = local._setup_failure_diagnostics
+    summary = (0, None, None, False)
+    summary = diagnostics.record_startup_observation_failure(
+        summary, "peer_child_exited_before_query"
+    )
+    summary = diagnostics.record_startup_observation_failure(
+        summary, "/private/var/db/token-marker"
+    )
+    summary = diagnostics.record_startup_observation_failure(summary, "peer_bsd_query_failed")
+    assert summary == (
+        3,
+        "peer_child_exited_before_query",
+        "peer_bsd_query_failed",
+        False,
+    )
+    payload = diagnostics.startup_observation_payload(summary)
+    assert payload == {
+        "count": 3,
+        "count_capped": False,
+        "first_site": "peer_child_exited_before_query",
+        "last_site": "peer_bsd_query_failed",
+    }
+    assert "/private/var/db/token-marker" not in json.dumps(payload)
+
+    capped = (0, None, None, False)
+    for _ in range(diagnostics.MAX_STARTUP_OBSERVATION_FAILURES + 20):
+        capped = diagnostics.record_startup_observation_failure(
+            capped, "peer_child_exited_after_query"
+        )
+    assert capped == (
+        diagnostics.MAX_STARTUP_OBSERVATION_FAILURES,
+        "peer_child_exited_after_query",
+        "peer_child_exited_after_query",
+        True,
+    )
+    assert diagnostics.startup_observation_payload(capped) == {
+        "count": diagnostics.MAX_STARTUP_OBSERVATION_FAILURES,
+        "count_capped": True,
+        "first_site": "peer_child_exited_after_query",
+        "last_site": "peer_child_exited_after_query",
+    }
+    assert (
+        diagnostics.startup_observation_payload(
+            (1, "token-like-untrusted-value", "peer_bsd_query_failed", False)
+        )
+        is None
+    )
+    assert diagnostics.startup_observation_payload((True, "unknown", "unknown", False)) is None
+    assert (
+        diagnostics.startup_observation_payload(
+            (
+                diagnostics.MAX_STARTUP_OBSERVATION_FAILURES,
+                "unknown",
+                "unknown",
+                False,
+            )
+        )
+        is None
+    )
+    assert diagnostics.startup_observation_payload((4, "unknown", "unknown", True)) is None
+
+
+def test_namespace_setup_wrapper_keeps_only_validated_startup_summary():
+    original = namespace_contract.MacOSFileAccessContractError("private exception detail")
+    original._safe_startup_observation_summary = (
+        2,
+        "peer_child_exited_before_query",
+        "/private/var/db/token-marker",
+        False,
+    )
+
+    def fail_operation():
+        raise original
+
+    with pytest.raises(local.MacOSSetupFailure) as caught:
+        local._at_setup_stage("namespace_creation", fail_operation)
+
+    assert not hasattr(caught.value, "safe_setup_observation")
+
+    original._safe_startup_observation_summary = (
+        2,
+        "peer_child_exited_before_query",
+        "peer_bsd_query_failed",
+        False,
+    )
+    with pytest.raises(local.MacOSSetupFailure) as caught:
+        local._at_setup_stage("namespace_creation", fail_operation)
+    assert caught.value.safe_setup_observation == {
+        "count": 2,
+        "count_capped": False,
+        "first_site": "peer_child_exited_before_query",
+        "last_site": "peer_bsd_query_failed",
+    }
 
 
 @pytest.mark.parametrize(
@@ -505,6 +601,12 @@ def test_cli_includes_setup_stage_only_for_typed_macos_setup_failure(monkeypatch
                 "The original sealed Darwin namespace is unavailable.",
                 setup_site="namespace_worker_start",
                 setup_offset=121,
+                startup_observation={
+                    "count": 2,
+                    "count_capped": False,
+                    "first_site": "peer_child_exited_before_query",
+                    "last_site": "peer_bsd_query_failed",
+                },
             )
         ),
     )
@@ -519,8 +621,26 @@ def test_cli_includes_setup_stage_only_for_typed_macos_setup_failure(monkeypatch
             "setup_stage": "namespace_creation",
             "setup_site": "namespace_worker_start",
             "setup_offset": 121,
+            "startup_observation": {
+                "count": 2,
+                "count_capped": False,
+                "first_site": "peer_child_exited_before_query",
+                "last_site": "peer_bsd_query_failed",
+            },
         }
     }
+
+    with pytest.raises(ValueError, match="unknown macOS startup observation diagnostic"):
+        local.MacOSSetupFailure(
+            "namespace_creation",
+            "safe",
+            startup_observation={
+                "count": 1,
+                "count_capped": False,
+                "first_site": "/private/var/db/private-workspace",
+                "last_site": "peer_bsd_query_failed",
+            },
+        )
 
     malformed = local.MacOSSetupFailure(
         "package_import_custody", "The protected macOS setup is unavailable."

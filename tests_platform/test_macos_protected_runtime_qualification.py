@@ -866,6 +866,10 @@ def test_child_cli_error_keeps_only_allowlisted_setup_stage():
     }
     assert local.MACOS_SETUP_DIAGNOSTIC_STAGES == lifecycle._SAFE_SETUP_STAGES
     assert local.MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS == lifecycle._SAFE_SETUP_SITE_OFFSETS
+    assert (
+        local._setup_failure_diagnostics.STARTUP_OBSERVATION_SITES
+        == lifecycle._SAFE_STARTUP_OBSERVATION_SITES
+    )
 
 
 def test_child_cli_error_redacts_unclassified_message_and_rejects_other_codes():
@@ -890,6 +894,112 @@ def test_child_cli_error_redacts_unclassified_message_and_rejects_other_codes():
         lifecycle._parse_child_cli_error('{"error":{"code":"arbitrary_code","message":"unsafe"}}')
         is None
     )
+
+
+def test_startup_observation_projection_is_allowlisted_and_bounded():
+    safe = {
+        "count": 3,
+        "count_capped": False,
+        "first_site": "peer_child_exited_before_query",
+        "last_site": "peer_bsd_query_failed",
+    }
+    parsed = lifecycle._parse_child_cli_error(
+        json.dumps(
+            {
+                "error": {
+                    "code": "command_failed",
+                    "message": "The original sealed Darwin namespace is unavailable.",
+                    "setup_stage": "namespace_creation",
+                    "startup_observation": safe,
+                }
+            }
+        )
+    )
+    secret = lifecycle._parse_child_cli_error(
+        json.dumps(
+            {
+                "error": {
+                    "code": "command_failed",
+                    "message": "The original sealed Darwin namespace is unavailable.",
+                    "setup_stage": "namespace_creation",
+                    "startup_observation": {
+                        **safe,
+                        "last_site": "/private/var/db/secret-marker",
+                    },
+                }
+            }
+        )
+    )
+    bool_count = lifecycle._parse_child_cli_error(
+        json.dumps(
+            {
+                "error": {
+                    "code": "command_failed",
+                    "message": "The original sealed Darwin namespace is unavailable.",
+                    "setup_stage": "namespace_creation",
+                    "startup_observation": {**safe, "count": True},
+                }
+            }
+        )
+    )
+    extra_field = lifecycle._parse_child_cli_error(
+        json.dumps(
+            {
+                "error": {
+                    "code": "command_failed",
+                    "message": "The original sealed Darwin namespace is unavailable.",
+                    "setup_stage": "namespace_creation",
+                    "startup_observation": {**safe, "raw_exception": "must be discarded"},
+                }
+            }
+        )
+    )
+    inconsistent_cap = lifecycle._parse_child_cli_error(
+        json.dumps(
+            {
+                "error": {
+                    "code": "command_failed",
+                    "message": "The original sealed Darwin namespace is unavailable.",
+                    "setup_stage": "namespace_creation",
+                    "startup_observation": {**safe, "count": 255, "count_capped": False},
+                }
+            }
+        )
+    )
+    premature_cap = lifecycle._parse_child_cli_error(
+        json.dumps(
+            {
+                "error": {
+                    "code": "command_failed",
+                    "message": "The original sealed Darwin namespace is unavailable.",
+                    "setup_stage": "namespace_creation",
+                    "startup_observation": {**safe, "count": 4, "count_capped": True},
+                }
+            }
+        )
+    )
+
+    expected = {
+        "count": 3,
+        "count_capped": False,
+        "first_site": "peer_child_exited_before_query",
+        "last_site": "peer_bsd_query_failed",
+    }
+    assert parsed is not None and parsed["startup_observation"] == expected
+    assert secret is not None and "startup_observation" not in secret
+    assert bool_count is not None and "startup_observation" not in bool_count
+    assert extra_field is not None and "startup_observation" not in extra_field
+    assert inconsistent_cap is not None and "startup_observation" not in inconsistent_cap
+    assert premature_cap is not None and "startup_observation" not in premature_cap
+    assert "/private/var/db/secret-marker" not in json.dumps(secret)
+    assert "must be discarded" not in json.dumps(extra_field)
+
+    readiness = lifecycle._safe_readiness_diagnostics(
+        "child_exited_before_readiness",
+        {"shutdown_method": "supervisor_sigterm", "process_group_gone": True},
+        parsed,
+    )
+    assert readiness["startup_observation"] == expected
 
 
 def _pretty_cli_json(value):

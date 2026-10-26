@@ -120,13 +120,53 @@ _SAFE_SETUP_SITE_OFFSETS = {
         "namespace_descriptor_security": frozenset(range(64)),
         "namespace_sealed_resource": frozenset(range(60)),
         "namespace_binding": frozenset(range(26)),
-        "namespace_worker_start": frozenset(range(122)),
+        "namespace_worker_start": frozenset(range(133)),
         "namespace_worker_guard_wall_window": frozenset({8}),
         "namespace_worker_guard_deadline": frozenset({10}),
         "namespace_worker_guard_wall_clock_order": frozenset({12}),
         "namespace_worker_guard_monotonic_order": frozenset({14}),
     },
 }
+_SAFE_STARTUP_OBSERVATION_SITES = frozenset(
+    {
+        "unknown",
+        "worker_process_missing",
+        "worker_process_not_retained",
+        "worker_active_process_missing",
+        "worker_process_indeterminate",
+        "worker_nofork_proof_refresh_failed",
+        "worker_consistency_changed",
+        "peer_runtime_unsupported",
+        "peer_uid_api_missing",
+        "peer_euid_api_missing",
+        "peer_real_uid_not_root",
+        "peer_effective_uid_not_root",
+        "peer_process_type_invalid",
+        "peer_pid_type_invalid",
+        "peer_pid_out_of_range",
+        "peer_process_already_reaped",
+        "peer_status_ownership_unavailable_initial",
+        "peer_identity_keys_invalid",
+        "peer_identity_value_invalid",
+        "peer_uid_mismatch",
+        "peer_gid_mismatch",
+        "peer_expected_start_invalid",
+        "peer_child_exited_before_query",
+        "peer_bsd_query_failed",
+        "peer_pid_mismatch",
+        "peer_parent_mismatch",
+        "peer_status_flags_missing",
+        "peer_status_flags_invalid",
+        "peer_status_invalid",
+        "peer_observed_ids_mismatch",
+        "peer_start_invalid",
+        "peer_start_mismatch",
+        "peer_process_reaped_after_query",
+        "peer_status_ownership_unavailable_after_query",
+        "peer_child_exited_after_query",
+    }
+)
+_MAX_STARTUP_OBSERVATION_FAILURES = 255
 _READINESS_FAILURE_STAGES = frozenset(
     {
         "readiness_wait",
@@ -139,7 +179,38 @@ _READINESS_FAILURE_STAGES = frozenset(
 )
 
 
-def _parse_child_cli_error(raw: str) -> dict[str, str] | None:
+def _safe_startup_observation(value: Any) -> dict[str, Any] | None:
+    if type(value) is not dict or set(value) != {
+        "count",
+        "count_capped",
+        "first_site",
+        "last_site",
+    }:
+        return None
+    count = value["count"]
+    count_capped = value["count_capped"]
+    first_site = value["first_site"]
+    last_site = value["last_site"]
+    if (
+        type(count) is not int
+        or not 1 <= count <= _MAX_STARTUP_OBSERVATION_FAILURES
+        or type(count_capped) is not bool
+        or count_capped != (count == _MAX_STARTUP_OBSERVATION_FAILURES)
+        or type(first_site) is not str
+        or first_site not in _SAFE_STARTUP_OBSERVATION_SITES
+        or type(last_site) is not str
+        or last_site not in _SAFE_STARTUP_OBSERVATION_SITES
+    ):
+        return None
+    return {
+        "count": count,
+        "count_capped": count_capped,
+        "first_site": first_site,
+        "last_site": last_site,
+    }
+
+
+def _parse_child_cli_error(raw: str) -> dict[str, Any] | None:
     """Keep only fixed CLI error codes and classifications, never message text."""
     if len(raw.encode("utf-8", errors="replace")) > 4096:
         return None
@@ -153,7 +224,7 @@ def _parse_child_cli_error(raw: str) -> dict[str, str] | None:
     message = error.get("message")
     if not isinstance(message, str):
         return None
-    result = {
+    result: dict[str, Any] = {
         "error_code": "command_failed",
         "error_class": _KNOWN_SETUP_ERROR_CLASSES.get(message, "unclassified_command_failure"),
     }
@@ -169,13 +240,17 @@ def _parse_child_cli_error(raw: str) -> dict[str, str] | None:
         ):
             result["setup_site"] = setup_site
             result["setup_offset"] = setup_offset
+        if setup_stage == "namespace_creation":
+            observation = _safe_startup_observation(error.get("startup_observation"))
+            if observation is not None:
+                result["startup_observation"] = observation
     return result
 
 
 def _safe_readiness_diagnostics(
     failure_stage: str,
     stopped: dict[str, Any],
-    child_error: dict[str, str] | None,
+    child_error: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Project runtime state onto fixed, non-sensitive diagnostic fields."""
     result: dict[str, Any] = {
@@ -220,6 +295,9 @@ def _safe_readiness_diagnostics(
             ):
                 result["setup_site"] = setup_site
                 result["setup_offset"] = setup_offset
+            observation = _safe_startup_observation(child_error.get("startup_observation"))
+            if observation is not None:
+                result["startup_observation"] = observation
     return result
 
 
@@ -228,14 +306,14 @@ class SupervisorHandle:
     process: subprocess.Popen[str]
     ready_lines: queue.Queue[str]
     stdout_lines: queue.Queue[str]
-    child_errors: queue.Queue[dict[str, str]]
+    child_errors: queue.Queue[dict[str, Any]]
     reader_threads: tuple[threading.Thread, threading.Thread]
 
 
 def _read_supervisor_stdout(
     stream: TextIO,
     stdout_lines: queue.Queue[str],
-    child_errors: queue.Queue[dict[str, str]],
+    child_errors: queue.Queue[dict[str, Any]],
 ) -> None:
     """Retain and parse one bounded complete JSON document after stdout EOF."""
     chunks: list[str] = []
@@ -468,7 +546,7 @@ def _open_supervisor(python: Path) -> tuple[SupervisorHandle, str, int, str]:
     )
     ready_lines: queue.Queue[str] = queue.Queue(maxsize=1)
     stdout_lines: queue.Queue[str] = queue.Queue(maxsize=1)
-    child_errors: queue.Queue[dict[str, str]] = queue.Queue(maxsize=1)
+    child_errors: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
 
     def read_stderr() -> None:
         assert process.stderr is not None

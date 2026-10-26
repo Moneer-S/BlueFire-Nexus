@@ -56,28 +56,30 @@ def test_known_child_checks_without_reaping(child):
 
 
 @pytest.mark.parametrize(
-    "field,value",
+    "field,value,site",
     [
-        ("pid", 72),
-        ("parent_pid", 69),
-        ("uid", 501),
-        ("real_uid", 0),
-        ("saved_uid", 0),
-        ("gid", 21),
-        ("saved_gid", 0),
-        ("flags", 0),
-        ("flags", 0x12),
-        ("flags", 0x14),
-        ("status", 5),
-        ("start_seconds", 101),
-        ("start_microseconds", 1_000_000),
+        ("pid", 72, "peer_pid_mismatch"),
+        ("parent_pid", 69, "peer_parent_mismatch"),
+        ("uid", 501, "peer_observed_ids_mismatch"),
+        ("real_uid", 0, "peer_observed_ids_mismatch"),
+        ("saved_uid", 0, "peer_observed_ids_mismatch"),
+        ("gid", 21, "peer_observed_ids_mismatch"),
+        ("saved_gid", 0, "peer_observed_ids_mismatch"),
+        ("flags", 0, "peer_status_flags_missing"),
+        ("flags", 0x12, "peer_status_flags_invalid"),
+        ("flags", 0x14, "peer_status_flags_invalid"),
+        ("status", 5, "peer_status_invalid"),
+        ("start_seconds", 101, "peer_start_mismatch"),
+        ("start_microseconds", 1_000_000, "peer_start_invalid"),
     ],
 )
-def test_changed_known_child_is_refused(child, field, value):
+def test_changed_known_child_is_refused(child, field, value, site):
     process, facts, ids, _ = child
     setattr(facts, field, value)
-    with pytest.raises(MacOSFileAccessContractError):
+    with pytest.raises(MacOSFileAccessContractError) as caught:
         peer.observe_owned_child(process, expected_ids=ids, expected_start=(100, 123))
+    assert caught.value._safe_startup_observation_site == site
+    assert str(caught.value) == "Original Darwin child consistency is unavailable."
 
 
 @pytest.mark.parametrize("when", [0, 1])
@@ -85,8 +87,11 @@ def test_child_exit_at_either_observation_is_refused(child, monkeypatch, when):
     process, _facts, ids, _ = child
     states = iter([when == 0, True])
     monkeypatch.setattr(runner_client, "_darwin_child_exited_without_reap", lambda _: next(states))
-    with pytest.raises(MacOSFileAccessContractError):
+    with pytest.raises(MacOSFileAccessContractError) as caught:
         peer.observe_owned_child(process, expected_ids=ids)
+    assert caught.value._safe_startup_observation_site == (
+        "peer_child_exited_before_query" if when == 0 else "peer_child_exited_after_query"
+    )
 
 
 def test_unavailable_child_ownership_never_becomes_adoption(child, monkeypatch):
@@ -96,14 +101,24 @@ def test_unavailable_child_ownership_never_becomes_adoption(child, monkeypatch):
         raise ChildProcessError("Not our original child")
 
     monkeypatch.setattr(runner_client, "_darwin_child_exited_without_reap", absent)
-    with pytest.raises(MacOSFileAccessContractError):
+    with pytest.raises(MacOSFileAccessContractError) as caught:
         peer.observe_owned_child(process, expected_ids=ids)
+    assert caught.value._safe_startup_observation_site == "unknown"
+    assert "Not our original child" not in str(caught.value)
 
 
 @pytest.mark.parametrize(
-    "change", ["reaped", "wrong_type", "bool_uid", "groups", "split_uid", "root"]
+    "change,site",
+    [
+        ("reaped", "peer_process_already_reaped"),
+        ("wrong_type", "peer_process_type_invalid"),
+        ("bool_uid", "peer_identity_value_invalid"),
+        ("groups", "peer_identity_keys_invalid"),
+        ("split_uid", "peer_uid_mismatch"),
+        ("root", "peer_real_uid_not_root"),
+    ],
 )
-def test_nonowned_or_ambiguous_input_refused(child, monkeypatch, change):
+def test_nonowned_or_ambiguous_input_refused(child, monkeypatch, change, site):
     process, _facts, ids, _ = child
     if change == "reaped":
         process.returncode = 0
@@ -117,8 +132,27 @@ def test_nonowned_or_ambiguous_input_refused(child, monkeypatch, change):
         ids["saved_uid"] = 503
     else:
         monkeypatch.setattr(peer.os, "getuid", lambda: 501)
-    with pytest.raises(MacOSFileAccessContractError):
+    with pytest.raises(MacOSFileAccessContractError) as caught:
         peer.observe_owned_child(process, expected_ids=ids)
+    assert caught.value._safe_startup_observation_site == site
+
+
+def test_untagged_contract_error_is_normalized_without_trusting_string_tag(child):
+    process, _facts, ids, _ = child
+
+    class ForgedIds(dict):
+        def __iter__(self):
+            error = MacOSFileAccessContractError("private raw detail")
+            error._safe_startup_observation_site = "peer_uid_mismatch"
+            raise error
+
+    with pytest.raises(MacOSFileAccessContractError) as caught:
+        peer.observe_owned_child(process, expected_ids=ForgedIds(ids))
+
+    assert str(caught.value) == "Original Darwin child consistency is unavailable."
+    assert not hasattr(caught.value, "_safe_startup_observation_site")
+    assert "private raw detail" not in str(caught.value)
+    assert caught.value.__suppress_context__
 
 
 def test_runtime_gate_is_platform_and_layout_specific(monkeypatch):
@@ -165,8 +199,9 @@ def test_clock_uses_explicit_shared_integer_conversion(monkeypatch):
 def test_public_process_query_requires_full_exact_layout(monkeypatch, returned):
     query = _Call(lambda *_: returned)
     monkeypatch.setattr(peer.ctypes, "CDLL", lambda *a, **k: SimpleNamespace(proc_pidinfo=query))
-    with pytest.raises(MacOSFileAccessContractError):
+    with pytest.raises(MacOSFileAccessContractError) as caught:
         peer._query_bsd(71)
+    assert caught.value._safe_startup_observation_site == "peer_bsd_query_failed"
     assert ctypes.sizeof(peer._BSDInfo) == 136
 
 

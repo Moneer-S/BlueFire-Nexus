@@ -51,7 +51,7 @@ _NAMESPACE_CREATION_SITE_OFFSETS = {
     "namespace_descriptor_security": frozenset(range(64)),
     "namespace_sealed_resource": frozenset(range(60)),
     "namespace_binding": frozenset(range(26)),
-    "namespace_worker_start": frozenset(range(122)),
+    "namespace_worker_start": frozenset(range(133)),
     "namespace_worker_guard_wall_window": frozenset({8}),
     "namespace_worker_guard_deadline": frozenset({10}),
     "namespace_worker_guard_wall_clock_order": frozenset({12}),
@@ -62,11 +62,136 @@ SITE_OFFSETS = {
     "namespace_creation": _NAMESPACE_CREATION_SITE_OFFSETS,
 }
 MAX_PACKAGE_OFFSET = 64
-MAX_NAMESPACE_OFFSET = 128
+MAX_NAMESPACE_OFFSET = 132
 MAX_OFFSETS = {
     "package_import_custody": MAX_PACKAGE_OFFSET,
     "namespace_creation": MAX_NAMESPACE_OFFSET,
 }
+
+MAX_STARTUP_OBSERVATION_FAILURES = 255
+STARTUP_OBSERVATION_SITES = frozenset(
+    {
+        "unknown",
+        "worker_process_missing",
+        "worker_process_not_retained",
+        "worker_active_process_missing",
+        "worker_process_indeterminate",
+        "worker_nofork_proof_refresh_failed",
+        "worker_consistency_changed",
+        "peer_runtime_unsupported",
+        "peer_uid_api_missing",
+        "peer_euid_api_missing",
+        "peer_real_uid_not_root",
+        "peer_effective_uid_not_root",
+        "peer_process_type_invalid",
+        "peer_pid_type_invalid",
+        "peer_pid_out_of_range",
+        "peer_process_already_reaped",
+        "peer_status_ownership_unavailable_initial",
+        "peer_identity_keys_invalid",
+        "peer_identity_value_invalid",
+        "peer_uid_mismatch",
+        "peer_gid_mismatch",
+        "peer_expected_start_invalid",
+        "peer_child_exited_before_query",
+        "peer_bsd_query_failed",
+        "peer_pid_mismatch",
+        "peer_parent_mismatch",
+        "peer_status_flags_missing",
+        "peer_status_flags_invalid",
+        "peer_status_invalid",
+        "peer_observed_ids_mismatch",
+        "peer_start_invalid",
+        "peer_start_mismatch",
+        "peer_process_reaped_after_query",
+        "peer_status_ownership_unavailable_after_query",
+        "peer_child_exited_after_query",
+    }
+)
+
+
+def normalize_startup_observation_site(value: Any) -> str:
+    """Return only a finite site label; arbitrary diagnostic strings are discarded."""
+    if type(value) is str and value in STARTUP_OBSERVATION_SITES:
+        return value
+    return "unknown"
+
+
+def record_startup_observation_failure(
+    summary: tuple[int, str | None, str | None, bool], value: Any
+) -> tuple[int, str | None, str | None, bool]:
+    """Update a fixed first/last/count summary without retaining exception data."""
+    if type(summary) is not tuple or len(summary) != 4:
+        summary = (0, None, None, False)
+    count, first, last, capped = summary
+    site = normalize_startup_observation_site(value)
+    if (
+        type(count) is not int
+        or not 0 <= count <= MAX_STARTUP_OBSERVATION_FAILURES
+        or type(capped) is not bool
+        or (first is not None and type(first) is not str)
+        or (last is not None and type(last) is not str)
+        or (count == 0 and (first is not None or last is not None or capped))
+        or (count > 0 and (first is None or last is None))
+    ):
+        count, first, last, capped = 0, None, None, False
+    if first is not None:
+        first = normalize_startup_observation_site(first)
+    next_count = min(count + 1, MAX_STARTUP_OBSERVATION_FAILURES)
+    return (
+        next_count,
+        site if count == 0 else first,
+        site,
+        capped or next_count == MAX_STARTUP_OBSERVATION_FAILURES,
+    )
+
+
+def startup_observation_payload(value: Any) -> dict[str, Any] | None:
+    """Validate the in-process summary before it crosses the CLI boundary."""
+    if type(value) is not tuple or len(value) != 4:
+        return None
+    count, first, last, capped = value
+    if (
+        type(count) is not int
+        or not 1 <= count <= MAX_STARTUP_OBSERVATION_FAILURES
+        or type(capped) is not bool
+        or capped != (count == MAX_STARTUP_OBSERVATION_FAILURES)
+        or type(first) is not str
+        or first not in STARTUP_OBSERVATION_SITES
+        or type(last) is not str
+        or last not in STARTUP_OBSERVATION_SITES
+    ):
+        return None
+    return {
+        "count": count,
+        "count_capped": capped,
+        "first_site": first,
+        "last_site": last,
+    }
+
+
+def startup_observation_from_exception(exc: BaseException) -> dict[str, Any] | None:
+    try:
+        value = getattr(exc, "_safe_startup_observation_summary", None)
+    except BaseException:
+        return None
+    return startup_observation_payload(value)
+
+
+def valid_startup_observation_payload(value: Any) -> bool:
+    if type(value) is not dict or set(value) != {
+        "count",
+        "count_capped",
+        "first_site",
+        "last_site",
+    }:
+        return False
+    return (
+        startup_observation_payload(
+            (value["count"], value["first_site"], value["last_site"], value["count_capped"])
+        )
+        is not None
+    )
 
 
 def package_import_site_ranges(
@@ -170,7 +295,7 @@ def namespace_creation_site_ranges(
         (namespace.SealedMacOSNamespace.binding.__code__, ((0, 25, "namespace_binding"),)),
         (
             worker.MacOSFileAccessWorker.start.__code__,
-            ((0, 121, "namespace_worker_start"),),
+            ((0, 132, "namespace_worker_start"),),
         ),
         (
             worker.MacOSFileAccessWorker._guard.__code__,

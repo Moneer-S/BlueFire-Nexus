@@ -8,8 +8,9 @@ import subprocess  # nosec B404
 import sys
 import threading
 import time
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
+from . import macos_setup_failure_diagnostics as _setup_failure_diagnostics
 from . import runner_client as runner
 from .macos_file_access_channel import MacOSPrimitiveChannel
 from .macos_file_access_contract import (
@@ -86,6 +87,12 @@ class MacOSFileAccessWorker:
         self._local_cleanup_unknown = False
         self._child_close_attempted = False
         self._last_clock = (0, 0)
+        self._startup_observation_summary: tuple[int, str | None, str | None, bool] = (
+            0,
+            None,
+            None,
+            False,
+        )
         self._lock = threading.Lock()
 
     def _guard(self, deadline: int | None = None) -> float:
@@ -111,12 +118,28 @@ class MacOSFileAccessWorker:
 
     def _registered(self, process: subprocess.Popen[bytes]) -> None:
         with runner._DARWIN_INDETERMINATE_LOCK:  # noqa: SLF001
-            if (
-                runner._DARWIN_ACTIVE_PROCESSES.get(process) is not self._runtime  # noqa: SLF001
-                or self._runtime._darwin_process_is_indeterminate(process)  # noqa: SLF001
-                or not self._runtime._refresh_darwin_no_fork_proof(process)
-            ):  # noqa: SLF001
-                raise _refuse()
+            if runner._DARWIN_ACTIVE_PROCESSES.get(process) is not self._runtime:  # noqa: SLF001
+                self._refuse_observation("worker_active_process_missing")
+            if self._runtime._darwin_process_is_indeterminate(process):  # noqa: SLF001
+                self._refuse_observation("worker_process_indeterminate")
+            if not self._runtime._refresh_darwin_no_fork_proof(process):  # noqa: SLF001
+                self._refuse_observation("worker_nofork_proof_refresh_failed")
+
+    @staticmethod
+    def _refuse_observation(site: str) -> NoReturn:
+        error = _refuse()
+        setattr(error, "_safe_startup_observation_site", site)  # noqa: B010
+        raise error from None
+
+    def _remember_startup_observation_failure(self, error: MacOSFileAccessContractError) -> None:
+        site = _setup_failure_diagnostics.normalize_startup_observation_site(
+            getattr(error, "_safe_startup_observation_site", None)
+        )
+        self._startup_observation_summary = (
+            _setup_failure_diagnostics.record_startup_observation_failure(
+                self._startup_observation_summary, site
+            )
+        )
 
     def _request_guard(self, request: dict[str, Any]) -> None:
         self._guard(request["deadline_ns"])
@@ -124,8 +147,10 @@ class MacOSFileAccessWorker:
 
     def _observe(self, *, startup: bool = False) -> None:
         process = self._process
-        if process is None or not any(original is process for original in self._processes):
-            raise _refuse()
+        if process is None:
+            self._refuse_observation("worker_process_missing")
+        if not any(original is process for original in self._processes):
+            self._refuse_observation("worker_process_not_retained")
         self._registered(process)
         credentials = self._binding["reader" if self._role == "reader" else "owner"]
         observed = observe_owned_child(
@@ -136,7 +161,7 @@ class MacOSFileAccessWorker:
             ),
         )
         if self._consistency is not None and observed != self._consistency:
-            raise _refuse()
+            self._refuse_observation("worker_consistency_changed")
         self._consistency = observed
         self._registered(process)
 
@@ -276,13 +301,24 @@ class MacOSFileAccessWorker:
                 try:
                     self._observe(startup=True)
                     break
-                except MacOSFileAccessContractError:
+                except MacOSFileAccessContractError as exc:
+                    try:
+                        self._remember_startup_observation_failure(exc)
+                    except BaseException:
+                        pass
                     time.sleep(min(_POLL_SECONDS, self._guard(startup_deadline)))
             self._guard(startup_deadline)
-        except BaseException:
+        except BaseException as exc:
             self._poisoned = True
             self._quarantine()
             self._close_channel()
+            if type(exc) is MacOSFileAccessContractError:
+                summary = self._startup_observation_summary
+                if summary[0] > 0:
+                    try:
+                        setattr(exc, "_safe_startup_observation_summary", summary)  # noqa: B010
+                    except Exception:
+                        pass
             raise
         finally:
             try:
