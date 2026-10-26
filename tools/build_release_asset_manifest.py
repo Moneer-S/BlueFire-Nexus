@@ -47,7 +47,8 @@ _BUILD_INFO_FIELDS = {
     "ui_files",
     "ui_digest",
 }
-_UI_NAMES = ("app.js", "index.html", "styles.css")
+_UI_NAMES = ("app.js", "index.html", "styles.css", "fonts/InterVariable.woff2")
+_UI_LICENSE_NAMES = ("fonts/OFL.txt",)
 
 
 def _read_regular(path: Path, maximum: int) -> bytes:
@@ -357,6 +358,9 @@ def _inspect_wheel(
             actual_size, actual_sha = _member_digest(archive, ui_path, 8 * 1024 * 1024)
             if item["size"] != actual_size or item["sha256"] != "sha256:" + actual_sha:
                 raise ValueError("wheel build identity does not match its UI member")
+        for name in _UI_LICENSE_NAMES:
+            if ui_root + name not in names:
+                raise ValueError("wheel is missing a required UI font license")
         if build_info["ui_digest"] != "sha256:" + _sha256(_canonical_json(files)):
             raise ValueError("wheel build identity UI digest is invalid")
 

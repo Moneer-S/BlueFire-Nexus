@@ -23,6 +23,8 @@ bluefire = [
   "ui/*.css",
   "ui/*.html",
   "ui/*.js",
+  "ui/fonts/*.woff2",
+  "ui/fonts/*.txt",
   "native/*.json",
   "native/bluefire-runner",
   "native/bluefire-runner.exe",

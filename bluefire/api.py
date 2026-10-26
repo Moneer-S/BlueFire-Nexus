@@ -50,6 +50,7 @@ _STATIC_ROUTES = {
     "/index.html": "index.html",
     "/ui/app.js": "app.js",
     "/ui/styles.css": "styles.css",
+    "/ui/fonts/InterVariable.woff2": "fonts/InterVariable.woff2",
 }
 _SECURITY_HEADERS = {
     "Cache-Control": "no-store",
@@ -1659,7 +1660,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
     def _serve_asset(self, route: str, *, include_body: bool) -> None:
         filename = _STATIC_ROUTES[route]
         target = (self.platform_server.ui_root / filename).resolve()
-        if target.parent != self.platform_server.ui_root or not target.is_file():
+        if not target.is_relative_to(self.platform_server.ui_root) or not target.is_file():
             self._not_found()
             return
         try:
@@ -1672,6 +1673,8 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             )
             return
         media_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        if target.suffix.lower() == ".woff2":
+            media_type = "font/woff2"
         if media_type.startswith("text/") or media_type in {
             "application/javascript",
             "application/json",

@@ -1,5 +1,14 @@
 # Third-party notices and source intake
 
+## Inter web font
+
+The packaged interface includes `InterVariable.woff2` from Inter 4.1, released by
+the Inter Project at `https://github.com/rsms/inter/releases/tag/v4.1`. The font is
+licensed under the SIL Open Font License 1.1; the complete license is included as
+`bluefire/ui/fonts/OFL.txt` in packaged distributions. The upstream WOFF2 file has
+SHA-256 `693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3`.
+Inter is a trademark of Rasmus Andersson. BlueFire does not imply endorsement.
+
 BlueFire Nexus records third-party source provenance before any public content is imported, adapted, or integrated through an external adapter. A source record is not proof that remote bytes were fetched, vendored, redistributed, or executed.
 
 Current built-in records are stored in `bluefire/data/research_sources.yaml` and exposed through Research Sources:

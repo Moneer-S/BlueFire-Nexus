@@ -214,7 +214,13 @@ function wrapPage(target) {
 
 function allowedRead(url) {
   const path = url.pathname;
-  if (["/", "/index.html", "/ui/app.js", "/ui/styles.css"].includes(path)) return !url.search;
+  if ([
+    "/",
+    "/index.html",
+    "/ui/app.js",
+    "/ui/styles.css",
+    "/ui/fonts/InterVariable.woff2",
+  ].includes(path)) return !url.search;
   if ([
     "/api/v1/session",
     "/api/v1/catalog",

@@ -1,3 +1,11 @@
+@font-face {
+  font-family: Inter;
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url("/ui/fonts/InterVariable.woff2") format("woff2");
+}
+
 :root {
   color-scheme: dark;
   --ink-1000: #020913;

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from . import release_readiness_runtime as runtime_support
-from .product_acceptance_artifacts import public_text_contains_private_path
+from .product_acceptance_artifacts import _is_link_or_reparse, public_text_contains_private_path
 from .product_acceptance_process import _playwright_browsers_path
 from .release_readiness_toolchain import rust_suite_environment
 from .release_readiness_validation import SBOM_REPORT, SUITE_SCHEMA
@@ -482,17 +483,43 @@ def _playwright_ids(value: Any) -> tuple[list[str], list[str], list[str]]:
 
 
 def _ui_digest(root: Path) -> Mapping[str, str]:
-    expected = {"index.html", "app.js", "styles.css"}
+    expected = {"index.html", "app.js", "styles.css", "fonts"}
     try:
-        entries = {item.name: item for item in root.iterdir() if item.is_file()}
+        entries = {item.name: item for item in root.iterdir()}
     except OSError:
         return {}
     if set(entries) != expected:
         return {}
-    return {
-        name: "sha256:" + hashlib.sha256(entries[name].read_bytes()).hexdigest()
-        for name in sorted(entries)
-    }
+    font_dir = entries["fonts"]
+    try:
+        details = font_dir.lstat()
+        if not stat.S_ISDIR(details.st_mode) or _is_link_or_reparse(details):
+            return {}
+        font_entries = {item.name: item for item in font_dir.iterdir()}
+    except OSError:
+        return {}
+    if set(font_entries) != {"InterVariable.woff2", "OFL.txt"}:
+        return {}
+    files = {name: entries[name] for name in expected - {"fonts"}}
+    files.update({f"fonts/{name}": path for name, path in font_entries.items()})
+    digests: dict[str, str] = {}
+    for name in sorted(files):
+        path = files[name]
+        try:
+            details = path.lstat()
+            if (
+                not stat.S_ISREG(details.st_mode)
+                or _is_link_or_reparse(details)
+                or not 0 < details.st_size <= 8 * 1024 * 1024
+            ):
+                return {}
+            payload = path.read_bytes()
+            if len(payload) != details.st_size:
+                return {}
+        except OSError:
+            return {}
+        digests[name] = "sha256:" + hashlib.sha256(payload).hexdigest()
+    return digests
 
 
 def _playwright_config(frontend: Path, temporary: Path, report: Path) -> Path:

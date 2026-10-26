@@ -287,6 +287,9 @@ def test_actual_committed_archives_distinguish_backend_changes_with_identical_ui
     )
     for name in ("app.js", "index.html", "styles.css"):
         (package / "ui" / name).write_text(name + "\n", encoding="utf-8")
+    font = package / "ui" / "fonts" / "InterVariable.woff2"
+    font.parent.mkdir()
+    font.write_bytes(b"fixture font\n")
     backend = package / "backend.py"
     backend.write_text("committed = 1\n", encoding="utf-8")
     executable = source / "fixture-executable.sh"

@@ -25,6 +25,9 @@ def _package(tmp_path: Path, newline: bytes = b"\n") -> Path:
     (root / "ui").mkdir(parents=True)
     for name in ("app.js", "index.html", "styles.css"):
         (root / "ui" / name).write_bytes(name.encode() + newline)
+    font = root / "ui" / "fonts" / "InterVariable.woff2"
+    font.parent.mkdir()
+    font.write_bytes(b"font" + newline)
     return root
 
 
@@ -52,6 +55,7 @@ def test_build_output_roundtrips_actual_assets_without_runtime_revision_inferenc
         "app.js",
         "index.html",
         "styles.css",
+        "fonts/InterVariable.woff2",
     ]
     assert str(tmp_path) not in json.dumps(result)
     original_digest = result["ui"]["digest"]
@@ -107,10 +111,45 @@ def test_metadata_validation_refuses_wrong_version_or_unbound_asset_inventory(
     assert diagnostic.build_info()["build"]["metadata_status"] == "invalid"
 
 
-def test_unavailable_asset_is_not_a_matching_build(tmp_path, monkeypatch):
+@pytest.mark.parametrize("invalid_name", [[], {}])
+def test_metadata_validation_rejects_non_string_asset_names_without_hashing(
+    tmp_path, monkeypatch, invalid_name
+):
     root = _package(tmp_path)
     _hook()["_write_build_identity"](root, root, __version__)
-    (root / "ui" / "app.js").unlink()
+    value = json.loads((root / "_build_info.json").read_text())
+    value["ui_files"][0]["name"] = invalid_name
+    (root / "_build_info.json").write_text(json.dumps(value), encoding="utf-8")
+    monkeypatch.setattr(diagnostic, "_PACKAGE_ROOT", root)
+    assert diagnostic.build_info()["build"]["metadata_status"] == "invalid"
+
+
+def test_metadata_validation_keeps_historical_three_asset_inventory(tmp_path, monkeypatch):
+    root = _package(tmp_path)
+    _hook()["_write_build_identity"](root, root, __version__)
+    path = root / "_build_info.json"
+    value = json.loads(path.read_text())
+    value["ui_files"] = value["ui_files"][:3]
+    value["ui_digest"] = diagnostic._digest(diagnostic._canonical(value["ui_files"]))
+    path.write_bytes(diagnostic._canonical(value) + b"\n")
+    (root / "ui" / "fonts" / "InterVariable.woff2").unlink()
+    (root / "ui" / "fonts").rmdir()
+    monkeypatch.setattr(diagnostic, "_PACKAGE_ROOT", root)
+    result = diagnostic.build_info()
+    assert result["build"]["metadata_status"] == "embedded"
+    assert result["ui"]["matches_build"] is True
+    assert [item["name"] for item in result["ui"]["files"]] == [
+        "app.js",
+        "index.html",
+        "styles.css",
+    ]
+
+
+@pytest.mark.parametrize("missing_asset", ["app.js", "fonts/InterVariable.woff2"])
+def test_unavailable_asset_is_not_a_matching_build(tmp_path, monkeypatch, missing_asset):
+    root = _package(tmp_path)
+    _hook()["_write_build_identity"](root, root, __version__)
+    (root / "ui" / missing_asset).unlink()
     monkeypatch.setattr(diagnostic, "_PACKAGE_ROOT", root)
     assert diagnostic.build_info()["ui"] == {"digest": None, "files": [], "matches_build": False}
 
