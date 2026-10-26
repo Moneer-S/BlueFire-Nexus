@@ -109,12 +109,19 @@ function exactRunPayload(value) {
   delete savedScenario.layout;
   return sameStructure(scenario, savedScenario)
     && scenario.id === savedScenarioId && scenario.start === "create_fixture"
-    && Array.isArray(scenario.steps) && scenario.steps.length === 2
+    && Array.isArray(scenario.steps) && scenario.steps.length === 3
     && scenario.steps[0].id === "create_fixture" && scenario.steps[0].behavior_id === "sandbox.fixture.create.v1"
     && sameStructure(scenario.steps[0].parameters, { record_count: 4 })
     && scenario.steps[1].id === "transform_fixture" && scenario.steps[1].behavior_id === "sandbox.fixture.transform.v1"
     && sameStructure(scenario.steps[1].parameters, { redact_values: true })
-    && sameStructure(scenario.edges, [{ from_step: "create_fixture", outcome: "success", to_step: "transform_fixture" }])
+    && sameStructure(scenario.steps[1].inputs, { workspace: { from_step: "create_fixture", artifact: "workspace" } })
+    && scenario.steps[2].id === "cleanup_workspace" && scenario.steps[2].behavior_id === "sandbox.cleanup.v1"
+    && sameStructure(scenario.steps[2].parameters, { verify_removal: true })
+    && sameStructure(scenario.steps[2].inputs, { workspace: { from_step: "create_fixture", artifact: "workspace" } })
+    && sameStructure(scenario.edges, [
+      { from_step: "create_fixture", outcome: "success", to_step: "transform_fixture" },
+      { from_step: "transform_fixture", outcome: "success", to_step: "cleanup_workspace" },
+    ])
     && value.mode === "execute" && value.autonomy === "off"
     && value.ai_provider_id === "deterministic-offline.v1"
     && value.runner_profile_id === "sandbox-execute.v1"
@@ -416,7 +423,7 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
   assert.equal(reviewed.ai_enabled, false);
   assert.equal(reviewed.plan?.autonomy, "off");
   assert.equal(reviewed.plan?.ai_enabled, false);
-  assert.deepEqual(reviewed.actions, ["sandbox.fixture.create.v1", "sandbox.fixture.transform.v1"]);
+  assert.deepEqual(reviewed.actions, ["sandbox.fixture.create.v1", "sandbox.fixture.transform.v1", "sandbox.cleanup.v1"]);
   assert.deepEqual(reviewed.plan?.steps?.map(step => ({
     step_id: step.step_id,
     behavior_id: step.behavior_id,
@@ -425,6 +432,7 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
   })), [
     { step_id: "create_fixture", behavior_id: "sandbox.fixture.create.v1", action_id: "sandbox.fixture.create.v1", parameters: { record_count: 4 } },
     { step_id: "transform_fixture", behavior_id: "sandbox.fixture.transform.v1", action_id: "sandbox.fixture.transform.v1", parameters: { redact_values: true } },
+    { step_id: "cleanup_workspace", behavior_id: "sandbox.cleanup.v1", action_id: "sandbox.cleanup.v1", parameters: { verify_removal: true } },
   ]);
   assert.ok(digest(reviewed.approval_binding?.plan_digest));
   report.execute_preflight = { status: reviewed.status, mode: reviewed.plan.mode, autonomy: reviewed.autonomy, ai_enabled: reviewed.ai_enabled, ai_provider_id: reviewed.plan.ai_provider?.provider_id, runner_profile_id: reviewed.plan.runner_profile_id, actions: reviewed.actions, plan_digest: reviewed.approval_binding.plan_digest };
@@ -452,9 +460,9 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
   assert.equal(runAutonomy, "off");
   assert.equal(run.scenario_id, savedScenarioId);
   assert.equal(run.runner_profile_id, "sandbox-execute.v1");
-  assert.equal(run.steps?.length, 2);
-  assert.deepEqual(run.steps.map(step => step.step_id), ["create_fixture", "transform_fixture"]);
-  assert.deepEqual(run.steps.map(step => step.behavior_id), ["sandbox.fixture.create.v1", "sandbox.fixture.transform.v1"]);
+  assert.equal(run.steps?.length, 3);
+  assert.deepEqual(run.steps.map(step => step.step_id), ["create_fixture", "transform_fixture", "cleanup_workspace"]);
+  assert.deepEqual(run.steps.map(step => step.behavior_id), ["sandbox.fixture.create.v1", "sandbox.fixture.transform.v1", "sandbox.cleanup.v1"]);
   const observed = (run.evidence?.records ?? []).filter(record => record.provenance === "observed");
   const actionByStep = { create_fixture: "sandbox.fixture.create.v1", transform_fixture: "sandbox.fixture.transform.v1" };
   assert.ok(observed.length >= 1 && observed.length <= 2, "Require real collector observations from this exact generated run");
@@ -483,7 +491,7 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
     observed_records: observed.map(record => ({ evidence_id: record.evidence_id, run_id: record.run_id, step_id: record.step_id, behavior_id: record.behavior_id, action_id: record.action_id, producer: record.producer })),
     cleanup: { attempted: run.cleanup.attempted, success: run.cleanup.success },
   };
-  report.checks.push("approved_two_step_execute_run_completed_with_observed_generated_fixture_metadata");
+  report.checks.push("approved_fixture_execute_run_completed_with_explicit_cleanup_and_observed_generated_fixture_metadata");
   await captureAssistantView("assistant-generated-fixture-execute-result");
 
   stage = "execute-runner-cleanup";
@@ -1155,7 +1163,7 @@ try {
   assert.equal(proposal?.proposal_job_id, childId);
   assert.equal(proposal?.provider?.effective_provider_id, providerId);
   assert.equal(proposal?.provider?.model, model);
-  assert.equal(proposal?.scenario?.steps?.length, 2);
+  assert.equal(proposal?.scenario?.steps?.length, 3);
   await gotoJourney(`${origin}/#/builder?graph_job=${encodeURIComponent(childId)}`, { waitUntil: "domcontentloaded" });
   await failOnBlockedWrite(page.getByRole("button", { name: "Save experiment", exact: true }).waitFor());
   stage = "proposal-review-screenshot";

@@ -43,7 +43,7 @@ def assistant_report() -> dict[str, object]:
     evidence_id = "evidence-0123456789abcdefabcd"
     candidate_id = "detection-0123456789abcdefabcd"
     evaluation_id = "detection-evaluation-" + "a" * 64
-    actions = ["sandbox.fixture.create.v1", "sandbox.fixture.transform.v1"]
+    actions = ["sandbox.fixture.create.v1", "sandbox.fixture.transform.v1", "sandbox.cleanup.v1"]
     counts = {
         "assistant_turns": 2,
         "model_requests": 4,
@@ -71,7 +71,7 @@ def assistant_report() -> dict[str, object]:
         "blocked_requests": [],
         "errors": [],
         "checks": [
-            "approved_two_step_execute_run_completed_with_observed_generated_fixture_metadata",
+            "approved_fixture_execute_run_completed_with_explicit_cleanup_and_observed_generated_fixture_metadata",
             "reviewed_fixture_detection_saved_and_evaluated_against_its_development_run",
             "saved_detection_candidate_and_development_evaluation_reopened_by_exact_ids",
         ],
@@ -91,7 +91,7 @@ def assistant_report() -> dict[str, object]:
             "runner_profile_id": "sandbox-execute.v1",
             "run_id": run_id,
             "job_id": "job-" + "b" * 32,
-            "step_count": 2,
+            "step_count": 3,
             "observed_metadata_record_count": 1,
             "observed_evidence_ids": [evidence_id],
             "observed_records": [
@@ -204,9 +204,18 @@ def test_fixture_outputs_bound_graph_and_detection_workflows() -> None:
     assert len(outputs) == 4
     assert outputs[0]["steps"][0]["capability_id"] == "graph.propose_and_validate"
     draft = outputs[1]
-    assert len(draft["steps"]) == 2
+    assert len(draft["steps"]) == 3
     assert draft["steps"][0]["parameters"]["record_count"] == 4
     assert draft["steps"][1]["parameters"]["redact_values"] is True
+    assert draft["steps"][2] == {
+        "id": "cleanup_workspace",
+        "behavior_id": "sandbox.cleanup.v1",
+        "parameters": {"verify_removal": True},
+    }
+    assert draft["edges"] == [
+        {"from_step": "create_fixture", "outcome": "success", "to_step": "transform_fixture"},
+        {"from_step": "transform_fixture", "outcome": "success", "to_step": "cleanup_workspace"},
+    ]
     assert outputs[2]["steps"][0]["capability_id"] == "detection.create_and_evaluate"
     assert (
         outputs[3]["source"]
@@ -267,6 +276,8 @@ def test_assistant_journey_validator_accepts_honest_benign_match_result() -> Non
         ),
         lambda report: report["detection_reopened"].update(development_case=False),
         lambda report: report["execute_preflight"].update(autonomy="auto"),
+        lambda report: report["execute_preflight"]["actions"].pop(),
+        lambda report: report["generated_fixture_execute"].update(step_count=2),
         lambda report: report["deadline_controls"].update(work_deadline_enforced=False),
         lambda report: report["deadline_controls"].update(cleanup_reserve_ms=0),
     ],

@@ -454,8 +454,8 @@ def _fixture_outputs() -> tuple[dict[str, object], ...]:
         },
         {
             "schema_version": "bluefire.ai-graph-draft.v1",
-            "title": "Create and transform a bounded fixture",
-            "purpose": "Prepare a typed fixture and normalize it for later inspection.",
+            "title": "Create, transform, and clean up a bounded fixture",
+            "purpose": "Prepare a typed fixture, normalize it for inspection, and explicitly remove its files.",
             "start": "create_fixture",
             "steps": [
                 {
@@ -468,15 +468,25 @@ def _fixture_outputs() -> tuple[dict[str, object], ...]:
                     "behavior_id": "sandbox.fixture.transform.v1",
                     "parameters": {"redact_values": True},
                 },
+                {
+                    "id": "cleanup_workspace",
+                    "behavior_id": "sandbox.cleanup.v1",
+                    "parameters": {"verify_removal": True},
+                },
             ],
             "edges": [
                 {
                     "from_step": "create_fixture",
                     "outcome": "success",
                     "to_step": "transform_fixture",
-                }
+                },
+                {
+                    "from_step": "transform_fixture",
+                    "outcome": "success",
+                    "to_step": "cleanup_workspace",
+                },
             ],
-            "rationale": "Both nodes are registered and their typed artifacts connect.",
+            "rationale": "All three nodes are registered, typed artifacts connect, and cleanup is explicit.",
             "assumptions": ["The operator will review this unsaved draft."],
         },
         {
@@ -553,7 +563,7 @@ def _assistant_fixture_journey_passed(value: object) -> bool:
         and isinstance(value.get("errors"), list)
         and not value["errors"]
         and isinstance(checks, list)
-        and "approved_two_step_execute_run_completed_with_observed_generated_fixture_metadata"
+        and "approved_fixture_execute_run_completed_with_explicit_cleanup_and_observed_generated_fixture_metadata"
         in checks
         and "reviewed_fixture_detection_saved_and_evaluated_against_its_development_run" in checks
         and "saved_detection_candidate_and_development_evaluation_reopened_by_exact_ids" in checks
@@ -570,7 +580,7 @@ def _assistant_fixture_journey_passed(value: object) -> bool:
         and isinstance(execute.get("job_id"), str)
         and re.fullmatch(r"job-[0-9a-f]{32}", execute["job_id"]) is not None
         and type(execute.get("step_count")) is int
-        and execute["step_count"] == 2
+        and execute["step_count"] == 3
         and type(execute.get("observed_metadata_record_count")) is int
         and 1 <= execute["observed_metadata_record_count"] <= 2
         and isinstance(observed_ids, list)
@@ -606,7 +616,11 @@ def _assistant_fixture_journey_passed(value: object) -> bool:
         and preflight.get("ai_enabled") is False
         and preflight.get("ai_provider_id") == "deterministic-offline.v1"
         and preflight.get("actions")
-        == ["sandbox.fixture.create.v1", "sandbox.fixture.transform.v1"]
+        == [
+            "sandbox.fixture.create.v1",
+            "sandbox.fixture.transform.v1",
+            "sandbox.cleanup.v1",
+        ]
         and isinstance(execute.get("cleanup"), dict)
         and execute["cleanup"].get("attempted") is True
         and execute["cleanup"].get("success") is True
