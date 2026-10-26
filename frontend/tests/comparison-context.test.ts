@@ -153,6 +153,7 @@ describe("comparison navigation context", () => {
 
 describe("missing-evaluation return navigation", () => {
   const selection: ComparisonSelection = { runIds: ["run-third", "run-first", "run-second"], baselineId: "rule-original", revisedId: "rule-revised" };
+  const snapshotId = `run-comparison-${"a".repeat(64)}`;
 
   it("round-trips ordered runs and both revision choices through a copied evaluation URL", () => {
     const href = comparisonEvaluationLink("run-second", "rule-revised", selection);
@@ -192,5 +193,34 @@ describe("missing-evaluation return navigation", () => {
     expect(destination.pathname).toBe("/compare");
     expect(destination.searchParams.get("return")).toBeNull();
     expect(destination.searchParams.get("origin")).toBeNull();
+  });
+
+  it("preserves a saved snapshot identity alongside ordered runs and revisions without carrying authority parameters", () => {
+    const href = comparisonEvaluationLink("run-second", "rule-revised", selection, snapshotId)!;
+    const copiedUrl = new URL(href, "https://example.test");
+    expect(copiedUrl.searchParams.get("snapshot")).toBe(snapshotId);
+    for (const [key, value] of Object.entries({ return: "https://evil.example", return_path: "/admin", execute: "1", approved: "true", approved_by: "operator", receiver_job: "job-other", method_job: "job-other", source: "unrelated" })) copiedUrl.searchParams.set(key, value);
+    const navigation = readComparisonEvaluationNavigation(copiedUrl.searchParams)!;
+    expect(navigation.snapshotId).toBe(snapshotId);
+    expect(navigation.comparison).toEqual(selection);
+    const destination = new URL(navigation.returnPath, "https://example.test");
+    expect(destination.origin).toBe("https://example.test");
+    expect(destination.pathname).toBe("/compare");
+    expect(destination.searchParams.get("snapshot")).toBe(snapshotId);
+    expect(readComparisonContext(destination.searchParams)).toEqual({ ...selection, explicit: true, invalid: false });
+    expect(Array.from(destination.searchParams.keys())).toEqual(["compare_context", "compare_run", "compare_run", "compare_run", "compare_baseline", "compare_revised", "snapshot"]);
+  });
+
+  it.each(["", "snapshot-other", "../snapshot", `run-comparison-${"A".repeat(64)}`, `run-comparison-${"a".repeat(63)}`, `run-comparison-${"a".repeat(65)}`, ` ${snapshotId}`, `${snapshotId}\n`, `${snapshotId}&execute=1`])("rejects a malformed saved snapshot identity %j", invalid => {
+    expect(comparisonEvaluationLink("run-second", "rule-revised", selection, invalid)).toBeUndefined();
+    const params = new URL(comparisonEvaluationLink("run-second", "rule-revised", selection)!, "https://example.test").searchParams;
+    params.set("snapshot", invalid);
+    expect(readComparisonEvaluationNavigation(params)).toBeUndefined();
+  });
+
+  it.each([snapshotId, `run-comparison-${"b".repeat(64)}`])("rejects repeated snapshot parameters without choosing a return snapshot", repeated => {
+    const params = new URL(comparisonEvaluationLink("run-second", "rule-revised", selection, snapshotId)!, "https://example.test").searchParams;
+    params.append("snapshot", repeated);
+    expect(readComparisonEvaluationNavigation(params)).toBeUndefined();
   });
 });

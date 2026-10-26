@@ -356,7 +356,7 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
           {turn ? <>
             <div className="assistant-response-heading"><Sparkles aria-hidden="true" /><h3 aria-live="polite">{labels[turn.status]}</h3></div>
             <p className="assistant-response-message">{turn.message}</p>
-            {turn.plan.length ? <details className="assistant-work-plan" open={turn.status === "working" || turn.status === "planning"}><summary>Work plan <span>{turn.plan.length} steps</span></summary><ol className="assistant-plan">{turn.plan.map((step, index) => {
+            {turn.plan.length ? <details className="assistant-work-plan" open={turn.status === "working" || turn.status === "planning"}><summary>Work plan <span>{turn.plan.length} {turn.plan.length === 1 ? "step" : "steps"}</span></summary><ol className="assistant-plan">{turn.plan.map((step, index) => {
               const result = turn.results.find((item) => item.step_id === step.step_id && (item.kind !== "receiver_phase" && item.kind !== "receiver_inspection" || turn.status === "completed"));
               const isCurrent = turn.active_child?.step_id === step.step_id;
               return <li key={step.step_id} aria-current={isCurrent ? "step" : undefined}><span className="assistant-step-number" aria-label={result ? "Completed" : undefined}>{result ? <Check aria-hidden="true" /> : index + 1}</span><div><strong>{step.title}</strong><p>{step.reason}</p>{isCurrent && !result ? <small>{labels[turn.status]}</small> : null}{step.detector_ref === "revised" ? <small>Uses the saved revision from this operation</small> : null}</div></li>;

@@ -12,7 +12,7 @@ import { ComparePage } from "../src/pages/Compare";
 import { DetectionLabPage } from "../src/pages/DetectionLab";
 import { RunsPage } from "../src/pages/Runs";
 import { ProductProvider } from "../src/state/ProductContext";
-import type { DetectionCandidate, DetectionResource, RunRecord, RunJob } from "../src/types";
+import type { DetectionCandidate, DetectionResource, RunRecord, RunJob, SavedComparisonSnapshot } from "../src/types";
 
 const sourceId = `run-${"1".repeat(32)}`;
 const syntheticId = `run-${"2".repeat(32)}`;
@@ -263,6 +263,61 @@ describe("run journey handoffs", () => {
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(2));
     expect(await screen.findByRole("combobox", { name: "Original detector" })).toHaveValue(candidateId);
     expect(screen.getByRole("combobox", { name: "Revised detector" })).toHaveValue(savedId);
+  });
+
+  it.each(["verified", "missing"] as const)("restores the exact saved snapshot after evaluating a missing detector result when return sources are %s", async sourceState => {
+    runs.push({ ...structuredClone(observedRun), run_id: replayId, evidence: { records: [] } });
+    registry = [
+      { ...resourceMetadata, id: candidateId, status: "parsed", document: { ...linkedCandidate, candidate_id: candidateId, title: "Original revision", state: "parsed", revision_root_id: candidateId, revision: 1 } },
+      { ...resourceMetadata, id: savedId, status: "parsed", document: { ...linkedCandidate, candidate_id: savedId, title: "Revised revision", state: "parsed", revision_root_id: candidateId, revision: 2 } },
+    ];
+    const snapshotId = `run-comparison-${"c".repeat(64)}`;
+    const snapshot: SavedComparisonSnapshot = {
+      snapshot_id: snapshotId, digest: `sha256:${"c".repeat(64)}`, created_at: "2030-01-01T12:00:00Z",
+      comparison: { comparison_id: "saved-comparison-before-evaluation", baseline_run_id: sourceId, run_ids: [...comparisonSelection.runIds], summaries: comparisonSelection.runIds.map(run_id => ({ run_id, path: [], outcomes: {} })), deltas: [] },
+      source_bindings: comparisonSelection.runIds.map(run_id => ({ run_id, bundle_hash: "recorded-bundle" })),
+      source_integrity: { status: "verified", runs: comparisonSelection.runIds.map(run_id => ({ run_id, status: "verified" })) },
+    };
+    const original = structuredClone(snapshot);
+    const read = vi.spyOn(api, "comparisonSnapshot").mockResolvedValue(snapshot);
+    vi.spyOn(api, "comparisonSnapshots").mockResolvedValue({ snapshots: [{ snapshot_id: snapshotId, digest: snapshot.digest, created_at: snapshot.created_at, run_ids: [...comparisonSelection.runIds], baseline_run_id: sourceId }] });
+    const compare = vi.spyOn(api, "compare");
+    const user = userEvent.setup();
+    renderJourney(`/compare?snapshot=${snapshotId}`);
+    await user.selectOptions(await screen.findByRole("combobox", { name: "Original detector" }), candidateId);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Revised detector" }), savedId);
+    const links = await screen.findAllByRole("link", { name: "Evaluate revised on this run" });
+    const missingEvaluation = links.find(link => new URL(link.getAttribute("href")!, "http://localhost").searchParams.get("run") === sourceId)!;
+    expect(new URL(missingEvaluation.getAttribute("href")!, "http://localhost").searchParams.get("snapshot")).toBe(snapshotId);
+    await user.click(missingEvaluation);
+    const submit = await screen.findByRole("button", { name: "Evaluate full observed run" });
+    await waitFor(() => expect(submit).toBeEnabled());
+    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+    await user.click(submit);
+    expect(await screen.findByText("The authored evaluation was refused.")).toBeVisible();
+    if (sourceState === "missing") read.mockResolvedValue({ ...snapshot, source_integrity: { status: "unavailable", runs: snapshot.source_integrity.runs.map(run => ({ ...run, status: run.run_id === replayId ? "missing" : "verified" })) } });
+    await user.click(screen.getByRole("button", { name: "Return to comparison" }));
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    expect(read).toHaveBeenLastCalledWith(snapshotId);
+    expect(await screen.findByRole("region", { name: "Comparison results" })).toBeVisible();
+    const returned = new URL(`http://localhost${screen.getByLabelText("Current route").textContent!}`);
+    expect(returned.searchParams.get("snapshot")).toBe(snapshotId);
+    expect(returned.searchParams.getAll("compare_run")).toEqual(comparisonSelection.runIds);
+    expect(returned.searchParams.get("compare_baseline")).toBe(candidateId);
+    expect(returned.searchParams.get("compare_revised")).toBe(savedId);
+    expect(screen.queryByText("Comparison selection restored. Choose Compare selected to load results.")).not.toBeInTheDocument();
+    await user.click(screen.getByText("Comparison record", { selector: "summary" }));
+    expect(screen.getByText("saved-comparison-before-evaluation", { selector: "code" })).toBeVisible();
+    if (sourceState === "missing") {
+      expect(await screen.findByText(/shown as saved and was not recomputed/)).toBeVisible();
+      expect(screen.queryByRole("region", { name: "Current detector evaluations" })).not.toBeInTheDocument();
+    } else {
+      expect(screen.getByRole("combobox", { name: "Original detector" })).toHaveValue(candidateId);
+      expect(screen.getByRole("combobox", { name: "Revised detector" })).toHaveValue(savedId);
+    }
+    expect(snapshot).toEqual(original);
+    expect(compare).not.toHaveBeenCalled();
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
   });
 
   it("opens evaluations temporarily while preserving the retained fixture tab and notes", async () => {

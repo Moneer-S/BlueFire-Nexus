@@ -20,7 +20,7 @@ function download(name: string, content: string, type: string) {
   URL.revokeObjectURL(url);
 }
 
-export function DetectorEvaluationTable({ baseline, revised, baselineLabel, revisedLabel, runIds, baselineResource, revisedResource }: {
+export function DetectorEvaluationTable({ baseline, revised, baselineLabel, revisedLabel, runIds, baselineResource, revisedResource, snapshotId }: {
   baseline: DetectionRunEvaluation[];
   revised: DetectionRunEvaluation[];
   baselineLabel: string;
@@ -28,6 +28,7 @@ export function DetectorEvaluationTable({ baseline, revised, baselineLabel, revi
   runIds?: string[];
   baselineResource?: DetectionResource;
   revisedResource?: DetectionResource;
+  snapshotId?: string;
 }) {
   const rows = compareDetectorEvaluations(baseline, revised, runIds);
   const comparison = runIds && baselineResource && revisedResource
@@ -36,7 +37,7 @@ export function DetectorEvaluationTable({ baseline, revised, baselineLabel, revi
   // A report from the opposite side is never a source of candidate identity.
   const missingLink = (runId: string, resource?: DetectionResource) => {
     if (!resource || resource.document.candidate_id !== resource.id) return undefined;
-    return comparison ? comparisonEvaluationLink(runId, resource.id, comparison) : registeredDetectionEvaluationLink(runId, resource.id);
+    return comparison ? comparisonEvaluationLink(runId, resource.id, comparison, snapshotId) : registeredDetectionEvaluationLink(runId, resource.id);
   };
   return rows.length ? <div className="detector-comparison-table" role="region" aria-label="Measured detector comparison" tabIndex={0}>
     <table><caption>Retained detector evaluations by run and revision</caption><thead><tr><th scope="col">Run / case</th><th scope="col">{baselineLabel}</th><th scope="col">{revisedLabel}</th><th scope="col">Measured change</th></tr></thead>
@@ -71,7 +72,7 @@ function evaluationsMatch(reports: DetectionRunEvaluation[], resource: Detection
     && (!resource.document.definition_digest || report.candidate.definition_digest === resource.document.definition_digest));
 }
 
-export function DetectorEvaluationComparison({ runIds, selection, onSelectionChange }: { runIds: string[]; selection?: DetectorSelection; onSelectionChange?: (selection: DetectorSelection) => void }) {
+export function DetectorEvaluationComparison({ runIds, selection, onSelectionChange, snapshotId }: { runIds: string[]; selection?: DetectorSelection; onSelectionChange?: (selection: DetectorSelection) => void; snapshotId?: string }) {
   const candidates = useQuery({ queryKey: ["detections"], queryFn: api.detections });
   const [localSelection, setLocalSelection] = useState<DetectorSelection>({ baselineId: "", revisedId: "" });
   const { baselineId, revisedId } = selection ?? localSelection;
@@ -121,7 +122,7 @@ export function DetectorEvaluationComparison({ runIds, selection, onSelectionCha
           <Field label="Revised detector"><select value={revisedId} disabled={!baseline || !revisionsReady} onChange={(event) => changeSelection({ baselineId, revisedId: event.target.value })}><option value="">Choose a revision</option>{revisedId && !revised ? <option value={revisedId}>Unavailable revised detector</option> : null}{revisions.map((item) => <option key={item.id} value={item.id}>{label(item)}</option>)}</select></Field></div>
         {baseline && !revisions.length ? <p>This detector has no saved revisions yet. Create one in Detection Lab.</p> : null}
         {left.isError || right.isError ? <ErrorState title="Detector evaluations unavailable" error={left.error ?? right.error} retry={() => { if (baseline) void left.refetch(); if (revised) void right.refetch(); }} /> : identityMismatch ? <Callout tone="warning" title="Detector evaluation identity mismatch"><p>Retained evaluations do not match the selected saved revisions. Refresh the detector records before comparing or exporting.</p><Button disabled={candidates.isFetching || left.isFetching || right.isFetching} onClick={() => { void candidates.refetch(); if (baseline) void left.refetch(); if (revised) void right.refetch(); }}>Refresh detector records</Button></Callout> : baseline && revised && !ready ? <LoadingState label="Loading retained detector results" /> : ready ? <>
-          <DetectorEvaluationTable baseline={left.data.evaluations} revised={right.data.evaluations} baselineLabel={`Original · revision ${baseline.document.revision ?? 1}`} revisedLabel={`Revised · revision ${revised.document.revision ?? 1}`} runIds={runIds} baselineResource={baseline} revisedResource={revised} />
+          <DetectorEvaluationTable baseline={left.data.evaluations} revised={right.data.evaluations} baselineLabel={`Original · revision ${baseline.document.revision ?? 1}`} revisedLabel={`Revised · revision ${revised.document.revision ?? 1}`} runIds={runIds} baselineResource={baseline} revisedResource={revised} snapshotId={snapshotId} />
           <p className="field-note">Case labels describe the operator's test setup. Counts are matched observed events. Detector evaluation does not establish deployed prevention.</p>
           <div className="candidate-actions"><Button onClick={exportResults}>Export comparison and evidence</Button><Button onClick={() => exportRule(revised)} disabled={revised.document.target_language !== "internal" && !revised.document.rule_source}>Download revised rule</Button></div>
         </> : null}
