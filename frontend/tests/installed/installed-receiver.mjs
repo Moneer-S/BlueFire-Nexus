@@ -21,6 +21,10 @@ import {
   sameJson as same,
 } from "./receiver-guards.mjs";
 import { boundedLocalTimeout, createDeadlineBudget } from "./receiver-deadline.mjs";
+import {
+  receiverPreparationDiagnostic,
+  receiverPrepareHttpDiagnostic,
+} from "./receiver-diagnostics.mjs";
 
 const [modulePath, output, port] = process.argv.slice(2);
 assert.match(port ?? "", /^\d{1,5}$/);
@@ -117,6 +121,8 @@ let originalControlDigest;
 let originalEnvelope;
 let linkedEnvelope;
 let phaseBindingDiagnostic;
+let prepareHttpDiagnostic;
+let pendingPreparationFailure;
 let activeOwnerRole = "original";
 const phaseOrders = { original: ["baseline", "protected", "legitimate"], linked: ["protected", "legitimate"] };
 const phaseIndexes = { original: 0, linked: 0 };
@@ -893,11 +899,28 @@ try {
     const path = new URL(response.url()).pathname;
     if (request.method() === "GET" && path === "/api/v1/session" && response.status() === 401) expected401 += 1;
     if (request.method() !== "POST") return;
+    const preparePath = receiverJobId
+      ? `/api/v1/receiver-defense/jobs/${receiverJobId}/prepare`
+      : undefined;
+    const failedPrepareResponse = path === preparePath && !response.ok();
+    const prepareStatus = failedPrepareResponse ? response.status() : null;
+    if (failedPrepareResponse) {
+      prepareHttpDiagnostic = receiverPrepareHttpDiagnostic(prepareStatus, null);
+      if (pendingPreparationFailure?.prepare_http) {
+        Object.assign(pendingPreparationFailure.prepare_http, prepareHttpDiagnostic);
+      }
+    }
     try {
       const contextRequestBody = path === "/api/v1/receiver-defense/context"
         ? request.postDataJSON()
         : undefined;
       const data = await response.json();
+      if (failedPrepareResponse) {
+        prepareHttpDiagnostic = receiverPrepareHttpDiagnostic(prepareStatus, data);
+        if (pendingPreparationFailure?.prepare_http) {
+          Object.assign(pendingPreparationFailure.prepare_http, prepareHttpDiagnostic);
+        }
+      }
       if (path === "/api/v1/receiver-defense/context" && response.ok()
         && receiverContextResponseMatchesRequest(contextRequestBody, latestFinalContextRequest, data)) latestContext = data;
       else if (path === "/api/v1/receiver-defense/jobs" && response.ok()) {
@@ -1361,6 +1384,14 @@ try {
 } catch (error) {
   const errorType = ["AssertionError", "TimeoutError", "TypeError", "Error"].includes(error?.name) ? error.name : "other";
   const failure = { stage, kind: "journey_failed", error_type: errorType };
+  if (stage.endsWith("-preparation") && currentPhase && receiverJobId) {
+    failure.receiver_preparation = receiverPreparationDiagnostic(
+      latestOwner,
+      currentPhase,
+      prepareHttpDiagnostic,
+    );
+    pendingPreparationFailure = failure.receiver_preparation;
+  }
   if (phaseBindingDiagnostic && (stage === "baseline-result-binding" || stage.endsWith("-result-binding"))) {
     if (stage === "baseline-result-binding") failure.baseline_binding = phaseBindingDiagnostic;
     else failure.phase_binding = phaseBindingDiagnostic;
