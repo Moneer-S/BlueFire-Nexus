@@ -91,7 +91,7 @@ const EXECUTION_ERROR_CODES = new Set([
 ]);
 const safePublicErrorCode = (value, allowed) => allowed.has(value) ? value : "unknown";
 assert.equal(safePublicErrorCode("receiver_result_insufficient", PHASE_ERROR_CODES), "receiver_result_insufficient");
-assert.equal(safePublicErrorCode("abcdefghijklmnop123456789", EXECUTION_ERROR_CODES), "unknown");
+assert.equal(safePublicErrorCode("unrecognized-test-code", EXECUTION_ERROR_CODES), "unknown");
 const count = (key) => consumeRequestBudget(counts, ROUTE_LIMITS, key);
 let browser, context, page;
 let connected = false;
