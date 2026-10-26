@@ -17,6 +17,8 @@
 .runs-page .run-intent-details > summary, .runs-page .resolved-preflight-details > summary { padding: 12px; font-size: .74rem; color: var(--muted-strong); cursor: pointer; }
 .runs-page .run-intent-details > .callout { margin: 12px; }
 .runs-page .provider-details > .field-note { margin: 0; padding: 0 13px 13px; }
+.runs-page .preview-hero { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.runs-page .preview-hero > svg { flex: none; width: 22px; height: 22px; color: var(--blue-soft); }
 .runs-page .preview-hero small { display: block; margin-top: 7px; color: var(--muted); font-size: .72rem; }
 .runs-page .run-action-bar { flex-wrap: wrap; border: 1px solid var(--line); border-radius: 10px; }
 .runs-page .run-action-bar > div { display: flex; align-items: center; gap: 10px; flex: 1 1 280px; font-size: .76rem; line-height: 1.4; }
