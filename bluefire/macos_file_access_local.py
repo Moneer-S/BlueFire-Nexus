@@ -668,7 +668,7 @@ def _run_reserved_workspace(
 
         signal.signal(signal.SIGTERM, stop_on_sigterm)
         try:
-            created_creator = _at_setup_stage(
+            creator = _at_setup_stage(
                 "namespace_creation",
                 lambda: macos_file_access_creator.MacOSFileAccessCreator.create(
                     runtime,
@@ -677,7 +677,7 @@ def _run_reserved_workspace(
                     retained=retained_creators,
                 ),
             )
-            creator = created_creator
+            created_creator = creator
             binding = _at_setup_stage(
                 "resource_baseline_review",
                 lambda: created_creator.review_context("baseline")["binding"],
@@ -709,7 +709,7 @@ def _run_reserved_workspace(
                 _make_directory(pycache_root, mode=0o755)
 
             _at_setup_stage("workspace_directory_creation", create_workspace_directories)
-            prepared_owner = _at_setup_stage(
+            owner = _at_setup_stage(
                 "owner_service_prepare",
                 lambda: macos_file_access_workspace.MacOSWorkspaceOwner.prepare(
                     created_creator,
@@ -725,7 +725,7 @@ def _run_reserved_workspace(
                     port=port,
                 ),
             )
-            owner = prepared_owner
+            prepared_owner = owner
             _at_setup_stage(
                 "service_startup",
                 lambda: macos_file_access_bridge.start_workspace(prepared_owner),
