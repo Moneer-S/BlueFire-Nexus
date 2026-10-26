@@ -276,7 +276,7 @@ def test_production_browser_harness_is_separate_and_fail_closed() -> None:
         "  await page.screenshot({ path: join(screenshotDirectory, SCREENSHOTS[1]) });"
     ) in spec
     assert (
-        "await material.scrollIntoViewIfNeeded();\n"
+        "await changes.scrollIntoViewIfNeeded();\n"
         "  await page.screenshot({ path: join(screenshotDirectory, SCREENSHOTS[2]) });"
     ) in spec
 
