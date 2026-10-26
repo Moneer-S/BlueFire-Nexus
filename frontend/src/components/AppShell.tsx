@@ -44,6 +44,8 @@ const moreItems = [
   { to: "/help", label: "Help & Docs", icon: HelpCircle },
 ];
 const allItems = [...workItems, ...settingsItems, ...moreItems];
+// Between the stacked-dock breakpoint and wide desktops.
+const assistantRailQuery = "(min-width: 1051px) and (max-width: 1679px)";
 
 function FlameMark() {
   return <svg className="brand-mark" viewBox="0 0 44 52" role="img" aria-label="BlueFire flame"><path d="M24 2c2 10-8 13-4 23 2 4 7 5 8 11 1 5-2 9-6 12 12-1 20-9 20-20 0-9-5-18-18-26Z"/><path className="brand-core" d="M18 21c0 8-10 10-10 20 0 5 4 9 10 9 7 0 12-5 12-12 0-6-4-11-7-14 0 6-4 9-7 8-4-2 1-7 2-11Z"/></svg>;
@@ -61,6 +63,21 @@ function WorkspaceShell() {
   useEffect(() => {
     try { window.localStorage.setItem("bluefire.navigation.collapsed.v1", String(collapsed)); } catch { /* Layout remains usable when browser storage is unavailable. */ }
   }, [collapsed]);
+  // A docked Assistant on a laptop-width window would leave the work it explains
+  // too narrow. Use the icon rail while it is open without changing the saved
+  // preference; expanding explicitly keeps labels until the Assistant closes.
+  const [dockNeedsRail, setDockNeedsRail] = useState(() => window.matchMedia?.(assistantRailQuery)?.matches ?? false);
+  useEffect(() => {
+    const query = window.matchMedia?.(assistantRailQuery);
+    if (!query) return;
+    const update = () => setDockNeedsRail(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  const [labelsBesideAssistant, setLabelsBesideAssistant] = useState(false);
+  useEffect(() => { if (!assistantOpen) setLabelsBesideAssistant(false); }, [assistantOpen]);
+  const railed = collapsed || (Boolean(assistantOpen) && dockNeedsRail && !labelsBesideAssistant);
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -129,13 +146,13 @@ function WorkspaceShell() {
   const renderLink = (item: typeof allItems[number]) => {
     const Icon = item.icon;
     const link = <NavLink to={item.to} end={item.to === "/"} aria-label={item.label} onClick={() => setMobileOpen(false)} className="nav-link"><Icon aria-hidden="true"/><span>{item.label}</span></NavLink>;
-    return collapsed ? <Tooltip.Root key={item.to}><Tooltip.Trigger asChild>{link}</Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip" side="right" sideOffset={10}>{item.label}</Tooltip.Content></Tooltip.Portal></Tooltip.Root> : <span key={item.to}>{link}</span>;
+    return railed ? <Tooltip.Root key={item.to}><Tooltip.Trigger asChild>{link}</Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="tooltip" side="right" sideOffset={10}>{item.label}</Tooltip.Content></Tooltip.Portal></Tooltip.Root> : <span key={item.to}>{link}</span>;
   };
 
   return <>
     <a className="skip-link" href="#main-content" onClick={(event) => { event.preventDefault(); document.getElementById("main-content")?.focus(); }}>Skip to content</a>
     <Tooltip.Provider delayDuration={350}>
-    <div className={`app-shell workbench-shell ${collapsed ? "nav-collapsed" : ""}`}>
+    <div className={`app-shell workbench-shell ${railed ? "nav-collapsed" : ""}`}>
       <header className="mobile-header" inert={mobileOpen}>
         <button ref={menuButtonRef} aria-label="Open navigation" aria-expanded={mobileOpen} aria-controls="workspace-navigation" onClick={() => setMobileOpen(true)}><Menu /></button>
         <Link className="brand" to="/" aria-label="BlueFire Nexus home"><FlameMark/><span><strong>BlueFire Nexus</strong></span></Link>
@@ -143,7 +160,7 @@ function WorkspaceShell() {
       </header>
       <div className={`mobile-scrim ${mobileOpen ? "visible" : ""}`} onClick={() => setMobileOpen(false)} aria-hidden="true" />
       <aside ref={sidebarRef} id="workspace-navigation" className={`sidebar ${mobileOpen ? "mobile-open" : ""}`} role={mobileOpen ? "dialog" : undefined} aria-modal={mobileOpen || undefined} aria-label="Workspace navigation">
-        <div className="sidebar-brand-row"><Link className="brand" to="/" aria-label="BlueFire Nexus home" onClick={() => setMobileOpen(false)}><FlameMark/><span><strong>BlueFire Nexus</strong></span></Link><IconButton label={collapsed ? "Expand navigation" : "Collapse navigation"} className="sidebar-collapse" aria-expanded={!collapsed} aria-controls="workspace-navigation" onClick={() => setCollapsed((value) => !value)}>{collapsed ? <PanelLeftOpen/> : <PanelLeftClose/>}</IconButton><button className="mobile-close" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X /></button></div>
+        <div className="sidebar-brand-row"><Link className="brand" to="/" aria-label="BlueFire Nexus home" onClick={() => setMobileOpen(false)}><FlameMark/><span><strong>BlueFire Nexus</strong></span></Link><IconButton label={railed ? "Expand navigation" : "Collapse navigation"} className="sidebar-collapse" aria-expanded={!railed} aria-controls="workspace-navigation" onClick={() => railed && !collapsed ? setLabelsBesideAssistant(true) : setCollapsed((value) => !value)}>{railed ? <PanelLeftOpen/> : <PanelLeftClose/>}</IconButton><button className="mobile-close" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X /></button></div>
         <nav aria-label="Primary navigation">
           <div className="nav-group work-nav">{workItems.map(renderLink)}</div>
           <button className="nav-disclosure" aria-label={settingsOpen ? "Hide settings tools" : "Show settings tools"} aria-expanded={settingsOpen} aria-controls="settings-navigation" onClick={() => setSettingsOpen((value) => !value)}><SlidersHorizontal aria-hidden="true"/><span>Settings tools</span><ChevronDown aria-hidden="true"/></button>

@@ -188,3 +188,37 @@ it("keeps the collapse control in the header with its base styling and restores 
   expect(screen.getByRole("button", { name: "Expand navigation" })).toHaveAttribute("aria-expanded", "false");
   expect(document.querySelector(".app-shell")).toHaveClass("nav-collapsed");
 });
+
+it("uses the icon rail beside a docked Assistant on laptop widths without changing the saved preference", async () => {
+  const user = userEvent.setup();
+  localStorage.removeItem("bluefire.navigation.collapsed.v1");
+  vi.mocked(api.catalog).mockResolvedValue(demoCatalog);
+  vi.mocked(api.scenarios).mockResolvedValue({ scenarios: [demoScenario] });
+  const matchMedia = vi.spyOn(window, "matchMedia").mockImplementation((query: string) => ({
+    matches: query === "(min-width: 1051px) and (max-width: 1679px)", media: query, onchange: null,
+    addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
+  }));
+  try {
+    renderShell();
+    const shell = document.querySelector(".app-shell")!;
+    expect(shell).not.toHaveClass("nav-collapsed");
+    const assistant = screen.getByRole("button", { name: /^Assistant/ });
+    await user.click(assistant);
+    expect(assistant).toHaveAttribute("aria-expanded", "true");
+    expect(shell).toHaveClass("nav-collapsed");
+    expect(screen.getByRole("link", { name: "Build" })).toBeVisible();
+    expect(localStorage.getItem("bluefire.navigation.collapsed.v1")).toBe("false");
+    await user.click(screen.getByRole("button", { name: "Expand navigation" }));
+    expect(shell).not.toHaveClass("nav-collapsed");
+    expect(localStorage.getItem("bluefire.navigation.collapsed.v1")).toBe("false");
+    await user.click(assistant);
+    expect(assistant).toHaveAttribute("aria-expanded", "false");
+    await user.click(assistant);
+    expect(shell).toHaveClass("nav-collapsed");
+    await user.click(assistant);
+    expect(shell).not.toHaveClass("nav-collapsed");
+    expect(screen.getByRole("button", { name: "Collapse navigation" })).toHaveAttribute("aria-expanded", "true");
+  } finally {
+    matchMedia.mockRestore();
+  }
+});
