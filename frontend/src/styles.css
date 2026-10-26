@@ -89,7 +89,7 @@ body, button, input, select, textarea { font: inherit; }
 /* Disclosures without a component style otherwise inherit the browser's 16px
    default. Zero specificity keeps component rules in charge, and min() never
    enlarges a summary that sits inside a smaller caption context. */
-:where(summary) { cursor: pointer; font-size: min(1em, var(--font-body-sm)); line-height: 1.45; }
+:where(summary) { cursor: pointer; font-size: min(1em, var(--font-body-sm)); }
 button, input, select, textarea { color: inherit; }
 button, select { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.46; }
@@ -657,7 +657,8 @@ td .badge { margin-left: 6px; }
 .live-path article[data-status="blocked"], .live-path article[data-status="refused"] { border-color: rgba(247, 184, 75, 0.28); }
 .live-path article[data-status="failed"] { border-color: rgba(255, 110, 121, 0.28); }
 .live-path article header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 6px; }
-.live-path article header .badge { max-width: 100%; }
+.live-path article header .badge { max-width: 100%; white-space: normal; }
+.live-path article header .badge i { flex: none; }
 .live-path article header > span:first-child { color: var(--muted); font: 0.54rem ui-monospace, SFMono-Regular, Consolas, monospace; }
 .live-path article strong { font-size: 0.64rem; line-height: 1.3; overflow-wrap: anywhere; }
 .live-path article small { color: var(--muted); font-size: 0.53rem; overflow-wrap: anywhere; }
@@ -669,7 +670,7 @@ td .badge { margin-left: 6px; }
 .console-empty span { max-width: 420px; margin-top: 5px; font-size: 0.64rem; line-height: 1.45; }
 .console-empty.compact { min-height: 140px; }
 .live-path > .console-empty { flex: 1; }
-.live-console { scroll-margin-top: 12px; }
+.live-console { scroll-margin-top: calc(var(--topbar-height, 60px) + 12px); }
 .timeline { list-style: none; margin: 0; padding: 0; }
 .timeline li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); }
 .timeline li:last-child { border-bottom: 0; }

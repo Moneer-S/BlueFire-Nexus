@@ -1027,6 +1027,16 @@ describe("product application", () => {
     expect(await screen.findByRole("link", { name: "Review latest result" })).toHaveAttribute("href", `/runs/${encodeURIComponent(completedRun.run_id)}`);
     expect(screen.getByRole("button", { name: "Review" })).toBeEnabled();
     expect(window.localStorage.getItem(activeJobStorageKey)).toBeNull();
+    // A finalized result offers its review as the next step, not lifecycle controls.
+    expect(screen.getByRole("button", { name: "Review" })).toHaveClass("button-primary");
+    for (const name of ["Pause", "Resume", "Cancel"]) expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+    // Returning to Runs restores the finalized result without its released job.
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("link", { name: "Build" }));
+    await user.click(await screen.findByRole("link", { name: "Runs" }));
+    expect(await screen.findByRole("button", { name: "Review" })).toHaveClass("button-primary");
+    expect(screen.queryByText(runningJob.job_id)).not.toBeInTheDocument();
+    for (const name of ["Pause", "Resume", "Cancel"]) expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
   });
 
   it("does not re-offer a terminal job from a stale inventory snapshot", async () => {
