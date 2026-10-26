@@ -12,8 +12,7 @@ from .job_runtime import JobResult, JobRuntimeError
 from .product_store_errors import ProductStoreError
 from .receiver_defense_context import OWNER_KIND, PREPARE_KIND, context
 from .receiver_defense_ownership import ReceiverOwners
-from .receiver_session import PREPARATION_STAGES
-from .receiver_session_contract import ReceiverSessionError
+from .receiver_session_contract import preparation_failure_stage
 from .util import content_hash
 
 
@@ -273,8 +272,8 @@ class ReceiverDefenseJobs:
             return JobResult(progress={"phase": "native_review_ready"})
         except BaseException as error:
             self.owners.close(ctx.job_id)
-            stage = error.preparation_stage if type(error) is ReceiverSessionError else None
-            if stage in PREPARATION_STAGES:
+            stage = preparation_failure_stage(error)
+            if stage is not None:
                 try:
                     records.update(
                         self.store,

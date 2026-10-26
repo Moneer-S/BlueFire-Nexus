@@ -13,6 +13,7 @@ from typing import Any, Mapping, cast
 
 from .receiver_session_channel import read_frame, require_eof, write_frame
 from .receiver_session_contract import (
+    PREPARATION_STAGES,
     SESSION_SECONDS,
     ReceiverSessionError,
     exact,
@@ -30,24 +31,6 @@ from .util import content_hash, file_hash
 
 _RETAINED: dict[str, OwnedReceiverSession] = {}
 _RETAINED_LOCK = threading.Lock()
-PREPARATION_STAGES = frozenset(
-    {
-        "attempt_sink",
-        "platform_containment",
-        "generation_frame",
-        "worker_spawn",
-        "containment_register",
-        "process_identity",
-        "pipe_check",
-        "armed_read",
-        "armed_validate",
-        "prepared_write",
-        "ready_read",
-        "ready_validate",
-        "deadline_check",
-        "monitor_start",
-    }
-)
 
 
 def reconcile_retained_receiver_sessions() -> Mapping[str, int]:

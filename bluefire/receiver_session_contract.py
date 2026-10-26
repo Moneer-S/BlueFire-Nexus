@@ -14,6 +14,24 @@ from .util import canonical_json_bytes, content_hash, file_hash
 
 FRAME_LIMIT = 8192
 SESSION_SECONDS = 240
+PREPARATION_STAGES = frozenset(
+    {
+        "attempt_sink",
+        "platform_containment",
+        "generation_frame",
+        "worker_spawn",
+        "containment_register",
+        "process_identity",
+        "pipe_check",
+        "armed_read",
+        "armed_validate",
+        "prepared_write",
+        "ready_read",
+        "ready_validate",
+        "deadline_check",
+        "monitor_start",
+    }
+)
 _HEX = re.compile(r"[0-9a-f]{64}")
 _HASH = re.compile(r"sha256:[0-9a-f]{64}")
 _GENERATION_FILES = (
@@ -29,6 +47,16 @@ _GENERATION_FILES = (
 
 class ReceiverSessionError(ValueError):
     """A secret-free, path-free session refusal."""
+
+    preparation_stage: str | None = None
+
+
+def preparation_failure_stage(error: BaseException) -> str | None:
+    """Return only a stage attached by the owned-session preparation boundary."""
+    if type(error) is not ReceiverSessionError:
+        return None
+    stage = error.preparation_stage
+    return stage if type(stage) is str and stage in PREPARATION_STAGES else None
 
 
 def _require(value: bool) -> None:

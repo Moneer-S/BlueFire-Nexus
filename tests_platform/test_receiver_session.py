@@ -17,6 +17,7 @@ from bluefire.receiver_session_contract import (
     ReceiverSessionError,
     decode_frame,
     encode_frame,
+    preparation_failure_stage,
     prepare_frame,
     ready_binding,
     task_frame,
@@ -127,6 +128,28 @@ def test_frame_parser_rejects_extra_fields_duplicate_fields_and_truncation():
     terminal["body"] = "not permitted"
     with pytest.raises(ReceiverSessionError):
         validate_terminal(terminal, binding, task)
+
+
+@pytest.mark.parametrize("value", [None, 1, [], {}, "/private/path"])
+def test_preparation_stage_reader_ignores_absent_or_malformed_values(value):
+    error = ReceiverSessionError("private message")
+    if value is not None:
+        error.preparation_stage = value
+    assert preparation_failure_stage(error) is None
+    assert preparation_failure_stage(ValueError("other exception")) is None
+
+
+def test_preparation_stage_reader_accepts_only_fixed_exact_error_type():
+    error = ReceiverSessionError("private message")
+    error.preparation_stage = "ready_read"
+    assert preparation_failure_stage(error) == "ready_read"
+
+    class DerivedReceiverSessionError(ReceiverSessionError):
+        pass
+
+    derived = DerivedReceiverSessionError("private message")
+    derived.preparation_stage = "ready_read"
+    assert preparation_failure_stage(derived) is None
 
 
 def test_prepare_failure_records_fixed_generation_frame_stage(monkeypatch):
