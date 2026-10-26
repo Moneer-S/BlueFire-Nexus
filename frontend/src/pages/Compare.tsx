@@ -512,6 +512,14 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {}, catal
   const pathChanges = comparison.deltas.filter(delta => delta.first_path_divergence !== null && delta.first_path_divergence !== undefined && delta.first_path_divergence >= 0).length;
   const cleanupUnknown = orderedRuns.filter(summary => typeof summary.cleanup_success !== "boolean").length;
   const conclusion = comparisonConclusion(comparison, stepPresentations);
+  const conclusionReportsSharedObjective = comparison.s3_access === undefined && orderedRuns.length > 1
+    && baseline?.run_id === comparison.baseline_run_id && orderedRuns.length === comparison.summaries.length
+    && orderedRuns.length === comparison.run_ids.length
+    && new Set(orderedRuns.map(run => run.run_id)).size === orderedRuns.length
+    && sameJson(orderedRuns.map(run => run.run_id), comparison.run_ids)
+    && (baseline.mode === "simulate" || baseline.mode === "execute")
+    && typeof baseline.objective_reached === "boolean"
+    && orderedRuns.every(run => run.mode === baseline.mode && run.objective_reached === baseline.objective_reached);
   const firstDifferenceIndex = (runId: string) => conclusion.differences.find(difference => difference.comparedRunId === runId)?.index
     ?? (orderedRuns.length === 2 ? conclusion.differences.find(difference => difference.baselineRunId === runId)?.index : undefined);
   const recordedPath = (summary: ComparisonSummary) => summary.path.length ? <ol>{summary.path.map((step, index) => {
@@ -539,7 +547,7 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {}, catal
       <div className="compare-story">{orderedRuns.map(summary => <article className="compare-story-run" key={summary.run_id} aria-label={`${comparedRunLabel(summary.run_id)} result`}>
         <header>{sharedName ? <Link className="comparison-role-link" to={runReviewPath(summary.run_id)} aria-label={summary.run_id === baseline?.run_id ? "Review baseline run" : `Review ${comparedRunLabel(summary.run_id).toLowerCase()}`}><Badge tone={summary.run_id === baseline?.run_id ? "info" : "neutral"}>{comparedRunLabel(summary.run_id)}</Badge><ArrowUpRight aria-hidden="true"/></Link> : <Badge tone={summary.run_id === baseline?.run_id ? "info" : "neutral"}>{comparedRunLabel(summary.run_id)}</Badge>}<span>{summary.mode === "simulate" ? "Simulate · synthetic" : summary.mode ? sentence(summary.mode) : "Mode not reported"}</span></header>
         {!sharedName ? <h3><Link to={runReviewPath(summary.run_id)}>{names[summary.run_id] ?? "Run"}<ArrowUpRight aria-hidden="true"/></Link></h3> : null}{runReference(summary.run_id)}
-        <div className="compare-run-objective"><span>Objective</span><strong data-state={typeof summary.objective_reached !== "boolean" ? "unknown" : summary.objective_reached ? "achieved" : "unmet"}>{objectiveLabel(summary.objective_reached, summary.mode)}</strong></div>
+        {!conclusionReportsSharedObjective ? <div className="compare-run-objective"><span>Objective</span><strong data-state={typeof summary.objective_reached !== "boolean" ? "unknown" : summary.objective_reached ? "achieved" : "unmet"}>{objectiveLabel(summary.objective_reached, summary.mode)}</strong></div> : null}
         <footer><span><GitBranch aria-hidden="true"/>{summary.path.length} recorded {pathUnit(summary)}</span><span><Eye aria-hidden="true"/>{reportedArrayCount(summary.evidence_details?.observed_artifacts, "observed artifact")}</span><details className="comparison-run-record"><summary>Run record</summary><code>{summary.run_id}</code></details></footer>
       </article>)}</div>
     </section>

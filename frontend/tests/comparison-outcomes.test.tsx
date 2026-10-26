@@ -64,6 +64,60 @@ it("shows comparison order without labeling unrelated selected runs as retests",
   expect(screen.getByRole("rowheader", { name: "Evidence gaps" })).toBeVisible();
 });
 
+it.each([
+  { mode: "simulate", reached: true, outcome: "Achieved (synthetic)", conclusion: /simulations achieved|simulated objectives achieved/i },
+  { mode: "execute", reached: false, outcome: "Not achieved", conclusion: /unmet objectives|recorded objectives not reached/i },
+] as const)("leaves the full outcomes table while removing repeated known $mode objective rows from run cards", ({ mode, reached, outcome, conclusion }) => {
+  const comparison = compareDemoRuns(demoRuns.map(run => run.run_id));
+  for (const summary of comparison.summaries) {
+    summary.mode = mode;
+    summary.objective_reached = reached;
+  }
+  render(<MemoryRouter><ComparisonResult comparison={comparison} /></MemoryRouter>);
+  const runOrder = screen.getByRole("group", { name: "Comparison run order" });
+  expect(within(screen.getByRole("region", { name: "Comparison conclusion" })).getByRole("heading")).toHaveTextContent(conclusion);
+  expect(runOrder.querySelectorAll(".compare-run-objective")).toHaveLength(0);
+  expect(within(runOrder).getByRole("article", { name: "Baseline result" })).toHaveTextContent(mode === "simulate" ? "Simulate · synthetic" : "Execute");
+  expect(within(runOrder).getByRole("article", { name: "Compared run 1 result" })).toHaveTextContent("Run record");
+  expect(outcomeCell("Objective", 0)).toHaveTextContent(outcome);
+  expect(outcomeCell("Objective", 1)).toHaveTextContent(outcome);
+});
+
+it("also removes repeated known outcomes when the conclusion counts all three runs", () => {
+  const comparison = compareDemoRuns(demoRuns.map(run => run.run_id));
+  for (const summary of comparison.summaries) { summary.mode = "simulate"; summary.objective_reached = true; }
+  comparison.summaries.push({ ...structuredClone(comparison.summaries[1]!), run_id: "third-run" });
+  comparison.run_ids.push("third-run");
+  render(<MemoryRouter><ComparisonResult comparison={comparison} /></MemoryRouter>);
+  expect(within(screen.getByRole("region", { name: "Comparison conclusion" })).getByText(/3 achieved, 0 not reached, 0 unreported/)).toBeVisible();
+  expect(screen.getByRole("group", { name: "Comparison run order" }).querySelectorAll(".compare-run-objective")).toHaveLength(0);
+  expect(outcomeCell("Objective", 2)).toHaveTextContent("Achieved (synthetic)");
+});
+
+it.each(["different", "unreported", "mixed mode", "S3 read scope"] as const)("retains per-run objectives for %s conclusions", variant => {
+  const comparison = compareDemoRuns(demoRuns.map(run => run.run_id));
+  for (const summary of comparison.summaries) { summary.mode = "simulate"; summary.objective_reached = true; }
+  if (variant === "different") comparison.summaries[1]!.objective_reached = false;
+  if (variant === "unreported") comparison.summaries[1]!.objective_reached = undefined;
+  if (variant === "mixed mode") comparison.summaries[1]!.mode = "execute";
+  if (variant === "S3 read scope") comparison.s3_access = { schema_version: "bluefire.s3-access-comparison.v1", state: "unavailable", reason: "mixed_selection", proof_scope: "saved_read_results_only" };
+  render(<MemoryRouter><ComparisonResult comparison={comparison} /></MemoryRouter>);
+  const runOrder = screen.getByRole("group", { name: "Comparison run order" });
+  expect(runOrder.querySelectorAll(".compare-run-objective")).toHaveLength(2);
+  expect(outcomeCell("Objective", 0)).toHaveTextContent("Achieved (synthetic)");
+  expect(outcomeCell("Objective", 1)).toHaveTextContent(variant === "different" ? "Not achieved" : variant === "unreported" ? "Not established" : variant === "mixed mode" ? "Achieved" : "Achieved (synthetic)");
+});
+
+it("retains card objectives when a duplicate baseline identity makes the conclusion count an extra different outcome", () => {
+  const comparison = compareDemoRuns(demoRuns.map(run => run.run_id));
+  for (const summary of comparison.summaries) { summary.mode = "simulate"; summary.objective_reached = true; }
+  comparison.summaries.push({ ...structuredClone(comparison.summaries[0]!), objective_reached: false });
+  render(<MemoryRouter><ComparisonResult comparison={comparison} /></MemoryRouter>);
+  expect(within(screen.getByRole("region", { name: "Comparison conclusion" })).getByText(/2 achieved, 1 not reached, 0 unreported/)).toBeVisible();
+  expect(screen.getByRole("group", { name: "Comparison run order" }).querySelectorAll(".compare-run-objective")).toHaveLength(2);
+  expect(outcomeCell("Objective", 0)).toHaveTextContent("Achieved (synthetic)");
+});
+
 it("keeps identical run titles distinguishable by role and timestamp with stored IDs in details", async () => {
   const user = userEvent.setup();
   const comparison = compareDemoRuns(demoRuns.map((run) => run.run_id));
