@@ -22,6 +22,7 @@ from .receiver_session_contract import (
     validate_ready,
     validate_terminal,
     worker_generation,
+    worker_startup_failure_stage,
 )
 from .runner_bootstrap import managed_product_root
 from .runner_client import _pinned_launch_file
@@ -175,6 +176,14 @@ class OwnedReceiverSession:
             return session
         except BaseException as error:
             if type(error) is ReceiverSessionError and stage in PREPARATION_STAGES:
+                process = session._process if session is not None else None
+                if stage == "ready_read" and process is not None:
+                    try:
+                        worker_stage = worker_startup_failure_stage(process.poll())
+                    except Exception:
+                        worker_stage = None
+                    if worker_stage is not None:
+                        stage = worker_stage
                 error.preparation_stage = stage
             if session is not None and session._process is None and spawned:
                 session._process = spawned[0]

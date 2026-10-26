@@ -30,8 +30,21 @@ PREPARATION_STAGES = frozenset(
         "ready_validate",
         "deadline_check",
         "monitor_start",
+        "worker_prepare_validation",
+        "worker_enrollment",
+        "worker_listener_startup",
+        "worker_ready_frame",
     }
 )
+WORKER_STARTUP_EXIT_CODES = {
+    "prepare_validation": 75,
+    "enrollment": 76,
+    "listener_startup": 77,
+    "ready_frame": 78,
+}
+_WORKER_FAILURE_STAGES = {
+    exit_code: f"worker_{name}" for name, exit_code in WORKER_STARTUP_EXIT_CODES.items()
+}
 _HEX = re.compile(r"[0-9a-f]{64}")
 _HASH = re.compile(r"sha256:[0-9a-f]{64}")
 _GENERATION_FILES = (
@@ -57,6 +70,13 @@ def preparation_failure_stage(error: BaseException) -> str | None:
         return None
     stage = error.preparation_stage
     return stage if type(stage) is str and stage in PREPARATION_STAGES else None
+
+
+def worker_startup_failure_stage(exit_code: object) -> str | None:
+    """Map only exact worker startup exit statuses to fixed public stages."""
+    if type(exit_code) is not int:
+        return None
+    return _WORKER_FAILURE_STAGES.get(exit_code)
 
 
 def _require(value: bool) -> None:

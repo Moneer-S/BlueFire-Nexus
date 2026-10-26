@@ -126,6 +126,10 @@ test("preparation-stage projection accepts only fixed stage codes", () => {
   }, "baseline");
   assert.equal(base("armed_read").receiver_prepare_failure_stage, "armed_read");
   assert.equal(base("ready_read").receiver_prepare_failure_stage, "ready_read");
+  assert.equal(base("worker_prepare_validation").receiver_prepare_failure_stage, "worker_prepare_validation");
+  assert.equal(base("worker_enrollment").receiver_prepare_failure_stage, "worker_enrollment");
+  assert.equal(base("worker_listener_startup").receiver_prepare_failure_stage, "worker_listener_startup");
+  assert.equal(base("worker_ready_frame").receiver_prepare_failure_stage, "worker_ready_frame");
   assert.equal(base("/private/path").receiver_prepare_failure_stage, "other");
   assert.equal(base("private frame contents").receiver_prepare_failure_stage, "other");
 });

@@ -168,9 +168,22 @@ def test_prepare_failure_records_fixed_generation_frame_stage(monkeypatch):
     assert caught.value.preparation_stage in session_module.PREPARATION_STAGES
 
 
-@pytest.mark.parametrize(("failure_call", "expected_stage"), [(1, "armed_read"), (2, "ready_read")])
+@pytest.mark.parametrize(
+    ("failure_call", "exit_code", "expected_stage"),
+    [
+        (1, 75, "armed_read"),
+        (2, None, "ready_read"),
+        (2, 75, "worker_prepare_validation"),
+        (2, 76, "worker_enrollment"),
+        (2, 77, "worker_listener_startup"),
+        (2, 78, "worker_ready_frame"),
+        (2, 74, "ready_read"),
+        (2, True, "ready_read"),
+        (2, "poll_error", "ready_read"),
+    ],
+)
 def test_prepare_read_diagnostics_keep_armed_and_ready_boundaries(
-    monkeypatch, failure_call, expected_stage
+    monkeypatch, failure_call, exit_code, expected_stage
 ):
     monkeypatch.setattr(session_module.sys, "platform", "linux")
     monkeypatch.setattr(session_module.LinuxPrivateProcessContainment, "available", lambda: True)
@@ -197,7 +210,17 @@ def test_prepare_read_diagnostics_keep_armed_and_ready_boundaries(
             return terminate
 
     monkeypatch.setattr(session_module, "LinuxPrivateProcessContainment", FakeContainment)
-    process = SimpleNamespace(pid=901, returncode=0, stdin=Stream(), stdout=Stream())
+    process = SimpleNamespace(
+        pid=901,
+        returncode=0,
+        poll=lambda: (
+            (_ for _ in ()).throw(RuntimeError("private poll detail"))
+            if exit_code == "poll_error"
+            else exit_code
+        ),
+        stdin=Stream(),
+        stdout=Stream(),
+    )
 
     def spawn(_launch_id, sink):
         sink.append(process)
@@ -231,7 +254,9 @@ def test_prepare_read_diagnostics_keep_armed_and_ready_boundaries(
     with pytest.raises(ReceiverSessionError) as caught:
         OwnedReceiverSession.prepare(REDACTED_ONLY_POLICY)
     assert caught.value.preparation_stage == expected_stage
+    assert str(caught.value) == "private frame detail"
     assert calls == failure_call
+    assert process.stdin.closed and process.stdout.closed
 
 
 class Stream(io.BytesIO):

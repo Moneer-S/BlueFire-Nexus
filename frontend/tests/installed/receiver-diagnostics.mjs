@@ -30,7 +30,8 @@ const JOB_ERROR_TYPES = new Set([
 const PREPARATION_STAGES = [
   "armed_read", "armed_validate", "attempt_sink", "containment_register", "deadline_check",
   "generation_frame", "monitor_start", "pipe_check", "platform_containment", "prepared_write",
-  "process_identity", "ready_read", "ready_validate", "worker_spawn",
+  "process_identity", "ready_read", "ready_validate", "worker_enrollment",
+  "worker_listener_startup", "worker_prepare_validation", "worker_ready_frame", "worker_spawn",
 ];
 const PREPARE_HTTP_ERROR_CODES = new Set([
   "browser_session_required", "invalid_service_response", "receiver_defense_refused", "service_error",
