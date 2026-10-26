@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { DEMO_MODE } from "../lib/api";
-import { parseActiveWorkReference, type ActiveWorkReference } from "../lib/active-defensive-work";
+import { loadActiveWork, parseActiveWorkReference, type ActiveWorkReference } from "../lib/active-defensive-work";
 import type { WorkFamily } from "../lib/saved-defensive-work";
 
 const key = "bluefire.local.active-defensive-work.v1";
@@ -41,6 +42,21 @@ export function useActiveDefensiveWork() {
     try { return serialized.length <= 512 ? parseActiveWorkReference(JSON.parse(serialized)) : undefined; }
     catch { return undefined; }
   }, [serialized]);
+}
+
+/** Share one checked owner record between its resume card and linked run context. */
+export function useActiveWorkSummary(reference: ActiveWorkReference | undefined) {
+  return useQuery({
+    queryKey: ["active-defensive-work", reference?.family, reference?.id],
+    queryFn: () => {
+      if (!reference) throw new Error("Choose saved work first.");
+      return loadActiveWork(reference);
+    },
+    enabled: reference !== undefined,
+    retry: false,
+    staleTime: 0,
+    refetchOnMount: "always",
+  });
 }
 
 /** Register only an identity whose existing workflow query has validated its record. */

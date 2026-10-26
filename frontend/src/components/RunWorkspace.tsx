@@ -650,7 +650,7 @@ export function RunReview({ run, catalog, showObjective = true }: { run: RunReco
   const detections = run.detections?.candidates;
   const aiProposals = Array.isArray(run.ai_proposals) ? run.ai_proposals : [];
   const outcome = objectiveLabel(run.objective_reached, run.mode);
-  const cleanup = cleanupSummary(run.cleanup);
+  const cleanup = cleanupSummary(run.cleanup, run.mode);
   const needsCleanup = cleanup.startsWith("Needs attention") || cleanup.startsWith("Failed");
   const stepName = (step: RunStep) => recordedStepLabels(step, catalog, run).name;
   const outcomeDescription = run.objective_reached === true
@@ -662,7 +662,7 @@ export function RunReview({ run, catalog, showObjective = true }: { run: RunReco
     {run.is_demo ? <Callout title="Seeded review">This is a sanitized Simulate record. It does not prove runner execution, independent observation, or a real control block.</Callout> : null}
     {run.approval_pause ? <Callout tone="warning" title="Waiting for a reviewed continuation">The planner paused before the next action. Return to its saved job to review the proposed change and, for Execute, approve the next run.</Callout> : null}
     <section className="run-outcome" aria-label="Recorded run outcome" data-result={run.objective_reached === true ? "achieved" : run.objective_reached === false ? "not-achieved" : "unknown"}>
-      <div className="run-outcome-main"><div className="run-outcome-heading"><span className="run-outcome-symbol"><Target aria-hidden="true"/></span><h2>{outcome}</h2></div>{showObjective && run.objective ? <div className="run-objective"><strong>Objective</strong><p>{run.objective}</p></div> : null}<details className="run-result-notes"><summary>Result details</summary><p>{outcomeDescription}</p><ul><li>{observed?.length === 0 ? "No independent confirmation is recorded." : observed ? "Collector observations; inspect their content and limitations." : "The evidence document is unavailable."}</li>{!stopped ? <li>This does not establish that the path completed.</li> : null}<li>{run.mode === "simulate" ? "Simulate does not perform lab effects." : "Recorded cleanup result; inspect any outstanding effects."}</li></ul></details></div>
+      <div className="run-outcome-main"><div className="run-outcome-heading"><span className="run-outcome-symbol"><Target aria-hidden="true"/></span><h2>{outcome}</h2></div>{showObjective && run.objective ? <div className="run-objective"><strong>Objective</strong><p>{run.objective}</p></div> : null}<details className="run-result-notes"><summary>Result details</summary><p>{outcomeDescription}</p><ul><li>{observed?.length === 0 ? "No independent confirmation is recorded." : observed ? "Collector observations; inspect their content and limitations." : "The evidence document is unavailable."}</li>{!stopped ? <li>This does not establish that the path completed.</li> : null}<li>{cleanup === "No real effects" ? "The cleanup record states that the simulation had no real effects." : run.mode === "simulate" ? "Simulation mode does not establish cleanup; review the recorded cleanup result." : "Recorded cleanup result; inspect any outstanding effects."}</li></ul></details></div>
       <dl className="run-outcome-facts">
         <div><dt>Independent observations</dt><dd>{observed ? `${observed.length} observed records` : "Not reported"}</dd></div>
         <div><dt>First stopped step</dt><dd>{stopped ? <>{stepName(stopped)}<small>{stepOutcomeLabel(stopped, run.mode)}</small></> : "None recorded"}</dd></div>

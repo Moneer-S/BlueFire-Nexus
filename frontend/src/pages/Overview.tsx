@@ -10,7 +10,7 @@ import { useProduct } from "../state/ProductContext";
 import { Badge, Button, ErrorState, formatDate, LoadingState, PageHeader, sentence } from "../components/Primitives";
 import { SavedDefensiveWork } from "../components/SavedDefensiveWork";
 import { ActiveWorkResume } from "../components/ActiveWorkResume";
-import { useActiveDefensiveWork } from "../state/activeDefensiveWork";
+import { useActiveDefensiveWork, useActiveWorkSummary } from "../state/activeDefensiveWork";
 import "./Overview.css";
 
 export function OverviewPage() {
@@ -19,6 +19,7 @@ export function OverviewPage() {
   const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog, staleTime: 60_000 });
   const { scenario, scenarioIsSeededFallback, dirty, runConfig } = useProduct();
   const activeWork = useActiveDefensiveWork();
+  const activeSummary = useActiveWorkSummary(DEMO_MODE ? undefined : activeWork);
   const recent = runs.data?.runs.slice(0, 4);
   const unavailable = runs.data?.unavailable_run_count ?? 0;
   const historyIsEmpty = runs.isSuccess && runs.data?.runs.length === 0 && unavailable === 0;
@@ -64,10 +65,14 @@ export function OverviewPage() {
         <header className="work-section-heading"><h2 id="recent-work-heading">Recent outcomes</h2><div className="work-section-actions"><Link to="/runs">View all<ArrowRight aria-hidden="true"/></Link><Button variant="ghost" size="small" aria-label="Refresh runs" disabled={runs.isFetching} onClick={() => { void runs.refetch(); }}><RotateCcw aria-hidden="true"/><span className="sr-only">{runs.isFetching ? "Refreshing" : "Refresh runs"}</span></Button></div></header>
         {runs.isError ? <><ErrorState title="Run history unavailable" error={runs.error} retry={() => runs.refetch()}/>{recent ? <p className="workspace-note">Showing previously loaded runs. Their current state could not be checked.</p> : null}</> : null}
         {unavailable > 0 ? <p className="workspace-note" role="status">{unavailable} run {unavailable === 1 ? "record is" : "records are"} unavailable. Only readable records are shown.</p> : null}
-        {runs.isPending ? <LoadingState label="Loading run history"/> : recent?.length ? <div className="table-scroll"><table className="recent-work-table"><thead><tr><th>Run</th><th>Created</th><th>Outcome</th></tr></thead><tbody>{recent.map(run => <tr key={run.run_id}>
-          <td><div className="recent-work-name"><CircleDot aria-hidden="true" data-status={run.status}/><div><Link to={"/runs/" + encodeURIComponent(run.run_id)}>{runLabel(run)}</Link><small>{sentence(run.mode)}{run.is_demo ? <Badge tone="violet">Demo</Badge> : null}</small></div></div></td>
-          <td><time dateTime={run.created_at}>{formatDate(run.created_at)}</time></td><td><div className="recent-work-outcome"><strong>{objectiveLabel(run.objective_reached, run.mode)}</strong><small><span className="sr-only">Run status: </span>{sentence(run.status)}</small></div></td>
-        </tr>)}</tbody></table></div> : runs.isSuccess && unavailable === 0 ? <div className="work-empty"><CircleDot aria-hidden="true"/><p>No runs have been recorded.</p><Link to="/runs?prepare=1">Review new run<ArrowRight aria-hidden="true"/></Link></div> : null}
+        {runs.isPending ? <LoadingState label="Loading run history"/> : recent?.length ? <div className="table-scroll"><table className="recent-work-table"><thead><tr><th>Run</th><th>Created</th><th>Outcome</th></tr></thead><tbody>{recent.map(run => {
+          const contexts = activeSummary.data?.runContexts?.filter(context => context.runId === run.run_id) ?? [];
+          const context = contexts.length === 1 ? contexts[0] : undefined;
+          return <tr key={run.run_id}>
+            <td><div className="recent-work-name"><CircleDot aria-hidden="true" data-status={run.status}/><div><Link to={"/runs/" + encodeURIComponent(run.run_id)}>{runLabel(run)}</Link><small>{context ? <span className="recent-work-phase">{context.phase}</span> : null}{sentence(run.mode)}{run.is_demo ? <Badge tone="violet">Demo</Badge> : null}</small></div></div></td>
+            <td><time dateTime={run.created_at}>{formatDate(run.created_at)}</time></td><td><div className="recent-work-outcome"><strong>{objectiveLabel(run.objective_reached, run.mode)}</strong>{context?.receiverDecision ? <span className="recent-work-decision">{context.receiverDecision}</span> : null}<small><span className="sr-only">Run status: </span>{sentence(run.status)}</small></div></td>
+          </tr>;
+        })}</tbody></table></div> : runs.isSuccess && unavailable === 0 ? <div className="work-empty"><CircleDot aria-hidden="true"/><p>No runs have been recorded.</p><Link to="/runs?prepare=1">Review new run<ArrowRight aria-hidden="true"/></Link></div> : null}
       </section>
     </div>
 

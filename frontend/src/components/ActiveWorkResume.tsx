@@ -1,14 +1,13 @@
-import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, RefreshCw, ShieldCheck } from "lucide-react";
 import { Link } from "react-router-dom";
-import { activeWorkHref, loadActiveWork, type ActiveWorkReference } from "../lib/active-defensive-work";
+import { activeWorkHref, type ActiveWorkReference } from "../lib/active-defensive-work";
 import { displayTitle } from "../lib/display-title";
-import { rememberActiveDefensiveWork } from "../state/activeDefensiveWork";
+import { rememberActiveDefensiveWork, useActiveWorkSummary } from "../state/activeDefensiveWork";
 import { Button, ErrorState, LoadingState, sentence } from "./Primitives";
 import "./ActiveWorkResume.css";
 
 export function ActiveWorkResume({ reference }: { reference: ActiveWorkReference }) {
-  const work = useQuery({ queryKey: ["active-defensive-work", reference.family, reference.id], queryFn: () => loadActiveWork(reference), retry: false, staleTime: 0, refetchOnMount: "always" });
+  const work = useActiveWorkSummary(reference);
   const value = work.data;
   return <section className="active-work active-objective" aria-labelledby="active-objective-heading">
     <div className="active-work-content">

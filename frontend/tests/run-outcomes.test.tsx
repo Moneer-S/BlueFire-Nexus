@@ -127,7 +127,44 @@ it("qualifies synthetic success and exposes an explicit zero observation count",
   expect(outcome.getByRole("heading", { name: "Achieved (synthetic)" })).toBeVisible();
   expect(outcome.getByText("0 observed records")).toBeVisible();
   await userEvent.setup().click(outcome.getByText("Result details"));
-  expect(outcome.getByText("Simulate does not perform lab effects.")).toBeVisible();
+  expect(outcome.getByText("Simulation mode does not establish cleanup; review the recorded cleanup result.")).toBeVisible();
+});
+
+it("reports no real effects only from an explicit zero-effect simulation record", () => {
+  render(<RunReview run={run({ mode: "simulate", cleanup: { status: "simulated", outstanding_effects: 0 } })} catalog={demoCatalog}/>);
+  expect(within(screen.getByRole("region", { name: "Recorded run outcome" })).getByText("No real effects")).toBeVisible();
+
+  render(<RunReview run={run({ mode: "simulate", cleanup: { attempted: false, success: null, outstanding_receipt_count: 0 } })} catalog={demoCatalog}/>);
+  expect(screen.getAllByText("No real effects")).toHaveLength(2);
+});
+
+it("keeps missing cleanup facts unknown instead of inferring no effects from simulation mode", () => {
+  render(<RunReview run={run({ mode: "simulate", cleanup: { attempted: false } })} catalog={demoCatalog}/>);
+  expect(within(screen.getByRole("region", { name: "Recorded run outcome" })).getByText("Not attempted")).toBeVisible();
+
+  render(<RunReview run={run({ mode: "simulate", cleanup: undefined })} catalog={demoCatalog}/>);
+  expect(within(screen.getAllByRole("region", { name: "Recorded run outcome" }).at(-1)!).getByText("Not recorded")).toBeVisible();
+
+  render(<RunReview run={run({ mode: "execute", cleanup: { attempted: false, success: null, outstanding_receipt_count: 0 } })} catalog={demoCatalog}/>);
+  expect(within(screen.getAllByRole("region", { name: "Recorded run outcome" }).at(-1)!).getByText("Not attempted")).toBeVisible();
+});
+
+it.each([
+  [{ status: "failed", attempted: false, success: null, outstanding_receipt_count: 0 }, "Failed · cleanup needs attention"],
+  [{ status: "unknown", attempted: false, success: null, outstanding_receipt_count: 0 }, "Unknown"],
+  [{ attempted: false, success: null, outstanding_receipt_count: 0, outstanding_effects: 1 }, "Needs attention · 1 outstanding effect"],
+  [{ status: "simulated", attempted: true, success: true, outstanding_receipt_count: 0 }, "Simulated"],
+])("preserves conflicting or unresolved cleanup record %j", (cleanup, expected) => {
+  render(<RunReview run={run({ mode: "simulate", cleanup })} catalog={demoCatalog}/>);
+  expect(within(screen.getByRole("region", { name: "Recorded run outcome" })).getByText(expected)).toBeVisible();
+});
+
+it("preserves recorded cleanup failures and completion outcomes", () => {
+  render(<RunReview run={run({ mode: "simulate", cleanup: { attempted: true, success: false, outstanding_receipt_count: 0 } })} catalog={demoCatalog}/>);
+  expect(within(screen.getByRole("region", { name: "Recorded run outcome" })).getByText("Failed · cleanup needs attention")).toBeVisible();
+
+  render(<RunReview run={run({ mode: "simulate", cleanup: { attempted: true, success: true, outstanding_receipt_count: 0 } })} catalog={demoCatalog}/>);
+  expect(screen.getByText("Complete · no outstanding effects")).toBeVisible();
 });
 
 it.each([

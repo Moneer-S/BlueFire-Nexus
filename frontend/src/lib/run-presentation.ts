@@ -26,15 +26,22 @@ export function stepOutcomeLabel(step: RunStep, mode: string): string {
   return step.status.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase()) || "Not reported";
 }
 
-export function cleanupSummary(cleanup: RunRecord["cleanup"]) {
+export function cleanupSummary(cleanup: RunRecord["cleanup"], mode?: RunRecord["mode"]) {
   if (cleanup === true) return "Complete";
   if (cleanup === false) return "Needs attention";
   if (!cleanup) return "Not recorded";
-  const count = cleanup.outstanding_receipt_count ?? cleanup.outstanding_effects;
-  const outstanding = typeof count === "number" ? count : undefined;
+  const counts = [cleanup.outstanding_receipt_count, cleanup.outstanding_effects].filter((count): count is number => typeof count === "number");
+  const outstanding = counts.length ? Math.max(...counts) : undefined;
   if (outstanding !== undefined && outstanding > 0) return `Needs attention · ${outstanding} outstanding effect${outstanding === 1 ? "" : "s"}`;
-  if (cleanup.success === false) return "Failed · cleanup needs attention";
+  if (cleanup.success === false || cleanup.status === "failed") return "Failed · cleanup needs attention";
+  if (cleanup.status === "unknown") return "Unknown";
+  if (cleanup.status === "simulated" && (cleanup.attempted === true || cleanup.success === true)) return "Simulated";
   if (cleanup.success === true && outstanding === 0) return "Complete · no outstanding effects";
+  const noEffectsRecorded = outstanding === 0 && (
+    cleanup.status === "simulated" && cleanup.attempted !== true && cleanup.success !== true
+      || cleanup.status === undefined && cleanup.attempted === false && cleanup.success === null
+  );
+  if (mode === "simulate" && noEffectsRecorded) return "No real effects";
   if (cleanup.attempted === false) return "Not attempted";
   return typeof cleanup.status === "string" ? cleanup.status.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase()) : "Result not reported";
 }
