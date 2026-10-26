@@ -99,6 +99,18 @@
 .file-access-history li { padding-block: 12px; border-bottom: 1px solid var(--line); }
 .file-access-history li > div { display: flex; justify-content: space-between; gap: 16px; padding-block: 4px; }
 .file-access-history details { margin-top: 8px; color: var(--muted-strong); font-size: .73rem; }
+.file-access-recovery-navigation { margin-top: 12px; }
+.file-access-recovery-navigation > p { margin: 0 0 8px; color: var(--muted-strong); font-size: .75rem; }
+.file-access-recovery-navigation ol { margin: 0; padding: 0; list-style: none; }
+.file-access-recovery-navigation li { padding-block: 10px; border-top: 1px solid var(--line); }
+.file-access-recovery-navigation li > a { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 16px; color: var(--blue-soft); text-decoration: none; }
+.file-access-recovery-navigation li > a:hover strong { text-decoration: underline; }
+.file-access-recovery-navigation a > span:first-child { display: grid; min-width: 0; gap: 3px; }
+.file-access-recovery-navigation a small { color: var(--muted-strong); font-size: .68rem; }
+.file-access-recovery-navigation a strong { margin: 0; color: inherit; font-size: .78rem; font-weight: 550; }
+.file-access-recovery-navigation a > span:last-child { display: inline-flex; align-items: center; gap: 8px; font-size: .72rem; }
+.file-access-recovery-navigation a svg { width: 15px; height: 15px; flex: none; }
+.file-access-recovery-navigation details { margin-top: 6px; color: var(--muted-strong); font-size: .7rem; }
 @container file-access-workspace (max-width: 950px) {
   .file-access-readiness { grid-template-columns: minmax(0, 1fr); padding: 17px 18px 2px; }
   .file-access-readiness-facts { grid-column: 1; grid-row: auto; gap: 14px; margin: 14px 0 0; padding: 12px 0 0; border-left: 0; border-top: 1px solid var(--line); }
