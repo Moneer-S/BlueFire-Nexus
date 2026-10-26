@@ -19,6 +19,7 @@ export interface ReceiverPreparationDiagnostic {
   receiver_job_state: string;
   receiver_job_error_code: string;
   receiver_job_error_type: string;
+  receiver_prepare_failure_stage: string;
   execution_job_state: string;
   execution_job_error_code: string;
   prepare_started: boolean | null;
