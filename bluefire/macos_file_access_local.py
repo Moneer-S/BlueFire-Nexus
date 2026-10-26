@@ -70,6 +70,7 @@ class MacOSSetupFailure(RuntimeError):
     """A setup error annotated with one fixed, non-sensitive operation stage."""
 
     safe_native_startup_exits: dict[str, str]
+    safe_native_startup_statuses: dict[str, dict[str, Any]]
 
     def __init__(
         self,
@@ -159,7 +160,7 @@ def _at_setup_stage(
 def _attach_retired_native_startup_exits(
     failure: MacOSSetupFailure, creator: Any, close_result: Any
 ) -> None:
-    """Add finite context only after the existing creator retirement succeeds."""
+    """Add finite cached-status context after creator retirement was attempted."""
     try:
         from .macos_file_access_creator import MacOSFileAccessCreator
 
@@ -167,8 +168,18 @@ def _attach_retired_native_startup_exits(
             failure.safe_setup_stage != "namespace_creation"
             or type(creator) is not MacOSFileAccessCreator
             or type(close_result) is not dict
-            or close_result.get("workers_closed") is not True
         ):
+            return
+        native_statuses = creator.retained_native_startup_statuses(
+            workers_closed=close_result.get("workers_closed") is True
+        )
+        if type(
+            native_statuses
+        ) is dict and _setup_failure_diagnostics.valid_native_startup_statuses(native_statuses):
+            failure.safe_native_startup_statuses = {
+                role: dict(status) for role, status in native_statuses.items()
+            }
+        if close_result.get("workers_closed") is not True:
             return
         native_exits = creator.retained_native_startup_exits()
         if type(native_exits) is dict and _setup_failure_diagnostics.valid_native_startup_exits(

@@ -179,6 +179,32 @@ _SAFE_NATIVE_STARTUP_EXIT_LABELS = frozenset(
         "channel_initialization",
     }
 )
+_SAFE_NATIVE_STARTUP_EXIT_CODES = {
+    80: "runtime_supported_check",
+    81: "initial_clock_or_deadline",
+    82: "initial_descriptor_inventory",
+    83: "readonly_descriptor",
+    84: "credential_selection",
+    85: "post_drop_descriptor_inventory",
+    86: "initial_resource_validation",
+    87: "channel_initialization",
+}
+_SAFE_NATIVE_STARTUP_STATUS_UNAVAILABLE_REASONS = frozenset(
+    {
+        "workers_not_closed",
+        "not_settled",
+        "cleanup_unknown",
+        "not_started",
+        "factory_not_entered",
+        "process_count_mismatch",
+        "proof_count_mismatch",
+        "process_identity_mismatch",
+        "worker_lock_busy",
+        "returncode_unavailable",
+        "returncode_invalid",
+        "returncode_out_of_bounds",
+    }
+)
 _SAFE_NATIVE_STARTUP_EXIT_ROLES = frozenset({"reader", "owner", "control"})
 _READINESS_FAILURE_STAGES = frozenset(
     {
@@ -239,6 +265,60 @@ def _safe_native_startup_exits(value: Any) -> dict[str, str] | None:
     return dict(value)
 
 
+def _safe_native_startup_statuses(value: Any) -> dict[str, dict[str, Any]] | None:
+    if (
+        type(value) is not dict
+        or not 0 < len(value) <= len(_SAFE_NATIVE_STARTUP_EXIT_ROLES)
+        or any(
+            type(role) is not str
+            or role not in _SAFE_NATIVE_STARTUP_EXIT_ROLES
+            or type(status) is not dict
+            or type(status.get("status")) is not str
+            for role, status in value.items()
+        )
+    ):
+        return None
+    result: dict[str, dict[str, Any]] = {}
+    for role, status in value.items():
+        kind = status["status"]
+        if kind == "unavailable":
+            if (
+                set(status) != {"status", "reason"}
+                or type(status["reason"]) is not str
+                or status["reason"] not in _SAFE_NATIVE_STARTUP_STATUS_UNAVAILABLE_REASONS
+            ):
+                return None
+        else:
+            if (
+                set(status)
+                not in (
+                    {"status", "returncode"},
+                    {"status", "returncode", "label"},
+                    {"status", "returncode", "signal"},
+                )
+                or type(status.get("returncode")) is not int
+                or not -255 <= status["returncode"] <= 255
+            ):
+                return None
+            code = status["returncode"]
+            if code in _SAFE_NATIVE_STARTUP_EXIT_CODES:
+                expected = {
+                    "status": "reserved_stage_exit",
+                    "returncode": code,
+                    "label": _SAFE_NATIVE_STARTUP_EXIT_CODES[code],
+                }
+            elif code == 0:
+                expected = {"status": "clean_exit", "returncode": 0}
+            elif code < 0:
+                expected = {"status": "signal_termination", "returncode": code}
+            else:
+                expected = {"status": "other_exit", "returncode": code}
+            if status != expected:
+                return None
+        result[role] = dict(status)
+    return result
+
+
 def _parse_child_cli_error(raw: str) -> dict[str, Any] | None:
     """Keep only fixed CLI error codes and classifications, never message text."""
     if len(raw.encode("utf-8", errors="replace")) > 4096:
@@ -276,6 +356,9 @@ def _parse_child_cli_error(raw: str) -> dict[str, Any] | None:
             native_exits = _safe_native_startup_exits(error.get("native_startup_exits"))
             if native_exits is not None:
                 result["native_startup_exits"] = native_exits
+            native_statuses = _safe_native_startup_statuses(error.get("native_startup_statuses"))
+            if native_statuses is not None:
+                result["native_startup_statuses"] = native_statuses
     return result
 
 
@@ -334,6 +417,11 @@ def _safe_readiness_diagnostics(
                 native_exits = _safe_native_startup_exits(child_error.get("native_startup_exits"))
                 if native_exits is not None:
                     result["native_startup_exits"] = native_exits
+                native_statuses = _safe_native_startup_statuses(
+                    child_error.get("native_startup_statuses")
+                )
+                if native_statuses is not None:
+                    result["native_startup_statuses"] = native_statuses
     return result
 
 

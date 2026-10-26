@@ -719,6 +719,42 @@ class MacOSFileAccessCreator:
         finally:
             self._lock.release()
 
+    def retained_native_startup_statuses(
+        self, *, workers_closed: bool
+    ) -> dict[str, dict[str, Any]] | None:
+        """Project bounded status or an explicit unavailable state for each owned worker."""
+        if os.getpid() != self._creator_pid or type(workers_closed) is not bool:
+            return None
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            if (
+                self._state != "retired"
+                or type(self._workers) is not dict
+                or len(self._workers) > len(_setup_failure_diagnostics.NATIVE_STARTUP_EXIT_ROLES)
+                or any(
+                    role not in _setup_failure_diagnostics.NATIVE_STARTUP_EXIT_ROLES
+                    for role in self._workers
+                )
+            ):
+                return None
+            statuses: dict[str, dict[str, Any]] = {}
+            for role in _setup_failure_diagnostics.NATIVE_STARTUP_EXIT_ROLES:
+                worker = self._workers.get(role)
+                if worker is None:
+                    continue
+                if type(worker) is not MacOSFileAccessWorker:
+                    return None
+                if workers_closed is not True or self._retired_workers_closed is not True:
+                    statuses[role] = _setup_failure_diagnostics.unavailable_native_startup_status(
+                        "workers_not_closed"
+                    )
+                else:
+                    statuses[role] = worker.retained_native_startup_status()
+            return statuses or None
+        finally:
+            self._lock.release()
+
     def reset(self) -> None:
         # No bool/receipt can grant mutation without the original namespace remover.
         raise MacOSFileAccessContractError(

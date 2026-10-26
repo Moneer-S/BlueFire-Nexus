@@ -1110,6 +1110,17 @@ def main(
                     )
                 ):
                     error["native_startup_exits"] = dict(native_exits)
+                native_statuses = getattr(exc, "safe_native_startup_statuses", None)
+                valid_native_statuses = getattr(diagnostics, "valid_native_startup_statuses", None)
+                if (
+                    stage == "namespace_creation"
+                    and type(native_statuses) is dict
+                    and callable(valid_native_statuses)
+                    and valid_native_statuses(native_statuses)
+                ):
+                    error["native_startup_statuses"] = {
+                        role: dict(status) for role, status in native_statuses.items()
+                    }
         _json({"error": error})
         return 2
     except KeyboardInterrupt:

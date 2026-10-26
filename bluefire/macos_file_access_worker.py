@@ -426,3 +426,42 @@ class MacOSFileAccessWorker:
             return code if type(code) is int else None
         finally:
             self._lock.release()
+
+    def retained_native_startup_status(self) -> dict[str, Any]:
+        """Describe cached startup status, or the exact fixed gate that withheld it."""
+        if not self._lock.acquire(blocking=False):
+            return _setup_failure_diagnostics.unavailable_native_startup_status("worker_lock_busy")
+        try:
+            if self._settled is not True:
+                return _setup_failure_diagnostics.unavailable_native_startup_status("not_settled")
+            if self._local_cleanup_unknown is not False:
+                return _setup_failure_diagnostics.unavailable_native_startup_status(
+                    "cleanup_unknown"
+                )
+            if self._creation_started is not True:
+                return _setup_failure_diagnostics.unavailable_native_startup_status("not_started")
+            if self._factory_entered is not True:
+                return _setup_failure_diagnostics.unavailable_native_startup_status(
+                    "factory_not_entered"
+                )
+            if len(self._processes) != 1:
+                return _setup_failure_diagnostics.unavailable_native_startup_status(
+                    "process_count_mismatch"
+                )
+            if len(self._proven) != 1:
+                return _setup_failure_diagnostics.unavailable_native_startup_status(
+                    "proof_count_mismatch"
+                )
+            process = self._processes[0]
+            if (
+                type(process) is not subprocess.Popen
+                or self._proven[0] is not process
+                or (self._process is not None and self._process is not process)
+            ):
+                return _setup_failure_diagnostics.unavailable_native_startup_status(
+                    "process_identity_mismatch"
+                )
+            code = vars(process).get("returncode")
+            return _setup_failure_diagnostics.native_startup_status_from_returncode(code)
+        finally:
+            self._lock.release()

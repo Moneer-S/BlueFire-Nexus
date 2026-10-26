@@ -15,6 +15,22 @@ NATIVE_STARTUP_EXIT_LABELS = {
     87: "channel_initialization",
 }
 NATIVE_STARTUP_EXIT_ROLES = ("reader", "owner", "control")
+NATIVE_STARTUP_STATUS_UNAVAILABLE_REASONS = frozenset(
+    {
+        "workers_not_closed",
+        "not_settled",
+        "cleanup_unknown",
+        "not_started",
+        "factory_not_entered",
+        "process_count_mismatch",
+        "proof_count_mismatch",
+        "process_identity_mismatch",
+        "worker_lock_busy",
+        "returncode_unavailable",
+        "returncode_invalid",
+        "returncode_out_of_bounds",
+    }
+)
 
 
 def native_startup_exit_label(value: Any) -> str | None:
@@ -33,6 +49,65 @@ def valid_native_startup_exits(value: Any) -> bool:
             and type(label) is str
             and label in NATIVE_STARTUP_EXIT_LABELS.values()
             for role, label in value.items()
+        )
+    )
+
+
+def unavailable_native_startup_status(reason: str) -> dict[str, str]:
+    if reason not in NATIVE_STARTUP_STATUS_UNAVAILABLE_REASONS:
+        raise ValueError("unknown native startup status reason")
+    return {"status": "unavailable", "reason": reason}
+
+
+def native_startup_status_from_returncode(value: Any) -> dict[str, Any]:
+    """Project one already-cached, bounded Popen status without inferring cause."""
+    if type(value) is not int:
+        return unavailable_native_startup_status(
+            "returncode_unavailable" if value is None else "returncode_invalid"
+        )
+    if not -255 <= value <= 255:
+        return unavailable_native_startup_status("returncode_out_of_bounds")
+    label = native_startup_exit_label(value)
+    if label is not None:
+        return {"status": "reserved_stage_exit", "returncode": value, "label": label}
+    if value == 0:
+        return {"status": "clean_exit", "returncode": value}
+    if value < 0:
+        return {"status": "signal_termination", "returncode": value}
+    return {"status": "other_exit", "returncode": value}
+
+
+def valid_native_startup_status(value: Any) -> bool:
+    if type(value) is not dict or type(value.get("status")) is not str:
+        return False
+    status = value["status"]
+    if status == "unavailable":
+        return (
+            set(value) == {"status", "reason"}
+            and type(value["reason"]) is str
+            and value["reason"] in NATIVE_STARTUP_STATUS_UNAVAILABLE_REASONS
+        )
+    if set(value) not in (
+        {"status", "returncode"},
+        {"status", "returncode", "label"},
+    ):
+        return False
+    code = value.get("returncode")
+    if type(code) is not int or not -255 <= code <= 255:
+        return False
+    expected = native_startup_status_from_returncode(code)
+    return value == expected
+
+
+def valid_native_startup_statuses(value: Any) -> bool:
+    return (
+        type(value) is dict
+        and 0 < len(value) <= len(NATIVE_STARTUP_EXIT_ROLES)
+        and all(
+            type(role) is str
+            and role in NATIVE_STARTUP_EXIT_ROLES
+            and valid_native_startup_status(status)
+            for role, status in value.items()
         )
     )
 
