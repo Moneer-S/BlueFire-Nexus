@@ -236,6 +236,11 @@
 .workbench-builder .adaptive-unavailable { padding: 8px 0; }
 
 .workbench-builder .inspector-header { display: flex; align-items: flex-start; gap: 9px; padding: 13px 12px 10px; }
+.workbench-builder .graph-selection-strip { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 11px; border-bottom: 1px solid var(--line); background: var(--ink-900); font-size: .72rem; }
+.workbench-builder .graph-selection-strip > svg { flex: 0 0 16px; width: 16px; height: 16px; color: var(--blue-soft); }
+.workbench-builder .graph-selection-strip > span { flex-shrink: 0; color: var(--muted); }
+.workbench-builder .graph-selection-strip > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.workbench-builder .graph-selection-strip > button { flex-shrink: 0; margin-left: auto; }
 .workbench-builder .inspector-header > div { min-width: 0; flex: 1; }
 .workbench-builder .inspector-header h2 { margin: 0; font-size: .86rem; line-height: 1.35; overflow-wrap: anywhere; }
 .workbench-builder .inspector-header p { margin: 4px 0 0; color: var(--muted); font-size: .67rem; }

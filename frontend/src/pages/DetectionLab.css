@@ -376,8 +376,11 @@
 .detection-page .detection-evaluation-report .evaluation-result-question { margin: 0; color: var(--muted-strong); font-size: .8125rem; line-height: 1.55; overflow-wrap: anywhere; }
 .detection-page .evaluation-result-badges { display: flex; flex-wrap: wrap; gap: 6px; }
 .detection-page .evaluation-result-badges .badge { font-size: .75rem; line-height: 1.4; }
-.detection-page .evaluation-evidence-note { display: grid; gap: 4px; margin: 0; padding: 10px 12px; border-left: 2px solid var(--blue); border-radius: 0 5px 5px 0; background: color-mix(in srgb, var(--blue) 7%, transparent); color: var(--muted-strong); font-size: .8125rem; line-height: 1.55; }
+.detection-page .evaluation-evidence-note { margin: 0; padding: 7px 10px; border-left: 2px solid var(--line-strong); border-radius: 0 5px 5px 0; background: color-mix(in srgb, var(--blue) 4%, transparent); color: var(--muted-strong); font-size: .8125rem; line-height: 1.55; }
+.detection-page .evaluation-evidence-note > summary { cursor: pointer; }
+.detection-page .evaluation-evidence-note > summary::marker { color: var(--blue-soft); }
 .detection-page .evaluation-evidence-note strong { color: var(--text); font-size: .8125rem; font-weight: 600; }
+.detection-page .evaluation-evidence-note > p { margin: 8px 0 0; }
 .detection-page .evaluation-review-note { margin: 0; color: var(--amber-soft); font-size: .8125rem; line-height: 1.55; }
 .detection-page .evaluation-review-note strong { font-weight: 600; }
 .detection-page .detection-evaluation-report > .callout { margin: 0; padding: 10px 12px; font-size: .8125rem; line-height: 1.55; }

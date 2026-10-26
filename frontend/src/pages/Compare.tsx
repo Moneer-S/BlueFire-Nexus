@@ -543,7 +543,12 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {}, catal
     <section className="comparison-conclusion" aria-label="Comparison conclusion">
       <div className="comparison-conclusion-icon"><GitCompareArrows aria-hidden="true" /></div>
       <div className="comparison-conclusion-copy"><p className="eyebrow">Recorded comparison</p><h2>{conclusion.title}</h2><p>{conclusion.detail}</p></div>
-      <div className="comparison-conclusion-metrics"><div><strong>{changed}</strong><span>compared runs changed</span></div><div><strong>{pathChanges}</strong><span>compared paths changed</span></div><div><strong>{cleanupUnknown}</strong><span>runs with cleanup unreported</span></div>{onExplain ? <Button size="small" variant="secondary" onClick={onExplain}>Explain comparison</Button> : null}</div>
+      <div className={`comparison-conclusion-metrics${changed === 0 && pathChanges === 0 && cleanupUnknown === 0 ? ` comparison-conclusion-metrics-quiet${onExplain ? " comparison-conclusion-metrics-has-action" : ""}` : ""}`}>
+        {changed === 0 && pathChanges === 0 && cleanupUnknown === 0
+          ? <div className="comparison-conclusion-zero-summary" aria-label="Comparison summary counts"><span><strong>{changed}</strong> compared runs changed</span><span><strong>{pathChanges}</strong> compared paths changed</span><span><strong>{cleanupUnknown}</strong> runs with cleanup unreported</span></div>
+          : <><div><strong>{changed}</strong><span>compared runs changed</span></div><div><strong>{pathChanges}</strong><span>compared paths changed</span></div><div><strong>{cleanupUnknown}</strong><span>runs with cleanup unreported</span></div></>}
+        {onExplain ? <Button size="small" variant="secondary" onClick={onExplain}>Explain comparison</Button> : null}
+      </div>
     </section>
     <section className="comparison-run-overview" role="group" aria-label="Comparison run order">
       <header className="comparison-section-heading"><h2>{sharedName ?? "Baseline and compared runs"}</h2><div className="comparison-run-actions"><span>{comparison.run_ids.length} runs reviewed</span>{reportUrl ? <a className="button button-secondary button-small comparison-download" href={reportUrl} download="bluefire-comparison.md"><Download aria-hidden="true"/>Download report</a> : null}</div></header>

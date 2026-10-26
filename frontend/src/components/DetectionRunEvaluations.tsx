@@ -172,7 +172,7 @@ export function EvaluationReport({ report, compact = false }: { report: Detectio
       <h3 className="evaluation-result-title">{title}</h3>
       {report.question ? <p className="evaluation-result-question">{report.question}</p> : null}
       <div className="evaluation-result-badges"><Badge>{sentence(activityLabel(report))} activity · operator assigned</Badge><Badge tone={result.state === "insufficient_evidence" || result.state === "backend_error" ? "warning" : "info"}>{sentence(result.state)}</Badge></div>
-      {report.development_case ? <p className="evaluation-evidence-note"><strong>Development evidence</strong><span>This data was used or declared for rule development. An independent label cannot make it unseen. Evaluate separate data before judging improvement.</span></p> : null}
+      {report.development_case ? <details className="evaluation-evidence-note"><summary><strong>Development evidence</strong> · <span>This data was used or declared for rule development.</span></summary><p>An independent label cannot make it unseen. Evaluate separate data before judging improvement.</p></details> : null}
       {activityLabel(report) === "benign" && result.state === "matched" ? <Callout tone="warning" title="Match in a declared benign case">This rule matched observed records in an operator-assigned benign case. Review this potential false positive; the label does not suppress the measured match.</Callout> : null}
       {evidenceSummary ? <p className="evaluation-review-note"><strong>Evidence needs review</strong> · {evidenceSummary}. See evidence and engine details.</p> : null}
       <DataList items={[
