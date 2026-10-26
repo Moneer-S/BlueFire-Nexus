@@ -386,7 +386,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     if (!sameViewport(next, current)) void flow.setViewport(next, { duration: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? 0 : duration });
     return next;
   }, [allBranches, expandedBranches, flow, graph.edges]);
-  const fitNodes = useCallback((ids: readonly string[], duration = 0, readable = false) => {
+  const fitNodes = useCallback((ids: readonly string[], duration = 0, readable = false, fallback: "start" | "readable" = "start") => {
     const canvas = graphCanvas.current;
     if (!canvas || !canvas.clientWidth || !canvas.clientHeight) return false;
     const bounds = ids.flatMap(id => {
@@ -400,7 +400,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     if (readable && viewport.zoom < minimumReadableGraphZoom) {
       // A scheduled group change may still capture the previous selection.
       const anchor = ids.includes(selectedId) ? selectedId : ids.includes(scenario.start) ? scenario.start : ids[0];
-      return anchor ? Boolean(frameStep(anchor, "start", duration)) : false;
+      return anchor ? Boolean(frameStep(anchor, fallback, duration)) : false;
     }
     void flow.setViewport(viewport, { duration: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? 0 : duration });
     return true;
@@ -516,7 +516,9 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
           // Establish usable graph space before accepting its first frame.
           if (frame.height < GRAPH_NODE_HEIGHT + 96) revealCanvasToolbar(canvas);
           lastScroll = scrollPosition();
-          initialFrameDone.current = fitNodes(shownSteps.map(step => step.id), 0, true);
+          // Opening frames the selection with its visible path: an entry step
+          // anchors the leading edge so the continuation fills the canvas.
+          initialFrameDone.current = fitNodes(shownSteps.map(step => step.id), 0, true, "readable");
         } else if (initialFrameDone.current && selectedId) {
           const current = flow.getViewport();
           // A later operator pan, zoom, focus, or card move owns the view from then on.

@@ -189,6 +189,28 @@ describe("Builder viewport controls", () => {
     expect(flow.setViewport).toHaveBeenCalledOnce();
   });
 
+  it("opens a long left-to-right plan with its entry at the leading edge and the continuation filling the canvas", async () => {
+    const scenario = structuredClone(demoScenario);
+    const template = structuredClone(scenario.steps[0]!);
+    scenario.steps = Array.from({ length: 9 }, (_, index) => ({ ...structuredClone(template), id: `wide_step_${index + 1}`, inputs: {} }));
+    scenario.start = scenario.steps[0]!.id;
+    scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success" as Outcome, to_step: step.id }));
+    scenario.edges.push({ from_step: "wide_step_6", outcome: "blocked", to_step: "wide_step_9" });
+    delete scenario.adaptive_execution;
+    // One saved row is wider than the canvas at a readable scale.
+    renderBuilder(scenario, Object.fromEntries(scenario.steps.map((step, index) => [step.id, { x: 32 + index * 276, y: 32 }])));
+    await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
+    expectReadableSelection("wide_step_1");
+    expect(state.viewport.zoom).toBe(1);
+    // The entry card starts at the canvas padding instead of its centre, so the
+    // following cards occupy the rest of the width rather than half of it.
+    expect(state.viewport.x + 32).toBe(24);
+    const visible = scenario.steps.filter((_, index) => state.viewport.x + 32 + index * 276 + 220 <= width);
+    expect(visible.length).toBeGreaterThanOrEqual(3);
+    // A single row is centred in the available height, not pinned to the top.
+    expect(state.viewport.y + 32 + 52).toBe(height / 2);
+  });
+
   it("reveals a step selected in Steps when returning to an unchanged Canvas without changing zoom", async () => {
     width = 650; height = 380;
     const scenario = structuredClone(demoScenario);
