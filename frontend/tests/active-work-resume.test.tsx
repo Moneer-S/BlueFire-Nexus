@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -190,5 +190,39 @@ describe("active work resume", () => {
     expect(screen.getByLabelText("Current route")).toHaveTextContent("/overview?tab=work");
     expect(window.localStorage.getItem("bluefire.local.active-defensive-work.v1")).toBeNull();
     expect(window.localStorage.getItem("bluefire.local.scenario.v1")).toBe(draftBytes);
+  });
+
+  it("adds exact saved phase context without changing objective outcomes or fetching the owner twice", async () => {
+    rememberActiveDefensiveWork(reference);
+    const records = ["baseline", "protected", "legitimate", "unrelated"].map((phase, index) => ({
+      run_id: `run-${phase}`, scenario_id: "receiver-collection", scenario_title: "Public record handoff",
+      created_at: `2026-10-25T12:0${index}:00Z`, mode: "execute", status: phase === "protected" ? "incomplete" : "completed",
+      objective_reached: phase !== "protected", is_demo: false,
+    }));
+    const before = structuredClone(records);
+    runs.mockResolvedValue({ runs: records, unavailable_run_count: 0 });
+    loadActiveWork.mockResolvedValue(summary(reference, { runContexts: [
+      { runId: "run-baseline", phase: "Baseline", receiverDecision: "Accepted by the receiver" },
+      { runId: "run-protected", phase: "Redaction required", receiverDecision: "Prevented by the receiver" },
+      { runId: "run-legitimate", phase: "Legitimate redacted use", receiverDecision: "Accepted by the receiver" },
+    ] }));
+    const user = userEvent.setup();
+    mountOverview();
+    const recent = within(await screen.findByRole("region", { name: "Recent outcomes" }));
+    await recent.findByText("Redaction required");
+    const row = within(recent.getByText("Redaction required").closest("tr")!);
+    expect(row.getByText("Not achieved")).toBeVisible();
+    expect(row.getByText("Incomplete")).toBeVisible();
+    expect(row.getByText("Prevented by the receiver")).toBeVisible();
+    expect(row.getByRole("link")).toHaveAttribute("href", "/runs/run-protected");
+    const unrelated = within(recent.getAllByRole("link", { name: "Public record handoff" })[3]!.closest("tr")!);
+    expect(unrelated.queryByText(/by the receiver/)).not.toBeInTheDocument();
+    expect(unrelated.queryByText(/Baseline|Redaction required|Legitimate redacted use/)).not.toBeInTheDocument();
+    expect(loadActiveWork).toHaveBeenCalledTimes(1);
+    expect(records).toEqual(before);
+    await user.click(screen.getByRole("button", { name: "Show working draft" }));
+    expect(recent.queryByText("Redaction required")).not.toBeInTheDocument();
+    expect(recent.queryByText("Prevented by the receiver")).not.toBeInTheDocument();
+    expect(recent.getAllByRole("link", { name: "Public record handoff" })).toHaveLength(4);
   });
 });

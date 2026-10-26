@@ -369,6 +369,15 @@ const ACTIVE_WORK_KEY = "bluefire.local.active-defensive-work.v1";
 const HOME_PHASE_LABELS = { baseline: "Baseline", protected: "Redaction required", legitimate: "Legitimate redacted use" };
 const HOME_DECISION_LABELS = { accepted: "Accepted by the receiver", policy_refused: "Prevented by the receiver" };
 
+function homeObjectiveLabel(reached, mode) {
+  return reached === true ? (mode === "simulate" ? "Achieved (synthetic)" : "Achieved")
+    : reached === false ? "Not achieved" : "Not established";
+}
+
+function homeRunStatusLabel(status) {
+  return status.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
+}
+
 // Retain only bounded result fields, never the preparation/session-bearing owner document.
 function homeRecordProjection(value, ownerId) {
   assert.equal(value.job?.job_id, ownerId);
@@ -381,10 +390,51 @@ function homeRecordProjection(value, ownerId) {
     assert.equal(item.result?.receiver_observation.schema_version, "bluefire.owned-receiver-observation.v1");
     assert.equal(item.result?.receiver_observation.state, "verified");
     assert.ok(Object.hasOwn(HOME_DECISION_LABELS, item.result?.decision));
-    return { phase: item.phase, decision: item.result.decision };
+    assert.equal(item.result.run?.run_id, item.result.run_id);
+    assert.equal(typeof item.result.run?.status, "string");
+    return { phase: item.phase, decision: item.result.decision, run_id: item.result.run_id,
+      objective_reached: item.result.run.objective_reached, mode: item.result.run.mode, run_status: item.result.run.status };
   });
   return { owner_job_id: ownerId, status: value.status, desired_policy_id: value.control.desired_policy_id,
     control_status: value.control.status, phases };
+}
+
+async function assertRecentOutcomeContexts(projection) {
+  const recentRows = page.locator(".recent-work-table tbody tr");
+  await recentRows.first().waitFor({ state: "visible" });
+  const rows = await recentRows.evaluateAll(elements => elements.map(element => {
+    const runHref = element.querySelector(".recent-work-name a")?.getAttribute("href");
+    const runPath = runHref?.startsWith("#") ? runHref.slice(1) : runHref;
+    return {
+      runId: runPath?.startsWith("/runs/") ? decodeURIComponent(runPath.slice("/runs/".length)) : undefined,
+      phase: element.querySelector(".recent-work-phase")?.textContent?.trim() ?? null,
+      decision: element.querySelector(".recent-work-decision")?.textContent?.trim() ?? null,
+      objective: element.querySelector(".recent-work-outcome > strong")?.textContent?.trim(),
+      status: element.querySelector(".recent-work-outcome > small")?.textContent?.trim(),
+    };
+  }));
+  assert.ok(rows.length > 0, "Home must retain its existing recent run rows");
+  const expected = new Map(projection.phases.map(item => [item.run_id, item]));
+  let matchedOwnerRows = 0;
+  for (const row of rows) {
+    assert.ok(row.runId, "Every recent outcome row must keep its saved run identity");
+    const phase = expected.get(row.runId);
+    if (!phase) {
+      assert.equal(row.phase, null, "An unrelated run must not inherit this receiver workflow's phase");
+      assert.equal(row.decision, null, "An unrelated run must not inherit this receiver's decision");
+      assert.ok(row.objective, "An unrelated run must keep its objective outcome");
+      assert.ok(row.status?.startsWith("Run status: "), "An unrelated run must keep its separate run status");
+      continue;
+    }
+    matchedOwnerRows += 1;
+    assert.equal(row.phase, HOME_PHASE_LABELS[phase.phase]);
+    assert.equal(row.decision, HOME_DECISION_LABELS[phase.decision]);
+    assert.equal(row.objective, homeObjectiveLabel(phase.objective_reached, phase.mode),
+      "Receiver context must not replace the saved objective outcome");
+    assert.equal(row.status, `Run status: ${homeRunStatusLabel(phase.run_status)}`,
+      "Receiver context must leave the saved run status unchanged");
+  }
+  assert.ok(matchedOwnerRows > 0, "At least one recent row must belong to the selected verified receiver workflow");
 }
 
 async function waitRememberedWork(ownerId) {
@@ -423,6 +473,7 @@ async function assertHomeRecord(projection, recordTitle) {
   assert.equal(await card.locator(".active-objective-state > span").textContent(), "Recorded state: Completed");
   assert.equal(await card.getByRole("link", { name: "Continue objective", exact: true }).getAttribute("href"),
     `#/compare?receiver=1&goal=data-handoff&receiver_job=${projection.owner_job_id}`);
+  await assertRecentOutcomeContexts(projection);
   return card;
 }
 
