@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { preflightDiagnostic } from "./preflight-diagnostics.mjs";
 
 const [modulePath, output, port, fixturePort, outerDeadlineArg] = process.argv.slice(2);
 const outerDeadlineMs = Number(outerDeadlineArg);
@@ -404,6 +405,10 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
   const preflightResponse = await preflight;
   assert.equal(preflightResponse.status(), 200);
   const reviewed = await preflightResponse.json();
+  report.execute_preflight_diagnostic = preflightDiagnostic(reviewed, {
+    profileId: "sandbox-execute.v1",
+    actionIds: ["sandbox.fixture.create.v1", "sandbox.fixture.transform.v1"],
+  });
   assert.equal(reviewed.status, "approval_required");
   assert.equal(reviewed.plan?.mode, "execute");
   assert.equal(reviewed.plan?.runner_profile_id, "sandbox-execute.v1");
