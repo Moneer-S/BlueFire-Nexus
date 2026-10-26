@@ -25,7 +25,7 @@ Connect behavior steps into an experiment, inspect the recorded outcome, then ca
 
 ![BlueFire Nexus Overview with saved experiments and results](docs/assets/screenshots/desktop-workspace.png)
 
-Watch the [AI-Off synthetic simulation workflow](docs/assets/screenshots/desktop-workflow.webm). This continuous recording follows actual interactions in an installed RC2 candidate: a saved graph and collection-method alternative, an Assistant request draft, simulation review, synthetic rule checks, and a saved JSONL-versus-TAR comparison. It uses generated data with AI Off. It does not demonstrate native execution, live model inference, or a changed-environment defense retest.
+Watch the [post-release development walkthrough](docs/assets/screenshots/desktop-workflow.webm): explore a connected plan, inspect its selected method and expected evidence, open an Assistant draft with graph context, and revisit a saved comparison. The recording uses AI Off and two saved simulations of the same path, whose outcomes are unchanged.
 
 ## Get started
 
@@ -115,7 +115,7 @@ Use **Detection Lab** to bring in a run as the evidence source, write a rule, an
 
 Repeat the experiment or change a method, then open **Compare** to see the differences between runs. Compare rule evaluations separately to see which records each revision matched. Export the results when you need to share or investigate them further.
 
-![Recorded JSONL and TAR collection paths compared across two AI-Off simulations](docs/assets/screenshots/compare.png)
+![Saved comparison context and conclusion for same-path AI-Off simulations](docs/assets/screenshots/compare.png)
 
 ## Work with your model
 
