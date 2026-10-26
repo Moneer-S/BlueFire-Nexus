@@ -37,6 +37,11 @@ MAX_FILES = 128
 MAX_LINK_DIAGNOSTICS = 8
 MAX_RPATH_CANDIDATES = 16
 MAX_DIAGNOSTIC_LABEL = 120
+_IMPORTABLE_SUFFIXES = {".py", ".pyc", ".so", ".zip"}
+_PACKAGE_IMPORT_FILE_LIMIT = 1024
+_RUNTIME_IMPORT_FILE_LIMIT = 4096
+_RUNTIME_IMPORT_BYTE_LIMIT = 256 * 1024 * 1024
+_IMPORT_INVENTORY_SCHEMA = "bluefire.macos-import-custody-inventory.v1"
 
 
 class DynamicLinkAuditError(ValueError):
@@ -46,6 +51,12 @@ class DynamicLinkAuditError(ValueError):
         )
         self.diagnostics = diagnostics[:MAX_LINK_DIAGNOSTICS]
         self.truncated = truncated
+
+
+class ImportInventoryLimitError(RuntimeError):
+    def __init__(self, inventory: dict[str, object]) -> None:
+        super().__init__("import_custody_limit_exceeded")
+        self.inventory = inventory
 
 
 def _hash(path: Path, limit: int) -> tuple[str, int]:
@@ -61,6 +72,265 @@ def _hash(path: Path, limit: int) -> tuple[str, int]:
                 raise ValueError("A staged input exceeds its fixed size limit.")
             digest.update(chunk)
     return digest.hexdigest(), size
+
+
+def _importable_tree_files(root: Path, prefix: Path) -> list[tuple[Path, str, int]]:
+    """Count the same importable file kinds that the runtime custody check sees."""
+    try:
+        protected_prefix = prefix.resolve(strict=True)
+        resolved_root = root.resolve(strict=True)
+    except OSError as error:
+        raise ValueError("import_custody_root_unavailable") from error
+    if not resolved_root.is_relative_to(protected_prefix) or root.is_symlink():
+        raise ValueError("import_custody_root_outside_prefix")
+
+    if resolved_root.is_file():
+        if resolved_root.suffix != ".zip":
+            raise ValueError("import_custody_unexpected_file_root")
+        try:
+            size = root.stat().st_size
+        except OSError as error:
+            raise ValueError("import_custody_root_unavailable") from error
+        return [(root, ".zip", size)]
+    if not resolved_root.is_dir():
+        raise ValueError("import_custody_root_not_directory")
+
+    rows: list[tuple[Path, str, int]] = []
+
+    def failed(_error: OSError) -> None:
+        raise ValueError("import_custody_tree_unreadable")
+
+    for directory, children, leaves in os.walk(root, followlinks=False, onerror=failed):
+        base = Path(directory)
+        for child in children:
+            child_path = base / child
+            if child_path.is_symlink() or not child_path.is_dir():
+                raise ValueError("import_custody_indirect_directory")
+        for leaf in leaves:
+            path = base / leaf
+            if path.suffix not in _IMPORTABLE_SUFFIXES:
+                continue
+            try:
+                details = path.lstat()
+                resolved_path = path.resolve(strict=True)
+            except OSError as error:
+                raise ValueError("import_custody_import_unavailable") from error
+            if not stat.S_ISREG(details.st_mode):
+                raise ValueError("import_custody_nonregular_import")
+            if not resolved_path.is_relative_to(protected_prefix):
+                raise ValueError("import_custody_import_outside_prefix")
+            rows.append((path, path.suffix, details.st_size))
+    return rows
+
+
+def _runtime_import_roots(python: Path) -> list[Path]:
+    source = "import json,sys; print(json.dumps(sys.path,separators=(',',':')))"
+    try:
+        completed = subprocess.run(
+            [str(python), "-I", "-S", "-B", "-c", source],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+            shell=False,
+            env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError("runtime_import_roots_unavailable") from error
+    if completed.returncode != 0 or completed.stderr or len(completed.stdout) > 16 * 1024:
+        raise ValueError("runtime_import_roots_unavailable")
+    try:
+        values = json.loads(completed.stdout.decode("ascii", "strict"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("runtime_import_roots_invalid") from error
+    if (
+        type(values) is not list
+        or not 0 < len(values) <= 8
+        or any(type(value) is not str or not Path(value).is_absolute() for value in values)
+        or len(values) != len(set(values))
+    ):
+        raise ValueError("runtime_import_roots_invalid")
+    return [Path(value) for value in values]
+
+
+def _import_custody_inventory(python: Path, prefix: Path) -> dict[str, object]:
+    """Preflight package and interpreter roots without retaining paths or filenames."""
+    package_root = (
+        prefix / "venv" / "lib" / f"python{PYTHON_VERSION.rsplit('.', 1)[0]}" / "site-packages"
+    )
+    package_files = _importable_tree_files(package_root, prefix)
+
+    runtime_files: dict[Path, tuple[str, int]] = {}
+    runtime_roots = _runtime_import_roots(python)
+    for root in runtime_roots:
+        if not root.exists():
+            if root.suffix != ".zip":
+                raise ValueError("runtime_import_root_missing")
+            continue
+        for path, suffix, size in _importable_tree_files(root, prefix):
+            runtime_files[path] = (suffix, size)
+
+    def counts(rows: list[tuple[str, int]]) -> dict[str, object]:
+        by_suffix = {suffix: 0 for suffix in sorted(_IMPORTABLE_SUFFIXES)}
+        total_bytes = 0
+        for suffix, size in rows:
+            by_suffix[suffix] += 1
+            total_bytes += size
+        return {"file_count": len(rows), "byte_count": total_bytes, "by_suffix": by_suffix}
+
+    package_summary = counts([(suffix, size) for _, suffix, size in package_files])
+    runtime_rows = [(suffix, size) for suffix, size in runtime_files.values()]
+    runtime_summary = counts(runtime_rows)
+    failure_stages: list[str] = []
+    failure_reasons: list[str] = []
+    if package_summary["file_count"] > _PACKAGE_IMPORT_FILE_LIMIT:
+        failure_stages.append("package_import_custody")
+        failure_reasons.append("package_file_limit_exceeded")
+    if package_summary["byte_count"] > _RUNTIME_IMPORT_BYTE_LIMIT:
+        if "package_import_custody" not in failure_stages:
+            failure_stages.append("package_import_custody")
+        failure_reasons.append("package_byte_limit_exceeded")
+    if runtime_summary["file_count"] > _RUNTIME_IMPORT_FILE_LIMIT:
+        failure_stages.append("runtime_import_custody")
+        failure_reasons.append("runtime_file_limit_exceeded")
+    if runtime_summary["byte_count"] > _RUNTIME_IMPORT_BYTE_LIMIT:
+        if "runtime_import_custody" not in failure_stages:
+            failure_stages.append("runtime_import_custody")
+        failure_reasons.append("runtime_byte_limit_exceeded")
+    return {
+        "schema_version": _IMPORT_INVENTORY_SCHEMA,
+        "status": "limit_exceeded" if failure_stages else "within_limits",
+        "failure_stages": failure_stages,
+        "failure_reasons": failure_reasons,
+        "package_imports": {
+            **package_summary,
+            "file_limit": _PACKAGE_IMPORT_FILE_LIMIT,
+            "byte_limit": _RUNTIME_IMPORT_BYTE_LIMIT,
+        },
+        "runtime_imports": {
+            **runtime_summary,
+            "file_limit": _RUNTIME_IMPORT_FILE_LIMIT,
+            "byte_limit": _RUNTIME_IMPORT_BYTE_LIMIT,
+            "root_count": len(runtime_roots),
+        },
+    }
+
+
+def _venv_command(interpreter: Path, environment: Path, *, without_pip: bool) -> list[str]:
+    command = [str(interpreter), "-m", "venv"]
+    if without_pip:
+        command.append("--without-pip")
+    command.append(str(environment))
+    return command
+
+
+def _cpython_configure_command(python_prefix: Path, openssl_prefix: Path) -> list[str]:
+    return [
+        "./configure",
+        f"--prefix={python_prefix}",
+        f"--with-openssl={openssl_prefix}",
+        "--with-openssl-rpath=no",
+        "--with-ensurepip=no",
+        "--disable-test-modules",
+    ]
+
+
+def _offline_install_command(
+    installer_python: Path, runtime_python: Path, wheelhouse: Path, project_wheel: Path
+) -> list[str]:
+    return [
+        str(installer_python),
+        "-m",
+        "pip",
+        "--python",
+        str(runtime_python),
+        "install",
+        "--no-index",
+        "--only-binary=:all:",
+        "--find-links",
+        str(wheelhouse),
+        "--disable-pip-version-check",
+        "--no-compile",
+        str(project_wheel),
+    ]
+
+
+def _remove_owned_installer_venv(installer_root: Path, prefix: Path) -> None:
+    try:
+        protected_prefix = prefix.resolve(strict=True)
+    except OSError as error:
+        raise ValueError("installer_environment_prefix_unavailable") from error
+    expected_root = prefix / "installer-venv"
+    if installer_root != expected_root or installer_root.is_symlink():
+        raise ValueError("installer_environment_identity_invalid")
+    if not installer_root.exists():
+        return
+    try:
+        resolved_root = installer_root.resolve(strict=True)
+    except OSError as error:
+        raise ValueError("installer_environment_root_unavailable") from error
+    if resolved_root.parent != protected_prefix or not resolved_root.is_dir():
+        raise ValueError("installer_environment_containment_invalid")
+    for directory, children, leaves in os.walk(resolved_root, followlinks=False):
+        base = Path(directory)
+        for name in children:
+            child = base / name
+            if child.is_symlink() or not child.is_dir():
+                raise ValueError("installer_environment_contains_indirect_entry")
+        for name in leaves:
+            child = base / name
+            if child.is_symlink():
+                try:
+                    resolved_child = child.resolve(strict=True)
+                except OSError as error:
+                    raise ValueError("installer_environment_contains_indirect_entry") from error
+                if (
+                    not resolved_child.is_relative_to(protected_prefix)
+                    or not resolved_child.is_file()
+                ):
+                    raise ValueError("installer_environment_contains_indirect_entry")
+            elif not child.is_file():
+                raise ValueError("installer_environment_contains_indirect_entry")
+    try:
+        shutil.rmtree(resolved_root)
+    except OSError as error:
+        raise ValueError("installer_environment_cleanup_failed") from error
+    if installer_root.exists() or installer_root.is_symlink():
+        raise ValueError("installer_environment_cleanup_incomplete")
+
+
+def _install_offline_wheel(
+    interpreter: Path,
+    installer_root: Path,
+    runtime_python: Path,
+    wheelhouse: Path,
+    project_wheel: Path,
+    prefix: Path,
+    *,
+    cwd: Path,
+    env: dict[str, str],
+) -> str:
+    if installer_root != prefix / "installer-venv":
+        raise ValueError("installer_environment_identity_invalid")
+    installer_python = installer_root / "bin" / "python"
+    try:
+        if installer_root.exists() or installer_root.is_symlink():
+            raise ValueError("installer_environment_path_not_fresh")
+        _run(
+            _venv_command(interpreter, installer_root, without_pip=False),
+            cwd=cwd,
+            env=env,
+            timeout=120,
+        )
+        return _run(
+            _offline_install_command(installer_python, runtime_python, wheelhouse, project_wheel),
+            cwd=cwd,
+            env=env,
+            timeout=300,
+        )
+    finally:
+        _remove_owned_installer_venv(installer_root, prefix)
 
 
 def _download(url: str, target: Path, expected: str, limit: int) -> dict[str, object]:
@@ -348,12 +618,7 @@ def install(args: argparse.Namespace) -> None:
     openssl_build = _run(["make", "-j2"], cwd=openssl_tree, env=env, timeout=900)
     openssl_install = _run(["make", "install_sw"], cwd=openssl_tree, env=env, timeout=300)
     python_configure = _run(
-        [
-            "./configure",
-            f"--prefix={python_prefix}",
-            f"--with-openssl={openssl_prefix}",
-            "--with-openssl-rpath=no",
-        ],
+        _cpython_configure_command(python_prefix, openssl_prefix),
         cwd=python_tree,
         env=env,
         timeout=240,
@@ -362,26 +627,25 @@ def install(args: argparse.Namespace) -> None:
     python_install = _run(["make", "altinstall"], cwd=python_tree, env=env, timeout=300)
     interpreter = python_prefix / "bin" / "python3.11"
     venv_python = prefix / "venv" / "bin" / "python"
-    _run([str(interpreter), "-m", "venv", str(prefix / "venv")], cwd=prefix, env=env, timeout=120)
-    install_output = _run(
-        [
-            str(venv_python),
-            "-m",
-            "pip",
-            "install",
-            "--no-index",
-            "--only-binary=:all:",
-            "--find-links",
-            str(protected_wheels),
-            "--disable-pip-version-check",
-            str(
-                protected_wheels
-                / next(row["name"] for row in wheels if row["name"].startswith("bluefire_nexus-"))
-            ),
-        ],
+    _run(
+        _venv_command(interpreter, prefix / "venv", without_pip=True),
         cwd=prefix,
         env=env,
-        timeout=300,
+        timeout=120,
+    )
+    installer_root = prefix / "installer-venv"
+    project_wheel = protected_wheels / next(
+        row["name"] for row in wheels if row["name"].startswith("bluefire_nexus-")
+    )
+    install_output = _install_offline_wheel(
+        interpreter,
+        installer_root,
+        venv_python,
+        protected_wheels,
+        project_wheel,
+        prefix,
+        cwd=prefix,
+        env=env,
     )
     _make_runtime_readable(prefix, (python_prefix, prefix / "venv"))
     identity = _run(
@@ -404,6 +668,9 @@ def install(args: argparse.Namespace) -> None:
         raise ValueError(
             "The built isolated runtime does not match the exact qualification target."
         )
+    import_inventory = _import_custody_inventory(venv_python, prefix)
+    if import_inventory["status"] != "within_limits":
+        raise ImportInventoryLimitError(import_inventory)
     audit = _audit_dynamic_links(prefix)
     reports = {
         "schema_version": "bluefire.macos-protected-python-build.v1",
@@ -418,6 +685,7 @@ def install(args: argparse.Namespace) -> None:
         "interpreter_sha256": _hash(venv_python.resolve(strict=True), 256 * 1024 * 1024)[0],
         "prefix": str(prefix),
         "dynamic_link_audit": audit,
+        "import_custody_inventory": import_inventory,
         "build_commands": [
             {
                 "name": "openssl-configure",
@@ -807,6 +1075,8 @@ def _failure_document(error: BaseException) -> dict[str, object]:
             "violations": error.diagnostics,
             "truncated": error.truncated,
         }
+    if isinstance(error, ImportInventoryLimitError):
+        failure["import_custody_inventory"] = error.inventory
     return failure
 
 

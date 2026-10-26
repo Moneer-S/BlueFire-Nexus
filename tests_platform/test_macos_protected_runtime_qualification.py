@@ -3,11 +3,13 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import queue
 import subprocess
 import sys
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -48,6 +50,251 @@ def test_lifecycle_supervisor_invokes_the_executable_cli_module(tmp_path):
 def _wheel_row(path: Path) -> dict[str, object]:
     content = path.read_bytes()
     return {"name": path.name, "sha256": hashlib.sha256(content).hexdigest(), "bytes": len(content)}
+
+
+def test_protected_python_installs_into_pip_free_runtime_with_offline_tooling(tmp_path):
+    interpreter = tmp_path / "cpython" / "bin" / "python3.11"
+    installer = tmp_path / "installer-venv"
+    runtime = tmp_path / "venv"
+    wheelhouse = tmp_path / "wheelhouse"
+    wheel = wheelhouse / "bluefire_nexus-3.0.0rc2-py3-none-any.whl"
+
+    assert provision._cpython_configure_command(tmp_path / "python", tmp_path / "openssl") == [
+        "./configure",
+        f"--prefix={tmp_path / 'python'}",
+        f"--with-openssl={tmp_path / 'openssl'}",
+        "--with-openssl-rpath=no",
+        "--with-ensurepip=no",
+        "--disable-test-modules",
+    ]
+    assert provision._venv_command(interpreter, runtime, without_pip=True) == [
+        str(interpreter),
+        "-m",
+        "venv",
+        "--without-pip",
+        str(runtime),
+    ]
+    assert provision._venv_command(interpreter, installer, without_pip=False) == [
+        str(interpreter),
+        "-m",
+        "venv",
+        str(installer),
+    ]
+
+    command = provision._offline_install_command(
+        installer / "bin" / "python",
+        runtime / "bin" / "python",
+        wheelhouse,
+        wheel,
+    )
+    assert command[:4] == [str(installer / "bin" / "python"), "-m", "pip", "--python"]
+    assert command[4] == str(runtime / "bin" / "python")
+    assert command[5:7] == ["install", "--no-index"]
+    assert "--only-binary=:all:" in command
+    assert "--no-compile" in command
+    assert str(wheelhouse) in command
+    assert command[-1] == str(wheel)
+    assert str(runtime) not in command[:4]
+
+
+def test_offline_installer_is_removed_after_success_and_failure(tmp_path, monkeypatch):
+    interpreter = tmp_path / "cpython" / "bin" / "python3.11"
+    prefix = tmp_path / "protected"
+    prefix.mkdir()
+    installer = prefix / "installer-venv"
+    runtime_python = prefix / "venv" / "bin" / "python"
+    wheelhouse = prefix / "stage" / "wheelhouse"
+    project_wheel = wheelhouse / "bluefire_nexus-3.0.0rc2-py3-none-any.whl"
+    calls = []
+
+    def create_installer(command, **kwargs):
+        calls.append(command)
+        assert kwargs["cwd"] == prefix
+        if len(calls) == 1:
+            assert kwargs["timeout"] == 120
+            (installer / "bin").mkdir(parents=True)
+            (installer / "bin" / "python").write_text("installer", encoding="utf-8")
+            return "installer-ready"
+        assert kwargs["timeout"] == 300
+        return "installed"
+
+    monkeypatch.setattr(provision, "_run", create_installer)
+    output = provision._install_offline_wheel(
+        interpreter,
+        installer,
+        runtime_python,
+        wheelhouse,
+        project_wheel,
+        prefix,
+        cwd=prefix,
+        env={"LANG": "C"},
+    )
+
+    assert output == "installed"
+    assert calls == [
+        provision._venv_command(interpreter, installer, without_pip=False),
+        provision._offline_install_command(
+            installer / "bin" / "python", runtime_python, wheelhouse, project_wheel
+        ),
+    ]
+    assert not installer.exists()
+
+    calls.clear()
+
+    def fail_during_install(command, **kwargs):
+        calls.append(command)
+        if len(calls) == 1:
+            assert kwargs["timeout"] == 120
+            (installer / "bin").mkdir(parents=True)
+            (installer / "bin" / "python").write_text("installer", encoding="utf-8")
+            return "installer-ready"
+        assert kwargs["timeout"] == 300
+        raise RuntimeError("fixed install failure")
+
+    monkeypatch.setattr(provision, "_run", fail_during_install)
+    with pytest.raises(RuntimeError, match="fixed install failure"):
+        provision._install_offline_wheel(
+            interpreter,
+            installer,
+            runtime_python,
+            wheelhouse,
+            project_wheel,
+            prefix,
+            cwd=prefix,
+            env={"LANG": "C"},
+        )
+
+    assert len(calls) == 2
+    assert calls[1] == provision._offline_install_command(
+        installer / "bin" / "python", runtime_python, wheelhouse, project_wheel
+    )
+    assert not installer.exists()
+
+
+def test_import_custody_inventory_counts_package_and_compiled_runtime_files(tmp_path, monkeypatch):
+    assert provision._PACKAGE_IMPORT_FILE_LIMIT == local._MAX_IMPORT_FILES
+    assert provision._RUNTIME_IMPORT_BYTE_LIMIT == local._MAX_IMPORT_BYTES
+    assert provision._RUNTIME_IMPORT_FILE_LIMIT == 4096
+    prefix = tmp_path / "protected"
+    package_root = prefix / "venv" / "lib" / "python3.11" / "site-packages"
+    runtime_root = prefix / "cpython" / "lib" / "python3.11"
+    package_root.mkdir(parents=True)
+    runtime_root.mkdir(parents=True)
+    (package_root / "application.py").write_text("", encoding="utf-8")
+    (package_root / "application.pyc").write_bytes(b"bytecode")
+    (package_root / "extension.so").write_bytes(b"extension")
+    (runtime_root / "stdlib.py").write_text("", encoding="utf-8")
+    (runtime_root / "stdlib.pyc").write_bytes(b"bytecode")
+    (runtime_root / "extension.so").write_bytes(b"extension")
+    archive = prefix / "cpython" / "lib" / "python311.zip"
+    archive.write_bytes(b"stdlib archive")
+    roots = [str(archive), str(runtime_root)]
+    monkeypatch.setattr(
+        provision.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout=json.dumps(roots).encode("ascii"), stderr=b""
+        ),
+    )
+
+    inventory = provision._import_custody_inventory(prefix / "venv" / "bin" / "python", prefix)
+
+    assert inventory == {
+        "schema_version": provision._IMPORT_INVENTORY_SCHEMA,
+        "status": "within_limits",
+        "failure_stages": [],
+        "failure_reasons": [],
+        "package_imports": {
+            "file_count": 3,
+            "byte_count": 17,
+            "by_suffix": {".py": 1, ".pyc": 1, ".so": 1, ".zip": 0},
+            "file_limit": 1024,
+            "byte_limit": 256 * 1024 * 1024,
+        },
+        "runtime_imports": {
+            "file_count": 4,
+            "byte_count": 31,
+            "by_suffix": {".py": 1, ".pyc": 1, ".so": 1, ".zip": 1},
+            "file_limit": 4096,
+            "byte_limit": 256 * 1024 * 1024,
+            "root_count": 2,
+        },
+    }
+
+
+def test_import_custody_limit_failure_is_fixed_label_and_path_free(tmp_path, monkeypatch):
+    prefix = tmp_path / "protected"
+    package_root = prefix / "venv" / "lib" / "python3.11" / "site-packages"
+    runtime_root = prefix / "cpython" / "lib" / "python3.11"
+    package_root.mkdir(parents=True)
+    runtime_root.mkdir(parents=True)
+    for index in range(provision._PACKAGE_IMPORT_FILE_LIMIT + 1):
+        (package_root / f"module-{index}.py").write_text("", encoding="utf-8")
+    (runtime_root / "stdlib.pyc").write_bytes(b"bytecode")
+    monkeypatch.setattr(
+        provision.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout=json.dumps([str(runtime_root)]).encode("ascii"), stderr=b""
+        ),
+    )
+
+    inventory = provision._import_custody_inventory(prefix / "venv" / "bin" / "python", prefix)
+    error = provision.ImportInventoryLimitError(inventory)
+    failure_text = json.dumps(provision._failure_document(error), sort_keys=True)
+
+    assert inventory["status"] == "limit_exceeded"
+    assert inventory["failure_stages"] == ["package_import_custody"]
+    assert inventory["failure_reasons"] == ["package_file_limit_exceeded"]
+    assert "module-" not in failure_text
+    assert str(tmp_path) not in failure_text
+    assert "package_import_custody" in failure_text
+
+
+def test_installer_environment_cleanup_is_limited_to_exact_owned_child(tmp_path):
+    prefix = tmp_path / "protected"
+    installer = prefix / "installer-venv"
+    runtime = prefix / "venv"
+    installer.mkdir(parents=True)
+    runtime.mkdir()
+    (installer / "python.py").write_text("installer", encoding="utf-8")
+    (runtime / "python.py").write_text("runtime", encoding="utf-8")
+
+    provision._remove_owned_installer_venv(installer, prefix)
+
+    assert not installer.exists()
+    assert (runtime / "python.py").read_text(encoding="utf-8") == "runtime"
+
+
+def test_installer_environment_cleanup_rejects_outside_target(tmp_path):
+    prefix = tmp_path / "protected"
+    outside = tmp_path / "other-installer"
+    prefix.mkdir()
+    outside.mkdir()
+    (outside / "retain.py").write_text("retained", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="installer_environment_identity_invalid"):
+        provision._remove_owned_installer_venv(outside, prefix)
+
+    assert (outside / "retain.py").read_text(encoding="utf-8") == "retained"
+
+
+def test_installer_environment_cleanup_unlinks_only_contained_python_symlinks(tmp_path):
+    prefix = tmp_path / "protected"
+    installer = prefix / "installer-venv"
+    runtime_python = prefix / "cpython" / "bin" / "python3.11"
+    installer.mkdir(parents=True)
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("runtime", encoding="utf-8")
+    try:
+        os.symlink(runtime_python, installer / "python")
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"Symlink creation is unavailable: {type(error).__name__}")
+
+    provision._remove_owned_installer_venv(installer, prefix)
+
+    assert not installer.exists()
+    assert runtime_python.read_text(encoding="utf-8") == "runtime"
 
 
 def test_promotion_binds_each_wheel_to_its_own_manifest_row(tmp_path, monkeypatch):
