@@ -73,6 +73,22 @@ describe("installed receiver request guards", () => {
     expect(receiverCompletedPhase(freshOwner, "baseline")).toBe(freshPhase);
   });
 
+  it("waits for the execution job terminal state when phase evidence becomes visible first", () => {
+    const transitioningPhase = {
+      phase: "baseline",
+      status: "completed",
+      preparation: { preparation_digest: `sha256:${"a".repeat(64)}` },
+      execution_job: { job_id: `job-${"1".repeat(32)}`, state: "running" },
+      result: { run_id: "run-verified" },
+      cleanup: { receiver: "verified_closed", run: "complete" },
+    };
+    const owner = { phases: [transitioningPhase] };
+
+    expect(receiverCompletedPhase(owner, "baseline")).toBeNull();
+    transitioningPhase.execution_job.state = "completed";
+    expect(receiverCompletedPhase(owner, "baseline")).toBe(transitioningPhase);
+  });
+
   it("authorizes an allowlisted POST independently of read allowlists", () => {
     const counts = { stop: 0 };
     const decision = classifyRequest({
