@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
+import platform
 import shutil
 import signal
 import socket
@@ -24,6 +26,7 @@ import bluefire.runner_private_files as private_files_module
 import bluefire.runner_trust as runner_trust_module
 import bluefire.runner_watchdog as runner_watchdog_module
 from bluefire import runner_linux_containment as linux_containment_module
+from bluefire.runner_bootstrap import load_runner_manifest
 from bluefire.runner_client import (
     RunnerDurableResultExists,
     RunnerPendingResultExists,
@@ -752,6 +755,79 @@ def test_receiver_environment_is_consumed_and_invalid_key_factory_fails_closed(
     assert not durable.exists()
 
 
+def _verified_launch_fixture_kind(platform_name: str, architecture: str) -> str:
+    if platform_name.startswith("linux") and architecture.lower() in {"amd64", "x86_64"}:
+        return "linux_native_runner"
+    return "python"
+
+
+def _load_verified_linux_runner_fixture(source_root: Path) -> tuple[Path, bytes]:
+    source = source_root / "bluefire" / "native" / "linux-x86_64" / "bluefire-runner"
+    manifest = load_runner_manifest(
+        resource_root=source.parent,
+        platform_name="linux",
+        architecture="x86_64",
+    )
+    payload = source.read_bytes()
+    assert len(payload) == manifest.size
+    assert hashlib.sha256(payload).hexdigest() == manifest.sha256
+    return source, payload
+
+
+_VERIFIED_LINUX_CAPABILITY_STDOUT = (
+    b'{"live_ready":false,"max_bytes":1048576,"max_message":16384,'
+    b'"max_operation_ns":5000000000,"max_requests":64,'
+    b'"monotonic_clock":"darwin-mach-absolute-ns",'
+    b'"native_backend_available":false,"protocol_supported":true,'
+    b'"schema_version":"bluefire.macos-file-access-capability.v1",'
+    b'"scope":"protocol_support_only"}\n'
+)
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "architecture", "expected"),
+    [
+        ("linux", "x86_64", "linux_native_runner"),
+        ("linux", "AMD64", "linux_native_runner"),
+        ("linux", "aarch64", "python"),
+        ("freebsd14", "x86_64", "python"),
+        ("darwin", "arm64", "python"),
+    ],
+)
+def test_verified_launch_fixture_selection_is_host_specific(
+    platform_name: str,
+    architecture: str,
+    expected: str,
+) -> None:
+    assert _verified_launch_fixture_kind(platform_name, architecture) == expected
+
+
+def test_verified_linux_capability_output_matches_fixed_contract() -> None:
+    expected = {
+        "live_ready": False,
+        "max_bytes": 1_048_576,
+        "max_message": 16_384,
+        "max_operation_ns": 5_000_000_000,
+        "max_requests": 64,
+        "monotonic_clock": "darwin-mach-absolute-ns",
+        "native_backend_available": False,
+        "protocol_supported": True,
+        "schema_version": "bluefire.macos-file-access-capability.v1",
+        "scope": "protocol_support_only",
+    }
+    canonical = json.dumps(expected, separators=(",", ":"), sort_keys=True).encode() + b"\n"
+
+    assert _VERIFIED_LINUX_CAPABILITY_STDOUT == canonical
+
+
+def test_verified_linux_runner_fixture_matches_committed_manifest() -> None:
+    source_root = Path(__file__).resolve().parents[1]
+    source, payload = _load_verified_linux_runner_fixture(source_root)
+
+    assert source.name == "bluefire-runner"
+    assert payload
+
+
 @pytest.mark.skipif(
     os.name == "nt" or sys.platform == "darwin",
     reason="non-Darwin POSIX descriptor-backed launch boundary",
@@ -760,16 +836,26 @@ def test_posix_verified_launch_cannot_be_redirected_before_receiver_key_exposure
     tmp_path: Path,
 ) -> None:
     runner = _runner(tmp_path)
-    executable = (tmp_path / "verified-python").resolve()
-    parked = (tmp_path / "verified-python.parked").resolve()
+    fixture_kind = _verified_launch_fixture_kind(sys.platform, platform.machine())
+    executable = (tmp_path / f"verified-{fixture_kind}").resolve()
+    parked = (tmp_path / f"verified-{fixture_kind}.parked").resolve()
     leaked = Path(str(executable) + ".leaked")
-    shutil.copyfile(Path(sys.executable).resolve(strict=True), executable)
+    if fixture_kind == "linux_native_runner":
+        source_root = Path(__file__).resolve().parents[1]
+        _source, payload = _load_verified_linux_runner_fixture(source_root)
+        executable.write_bytes(payload)
+        command_tail = ["macos-file-access-capability"]
+        expected_stdout = _VERIFIED_LINUX_CAPABILITY_STDOUT
+    else:
+        shutil.copyfile(Path(sys.executable).resolve(strict=True), executable)
+        base_executable = Path(os.path.abspath(sys._base_executable))
+        (tmp_path / "pyvenv.cfg").write_text(
+            f"home = {base_executable.parent}\ninclude-system-site-packages = false\n",
+            encoding="utf-8",
+        )
+        command_tail = ["-I", "-B", "-c", "print('trusted')"]
+        expected_stdout = b"trusted\n"
     executable.chmod(0o700)
-    base_executable = Path(os.path.abspath(sys._base_executable))
-    (tmp_path / "pyvenv.cfg").write_text(
-        f"home = {base_executable.parent}\ninclude-system-site-packages = false\n",
-        encoding="utf-8",
-    )
     expected_digest = runner_client_module.file_hash(executable)
     receiver_environment = {
         "BLUEFIRE_RECEIVER_TASK_ID": "task-posix-launch-01",
@@ -784,7 +870,7 @@ def test_posix_verified_launch_cannot_be_redirected_before_receiver_key_exposure
         )
         executable.chmod(0o700)
         process = runner._spawn(
-            [launch[0], "-I", "-B", "-c", "print('trusted')"],
+            [launch[0], *command_tail],
             stdout=subprocess.PIPE,
             receiver_environment=receiver_environment,
             inherited_descriptors=launch[1],
@@ -795,7 +881,7 @@ def test_posix_verified_launch_cannot_be_redirected_before_receiver_key_exposure
     stdout = process.stdout.read()
     assert runner._finish_posix_process_group(process) is True
     stderr_diagnostic = _read_verified_launch_stderr_after_exit(process)
-    stdout_matches_expected = stdout == b"trusted\n"
+    stdout_matches_expected = stdout == expected_stdout
     leak_file_exists = leaked.exists()
     diagnostic = (
         f"stderr_class={stderr_diagnostic['class']}; "
