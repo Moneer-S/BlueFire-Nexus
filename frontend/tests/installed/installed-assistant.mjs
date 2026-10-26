@@ -490,9 +490,9 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
   await gotoJourney(`${origin}/#/detection-lab?run=${encodeURIComponent(runId)}&create=1`, { waitUntil: "domcontentloaded" });
   await page.getByRole("region", { name: "Create detection from run", exact: true }).waitFor();
   const detectionContextResponse = waitForJourneyResponse(response => new URL(response.url()).pathname === "/api/v1/assistance/detection-context" && response.request().method() === "POST");
-  await page.getByLabel("Behavior to detect", { exact: true }).selectOption("sandbox.fixture.create.v1");
-  await page.getByLabel("Rule language", { exact: true }).selectOption("sqlite");
-  await page.getByLabel("Development case", { exact: true }).selectOption("benign");
+  await page.getByRole("combobox", { name: /^Behavior to detect\b/ }).selectOption("sandbox.fixture.create.v1");
+  await page.getByRole("combobox", { name: "Rule language", exact: true }).selectOption("sqlite");
+  await page.getByRole("combobox", { name: /^Development case\b/ }).selectOption("benign");
   await page.getByRole("button", { name: "Draft rule with Assistant", exact: true }).click();
   await ensureAssistantOpen();
   expectedDetectionContext = await (await detectionContextResponse).json();
