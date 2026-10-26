@@ -1056,8 +1056,11 @@ try {
   const advancedRevisions = page.locator("details.detection-advanced-revisions");
   if (!await advancedRevisions.evaluate(element => element.open)) await advancedRevisions.locator(":scope > summary").click();
   await page.getByRole("radio", { name: /^Clone unchanged rule behavior\b/ }).check();
+  stage = "detection-navigation-revision-fill-title";
   await page.getByRole("textbox", { name: "Revision title", exact: true }).fill(navigationRevisionTitle);
-  await page.getByRole("textbox", { name: "Required research reason", exact: true }).fill(navigationRevisionReason);
+  stage = "detection-navigation-revision-fill-reason";
+  await advancedRevisions.getByRole("textbox", { name: /^Required research reason\b/ }).fill(navigationRevisionReason);
+  stage = "detection-navigation-revision-clone-submit";
   const navigationRevisionResponsePromise = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/detections/${ownedDetectionId}/clone` && response.request().method() === "POST");
   await page.getByRole("button", { name: "Create immutable clone", exact: true }).click();
   const navigationRevisionResponse = await navigationRevisionResponsePromise;
@@ -1080,6 +1083,7 @@ try {
     return params.get("candidate") === id && params.get("candidate_scope") === "registry";
   }, ownedDetectionRevisionId);
   await page.getByRole("tab", { name: "Candidate", exact: true }).click();
+  stage = "detection-navigation-revision-child-parse";
   const navigationRevisionParseResponsePromise = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/detections/${ownedDetectionRevisionId}/parse` && response.request().method() === "POST");
   await page.getByRole("button", { name: "Validate source", exact: true }).click();
   const navigationRevisionParseResponse = await navigationRevisionParseResponsePromise;
