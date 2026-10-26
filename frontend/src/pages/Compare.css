@@ -103,6 +103,15 @@
 .compare-page .compare-lanes article > header > a { display: inline-flex; align-items: center; gap: 6px; color: var(--text); font-size: .78rem; font-weight: 650; text-decoration: none; }
 .compare-page .compare-lanes article > header svg { width: 12px; height: 12px; color: var(--muted); }
 .compare-page .compare-lanes article > header > small { color: var(--muted); font-size: .7rem; }
+.compare-page .comparison-paths > header > .button { min-width: 0; max-width: 100%; white-space: normal; text-align: left; }
+.compare-page .comparison-shared-path { grid-template-columns: minmax(0, 1fr); }
+.compare-page .comparison-shared-path article > header > strong { font-size: .8rem; font-weight: 650; }
+.compare-page .comparison-shared-scope { margin: 6px 0 8px; color: var(--muted); font-size: .72rem; line-height: 1.45; }
+.compare-page .comparison-path-participants { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 9px; }
+.compare-page .comparison-path-participants > a { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; min-width: 0; max-width: 100%; color: var(--text); font-size: .72rem; text-decoration: none; overflow-wrap: anywhere; }
+.compare-page .comparison-path-participants > a > span { color: var(--muted); }
+.compare-page .comparison-path-participants strong { min-width: 0; font-weight: 550; }
+.compare-page .comparison-path-participants svg { flex: 0 0 11px; width: 11px; height: 11px; align-self: center; color: var(--muted); }
 .compare-page .compare-lanes ol { display: grid; gap: 0; margin: 7px 0; }
 .compare-page .compare-lanes li { display: grid; grid-template-columns: 17px minmax(0, 1fr) minmax(0, auto); align-items: baseline; gap: 6px; padding: 4px 0 4px 6px; border: 0; border-left: 2px solid var(--blue); border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
 .compare-page .compare-lanes li + li { margin-top: 0; }
