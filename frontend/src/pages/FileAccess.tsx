@@ -379,6 +379,16 @@ function RetainedFileAccess({ control, disabled, ready, readOnly, fileAccessPath
     {control.baseline ? <><h3>Verified baseline</h3><DataList items={[{ label: "Non-owner read", value: "Allowed" }, { label: "Owner read", value: "Allowed" }, { label: "Records", value: control.baseline.record_count }]} /><p>Baseline reads are historical. Mode inspection alone does not establish a fresh access outcome.</p><FileAccessDetails title="Baseline provenance"><DataList items={[{ label: "Baseline content", value: <code>{control.baseline.sha256}</code> }]} /></FileAccessDetails></> : <Callout title="Baseline not established">Fresh non-owner and owner reads have not both been verified.</Callout>}
     {!readOnly && (control.status === "uncertain" || control.usage_state !== "settled") ? <Callout title="Unsettled control or usage">Rollback and reset require independently reconciled resource and cleanup evidence.</Callout> : null}
     {!readOnly && control.status === "recovery_required" ? <Callout title="Reset required">Only a reviewed reset is available for this retained control.</Callout> : null}
+    {(control.status === "uncertain" || control.status === "recovery_required" || control.usage_state !== "settled") && control.operations.length ? <nav className="file-access-recovery-navigation" aria-label="Inspect saved operations">
+      <p>Open an original operation to inspect its saved evidence and recovery status. Opening it does not repeat work.</p>
+      <ol>{control.operations.map((job, index) => {
+        const submitted = job.progress.submitted_request as FileAccessSubmission | undefined;
+        return <li key={job.job_id}>
+          <Link to={fileAccessPath({ control: control.control_owner_id, operation: job.job_id })}><span><small>Inspect operation {index + 1}</small>{" "}<strong>{submitted?.review?.operation ? fileAccessOperationLabels[submitted.review.operation] : "Control operation"}</strong></span>{" "}<span>{sentence(job.state)}<ArrowRight aria-hidden="true" /></span></Link>
+          <details><summary>Operation reference</summary><code>{job.job_id}</code></details>
+        </li>;
+      })}</ol>
+    </nav> : null}
     {!readOnly ? <div className="file-access-actions">{control.allowed_operations.map(operation => <Button key={operation} disabled={disabled || running || ((operation === "baseline" || operation === "harden") && !ready)} onClick={() => onReview({ operation, control_owner_id: control.control_owner_id })}><FileLock2 />Review {fileAccessOperationLabels[operation].toLowerCase()}</Button>)}
       {control.baseline ? <Link className="button button-secondary button-medium" to={`/composition?${new URLSearchParams({ control: control.control_owner_id, pack: FILE_ACCESS_PACK })}`}>{canCompose && !disabled && ready ? "Open composition workspace" : "Inspect composition history"}</Link> : null}
     </div> : null}
