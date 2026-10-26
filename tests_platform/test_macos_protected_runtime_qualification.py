@@ -804,6 +804,32 @@ def test_child_cli_error_keeps_only_allowlisted_setup_stage():
             }
         )
     )
+    namespace_site = lifecycle._parse_child_cli_error(
+        json.dumps(
+            {
+                "error": {
+                    "code": "command_failed",
+                    "message": "The original sealed Darwin namespace is unavailable.",
+                    "setup_stage": "namespace_creation",
+                    "setup_site": "namespace_worker_start",
+                    "setup_offset": 121,
+                }
+            }
+        )
+    )
+    cross_stage_site = lifecycle._parse_child_cli_error(
+        json.dumps(
+            {
+                "error": {
+                    "code": "command_failed",
+                    "message": "The protected macOS setup is unavailable.",
+                    "setup_stage": "namespace_creation",
+                    "setup_site": "package_acl_policy",
+                    "setup_offset": 33,
+                }
+            }
+        )
+    )
 
     assert parsed == {
         "error_code": "command_failed",
@@ -825,6 +851,18 @@ def test_child_cli_error_keeps_only_allowlisted_setup_stage():
         "error_code": "command_failed",
         "error_class": "protected_setup_unavailable",
         "setup_stage": "package_import_custody",
+    }
+    assert namespace_site == {
+        "error_code": "command_failed",
+        "error_class": "unclassified_command_failure",
+        "setup_stage": "namespace_creation",
+        "setup_site": "namespace_worker_start",
+        "setup_offset": 121,
+    }
+    assert cross_stage_site == {
+        "error_code": "command_failed",
+        "error_class": "protected_setup_unavailable",
+        "setup_stage": "namespace_creation",
     }
     assert local.MACOS_SETUP_DIAGNOSTIC_STAGES == lifecycle._SAFE_SETUP_STAGES
     assert local.MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS == lifecycle._SAFE_SETUP_SITE_OFFSETS
@@ -1009,4 +1047,28 @@ def test_readiness_diagnostics_keep_only_a_known_package_site_and_bounded_offset
         "setup_stage": "package_import_custody",
         "setup_site": "package_acl_policy",
         "setup_offset": 33,
+    }
+
+
+def test_readiness_diagnostics_keep_namespace_site_only_for_namespace_stage():
+    diagnostics = lifecycle._safe_readiness_diagnostics(
+        "child_exited_before_readiness",
+        {},
+        {
+            "error_code": "command_failed",
+            "error_class": "unclassified_command_failure",
+            "setup_stage": "namespace_creation",
+            "setup_site": "namespace_worker_start",
+            "setup_offset": 121,
+            "raw_message": "private path and capability data",
+        },
+    )
+
+    assert diagnostics == {
+        "failure_stage": "child_exited_before_readiness",
+        "error_code": "command_failed",
+        "error_class": "unclassified_command_failure",
+        "setup_stage": "namespace_creation",
+        "setup_site": "namespace_worker_start",
+        "setup_offset": 121,
     }

@@ -73,40 +73,55 @@ _SAFE_SETUP_STAGES = frozenset(
     }
 )
 _SAFE_SETUP_SITE_OFFSETS = {
-    "package_root_ancestry": frozenset({1}),
-    "package_root_inventory_call": frozenset({2}),
-    "package_ancestor_path": frozenset({1}),
-    "package_ancestor_directory": frozenset({3}),
-    "package_walk_root": frozenset({3}),
-    "package_walk_directory": frozenset({10}) | frozenset(range(12, 20)),
-    "package_walk_file_inventory": frozenset(range(20, 29)),
-    "package_walk_complete": frozenset({29}),
-    "package_directory_open": frozenset(range(1, 4)),
-    "package_directory_custody": frozenset(range(4, 12)),
-    "package_directory_descriptor": frozenset({12}),
-    "package_directory_release": frozenset({14}),
-    "package_filesystem_abi": frozenset(range(2, 5)),
-    "package_filesystem_policy": frozenset(range(5, 11)),
-    "package_acl_lookup": frozenset(range(11, 26)),
-    "package_acl_policy": frozenset(range(26, 34)),
-    "package_file_open": frozenset(range(1, 3)),
-    "package_file_custody": frozenset(range(3, 12)),
-    "package_file_descriptor": frozenset({12}),
-    "package_file_read": frozenset(range(13, 23)),
-    "package_file_integrity": frozenset(range(23, 46)),
-    "package_file_release": frozenset({46}),
-    "package_hash_open": frozenset(range(3, 5)),
-    "package_hash_custody": frozenset(range(5, 14)),
-    "package_hash_descriptor": frozenset({14}),
-    "package_hash_read": frozenset(range(15, 25)),
-    "package_hash_integrity": frozenset(range(25, 32)),
-    "package_hash_release": frozenset({32}),
-    "package_inventory_bounds": frozenset(range(2, 9)) | frozenset({34, 35, 49}),
-    "package_inventory_root": frozenset(range(16, 32)),
-    "package_inventory_directory": frozenset({32, 36, 37, 38}),
-    "package_inventory_walk": frozenset({33}),
-    "package_inventory_file_references": frozenset(range(39, 49)),
-    "package_inventory_complete": frozenset({50}),
+    "package_import_custody": {
+        "package_root_ancestry": frozenset({1}),
+        "package_root_inventory_call": frozenset({2}),
+        "package_ancestor_path": frozenset({1}),
+        "package_ancestor_directory": frozenset({3}),
+        "package_walk_root": frozenset({3}),
+        "package_walk_directory": frozenset({10}) | frozenset(range(12, 20)),
+        "package_walk_file_inventory": frozenset(range(20, 29)),
+        "package_walk_complete": frozenset({29}),
+        "package_directory_open": frozenset(range(1, 4)),
+        "package_directory_custody": frozenset(range(4, 12)),
+        "package_directory_descriptor": frozenset({12}),
+        "package_directory_release": frozenset({14}),
+        "package_filesystem_abi": frozenset(range(2, 5)),
+        "package_filesystem_policy": frozenset(range(5, 11)),
+        "package_acl_lookup": frozenset(range(11, 26)),
+        "package_acl_policy": frozenset(range(26, 34)),
+        "package_file_open": frozenset(range(1, 3)),
+        "package_file_custody": frozenset(range(3, 12)),
+        "package_file_descriptor": frozenset({12}),
+        "package_file_read": frozenset(range(13, 23)),
+        "package_file_integrity": frozenset(range(23, 46)),
+        "package_file_release": frozenset({46}),
+        "package_hash_open": frozenset(range(3, 5)),
+        "package_hash_custody": frozenset(range(5, 14)),
+        "package_hash_descriptor": frozenset({14}),
+        "package_hash_read": frozenset(range(15, 25)),
+        "package_hash_integrity": frozenset(range(25, 32)),
+        "package_hash_release": frozenset({32}),
+        "package_inventory_bounds": frozenset(range(2, 9)) | frozenset({34, 35, 49}),
+        "package_inventory_root": frozenset(range(16, 32)),
+        "package_inventory_directory": frozenset({32, 36, 37, 38}),
+        "package_inventory_walk": frozenset({33}),
+        "package_inventory_file_references": frozenset(range(39, 49)),
+        "package_inventory_complete": frozenset({50}),
+    },
+    "namespace_creation": {
+        "namespace_creator": frozenset(range(78)),
+        "namespace_create": frozenset(range(44)),
+        "namespace_root_prerequisite": frozenset(range(17)),
+        "namespace_credentials": frozenset(range(14)),
+        "namespace_directory_open": frozenset(range(14)),
+        "namespace_descriptor_policy": frozenset(range(13)),
+        "namespace_filesystem_policy": frozenset(range(10)),
+        "namespace_descriptor_security": frozenset(range(64)),
+        "namespace_sealed_resource": frozenset(range(60)),
+        "namespace_binding": frozenset(range(26)),
+        "namespace_worker_start": frozenset(range(122)),
+    },
 }
 _READINESS_FAILURE_STAGES = frozenset(
     {
@@ -144,10 +159,10 @@ def _parse_child_cli_error(raw: str) -> dict[str, str] | None:
         setup_site = error.get("setup_site")
         setup_offset = error.get("setup_offset")
         if (
-            setup_stage == "package_import_custody"
-            and type(setup_site) is str
+            type(setup_site) is str
             and type(setup_offset) is int
-            and setup_offset in _SAFE_SETUP_SITE_OFFSETS.get(setup_site, ())
+            and setup_offset
+            in _SAFE_SETUP_SITE_OFFSETS.get(setup_stage, {}).get(setup_site, ())
         ):
             result["setup_site"] = setup_site
             result["setup_offset"] = setup_offset
@@ -195,10 +210,10 @@ def _safe_readiness_diagnostics(
             setup_site = child_error.get("setup_site")
             setup_offset = child_error.get("setup_offset")
             if (
-                setup_stage == "package_import_custody"
-                and type(setup_site) is str
+                type(setup_site) is str
                 and type(setup_offset) is int
-                and setup_offset in _SAFE_SETUP_SITE_OFFSETS.get(setup_site, ())
+                and setup_offset
+                in _SAFE_SETUP_SITE_OFFSETS.get(setup_stage, {}).get(setup_site, ())
             ):
                 result["setup_site"] = setup_site
                 result["setup_offset"] = setup_offset

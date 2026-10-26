@@ -1070,10 +1070,10 @@ def main(
             ):
                 error["setup_stage"] = stage
                 if (
-                    stage == "package_import_custody"
+                    stage in allowed_site_offsets
                     and type(setup_site) is str
                     and type(setup_offset) is int
-                    and setup_offset in allowed_site_offsets.get(setup_site, ())
+                    and setup_offset in allowed_site_offsets.get(stage, {}).get(setup_site, ())
                 ):
                     error["setup_site"] = setup_site
                     error["setup_offset"] = setup_offset

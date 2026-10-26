@@ -274,7 +274,8 @@
         "bluefire.browser_launch",
         "bluefire.cloud_identity_pack",
         "bluefire.macos_file_access_local",
-        "bluefire.macos_file_access_workspace_bootstrap"
+        "bluefire.macos_file_access_workspace_bootstrap",
+        "bluefire.macos_setup_failure_diagnostics"
       ]
     },
     {

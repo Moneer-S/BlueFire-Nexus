@@ -21,6 +21,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Callable, TypeVar, cast
 
+from . import macos_setup_failure_diagnostics as _setup_failure_diagnostics
 from .config import BlueFireConfig
 from .macos_file_access_workspace import WORKSPACE_PARENT
 
@@ -59,43 +60,10 @@ MACOS_SETUP_DIAGNOSTIC_STAGES = frozenset(
         "ui_readiness",
     }
 )
-MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS = {
-    "package_root_ancestry": frozenset({1}),
-    "package_root_inventory_call": frozenset({2}),
-    "package_ancestor_path": frozenset({1}),
-    "package_ancestor_directory": frozenset({3}),
-    "package_walk_root": frozenset({3}),
-    "package_walk_directory": frozenset({10}) | frozenset(range(12, 20)),
-    "package_walk_file_inventory": frozenset(range(20, 29)),
-    "package_walk_complete": frozenset({29}),
-    "package_directory_open": frozenset(range(1, 4)),
-    "package_directory_custody": frozenset(range(4, 12)),
-    "package_directory_descriptor": frozenset({12}),
-    "package_directory_release": frozenset({14}),
-    "package_filesystem_abi": frozenset(range(2, 5)),
-    "package_filesystem_policy": frozenset(range(5, 11)),
-    "package_acl_lookup": frozenset(range(11, 26)),
-    "package_acl_policy": frozenset(range(26, 34)),
-    "package_file_open": frozenset(range(1, 3)),
-    "package_file_custody": frozenset(range(3, 12)),
-    "package_file_descriptor": frozenset({12}),
-    "package_file_read": frozenset(range(13, 23)),
-    "package_file_integrity": frozenset(range(23, 46)),
-    "package_file_release": frozenset({46}),
-    "package_hash_open": frozenset(range(3, 5)),
-    "package_hash_custody": frozenset(range(5, 14)),
-    "package_hash_descriptor": frozenset({14}),
-    "package_hash_read": frozenset(range(15, 25)),
-    "package_hash_integrity": frozenset(range(25, 32)),
-    "package_hash_release": frozenset({32}),
-    "package_inventory_bounds": frozenset(range(2, 9)) | frozenset({34, 35, 49}),
-    "package_inventory_root": frozenset(range(16, 32)),
-    "package_inventory_directory": frozenset({32, 36, 37, 38}),
-    "package_inventory_walk": frozenset({33}),
-    "package_inventory_file_references": frozenset(range(39, 49)),
-    "package_inventory_complete": frozenset({50}),
-}
-_MAX_PACKAGE_SETUP_OFFSET = 64
+MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS = _setup_failure_diagnostics.SITE_OFFSETS
+_MAX_SETUP_OFFSETS = _setup_failure_diagnostics.MAX_OFFSETS
+_MAX_PACKAGE_SETUP_OFFSET = _setup_failure_diagnostics.MAX_PACKAGE_OFFSET
+_MAX_NAMESPACE_SETUP_OFFSET = _setup_failure_diagnostics.MAX_NAMESPACE_OFFSET
 
 
 class MacOSSetupFailure(RuntimeError):
@@ -112,12 +80,11 @@ class MacOSSetupFailure(RuntimeError):
         if stage not in MACOS_SETUP_DIAGNOSTIC_STAGES:
             raise ValueError("unknown macOS setup diagnostic stage")
         if setup_site is not None and (
-            stage != "package_import_custody"
-            or setup_site not in MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS
+            setup_site not in MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS.get(stage, {})
             or type(setup_offset) is not int
             or setup_offset < 0
-            or setup_offset > _MAX_PACKAGE_SETUP_OFFSET
-            or setup_offset not in MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS[setup_site]
+            or setup_offset > _MAX_SETUP_OFFSETS.get(stage, -1)
+            or setup_offset not in MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS[stage][setup_site]
         ):
             raise ValueError("unknown macOS setup diagnostic site")
         if setup_site is None and setup_offset is not None:
@@ -154,9 +121,9 @@ def _at_setup_stage(
                 and len(candidate) == 2
                 and type(candidate[0]) is str
                 and type(candidate[1]) is int
-                and candidate[0] in MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS
-                and candidate[1] in MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS[candidate[0]]
-                and candidate[1] <= _MAX_PACKAGE_SETUP_OFFSET
+                and candidate[0] in MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS.get(stage, {})
+                and candidate[1] in MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS[stage][candidate[0]]
+                and candidate[1] <= _MAX_SETUP_OFFSETS.get(stage, -1)
             ):
                 diagnostic = candidate
         if diagnostic is None:
@@ -423,113 +390,37 @@ def _walk_imports(root: Path, *, limit: int) -> dict[str, str]:
 
 
 def _package_import_site_ranges(inventory_code: Any, validation: Any) -> tuple[Any, ...]:
-    return (
-        (inventory_code, ((1, 1, "package_root_ancestry"), (2, 2, "package_root_inventory_call"))),
-        (
-            _walk_imports.__code__,
-            (
-                (3, 3, "package_walk_root"),
-                (10, 10, "package_walk_directory"),
-                (12, 19, "package_walk_directory"),
-                (20, 28, "package_walk_file_inventory"),
-                (29, 29, "package_walk_complete"),
-            ),
-        ),
-        (
-            _hash_file.__code__,
-            (
-                (3, 4, "package_hash_open"),
-                (5, 13, "package_hash_custody"),
-                (14, 14, "package_hash_descriptor"),
-                (15, 24, "package_hash_read"),
-                (25, 31, "package_hash_integrity"),
-                (32, 32, "package_hash_release"),
-            ),
-        ),
-        (
-            validation._parents.__code__,
-            ((1, 1, "package_ancestor_path"), (3, 3, "package_ancestor_directory")),
-        ),
-        (
-            validation._directory.__code__,
-            (
-                (1, 3, "package_directory_open"),
-                (4, 11, "package_directory_custody"),
-                (12, 12, "package_directory_descriptor"),
-                (14, 14, "package_directory_release"),
-            ),
-        ),
-        (
-            validation._descriptor_security.__code__,
-            (
-                (2, 4, "package_filesystem_abi"),
-                (5, 10, "package_filesystem_policy"),
-                (11, 25, "package_acl_lookup"),
-                (26, 33, "package_acl_policy"),
-            ),
-        ),
-        (
-            validation._import_inventory.__code__,
-            (
-                (2, 8, "package_inventory_bounds"),
-                (16, 31, "package_inventory_root"),
-                (32, 32, "package_inventory_directory"),
-                (33, 33, "package_inventory_walk"),
-                (34, 35, "package_inventory_bounds"),
-                (36, 38, "package_inventory_directory"),
-                (39, 48, "package_inventory_file_references"),
-                (49, 49, "package_inventory_bounds"),
-                (50, 50, "package_inventory_complete"),
-            ),
-        ),
-        (
-            validation._protected_file.__code__,
-            (
-                (1, 2, "package_file_open"),
-                (3, 11, "package_file_custody"),
-                (12, 12, "package_file_descriptor"),
-                (13, 22, "package_file_read"),
-                (23, 45, "package_file_integrity"),
-                (46, 46, "package_file_release"),
-            ),
-        ),
+    return _setup_failure_diagnostics.package_import_site_ranges(
+        inventory_code, validation, _walk_imports, _hash_file
     )
 
 
 def _package_import_site_for_frame(
-    code: Any, offset: int, code_ranges: tuple[Any, ...]
+    code: Any,
+    offset: int,
+    code_ranges: tuple[Any, ...],
+    *,
+    max_offset: int = _setup_failure_diagnostics.MAX_PACKAGE_OFFSET,
 ) -> tuple[bool, tuple[str, int] | None]:
-    """Match one exact code object and a bounded relative line offset."""
-    for candidate, ranges in code_ranges:
-        if code is not candidate:
-            continue
-        if type(offset) is not int or not 0 <= offset <= _MAX_PACKAGE_SETUP_OFFSET:
-            return True, None
-        for first, last, label in ranges:
-            if first <= offset <= last:
-                return True, (label, offset)
-        return True, None
-    return False, None
+    return _setup_failure_diagnostics.site_for_frame(
+        code, offset, code_ranges, max_offset=max_offset
+    )
 
 
 def _package_import_failure_site(
     exc: BaseException, inventory_code: Any, validation: Any
 ) -> tuple[str, int] | None:
-    """Project only recognized package-custody code frames and bounded offsets."""
-    code_ranges = _package_import_site_ranges(inventory_code, validation)
-    traceback = exc.__traceback__
-    last_valid_diagnostic = None
-    while traceback is not None:
-        code = traceback.tb_frame.f_code
-        matched, diagnostic = _package_import_site_for_frame(
-            code,
-            traceback.tb_lineno - code.co_firstlineno,
-            code_ranges,
-        )
-        if matched and diagnostic is not None:
-            last_valid_diagnostic = diagnostic
-        traceback = traceback.tb_next
-    return last_valid_diagnostic
+    return _setup_failure_diagnostics.package_import_failure_site(
+        exc, inventory_code, validation, _walk_imports, _hash_file
+    )
+
+
+def _namespace_creation_failure_site(
+    exc: BaseException, creator: Any, namespace: Any, contract: Any, worker: Any
+) -> tuple[str, int] | None:
+    return _setup_failure_diagnostics.namespace_creation_failure_site(
+        exc, creator, namespace, contract, worker
+    )
 
 
 def _isolated_runtime_roots(python: Path) -> list[str]:
@@ -834,7 +725,13 @@ def _run_reserved_workspace(
     browser_console_url: Any,
     macos_file_access_workspace: Any,
 ) -> dict[str, Any]:
-    from . import macos_file_access_bridge, macos_file_access_creator
+    from . import (
+        macos_file_access_bridge,
+        macos_file_access_contract,
+        macos_file_access_creator,
+        macos_file_access_namespace,
+        macos_file_access_worker,
+    )
     from .runner_client import SubprocessRustRunner
 
     owner_credential, reader_credential = _at_setup_stage(
@@ -877,6 +774,13 @@ def _run_reserved_workspace(
                     owner=owner_credential,
                     reader=reader_credential,
                     retained=retained_creators,
+                ),
+                failure_site=lambda exc: _namespace_creation_failure_site(
+                    exc,
+                    macos_file_access_creator,
+                    macos_file_access_namespace,
+                    macos_file_access_contract,
+                    macos_file_access_worker,
                 ),
             )
             created_creator = creator

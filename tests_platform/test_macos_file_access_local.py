@@ -336,6 +336,81 @@ def test_package_import_failure_site_uses_only_fixed_code_and_bounded_offsets():
     assert not unknown_matched and unknown is None
 
 
+def test_package_import_failure_site_prefers_deepest_known_frame():
+    def inventory_package_imports():
+        validation._parents(Path("relative/private-root"))
+
+    with pytest.raises(RuntimeError) as caught:
+        inventory_package_imports()
+
+    assert local._package_import_failure_site(
+        caught.value, inventory_package_imports.__code__, validation
+    ) == ("package_ancestor_path", 1)
+
+
+def test_namespace_creation_failure_site_is_fixed_stage_scoped_and_deepest():
+    def namespace_create():
+        raise RuntimeError("private path and local detail")
+
+    def creator_create():
+        namespace_create()
+
+    creator = SimpleNamespace(
+        MacOSFileAccessCreator=SimpleNamespace(
+            create=SimpleNamespace(__func__=creator_create)
+        )
+    )
+    namespace = SimpleNamespace(
+        SealedMacOSNamespace=SimpleNamespace(
+            create=SimpleNamespace(__func__=lambda: None),
+            _open_directory=lambda: None,
+            _create=namespace_create,
+            binding=lambda: None,
+        ),
+        _root=lambda: None,
+        _directory=lambda: None,
+        _security=lambda: None,
+        _validate_darwin_descriptor_security=lambda: None,
+    )
+    contract = SimpleNamespace(validate_credentials=lambda: None)
+    worker = SimpleNamespace(
+        MacOSFileAccessWorker=SimpleNamespace(start=lambda: None)
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        creator_create()
+
+    diagnostic = local._namespace_creation_failure_site(
+        caught.value, creator, namespace, contract, worker
+    )
+    assert diagnostic is not None
+    assert diagnostic[0] == "namespace_sealed_resource"
+    assert diagnostic[1] in local.MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS[
+        "namespace_creation"
+    ][diagnostic[0]]
+    assert str(Path("private path and local detail")) not in json.dumps(diagnostic)
+
+    failure = local.MacOSSetupFailure(
+        "namespace_creation", "The protected macOS setup is unavailable.",
+        setup_site="namespace_worker_start", setup_offset=121,
+    )
+    assert failure.safe_setup_stage == "namespace_creation"
+    assert failure.safe_setup_site == "namespace_worker_start"
+    assert failure.safe_setup_offset == 121
+    with pytest.raises(ValueError, match="unknown macOS setup diagnostic site"):
+        local.MacOSSetupFailure(
+            "namespace_creation", "safe", setup_site="namespace_worker_start", setup_offset=122
+        )
+    with pytest.raises(ValueError, match="unknown macOS setup diagnostic site"):
+        local.MacOSSetupFailure(
+            "namespace_creation", "safe", setup_site="namespace_worker_start", setup_offset=True
+        )
+    with pytest.raises(ValueError, match="unknown macOS setup diagnostic site"):
+        local.MacOSSetupFailure(
+            "package_import_custody", "safe", setup_site="namespace_worker_start", setup_offset=121
+        )
+
+
 def test_setup_site_callback_failure_preserves_original_setup_error():
     def fail_operation():
         raise RuntimeError("original guarded failure")
@@ -380,6 +455,32 @@ def test_cli_includes_setup_stage_only_for_typed_macos_setup_failure(monkeypatch
             "setup_stage": "package_import_custody",
             "setup_site": "package_acl_policy",
             "setup_offset": 33,
+        }
+    }
+
+    monkeypatch.setattr(
+        cli,
+        "_execute",
+        lambda _args: (_ for _ in ()).throw(
+            local.MacOSSetupFailure(
+                "namespace_creation",
+                "The original sealed Darwin namespace is unavailable.",
+                setup_site="namespace_worker_start",
+                setup_offset=121,
+            )
+        ),
+    )
+    output = io.StringIO()
+    with redirect_stdout(output):
+        result = cli.main(args)
+    assert result == 2
+    assert json.loads(output.getvalue()) == {
+        "error": {
+            "code": "command_failed",
+            "message": "The original sealed Darwin namespace is unavailable.",
+            "setup_stage": "namespace_creation",
+            "setup_site": "namespace_worker_start",
+            "setup_offset": 121,
         }
     }
 
