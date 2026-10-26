@@ -457,8 +457,12 @@ def _fixture_output_for_request(index: int, request: object) -> dict[str, object
             observations = context["observations"]
             evidence_id = observations[0]["evidence_id"]
         except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-            raise ValueError("detection fixture requires a supplied observed evidence reference") from exc
-        if not isinstance(evidence_id, str) or not re.fullmatch(r"evidence-[0-9a-f]{20}", evidence_id):
+            raise ValueError(
+                "detection fixture requires a supplied observed evidence reference"
+            ) from exc
+        if not isinstance(evidence_id, str) or not re.fullmatch(
+            r"evidence-[0-9a-f]{20}", evidence_id
+        ):
             raise ValueError("detection fixture evidence reference is invalid")
         output["evidence_refs"] = [evidence_id]
     return output
@@ -493,7 +497,8 @@ def _assistant_fixture_journey_passed(value: object) -> bool:
         and isinstance(value.get("errors"), list)
         and not value["errors"]
         and isinstance(checks, list)
-        and "approved_two_step_execute_run_completed_with_observed_generated_fixture_metadata" in checks
+        and "approved_two_step_execute_run_completed_with_observed_generated_fixture_metadata"
+        in checks
         and "reviewed_fixture_detection_saved_and_evaluated_against_its_development_run" in checks
         and "saved_detection_candidate_and_development_evaluation_reopened_by_exact_ids" in checks
         and isinstance(graph, dict)
@@ -514,18 +519,25 @@ def _assistant_fixture_journey_passed(value: object) -> bool:
         and 1 <= execute["observed_metadata_record_count"] <= 2
         and isinstance(observed_ids, list)
         and len(observed_ids) == execute["observed_metadata_record_count"]
-        and all(isinstance(item, str) and re.fullmatch(r"evidence-[0-9a-f]{20}", item) for item in observed_ids)
+        and all(
+            isinstance(item, str) and re.fullmatch(r"evidence-[0-9a-f]{20}", item)
+            for item in observed_ids
+        )
         and len(set(observed_ids)) == len(observed_ids)
         and isinstance(observed_records, list)
         and len(observed_records) == len(observed_ids)
-        and all(isinstance(item, dict) and isinstance(item.get("evidence_id"), str) for item in observed_records)
+        and all(
+            isinstance(item, dict) and isinstance(item.get("evidence_id"), str)
+            for item in observed_records
+        )
         and {item["evidence_id"] for item in observed_records} == set(observed_ids)
         and all(
             isinstance(item, dict)
             and item.get("run_id") == execute.get("run_id")
             and item.get("producer") == "collector.filesystem.sandbox.v1"
             and item.get("step_id") in {"create_fixture", "transform_fixture"}
-            and item.get("behavior_id") == {
+            and item.get("behavior_id")
+            == {
                 "create_fixture": "sandbox.fixture.create.v1",
                 "transform_fixture": "sandbox.fixture.transform.v1",
             }.get(item.get("step_id"))
@@ -537,7 +549,8 @@ def _assistant_fixture_journey_passed(value: object) -> bool:
         and preflight.get("autonomy") == "off"
         and preflight.get("ai_enabled") is False
         and preflight.get("ai_provider_id") == "deterministic-offline.v1"
-        and preflight.get("actions") == ["sandbox.fixture.create.v1", "sandbox.fixture.transform.v1"]
+        and preflight.get("actions")
+        == ["sandbox.fixture.create.v1", "sandbox.fixture.transform.v1"]
         and isinstance(execute.get("cleanup"), dict)
         and execute["cleanup"].get("attempted") is True
         and execute["cleanup"].get("success") is True
@@ -545,7 +558,8 @@ def _assistant_fixture_journey_passed(value: object) -> bool:
         and isinstance(detection.get("candidate_id"), str)
         and re.fullmatch(r"detection-[0-9a-f]{20}", detection["candidate_id"]) is not None
         and isinstance(detection.get("evaluation_id"), str)
-        and re.fullmatch(r"detection-evaluation-[0-9a-f]{64}", detection["evaluation_id"]) is not None
+        and re.fullmatch(r"detection-evaluation-[0-9a-f]{64}", detection["evaluation_id"])
+        is not None
         and detection.get("run_id") == execute.get("run_id")
         and detection.get("development_case") is True
         and detection.get("backend_executed") is True
@@ -562,7 +576,8 @@ def _assistant_fixture_journey_passed(value: object) -> bool:
         and type(value["detection_reopened"].get("revision")) is int
         and value["detection_reopened"]["revision"] > 0
         and isinstance(value["detection_reopened"].get("definition_digest"), str)
-        and re.fullmatch(r"sha256:[0-9a-f]{64}", value["detection_reopened"]["definition_digest"]) is not None
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", value["detection_reopened"]["definition_digest"])
+        is not None
         and value["detection_reopened"].get("development_case") is True
         and value["detection_reopened"].get("evaluation_use") == "development"
         and isinstance(provider_requests, dict)
@@ -574,7 +589,8 @@ def _assistant_fixture_journey_passed(value: object) -> bool:
         and cleanup.get("runner_stopped") is True
         and cleanup.get("execute_job_terminal") is True
         and isinstance(counts, dict)
-        and counts == {
+        and counts
+        == {
             "assistant_turns": 2,
             "model_requests": 4,
             "run_preflight": 1,

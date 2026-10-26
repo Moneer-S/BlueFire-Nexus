@@ -11,8 +11,8 @@ from tools.verify_installed_browser import (
     _FIXTURE_MODEL,
     _FIXTURE_PURPOSES,
     _assistant_fixture_journey_passed,
-    _fixture_outputs,
     _fixture_output_for_request,
+    _fixture_outputs,
     _fixture_request_allowed,
 )
 
@@ -77,33 +77,59 @@ def assistant_report() -> dict[str, object]:
         ],
         "graph_simulation": {"native_execution": False},
         "execute_preflight": {
-            "mode": "execute", "autonomy": "off", "ai_enabled": False,
-            "ai_provider_id": "deterministic-offline.v1", "actions": actions,
+            "mode": "execute",
+            "autonomy": "off",
+            "ai_enabled": False,
+            "ai_provider_id": "deterministic-offline.v1",
+            "actions": actions,
         },
         "generated_fixture_execute": {
-            "status": "completed", "native_execution": True, "mode": "execute",
-            "autonomy": "off", "runner_profile_id": "sandbox-execute.v1",
-            "run_id": run_id, "job_id": "job-" + "b" * 32,
-            "step_count": 2, "observed_metadata_record_count": 1,
+            "status": "completed",
+            "native_execution": True,
+            "mode": "execute",
+            "autonomy": "off",
+            "runner_profile_id": "sandbox-execute.v1",
+            "run_id": run_id,
+            "job_id": "job-" + "b" * 32,
+            "step_count": 2,
+            "observed_metadata_record_count": 1,
             "observed_evidence_ids": [evidence_id],
-            "observed_records": [{
-                "evidence_id": evidence_id, "run_id": run_id,
-                "step_id": "create_fixture", "behavior_id": actions[0],
-                "action_id": actions[0], "producer": "collector.filesystem.sandbox.v1",
-            }],
+            "observed_records": [
+                {
+                    "evidence_id": evidence_id,
+                    "run_id": run_id,
+                    "step_id": "create_fixture",
+                    "behavior_id": actions[0],
+                    "action_id": actions[0],
+                    "producer": "collector.filesystem.sandbox.v1",
+                }
+            ],
             "cleanup": {"attempted": True, "success": True},
         },
         "detection_application": {
-            "candidate_id": candidate_id, "evaluation_id": evaluation_id,
-            "run_id": run_id, "development_case": True, "backend_executed": True,
-            "result_state": "matched", "observed_match_count": 1, "benign_match_count": 1,
+            "candidate_id": candidate_id,
+            "evaluation_id": evaluation_id,
+            "run_id": run_id,
+            "development_case": True,
+            "backend_executed": True,
+            "result_state": "matched",
+            "observed_match_count": 1,
+            "benign_match_count": 1,
         },
         "detection_reopened": {
-            "candidate_id": candidate_id, "evaluation_id": evaluation_id,
-            "run_id": run_id, "revision": 2, "definition_digest": "sha256:" + "c" * 64,
-            "development_case": True, "evaluation_use": "development",
+            "candidate_id": candidate_id,
+            "evaluation_id": evaluation_id,
+            "run_id": run_id,
+            "revision": 2,
+            "definition_digest": "sha256:" + "c" * 64,
+            "development_case": True,
+            "evaluation_use": "development",
         },
-        "provider_requests": {"count": 4, "purposes": list(_FIXTURE_PURPOSES), "request_bytes": 1024},
+        "provider_requests": {
+            "count": 4,
+            "purposes": list(_FIXTURE_PURPOSES),
+            "request_bytes": 1024,
+        },
         "cleanup": {"runner_stopped": True, "execute_job_terminal": True},
         "request_counts": counts,
     }
@@ -182,7 +208,10 @@ def test_fixture_outputs_bound_graph_and_detection_workflows() -> None:
     assert draft["steps"][0]["parameters"]["record_count"] == 4
     assert draft["steps"][1]["parameters"]["redact_values"] is True
     assert outputs[2]["steps"][0]["capability_id"] == "detection.create_and_evaluate"
-    assert outputs[3]["source"] == "SELECT fixture_id FROM logs WHERE artifact_type = 'collector_observation'"
+    assert (
+        outputs[3]["source"]
+        == "SELECT fixture_id FROM logs WHERE artifact_type = 'collector_observation'"
+    )
     assert outputs[3]["evidence_refs"] == []
 
 
@@ -221,11 +250,21 @@ def test_assistant_journey_validator_accepts_honest_benign_match_result() -> Non
 @pytest.mark.parametrize(
     "mutation",
     [
-        lambda report: report["generated_fixture_execute"]["observed_records"][0].update(run_id="run-20261025T104447Z-aaaaaaaaaaaaaaaa"),
-        lambda report: report["generated_fixture_execute"]["observed_records"][0].update(producer="runner-receipt"),
-        lambda report: report["generated_fixture_execute"]["observed_records"][0].update(action_id="sandbox.fixture.transform.v1"),
-        lambda report: report["detection_reopened"].update(evaluation_id="detection-evaluation-" + "d" * 64),
-        lambda report: report["detection_reopened"].update(run_id="run-20261025T104447Z-aaaaaaaaaaaaaaaa"),
+        lambda report: report["generated_fixture_execute"]["observed_records"][0].update(
+            run_id="run-20261025T104447Z-aaaaaaaaaaaaaaaa"
+        ),
+        lambda report: report["generated_fixture_execute"]["observed_records"][0].update(
+            producer="runner-receipt"
+        ),
+        lambda report: report["generated_fixture_execute"]["observed_records"][0].update(
+            action_id="sandbox.fixture.transform.v1"
+        ),
+        lambda report: report["detection_reopened"].update(
+            evaluation_id="detection-evaluation-" + "d" * 64
+        ),
+        lambda report: report["detection_reopened"].update(
+            run_id="run-20261025T104447Z-aaaaaaaaaaaaaaaa"
+        ),
         lambda report: report["detection_reopened"].update(development_case=False),
         lambda report: report["execute_preflight"].update(autonomy="auto"),
         lambda report: report["deadline_controls"].update(work_deadline_enforced=False),
