@@ -273,6 +273,7 @@
         "bluefire.s3_access_setup_cli",
         "bluefire.browser_launch",
         "bluefire.cloud_identity_pack",
+        "bluefire.macos_file_access_local",
         "bluefire.macos_file_access_workspace_bootstrap"
       ]
     },

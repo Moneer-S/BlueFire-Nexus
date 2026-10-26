@@ -84,7 +84,7 @@ def _root() -> None:
     _require(
         _supported_runtime()
         and sys.implementation.name == "cpython"
-        and sys.version_info[:3] == (3, 10, 16)
+        and sys.version_info[:3] in ((3, 10, 16), (3, 11, 18))
         and _posix_id("getuid")
         == _posix_id("geteuid")
         == _posix_id("getgid")

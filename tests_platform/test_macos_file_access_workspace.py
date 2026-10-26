@@ -22,6 +22,64 @@ from bluefire.util import canonical_json_bytes, content_hash
 from tests_platform.test_macos_file_access_contract import binding
 
 
+@pytest.mark.parametrize("version", [(3, 10, 16), (3, 11, 18)])
+def test_original_root_gate_accepts_only_legacy_and_hosted_qualification_versions(
+    monkeypatch, version
+):
+    monkeypatch.setattr(workspace, "_supported_runtime", lambda: True)
+    monkeypatch.setattr(workspace, "_posix_id", lambda _name: 0)
+    monkeypatch.setattr(workspace.sys, "version_info", version)
+
+    workspace._root()
+
+
+@pytest.mark.parametrize("version", [(3, 10, 17), (3, 11, 9), (3, 11, 17), (3, 11, 19), (3, 12, 0)])
+def test_original_root_gate_rejects_adjacent_python_patches(monkeypatch, version):
+    monkeypatch.setattr(workspace, "_supported_runtime", lambda: True)
+    monkeypatch.setattr(workspace, "_posix_id", lambda _name: 0)
+    monkeypatch.setattr(workspace.sys, "version_info", version)
+
+    with pytest.raises(MacOSFileAccessContractError):
+        workspace._root()
+
+
+@pytest.mark.parametrize("version", [(3, 10, 16), (3, 11, 18)])
+def test_preimport_child_gate_accepts_exact_legacy_and_qualification_versions(monkeypatch, version):
+    inventory = []
+
+    def reach_inventory(_descriptor):
+        inventory.append(True)
+        raise AssertionError("inventory reached")
+
+    monkeypatch.setattr(bootstrap.sys, "version_info", version)
+    monkeypatch.setattr(bootstrap.sys, "platform", "darwin")
+    monkeypatch.setattr(bootstrap.sys, "flags", SimpleNamespace(isolated=1, no_site=1))
+    monkeypatch.setattr(bootstrap.sys, "dont_write_bytecode", True)
+    monkeypatch.setattr(bootstrap.sys, "implementation", SimpleNamespace(name="cpython"))
+    monkeypatch.setattr(bootstrap, "_inventory", reach_inventory)
+
+    with pytest.raises(AssertionError, match="inventory reached"):
+        bootstrap._handshake(3, {})
+
+    assert inventory == [True]
+
+
+@pytest.mark.parametrize("version", [(3, 10, 17), (3, 11, 9), (3, 11, 17), (3, 11, 19)])
+def test_preimport_child_gate_rejects_unqualified_patch_before_inventory(monkeypatch, version):
+    inventory = []
+    monkeypatch.setattr(bootstrap.sys, "version_info", version)
+    monkeypatch.setattr(bootstrap.sys, "platform", "darwin")
+    monkeypatch.setattr(bootstrap.sys, "flags", SimpleNamespace(isolated=1, no_site=1))
+    monkeypatch.setattr(bootstrap.sys, "dont_write_bytecode", True)
+    monkeypatch.setattr(bootstrap.sys, "implementation", SimpleNamespace(name="cpython"))
+    monkeypatch.setattr(bootstrap, "_inventory", lambda _descriptor: inventory.append(True))
+
+    with pytest.raises(RuntimeError, match="original Darwin workspace bootstrap"):
+        bootstrap._handshake(3, {})
+
+    assert inventory == []
+
+
 class Stream:
     def __init__(self, descriptor):
         self.descriptor = descriptor

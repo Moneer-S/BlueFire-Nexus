@@ -11,6 +11,7 @@ import pytest
 
 from bluefire import cli
 from bluefire import macos_file_access_local as local
+from bluefire import macos_file_access_peer as peer
 
 
 def test_fixed_local_config_is_no_model_approved_and_exactly_scoped():
@@ -28,6 +29,39 @@ def test_fixed_local_config_is_no_model_approved_and_exactly_scoped():
     assert profile.network_allowlist == ()
     assert not profile.secrets
     assert not profile.native_tool_installations
+
+
+@pytest.mark.parametrize("version", [(3, 10, 16), (3, 11, 18)])
+def test_supervisor_platform_gate_accepts_only_legacy_and_qualification_versions(
+    monkeypatch, version
+):
+    monkeypatch.setattr(local.sys, "platform", "darwin")
+    monkeypatch.setattr(local.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(local.sys, "implementation", SimpleNamespace(name="cpython"))
+    monkeypatch.setattr(local.sys, "version_info", version)
+    monkeypatch.setattr(local.os, "getuid", lambda: 0, raising=False)
+    monkeypatch.setattr(local.os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(local.os, "getgid", lambda: 0, raising=False)
+    monkeypatch.setattr(local.os, "getegid", lambda: 0, raising=False)
+    monkeypatch.setattr(peer, "_supported_runtime", lambda: True)
+
+    local._platform_gate()
+
+
+@pytest.mark.parametrize("version", [(3, 10, 17), (3, 11, 9), (3, 11, 17), (3, 11, 19)])
+def test_supervisor_platform_gate_rejects_unqualified_python_patches(monkeypatch, version):
+    monkeypatch.setattr(local.sys, "platform", "darwin")
+    monkeypatch.setattr(local.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(local.sys, "implementation", SimpleNamespace(name="cpython"))
+    monkeypatch.setattr(local.sys, "version_info", version)
+    monkeypatch.setattr(local.os, "getuid", lambda: 0, raising=False)
+    monkeypatch.setattr(local.os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(local.os, "getgid", lambda: 0, raising=False)
+    monkeypatch.setattr(local.os, "getegid", lambda: 0, raising=False)
+    monkeypatch.setattr(peer, "_supported_runtime", lambda: True)
+
+    with pytest.raises(RuntimeError, match="root-owned CPython"):
+        local._platform_gate()
 
 
 def test_temporary_numeric_id_recipe_avoids_registered_and_running_ids(monkeypatch):
@@ -139,7 +173,9 @@ def test_interpreter_is_custodied_before_hash_and_subprocess_probe(monkeypatch, 
 
 def test_reservation_file_requires_private_single_link_regular_file(monkeypatch):
     private = SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=0, st_nlink=1, st_size=0)
-    monkeypatch.setattr(local.os.path, "samestat", lambda left, right: left is private and right is private)
+    monkeypatch.setattr(
+        local.os.path, "samestat", lambda left, right: left is private and right is private
+    )
 
     assert local._reservation_file_matches(private, private)
     assert not local._reservation_file_matches(
@@ -206,7 +242,9 @@ def test_workspace_parent_uses_validation_parent_api(monkeypatch, tmp_path):
     root.mkdir()
     monkeypatch.setattr(local, "WORKSPACE_PARENT", root)
     monkeypatch.setattr(validation, "_parents", lambda path: calls.append(("parents", path)))
-    monkeypatch.setattr(validation, "_directory", lambda path, *, owner=0: calls.append(("directory", path, owner)))
+    monkeypatch.setattr(
+        validation, "_directory", lambda path, *, owner=0: calls.append(("directory", path, owner))
+    )
     calls = []
     monkeypatch.setattr(local.stat, "S_IMODE", lambda _mode: 0o711)
 
@@ -217,9 +255,20 @@ def test_workspace_parent_uses_validation_parent_api(monkeypatch, tmp_path):
 
 def test_cli_supervisor_requires_fixed_setup_and_rejects_custom_state(monkeypatch):
     calls = []
-    monkeypatch.setattr(local, "run_local_supervisor", lambda **kwargs: calls.append(kwargs) or {"status": "stopped_cleanly"})
+    monkeypatch.setattr(
+        local,
+        "run_local_supervisor",
+        lambda **kwargs: calls.append(kwargs) or {"status": "stopped_cleanly"},
+    )
     args = cli._parser().parse_args(
-        ["runner", "macos-file-setup", "--confirm-create-generated-workspace", "--port", "8123", "--no-browser"]
+        [
+            "runner",
+            "macos-file-setup",
+            "--confirm-create-generated-workspace",
+            "--port",
+            "8123",
+            "--no-browser",
+        ]
     )
 
     result = cli._execute(args)

@@ -392,7 +392,7 @@ def _handshake(descriptor: int, recipe):
         and bool(sys.flags.no_site)
         and sys.dont_write_bytecode
         and sys.implementation.name == "cpython"
-        and sys.version_info[:3] == (3, 10, 16)
+        and sys.version_info[:3] in ((3, 10, 16), (3, 11, 18))
         and sys.platform == "darwin"
         and type(descriptor) is int
         and descriptor >= 3

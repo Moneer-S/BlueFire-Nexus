@@ -23,7 +23,6 @@ from typing import Any
 
 from .config import BlueFireConfig
 from .macos_file_access_workspace import WORKSPACE_PARENT
-from .util import canonical_json_bytes
 
 _IDENTITY_MIN = 60_000
 _IDENTITY_MAX = 65_000
@@ -49,10 +48,10 @@ def _platform_gate() -> None:
         sys.platform == "darwin"
         and platform.machine() == "arm64"
         and sys.implementation.name == "cpython"
-        and sys.version_info[:3] == (3, 10, 16)
+        and sys.version_info[:3] in ((3, 10, 16), (3, 11, 18))
         and os.getuid() == os.geteuid() == os.getgid() == os.getegid() == 0
         and _supported_runtime(),
-        "Use the original root-owned CPython 3.10.16 macOS arm64 setup session.",
+        "Use a root-owned CPython 3.10.16 legacy or 3.11.18 qualification session on macOS arm64.",
     )
 
 
@@ -274,9 +273,7 @@ def _walk_imports(root: Path, *, limit: int) -> dict[str, str]:
         base = Path(directory)
         details = base.lstat()
         _require(
-            stat.S_ISDIR(details.st_mode)
-            and details.st_uid == 0
-            and not details.st_mode & 0o022
+            stat.S_ISDIR(details.st_mode) and details.st_uid == 0 and not details.st_mode & 0o022
         )
         _directory(base)
         for child in children:
@@ -430,7 +427,9 @@ def _fresh_shutdown_binding(creator: Any) -> dict[str, Any] | None:
     return binding if type(binding) is dict else None
 
 
-def _shutdown_projection(owner_result: Any, creator_result: Any, binding: dict[str, Any]) -> dict[str, Any]:
+def _shutdown_projection(
+    owner_result: Any, creator_result: Any, binding: dict[str, Any]
+) -> dict[str, Any]:
     host_clean = (
         type(owner_result) is dict
         and owner_result.get("host_closed") is True
@@ -576,8 +575,18 @@ def _run_reserved_workspace(
             generation = binding["generation"]
             workspace_root = WORKSPACE_PARENT / generation
             _require(not workspace_root.exists() and not workspace_root.is_symlink())
-            _make_directory(workspace_root, mode=0o700, owner=owner_credential["effective_uid"], group=owner_credential["effective_gid"])
-            _make_directory(workspace_root / "runs", mode=0o700, owner=owner_credential["effective_uid"], group=owner_credential["effective_gid"])
+            _make_directory(
+                workspace_root,
+                mode=0o700,
+                owner=owner_credential["effective_uid"],
+                group=owner_credential["effective_gid"],
+            )
+            _make_directory(
+                workspace_root / "runs",
+                mode=0o700,
+                owner=owner_credential["effective_uid"],
+                group=owner_credential["effective_gid"],
+            )
             cache_parent = WORKSPACE_PARENT / "runtime-cache"
             if cache_parent.exists() or cache_parent.is_symlink():
                 macos_file_access_workspace.validation._directory(cache_parent)
@@ -601,12 +610,17 @@ def _run_reserved_workspace(
             )
             macos_file_access_bridge.start_workspace(owner)
             ready = owner.ui_readiness()
-            url = browser_console_url(ready["host"], ready["port"], ready["browser_bootstrap_capability"])
+            url = browser_console_url(
+                ready["host"], ready["port"], ready["browser_bootstrap_capability"]
+            )
             print(
                 f"BlueFire original macOS file-access workspace: {url if no_browser else url.split('#', 1)[0]}",
                 file=sys.stderr,
             )
-            print(f"One-time connection code: {ready['browser_bootstrap_capability']}", file=sys.stderr)
+            print(
+                f"One-time connection code: {ready['browser_bootstrap_capability']}",
+                file=sys.stderr,
+            )
             sys.stderr.flush()
             if not no_browser:
                 from .browser_launch import open_console_url
@@ -614,7 +628,10 @@ def _run_reserved_workspace(
                 try:
                     open_console_url(url.split("#", 1)[0])
                 except (OSError, RuntimeError):
-                    print("The local console is ready; open the printed address manually.", file=sys.stderr)
+                    print(
+                        "The local console is ready; open the printed address manually.",
+                        file=sys.stderr,
+                    )
             stopped.wait()
         except KeyboardInterrupt:
             pass
@@ -625,26 +642,48 @@ def _run_reserved_workspace(
                 owner = retained_owners[0]
             current_binding = _fresh_shutdown_binding(creator)
             owner_result: Any = {"host_closed": True, "scope": "not_started"}
-            creator_result: Any = {"workers_closed": True, "namespace_handles_closed": True, "fixture_removed": False, "scope": "not_started"}
+            creator_result: Any = {
+                "workers_closed": True,
+                "namespace_handles_closed": True,
+                "fixture_removed": False,
+                "scope": "not_started",
+            }
             if owner is not None and getattr(owner, "_state", None) != "preparing":
                 try:
                     owner_result = owner.close()
                 except BaseException:
-                    owner_result = {"host_closed": False, "scope": "original_workspace_host_only", "cleanup_error": "unknown"}
+                    owner_result = {
+                        "host_closed": False,
+                        "scope": "original_workspace_host_only",
+                        "cleanup_error": "unknown",
+                    }
             if creator is not None and getattr(creator, "_state", None) != "creating":
                 try:
                     creator_result = creator.close()
                 except BaseException:
-                    creator_result = {"workers_closed": False, "namespace_handles_closed": False, "fixture_removed": False, "scope": "original_component_retirement_only", "cleanup_error": "unknown"}
+                    creator_result = {
+                        "workers_closed": False,
+                        "namespace_handles_closed": False,
+                        "fixture_removed": False,
+                        "scope": "original_component_retirement_only",
+                        "cleanup_error": "unknown",
+                    }
             if current_binding is not None:
-                shutdown_result = _shutdown_projection(owner_result, creator_result, current_binding)
+                shutdown_result = _shutdown_projection(
+                    owner_result, creator_result, current_binding
+                )
             else:
                 shutdown_result = {
                     "schema_version": "bluefire.macos-file-access-local-supervisor-result.v1",
                     "status": "cleanup_unknown",
                     "host": owner_result,
                     "components": creator_result,
-                    "generated_resource": {"resource_retained": True, "fixture_removed": False, "whole_setup_cleanup_proven": False, "state_at_shutdown": "unknown"},
+                    "generated_resource": {
+                        "resource_retained": True,
+                        "fixture_removed": False,
+                        "whole_setup_cleanup_proven": False,
+                        "state_at_shutdown": "unknown",
+                    },
                     "workspace_retained": True,
                     "identity_accounts_created": False,
                 }

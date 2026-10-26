@@ -212,7 +212,7 @@ jobs:
   package:
     name: Native wheel - ${{ matrix.platform }} ${{ matrix.architecture }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: ${{ (matrix.platform == 'macos' && matrix.architecture == 'aarch64') && 75 || 45 }}
     defaults:
       run:
         working-directory: ./wheel-source
@@ -387,6 +387,72 @@ jobs:
           -I verify_macos_file_access_protocol.py
           --forbid-root "${{ github.workspace }}"
           --report "${{ runner.temp }}/macos-file-access-capability.json"
+
+      - name: Stage pinned macOS protected Python inputs
+        if: matrix.platform == 'macos' && matrix.architecture == 'aarch64'
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          stage="$RUNNER_TEMP/bluefire-macos-protected-python-stage"
+          test ! -e "$stage"
+          wheels=(dist/*.whl)
+          test "${#wheels[@]}" = 1
+          python -I -B tools/provision_macos_protected_python.py stage \
+            --stage-root "$stage" \
+            --wheel "${wheels[0]}" \
+            --inspection dist/package-inspection.json
+
+      - name: Build root-owned CPython 3.11.18 and static OpenSSL 3.5.9
+        if: matrix.platform == 'macos' && matrix.architecture == 'aarch64'
+        timeout-minutes: 32
+        shell: bash
+        env:
+          BLUEFIRE_MACOS_PROTECTED_STAGE: ${{ runner.temp }}/bluefire-macos-protected-python-stage
+          BLUEFIRE_MACOS_PROTECTED_PREFIX: /private/var/db/bluefire-macos-runtime/${{ github.run_id }}-${{ github.run_attempt }}
+          BLUEFIRE_MACOS_BUILD_RECEIPT: ${{ runner.temp }}/bluefire-macos-protected-python-build.json
+        run: |
+          host_python="$(python -c 'import sys; print(sys.executable)')"
+          sudo -n env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$RUNNER_TEMP" \
+            LANG=C LC_ALL=C PYTHONNOUSERSITE=1 \
+            "$host_python" -I -B tools/provision_macos_protected_python.py install \
+              --stage-root "$BLUEFIRE_MACOS_PROTECTED_STAGE" \
+              --prefix "$BLUEFIRE_MACOS_PROTECTED_PREFIX" \
+              --run-identity "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+              --report "$BLUEFIRE_MACOS_BUILD_RECEIPT"
+
+      - name: Verify installed macOS generated-resource lifecycle through normal approvals
+        if: matrix.platform == 'macos' && matrix.architecture == 'aarch64'
+        timeout-minutes: 15
+        shell: bash
+        env:
+          BLUEFIRE_MACOS_PROTECTED_PREFIX: /private/var/db/bluefire-macos-runtime/${{ github.run_id }}-${{ github.run_attempt }}
+          BLUEFIRE_MACOS_LIFECYCLE_REPORT: ${{ runner.temp }}/macos-file-access-lifecycle-qualification.json
+        run: |
+          wheels=(dist/*.whl)
+          test "${#wheels[@]}" = 1
+          cp tools/verify_macos_file_access_lifecycle.py "$RUNNER_TEMP/verify_macos_file_access_lifecycle.py"
+          sudo -n env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+            HOME="$BLUEFIRE_MACOS_PROTECTED_PREFIX/home" \
+            LANG=C LC_ALL=C PYTHONNOUSERSITE=1 \
+            "$BLUEFIRE_MACOS_PROTECTED_PREFIX/venv/bin/python" -I -B \
+              "$RUNNER_TEMP/verify_macos_file_access_lifecycle.py" \
+              --python "$BLUEFIRE_MACOS_PROTECTED_PREFIX/venv/bin/python" \
+              --prefix "$BLUEFIRE_MACOS_PROTECTED_PREFIX" \
+              --run-identity "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+              --wheel "${wheels[0]}" \
+              --source-revision "$GITHUB_SHA" \
+              --output "$BLUEFIRE_MACOS_LIFECYCLE_REPORT"
+
+      - name: Upload macOS protected-runtime lifecycle evidence
+        if: always() && matrix.platform == 'macos' && matrix.architecture == 'aarch64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bluefire-macos-26-arm64-cpython-3.11.18-file-access-lifecycle
+          path: |
+            ${{ runner.temp }}/bluefire-macos-protected-python-build.json
+            ${{ runner.temp }}/macos-file-access-lifecycle-qualification.json
+          retention-days: 7
+          if-no-files-found: warn
 
       - name: Set up Node.js for installed verification
         id: installed-verification-node

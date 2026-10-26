@@ -8,9 +8,12 @@ release or general-purpose file-permission tool; native proof remains outstandin
 
 The source accepts only its original protected setup, generated eight-record
 resource, retained processes and private inherited channel. Its runtime boundary
-is macOS 26 / Darwin 25 arm64, APFS and CPython 3.10.16. Privileged setup and
-separate nonroot owner and reader identities must already be prepared; this note
-does not provide an installation or provisioning procedure.
+is macOS 26 / Darwin 25 arm64, APFS and exact CPython 3.10.16 or 3.11.18.
+The 3.10.16 path is retained as a legacy source contract and is not a current
+supported-runtime qualification. The 3.11.18 path is the hosted qualification
+target. Privileged setup and separate nonroot owner and reader identities are
+created only by the fixed product supervisor; this note does not authorize
+arbitrary setup or describe whole-enrollment cleanup.
 
 There is no arbitrary file selection, credential-entry workflow or adoption of
 saved process state. The File Access page does not create a setup or offer reset
@@ -74,6 +77,17 @@ Source review, fake-backed tests and synthetic UI journeys are separate from
 installed native proof. They do not establish actual macOS read denial, target SDK
 ABI correctness or the complete installed lifecycle. No live Mac validation is
 claimed here.
+
+The hosted qualification target is configured separately from the existing
+protocol-only capability check. It builds CPython 3.11.18 from its pinned source
+archive with static OpenSSL in a unique root-owned per-run prefix, stages only
+binary wheels, then exercises the protected setup CLI and ordinary same-origin
+review/approval APIs. A successful report must show baseline reads, the reviewed
+mode change, a fresh denied non-owner read, the owner's unchanged read, settled
+attempt closure, and the actual shutdown scope. The original workers remain
+available during the attempt and close during shutdown. The generated resource
+and its applied defense remain after shutdown; that is not whole-setup cleanup.
+This configuration is not itself evidence that the hosted native run succeeded.
 
 The intended result concerns only the controlled generated resource. It does not
 establish arbitrary-file protection, continuous mode immutability, administrator
