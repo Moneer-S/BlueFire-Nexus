@@ -414,7 +414,7 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
   const reviewed = await preflightResponse.json();
   report.execute_preflight_diagnostic = preflightDiagnostic(reviewed, {
     profileId: "sandbox-execute.v1",
-    actionIds: ["sandbox.fixture.create.v1", "sandbox.fixture.transform.v1"],
+    actionIds: ["sandbox.fixture.create.v1", "sandbox.fixture.transform.v1", "sandbox.cleanup.v1"],
   });
   assert.equal(reviewed.status, "approval_required");
   assert.equal(reviewed.plan?.mode, "execute");
