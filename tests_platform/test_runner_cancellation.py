@@ -273,6 +273,70 @@ def _runner(
     )
 
 
+_VERIFIED_LAUNCH_STDERR_LIMIT_BYTES = 4096
+_VERIFIED_LAUNCH_PYTHON_EXCEPTIONS = frozenset(
+    {b"PermissionError", b"FileNotFoundError", b"OSError", b"RuntimeError", b"ValueError"}
+)
+
+
+def _classify_verified_launch_stderr(stderr: bytes) -> str:
+    if not stderr:
+        return "empty"
+    if b"Fatal Python error:" in stderr:
+        return "fatal_python_runtime"
+    if b"Traceback (most recent call last):" in stderr:
+        return "python_traceback"
+    return "other_nonempty"
+
+
+def _classify_verified_launch_exception_type(stderr: bytes) -> str:
+    if b"Traceback (most recent call last):" not in stderr:
+        return "not_applicable"
+    lines = stderr.rstrip().splitlines()
+    if not lines:
+        return "unknown"
+    candidate = lines[-1].partition(b":")[0].strip()
+    if candidate not in _VERIFIED_LAUNCH_PYTHON_EXCEPTIONS:
+        return "unknown"
+    return candidate.decode("ascii")
+
+
+def _unavailable_verified_launch_stderr() -> dict[str, Any]:
+    return {
+        "class": "unavailable",
+        "exception_type": "unavailable",
+        "captured_bytes": 0,
+        "truncated": False,
+    }
+
+
+def _read_verified_launch_stderr_after_exit(process: subprocess.Popen[bytes]) -> dict[str, Any]:
+    """Read a small stderr sample without waiting after verified child cleanup."""
+    stream = process.stderr
+    if stream is None:
+        return _unavailable_verified_launch_stderr()
+    try:
+        descriptor = stream.fileno()
+        os.set_blocking(descriptor, False)
+        payload = os.read(descriptor, _VERIFIED_LAUNCH_STDERR_LIMIT_BYTES + 1)
+    except BlockingIOError:
+        return _unavailable_verified_launch_stderr()
+    except (OSError, ValueError):
+        return _unavailable_verified_launch_stderr()
+    finally:
+        try:
+            stream.close()
+        except (OSError, ValueError):
+            pass
+    sample = payload[:_VERIFIED_LAUNCH_STDERR_LIMIT_BYTES]
+    return {
+        "class": _classify_verified_launch_stderr(sample),
+        "exception_type": _classify_verified_launch_exception_type(sample),
+        "captured_bytes": len(sample),
+        "truncated": len(payload) > _VERIFIED_LAUNCH_STDERR_LIMIT_BYTES,
+    }
+
+
 def _isolated_module(source: ModuleType, **overrides: object) -> ModuleType:
     isolated = ModuleType(source.__name__)
     isolated.__dict__.update(vars(source))
@@ -730,9 +794,110 @@ def test_posix_verified_launch_cannot_be_redirected_before_receiver_key_exposure
     assert process.stdout is not None
     stdout = process.stdout.read()
     assert runner._finish_posix_process_group(process) is True
-    assert process.returncode == 0
-    assert stdout == b"trusted\n"
-    assert not leaked.exists()
+    stderr_diagnostic = _read_verified_launch_stderr_after_exit(process)
+    stdout_matches_expected = stdout == b"trusted\n"
+    leak_file_exists = leaked.exists()
+    diagnostic = (
+        f"stderr_class={stderr_diagnostic['class']}; "
+        f"stderr_exception_type={stderr_diagnostic['exception_type']}; "
+        f"stderr_captured_bytes={stderr_diagnostic['captured_bytes']}; "
+        f"stderr_truncated={stderr_diagnostic['truncated']}; "
+        f"stdout_matches_expected={stdout_matches_expected}; "
+        f"leak_file_exists={leak_file_exists}"
+    )
+    assert (
+        process.returncode == 0
+    ), f"verified_fd_child_nonzero; returncode={process.returncode}; {diagnostic}"
+    assert stdout_matches_expected, f"verified_fd_child_stdout_mismatch; {diagnostic}"
+    assert not leak_file_exists, f"verified_fd_leak_marker_created; {diagnostic}"
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected", "expected_exception"),
+    [
+        (b"", "empty", "not_applicable"),
+        (
+            b"Traceback (most recent call last):\nPermissionError: denied\n",
+            "python_traceback",
+            "PermissionError",
+        ),
+        (
+            b"Traceback (most recent call last):\nFileNotFoundError: missing\n",
+            "python_traceback",
+            "FileNotFoundError",
+        ),
+        (
+            b"Traceback (most recent call last):\nOSError: unavailable\n",
+            "python_traceback",
+            "OSError",
+        ),
+        (
+            b"Traceback (most recent call last):\nRuntimeError: failed\n",
+            "python_traceback",
+            "RuntimeError",
+        ),
+        (
+            b"Traceback (most recent call last):\nValueError: invalid\n",
+            "python_traceback",
+            "ValueError",
+        ),
+        (
+            b"Traceback (most recent call last):\nCustomFailure: unknown\n",
+            "python_traceback",
+            "unknown",
+        ),
+        (b"Fatal Python error: startup failed\n", "fatal_python_runtime", "not_applicable"),
+        (b"opaque diagnostic bytes\n", "other_nonempty", "not_applicable"),
+    ],
+)
+def test_verified_launch_stderr_classification_is_finite(
+    stderr: bytes,
+    expected: str,
+    expected_exception: str,
+) -> None:
+    assert _classify_verified_launch_stderr(stderr) == expected
+    assert _classify_verified_launch_exception_type(stderr) == expected_exception
+
+
+def test_verified_launch_stderr_without_pipe_has_complete_safe_shape() -> None:
+    result = _read_verified_launch_stderr_after_exit(SimpleNamespace(stderr=None))  # type: ignore[arg-type]
+
+    assert result == {
+        "class": "unavailable",
+        "exception_type": "unavailable",
+        "captured_bytes": 0,
+        "truncated": False,
+    }
+
+
+def test_verified_launch_stderr_nonblocking_unavailable_has_complete_safe_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Stream:
+        closed = False
+
+        def fileno(self) -> int:
+            return 123
+
+        def close(self) -> None:
+            self.closed = True
+
+    stream = Stream()
+    monkeypatch.setattr(os, "set_blocking", lambda _fd, _blocking: None, raising=False)
+
+    def unavailable_read(_fd: int, _size: int) -> bytes:
+        raise BlockingIOError
+
+    monkeypatch.setattr(os, "read", unavailable_read)
+    result = _read_verified_launch_stderr_after_exit(SimpleNamespace(stderr=stream))  # type: ignore[arg-type]
+
+    assert result == {
+        "class": "unavailable",
+        "exception_type": "unavailable",
+        "captured_bytes": 0,
+        "truncated": False,
+    }
+    assert stream.closed
 
 
 @pytest.mark.skipif(sys.platform == "darwin", reason="Darwin requires proved process ownership")
