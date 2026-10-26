@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import queue
 from pathlib import Path
 
@@ -342,7 +343,7 @@ def test_group_wait_keeps_original_child_unreaped_until_group_is_empty(monkeypat
 def test_escalation_signals_only_while_original_child_still_pins_group(monkeypatch):
     process = _FakeProcess()
     handle = lifecycle.SupervisorHandle(
-        process, queue.Queue(), queue.Queue(), (_Reader(), _Reader())
+        process, queue.Queue(), queue.Queue(), queue.Queue(), (_Reader(), _Reader())
     )
     wait_results = iter([False, False, False])
     monkeypatch.setattr(
@@ -377,7 +378,11 @@ def test_undrained_reader_is_not_closed_from_another_thread(monkeypatch):
     process.stdout = _UnclosableStream()
     process.stderr = _UnclosableStream()
     handle = lifecycle.SupervisorHandle(
-        process, queue.Queue(), queue.Queue(), (_Reader(alive=True), _Reader(alive=True))
+        process,
+        queue.Queue(),
+        queue.Queue(),
+        queue.Queue(),
+        (_Reader(alive=True), _Reader(alive=True)),
     )
     monkeypatch.setattr(lifecycle.os, "kill", lambda *_args: None)
     monkeypatch.setattr(lifecycle, "_child_exit_state", lambda _pid: False)
@@ -391,3 +396,81 @@ def test_undrained_reader_is_not_closed_from_another_thread(monkeypatch):
 
     assert result["streams_drained"] is False
     assert result["drained"] is False
+
+
+def test_child_cli_error_retains_only_known_safe_classification():
+    parsed = lifecycle._parse_child_cli_error(
+        '{"error":{"code":"command_failed","message":"The local identity inventory is unavailable."}}'
+    )
+
+    assert parsed == {
+        "error_code": "command_failed",
+        "error_class": "local_identity_inventory_unavailable",
+    }
+
+
+def test_child_cli_error_redacts_unclassified_message_and_rejects_other_codes():
+    secret_message = (
+        "failed at /private/var/db/private-workspace using "
+        "http://127.0.0.1:4312/#bluefire-session=secret-capability"
+    )
+    parsed = lifecycle._parse_child_cli_error(
+        json.dumps({"error": {"code": "command_failed", "message": secret_message}})
+    )
+    serialized = json.dumps(parsed)
+
+    assert parsed == {
+        "error_code": "command_failed",
+        "error_class": "unclassified_command_failure",
+    }
+    assert all(
+        unsafe not in serialized
+        for unsafe in ("private-workspace", "127.0.0.1", "secret-capability")
+    )
+    assert (
+        lifecycle._parse_child_cli_error('{"error":{"code":"arbitrary_code","message":"unsafe"}}')
+        is None
+    )
+
+
+def test_readiness_failure_diagnostics_keep_specific_stage_and_fixed_fields_only():
+    diagnostics = lifecycle._safe_readiness_diagnostics(
+        "child_exited_before_readiness",
+        {
+            "shutdown_method": "supervisor_sigterm",
+            "supervisor_returncode": 2,
+            "process_group_gone": True,
+            "streams_drained": True,
+            "stdout": "http://127.0.0.1:4312/#bluefire-session=secret-capability",
+        },
+        {
+            "error_code": "command_failed",
+            "error_class": "unclassified_command_failure",
+            "message": "/private/var/db/private-workspace",
+        },
+    )
+
+    assert diagnostics == {
+        "failure_stage": "child_exited_before_readiness",
+        "shutdown_method": "supervisor_sigterm",
+        "process_group_gone": True,
+        "streams_drained": True,
+        "supervisor_returncode": 2,
+        "error_code": "command_failed",
+        "error_class": "unclassified_command_failure",
+    }
+
+
+def test_readiness_diagnostics_fall_back_on_malformed_field_types():
+    diagnostics = lifecycle._safe_readiness_diagnostics(
+        ["child_exited_before_readiness"],
+        {
+            "shutdown_method": ["supervisor_sigterm"],
+            "process_group_gone": "true",
+            "streams_drained": 1,
+            "supervisor_returncode": True,
+        },
+        {"error_code": "command_failed", "error_class": ["unsafe"]},
+    )
+
+    assert diagnostics == {"failure_stage": "readiness_wait"}

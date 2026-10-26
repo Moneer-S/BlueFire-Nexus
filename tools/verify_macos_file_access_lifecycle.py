@@ -31,7 +31,92 @@ JOB_TIMEOUT = 180
 
 
 class QualificationError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, diagnostics: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.diagnostics = diagnostics or {}
+
+
+_KNOWN_SETUP_ERROR_CLASSES = {
+    "The local identity inventory is unavailable.": "local_identity_inventory_unavailable",
+    "The local identity inventory is invalid.": "local_identity_inventory_invalid",
+    "The temporary identity inventory is unavailable.": "temporary_identity_inventory_unavailable",
+    "The temporary identity inventory is invalid.": "temporary_identity_inventory_invalid",
+    "No unused temporary numeric identities are available.": "temporary_identities_unavailable",
+    "Another protected macOS setup session is active.": "setup_session_already_active",
+    "The protected macOS setup is unavailable.": "protected_setup_unavailable",
+    "Use a root-owned CPython 3.10.16 legacy or 3.11.18 qualification session on macOS arm64.": "unsupported_protected_runtime",
+}
+_SAFE_SETUP_ERROR_CLASSES = frozenset(_KNOWN_SETUP_ERROR_CLASSES.values()) | {
+    "unclassified_command_failure"
+}
+_READINESS_FAILURE_STAGES = frozenset(
+    {
+        "readiness_wait",
+        "child_identity_unavailable",
+        "child_exited_before_readiness",
+        "readiness_timeout",
+        "loopback_origin_invalid",
+        "bootstrap_capability_invalid",
+    }
+)
+
+
+def _parse_child_cli_error(raw: str) -> dict[str, str] | None:
+    """Keep only fixed CLI error codes and classifications, never message text."""
+    if len(raw.encode("utf-8", errors="replace")) > 4096:
+        return None
+    try:
+        document = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    error = document.get("error") if isinstance(document, dict) else None
+    if not isinstance(error, dict) or error.get("code") != "command_failed":
+        return None
+    message = error.get("message")
+    if not isinstance(message, str):
+        return None
+    return {
+        "error_code": "command_failed",
+        "error_class": _KNOWN_SETUP_ERROR_CLASSES.get(message, "unclassified_command_failure"),
+    }
+
+
+def _safe_readiness_diagnostics(
+    failure_stage: str,
+    stopped: dict[str, Any],
+    child_error: dict[str, str] | None,
+) -> dict[str, Any]:
+    """Project runtime state onto fixed, non-sensitive diagnostic fields."""
+    result: dict[str, Any] = {
+        "failure_stage": (
+            failure_stage
+            if isinstance(failure_stage, str) and failure_stage in _READINESS_FAILURE_STAGES
+            else "readiness_wait"
+        )
+    }
+    shutdown_method = stopped.get("shutdown_method")
+    if isinstance(shutdown_method, str) and shutdown_method in {
+        "supervisor_sigterm",
+        "group_sigterm",
+        "group_sigkill",
+    }:
+        result["shutdown_method"] = shutdown_method
+    for field in ("process_group_gone", "streams_drained"):
+        value = stopped.get(field)
+        if type(value) is bool:
+            result[field] = value
+    returncode = stopped.get("supervisor_returncode")
+    if type(returncode) is int and -255 <= returncode <= 255:
+        result["supervisor_returncode"] = returncode
+    if (
+        isinstance(child_error, dict)
+        and child_error.get("error_code") == "command_failed"
+        and isinstance(child_error.get("error_class"), str)
+        and child_error.get("error_class") in _SAFE_SETUP_ERROR_CLASSES
+    ):
+        result["error_code"] = "command_failed"
+        result["error_class"] = child_error["error_class"]
+    return result
 
 
 @dataclass
@@ -39,6 +124,7 @@ class SupervisorHandle:
     process: subprocess.Popen[str]
     ready_lines: queue.Queue[str]
     stdout_lines: queue.Queue[str]
+    child_errors: queue.Queue[dict[str, str]]
     reader_threads: tuple[threading.Thread, threading.Thread]
 
 
@@ -226,6 +312,7 @@ def _open_supervisor(python: Path) -> tuple[SupervisorHandle, str, int, str]:
     )
     ready_lines: queue.Queue[str] = queue.Queue(maxsize=1)
     stdout_lines: queue.Queue[str] = queue.Queue(maxsize=1)
+    child_errors: queue.Queue[dict[str, str]] = queue.Queue(maxsize=1)
 
     def read_stderr() -> None:
         assert process.stderr is not None
@@ -242,6 +329,13 @@ def _open_supervisor(python: Path) -> tuple[SupervisorHandle, str, int, str]:
             try:
                 document = json.loads(raw)
             except json.JSONDecodeError:
+                continue
+            child_error = _parse_child_cli_error(raw)
+            if child_error is not None:
+                try:
+                    child_errors.put_nowait(child_error)
+                except queue.Full:
+                    pass
                 continue
             if (
                 not isinstance(document, dict)
@@ -260,19 +354,24 @@ def _open_supervisor(python: Path) -> tuple[SupervisorHandle, str, int, str]:
     stdout_reader = threading.Thread(
         target=read_stdout, name="bluefire-macos-supervisor-stdout", daemon=True
     )
-    handle = SupervisorHandle(process, ready_lines, stdout_lines, (stderr_reader, stdout_reader))
+    handle = SupervisorHandle(
+        process, ready_lines, stdout_lines, child_errors, (stderr_reader, stdout_reader)
+    )
     stderr_reader.start()
     stdout_reader.start()
+    failure_stage = "readiness_wait"
     try:
         deadline = time.monotonic() + 120
         ready_url = None
         while time.monotonic() < deadline:
             child_state = _child_exit_state(process.pid)
             if child_state is None:
+                failure_stage = "child_identity_unavailable"
                 raise QualificationError(
                     "The original setup process identity could not be retained."
                 )
             if child_state:
+                failure_stage = "child_exited_before_readiness"
                 raise QualificationError(
                     "The protected macOS setup command exited before readiness."
                 )
@@ -284,6 +383,7 @@ def _open_supervisor(python: Path) -> tuple[SupervisorHandle, str, int, str]:
                 ready_url = line.partition(": ")[2].strip()
                 break
         if ready_url is None:
+            failure_stage = "readiness_timeout"
             raise QualificationError("The protected macOS setup did not report readiness in time.")
         parsed = urllib.parse.urlsplit(ready_url)
         if (
@@ -293,12 +393,14 @@ def _open_supervisor(python: Path) -> tuple[SupervisorHandle, str, int, str]:
             or parsed.path != "/"
             or parsed.query
         ):
+            failure_stage = "loopback_origin_invalid"
             raise QualificationError(
                 "The protected macOS setup did not bind its expected loopback origin."
             )
         fragment = urllib.parse.parse_qs(parsed.fragment, strict_parsing=True)
         capabilities = fragment.get("bluefire-session", [])
         if len(capabilities) != 1 or not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", capabilities[0]):
+            failure_stage = "bootstrap_capability_invalid"
             raise QualificationError(
                 "The protected macOS setup omitted its memory-only bootstrap capability."
             )
@@ -306,7 +408,14 @@ def _open_supervisor(python: Path) -> tuple[SupervisorHandle, str, int, str]:
     except BaseException as error:
         stopped = _stop_supervisor(handle)
         detail = f"shutdown={stopped['shutdown_method']} exited={stopped['supervisor_exited']} group_gone={stopped['process_group_gone']} streams_drained={stopped['streams_drained']}"
-        raise QualificationError(f"Protected macOS setup readiness failed; {detail}.") from error
+        try:
+            child_error = handle.child_errors.get_nowait()
+        except queue.Empty:
+            child_error = None
+        raise QualificationError(
+            f"Protected macOS setup readiness failed; {detail}.",
+            diagnostics=_safe_readiness_diagnostics(failure_stage, stopped, child_error),
+        ) from error
 
 
 def _stop_supervisor(handle: SupervisorHandle) -> dict[str, Any]:
@@ -819,6 +928,8 @@ def main() -> int:
             "error_type": type(exc).__name__,
             "message": str(exc)[:500],
         }
+        if isinstance(exc, QualificationError):
+            failure.update(exc.diagnostics)
         try:
             output = Path(args.output)
             if not output.exists():
