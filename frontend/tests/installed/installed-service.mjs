@@ -1109,9 +1109,11 @@ try {
     const assistant = page.getByRole("complementary", { name: "BlueFire Assistant", exact: true });
     const evidenceSummary = assistant.locator(".assistant-source-details > summary");
     await assistant.getByRole("region", { name: "Current selection", exact: true }).waitFor();
+    await assistant.getByRole("group", { name: "Saved comparison summary", exact: true })
+      .getByText(/saved runs · run 1 is the recorded baseline/i).waitFor();
     await evidenceSummary.waitFor({ state: "visible" });
     await evidenceSummary.click();
-    await assistant.getByText(/saved runs · run 1 is the recorded baseline/i).waitFor();
+    await assistant.locator(".assistant-source-details").getByText(/saved runs · run 1 is the recorded baseline/i).waitFor();
     await assistant.getByRole("button", { name: "Assistant settings", exact: true }).click();
     const assistantMode = assistant.getByRole("combobox", { name: /^(AI mode|Assistant mode)\b/ });
     assert.ok((await assistantMode.locator("option").allTextContents()).includes("Assist · explanation only"));
