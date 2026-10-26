@@ -26,6 +26,10 @@ RECEIVER_EXECUTE_CODE = BlueFireService._execute_job.__code__
 MAX_EXECUTE_LINE_OFFSET = 128
 REPLAY_EXECUTE_CODE = BlueFireService._execute_replay_job.__code__
 MAX_REPLAY_EXECUTE_LINE_OFFSET = 128
+REPLAY_CALLBACK_INNER_CODE = BlueFireService._execute_job_inner.__code__
+MAX_REPLAY_CALLBACK_INNER_LINE_OFFSET = 256
+PROPOSAL_CONTINUATION_CODE = BlueFireService._run_ai_proposal_continuation_locked.__code__
+MAX_PROPOSAL_CONTINUATION_LINE_OFFSET = 256
 ERROR_CODES = {
     "execution_callback_failed",
     "job_scheduling_failed",
@@ -74,6 +78,8 @@ FUNCTIONS = {
     "_execute_job",
     "_execute_job_inner",
     "_execute_replay_job",
+    "_run_ai_proposal_continuation",
+    "_run_ai_proposal_continuation_locked",
     "_review_replay_job",
     "_replay_catalog_lease",
     "_replay_locked",
@@ -99,10 +105,14 @@ def _process_thread_sample():
     stacks = []
     receiver_execute_offsets = []
     replay_execute_offsets = []
+    replay_callback_inner_offsets = []
+    proposal_continuation_offsets = []
     for frame in islice(process_frames.values(), 8):
         functions = []
         receiver_execute_offset = None
         replay_execute_offset = None
+        replay_callback_inner_offset = None
+        proposal_continuation_offset = None
         for _ in range(24):
             functions.append(_label(frame.f_code.co_name, FUNCTIONS))
             if frame.f_code is RECEIVER_EXECUTE_CODE and receiver_execute_offset is None:
@@ -113,6 +123,14 @@ def _process_thread_sample():
                 offset = frame.f_lineno - REPLAY_EXECUTE_CODE.co_firstlineno
                 if type(offset) is int and 0 <= offset <= MAX_REPLAY_EXECUTE_LINE_OFFSET:
                     replay_execute_offset = offset
+            if frame.f_code is REPLAY_CALLBACK_INNER_CODE and replay_callback_inner_offset is None:
+                offset = frame.f_lineno - REPLAY_CALLBACK_INNER_CODE.co_firstlineno
+                if type(offset) is int and 0 <= offset <= MAX_REPLAY_CALLBACK_INNER_LINE_OFFSET:
+                    replay_callback_inner_offset = offset
+            if frame.f_code is PROPOSAL_CONTINUATION_CODE and proposal_continuation_offset is None:
+                offset = frame.f_lineno - PROPOSAL_CONTINUATION_CODE.co_firstlineno
+                if type(offset) is int and 0 <= offset <= MAX_PROPOSAL_CONTINUATION_LINE_OFFSET:
+                    proposal_continuation_offset = offset
             frame = frame.f_back
             if frame is None:
                 break
@@ -121,11 +139,17 @@ def _process_thread_sample():
             receiver_execute_offsets.append(receiver_execute_offset)
         if replay_execute_offset is not None:
             replay_execute_offsets.append(replay_execute_offset)
+        if replay_callback_inner_offset is not None:
+            replay_callback_inner_offsets.append(replay_callback_inner_offset)
+        if proposal_continuation_offset is not None:
+            proposal_continuation_offsets.append(proposal_continuation_offset)
     return {
         "process_thread_functions": stacks,
         "process_threads_truncated": len(process_frames) > 8,
         "receiver_execute_line_offsets": receiver_execute_offsets,
         "replay_execute_line_offsets": replay_execute_offsets,
+        "replay_callback_inner_line_offsets": replay_callback_inner_offsets,
+        "proposal_continuation_line_offsets": proposal_continuation_offsets,
     }
 
 

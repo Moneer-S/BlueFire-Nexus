@@ -254,6 +254,57 @@ def test_replay_callback_entry_site_uses_exact_code_object_and_bounded_offset(
     assert len(payload.encode()) < 8192
 
 
+def test_replay_continuation_sites_use_exact_codes_and_bounded_offsets(monkeypatch):
+    inner_code = diagnostic.REPLAY_CALLBACK_INNER_CODE
+    continuation_code = diagnostic.PROPOSAL_CONTINUATION_CODE
+    inner_offset = 17
+    continuation_offset = 31
+
+    def frame(code, offset):
+        return SimpleNamespace(
+            f_code=code,
+            f_lineno=code.co_firstlineno + offset,
+            f_back=None,
+        )
+
+    sampled = {
+        1: frame(inner_code, inner_offset),
+        2: frame(
+            SimpleNamespace(
+                co_name=inner_code.co_name,
+                co_firstlineno=inner_code.co_firstlineno,
+            ),
+            inner_offset,
+        ),
+        3: frame(inner_code, diagnostic.MAX_REPLAY_CALLBACK_INNER_LINE_OFFSET + 1),
+        4: frame(continuation_code, continuation_offset),
+        5: frame(
+            SimpleNamespace(
+                co_name=continuation_code.co_name,
+                co_firstlineno=continuation_code.co_firstlineno,
+            ),
+            continuation_offset,
+        ),
+        6: frame(
+            continuation_code,
+            diagnostic.MAX_PROPOSAL_CONTINUATION_LINE_OFFSET + 1,
+        ),
+    }
+    monkeypatch.setattr(diagnostic.sys, "_current_frames", lambda: sampled)
+    sections = []
+    diagnostic.report_replay_callback_entry(lambda *args: sections.append(args))
+    when, title, payload = sections[0]
+    assert (when, title) == ("call", "Replay callback-entry diagnostic")
+    report = json.loads(payload)
+    assert report["replay_callback_inner_line_offsets"] == [inner_offset]
+    assert report["proposal_continuation_line_offsets"] == [continuation_offset]
+    assert report["process_thread_functions"][0] == ["_execute_job_inner"]
+    assert report["process_thread_functions"][3] == ["_run_ai_proposal_continuation_locked"]
+    serialized = json.dumps(report, sort_keys=True)
+    assert PRIVATE not in serialized
+    assert len(serialized.encode()) < 8192
+
+
 def test_replay_callback_entry_diagnostic_failure_preserves_timeout_assertion(monkeypatch):
     def unavailable():
         raise RuntimeError(PRIVATE)
