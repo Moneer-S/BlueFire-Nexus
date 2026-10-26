@@ -475,7 +475,12 @@ def _pretty_cli_json(value):
 
 def test_stdout_reader_parses_pretty_printed_cli_error_after_eof():
     raw = _pretty_cli_json(
-        {"error": {"code": "command_failed", "message": "The local identity inventory is unavailable."}}
+        {
+            "error": {
+                "code": "command_failed",
+                "message": "The local identity inventory is unavailable.",
+            }
+        }
     )
     stdout = queue.Queue(maxsize=1)
     child_errors = queue.Queue(maxsize=1)
@@ -512,7 +517,7 @@ def test_stdout_reader_preserves_pretty_printed_supervisor_result():
 @pytest.mark.parametrize(
     "raw",
     [
-        "{\"schema_version\": \"bluefire.macos-file-access-local-supervisor-result.v1\"",
+        '{"schema_version": "bluefire.macos-file-access-local-supervisor-result.v1"',
         _pretty_cli_json({"schema_version": "unknown.result.v1", "status": "passed"}),
     ],
 )

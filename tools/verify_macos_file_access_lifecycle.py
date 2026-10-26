@@ -166,8 +166,7 @@ def _read_supervisor_stdout(
         return
     if (
         not isinstance(document, dict)
-        or document.get("schema_version")
-        != "bluefire.macos-file-access-local-supervisor-result.v1"
+        or document.get("schema_version") != "bluefire.macos-file-access-local-supervisor-result.v1"
     ):
         return
     try:
