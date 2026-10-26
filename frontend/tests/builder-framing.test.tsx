@@ -12,6 +12,7 @@ import type { Outcome, Scenario } from "../src/types";
 const state = vi.hoisted(() => ({ props: {} as ReactFlowProps, viewport: { x: 0, y: 0, zoom: 1 } as Viewport }));
 const flow = vi.hoisted(() => ({
   getNode: (id: string) => state.props.nodes?.find(node => node.id === id),
+  getNodes: () => state.props.nodes ?? [],
   getViewport: () => state.viewport,
   getZoom: () => state.viewport.zoom,
   setViewport: vi.fn(async (viewport: Viewport) => { state.viewport = viewport; return true; }),
@@ -588,11 +589,15 @@ describe("Builder viewport controls", () => {
     const target = scenario.steps[1]!;
     fireEvent.click(screen.getByRole("button", { name: `Select ${target.id}` }));
     await waitFor(() => expect(state.viewport.zoom).toBe(1));
-    expect(state.viewport).toEqual({ x: 167, y: -186, zoom: 1 });
+    // Focus centers the occupied column, including its conditional-route gutter.
+    expect(state.viewport).toEqual({ x: 131, y: -186, zoom: 1 });
+    expectReadableSelection(target.id);
     state.viewport = { x: 2, y: 3, zoom: 0.4 };
     fireEvent.click(screen.getByLabelText("View options", { selector: "summary" }));
     fireEvent.click(screen.getByRole("button", { name: "Focus selected step" }));
-    expect(state.viewport).toEqual({ x: 167, y: -186, zoom: 1 });
+    expect(state.viewport).toEqual({ x: 131, y: -186, zoom: 1 });
+    expectReadableSelection(target.id);
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(scenario);
   });
 
   it("keeps conditional route labels inside the canvas when the inspector or Assistant narrows it", async () => {
