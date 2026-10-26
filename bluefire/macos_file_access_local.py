@@ -19,7 +19,7 @@ import sys
 import threading
 from importlib import resources
 from pathlib import Path
-from typing import Any, Callable, cast
+from typing import Any, Callable, TypeVar, cast
 
 from .config import BlueFireConfig
 from .macos_file_access_workspace import WORKSPACE_PARENT
@@ -34,6 +34,7 @@ _SUPPORTED_METHODS = (
     "macos.file_access.verify_owner.v1",
     "macos.file_access.close_attempt.v1",
 )
+_SetupResult = TypeVar("_SetupResult")
 
 MACOS_SETUP_DIAGNOSTIC_STAGES = frozenset(
     {
@@ -70,7 +71,7 @@ class MacOSSetupFailure(RuntimeError):
         self.safe_setup_stage = stage
 
 
-def _at_setup_stage(stage: str, operation: Callable[[], Any]) -> Any:
+def _at_setup_stage(stage: str, operation: Callable[[], _SetupResult]) -> _SetupResult:
     """Tag expected setup failures without retaining their underlying details."""
     if stage not in MACOS_SETUP_DIAGNOSTIC_STAGES:
         raise ValueError("unknown macOS setup diagnostic stage")
@@ -667,7 +668,7 @@ def _run_reserved_workspace(
 
         signal.signal(signal.SIGTERM, stop_on_sigterm)
         try:
-            creator = _at_setup_stage(
+            created_creator = _at_setup_stage(
                 "namespace_creation",
                 lambda: macos_file_access_creator.MacOSFileAccessCreator.create(
                     runtime,
@@ -676,8 +677,10 @@ def _run_reserved_workspace(
                     retained=retained_creators,
                 ),
             )
+            creator = created_creator
             binding = _at_setup_stage(
-                "resource_baseline_review", lambda: creator.review_context("baseline")["binding"]
+                "resource_baseline_review",
+                lambda: created_creator.review_context("baseline")["binding"],
             )
             generation = binding["generation"]
             workspace_root = WORKSPACE_PARENT / generation
@@ -706,10 +709,10 @@ def _run_reserved_workspace(
                 _make_directory(pycache_root, mode=0o755)
 
             _at_setup_stage("workspace_directory_creation", create_workspace_directories)
-            owner = _at_setup_stage(
+            prepared_owner = _at_setup_stage(
                 "owner_service_prepare",
                 lambda: macos_file_access_workspace.MacOSWorkspaceOwner.prepare(
-                    creator,
+                    created_creator,
                     python=python,
                     python_sha256=python_sha256,
                     package_root=package_root,
@@ -722,10 +725,12 @@ def _run_reserved_workspace(
                     port=port,
                 ),
             )
+            owner = prepared_owner
             _at_setup_stage(
-                "service_startup", lambda: macos_file_access_bridge.start_workspace(owner)
+                "service_startup",
+                lambda: macos_file_access_bridge.start_workspace(prepared_owner),
             )
-            ready = _at_setup_stage("ui_readiness", owner.ui_readiness)
+            ready = _at_setup_stage("ui_readiness", prepared_owner.ui_readiness)
             url = browser_console_url(
                 ready["host"], ready["port"], ready["browser_bootstrap_capability"]
             )
