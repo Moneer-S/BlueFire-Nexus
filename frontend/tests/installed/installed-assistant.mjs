@@ -1,5 +1,5 @@
 // The installed Assistant journey uses only a bounded loopback structured-output fixture.
-/* global process, URL, sessionStorage, fetch, setTimeout, structuredClone, document, requestAnimationFrame */
+/* global process, URL, sessionStorage, fetch, setTimeout, clearTimeout, AbortController, AbortSignal, structuredClone, document, location */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
@@ -104,7 +104,8 @@ function exactRunPayload(value) {
     || !exactKeys(value, ["scenario", "layout", "mode", "autonomy", "ai_provider_id", "runner_profile_id", "target_scope", "collectors"])) return false;
   const scenario = value.scenario;
   if (!scenario || typeof scenario !== "object" || Array.isArray(scenario)) return false;
-  const { layout: _layout, ...savedScenario } = savedScenarioDocument ?? {};
+  const savedScenario = { ...savedScenarioDocument };
+  delete savedScenario.layout;
   return sameStructure(scenario, savedScenario)
     && scenario.id === savedScenarioId && scenario.start === "create_fixture"
     && Array.isArray(scenario.steps) && scenario.steps.length === 2
