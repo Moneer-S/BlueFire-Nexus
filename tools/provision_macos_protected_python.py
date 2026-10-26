@@ -34,6 +34,18 @@ OPENSSL_SHA256 = "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb85
 MAX_SOURCE_BYTES = 120 * 1024 * 1024
 MAX_WHEEL_BYTES = 500 * 1024 * 1024
 MAX_FILES = 128
+MAX_LINK_DIAGNOSTICS = 8
+MAX_RPATH_CANDIDATES = 16
+MAX_DIAGNOSTIC_LABEL = 120
+
+
+class DynamicLinkAuditError(ValueError):
+    def __init__(self, diagnostics: list[dict[str, object]], *, truncated: bool) -> None:
+        super().__init__(
+            "A protected Python dynamic dependency is outside its prefix and SIP paths."
+        )
+        self.diagnostics = diagnostics[:MAX_LINK_DIAGNOSTICS]
+        self.truncated = truncated
 
 
 def _hash(path: Path, limit: int) -> tuple[str, int]:
@@ -495,19 +507,50 @@ def _promote_wheels(
 def _first_rpath_candidate(
     rpaths: list[str], suffix: str, loader_file: Path, executable_dir: Path
 ) -> Path | None:
-    for rpath in rpaths:
+    return _resolve_rpath_candidate(
+        rpaths,
+        suffix,
+        loader_file,
+        executable_dir,
+        protected_prefix=loader_file.parent.parent.parent,
+    )[0]
+
+
+def _resolve_rpath_candidate(
+    rpaths: list[str],
+    suffix: str,
+    loader_file: Path,
+    executable_dir: Path,
+    *,
+    protected_prefix: Path,
+) -> tuple[Path | None, list[dict[str, object]], int | None]:
+    diagnostics: list[dict[str, object]] = []
+    for index, rpath in enumerate(rpaths):
         if rpath.startswith("@loader_path/"):
             root = (loader_file.parent / rpath.removeprefix("@loader_path/")).resolve()
+            origin = "loader_path"
         elif rpath.startswith("@executable_path/"):
             root = (executable_dir / rpath.removeprefix("@executable_path/")).resolve()
+            origin = "executable_path"
         else:
             root = Path(rpath).resolve()
+            origin = "absolute" if Path(rpath).is_absolute() else "relative"
         candidate = (root / suffix).resolve()
+        exists = candidate.exists()
+        if len(diagnostics) < MAX_RPATH_CANDIDATES:
+            diagnostics.append(
+                {
+                    "index": index,
+                    "origin": origin,
+                    "candidate": _diagnostic_path_label(candidate, protected_prefix),
+                    "exists": exists,
+                }
+            )
         # Only a real filesystem candidate establishes @rpath ordering. A
         # system-looking but absent path cannot prove what dyld will resolve.
-        if candidate.exists():
-            return candidate
-    return None
+        if exists:
+            return candidate, diagnostics, index
+    return None, diagnostics, None
 
 
 def _audit_dynamic_links(prefix: Path) -> dict[str, object]:
@@ -522,7 +565,8 @@ def _audit_dynamic_links(prefix: Path) -> dict[str, object]:
     if not candidates:
         raise ValueError("No protected Python runtime files were found for dynamic-link review.")
     reviewed = 0
-    external: list[str] = []
+    link_diagnostics: list[dict[str, object]] = []
+    link_violation_count = 0
     for path in candidates:
         if not path.is_file():
             continue
@@ -542,15 +586,7 @@ def _audit_dynamic_links(prefix: Path) -> dict[str, object]:
             timeout=20,
             check=True,
         ).stdout
-        rpaths: list[str] = []
-        lines = load_commands.splitlines()
-        for index, line in enumerate(lines):
-            if line.strip() == "cmd LC_RPATH":
-                for candidate in lines[index + 1 : index + 5]:
-                    pieces = candidate.strip().split()
-                    if pieces and pieces[0] == "path" and len(pieces) > 1:
-                        rpaths.append(pieces[1])
-                        break
+        rpaths = _parse_lc_rpaths(load_commands)
         result = subprocess.run(
             ["/usr/bin/otool", "-L", str(path)],
             text=True,
@@ -559,16 +595,13 @@ def _audit_dynamic_links(prefix: Path) -> dict[str, object]:
             timeout=20,
             check=True,
         )
-        for line in result.stdout.splitlines()[1:]:
-            if line.strip().endswith(":") and "(architecture " in line:
-                continue
-            dependency = line.strip().split(" ", 1)[0]
-            if not dependency:
-                continue
+        for dependency in _parse_otool_dependencies(result.stdout):
             if dependency.startswith("/") and _is_sip_system_path(dependency):
                 # Dyld shared-cache libraries need not have on-disk files.
                 continue
             choices: list[Path] = []
+            rpath_candidates: list[dict[str, object]] = []
+            selected_rpath_index: int | None = None
             if dependency.startswith("@loader_path/"):
                 choices = [
                     (resolved_file.parent / dependency.removeprefix("@loader_path/")).resolve()
@@ -581,18 +614,30 @@ def _audit_dynamic_links(prefix: Path) -> dict[str, object]:
                 ]
             elif dependency.startswith("@rpath/"):
                 suffix = dependency.removeprefix("@rpath/")
-                candidate = _first_rpath_candidate(
+                candidate, rpath_candidates, selected_rpath_index = _resolve_rpath_candidate(
                     rpaths,
                     suffix,
                     resolved_file,
                     prefix / "cpython" / "bin",
+                    protected_prefix=prefix,
                 )
                 if candidate is not None:
                     choices = [candidate]
             else:
                 choices = [Path(dependency).resolve()]
             if len(choices) != 1:
-                external.append(dependency)
+                link_violation_count += 1
+                if len(link_diagnostics) < MAX_LINK_DIAGNOSTICS:
+                    link_diagnostics.append(
+                        _link_diagnostic(
+                            path,
+                            dependency,
+                            "unresolved_dependency",
+                            prefix,
+                            rpath_candidates=rpath_candidates,
+                            selected_rpath_index=selected_rpath_index,
+                        )
+                    )
                 continue
             choice = choices[0]
             # System dylibs are often present only in the dyld shared cache,
@@ -600,23 +645,148 @@ def _audit_dynamic_links(prefix: Path) -> dict[str, object]:
             if _is_sip_system_path(choice.as_posix()):
                 continue
             if not choice.exists() or not choice.is_file():
-                external.append(dependency)
+                link_violation_count += 1
+                if len(link_diagnostics) < MAX_LINK_DIAGNOSTICS:
+                    link_diagnostics.append(
+                        _link_diagnostic(
+                            path,
+                            dependency,
+                            "missing_dependency",
+                            prefix,
+                            candidate=choice,
+                            rpath_candidates=rpath_candidates,
+                            selected_rpath_index=selected_rpath_index,
+                        )
+                    )
                 continue
             resolved_choice = choice.resolve(strict=True)
             if resolved_choice.is_relative_to(prefix):
                 dependency_stat = resolved_choice.stat()
                 if dependency_stat.st_uid != 0 or dependency_stat.st_mode & 0o022:
-                    external.append(dependency)
+                    link_violation_count += 1
+                    if len(link_diagnostics) < MAX_LINK_DIAGNOSTICS:
+                        link_diagnostics.append(
+                            _link_diagnostic(
+                                path,
+                                dependency,
+                                "protected_dependency_mutable",
+                                prefix,
+                                candidate=resolved_choice,
+                                rpath_candidates=rpath_candidates,
+                                selected_rpath_index=selected_rpath_index,
+                            )
+                        )
             elif not str(resolved_choice).startswith(("/usr/lib/", "/System/Library/")):
                 # For @rpath, this is the first existing loader candidate; a
                 # later safe rpath cannot mask an earlier unprotected file.
-                external.append(dependency)
+                link_violation_count += 1
+                if len(link_diagnostics) < MAX_LINK_DIAGNOSTICS:
+                    link_diagnostics.append(
+                        _link_diagnostic(
+                            path,
+                            dependency,
+                            "outside_prefix_and_sip",
+                            prefix,
+                            candidate=resolved_choice,
+                            rpath_candidates=rpath_candidates,
+                            selected_rpath_index=selected_rpath_index,
+                        )
+                    )
         reviewed += 1
-    if external:
-        raise ValueError(
-            "A protected Python dynamic dependency is outside its prefix and SIP paths."
+    if link_violation_count:
+        raise DynamicLinkAuditError(
+            link_diagnostics,
+            truncated=link_violation_count > len(link_diagnostics),
         )
     return {"status": "closed", "files_reviewed": reviewed, "external_dependencies": []}
+
+
+def _parse_lc_rpaths(output: str) -> list[str]:
+    rpaths: list[str] = []
+    lines = output.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() == "cmd LC_RPATH":
+            for candidate in lines[index + 1 : index + 5]:
+                pieces = candidate.strip().split()
+                if pieces and pieces[0] == "path" and len(pieces) > 1:
+                    rpaths.append(pieces[1])
+                    break
+    return rpaths
+
+
+def _parse_otool_dependencies(output: str) -> list[str]:
+    dependencies: list[str] = []
+    for line in output.splitlines()[1:]:
+        if line.strip().endswith(":") and "(architecture " in line:
+            continue
+        dependency = line.strip().split(" ", 1)[0]
+        if dependency:
+            dependencies.append(dependency)
+    return dependencies
+
+
+def _diagnostic_component(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._+-]", "_", value)[:MAX_DIAGNOSTIC_LABEL]
+
+
+def _diagnostic_path_label(path: Path, prefix: Path) -> str:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    if resolved.is_relative_to(prefix):
+        return "prefix/" + _diagnostic_component(resolved.relative_to(prefix).as_posix())
+    if _is_sip_system_path(path.as_posix()) or _is_sip_system_path(resolved.as_posix()):
+        return "sip/" + _diagnostic_component(path.name)
+    category = "external" if path.exists() else "missing"
+    return category + "/" + _diagnostic_component(path.name)
+
+
+def _diagnostic_dependency_label(dependency: str, prefix: Path) -> str:
+    for kind in ("@rpath/", "@loader_path/", "@executable_path/"):
+        if dependency.startswith(kind):
+            return kind + _diagnostic_component(Path(dependency).name)
+    if dependency.startswith("/"):
+        return _diagnostic_path_label(Path(dependency), prefix)
+    return "relative/" + _diagnostic_component(Path(dependency).name)
+
+
+def _link_diagnostic(
+    image: Path,
+    dependency: str,
+    reason: str,
+    prefix: Path,
+    *,
+    candidate: Path | None = None,
+    rpath_candidates: list[dict[str, object]] | None = None,
+    selected_rpath_index: int | None = None,
+) -> dict[str, object]:
+    candidates = rpath_candidates or []
+    return {
+        "image": _diagnostic_component(image.name),
+        "dependency": _diagnostic_dependency_label(dependency, prefix),
+        "reason": reason,
+        "candidate": _diagnostic_path_label(candidate, prefix) if candidate is not None else None,
+        "selected_rpath_index": selected_rpath_index,
+        "rpath_candidates": candidates[:MAX_RPATH_CANDIDATES],
+        "rpath_candidates_limit_reached": len(candidates) >= MAX_RPATH_CANDIDATES,
+    }
+
+
+def _failure_document(error: BaseException) -> dict[str, object]:
+    failure: dict[str, object] = {
+        "schema_version": "bluefire.macos-protected-python-build.v1",
+        "status": "failed",
+        "error_type": type(error).__name__,
+        "message": str(error)[:1200],
+    }
+    if isinstance(error, DynamicLinkAuditError):
+        failure["dynamic_link_diagnostics"] = {
+            "schema_version": "bluefire.macos-dynamic-link-diagnostic.v1",
+            "violations": error.diagnostics,
+            "truncated": error.truncated,
+        }
+    return failure
 
 
 def _is_sip_system_path(path: str) -> bool:
@@ -692,12 +862,7 @@ def main() -> int:
         tarfile.TarError,
         json.JSONDecodeError,
     ) as error:
-        failure = {
-            "schema_version": "bluefire.macos-protected-python-build.v1",
-            "status": "failed",
-            "error_type": type(error).__name__,
-            "message": str(error)[:1200],
-        }
+        failure = _failure_document(error)
         if args.command == "install":
             try:
                 report = Path(args.report)

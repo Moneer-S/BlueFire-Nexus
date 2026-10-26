@@ -96,6 +96,104 @@ def test_missing_system_looking_rpath_does_not_mask_later_unprotected_candidate(
     assert not provision._is_sip_system_path(selected.as_posix())
 
 
+def test_otool_parsers_capture_rpaths_and_skip_architecture_headers():
+    load_commands = """Load command 2
+      cmd LC_RPATH
+  cmdsize 48
+     path @loader_path/../lib (offset 12)
+Load command 3
+      cmd LC_RPATH
+  cmdsize 40
+     path @executable_path/../lib (offset 12)
+"""
+    dependencies = """python3.11:
+    @rpath/libcrypto.3.dylib (compatibility version 3.0.0, current version 3.0.0)
+    /usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)
+python3.11 (architecture arm64):
+    @rpath/libcrypto.3.dylib (compatibility version 3.0.0, current version 3.0.0)
+"""
+
+    assert provision._parse_lc_rpaths(load_commands) == [
+        "@loader_path/../lib",
+        "@executable_path/../lib",
+    ]
+    assert provision._parse_otool_dependencies(dependencies) == [
+        "@rpath/libcrypto.3.dylib",
+        "/usr/lib/libSystem.B.dylib",
+        "@rpath/libcrypto.3.dylib",
+    ]
+
+
+def test_link_diagnostic_is_bounded_and_redacts_external_parent_paths(tmp_path):
+    prefix = tmp_path / "protected"
+    external = tmp_path / "runner-private" / "libunexpected.dylib"
+    image = prefix / "cpython" / "bin" / "python3.11"
+    external.parent.mkdir()
+    external.write_bytes(b"untrusted")
+
+    diagnostic = provision._link_diagnostic(
+        image,
+        "@rpath/libunexpected.dylib",
+        "outside_prefix_and_sip",
+        prefix,
+        candidate=external,
+        rpath_candidates=[
+            {
+                "index": 0,
+                "origin": "absolute",
+                "candidate": "external/libunexpected.dylib",
+                "exists": True,
+            }
+        ],
+    )
+    error = provision.DynamicLinkAuditError([diagnostic], truncated=False)
+    receipt = provision._failure_document(error)
+
+    assert diagnostic["image"] == "python3.11"
+    assert diagnostic["dependency"] == "@rpath/libunexpected.dylib"
+    assert diagnostic["candidate"] == "external/libunexpected.dylib"
+    assert "runner-private" not in repr(diagnostic)
+    assert receipt["error_type"] == "DynamicLinkAuditError"
+    assert receipt["dynamic_link_diagnostics"] == {
+        "schema_version": "bluefire.macos-dynamic-link-diagnostic.v1",
+        "violations": [diagnostic],
+        "truncated": False,
+    }
+
+
+def test_link_diagnostic_receipt_caps_violation_and_rpath_lists():
+    prefix = Path("/private/var/db/bluefire-macos-runtime/1-1")
+    image = prefix / "cpython" / "bin" / "python3.11"
+    rpaths = [
+        {
+            "index": index,
+            "origin": "absolute",
+            "candidate": f"missing/lib{index}.dylib",
+            "exists": False,
+        }
+        for index in range(provision.MAX_RPATH_CANDIDATES + 3)
+    ]
+    violations = [
+        provision._link_diagnostic(
+            image,
+            "@rpath/libbad.dylib",
+            "unresolved_dependency",
+            prefix,
+            rpath_candidates=rpaths,
+        )
+        for _ in range(provision.MAX_LINK_DIAGNOSTICS + 1)
+    ]
+
+    error = provision.DynamicLinkAuditError(violations, truncated=True)
+    failure = provision._failure_document(error)
+    diagnostics = failure["dynamic_link_diagnostics"]
+
+    assert len(diagnostics["violations"]) == provision.MAX_LINK_DIAGNOSTICS
+    assert diagnostics["truncated"] is True
+    assert len(diagnostics["violations"][0]["rpath_candidates"]) == provision.MAX_RPATH_CANDIDATES
+    assert diagnostics["violations"][0]["rpath_candidates_limit_reached"] is True
+
+
 class _FakeProcess:
     pid = 1234
     returncode = None
