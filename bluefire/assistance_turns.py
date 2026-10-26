@@ -21,6 +21,7 @@ from .assistance_context import (
 )
 from .assistance_context import context as selected_context
 from .assistance_context import is_analysis_only as is_analysis_only
+from .assistance_context import is_audit as is_audit
 from .assistance_context import is_creation as is_creation
 from .assistance_context import is_graph as is_graph
 from .assistance_context import is_receiver as is_receiver
