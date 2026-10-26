@@ -1,6 +1,7 @@
 """Saved-only, minimized file-access explanation; no native or recovery contact."""
 
 import re
+from typing import Any, Mapping
 
 from .product_store_errors import ProductStoreError
 from .util import canonical_json_bytes, content_hash
@@ -214,7 +215,7 @@ def _summary(service, view):
     return summary
 
 
-def context(service, value=None, *, owner_id=None):
+def context(service, value=None, *, owner_id=None) -> Mapping[str, Any]:
     """Use the ordinary saved projection, with its native-readiness probe disabled internally."""
     try:
         chosen = selection(value) if value is not None else None

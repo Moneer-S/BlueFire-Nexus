@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from http import HTTPStatus
-from typing import Any, Mapping, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol
 from urllib.parse import urlencode
 
 from .ai_assistance import COMPARE, REVISE
@@ -35,7 +35,16 @@ from .product_store_errors import ProductStoreError
 from .registry import BehaviorRegistry
 from .util import content_hash
 
-_ANALYSIS_ADAPTERS = {
+if TYPE_CHECKING:
+    from .file_access_control import FileAccessControl
+
+_ANALYSIS_ADAPTERS: dict[
+    str,
+    tuple[
+        Callable[[Mapping[str, Any]], Mapping[str, Any]],
+        Callable[[AssistanceContext, Mapping[str, Any]], Mapping[str, Any]],
+    ],
+] = {
     AUDIT_KIND: (audit_selection, audit_context),
     FILE_ACCESS_KIND: (file_access_selection, file_access_context),
     COMPARISON_KIND: (comparison_selection, comparison_context),
@@ -54,7 +63,6 @@ class AssistanceContext(Protocol):
     assistance_receiver: Any
     receiver_defense: Any
     s3_access: Any
-    file_access: Any
     method_comparison: MethodComparisonJobs
     product_store: ProductStore
     registry: BehaviorRegistry
@@ -64,6 +72,9 @@ class AssistanceContext(Protocol):
     def _runtime_ai(self) -> AIConfig: ...
 
     def comparison_snapshot(self, snapshot_id: str) -> Mapping[str, Any]: ...
+
+    @property
+    def file_access(self) -> FileAccessControl: ...
 
 
 LIMITATIONS = [
@@ -130,15 +141,18 @@ def analysis_selection(value):
     return adapter[0](value)
 
 
-def analysis_context(service, chosen):
+def analysis_context(service: AssistanceContext, chosen: Mapping[str, Any]) -> Mapping[str, Any]:
     """Reuse the read-only source adapters for capability-free explanations."""
-    adapter = _ANALYSIS_ADAPTERS.get(chosen.get("kind"))
+    kind = chosen.get("kind")
+    adapter = _ANALYSIS_ADAPTERS.get(kind) if isinstance(kind, str) else None
     if adapter is None:
         raise ProductStoreError("Select an exact saved analysis context.")
     return adapter[1](service, chosen)
 
 
-def fresh_analysis_context(service, chosen, captured):
+def fresh_analysis_context(
+    service: AssistanceContext, chosen: Mapping[str, Any], captured: Mapping[str, Any]
+) -> Mapping[str, Any]:
     """Revalidate before provider use/publication while preserving the captured document."""
     current = analysis_context(service, chosen)
     if current != captured:

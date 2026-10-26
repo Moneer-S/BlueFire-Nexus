@@ -1,6 +1,7 @@
 """Strict minimized facts from one immutable comparison; never recompute or dispatch."""
 
 import re
+from typing import Any, Mapping
 
 from .assistance_comparison_s3 import project as s3_summary
 from .assistance_comparison_s3 import require
@@ -432,7 +433,7 @@ def _summary(snapshot):
     return result
 
 
-def context(service, value=None, *, snapshot_id=None):
+def context(service, value=None, *, snapshot_id=None) -> Mapping[str, Any]:
     try:
         chosen = selection(value) if value is not None else None
         identifier = chosen["snapshot_id"] if chosen is not None else snapshot_id
