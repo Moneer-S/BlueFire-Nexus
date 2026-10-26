@@ -1111,11 +1111,16 @@ try {
     await evidenceSummary.waitFor({ state: "visible" });
     await evidenceSummary.click();
     await assistant.getByText(/saved runs · run 1 is the recorded baseline/i).waitFor();
-    assert.equal(await assistant.getByRole("combobox", { name: /^(AI mode|Assistant mode)\b/ }).locator("option:checked").innerText(), "Assist · explanation only");
+    await assistant.getByRole("button", { name: "Assistant settings", exact: true }).click();
+    const assistantMode = assistant.getByRole("combobox", { name: /^(AI mode|Assistant mode)\b/ });
+    assert.ok((await assistantMode.locator("option").allTextContents()).includes("Assist · explanation only"));
+    assert.equal(await assistantMode.locator("option:checked").innerText(), "Off");
+    await assistant.getByRole("button", { name: "Assistant settings", exact: true }).click();
     report.checks.push("saved_comparison_assistant_fetches_exact_analysis_only_context_without_turn_submission");
 
     stage = "comparison-assistant-navigate-away-and-reopen";
-    await page.getByRole("link", { name: "Build", exact: true }).click();
+    await page.getByRole("link", { name: "Overview", exact: true }).click();
+    await page.getByRole("heading", { name: "Overview", exact: true }).waitFor();
     const previousSelection = assistant.getByRole("region", { name: "Previous selection", exact: true });
     await previousSelection.waitFor();
     assert.equal(await previousSelection.getByText("Saved comparison", { exact: true }).count(), 1);
@@ -1187,7 +1192,9 @@ try {
       selected_exactly: true,
       context_gets: comparisonAssistantContextGets,
       context_capabilities: assistantContext.capabilities.length,
-      explanation_only: assistantContext.analysis_only,
+      analysis_only_context: assistantContext.analysis_only,
+      active_mode: "Off",
+      explanation_mode_available: true,
       assistant_turn_posts: comparisonAssistantTurnPosts,
       read_only_post_attempts: readOnlyPostAttempts,
       reopened_same_snapshot: true,
@@ -1195,6 +1202,8 @@ try {
     };
     report.checks.push("saved_comparison_assistant_selection_survives_navigation_and_reopens_exact_snapshot");
     report.checks.push("bundled_inter_font_loaded_from_installed_service_and_captured_at_two_desktop_sizes");
+    await assistant.getByRole("button", { name: "Close assistant", exact: true }).click();
+    await assistant.waitFor({ state: "detached" });
   } finally {
     readOnlyCapturePhase = false;
   }

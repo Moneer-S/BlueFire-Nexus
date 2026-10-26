@@ -887,7 +887,9 @@ def main() -> int:
                 is None
                 or comparison_assistant.get("saved_run_count") != 2
                 or comparison_assistant.get("selected_exactly") is not True
-                or comparison_assistant.get("explanation_only") is not True
+                or comparison_assistant.get("analysis_only_context") is not True
+                or comparison_assistant.get("active_mode") != "Off"
+                or comparison_assistant.get("explanation_mode_available") is not True
                 or comparison_assistant.get("assistant_turn_posts") != 0
                 or comparison_assistant.get("read_only_post_attempts") != 0
                 or comparison_assistant.get("reopened_same_snapshot") is not True
