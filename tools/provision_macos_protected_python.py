@@ -21,6 +21,7 @@ import sys
 import tarfile
 import urllib.request
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path
 
 PYTHON_VERSION = "3.11.18"
@@ -74,8 +75,8 @@ def _hash(path: Path, limit: int) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
-def _importable_tree_files(root: Path, prefix: Path) -> list[tuple[Path, str, int]]:
-    """Count the same importable file kinds that the runtime custody check sees."""
+def _importable_tree_files(root: Path, prefix: Path) -> Iterator[tuple[Path, str, int]]:
+    """Yield importable files using the same roots and suffixes as runtime custody."""
     try:
         protected_prefix = prefix.resolve(strict=True)
         resolved_root = root.resolve(strict=True)
@@ -91,11 +92,10 @@ def _importable_tree_files(root: Path, prefix: Path) -> list[tuple[Path, str, in
             size = root.stat().st_size
         except OSError as error:
             raise ValueError("import_custody_root_unavailable") from error
-        return [(root, ".zip", size)]
+        yield root, ".zip", size
+        return
     if not resolved_root.is_dir():
         raise ValueError("import_custody_root_not_directory")
-
-    rows: list[tuple[Path, str, int]] = []
 
     def failed(_error: OSError) -> None:
         raise ValueError("import_custody_tree_unreadable")
@@ -119,8 +119,7 @@ def _importable_tree_files(root: Path, prefix: Path) -> list[tuple[Path, str, in
                 raise ValueError("import_custody_nonregular_import")
             if not resolved_path.is_relative_to(protected_prefix):
                 raise ValueError("import_custody_import_outside_prefix")
-            rows.append((path, path.suffix, details.st_size))
-    return rows
+            yield path, path.suffix, details.st_size
 
 
 def _runtime_import_roots(python: Path) -> list[Path]:
@@ -154,50 +153,113 @@ def _runtime_import_roots(python: Path) -> list[Path]:
     return [Path(value) for value in values]
 
 
+def _bounded_import_counts(
+    root: Path, prefix: Path, *, file_limit: int, byte_limit: int
+) -> tuple[dict[str, object], str | None]:
+    by_suffix = {suffix: 0 for suffix in sorted(_IMPORTABLE_SUFFIXES)}
+    file_count = 0
+    byte_count = 0
+    failure_reason = None
+    for _path, suffix, size in _importable_tree_files(root, prefix):
+        file_count += 1
+        byte_count += size
+        by_suffix[suffix] += 1
+        if file_count > file_limit:
+            failure_reason = "file_limit_exceeded"
+            break
+        if byte_count > byte_limit:
+            failure_reason = "byte_limit_exceeded"
+            break
+    return {
+        "file_count": file_count,
+        "byte_count": byte_count,
+        "by_suffix": by_suffix,
+        "truncated": failure_reason is not None,
+    }, failure_reason
+
+
 def _import_custody_inventory(python: Path, prefix: Path) -> dict[str, object]:
     """Preflight package and interpreter roots without retaining paths or filenames."""
     package_root = (
         prefix / "venv" / "lib" / f"python{PYTHON_VERSION.rsplit('.', 1)[0]}" / "site-packages"
     )
-    package_files = _importable_tree_files(package_root, prefix)
+    package_summary, package_failure = _bounded_import_counts(
+        package_root,
+        prefix,
+        file_limit=_PACKAGE_IMPORT_FILE_LIMIT,
+        byte_limit=_RUNTIME_IMPORT_BYTE_LIMIT,
+    )
 
+    runtime_roots: list[Path] = []
     runtime_files: dict[Path, tuple[str, int]] = {}
-    runtime_roots = _runtime_import_roots(python)
-    for root in runtime_roots:
-        if not root.exists():
-            if root.suffix != ".zip":
-                raise ValueError("runtime_import_root_missing")
-            continue
-        for path, suffix, size in _importable_tree_files(root, prefix):
-            runtime_files[path] = (suffix, size)
+    runtime_by_suffix = {suffix: 0 for suffix in sorted(_IMPORTABLE_SUFFIXES)}
+    runtime_byte_count = 0
+    runtime_failure: str | None = None
+    runtime_current_root_file_count = 0
+    runtime_current_root_byte_count = 0
+    if package_failure is None:
+        runtime_roots = _runtime_import_roots(python)
+        for root in runtime_roots:
+            if not root.exists():
+                if root.suffix != ".zip":
+                    raise ValueError("runtime_import_root_missing")
+                continue
+            root_files: dict[Path, tuple[str, int]] = {}
+            runtime_current_root_file_count = 0
+            runtime_current_root_byte_count = 0
+            for path, suffix, size in _importable_tree_files(root, prefix):
+                runtime_current_root_file_count += 1
+                runtime_current_root_byte_count += size
+                if runtime_current_root_file_count > _RUNTIME_IMPORT_FILE_LIMIT:
+                    runtime_failure = "runtime_file_limit_exceeded"
+                    break
+                root_files[path] = (suffix, size)
+                if runtime_current_root_byte_count > _RUNTIME_IMPORT_BYTE_LIMIT:
+                    runtime_failure = "runtime_byte_limit_exceeded"
+                    break
+            if runtime_failure is not None:
+                break
+            for path, (suffix, size) in root_files.items():
+                if path not in runtime_files:
+                    if len(runtime_files) >= _RUNTIME_IMPORT_FILE_LIMIT:
+                        runtime_by_suffix[suffix] += 1
+                        runtime_byte_count += size
+                        runtime_failure = "runtime_file_limit_exceeded"
+                        break
+                    runtime_files[path] = (suffix, size)
+                    runtime_by_suffix[suffix] += 1
+                runtime_byte_count += size
+                if runtime_byte_count > _RUNTIME_IMPORT_BYTE_LIMIT:
+                    runtime_failure = "runtime_byte_limit_exceeded"
+                    break
+            if runtime_failure is not None:
+                break
 
-    def counts(rows: list[tuple[str, int]]) -> dict[str, object]:
-        by_suffix = {suffix: 0 for suffix in sorted(_IMPORTABLE_SUFFIXES)}
-        total_bytes = 0
-        for suffix, size in rows:
-            by_suffix[suffix] += 1
-            total_bytes += size
-        return {"file_count": len(rows), "byte_count": total_bytes, "by_suffix": by_suffix}
-
-    package_summary = counts([(suffix, size) for _, suffix, size in package_files])
-    runtime_rows = [(suffix, size) for suffix, size in runtime_files.values()]
-    runtime_summary = counts(runtime_rows)
+    runtime_summary = {
+        "file_count": sum(runtime_by_suffix.values()),
+        "byte_count": runtime_byte_count,
+        "by_suffix": runtime_by_suffix,
+        "truncated": runtime_failure is not None,
+        "current_root_file_count": runtime_current_root_file_count,
+        "current_root_byte_count": runtime_current_root_byte_count,
+    }
     failure_stages: list[str] = []
     failure_reasons: list[str] = []
-    if package_summary["file_count"] > _PACKAGE_IMPORT_FILE_LIMIT:
+    if package_failure == "file_limit_exceeded":
         failure_stages.append("package_import_custody")
         failure_reasons.append("package_file_limit_exceeded")
-    if package_summary["byte_count"] > _RUNTIME_IMPORT_BYTE_LIMIT:
+    if package_failure == "byte_limit_exceeded":
         if "package_import_custody" not in failure_stages:
             failure_stages.append("package_import_custody")
         failure_reasons.append("package_byte_limit_exceeded")
-    if runtime_summary["file_count"] > _RUNTIME_IMPORT_FILE_LIMIT:
+    if runtime_failure == "runtime_file_limit_exceeded":
         failure_stages.append("runtime_import_custody")
         failure_reasons.append("runtime_file_limit_exceeded")
-    if runtime_summary["byte_count"] > _RUNTIME_IMPORT_BYTE_LIMIT:
+    if runtime_failure == "runtime_byte_limit_exceeded":
         if "runtime_import_custody" not in failure_stages:
             failure_stages.append("runtime_import_custody")
         failure_reasons.append("runtime_byte_limit_exceeded")
+    runtime_not_scanned = package_failure is not None
     return {
         "schema_version": _IMPORT_INVENTORY_SCHEMA,
         "status": "limit_exceeded" if failure_stages else "within_limits",
@@ -213,6 +275,7 @@ def _import_custody_inventory(python: Path, prefix: Path) -> dict[str, object]:
             "file_limit": _RUNTIME_IMPORT_FILE_LIMIT,
             "byte_limit": _RUNTIME_IMPORT_BYTE_LIMIT,
             "root_count": len(runtime_roots),
+            "not_scanned": runtime_not_scanned,
         },
     }
 

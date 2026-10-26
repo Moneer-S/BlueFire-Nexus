@@ -208,6 +208,7 @@ def test_import_custody_inventory_counts_package_and_compiled_runtime_files(tmp_
             "file_count": 3,
             "byte_count": 17,
             "by_suffix": {".py": 1, ".pyc": 1, ".so": 1, ".zip": 0},
+            "truncated": False,
             "file_limit": 1024,
             "byte_limit": 256 * 1024 * 1024,
         },
@@ -215,9 +216,13 @@ def test_import_custody_inventory_counts_package_and_compiled_runtime_files(tmp_
             "file_count": 4,
             "byte_count": 31,
             "by_suffix": {".py": 1, ".pyc": 1, ".so": 1, ".zip": 1},
+            "truncated": False,
+            "current_root_file_count": 3,
+            "current_root_byte_count": 17,
             "file_limit": 4096,
             "byte_limit": 256 * 1024 * 1024,
             "root_count": 2,
+            "not_scanned": False,
         },
     }
 
@@ -228,7 +233,7 @@ def test_import_custody_limit_failure_is_fixed_label_and_path_free(tmp_path, mon
     runtime_root = prefix / "cpython" / "lib" / "python3.11"
     package_root.mkdir(parents=True)
     runtime_root.mkdir(parents=True)
-    for index in range(provision._PACKAGE_IMPORT_FILE_LIMIT + 1):
+    for index in range(provision._PACKAGE_IMPORT_FILE_LIMIT + 100):
         (package_root / f"module-{index}.py").write_text("", encoding="utf-8")
     (runtime_root / "stdlib.pyc").write_bytes(b"bytecode")
     monkeypatch.setattr(
@@ -246,9 +251,64 @@ def test_import_custody_limit_failure_is_fixed_label_and_path_free(tmp_path, mon
     assert inventory["status"] == "limit_exceeded"
     assert inventory["failure_stages"] == ["package_import_custody"]
     assert inventory["failure_reasons"] == ["package_file_limit_exceeded"]
+    assert inventory["package_imports"]["file_count"] == provision._PACKAGE_IMPORT_FILE_LIMIT + 1
+    assert inventory["package_imports"]["truncated"] is True
     assert "module-" not in failure_text
     assert str(tmp_path) not in failure_text
     assert "package_import_custody" in failure_text
+
+
+def test_bounded_inventory_stops_streaming_at_byte_limit(tmp_path, monkeypatch):
+    prefix = tmp_path / "protected"
+    root = prefix / "imports"
+    root.mkdir(parents=True)
+    visited = 0
+
+    def many_small_imports(_root, _prefix):
+        nonlocal visited
+        for index in range(5000):
+            visited += 1
+            yield prefix / f"module-{index}.py", ".py", 65_537
+
+    monkeypatch.setattr(provision, "_importable_tree_files", many_small_imports)
+
+    summary, failure = provision._bounded_import_counts(
+        root,
+        prefix,
+        file_limit=provision._RUNTIME_IMPORT_FILE_LIMIT,
+        byte_limit=provision._RUNTIME_IMPORT_BYTE_LIMIT,
+    )
+
+    assert failure == "byte_limit_exceeded"
+    assert visited == 4096
+    assert summary["file_count"] == visited
+    assert summary["byte_count"] == 65_537 * visited
+    assert summary["truncated"] is True
+
+
+def test_runtime_inventory_preserves_overlapping_root_key_and_byte_semantics(tmp_path, monkeypatch):
+    prefix = tmp_path / "protected"
+    package_root = prefix / "venv" / "lib" / "python3.11" / "site-packages"
+    runtime_root = prefix / "cpython" / "lib" / "python3.11"
+    alias_parent = runtime_root.parent / "alias"
+    package_root.mkdir(parents=True)
+    runtime_root.mkdir(parents=True)
+    alias_parent.mkdir()
+    source = runtime_root / "stdlib.py"
+    source.write_bytes(b"runtime")
+    overlapping_root = alias_parent / ".." / runtime_root.name
+    roots = [str(runtime_root), str(overlapping_root)]
+    monkeypatch.setattr(
+        provision, "_runtime_import_roots", lambda _python: [Path(x) for x in roots]
+    )
+
+    inventory = provision._import_custody_inventory(prefix / "venv" / "bin" / "python", prefix)
+
+    assert inventory["status"] == "within_limits"
+    assert inventory["runtime_imports"]["root_count"] == 2
+    assert inventory["runtime_imports"]["file_count"] == 2
+    assert inventory["runtime_imports"]["byte_count"] == 2 * source.stat().st_size
+    assert inventory["runtime_imports"]["by_suffix"][".py"] == 2
 
 
 def test_installer_environment_cleanup_is_limited_to_exact_owned_child(tmp_path):
