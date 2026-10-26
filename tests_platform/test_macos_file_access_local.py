@@ -288,7 +288,9 @@ def test_setup_failure_carries_only_a_fixed_operation_stage():
     with pytest.raises(local.MacOSSetupFailure) as caught:
         local._at_setup_stage(
             "native_runner_initialization",
-            lambda: (_ for _ in ()).throw(RuntimeError("The protected macOS setup is unavailable.")),
+            lambda: (_ for _ in ()).throw(
+                RuntimeError("The protected macOS setup is unavailable.")
+            ),
         )
 
     assert str(caught.value) == "The protected macOS setup is unavailable."

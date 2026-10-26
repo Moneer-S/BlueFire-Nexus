@@ -539,6 +539,7 @@ def run_local_supervisor(*, port: int = 0, no_browser: bool = False) -> dict[str
         lambda: _require(package_root.name in {"site-packages", "dist-packages"}),
     )
     validation = macos_file_access_workspace.validation
+
     def inventory_package_imports() -> dict[str, str]:
         validation._parents(package_root)
         return _walk_imports(package_root, limit=_MAX_IMPORT_FILES)
@@ -564,6 +565,7 @@ def run_local_supervisor(*, port: int = 0, no_browser: bool = False) -> dict[str
     )
     runtime_sha256: dict[str, str] = {}
     runtime_bytes = 0
+
     def inventory_runtime_imports() -> None:
         nonlocal runtime_bytes
         for raw_root in runtime_import_roots:
@@ -610,7 +612,7 @@ def run_local_supervisor(*, port: int = 0, no_browser: bool = False) -> dict[str
                 browser_console_url=browser_console_url,
                 macos_file_access_workspace=macos_file_access_workspace,
             )
-        )
+        ),
     )
 
 
@@ -636,11 +638,15 @@ def _run_reserved_workspace(
         "temporary_identity_selection", temporary_credentials
     )
     runtime_root = WORKSPACE_PARENT / ("runner-runtime-" + secrets.token_hex(16))
-    _at_setup_stage("workspace_directory_creation", lambda: _make_directory(runtime_root, mode=0o700))
+    _at_setup_stage(
+        "workspace_directory_creation", lambda: _make_directory(runtime_root, mode=0o700)
+    )
 
     with resources.as_file(native_resource) as native_path:
         native = Path(native_path).resolve(strict=True)
-        _at_setup_stage("native_resource_validation", lambda: _require(_hash_file(native) == manifest.sha256))
+        _at_setup_stage(
+            "native_resource_validation", lambda: _require(_hash_file(native) == manifest.sha256)
+        )
         _at_setup_stage(
             "native_resource_validation",
             lambda: macos_file_access_workspace.validation._protected_file(native, manifest.sha256),
@@ -675,6 +681,7 @@ def _run_reserved_workspace(
             )
             generation = binding["generation"]
             workspace_root = WORKSPACE_PARENT / generation
+
             def create_workspace_directories() -> None:
                 _require(not workspace_root.exists() and not workspace_root.is_symlink())
                 _make_directory(

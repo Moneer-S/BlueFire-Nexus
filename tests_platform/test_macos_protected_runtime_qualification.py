@@ -517,7 +517,7 @@ def test_stdout_reader_parses_pretty_printed_cli_error_after_eof():
             "error": {
                 "code": "command_failed",
                 "message": "The local identity inventory is unavailable.",
-            "setup_stage": "local_account_inventory",
+                "setup_stage": "local_account_inventory",
             }
         }
     )
