@@ -445,6 +445,7 @@ jobs:
           cp frontend/tests/installed/installed-assistant.mjs "$RUNNER_TEMP/installed-assistant.mjs"
           cp frontend/tests/installed/preflight-diagnostics.mjs "$RUNNER_TEMP/preflight-diagnostics.mjs"
           cp frontend/tests/installed/run-job-state.mjs "$RUNNER_TEMP/run-job-state.mjs"
+          cp frontend/tests/installed/run-result-identity.mjs "$RUNNER_TEMP/run-result-identity.mjs"
           cp frontend/tests/installed/installed-receiver.mjs "$RUNNER_TEMP/installed-receiver.mjs"
           cp frontend/tests/installed/receiver-diagnostics.mjs "$RUNNER_TEMP/receiver-diagnostics.mjs"
           cp frontend/tests/installed/receiver-guards.mjs "$RUNNER_TEMP/receiver-guards.mjs"
