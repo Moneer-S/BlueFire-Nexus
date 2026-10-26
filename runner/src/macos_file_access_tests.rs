@@ -89,11 +89,15 @@ fn descriptor_inventory_failure_categories_map_to_fixed_nonzero_startup_codes() 
         (native::DescriptorRole::ControlChannel, 95, 101, 106),
     ] {
         assert_eq!(
-            Failure::MissingExpectedRole(role).startup_stage().exit_code(),
+            Failure::MissingExpectedRole(role)
+                .startup_stage()
+                .exit_code(),
             missing
         );
         assert_eq!(
-            Failure::MixedRowsMissingRole(role).startup_stage().exit_code(),
+            Failure::MixedRowsMissingRole(role)
+                .startup_stage()
+                .exit_code(),
             mixed
         );
         assert_eq!(
