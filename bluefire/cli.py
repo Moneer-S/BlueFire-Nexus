@@ -582,7 +582,9 @@ def _execute(
         return setup(args.profile)
     if args.command == "runner" and args.runner_command == "macos-file-setup":
         if args.confirm_create_generated_workspace is not True:
-            raise ValueError("macOS local setup requires explicit generated-workspace confirmation.")
+            raise ValueError(
+                "macOS local setup requires explicit generated-workspace confirmation."
+            )
         if any(
             value is not None for value in (args.config, args.runs_dir, config, ai_provider_access)
         ):
