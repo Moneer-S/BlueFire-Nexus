@@ -175,6 +175,49 @@ def test_process_thread_labels_and_error_fields_are_private_and_bounded(
     assert all(set(stack) == {longest, "unknown"} for stack in report["process_thread_functions"])
 
 
+def test_replay_and_product_store_offsets_require_exact_code_and_stay_bounded(monkeypatch, capsys):
+    timeout = JobWaitTimeout(PRIVATE)
+
+    def frame(code, line_number, back=None):
+        return SimpleNamespace(f_code=code, f_lineno=line_number, f_back=back)
+
+    replay_code = diagnostic.REPLAY_LOCKED_CODE
+    connection_code = diagnostic.PRODUCT_STORE_CONNECTION_CODE
+    replay_offset = 27
+    connection_offset = 13
+    sampled = {
+        1: frame(replay_code, replay_code.co_firstlineno + replay_offset),
+        2: frame(
+            SimpleNamespace(co_name=replay_code.co_name),
+            replay_code.co_firstlineno + replay_offset,
+        ),
+        3: frame(
+            replay_code,
+            replay_code.co_firstlineno + diagnostic.MAX_REPLAY_LOCKED_LINE_OFFSET + 1,
+        ),
+        4: frame(connection_code, connection_code.co_firstlineno + connection_offset),
+        5: frame(
+            SimpleNamespace(co_name=connection_code.co_name),
+            connection_code.co_firstlineno + connection_offset,
+        ),
+        6: frame(
+            connection_code,
+            connection_code.co_firstlineno
+            + diagnostic.MAX_PRODUCT_STORE_CONNECTION_LINE_OFFSET
+            + 1,
+        ),
+    }
+    monkeypatch.setattr(diagnostic.sys, "_current_frames", lambda: sampled)
+
+    report = emit(timeout, capsys)
+
+    assert report["replay_locked_line_offsets"] == [replay_offset]
+    assert report["product_store_connection_line_offsets"] == [connection_offset]
+    serialized = json.dumps(report, sort_keys=True)
+    assert PRIVATE not in serialized
+    assert len(serialized.encode()) < 8192
+
+
 @pytest.mark.parametrize(
     "options",
     [

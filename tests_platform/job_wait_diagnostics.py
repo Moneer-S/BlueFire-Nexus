@@ -6,6 +6,8 @@ from contextlib import contextmanager
 from itertools import islice
 
 from bluefire.job_runtime import JobState, JobWaitTimeout, RunJobController
+from bluefire.product_store import ProductStore
+from bluefire.service import BlueFireService
 
 STAGES = {
     "graph_parent",
@@ -21,6 +23,10 @@ STAGES = {
     "assist_cancellation_approval",
 }
 STATES = {state.value for state in JobState}
+REPLAY_LOCKED_CODE = BlueFireService._replay_locked.__code__
+MAX_REPLAY_LOCKED_LINE_OFFSET = 384
+PRODUCT_STORE_CONNECTION_CODE = ProductStore._connection.__wrapped__.__code__
+MAX_PRODUCT_STORE_CONNECTION_LINE_OFFSET = 40
 ERROR_CODES = {
     "execution_callback_failed",
     "job_scheduling_failed",
@@ -120,16 +126,37 @@ def _report(timeout, stage):
     # These are process-thread snapshots, not proof of this job's worker ownership.
     process_frames = sys._current_frames()
     stacks = []
+    replay_locked_offsets = []
+    product_store_connection_offsets = []
     for frame in islice(process_frames.values(), 8):
         functions = []
+        replay_locked_offset = None
+        product_store_connection_offset = None
         for _ in range(24):
             functions.append(_label(frame.f_code.co_name, FUNCTIONS))
+            if frame.f_code is REPLAY_LOCKED_CODE and replay_locked_offset is None:
+                offset = frame.f_lineno - REPLAY_LOCKED_CODE.co_firstlineno
+                if type(offset) is int and 0 <= offset <= MAX_REPLAY_LOCKED_LINE_OFFSET:
+                    replay_locked_offset = offset
+            if (
+                frame.f_code is PRODUCT_STORE_CONNECTION_CODE
+                and product_store_connection_offset is None
+            ):
+                offset = frame.f_lineno - PRODUCT_STORE_CONNECTION_CODE.co_firstlineno
+                if type(offset) is int and 0 <= offset <= MAX_PRODUCT_STORE_CONNECTION_LINE_OFFSET:
+                    product_store_connection_offset = offset
             frame = frame.f_back
             if frame is None:
                 break
         stacks.append(functions)
+        if replay_locked_offset is not None:
+            replay_locked_offsets.append(replay_locked_offset)
+        if product_store_connection_offset is not None:
+            product_store_connection_offsets.append(product_store_connection_offset)
     evidence["process_thread_functions"] = stacks
     evidence["process_threads_truncated"] = len(process_frames) > 8
+    evidence["replay_locked_line_offsets"] = replay_locked_offsets
+    evidence["product_store_connection_line_offsets"] = product_store_connection_offsets
     return json.dumps(evidence, sort_keys=True)
 
 
