@@ -39,6 +39,13 @@ export function graphBoundsViewport(nodes: readonly GraphNodeBounds[], frame: Gr
   };
 }
 
+/** Focus keeps a compact plan in context when doing so needs no smaller cards. */
+export function focusedGraphViewport(selected: GraphNodeBounds, context: readonly GraphNodeBounds[], frame: GraphFrame): GraphViewport {
+  const focused = readableGraphViewport(selected, frame);
+  const whole = graphBoundsViewport([selected, ...context], frame, 24, focused.zoom);
+  return whole && whole.zoom >= focused.zoom ? whole : focused;
+}
+
 /** Reveal only the obscured distance. Panel changes never reset user zoom. */
 export function revealGraphNode(viewport: GraphViewport, node: GraphNodeBounds, frame: GraphFrame, margin = 48): GraphViewport {
   const shift = (start: number, size: number, extent: number) => {

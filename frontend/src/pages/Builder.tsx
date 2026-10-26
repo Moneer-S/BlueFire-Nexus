@@ -19,7 +19,7 @@ import { ParameterField } from "../components/ParameterField";
 import { BuilderEvidenceTray } from "../components/BuilderEvidenceTray";
 import { connectedRunBands } from "../lib/connected-run-bands";
 import { graphNodeTitle } from "../lib/graph-node-title";
-import { branchLabels, focusedGraphLayout, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, graphBoundsViewport, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, readableGraphViewport, revealGraphContext, type GraphFrame, type GraphViewport, type ScenarioGraph } from "../lib/graph-view";
+import { branchLabels, focusedGraphLayout, focusedGraphViewport, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, graphBoundsViewport, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, readableGraphViewport, revealGraphContext, type GraphFrame, type GraphViewport, type ScenarioGraph } from "../lib/graph-view";
 import { api } from "../lib/api";
 import { defaultGraphView, readWorkingGraphView, writeWorkingGraphView } from "../lib/graph-view-retention";
 import { initialParameterValue, shouldInitializeParameter } from "../lib/parameters";
@@ -376,7 +376,12 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
       const neighbor = flow.getNode(neighborId);
       return neighbor && !neighbor.hidden ? [{ ...neighbor.position, width: neighbor.measured?.width ?? GRAPH_NODE_WIDTH, height: neighbor.measured?.height ?? GRAPH_NODE_HEIGHT }] : [];
     });
-    const next = mode === "reveal" ? revealGraphContext(preferred ?? current, bounds, neighbors, frame) : readableGraphViewport(bounds, frame, mode === "start");
+    const context = mode === "readable" ? flow.getNodes().filter(item => !item.hidden && item.id !== id).map(item => {
+      const routes = graph.edges.some(edge => edge.from_step === item.id && (edge.outcome === "success" ? item.data.routeOut !== Position.Bottom : allBranches || expandedBranches.has(item.id)));
+      return { ...item.position, width: (item.measured?.width ?? GRAPH_NODE_WIDTH) + (routes ? rightRouteGutter : 0), height: item.measured?.height ?? GRAPH_NODE_HEIGHT };
+    }) : [];
+    const next = mode === "reveal" ? revealGraphContext(preferred ?? current, bounds, neighbors, frame)
+      : mode === "readable" ? focusedGraphViewport(bounds, context, frame) : readableGraphViewport(bounds, frame, true);
     if (!sameViewport(next, current)) void flow.setViewport(next, { duration: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? 0 : duration });
     return next;
   }, [allBranches, expandedBranches, flow, graph.edges]);

@@ -768,7 +768,12 @@ def main() -> int:
             "wheel_sha256": digest(wheel),
             "ui_sha256": {
                 name: digest(package / "ui" / name)
-                for name in ("index.html", "app.js", "styles.css")
+                for name in (
+                    "index.html",
+                    "app.js",
+                    "styles.css",
+                    "fonts/InterVariable.woff2",
+                )
             },
             "installed_outside_checkout": True,
             "harness_sha256": digest(Path(__file__)),
@@ -838,6 +843,70 @@ def main() -> int:
         child.communicate(json.dumps({"capability": capability}).encode(), timeout=240)
         capability = ""
         report["browser_returncode"] = child.returncode
+        browser_report_path = output / "browser-report.json"
+        if child.returncode == 0:
+            browser_report = json.loads(browser_report_path.read_text(encoding="utf-8"))
+            font = browser_report.get("font_asset")
+            network_font = font.get("network_response") if isinstance(font, dict) else None
+            font_state = font.get("document_font_state") if isinstance(font, dict) else None
+            comparison_assistant = browser_report.get("comparison_assistant")
+            screenshot_names = {
+                item.get("name")
+                for item in browser_report.get("screenshots", [])
+                if isinstance(item, dict)
+            }
+            packaged_font_sha256 = digest(package / "ui" / "fonts" / "InterVariable.woff2")
+            if (
+                browser_report.get("status") != "passed"
+                or not isinstance(network_font, dict)
+                or network_font.get("status") != 200
+                or type(network_font.get("bytes")) is not int
+                or network_font["bytes"] <= 0
+                or network_font.get("sha256") != packaged_font_sha256
+                or not isinstance(font_state, dict)
+                or not any(
+                    isinstance(face, dict)
+                    and face.get("family") == "Inter"
+                    and face.get("status") == "loaded"
+                    for face in font_state.get("faces", [])
+                )
+                or font_state.get("check") is not True
+                or not isinstance(font_state.get("conclusion_family"), str)
+                or "Inter" not in font_state["conclusion_family"]
+                or not isinstance(comparison_assistant, dict)
+                or comparison_assistant.get("status") != "passed"
+                or comparison_assistant.get("snapshot_id")
+                != browser_report.get("comparison_snapshot_id")
+                or re.fullmatch(
+                    r"sha256:[0-9a-f]{64}", comparison_assistant.get("snapshot_digest", "")
+                )
+                is None
+                or re.fullmatch(
+                    r"sha256:[0-9a-f]{64}", comparison_assistant.get("context_digest", "")
+                )
+                is None
+                or comparison_assistant.get("saved_run_count") != 2
+                or comparison_assistant.get("selected_exactly") is not True
+                or comparison_assistant.get("explanation_only") is not True
+                or comparison_assistant.get("assistant_turn_posts") != 0
+                or comparison_assistant.get("read_only_post_attempts") != 0
+                or comparison_assistant.get("reopened_same_snapshot") is not True
+                or not {"comparison-assistant-1440x900", "comparison-assistant-1366x768"}.issubset(
+                    screenshot_names
+                )
+            ):
+                raise ValueError(
+                    "Installed browser journey did not verify saved-comparison Assistant and packaged Inter evidence"
+                )
+            report["comparison_assistant"] = comparison_assistant
+            report["font_asset"] = {
+                "path": "ui/fonts/InterVariable.woff2",
+                "packaged_sha256": packaged_font_sha256,
+                "network_sha256": network_font["sha256"],
+                "network_bytes": network_font["bytes"],
+                "matches_installed_wheel": True,
+                "document_font_state": font_state,
+            }
         if child.returncode == 0:
             report["status"] = "passed"
         if assistant_driver is not None and child.returncode == 0:
@@ -850,9 +919,7 @@ def main() -> int:
                 port=0,
                 browser_bootstrap_capability=assistant_capability,
             )
-            assistant_thread = threading.Thread(
-                target=assistant_server.serve_forever, daemon=False
-            )
+            assistant_thread = threading.Thread(target=assistant_server.serve_forever, daemon=False)
             assistant_thread.start()
             assistant_child = subprocess.Popen(
                 [
@@ -910,9 +977,7 @@ def main() -> int:
                 port=0,
                 browser_bootstrap_capability=receiver_capability,
             )
-            receiver_thread = threading.Thread(
-                target=receiver_server.serve_forever, daemon=False
-            )
+            receiver_thread = threading.Thread(target=receiver_server.serve_forever, daemon=False)
             receiver_thread.start()
             receiver_child = subprocess.Popen(
                 [
@@ -993,9 +1058,7 @@ def main() -> int:
             (
                 report["receiver_service_thread_stopped"],
                 report["receiver_http_server_closed"],
-            ) = _stop_http_server(
-                receiver_server, receiver_thread, "receiver_http", cleanup_errors
-            )
+            ) = _stop_http_server(receiver_server, receiver_thread, "receiver_http", cleanup_errors)
         if (
             receiver_service is not None
             and report["receiver_service_thread_stopped"]

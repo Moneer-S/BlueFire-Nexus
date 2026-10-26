@@ -36,6 +36,7 @@ const responsiveReadPaths = new Set([
   "/api/v1/s3-access/environments", "/api/v1/s3-access/exercises",
   "/api/v1/ad-smb/environments", "/api/v1/ad-smb/workflows",
   "/api/v1/file-access/status", "/api/v1/assistance/graph-context",
+  "/ui/fonts/InterVariable.woff2",
 ]);
 const exactKeys = (value, keys) => value && typeof value === "object" && !Array.isArray(value)
   && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
@@ -50,7 +51,9 @@ function responsiveReadAllowed(path) {
   const detection = path.match(/^\/api\/v1\/detections\/(detection-[0-9a-f]{20})$/);
   if (detection) return detection[1] === ownedDetectionId;
   const snapshot = path.match(/^\/api\/v1\/comparison-snapshots\/([A-Za-z0-9_-]+)$/);
-  return Boolean(snapshot && snapshot[1] === report.comparison_snapshot_id);
+  if (snapshot && snapshot[1] === report.comparison_snapshot_id) return true;
+  const assistantContext = path.match(/^\/api\/v1\/comparison-snapshots\/([A-Za-z0-9_-]+)\/assistant-context$/);
+  return Boolean(assistantContext && assistantContext[1] === report.comparison_snapshot_id);
 }
 const withoutLayout = scenario => {
   if (!scenario || typeof scenario !== "object" || Array.isArray(scenario)) return null;
@@ -62,6 +65,10 @@ const report = { schema_version: "bluefire.installed-browser-journey.v1", real_s
 let browser, context, page, connected = false, stage = "launch", bootstrapSession401 = 0;
 let sessionPosts = 0, scenarioVersionPosts = 0, scenarioValidationPosts = 0, graphContextPosts = 0, controlListPosts = 0;
 let preflightPosts = 0, simulationRunPosts = 0, comparisonPosts = 0;
+let comparisonAssistantContextGets = 0, comparisonAssistantTurnPosts = 0, readOnlyPostAttempts = 0;
+let fontResponseResolve;
+const fontResponsePromise = new Promise(resolve => { fontResponseResolve = resolve; });
+let fontResponseEvidence;
 let detectionFromRunPosts = 0, detectionParsePosts = 0, detectionFixturePosts = 0, detectionBenignPosts = 0;
 let readOnlyCapturePhase = false;
 let ownedRunIds = [];
@@ -382,6 +389,7 @@ try {
   await context.route("**/*", async route => {
     const request = route.request(), url = new URL(request.url()), method = request.method();
     let allowed = url.origin === origin && ["GET", "HEAD"].includes(method), reason;
+    if (readOnlyCapturePhase && method === "POST") readOnlyPostAttempts += 1;
     if (url.origin !== origin) reason = "non_loopback";
     else if (readOnlyCapturePhase) {
       allowed = false;
@@ -490,8 +498,23 @@ try {
     await route.continue();
   });
   page = await context.newPage();
-  page.on("response", response => {
+  page.on("response", async response => {
     if (!connected && stage === "connect" && response.url() === `${origin}/api/v1/session` && response.request().method() === "GET" && response.status() === 401) bootstrapSession401 += 1;
+    const url = new URL(response.url());
+    if (url.origin !== origin || url.pathname !== "/ui/fonts/InterVariable.woff2" || fontResponseEvidence) return;
+    try {
+      const bytes = await response.body();
+      fontResponseEvidence = { path: url.pathname, status: response.status(), content_type: response.headers()["content-type"] ?? "", bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+    } catch {
+      fontResponseEvidence = { path: url.pathname, status: response.status(), content_type: response.headers()["content-type"] ?? "", bytes: 0, sha256: "" };
+    }
+    fontResponseResolve(fontResponseEvidence);
+  });
+  page.on("request", request => {
+    const url = new URL(request.url());
+    if (url.origin !== origin) return;
+    if (url.pathname === `/api/v1/comparison-snapshots/${report.comparison_snapshot_id}/assistant-context` && request.method() === "GET") comparisonAssistantContextGets += 1;
+    if (url.pathname === "/api/v1/assistance/turns" && request.method() === "POST") comparisonAssistantTurnPosts += 1;
   });
   page.on("pageerror", () => report.errors.push({ stage, kind: "page-error" }));
   page.on("console", message => {
@@ -1058,6 +1081,123 @@ try {
     heading: "Compare runs",
     controls: [{ label: "Saved comparisons", locator: comparisonHistorySummary, textFits: true }],
   });
+
+  stage = "comparison-assistant-explain-saved-snapshot";
+  const comparisonAssistantPath = `/api/v1/comparison-snapshots/${report.comparison_snapshot_id}/assistant-context`;
+  const blockedBeforeComparisonAssistant = report.blocked_requests.length;
+  readOnlyCapturePhase = true;
+  try {
+    const contextResponsePromise = page.waitForResponse(response => new URL(response.url()).pathname === comparisonAssistantPath && response.request().method() === "GET");
+    const comparisonConclusion = page.getByRole("region", { name: "Comparison conclusion", exact: true });
+    const explainComparison = comparisonConclusion.getByRole("button", { name: "Explain comparison", exact: true });
+    await explainComparison.waitFor({ state: "visible" });
+    await explainComparison.click();
+    const contextResponse = await contextResponsePromise;
+    assert.equal(contextResponse.status(), 200);
+    const assistantContext = await contextResponse.json();
+    const expectedSelection = { kind: "comparison_snapshot", snapshot_id: report.comparison_snapshot_id, snapshot_digest: savedComparison.digest };
+    assert.equal(assistantContext.schema_version, "bluefire.assistance-context.v1");
+    assert.deepEqual(assistantContext.selected, expectedSelection);
+    assert.match(assistantContext.context_digest, /^sha256:[0-9a-f]{64}$/);
+    assert.equal(assistantContext.analysis_only, true);
+    assert.deepEqual(assistantContext.capabilities, []);
+    assert.equal(assistantContext.reference_summary.schema_version, "bluefire.comparison-assistance-summary.v1");
+    assert.equal(assistantContext.reference_summary.saved_comparison.run_count, 2);
+    assert.equal(assistantContext.reference_summary.saved_comparison.baseline_position, 1);
+    assert.equal(assistantContext.reference_summary.source_integrity.runs.length, 2);
+    const assistant = page.getByRole("complementary", { name: "BlueFire Assistant", exact: true });
+    const evidenceSummary = assistant.locator(".assistant-source-details > summary");
+    await assistant.getByRole("region", { name: "Current selection", exact: true }).waitFor();
+    await evidenceSummary.waitFor({ state: "visible" });
+    await evidenceSummary.click();
+    await assistant.getByText(/saved runs · run 1 is the recorded baseline/i).waitFor();
+    assert.equal(await assistant.getByRole("combobox", { name: /^(AI mode|Assistant mode)\b/ }).locator("option:checked").innerText(), "Assist · explanation only");
+    report.checks.push("saved_comparison_assistant_fetches_exact_analysis_only_context_without_turn_submission");
+
+    stage = "comparison-assistant-navigate-away-and-reopen";
+    await page.getByRole("link", { name: "Build", exact: true }).click();
+    const previousSelection = assistant.getByRole("region", { name: "Previous selection", exact: true });
+    await previousSelection.waitFor();
+    assert.equal(await previousSelection.getByText("Saved comparison", { exact: true }).count(), 1);
+    await previousSelection.getByRole("link", { name: "Reopen source", exact: true }).click();
+    await page.getByRole("region", { name: "Comparison results", exact: true }).waitFor();
+    assert.ok(new URL(page.url()).hash.includes(`snapshot=${report.comparison_snapshot_id}`));
+    await assistant.getByRole("region", { name: "Current selection", exact: true }).waitFor();
+    await evidenceSummary.waitFor({ state: "visible" });
+
+    const fontResponse = await Promise.race([
+      fontResponsePromise,
+      new Promise(resolve => setTimeout(() => resolve(undefined), 3000)),
+    ]);
+    assert.ok(fontResponse && fontResponse.status === 200 && fontResponse.bytes > 0 && /^[0-9a-f]{64}$/.test(fontResponse.sha256), "Installed Inter font must be fetched with nonempty response bytes.");
+    const fontState = await page.evaluate(async () => {
+      await document.fonts.ready;
+      const faces = [...document.fonts].filter(face => face.family.replace(/[\"']/g, "") === "Inter");
+      const conclusion = document.querySelector(".comparison-conclusion h2");
+      return {
+        font_set_status: document.fonts.status,
+        faces: faces.map(face => ({ family: face.family.replace(/[\"']/g, ""), status: face.status, weight: face.weight })),
+        check: document.fonts.check('400 16px "Inter"', "BlueFire comparison"),
+        conclusion_family: conclusion ? getComputedStyle(conclusion).fontFamily : "",
+      };
+    });
+    assert.ok(fontState.faces.some(face => face.status === "loaded"), "Inter must be loaded in document.fonts.");
+    assert.equal(fontState.check, true);
+    assert.match(fontState.conclusion_family, /Inter/);
+    report.font_asset = { network_response: fontResponse, document_font_state: fontState };
+
+    for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 768 }]) {
+      stage = `comparison-assistant-${viewport.width}x${viewport.height}`;
+      await page.setViewportSize(viewport);
+      await page.evaluate(() => {
+        window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+        document.getElementById("main-content")?.scrollTo({ top: 0, left: 0, behavior: "instant" });
+        document.querySelector(".assistant-body")?.scrollTo({ top: 0, left: 0, behavior: "instant" });
+      });
+      await evidenceSummary.scrollIntoViewIfNeeded();
+      await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+      const geometry = await assistant.evaluate(element => {
+        const box = element.getBoundingClientRect();
+        const summary = element.querySelector(".assistant-source-details > summary");
+        const summaryBox = summary?.getBoundingClientRect();
+        return { panel: { left: box.left, right: box.right, top: box.top, bottom: box.bottom }, summary: summaryBox ? { left: summaryBox.left, right: summaryBox.right, top: summaryBox.top, bottom: summaryBox.bottom } : null };
+      });
+      assert.ok(geometry.panel.left >= -1 && geometry.panel.right <= viewport.width + 1 && geometry.panel.top >= -1 && geometry.panel.bottom <= viewport.height + 1);
+      assert.ok(geometry.summary && geometry.summary.left >= -1 && geometry.summary.right <= viewport.width + 1 && geometry.summary.top >= -1 && geometry.summary.bottom <= viewport.height + 1);
+      assert.equal(await assistant.getByRole("region", { name: "Current selection", exact: true }).count(), 1);
+      await capture(`comparison-assistant-${viewport.width}x${viewport.height}`, {
+        surface: "saved-comparison-assistant",
+        viewport,
+        snapshot_id: report.comparison_snapshot_id,
+        font_asset_sha256: fontResponse.sha256,
+        loaded_font_faces: fontState.faces.filter(face => face.status === "loaded").length,
+        layout_checks: ["assistant_panel_in_viewport", "saved_comparison_context_visible", "bundled_inter_loaded"],
+      });
+    }
+    assert.ok(comparisonAssistantContextGets >= 1 && comparisonAssistantContextGets <= 2);
+    assert.equal(comparisonAssistantTurnPosts, 0);
+    assert.equal(readOnlyPostAttempts, 0);
+    assert.equal(report.blocked_requests.length, blockedBeforeComparisonAssistant);
+    report.comparison_assistant = {
+      status: "passed",
+      snapshot_id: report.comparison_snapshot_id,
+      snapshot_digest: assistantContext.selected.snapshot_digest,
+      context_digest: assistantContext.context_digest,
+      saved_run_count: assistantContext.reference_summary.saved_comparison.run_count,
+      selected_exactly: true,
+      context_gets: comparisonAssistantContextGets,
+      context_capabilities: assistantContext.capabilities.length,
+      explanation_only: assistantContext.analysis_only,
+      assistant_turn_posts: comparisonAssistantTurnPosts,
+      read_only_post_attempts: readOnlyPostAttempts,
+      reopened_same_snapshot: true,
+      screenshots: ["comparison-assistant-1440x900", "comparison-assistant-1366x768"],
+    };
+    report.checks.push("saved_comparison_assistant_selection_survives_navigation_and_reopens_exact_snapshot");
+    report.checks.push("bundled_inter_font_loaded_from_installed_service_and_captured_at_two_desktop_sizes");
+  } finally {
+    readOnlyCapturePhase = false;
+  }
 
   stage = "environments-load-overview";
   await page.goto(`${origin}/#/environments`);

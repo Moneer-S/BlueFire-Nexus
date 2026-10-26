@@ -136,7 +136,7 @@ def build_info() -> dict[str, Any]:
             font_dir.lstat()
             if font_dir.is_symlink():
                 raise ValueError("asset directory unavailable")
-            names = _UI_NAMES
+            names: tuple[str, ...] = _UI_NAMES
         except FileNotFoundError:
             names = _LEGACY_UI_NAMES
         for name in names:

@@ -737,6 +737,10 @@ class StubService:
         self.calls.append(("comparison_snapshot", snapshot_id))
         return {"snapshot_id": snapshot_id}
 
+    def comparison_assistance_context(self, snapshot_id: str) -> Mapping[str, Any]:
+        self.calls.append(("comparison_assistance_context", snapshot_id))
+        return {"saved": True}
+
 
 @contextmanager
 def running_server(

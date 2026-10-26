@@ -12,9 +12,6 @@ PATH = "/api/v1/comparison-snapshots/" + SNAPSHOT + "/assistant-context"
 
 def test_comparison_context_route_forwards_only_exact_canonical_identity():
     service = StubService()
-    service.comparison_assistance_context = lambda identifier: service.calls.append(
-        ("comparison_assistance_context", identifier)
-    ) or {"saved": True}
     with running_server(service) as (server, _):
         status, _, payload = request(server, "GET", PATH)
         assert status == 200 and json_body(payload) == {"saved": True}

@@ -34,9 +34,10 @@ def test_ui_digest_binds_font_license_and_rejects_incomplete_inventory(tmp_path:
         "fonts/OFL.txt",
     }
     font.write_bytes(b"changed font")
-    assert suites_module._ui_digest(ui)["fonts/InterVariable.woff2"] != digest[
-        "fonts/InterVariable.woff2"
-    ]
+    assert (
+        suites_module._ui_digest(ui)["fonts/InterVariable.woff2"]
+        != digest["fonts/InterVariable.woff2"]
+    )
     font.unlink()
     assert suites_module._ui_digest(ui) == {}
 
