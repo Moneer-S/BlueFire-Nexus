@@ -176,19 +176,23 @@ class OwnedReceiverSession:
             return session
         except BaseException as error:
             if type(error) is ReceiverSessionError and stage in PREPARATION_STAGES:
-                process = session._process if session is not None else None
-                if stage == "ready_read" and process is not None:
-                    try:
-                        worker_stage = worker_startup_failure_stage(process.poll())
-                    except Exception:
-                        worker_stage = None
-                    if worker_stage is not None:
-                        stage = worker_stage
                 error.preparation_stage = stage
             if session is not None and session._process is None and spawned:
                 session._process = spawned[0]
             if session is not None:
-                session.close()
+                closed = session.close()
+                if (
+                    closed
+                    and type(error) is ReceiverSessionError
+                    and stage == "ready_read"
+                    and session._process is not None
+                ):
+                    try:
+                        worker_stage = worker_startup_failure_stage(session._process.returncode)
+                    except Exception:
+                        worker_stage = None
+                    if worker_stage is not None:
+                        error.preparation_stage = worker_stage
             raise
 
     @property

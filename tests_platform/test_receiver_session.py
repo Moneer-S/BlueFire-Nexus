@@ -169,21 +169,21 @@ def test_prepare_failure_records_fixed_generation_frame_stage(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("failure_call", "exit_code", "expected_stage"),
+    ("failure_call", "exit_code", "release_ok", "expected_stage"),
     [
-        (1, 75, "armed_read"),
-        (2, None, "ready_read"),
-        (2, 75, "worker_prepare_validation"),
-        (2, 76, "worker_enrollment"),
-        (2, 77, "worker_listener_startup"),
-        (2, 78, "worker_ready_frame"),
-        (2, 74, "ready_read"),
-        (2, True, "ready_read"),
-        (2, "poll_error", "ready_read"),
+        (1, 75, True, "armed_read"),
+        (2, None, True, "ready_read"),
+        (2, 75, True, "worker_prepare_validation"),
+        (2, 76, True, "worker_enrollment"),
+        (2, 77, True, "worker_listener_startup"),
+        (2, 78, True, "worker_ready_frame"),
+        (2, 74, True, "ready_read"),
+        (2, True, True, "ready_read"),
+        (2, 75, False, "ready_read"),
     ],
 )
 def test_prepare_read_diagnostics_keep_armed_and_ready_boundaries(
-    monkeypatch, failure_call, exit_code, expected_stage
+    monkeypatch, failure_call, exit_code, release_ok, expected_stage
 ):
     monkeypatch.setattr(session_module.sys, "platform", "linux")
     monkeypatch.setattr(session_module.LinuxPrivateProcessContainment, "available", lambda: True)
@@ -201,26 +201,41 @@ def test_prepare_read_diagnostics_keep_armed_and_ready_boundaries(
             return ("identity", "123456")
 
         def was_released(self, _process):
-            return True
-
-        def contains(self, _process):
             return False
 
-        def release(self, _process, *, terminate):
-            return terminate
+        def contains(self, actual):
+            return actual is process
+
+        def release(self, actual, *, terminate):
+            assert terminate is True
+            if release_ok:
+                actual.released = True
+            return release_ok
 
     monkeypatch.setattr(session_module, "LinuxPrivateProcessContainment", FakeContainment)
-    process = SimpleNamespace(
-        pid=901,
-        returncode=0,
-        poll=lambda: (
-            (_ for _ in ()).throw(RuntimeError("private poll detail"))
-            if exit_code == "poll_error"
-            else exit_code
-        ),
-        stdin=Stream(),
-        stdout=Stream(),
-    )
+
+    class StartupProcess:
+        pid = 901
+
+        def __init__(self):
+            self.stdin = Stream()
+            self.stdout = Stream()
+            self.released = False
+            self.returncode_reads = 0
+            self.poll_calls = 0
+
+        @property
+        def returncode(self):
+            assert self.released, "returncode was read before verified cleanup"
+            self.returncode_reads += 1
+            return exit_code
+
+        def poll(self):
+            self.poll_calls += 1
+            raise AssertionError("poll must not reap the owned worker")
+
+    process = StartupProcess()
+    monkeypatch.setattr(session_module, "_RETAINED", {})
 
     def spawn(_launch_id, sink):
         sink.append(process)
@@ -256,7 +271,10 @@ def test_prepare_read_diagnostics_keep_armed_and_ready_boundaries(
     assert caught.value.preparation_stage == expected_stage
     assert str(caught.value) == "private frame detail"
     assert calls == failure_call
-    assert process.stdin.closed and process.stdout.closed
+    assert process.poll_calls == 0
+    assert process.returncode_reads == int(failure_call == 2 and release_ok)
+    assert process.stdin.closed
+    assert process.stdout.closed is release_ok
 
 
 class Stream(io.BytesIO):
