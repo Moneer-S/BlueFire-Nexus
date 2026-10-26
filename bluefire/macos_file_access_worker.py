@@ -95,12 +95,13 @@ class MacOSFileAccessWorker:
             if deadline is not None
             else cast(int, self._binding["original_deadline_ns"])
         )
-        if (
-            not self._binding["issued_at_ms"] <= wall < self._binding["expires_at_ms"]
-            or monotonic >= limit
-            or wall < self._last_clock[0]
-            or monotonic < self._last_clock[1]
-        ):
+        if not self._binding["issued_at_ms"] <= wall < self._binding["expires_at_ms"]:
+            raise _refuse()
+        if monotonic >= limit:
+            raise _refuse()
+        if wall < self._last_clock[0]:
+            raise _refuse()
+        if monotonic < self._last_clock[1]:
             raise _refuse()
         self._last_clock = wall, monotonic
         return min(

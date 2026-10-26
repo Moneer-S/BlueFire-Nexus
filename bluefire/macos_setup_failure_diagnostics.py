@@ -52,6 +52,10 @@ _NAMESPACE_CREATION_SITE_OFFSETS = {
     "namespace_sealed_resource": frozenset(range(60)),
     "namespace_binding": frozenset(range(26)),
     "namespace_worker_start": frozenset(range(122)),
+    "namespace_worker_guard_wall_window": frozenset({8}),
+    "namespace_worker_guard_deadline": frozenset({10}),
+    "namespace_worker_guard_wall_clock_order": frozenset({12}),
+    "namespace_worker_guard_monotonic_order": frozenset({14}),
 }
 SITE_OFFSETS = {
     "package_import_custody": _PACKAGE_IMPORT_SITE_OFFSETS,
@@ -167,6 +171,15 @@ def namespace_creation_site_ranges(
         (
             worker.MacOSFileAccessWorker.start.__code__,
             ((0, 121, "namespace_worker_start"),),
+        ),
+        (
+            worker.MacOSFileAccessWorker._guard.__code__,
+            (
+                (8, 8, "namespace_worker_guard_wall_window"),
+                (10, 10, "namespace_worker_guard_deadline"),
+                (12, 12, "namespace_worker_guard_wall_clock_order"),
+                (14, 14, "namespace_worker_guard_monotonic_order"),
+            ),
         ),
     )
 

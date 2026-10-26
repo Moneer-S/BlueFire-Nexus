@@ -14,8 +14,12 @@ from types import SimpleNamespace
 import pytest
 
 from bluefire import cli
+from bluefire import macos_file_access_contract as namespace_contract
+from bluefire import macos_file_access_creator as namespace_creator
 from bluefire import macos_file_access_local as local
+from bluefire import macos_file_access_namespace as namespace
 from bluefire import macos_file_access_peer as peer
+from bluefire import macos_file_access_worker as namespace_worker
 from bluefire import macos_file_access_workspace_validation as validation
 
 
@@ -371,7 +375,9 @@ def test_namespace_creation_failure_site_is_fixed_stage_scoped_and_deepest():
         _validate_darwin_descriptor_security=lambda: None,
     )
     contract = SimpleNamespace(validate_credentials=lambda: None)
-    worker = SimpleNamespace(MacOSFileAccessWorker=SimpleNamespace(start=lambda: None))
+    worker = SimpleNamespace(
+        MacOSFileAccessWorker=SimpleNamespace(start=lambda: None, _guard=lambda: None)
+    )
 
     with pytest.raises(RuntimeError) as caught:
         creator_create()
@@ -408,6 +414,39 @@ def test_namespace_creation_failure_site_is_fixed_stage_scoped_and_deepest():
         local.MacOSSetupFailure(
             "package_import_custody", "safe", setup_site="namespace_worker_start", setup_offset=121
         )
+
+
+@pytest.mark.parametrize(
+    ("wall_ms", "monotonic_ns", "last_clock", "site", "offset"),
+    [
+        (1_000, 4_000, (0, 0), "namespace_worker_guard_wall_window", 8),
+        (2_000, 5_000, (0, 0), "namespace_worker_guard_deadline", 10),
+        (2_000, 4_000, (2_001, 0), "namespace_worker_guard_wall_clock_order", 12),
+        (2_000, 4_000, (0, 4_001), "namespace_worker_guard_monotonic_order", 14),
+    ],
+)
+def test_namespace_worker_guard_refusal_has_fixed_site_diagnostic(
+    monkeypatch, wall_ms, monotonic_ns, last_clock, site, offset
+):
+    owner = object.__new__(namespace_worker.MacOSFileAccessWorker)
+    owner._binding = {
+        "issued_at_ms": 1_500,
+        "expires_at_ms": 3_000,
+        "original_deadline_ns": 5_000,
+    }
+    owner._last_clock = last_clock
+    monkeypatch.setattr(namespace_worker.time, "time_ns", lambda: wall_ms * 1_000_000)
+    monkeypatch.setattr(namespace_worker, "darwin_clock_ns", lambda: monotonic_ns)
+
+    with pytest.raises(namespace_contract.MacOSFileAccessContractError) as caught:
+        owner._guard()
+
+    diagnostic = local._namespace_creation_failure_site(
+        caught.value, namespace_creator, namespace, namespace_contract, namespace_worker
+    )
+    assert diagnostic == (site, offset)
+    assert diagnostic[0] in local.MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS["namespace_creation"]
+    assert diagnostic[1] in local.MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS["namespace_creation"][site]
 
 
 def test_setup_site_callback_failure_preserves_original_setup_error():

@@ -121,6 +121,10 @@ _SAFE_SETUP_SITE_OFFSETS = {
         "namespace_sealed_resource": frozenset(range(60)),
         "namespace_binding": frozenset(range(26)),
         "namespace_worker_start": frozenset(range(122)),
+        "namespace_worker_guard_wall_window": frozenset({8}),
+        "namespace_worker_guard_deadline": frozenset({10}),
+        "namespace_worker_guard_wall_clock_order": frozenset({12}),
+        "namespace_worker_guard_monotonic_order": frozenset({14}),
     },
 }
 _READINESS_FAILURE_STAGES = frozenset(
