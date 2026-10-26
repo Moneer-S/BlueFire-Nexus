@@ -28,6 +28,7 @@ from bluefire.receiver_policy import ReceiverContentPolicy
 from bluefire.receiver_session_contract import ReceiverSessionError, prepare_frame, ready_binding
 from bluefire.service import BlueFireService
 from bluefire.util import content_hash
+from tests_platform.job_wait_diagnostics import diagnose_job_wait
 from tests_platform.seed_timing import observe_service_seed
 from tests_platform.test_graph_ai_jobs import Access
 from tests_platform.test_orchestrator import StructuredFakeRunner
@@ -1404,7 +1405,8 @@ def baseline_execution(setup, *, configure=None):
     identifier = reviewed["phases"][0]["execution_job"]["job_id"]
     service.job_controller.wait_for_state(identifier, {JobState.AWAITING_APPROVAL}, timeout=10)
     service.approve_job(identifier, {"approved_by": "Reviewer"})
-    terminal = service.job_controller.wait(identifier, timeout=20)
+    with diagnose_job_wait("receiver_baseline_terminal"):
+        terminal = service.job_controller.wait(identifier, timeout=20)
     return parent, terminal, service.receiver_defense_job(parent["job_id"])
 
 

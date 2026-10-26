@@ -57,8 +57,9 @@ def emit(timeout, capsys, *, stage="replay_approval", report_section=True):
 
 
 @pytest.mark.parametrize("state", ["queued", "running", "failed", "completed"])
+@pytest.mark.parametrize("stage", ["replay_approval", "receiver_baseline_terminal"])
 def test_real_wait_snapshot_distinguishes_active_and_terminal_states_without_reread(
-    monkeypatch, capsys, state
+    monkeypatch, capsys, state, stage
 ):
     snapshot = {
         "state": state,
@@ -78,7 +79,8 @@ def test_real_wait_snapshot_distinguishes_active_and_terminal_states_without_rer
     }
     timeout, reads = actual_timeout(snapshot)
     monkeypatch.setattr(diagnostic.sys, "_current_frames", lambda: {})
-    report = emit(timeout, capsys)
+    report = emit(timeout, capsys, stage=stage)
+    assert report["stage"] == stage
     assert reads == [PRIVATE]
     assert report["last_wait_job"] == {
         "available": True,
