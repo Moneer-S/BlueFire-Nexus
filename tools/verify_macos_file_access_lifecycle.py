@@ -20,7 +20,7 @@ import uuid
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from bluefire import runner_client
 
@@ -126,6 +126,54 @@ class SupervisorHandle:
     stdout_lines: queue.Queue[str]
     child_errors: queue.Queue[dict[str, str]]
     reader_threads: tuple[threading.Thread, threading.Thread]
+
+
+def _read_supervisor_stdout(
+    stream: TextIO,
+    stdout_lines: queue.Queue[str],
+    child_errors: queue.Queue[dict[str, str]],
+) -> None:
+    """Retain and parse one bounded complete JSON document after stdout EOF."""
+    chunks: list[str] = []
+    retained_bytes = 0
+    over_limit = False
+    while True:
+        chunk = stream.read(64 * 1024)
+        if not chunk:
+            break
+        chunk_bytes = len(chunk.encode("utf-8", errors="replace"))
+        if over_limit:
+            continue
+        if retained_bytes + chunk_bytes > MAX_BODY:
+            chunks.clear()
+            over_limit = True
+            continue
+        chunks.append(chunk)
+        retained_bytes += chunk_bytes
+    if over_limit:
+        return
+    raw = "".join(chunks)
+    try:
+        document = json.loads(raw)
+    except json.JSONDecodeError:
+        return
+    child_error = _parse_child_cli_error(raw)
+    if child_error is not None:
+        try:
+            child_errors.put_nowait(child_error)
+        except queue.Full:
+            pass
+        return
+    if (
+        not isinstance(document, dict)
+        or document.get("schema_version")
+        != "bluefire.macos-file-access-local-supervisor-result.v1"
+    ):
+        return
+    try:
+        stdout_lines.put_nowait(raw)
+    except queue.Full:
+        pass
 
 
 def _supervisor_argv(python: Path) -> list[str]:
@@ -330,28 +378,7 @@ def _open_supervisor(python: Path) -> tuple[SupervisorHandle, str, int, str]:
 
     def read_stdout() -> None:
         assert process.stdout is not None
-        for raw in process.stdout:
-            try:
-                document = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            child_error = _parse_child_cli_error(raw)
-            if child_error is not None:
-                try:
-                    child_errors.put_nowait(child_error)
-                except queue.Full:
-                    pass
-                continue
-            if (
-                not isinstance(document, dict)
-                or document.get("schema_version")
-                != "bluefire.macos-file-access-local-supervisor-result.v1"
-            ):
-                continue
-            try:
-                stdout_lines.put_nowait(raw[:MAX_BODY])
-            except queue.Full:
-                continue
+        _read_supervisor_stdout(process.stdout, stdout_lines, child_errors)
 
     stderr_reader = threading.Thread(
         target=read_stderr, name="bluefire-macos-supervisor-stderr", daemon=True

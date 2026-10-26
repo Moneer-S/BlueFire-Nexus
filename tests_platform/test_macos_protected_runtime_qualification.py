@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import queue
 import subprocess
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import pytest
 
+from bluefire import cli
 from tools import provision_macos_protected_python as provision
 from tools import verify_macos_file_access_lifecycle as lifecycle
 
@@ -461,6 +464,82 @@ def test_child_cli_error_redacts_unclassified_message_and_rejects_other_codes():
         lifecycle._parse_child_cli_error('{"error":{"code":"arbitrary_code","message":"unsafe"}}')
         is None
     )
+
+
+def _pretty_cli_json(value):
+    output = io.StringIO()
+    with redirect_stdout(output):
+        cli._json(value)
+    return output.getvalue()
+
+
+def test_stdout_reader_parses_pretty_printed_cli_error_after_eof():
+    raw = _pretty_cli_json(
+        {"error": {"code": "command_failed", "message": "The local identity inventory is unavailable."}}
+    )
+    stdout = queue.Queue(maxsize=1)
+    child_errors = queue.Queue(maxsize=1)
+
+    lifecycle._read_supervisor_stdout(io.StringIO(raw), stdout, child_errors)
+
+    assert stdout.empty()
+    assert child_errors.get_nowait() == {
+        "error_code": "command_failed",
+        "error_class": "local_identity_inventory_unavailable",
+    }
+
+
+def test_stdout_reader_preserves_pretty_printed_supervisor_result():
+    document = {
+        "schema_version": "bluefire.macos-file-access-local-supervisor-result.v1",
+        "status": "stopped_cleanly",
+        "host": {"host_closed": True},
+        "components": {"workers_closed": True},
+        "generated_resource": {"resource_retained": True},
+        "workspace_retained": True,
+        "identity_accounts_created": False,
+    }
+    raw = _pretty_cli_json(document)
+    stdout = queue.Queue(maxsize=1)
+    child_errors = queue.Queue(maxsize=1)
+
+    lifecycle._read_supervisor_stdout(io.StringIO(raw), stdout, child_errors)
+
+    assert json.loads(stdout.get_nowait()) == document
+    assert child_errors.empty()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "{\"schema_version\": \"bluefire.macos-file-access-local-supervisor-result.v1\"",
+        _pretty_cli_json({"schema_version": "unknown.result.v1", "status": "passed"}),
+    ],
+)
+def test_stdout_reader_discards_malformed_and_unknown_documents(raw):
+    stdout = queue.Queue(maxsize=1)
+    child_errors = queue.Queue(maxsize=1)
+
+    lifecycle._read_supervisor_stdout(io.StringIO(raw), stdout, child_errors)
+
+    assert stdout.empty()
+    assert child_errors.empty()
+
+
+def test_stdout_reader_drains_but_does_not_retain_over_limit_document():
+    prefix = _pretty_cli_json(
+        {"schema_version": "bluefire.macos-file-access-local-supervisor-result.v1"}
+    )
+    raw = prefix + (" " * lifecycle.MAX_BODY)
+    stream = io.StringIO(raw)
+    stdout = queue.Queue(maxsize=1)
+    child_errors = queue.Queue(maxsize=1)
+
+    lifecycle._read_supervisor_stdout(stream, stdout, child_errors)
+
+    assert stream.tell() == len(raw)
+    assert stdout.empty()
+    assert child_errors.empty()
 
 
 def test_readiness_failure_diagnostics_keep_specific_stage_and_fixed_fields_only():
