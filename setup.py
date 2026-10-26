@@ -264,7 +264,7 @@ def _write_build_identity(build_root: Path, source_root: Path, version: str) -> 
     if ui.is_symlink() or not ui.is_dir():
         raise RuntimeError("build assets are unavailable")
     files = []
-    for name in ("app.js", "index.html", "styles.css"):
+    for name in ("app.js", "index.html", "styles.css", "fonts/InterVariable.woff2"):
         payload = read(ui / name, 8 * 1024 * 1024)
         files.append({"name": name, "sha256": digest(payload), "size": len(payload)})
     value = {

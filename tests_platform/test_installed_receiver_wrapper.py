@@ -318,6 +318,7 @@ def test_receiver_browser_driver_uses_authenticated_readiness_and_safe_diagnosti
     ).read_text(encoding="utf-8")
     assert 'assert.equal(ready.process, "authenticated")' in driver
     assert 'assert.equal(ready.process, "running")' not in driver
+    assert '"/ui/fonts/InterVariable.woff2"' in driver
     assert "report.runner_status_diagnostic" in driver
     assert "profile_matches: ready.profile_id === PROFILE" in driver
     assert (

@@ -11,6 +11,7 @@ import ast
 import hashlib
 import json
 import re
+import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -102,6 +103,27 @@ def _reviewed_text_sha256(path: Path) -> str:
     except UnicodeDecodeError as exc:
         raise RightsAuditError(f"reviewed file is not UTF-8: {path.name}") from exc
     return hashlib.sha256(normalized).hexdigest()
+
+
+def _reviewed_binary_sha256(path: Path) -> str:
+    """Hash a reviewed bounded binary asset without text normalization."""
+
+    try:
+        details = path.lstat()
+        if not stat.S_ISREG(details.st_mode) or not 0 < details.st_size <= 16 * 1024 * 1024:
+            raise RightsAuditError(f"reviewed binary is unsafe or unbounded: {path.name}")
+        payload = path.read_bytes()
+        after = path.lstat()
+    except OSError as exc:
+        raise RightsAuditError(f"reviewed file is missing: {path.name}") from exc
+    if len(payload) != details.st_size or (
+        details.st_dev,
+        details.st_ino,
+        details.st_size,
+        details.st_mtime_ns,
+    ) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+        raise RightsAuditError(f"reviewed binary changed while being read: {path.name}")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _string_list(value: Any, context: str) -> list[str]:
@@ -565,6 +587,7 @@ def _asset_files(repository: Path) -> set[str]:
         "bluefire/data",
         "bluefire/native",
         "bluefire/ui",
+        "frontend/public",
         "docs/assets",
     ):
         root = repository / relative_root
@@ -602,6 +625,15 @@ def _verify_assets(repository: Path, policy: Mapping[str, Any]) -> int:
         _require(
             _reviewed_text_sha256(repository / relative) == digest,
             f"third-party asset changed: {relative}",
+        )
+    binary_integrity = _mapping(
+        assets.get("third_party_binary_integrity", {}), "third-party binary asset integrity"
+    )
+    for relative, digest in binary_integrity.items():
+        _require(re.fullmatch(r"[0-9a-f]{64}", str(digest)) is not None, "bad binary asset digest")
+        _require(
+            _reviewed_binary_sha256(repository / relative) == digest,
+            f"third-party binary asset changed: {relative}",
         )
     return len(reviewed)
 

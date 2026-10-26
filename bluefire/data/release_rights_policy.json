@@ -16,6 +16,7 @@
     "MIT",
     "MIT-0",
     "MIT OR Apache-2.0",
+    "OFL-1.1",
     "Unlicense OR MIT",
     "Zlib"
   ],
@@ -39,6 +40,9 @@
     "required_fragments": [
       "LicenseRef-MITRE-ATTACK-2026",
       "© 2026 The MITRE Corporation.",
+      "SIL Open Font License 1.1",
+      "InterVariable.woff2",
+      "Inter is a trademark of Rasmus Andersson",
       "cffi (MIT-0)",
       "71 packages in its production lock closure",
       "49 external crates in `Cargo.lock`",
@@ -403,6 +407,12 @@
         "bluefire/ui/index.html",
         "bluefire/ui/styles.css"
       ],
+      "third-party-font-sil-open-font-license-1.1": [
+        "frontend/public/fonts/InterVariable.woff2",
+        "frontend/public/fonts/OFL.txt",
+        "bluefire/ui/fonts/InterVariable.woff2",
+        "bluefire/ui/fonts/OFL.txt"
+      ],
       "generated-native-runner-reviewed-rust-graph": [
         "bluefire/native/bluefire-runner.exe",
         "bluefire/native/linux-x86_64/bluefire-runner",
@@ -434,7 +444,13 @@
     "third_party_integrity": {
       "bluefire/data/mitre_attack_t1082_v19_2.json": "dd2e50ceef844302a690a1debac8336864e93ebd19da526eefac3072f5ee9a02",
       "bluefire/data/mitre_attack_v19_2_LICENSE.txt": "4de9222b0d5bc69b758f9cf0afdaea48fdcbfe7d33c7481973a6aa07d6cbea9d",
+      "frontend/public/fonts/OFL.txt": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a",
+      "bluefire/ui/fonts/OFL.txt": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a",
       "bluefire/data/atomic_red_team_LICENSE.txt": "65af6027045d23175366eab50e460ab3ee7790e591cb84cc32c78ac63a4c90e1"
+    },
+    "third_party_binary_integrity": {
+      "frontend/public/fonts/InterVariable.woff2": "693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3",
+      "bluefire/ui/fonts/InterVariable.woff2": "693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3"
     }
   },
   "project_authored_code": {

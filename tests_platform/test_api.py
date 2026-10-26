@@ -2450,6 +2450,7 @@ def test_static_assets_have_strict_security_headers_and_head_support() -> None:
             ("/", "text/html"),
             ("/ui/app.js", "javascript"),
             ("/ui/styles.css", "text/css"),
+            ("/ui/fonts/InterVariable.woff2", "font/woff2"),
         ):
             status, headers, payload = request(server, "GET", path)
             assert status == 200
