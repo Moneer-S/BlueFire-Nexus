@@ -587,15 +587,7 @@ def _audit_dynamic_links(prefix: Path) -> dict[str, object]:
             check=True,
         ).stdout
         rpaths = _parse_lc_rpaths(load_commands)
-        result = subprocess.run(
-            ["/usr/bin/otool", "-L", str(path)],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=20,
-            check=True,
-        )
-        for dependency in _parse_otool_dependencies(result.stdout):
+        for dependency in _parse_lc_dylib_dependencies(load_commands):
             if dependency.startswith("/") and _is_sip_system_path(dependency):
                 # Dyld shared-cache libraries need not have on-disk files.
                 continue
@@ -714,14 +706,43 @@ def _parse_lc_rpaths(output: str) -> list[str]:
     return rpaths
 
 
-def _parse_otool_dependencies(output: str) -> list[str]:
+_DYLIB_DEPENDENCY_COMMANDS = frozenset(
+    {
+        "cmd LC_LOAD_DYLIB",
+        "cmd LC_LOAD_WEAK_DYLIB",
+        "cmd LC_REEXPORT_DYLIB",
+        "cmd LC_LOAD_UPWARD_DYLIB",
+        "cmd LC_LAZY_LOAD_DYLIB",
+    }
+)
+
+
+def _parse_lc_dylib_dependencies(output: str) -> list[str]:
+    """Read dependent install names, excluding LC_ID_DYLIB by command role."""
     dependencies: list[str] = []
-    for line in output.splitlines()[1:]:
-        if line.strip().endswith(":") and "(architecture " in line:
+    lines = output.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() not in _DYLIB_DEPENDENCY_COMMANDS:
             continue
-        dependency = line.strip().split(" ", 1)[0]
-        if dependency:
-            dependencies.append(dependency)
+        dependency = None
+        for candidate in lines[index + 1 :]:
+            value = candidate.strip()
+            if (
+                value.startswith("Load command ")
+                or value.startswith("cmd ")
+                or re.search(r"\(architecture [^)]+\):$", value)
+            ):
+                break
+            if value.startswith("name "):
+                dependency = value[len("name ") :]
+                offset = re.search(r"\s+\(offset [0-9]+\)$", dependency)
+                if offset is not None:
+                    dependency = dependency[: offset.start()]
+                dependency = dependency.strip()
+                break
+        if not dependency:
+            raise ValueError("A Mach-O dynamic-library load command has no install name.")
+        dependencies.append(dependency)
     return dependencies
 
 

@@ -96,7 +96,7 @@ def test_missing_system_looking_rpath_does_not_mask_later_unprotected_candidate(
     assert not provision._is_sip_system_path(selected.as_posix())
 
 
-def test_otool_parsers_capture_rpaths_and_skip_architecture_headers():
+def test_otool_load_command_parsers_capture_rpaths_and_dependencies():
     load_commands = """Load command 2
       cmd LC_RPATH
   cmdsize 48
@@ -105,22 +105,119 @@ Load command 3
       cmd LC_RPATH
   cmdsize 40
      path @executable_path/../lib (offset 12)
-"""
-    dependencies = """python3.11:
-    @rpath/libcrypto.3.dylib (compatibility version 3.0.0, current version 3.0.0)
-    /usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)
-python3.11 (architecture arm64):
-    @rpath/libcrypto.3.dylib (compatibility version 3.0.0, current version 3.0.0)
+Load command 4
+      cmd LC_LOAD_DYLIB
+  cmdsize 72
+     name @rpath/libcrypto.3.dylib (offset 24)
+Load command 5
+      cmd LC_LOAD_WEAK_DYLIB
+  cmdsize 72
+     name /usr/lib/libSystem.B.dylib (offset 24)
+Load command 6
+      cmd LC_REEXPORT_DYLIB
+  cmdsize 72
+     name @rpath/libreexport.dylib (offset 24)
+Load command 7
+      cmd LC_LOAD_UPWARD_DYLIB
+  cmdsize 72
+     name @rpath/libupward.dylib (offset 24)
+Load command 8
+      cmd LC_LAZY_LOAD_DYLIB
+  cmdsize 72
+     name @rpath/liblazy.dylib (offset 24)
 """
 
     assert provision._parse_lc_rpaths(load_commands) == [
         "@loader_path/../lib",
         "@executable_path/../lib",
     ]
-    assert provision._parse_otool_dependencies(dependencies) == [
+    assert provision._parse_lc_dylib_dependencies(load_commands) == [
         "@rpath/libcrypto.3.dylib",
         "/usr/lib/libSystem.B.dylib",
+        "@rpath/libreexport.dylib",
+        "@rpath/libupward.dylib",
+        "@rpath/liblazy.dylib",
+    ]
+
+
+def test_lc_dylib_parser_excludes_id_but_preserves_identical_dependency():
+    install_name = "@rpath/cryptography.hazmat.bindings._rust.abi3.so"
+    load_commands = f"""Load command 1
+      cmd LC_ID_DYLIB
+  cmdsize 80
+     name {install_name} (offset 24)
+Load command 2
+      cmd LC_LOAD_DYLIB
+  cmdsize 80
+     name {install_name} (offset 24)
+Load command 3
+      cmd LC_LOAD_DYLIB
+  cmdsize 72
+     name @rpath/libcrypto.3.dylib (offset 24)
+"""
+
+    # Only LC_LOAD_* roles are checked as dependencies. Even the same string
+    # remains a dependency when it appears under LC_LOAD_DYLIB.
+    assert provision._parse_lc_dylib_dependencies(load_commands) == [
+        install_name,
         "@rpath/libcrypto.3.dylib",
+    ]
+
+
+def test_lc_dylib_parser_fails_closed_before_a_following_command_name():
+    load_commands = """Load command 0
+      cmd LC_ID_DYLIB
+  cmdsize 48
+     name @rpath/image.dylib (offset 24)
+Load command 1
+      cmd LC_LOAD_DYLIB
+  cmdsize 24
+Load command 2
+      cmd LC_ID_DYLIB
+  cmdsize 64
+     name @rpath/unrelated.dylib (offset 24)
+"""
+
+    with pytest.raises(ValueError, match="has no install name"):
+        provision._parse_lc_dylib_dependencies(load_commands)
+
+
+def test_lc_dylib_parser_preserves_install_name_spaces():
+    load_commands = """Load command 0
+      cmd LC_LOAD_DYLIB
+  cmdsize 72
+     name @rpath/Library With Spaces.dylib (offset 24)
+"""
+
+    assert provision._parse_lc_dylib_dependencies(load_commands) == [
+        "@rpath/Library With Spaces.dylib"
+    ]
+
+
+def test_lc_dylib_parser_keeps_each_fat_slice_dependency():
+    load_commands = """/runtime/_rust.abi3.so (architecture arm64):
+Load command 0
+      cmd LC_ID_DYLIB
+  cmdsize 64
+     name @rpath/_rust.abi3.so (offset 24)
+Load command 1
+      cmd LC_LOAD_DYLIB
+  cmdsize 72
+     name @rpath/arm64/libcrypto.dylib (offset 24)
+/runtime/_rust.abi3.so (architecture x86_64):
+Load command 0
+      cmd LC_ID_DYLIB
+  cmdsize 64
+     name @rpath/_rust.abi3.so (offset 24)
+Load command 1
+      cmd LC_LOAD_DYLIB
+  cmdsize 72
+     name @rpath/x86_64/libcrypto.dylib (offset 24)
+"""
+
+    assert provision._parse_lc_dylib_dependencies(load_commands) == [
+        "@rpath/arm64/libcrypto.dylib",
+        "@rpath/x86_64/libcrypto.dylib",
     ]
 
 
