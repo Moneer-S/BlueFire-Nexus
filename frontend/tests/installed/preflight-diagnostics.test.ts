@@ -6,13 +6,44 @@ const expected = {
   actionIds: ["sandbox.fixture.create.v1", "sandbox.fixture.transform.v1"],
 };
 
+function validPreflight(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "bluefire.preflight.v1",
+    status: "refused",
+    ready: false,
+    mode: "execute",
+    scenario_id: "fixture-scenario",
+    runner_profile_id: expected.profileId,
+    ai_enabled: false,
+    autonomy: "off",
+    ai_provider: {},
+    actions: expected.actionIds,
+    required_capabilities: [],
+    approval_required: true,
+    problems: ["Explicit operator approval is required."],
+    plan: {
+      schema_version: "bluefire.plan.v1",
+      scenario_id: "fixture-scenario",
+      objective: "fixture objective",
+      mode: "execute",
+      autonomy: "off",
+      ai_enabled: false,
+      ai_provider: {},
+      runner_profile_id: expected.profileId,
+      scenario_digest: "digest-value",
+      steps: [],
+      edges: [],
+    },
+    ...overrides,
+  };
+}
+
 describe("installed preflight diagnostics", () => {
   it("projects only fixed fields and known labels for a refused response", () => {
-    const diagnostic = preflightDiagnostic({
+    const diagnostic = preflightDiagnostic(validPreflight({
       status: "refused",
       ready: false,
       approval_required: true,
-      plan: { mode: "execute", runner_profile_id: expected.profileId },
       actions: expected.actionIds,
       runner_readiness: { schema_version: "bluefire.execute-readiness.v1", profile_id: expected.profileId },
       problems: [
@@ -20,7 +51,7 @@ describe("installed preflight diagnostics", () => {
         "target scope is outside the selected profile: secret-path-value",
         "unrecognized-secret-token-value",
       ],
-    }, expected);
+    }), expected);
 
     expect(diagnostic).toEqual({
       schema_version: "bluefire.installed-preflight-diagnostic.v1",
@@ -55,7 +86,7 @@ describe("installed preflight diagnostics", () => {
 
   it("caps inspected problem data and reports truncation", () => {
     const problems = Array.from({ length: 40 }, (_, index) => `secret-token-${index}`);
-    const diagnostic = preflightDiagnostic({ status: "refused", problems });
+    const diagnostic = preflightDiagnostic(validPreflight({ problems }));
     expect(diagnostic.problem_count).toBe(32);
     expect(diagnostic.problem_scan_truncated).toBe(true);
     expect(diagnostic.unknown_problem_count).toBe(32);
@@ -64,13 +95,30 @@ describe("installed preflight diagnostics", () => {
   });
 
   it("uses unknown for non-allowlisted status and problem strings", () => {
-    const diagnostic = preflightDiagnostic({
+    const diagnostic = preflightDiagnostic(validPreflight({
       status: "secret-status",
       problems: ["Explicit operator approval is required. changed"],
-    });
+    }));
     expect(diagnostic.status).toBe("unknown");
+    expect(diagnostic.response_shape_valid).toBe(false);
     expect(diagnostic.problem_labels).toEqual([]);
     expect(diagnostic.unknown_problem_count).toBe(1);
     expect(JSON.stringify(diagnostic)).not.toContain("secret-status");
+  });
+
+  it("rejects missing or incorrect top-level schema versions", () => {
+    expect(preflightDiagnostic(validPreflight({ schema_version: undefined })).response_shape_valid).toBe(false);
+    expect(preflightDiagnostic(validPreflight({ schema_version: "bluefire.preflight.v0" })).response_shape_valid).toBe(false);
+  });
+
+  it("rejects missing or malformed plan and actions shapes", () => {
+    expect(preflightDiagnostic(validPreflight({ plan: undefined })).response_shape_valid).toBe(false);
+    expect(preflightDiagnostic(validPreflight({ plan: { schema_version: "bluefire.plan.v0" } })).response_shape_valid).toBe(false);
+    expect(preflightDiagnostic(validPreflight({
+      plan: { ...validPreflight().plan, steps: undefined },
+    })).response_shape_valid).toBe(false);
+    expect(preflightDiagnostic(validPreflight({ actions: undefined })).response_shape_valid).toBe(false);
+    expect(preflightDiagnostic(validPreflight({ actions: "secret-actions" })).response_shape_valid).toBe(false);
+    expect(preflightDiagnostic(validPreflight({ actions: ["safe", 42] })).response_shape_valid).toBe(false);
   });
 });

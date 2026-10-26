@@ -70,13 +70,44 @@ function matchesExpectedActions(value, expectedActionIds) {
     && value.every((action, index) => action === expectedActionIds[index]);
 }
 
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStringArray(value) {
+  return Array.isArray(value) && value.every(item => typeof item === "string");
+}
+
+function isNullableString(value) {
+  return value === null || typeof value === "string";
+}
+
+function hasPreflightShape(value) {
+  if (!isRecord(value) || value.schema_version !== "bluefire.preflight.v1"
+    || !statusValues.has(value.status) || typeof value.ready !== "boolean"
+    || !planModes.has(value.mode) || typeof value.scenario_id !== "string"
+    || !isNullableString(value.runner_profile_id) || typeof value.ai_enabled !== "boolean"
+    || typeof value.autonomy !== "string" || !isRecord(value.ai_provider)
+    || !isStringArray(value.actions) || !isStringArray(value.required_capabilities)
+    || typeof value.approval_required !== "boolean" || !isStringArray(value.problems)) return false;
+
+  const plan = value.plan;
+  return isRecord(plan) && plan.schema_version === "bluefire.plan.v1"
+    && typeof plan.scenario_id === "string" && typeof plan.objective === "string"
+    && planModes.has(plan.mode) && typeof plan.autonomy === "string"
+    && isRecord(plan.ai_provider) && isNullableString(plan.runner_profile_id)
+    && typeof plan.scenario_digest === "string"
+    && Array.isArray(plan.steps) && plan.steps.every(isRecord)
+    && Array.isArray(plan.edges) && plan.edges.every(isRecord);
+}
+
 export function preflightDiagnostic(report, expected = {}) {
-  const responseShapeValid = report !== null && typeof report === "object" && !Array.isArray(report)
-    && typeof report.status === "string" && Array.isArray(report.problems);
+  const reportIsRecord = isRecord(report);
+  const responseShapeValid = hasPreflightShape(report);
   const expectedValues = expected !== null && typeof expected === "object" && !Array.isArray(expected)
     ? expected
     : {};
-  const problems = responseShapeValid && Array.isArray(report.problems) ? report.problems : [];
+  const problems = reportIsRecord && Array.isArray(report.problems) ? report.problems : [];
   const inspected = problems.slice(0, MAX_PROBLEMS);
   const labels = [];
   let unknownProblemCount = 0;
@@ -85,9 +116,9 @@ export function preflightDiagnostic(report, expected = {}) {
     if (label === null) unknownProblemCount += 1;
     else if (!labels.includes(label)) labels.push(label);
   }
-  const runnerReadiness = responseShapeValid ? report.runner_readiness : null;
+  const runnerReadiness = reportIsRecord ? report.runner_readiness : null;
   const readinessPresent = runnerReadiness !== null && typeof runnerReadiness === "object" && !Array.isArray(runnerReadiness);
-  const profile = responseShapeValid && report.plan && typeof report.plan === "object"
+  const profile = reportIsRecord && isRecord(report.plan)
     ? report.plan.runner_profile_id
     : undefined;
   const readinessProfile = readinessPresent ? runnerReadiness.profile_id : undefined;
@@ -95,17 +126,17 @@ export function preflightDiagnostic(report, expected = {}) {
   return {
     schema_version: "bluefire.installed-preflight-diagnostic.v1",
     response_shape_valid: responseShapeValid,
-    status: responseShapeValid ? statusValue(report.status) : "unknown",
-    ready: responseShapeValid ? booleanOrNull(report.ready) : null,
-    approval_required: responseShapeValid ? booleanOrNull(report.approval_required) : null,
-    plan_mode: responseShapeValid && report.plan && typeof report.plan === "object"
+    status: reportIsRecord ? statusValue(report.status) : "unknown",
+    ready: reportIsRecord ? booleanOrNull(report.ready) : null,
+    approval_required: reportIsRecord ? booleanOrNull(report.approval_required) : null,
+    plan_mode: reportIsRecord && isRecord(report.plan)
       ? planMode(report.plan.mode)
       : "unknown",
     runner_profile_matches_expected: matchesExpectedProfile(profile, expectedValues.profileId),
     runner_readiness_present: readinessPresent,
     runner_readiness_schema_valid: readinessPresent && readinessSchemas.has(runnerReadiness.schema_version),
     runner_readiness_profile_matches_expected: matchesExpectedProfile(readinessProfile, expectedValues.profileId),
-    actions_match_expected: responseShapeValid
+    actions_match_expected: reportIsRecord
       ? matchesExpectedActions(report.actions, expectedValues.actionIds)
       : null,
     problem_count: Math.min(problems.length, MAX_PROBLEMS),
