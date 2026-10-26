@@ -525,6 +525,9 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
   const runIdentity = page.getByText("Run identity, environment and technical record", { exact: true });
   await runIdentity.click();
   await page.locator(".historical-run-page").getByText(runId, { exact: true }).waitFor({ state: "visible", timeout: remainingJourneyMs(5_000) });
+  await runIdentity.click();
+  const runHistoryLink = page.locator(".historical-run-page").getByRole("link", { name: "Run history", exact: true });
+  await runHistoryLink.scrollIntoViewIfNeeded({ timeout: remainingJourneyMs(5_000) });
   report.checks.push("completed_generated_fixture_run_opened_from_live_console_review_and_verified_in_canonical_run_view");
   await captureAssistantView("assistant-generated-fixture-execute-result");
 
