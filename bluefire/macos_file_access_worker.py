@@ -400,3 +400,29 @@ class MacOSFileAccessWorker:
                     self._runtime._quarantine_interrupted_darwin_launch(process)  # noqa: SLF001
             self._settled = released
             return released
+
+    def retained_native_startup_exit_code(self) -> int | None:
+        """Read one original cached Popen status only after physical settlement."""
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            if (
+                self._settled is not True
+                or self._local_cleanup_unknown is not False
+                or self._creation_started is not True
+                or self._factory_entered is not True
+                or len(self._processes) != 1
+                or len(self._proven) != 1
+            ):
+                return None
+            process = self._processes[0]
+            if (
+                type(process) is not subprocess.Popen
+                or self._proven[0] is not process
+                or (self._process is not None and self._process is not process)
+            ):
+                return None
+            code = vars(process).get("returncode")
+            return code if type(code) is int else None
+        finally:
+            self._lock.release()

@@ -14,6 +14,34 @@ fn credentials(uid: u32) -> Credentials {
     }
 }
 
+#[test]
+fn native_startup_failure_codes_are_reserved_and_stage_propagation_is_closed() {
+    use native::StartupFailureStage as Stage;
+
+    let stages = [
+        (Stage::RuntimeSupportedCheck, 80),
+        (Stage::InitialClockOrDeadline, 81),
+        (Stage::InitialDescriptorInventory, 82),
+        (Stage::ReadonlyDescriptor, 83),
+        (Stage::CredentialSelection, 84),
+        (Stage::PostDropDescriptorInventory, 85),
+        (Stage::InitialResourceValidation, 86),
+        (Stage::ChannelInitialization, 87),
+    ];
+    let mut codes = Vec::new();
+    for (stage, code) in stages {
+        assert_eq!(stage.exit_code(), code);
+        assert!((80..=87).contains(&code));
+        assert!(![0, 2, 3, 4].contains(&code));
+        assert_eq!(native::startup_step(stage, Ok(7)), Ok(7));
+        assert_eq!(native::startup_step(stage, Err::<(), ()>(())), Err(stage));
+        codes.push(code);
+    }
+    codes.sort_unstable();
+    codes.dedup();
+    assert_eq!(codes, (80..=87).collect::<Vec<_>>());
+}
+
 fn request(operation: &str) -> Request {
     let bytes = b"{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n";
     let binding = Binding {

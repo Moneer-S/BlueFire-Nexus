@@ -69,6 +69,8 @@ _MAX_NAMESPACE_SETUP_OFFSET = _setup_failure_diagnostics.MAX_NAMESPACE_OFFSET
 class MacOSSetupFailure(RuntimeError):
     """A setup error annotated with one fixed, non-sensitive operation stage."""
 
+    safe_native_startup_exits: dict[str, str]
+
     def __init__(
         self,
         stage: str,
@@ -152,6 +154,30 @@ def _at_setup_stage(
             setup_offset=diagnostic[1],
             startup_observation=startup_observation,
         ) from None
+
+
+def _attach_retired_native_startup_exits(
+    failure: MacOSSetupFailure, creator: Any, close_result: Any
+) -> None:
+    """Add finite context only after the existing creator retirement succeeds."""
+    try:
+        from .macos_file_access_creator import MacOSFileAccessCreator
+
+        if (
+            failure.safe_setup_stage != "namespace_creation"
+            or type(creator) is not MacOSFileAccessCreator
+            or type(close_result) is not dict
+            or close_result.get("workers_closed") is not True
+        ):
+            return
+        native_exits = creator.retained_native_startup_exits()
+        if type(native_exits) is dict and _setup_failure_diagnostics.valid_native_startup_exits(
+            native_exits
+        ):
+            failure.safe_native_startup_exits = dict(native_exits)
+    except BaseException:
+        # Diagnostic collection cannot replace the original failure or cleanup.
+        pass
 
 
 def _require(condition: bool, message: str = "The protected macOS setup is unavailable.") -> None:
@@ -778,6 +804,7 @@ def _run_reserved_workspace(
         retained_creators: list[Any] = []
         retained_owners: list[Any] = []
         creator = owner = None
+        setup_failure: MacOSSetupFailure | None = None
         binding = None
         shutdown_result = None
         stopped = threading.Event()
@@ -881,6 +908,9 @@ def _run_reserved_workspace(
                         file=sys.stderr,
                     )
             stopped.wait()
+        except MacOSSetupFailure as exc:
+            setup_failure = exc
+            raise
         except KeyboardInterrupt:
             pass
         finally:
@@ -916,6 +946,8 @@ def _run_reserved_workspace(
                         "scope": "original_component_retirement_only",
                         "cleanup_error": "unknown",
                     }
+            if setup_failure is not None:
+                _attach_retired_native_startup_exits(setup_failure, creator, creator_result)
             if current_binding is not None:
                 shutdown_result = _shutdown_projection(
                     owner_result, creator_result, current_binding

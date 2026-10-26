@@ -12,6 +12,43 @@ pub(super) struct Recipe {
     pub(super) groups: Vec<u32>,
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StartupFailureStage {
+    RuntimeSupportedCheck,
+    InitialClockOrDeadline,
+    InitialDescriptorInventory,
+    ReadonlyDescriptor,
+    CredentialSelection,
+    PostDropDescriptorInventory,
+    InitialResourceValidation,
+    ChannelInitialization,
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+impl StartupFailureStage {
+    pub(super) const fn exit_code(self) -> i32 {
+        match self {
+            Self::RuntimeSupportedCheck => 80,
+            Self::InitialClockOrDeadline => 81,
+            Self::InitialDescriptorInventory => 82,
+            Self::ReadonlyDescriptor => 83,
+            Self::CredentialSelection => 84,
+            Self::PostDropDescriptorInventory => 85,
+            Self::InitialResourceValidation => 86,
+            Self::ChannelInitialization => 87,
+        }
+    }
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+pub(super) fn startup_step<T>(
+    stage: StartupFailureStage,
+    result: Result<T, ()>,
+) -> Result<T, StartupFailureStage> {
+    result.map_err(|_| stage)
+}
+
 fn decimal(value: &str) -> Result<u64, String> {
     if value.is_empty()
         || !value.bytes().all(|byte| byte.is_ascii_digit())
@@ -218,7 +255,11 @@ pub(super) fn run(args: &[String], entry: Entry) -> Result<i32, String> {
     let recipe = recipe(args, entry)?;
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        darwin::run(recipe, entry).map_err(|_| REFUSAL.into())
+        match darwin::run(recipe, entry) {
+            Ok(code) => Ok(code),
+            Err(darwin::RunFailure::Startup(stage)) => Ok(stage.exit_code()),
+            Err(darwin::RunFailure::Generic) => Err(REFUSAL.into()),
+        }
     }
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     {
@@ -242,6 +283,12 @@ mod darwin {
         Backend, Clock, Credentials, Directory, Entry, Facts, OpenFailure, Session, LEAF,
         MAX_MESSAGE, MAX_REQUESTS,
     };
+
+    #[derive(Debug)]
+    pub(super) enum RunFailure {
+        Startup(super::StartupFailureStage),
+        Generic,
+    }
 
     // Pinned public headers: apple-oss-distributions/xnu@ac9718fb1af618d5ce8678d0dc6e8a58f252216f
     // bsd/sys/{proc_info,mount,fcntl}.h and osfmk/mach/mach_time.h.
@@ -795,12 +842,21 @@ mod darwin {
         remaining(deadline).map(|_| ())
     }
 
-    pub(super) fn run(recipe: super::Recipe, entry: Entry) -> Result<i32, ()> {
-        supported()?;
+    pub(super) fn run(recipe: super::Recipe, entry: Entry) -> Result<i32, RunFailure> {
+        super::startup_step(super::StartupFailureStage::RuntimeSupportedCheck, supported())
+            .map_err(RunFailure::Startup)?;
         let held = recipe.held;
         let channel_fd = recipe.channel;
-        let now = clock()?.monotonic_ns;
-        super::original_deadline(now, recipe.original_deadline_ns)?;
+        let now = super::startup_step(
+            super::StartupFailureStage::InitialClockOrDeadline,
+            clock().map(|value| value.monotonic_ns),
+        )
+        .map_err(RunFailure::Startup)?;
+        super::startup_step(
+            super::StartupFailureStage::InitialClockOrDeadline,
+            super::original_deadline(now, recipe.original_deadline_ns),
+        )
+        .map_err(RunFailure::Startup)?;
         let mut backend = Native {
             held: Some(held),
             channel: channel_fd,
@@ -808,19 +864,50 @@ mod darwin {
             entry,
             cleanup_unknown: false,
         };
-        backend.inventory()?;
-        readonly(held)?;
-        super::select_principal(&mut DropCredentials, &recipe)?;
-        backend.inventory()?;
-        if entry == Entry::Reader {
-            backend.directory()?;
-        } else {
-            let facts = backend.facts(held)?;
-            if facts.owner_uid != principal()?.effective_uid {
-                return Err(());
-            }
+        let startup = (|| -> Result<(), super::StartupFailureStage> {
+            super::startup_step(
+                super::StartupFailureStage::InitialDescriptorInventory,
+                backend.inventory(),
+            )?;
+            super::startup_step(
+                super::StartupFailureStage::ReadonlyDescriptor,
+                readonly(held),
+            )?;
+            super::startup_step(
+                super::StartupFailureStage::CredentialSelection,
+                super::select_principal(&mut DropCredentials, &recipe),
+            )?;
+            super::startup_step(
+                super::StartupFailureStage::PostDropDescriptorInventory,
+                backend.inventory(),
+            )?;
+            super::startup_step(
+                super::StartupFailureStage::InitialResourceValidation,
+                if entry == Entry::Reader {
+                    backend.directory()
+                } else {
+                    (|| {
+                        let facts = backend.facts(held)?;
+                        if facts.owner_uid != principal()?.effective_uid {
+                            return Err(());
+                        }
+                        Ok(())
+                    })()
+                },
+            )?;
+            Ok(())
+        })();
+        if let Err(stage) = startup {
+            return Err(RunFailure::Startup(stage));
         }
-        let mut stream = channel(channel_fd)?;
+        let mut stream = match channel(channel_fd) {
+            Ok(stream) => stream,
+            Err(()) => {
+                return Err(RunFailure::Startup(
+                    super::StartupFailureStage::ChannelInitialization,
+                ));
+            }
+        };
         let result = (|| {
             let mut session = Session::new();
             for _ in 0..MAX_REQUESTS {
@@ -865,8 +952,8 @@ mod darwin {
         let fd = stream.into_raw_fd();
         let channel_closed = unsafe { libc::close(fd) } == 0;
         if !held_closed || !channel_closed {
-            return Err(());
+            return Err(RunFailure::Generic);
         }
-        result
+        result.map_err(|_| RunFailure::Generic)
     }
 }

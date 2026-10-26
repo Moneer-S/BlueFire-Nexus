@@ -4,6 +4,39 @@ from __future__ import annotations
 
 from typing import Any
 
+NATIVE_STARTUP_EXIT_LABELS = {
+    80: "runtime_supported_check",
+    81: "initial_clock_or_deadline",
+    82: "initial_descriptor_inventory",
+    83: "readonly_descriptor",
+    84: "credential_selection",
+    85: "post_drop_descriptor_inventory",
+    86: "initial_resource_validation",
+    87: "channel_initialization",
+}
+NATIVE_STARTUP_EXIT_ROLES = ("reader", "owner", "control")
+
+
+def native_startup_exit_label(value: Any) -> str | None:
+    """Classify only the reserved nonzero native startup exits."""
+    return NATIVE_STARTUP_EXIT_LABELS.get(value) if type(value) is int else None
+
+
+def valid_native_startup_exits(value: Any) -> bool:
+    """Validate a finite role-to-label diagnostic without lifecycle authority."""
+    return (
+        type(value) is dict
+        and 0 < len(value) <= len(NATIVE_STARTUP_EXIT_ROLES)
+        and all(
+            type(role) is str
+            and role in NATIVE_STARTUP_EXIT_ROLES
+            and type(label) is str
+            and label in NATIVE_STARTUP_EXIT_LABELS.values()
+            for role, label in value.items()
+        )
+    )
+
+
 _PACKAGE_IMPORT_SITE_OFFSETS = {
     "package_root_ancestry": frozenset({1}),
     "package_root_inventory_call": frozenset({2}),

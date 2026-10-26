@@ -167,6 +167,19 @@ _SAFE_STARTUP_OBSERVATION_SITES = frozenset(
     }
 )
 _MAX_STARTUP_OBSERVATION_FAILURES = 255
+_SAFE_NATIVE_STARTUP_EXIT_LABELS = frozenset(
+    {
+        "runtime_supported_check",
+        "initial_clock_or_deadline",
+        "initial_descriptor_inventory",
+        "readonly_descriptor",
+        "credential_selection",
+        "post_drop_descriptor_inventory",
+        "initial_resource_validation",
+        "channel_initialization",
+    }
+)
+_SAFE_NATIVE_STARTUP_EXIT_ROLES = frozenset({"reader", "owner", "control"})
 _READINESS_FAILURE_STAGES = frozenset(
     {
         "readiness_wait",
@@ -210,6 +223,22 @@ def _safe_startup_observation(value: Any) -> dict[str, Any] | None:
     }
 
 
+def _safe_native_startup_exits(value: Any) -> dict[str, str] | None:
+    if (
+        type(value) is not dict
+        or not 0 < len(value) <= len(_SAFE_NATIVE_STARTUP_EXIT_ROLES)
+        or any(
+            type(role) is not str
+            or role not in _SAFE_NATIVE_STARTUP_EXIT_ROLES
+            or type(label) is not str
+            or label not in _SAFE_NATIVE_STARTUP_EXIT_LABELS
+            for role, label in value.items()
+        )
+    ):
+        return None
+    return dict(value)
+
+
 def _parse_child_cli_error(raw: str) -> dict[str, Any] | None:
     """Keep only fixed CLI error codes and classifications, never message text."""
     if len(raw.encode("utf-8", errors="replace")) > 4096:
@@ -244,6 +273,9 @@ def _parse_child_cli_error(raw: str) -> dict[str, Any] | None:
             observation = _safe_startup_observation(error.get("startup_observation"))
             if observation is not None:
                 result["startup_observation"] = observation
+            native_exits = _safe_native_startup_exits(error.get("native_startup_exits"))
+            if native_exits is not None:
+                result["native_startup_exits"] = native_exits
     return result
 
 
@@ -298,6 +330,10 @@ def _safe_readiness_diagnostics(
             observation = _safe_startup_observation(child_error.get("startup_observation"))
             if observation is not None:
                 result["startup_observation"] = observation
+            if setup_stage == "namespace_creation":
+                native_exits = _safe_native_startup_exits(child_error.get("native_startup_exits"))
+                if native_exits is not None:
+                    result["native_startup_exits"] = native_exits
     return result
 
 

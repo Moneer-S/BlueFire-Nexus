@@ -1086,6 +1086,30 @@ def main(
                     and valid_observation(observation)
                 ):
                     error["startup_observation"] = dict(observation)
+                native_exits = getattr(exc, "safe_native_startup_exits", None)
+                allowed_native_exits = {
+                    "runtime_supported_check",
+                    "initial_clock_or_deadline",
+                    "initial_descriptor_inventory",
+                    "readonly_descriptor",
+                    "credential_selection",
+                    "post_drop_descriptor_inventory",
+                    "initial_resource_validation",
+                    "channel_initialization",
+                }
+                if (
+                    stage == "namespace_creation"
+                    and type(native_exits) is dict
+                    and 0 < len(native_exits) <= 3
+                    and all(
+                        type(role) is str
+                        and role in ("reader", "owner", "control")
+                        and type(label) is str
+                        and label in allowed_native_exits
+                        for role, label in native_exits.items()
+                    )
+                ):
+                    error["native_startup_exits"] = dict(native_exits)
         _json({"error": error})
         return 2
     except KeyboardInterrupt:
