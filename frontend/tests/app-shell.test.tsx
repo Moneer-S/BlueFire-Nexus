@@ -222,3 +222,31 @@ it("uses the icon rail beside a docked Assistant on laptop widths without changi
     matchMedia.mockRestore();
   }
 });
+
+it("expands a saved rail in one click beside the Assistant and treats a later Collapse as temporary", async () => {
+  const user = userEvent.setup();
+  localStorage.setItem("bluefire.navigation.collapsed.v1", "true");
+  vi.mocked(api.catalog).mockResolvedValue(demoCatalog);
+  vi.mocked(api.scenarios).mockResolvedValue({ scenarios: [demoScenario] });
+  const matchMedia = vi.spyOn(window, "matchMedia").mockImplementation((query: string) => ({
+    matches: query === "(min-width: 1051px) and (max-width: 1679px)", media: query, onchange: null,
+    addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
+  }));
+  try {
+    renderShell();
+    const shell = document.querySelector(".app-shell")!;
+    const assistant = screen.getByRole("button", { name: /^Assistant/ });
+    await user.click(assistant);
+    expect(shell).toHaveClass("nav-collapsed");
+    await user.click(screen.getByRole("button", { name: "Expand navigation" }));
+    expect(shell).not.toHaveClass("nav-collapsed");
+    expect(localStorage.getItem("bluefire.navigation.collapsed.v1")).toBe("false");
+    await user.click(screen.getByRole("button", { name: "Collapse navigation" }));
+    expect(shell).toHaveClass("nav-collapsed");
+    expect(localStorage.getItem("bluefire.navigation.collapsed.v1")).toBe("false");
+    await user.click(assistant);
+    expect(shell).not.toHaveClass("nav-collapsed");
+  } finally {
+    matchMedia.mockRestore();
+  }
+});

@@ -77,7 +77,15 @@ function WorkspaceShell() {
   }, []);
   const [labelsBesideAssistant, setLabelsBesideAssistant] = useState(false);
   useEffect(() => { if (!assistantOpen) setLabelsBesideAssistant(false); }, [assistantOpen]);
-  const railed = collapsed || (Boolean(assistantOpen) && dockNeedsRail && !labelsBesideAssistant);
+  const assistantRail = Boolean(assistantOpen) && dockNeedsRail;
+  const railed = collapsed || (assistantRail && !labelsBesideAssistant);
+  // Beside the docked Assistant, Collapse only undoes a temporary Expand.
+  const toggleNavigation = () => {
+    if (!assistantRail) { setCollapsed((value) => !value); return; }
+    if (!railed) { setLabelsBesideAssistant(false); return; }
+    if (collapsed) setCollapsed(false);
+    setLabelsBesideAssistant(true);
+  };
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -160,7 +168,7 @@ function WorkspaceShell() {
       </header>
       <div className={`mobile-scrim ${mobileOpen ? "visible" : ""}`} onClick={() => setMobileOpen(false)} aria-hidden="true" />
       <aside ref={sidebarRef} id="workspace-navigation" className={`sidebar ${mobileOpen ? "mobile-open" : ""}`} role={mobileOpen ? "dialog" : undefined} aria-modal={mobileOpen || undefined} aria-label="Workspace navigation">
-        <div className="sidebar-brand-row"><Link className="brand" to="/" aria-label="BlueFire Nexus home" onClick={() => setMobileOpen(false)}><FlameMark/><span><strong>BlueFire Nexus</strong></span></Link><IconButton label={railed ? "Expand navigation" : "Collapse navigation"} className="sidebar-collapse" aria-expanded={!railed} aria-controls="workspace-navigation" onClick={() => railed && !collapsed ? setLabelsBesideAssistant(true) : setCollapsed((value) => !value)}>{railed ? <PanelLeftOpen/> : <PanelLeftClose/>}</IconButton><button className="mobile-close" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X /></button></div>
+        <div className="sidebar-brand-row"><Link className="brand" to="/" aria-label="BlueFire Nexus home" onClick={() => setMobileOpen(false)}><FlameMark/><span><strong>BlueFire Nexus</strong></span></Link><IconButton label={railed ? "Expand navigation" : "Collapse navigation"} className="sidebar-collapse" aria-expanded={!railed} aria-controls="workspace-navigation" onClick={toggleNavigation}>{railed ? <PanelLeftOpen/> : <PanelLeftClose/>}</IconButton><button className="mobile-close" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X /></button></div>
         <nav aria-label="Primary navigation">
           <div className="nav-group work-nav">{workItems.map(renderLink)}</div>
           <button className="nav-disclosure" aria-label={settingsOpen ? "Hide settings tools" : "Show settings tools"} aria-expanded={settingsOpen} aria-controls="settings-navigation" onClick={() => setSettingsOpen((value) => !value)}><SlidersHorizontal aria-hidden="true"/><span>Settings tools</span><ChevronDown aria-hidden="true"/></button>
