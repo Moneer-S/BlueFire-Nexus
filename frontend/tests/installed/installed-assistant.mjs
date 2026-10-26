@@ -360,21 +360,26 @@ async function ensureAssistantOpen() {
   await failOnBlockedWrite(panel.waitFor({ state: "visible" }));
 }
 
+async function runExecuteSetupAction(actionStage, action) {
+  stage = actionStage;
+  setJourneyActionTimeout();
+  await action();
+}
+
 async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
   remainingJourneyMs(1);
-  setJourneyActionTimeout();
   savedScenarioId = savedEnvelope.application.scenario_id;
   savedScenarioDocument = immutable.scenario.document;
-  stage = "execute-run-setup";
-  await page.getByRole("link", { name: "Review run", exact: true }).click();
-  await page.waitForFunction(() => location.hash.startsWith("#/runs"), null, { timeout: remainingJourneyMs(10_000) });
-  await page.getByRole("radio", { name: /Execute/ }).check();
-  await page.getByRole("radio", { name: /Off\s+Deterministic/ }).check();
-  await page.getByLabel("Environment profile", { exact: true }).selectOption("sandbox-execute.v1");
-  await page.getByText("AI provider & environment details", { exact: true }).click();
-  await page.getByLabel("Provider", { exact: true }).selectOption("deterministic-offline.v1");
-  await page.getByText("Environment and scope references", { exact: true }).click();
-  await page.getByLabel("Target scope", { exact: true }).fill("sandbox.workspace");
+  await runExecuteSetupAction("execute-run-setup-review-run-link", () => page.getByRole("link", { name: "Review run", exact: true }).click());
+  await runExecuteSetupAction("execute-run-setup-runs-route", () => page.waitForFunction(() => location.hash.startsWith("#/runs"), null, { timeout: remainingJourneyMs(10_000) }));
+  await runExecuteSetupAction("execute-run-setup-execute-mode", () => page.getByRole("radio", { name: /Execute/ }).check());
+  await runExecuteSetupAction("execute-run-setup-ai-off", () => page.getByRole("radio", { name: /Off\s+Deterministic/ }).check());
+  await runExecuteSetupAction("execute-run-setup-environment-profile", () => page.getByLabel("Environment profile", { exact: true }).selectOption("sandbox-execute.v1"));
+  await runExecuteSetupAction("execute-run-setup-provider-details", () => page.getByText("AI provider & environment details", { exact: true }).click());
+  await runExecuteSetupAction("execute-run-setup-deterministic-provider", () => page.getByLabel("Provider", { exact: true }).selectOption("deterministic-offline.v1"));
+  await runExecuteSetupAction("execute-run-setup-scope-details", () => page.getByText("Environment and scope references", { exact: true }).click());
+  await runExecuteSetupAction("execute-run-setup-target-scope", () => page.getByLabel("Target scope", { exact: true }).fill("sandbox.workspace"));
+  stage = "execute-run-setup-complete";
   report.checks.push("execute_graph_selected_with_ai_off_and_exact_sandbox_scope");
 
   stage = "execute-runner-enrollment";
