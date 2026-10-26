@@ -16,6 +16,22 @@ NATIVE_STARTUP_EXIT_LABELS = {
     88: "initial_descriptor_inventory_query",
     89: "initial_descriptor_inventory_rows",
     90: "initial_descriptor_inventory_standard_streams",
+    91: "initial_descriptor_inventory_missing_stdin",
+    92: "initial_descriptor_inventory_missing_stdout",
+    93: "initial_descriptor_inventory_missing_stderr",
+    94: "initial_descriptor_inventory_missing_resource",
+    95: "initial_descriptor_inventory_missing_control_channel",
+    96: "initial_descriptor_inventory_unexpected_rows",
+    97: "initial_descriptor_inventory_mixed_missing_stdin",
+    98: "initial_descriptor_inventory_mixed_missing_stdout",
+    99: "initial_descriptor_inventory_mixed_missing_stderr",
+    100: "initial_descriptor_inventory_mixed_missing_resource",
+    101: "initial_descriptor_inventory_mixed_missing_control_channel",
+    102: "initial_descriptor_inventory_type_mismatch_stdin",
+    103: "initial_descriptor_inventory_type_mismatch_stdout",
+    104: "initial_descriptor_inventory_type_mismatch_stderr",
+    105: "initial_descriptor_inventory_type_mismatch_resource",
+    106: "initial_descriptor_inventory_type_mismatch_control_channel",
 }
 NATIVE_STARTUP_EXIT_ROLES = ("reader", "owner", "control")
 NATIVE_STARTUP_STATUS_UNAVAILABLE_REASONS = frozenset(

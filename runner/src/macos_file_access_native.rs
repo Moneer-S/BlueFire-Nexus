@@ -27,6 +27,22 @@ pub(super) enum StartupFailureStage {
     InitialDescriptorInventoryQuery,
     InitialDescriptorInventoryRows,
     InitialDescriptorInventoryStandardStreams,
+    InventoryMissingStdin,
+    InventoryMissingStdout,
+    InventoryMissingStderr,
+    InventoryMissingResource,
+    InventoryMissingControlChannel,
+    InventoryUnexpectedRows,
+    InventoryMixedRowsMissingStdin,
+    InventoryMixedRowsMissingStdout,
+    InventoryMixedRowsMissingStderr,
+    InventoryMixedRowsMissingResource,
+    InventoryMixedRowsMissingControlChannel,
+    InventoryTypeMismatchStdin,
+    InventoryTypeMismatchStdout,
+    InventoryTypeMismatchStderr,
+    InventoryTypeMismatchResource,
+    InventoryTypeMismatchControlChannel,
 }
 
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
@@ -45,6 +61,22 @@ impl StartupFailureStage {
             Self::InitialDescriptorInventoryQuery => 88,
             Self::InitialDescriptorInventoryRows => 89,
             Self::InitialDescriptorInventoryStandardStreams => 90,
+            Self::InventoryMissingStdin => 91,
+            Self::InventoryMissingStdout => 92,
+            Self::InventoryMissingStderr => 93,
+            Self::InventoryMissingResource => 94,
+            Self::InventoryMissingControlChannel => 95,
+            Self::InventoryUnexpectedRows => 96,
+            Self::InventoryMixedRowsMissingStdin => 97,
+            Self::InventoryMixedRowsMissingStdout => 98,
+            Self::InventoryMixedRowsMissingStderr => 99,
+            Self::InventoryMixedRowsMissingResource => 100,
+            Self::InventoryMixedRowsMissingControlChannel => 101,
+            Self::InventoryTypeMismatchStdin => 102,
+            Self::InventoryTypeMismatchStdout => 103,
+            Self::InventoryTypeMismatchStderr => 104,
+            Self::InventoryTypeMismatchResource => 105,
+            Self::InventoryTypeMismatchControlChannel => 106,
         }
     }
 }
@@ -54,6 +86,10 @@ impl StartupFailureStage {
 pub(super) enum DescriptorInventoryFailure {
     QueryResultShape,
     ExpectedRowsAndTypes,
+    MissingExpectedRole(DescriptorRole),
+    UnexpectedRowsPresent,
+    MixedRowsMissingRole(DescriptorRole),
+    TypeMismatch(DescriptorRole),
     StandardStreams,
 }
 
@@ -63,7 +99,58 @@ impl DescriptorInventoryFailure {
         match self {
             Self::QueryResultShape => StartupFailureStage::InitialDescriptorInventoryQuery,
             Self::ExpectedRowsAndTypes => StartupFailureStage::InitialDescriptorInventoryRows,
+            Self::MissingExpectedRole(role) => role.missing_stage(),
+            Self::UnexpectedRowsPresent => StartupFailureStage::InventoryUnexpectedRows,
+            Self::MixedRowsMissingRole(role) => role.mixed_stage(),
+            Self::TypeMismatch(role) => role.type_mismatch_stage(),
             Self::StandardStreams => StartupFailureStage::InitialDescriptorInventoryStandardStreams,
+        }
+    }
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DescriptorRole {
+    Stdin,
+    Stdout,
+    Stderr,
+    Resource,
+    ControlChannel,
+    ReadHandle,
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+impl DescriptorRole {
+    pub(super) const fn missing_stage(self) -> StartupFailureStage {
+        match self {
+            Self::Stdin => StartupFailureStage::InventoryMissingStdin,
+            Self::Stdout => StartupFailureStage::InventoryMissingStdout,
+            Self::Stderr => StartupFailureStage::InventoryMissingStderr,
+            Self::Resource => StartupFailureStage::InventoryMissingResource,
+            Self::ControlChannel => StartupFailureStage::InventoryMissingControlChannel,
+            Self::ReadHandle => StartupFailureStage::InitialDescriptorInventoryRows,
+        }
+    }
+
+    pub(super) const fn mixed_stage(self) -> StartupFailureStage {
+        match self {
+            Self::Stdin => StartupFailureStage::InventoryMixedRowsMissingStdin,
+            Self::Stdout => StartupFailureStage::InventoryMixedRowsMissingStdout,
+            Self::Stderr => StartupFailureStage::InventoryMixedRowsMissingStderr,
+            Self::Resource => StartupFailureStage::InventoryMixedRowsMissingResource,
+            Self::ControlChannel => StartupFailureStage::InventoryMixedRowsMissingControlChannel,
+            Self::ReadHandle => StartupFailureStage::InitialDescriptorInventoryRows,
+        }
+    }
+
+    pub(super) const fn type_mismatch_stage(self) -> StartupFailureStage {
+        match self {
+            Self::Stdin => StartupFailureStage::InventoryTypeMismatchStdin,
+            Self::Stdout => StartupFailureStage::InventoryTypeMismatchStdout,
+            Self::Stderr => StartupFailureStage::InventoryTypeMismatchStderr,
+            Self::Resource => StartupFailureStage::InventoryTypeMismatchResource,
+            Self::ControlChannel => StartupFailureStage::InventoryTypeMismatchControlChannel,
+            Self::ReadHandle => StartupFailureStage::InitialDescriptorInventoryRows,
         }
     }
 }
@@ -177,35 +264,90 @@ pub(super) fn inventory(
     held: i32,
     channel: i32,
     read: Option<i32>,
-) -> Result<(), ()> {
+) -> Result<(), DescriptorInventoryFailure> {
     let mut expected = vec![
-        (0, None),
-        (1, None),
-        (2, None),
-        (held, Some(1)),
-        (channel, Some(2)),
+        ExpectedDescriptor {
+            fd: 0,
+            required_kind: None,
+            role: DescriptorRole::Stdin,
+        },
+        ExpectedDescriptor {
+            fd: 1,
+            required_kind: None,
+            role: DescriptorRole::Stdout,
+        },
+        ExpectedDescriptor {
+            fd: 2,
+            required_kind: None,
+            role: DescriptorRole::Stderr,
+        },
+        ExpectedDescriptor {
+            fd: held,
+            required_kind: Some(1),
+            role: DescriptorRole::Resource,
+        },
+        ExpectedDescriptor {
+            fd: channel,
+            required_kind: Some(2),
+            role: DescriptorRole::ControlChannel,
+        },
     ];
     if let Some(fd) = read {
         if fd < 3 || fd == held || fd == channel {
-            return Err(());
+            return Err(DescriptorInventoryFailure::ExpectedRowsAndTypes);
         }
-        expected.push((fd, Some(1)));
+        expected.push(ExpectedDescriptor {
+            fd,
+            required_kind: Some(1),
+            role: DescriptorRole::ReadHandle,
+        });
     }
     if rows.len() != expected.len() {
-        return Err(());
+        return Err(classify_row_set_mismatch(rows, &expected));
     }
     let mut actual = rows.to_vec();
-    actual.sort_unstable();
-    expected.sort_unstable();
-    for ((fd, kind), (wanted, required)) in actual.iter().zip(&expected) {
-        if fd != wanted
-            || required.is_some_and(|value| *kind != value)
-            || (required.is_none() && !matches!(*kind, 1 | 6))
+    actual.sort_unstable_by_key(|row| (row.0, row.1));
+    expected.sort_unstable_by_key(|row| row.fd);
+    for ((fd, kind), wanted) in actual.iter().zip(&expected) {
+        if fd != &wanted.fd {
+            return Err(classify_row_set_mismatch(rows, &expected));
+        }
+        if wanted.required_kind.is_some_and(|value| *kind != value)
+            || (wanted.required_kind.is_none() && !matches!(*kind, 1 | 6))
         {
-            return Err(());
+            return Err(DescriptorInventoryFailure::TypeMismatch(wanted.role));
         }
     }
     Ok(())
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+#[derive(Debug, Clone, Copy)]
+struct ExpectedDescriptor {
+    fd: i32,
+    required_kind: Option<u32>,
+    role: DescriptorRole,
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+fn classify_row_set_mismatch(
+    rows: &[(i32, u32)],
+    expected: &[ExpectedDescriptor],
+) -> DescriptorInventoryFailure {
+    let missing = expected
+        .iter()
+        .find(|wanted| !rows.iter().any(|(fd, _)| *fd == wanted.fd))
+        .map(|wanted| wanted.role);
+    let unexpected_or_duplicate = rows.iter().enumerate().any(|(index, (fd, _))| {
+        !expected.iter().any(|wanted| wanted.fd == *fd)
+            || rows[..index].iter().any(|(previous, _)| previous == fd)
+    });
+    match (missing, unexpected_or_duplicate) {
+        (Some(role), false) => DescriptorInventoryFailure::MissingExpectedRole(role),
+        (None, true) => DescriptorInventoryFailure::UnexpectedRowsPresent,
+        (Some(role), true) => DescriptorInventoryFailure::MixedRowsMissingRole(role),
+        (None, false) => DescriptorInventoryFailure::ExpectedRowsAndTypes,
+    }
 }
 
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
@@ -592,8 +734,7 @@ mod darwin {
             held,
             channel,
             read,
-        )
-        .map_err(|_| super::DescriptorInventoryFailure::ExpectedRowsAndTypes)?;
+        )?;
         let mut null = unsafe { std::mem::zeroed::<libc::stat>() };
         if unsafe { libc::lstat(c"/dev/null".as_ptr(), &mut null) } != 0
             || null.st_mode & libc::S_IFMT != libc::S_IFCHR

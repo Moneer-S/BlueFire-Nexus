@@ -58,7 +58,7 @@ def test_only_exact_reserved_reaped_native_code_maps_to_fixed_label(monkeypatch,
     assert original.retained_native_startup_exits() == {"owner": label}
 
 
-@pytest.mark.parametrize("code", [None, False, True, 0, 2, 3, 4, -15, 79, 91, "80"])
+@pytest.mark.parametrize("code", [None, False, True, 0, 2, 3, 4, -15, 79, 107, "80"])
 def test_unavailable_generic_signal_unknown_and_bool_codes_have_no_cause(monkeypatch, code):
     retained = _worker(monkeypatch, code)
     original = _creator({"reader": retained})
@@ -71,7 +71,7 @@ def test_unavailable_generic_signal_unknown_and_bool_codes_have_no_cause(monkeyp
     [
         (0, {"status": "clean_exit", "returncode": 0}),
         (2, {"status": "other_exit", "returncode": 2}),
-        (91, {"status": "other_exit", "returncode": 91}),
+        (107, {"status": "other_exit", "returncode": 107}),
         (
             84,
             {
@@ -264,11 +264,7 @@ def _cli_error(monkeypatch, failure):
 
 @pytest.mark.parametrize(
     "code,label",
-    [
-        (88, "initial_descriptor_inventory_query"),
-        (89, "initial_descriptor_inventory_rows"),
-        (90, "initial_descriptor_inventory_standard_streams"),
-    ],
+    [(code, label) for code, label in diagnostics.NATIVE_STARTUP_EXIT_LABELS.items() if code >= 88],
 )
 def test_inventory_substage_labels_cross_cli_and_verifier(monkeypatch, code, label):
     retained = _worker(monkeypatch, code)
