@@ -18,6 +18,7 @@ export interface ReceiverPreparationDiagnostic {
   preparation_present: boolean;
   receiver_job_state: string;
   receiver_job_error_code: string;
+  receiver_job_error_type: string;
   execution_job_state: string;
   execution_job_error_code: string;
   prepare_started: boolean | null;

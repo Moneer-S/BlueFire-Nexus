@@ -22,6 +22,11 @@ const JOB_ERROR_CODES = new Set([
   "execution_callback_failed", "replay_cleanup_deferred", "replay_record_incomplete",
   "run_cleanup_deferred", "run_record_incomplete",
 ]);
+const JOB_ERROR_TYPES = new Set([
+  "APIError", "FileNotFoundError", "JobCancelled", "JobRuntimeError", "OSError",
+  "PermissionError", "ProductStoreError", "ReceiverSessionError", "RunnerTransportError",
+  "TimeoutError", "TypeError", "ValueError",
+]);
 const PREPARE_HTTP_ERROR_CODES = new Set([
   "browser_session_required", "invalid_service_response", "receiver_defense_refused", "service_error",
 ]);
@@ -29,6 +34,7 @@ const PREPARE_HTTP_ERROR_CODES = new Set([
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const enumValue = (value, allowed) => allowed.includes(value) ? value : value == null ? "missing" : "other";
 const errorCode = (value, allowed) => typeof value === "string" && allowed.has(value) ? value : "unknown";
+const errorType = value => typeof value === "string" && JOB_ERROR_TYPES.has(value) ? value : "other";
 const booleanValue = value => typeof value === "boolean" ? value : null;
 
 export function receiverPrepareHttpDiagnostic(status, body) {
@@ -76,6 +82,7 @@ export function receiverPreparationDiagnostic(owner, phaseName, prepareHttp = nu
     preparation_present: validPhase.preparation !== null && validPhase.preparation !== undefined,
     receiver_job_state: enumValue(receiverJob.state, JOB_STATES),
     receiver_job_error_code: errorCode(receiverJob.error?.code, JOB_ERROR_CODES),
+    receiver_job_error_type: errorType(receiverJob.error?.exception_type),
     execution_job_state: enumValue(executionJob.state, JOB_STATES),
     execution_job_error_code: errorCode(executionJob.error?.code, JOB_ERROR_CODES),
     prepare_started: booleanValue(progress.prepare_started),

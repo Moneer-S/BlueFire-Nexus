@@ -14,7 +14,11 @@ test("projects bounded owner and preparation status plus shared preflight labels
       receiver_job: {
         job_id: "job-private-id",
         state: "failed",
-        error: { code: "execution_callback_failed", message: "private message" },
+        error: {
+          code: "execution_callback_failed",
+          exception_type: "ReceiverSessionError",
+          message: "private message",
+        },
         progress: {
           prepare_started: false,
           execution_started: false,
@@ -41,12 +45,39 @@ test("projects bounded owner and preparation status plus shared preflight labels
   assert.equal(result.receiver_cleanup, "verified_closed");
   assert.equal(result.receiver_job_state, "failed");
   assert.equal(result.receiver_job_error_code, "execution_callback_failed");
+  assert.equal(result.receiver_job_error_type, "ReceiverSessionError");
   assert.deepEqual(result.preflight_refusal?.problem_labels, ["target_scope_outside_profile"]);
   assert.equal(result.preflight_refusal?.problem_count, 1);
   const serialized = JSON.stringify(result);
   for (const secret of ["job-private-id", "/secret/path", "/private/scope", "private text", "private message"]) {
     assert.equal(serialized.includes(secret), false, secret);
   }
+});
+
+test("unknown exception class names are collapsed without changing cleanup facts", () => {
+  const result = receiverPreparationDiagnostic({
+    status: "active",
+    phases: [{
+      phase: "baseline",
+      status: "failed",
+      cleanup: { receiver: "verified_closed", run: "not_started" },
+      receiver_job: {
+        state: "failed",
+        error: {
+          code: "execution_callback_failed",
+          exception_type: "PrivatePathAndSecretCanary",
+          message: "private path and token canary",
+        },
+        progress: { prepare_started: true, receiver_closed: true },
+      },
+    }],
+  }, "baseline");
+  assert.equal(result.receiver_job_error_code, "execution_callback_failed");
+  assert.equal(result.receiver_job_error_type, "other");
+  assert.equal(result.receiver_cleanup, "verified_closed");
+  const serialized = JSON.stringify(result);
+  assert.equal(serialized.includes("PrivatePathAndSecretCanary"), false);
+  assert.equal(serialized.includes("private path and token canary"), false);
 });
 
 test("captures only numeric prepare HTTP status and known API codes", () => {
@@ -77,6 +108,7 @@ test("malformed or missing owner state stays unknown without retaining extra fie
   assert.equal(result.owner_status, "other");
   assert.equal(result.phase_status, "missing");
   assert.equal(result.receiver_job_state, "missing");
+  assert.equal(result.receiver_job_error_type, "other");
   assert.equal(result.preflight_refusal, null);
   assert.equal(JSON.stringify(result).includes("/private"), false);
 });
