@@ -307,6 +307,48 @@ def test_replay_continuation_sites_use_exact_codes_and_bounded_offsets(monkeypat
     assert len(serialized.encode()) < 8192
 
 
+def test_replay_and_product_store_offsets_require_exact_code_and_stay_bounded(monkeypatch):
+    replay_code = diagnostic.REPLAY_LOCKED_CODE
+    connection_code = diagnostic.PRODUCT_STORE_CONNECTION_CODE
+
+    def frame(code, offset):
+        return SimpleNamespace(
+            f_code=code,
+            f_lineno=code.co_firstlineno + offset,
+            f_back=None,
+        )
+
+    sampled = {
+        1: frame(replay_code, 27),
+        2: frame(
+            SimpleNamespace(
+                co_name=replay_code.co_name,
+                co_firstlineno=replay_code.co_firstlineno,
+            ),
+            27,
+        ),
+        3: frame(replay_code, diagnostic.MAX_REPLAY_LOCKED_LINE_OFFSET + 1),
+        4: frame(connection_code, 27),
+        5: frame(
+            SimpleNamespace(
+                co_name=connection_code.co_name,
+                co_firstlineno=connection_code.co_firstlineno,
+            ),
+            27,
+        ),
+        6: frame(connection_code, diagnostic.MAX_PRODUCT_STORE_CONNECTION_LINE_OFFSET + 1),
+    }
+    monkeypatch.setattr(diagnostic.sys, "_current_frames", lambda: sampled)
+
+    report = diagnostic._process_thread_sample()
+
+    assert report["replay_locked_line_offsets"] == [27]
+    assert report["product_store_connection_line_offsets"] == [27]
+    serialized = json.dumps(report, sort_keys=True)
+    assert PRIVATE not in serialized
+    assert len(serialized.encode()) < 8192
+
+
 def test_replay_callback_entry_diagnostic_failure_preserves_timeout_assertion(monkeypatch):
     def unavailable():
         raise RuntimeError(PRIVATE)
