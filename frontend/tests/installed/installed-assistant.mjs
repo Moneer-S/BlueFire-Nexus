@@ -512,6 +512,20 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
     cleanup: { attempted: run.cleanup.attempted, success: run.cleanup.success },
   };
   report.checks.push("approved_fixture_execute_run_completed_with_explicit_cleanup_and_observed_generated_fixture_metadata");
+
+  stage = "execute-run-result-review";
+  const reviewRun = page.locator(".live-console").getByRole("button", { name: "Review", exact: true });
+  await reviewRun.waitFor({ state: "visible", timeout: remainingJourneyMs(20_000) });
+  assert.equal(await reviewRun.isEnabled(), true, "The live console must expose a usable Review control for its loaded result.");
+  await reviewRun.click();
+  await page.waitForURL(url => url.origin === origin && url.hash === `#/runs/${encodeURIComponent(runId)}`, { timeout: remainingJourneyMs(12_000) });
+  const selectedRun = page.getByRole("region", { name: "Selected run", exact: true });
+  await selectedRun.waitFor({ state: "visible", timeout: remainingJourneyMs(12_000) });
+  await selectedRun.getByText("Completed", { exact: true }).waitFor({ state: "visible", timeout: remainingJourneyMs(5_000) });
+  const runIdentity = page.getByText("Run identity, environment and technical record", { exact: true });
+  await runIdentity.click();
+  await page.locator(".historical-run-page").getByText(runId, { exact: true }).waitFor({ state: "visible", timeout: remainingJourneyMs(5_000) });
+  report.checks.push("completed_generated_fixture_run_opened_from_live_console_review_and_verified_in_canonical_run_view");
   await captureAssistantView("assistant-generated-fixture-execute-result");
 
   stage = "execute-runner-cleanup";
