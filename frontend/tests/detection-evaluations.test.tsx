@@ -59,6 +59,8 @@ it("submits source identity and case context only, and exposes a measured benign
   await user.selectOptions(screen.getByRole("combobox", { name: /Activity label/ }), "benign");
   await user.click(screen.getByRole("button", { name: "Evaluate full observed run" }));
   expect(await screen.findByText("Match in a declared benign case")).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "1 matched record" })).toBeVisible();
+  expect(screen.getByText("Does the revised detector identify staged collection?")).toBeVisible();
   const post = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === "POST")!;
   expect(String(post[0])).toContain(`/detections/${candidateId}/evaluate-run`);
   expect(JSON.parse(String(post[1]!.body))).toEqual({ run_id: runId, question: expect.any(String), case_role: "benign", activity_label: "benign", evaluation_use: "unspecified" });
@@ -74,7 +76,7 @@ it("retains a telemetry gap as insufficient without presenting a zero-match resu
   mount();
   await user.selectOptions(screen.getByRole("combobox", { name: /Use of this data/ }), "independent");
   await user.click(screen.getByRole("button", { name: "Evaluate full observed run" }));
-  expect(await screen.findByText("Insufficient evidence or backend unavailable")).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "Insufficient evidence or backend unavailable" })).toBeInTheDocument();
   expect(screen.getByText("Source contains evidence gaps")).toBeInTheDocument();
   expect(screen.queryByText("0 matched records")).not.toBeInTheDocument();
   expect(retained[0]?.case_role).toBe("unknown");

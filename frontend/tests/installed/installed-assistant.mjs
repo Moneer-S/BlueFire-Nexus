@@ -702,7 +702,6 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
   assert.equal(renderedEvaluation.source?.run_id, runId);
   assert.equal(renderedEvaluation.development_case, true);
   await immutableRecordSummary.click();
-  await retainedEvaluationCard.scrollIntoViewIfNeeded({ timeout: remainingJourneyMs(5_000) });
   report.detection_reopened = {
     candidate_id: candidateId,
     revision: reopenedDocument.revision,
@@ -712,7 +711,38 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
     development_case: reopenedEvaluation.development_case,
     evaluation_use: reopenedEvaluation.classification.evaluation_use,
   };
-  await captureAssistantView("assistant-generated-fixture-detection-result-reopened");
+  const resultHeading = retainedEvaluationCard.locator(".evaluation-result-title");
+  assert.equal(await resultHeading.innerText(), `${evaluationResult.match_count} matched ${evaluationResult.match_count === 1 ? "record" : "records"}`);
+  report.detection_reopened_layout = [];
+  const originalViewport = page.viewportSize();
+  try {
+    for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 768 }]) {
+      await page.setViewportSize(viewport);
+      await resultHeading.evaluate(element => element.scrollIntoView({ block: "start", inline: "nearest", behavior: "instant" }));
+      const layout = await retainedEvaluationCard.evaluate(card => {
+        const heading = card.querySelector(".evaluation-result-title");
+        const facts = card.querySelector(":scope > .data-list");
+        if (!heading || !facts) return null;
+        const cardRect = card.getBoundingClientRect(), titleRect = heading.getBoundingClientRect();
+        const factsRect = facts.getBoundingClientRect();
+        const hit = document.elementFromPoint(titleRect.left + titleRect.width / 2, titleRect.top + titleRect.height / 2);
+        return {
+          card_width: cardRect.width,
+          facts_width: factsRect.width,
+          facts_span_card: factsRect.width >= card.clientWidth - 32,
+          facts_contained: factsRect.left >= cardRect.left && factsRect.right <= cardRect.right + 1,
+          heading_in_view: titleRect.top >= 0 && titleRect.bottom <= document.documentElement.clientHeight,
+          heading_unobscured: hit === heading || heading.contains(hit),
+        };
+      });
+      assert.ok(layout?.facts_span_card && layout.facts_contained, "Evaluation facts must use the report width, not collapse into a nested grid column.");
+      assert.ok(layout.heading_in_view && layout.heading_unobscured, "The measured conclusion must be visible and unobscured before capture.");
+      report.detection_reopened_layout.push({ viewport, ...layout });
+      await captureAssistantView(viewport.width === 1440 ? "assistant-generated-fixture-detection-result-reopened" : "assistant-generated-fixture-detection-result-reopened-1366x768");
+    }
+  } finally {
+    await page.setViewportSize(originalViewport);
+  }
   report.checks.push("saved_detection_candidate_and_development_evaluation_reopened_by_exact_ids");
   report.checks.push("reviewed_fixture_detection_saved_and_evaluated_against_its_development_run");
 }

@@ -350,6 +350,9 @@
 
 .detection-page details > summary { overflow-wrap: anywhere; }
 .detection-page pre { max-width: 100%; max-height: min(48dvh, 440px); overflow: auto; overflow-wrap: anywhere; }
+.detection-page .detection-evaluation-report { grid-template-columns: minmax(0, 1fr); }
+.detection-page .detection-evaluation-report .evaluation-result-title { margin: 0; font-size: 1.15rem; line-height: 1.35; overflow-wrap: anywhere; }
+.detection-page .detection-evaluation-report .evaluation-result-question { margin: 0; color: var(--muted-strong); line-height: 1.5; overflow-wrap: anywhere; }
 
 @container detection-page (max-width: 1100px) {
   .detection-layout { grid-template-columns: 220px minmax(0, 1fr); gap: 12px; }

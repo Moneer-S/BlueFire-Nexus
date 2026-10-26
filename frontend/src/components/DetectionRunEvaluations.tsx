@@ -151,8 +151,8 @@ export function EvaluationReport({ report, compact = false }: { report: Detectio
     { label: "Evaluation engine", value: backend },
     { label: report.candidate.target_language === "internal" ? "Definition digest" : "Query digest", value: <code>{report.candidate.target_language === "internal" ? report.candidate.definition_digest : report.candidate.query_sha256}</code> },
   ]} /><MatchedObservations key={report.evaluation_id} report={report} /><details><summary>Inspect immutable evaluation record</summary><pre>{JSON.stringify(report, null, 2)}</pre></details></>;
-  return <article className={compact ? "creation-result" : undefined}>
-    {compact ? <><h3>{measured}</h3><p>{report.source.observed_count} independently observed · {report.source.evidence_count} total records</p></> : <strong>{report.question}</strong>}
+  return <article className={compact ? "creation-result" : "detection-evaluation-report"}>
+    {compact ? <><h3>{measured}</h3><p>{report.source.observed_count} independently observed · {report.source.evidence_count} total records</p></> : <><h3 className="evaluation-result-title">{measured}</h3><p className="evaluation-result-question">{report.question}</p></>}
     {report.development_case ? compact ? <p className="creation-evidence-note"><strong>Development evidence</strong> · This data was used while developing the rule. Test separate data before judging effectiveness.</p> : <Callout title="Development evidence">This data was used or declared for rule development. An independent label cannot make it unseen. Evaluate separate data before judging improvement.</Callout> : null}
     <div><Badge>{sentence(activityLabel(report))} activity · operator assigned</Badge><Badge tone={result.state === "insufficient_evidence" || result.state === "backend_error" ? "warning" : "info"}>{sentence(result.state)}</Badge></div>
     {activityLabel(report) === "benign" && result.state === "matched" ? <Callout tone="warning" title="Match in a declared benign case">This rule matched observed records in an operator-assigned benign case. Review this potential false positive; the label does not suppress the measured match.</Callout> : null}
