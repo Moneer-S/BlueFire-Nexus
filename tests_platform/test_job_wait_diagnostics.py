@@ -404,7 +404,7 @@ def test_receiver_terminal_wait_preserves_deadlines_dispatch_and_private_real_sn
         return
     assert len(captured.out.encode()) < 8192
     report = json.loads(captured.out.removeprefix("Job wait diagnostic: "))
-    assert report["stage"] == "receiver_terminal"
+    assert report["stage"] == "receiver_legitimate_terminal"
     assert report["last_wait_job"]["available"] is True
     assert report["last_wait_job"]["state"] == "running"
     assert report["last_wait_job"]["phase"] == "running"
