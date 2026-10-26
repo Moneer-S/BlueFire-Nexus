@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import process from "node:process";
 import { URL } from "node:url";
 import { expect, test, type Download, type Locator, type Page, type Request } from "@playwright/test";
+import { objectiveLabel } from "../../src/lib/run-presentation";
 import { acknowledgedSessionAbort } from "./session-acknowledgment";
 
 const CAPABILITY_FRAGMENT = /^#bluefire-session=[A-Za-z0-9_-]{64}$/;
@@ -581,13 +582,67 @@ test("production operator UI completes authoring, management, run, replay, and c
   const comparison = await (await comparisonResponse).json() as JsonObject;
   const comparisonId = comparison.comparison_id;
   expect(comparisonId).toMatch(/^comparison-[0-9a-f]{20}$/);
-  const material = page.locator(".comparison-changes");
-  await expect(material).toBeVisible();
-  expect(Number(await material.locator("strong").innerText())).toBeGreaterThan(0);
-  await expect(page.getByRole("region", { name: "Compared run outcomes" })).toBeVisible();
-  await page.getByText("Step-by-step results and run details", { exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Side-by-side execution lanes" })).toBeVisible();
-  await material.scrollIntoViewIfNeeded();
+  expect(comparison.run_ids).toEqual([baselineRunId, replayRunId]);
+  const summaries = comparison.summaries as JsonObject[];
+  expect(summaries.map(summary => summary.run_id)).toEqual([baselineRunId, replayRunId]);
+  const deltas = comparison.deltas as JsonObject[];
+  expect(deltas).toHaveLength(1);
+  const materialDelta = deltas[0]!;
+  expect(materialDelta).toMatchObject({ from_run_id: baselineRunId, to_run_id: replayRunId, material_changed: true });
+  expect(Array.isArray(materialDelta.material_changes) && materialDelta.material_changes.length).toBeGreaterThan(0);
+
+  const outcomes = page.getByRole("region", { name: "Compared run outcomes" });
+  await expect(outcomes).toBeVisible();
+  const objectiveRow = outcomes.getByRole("rowheader", { name: "Objective" }).locator("..");
+  const renderedObjectives = await objectiveRow.locator("td").allInnerTexts();
+  expect(renderedObjectives).toEqual(summaries.map(summary => objectiveLabel(
+    typeof summary.objective_reached === "boolean" ? summary.objective_reached : undefined,
+    typeof summary.mode === "string" ? summary.mode : undefined,
+  )));
+
+  const changes = page.getByRole("region", { name: "Changes between runs" });
+  await expect(changes).toBeVisible();
+  const changeNotes = changes.locator("article ul li");
+  await expect(changeNotes.first()).toBeVisible();
+  const visibleNotes = await changeNotes.allInnerTexts();
+  const pathDivergence = materialDelta.first_path_divergence;
+  if (typeof pathDivergence === "number" && pathDivergence >= 0) {
+    expect(visibleNotes).toContain(`Path diverges at step ${pathDivergence + 1}.`);
+  } else if ((materialDelta.dimensions as JsonObject | undefined)?.implementation
+    && ((materialDelta.dimensions as JsonObject).implementation as JsonObject).changed === true) {
+    expect(visibleNotes).toContain("Implementation changed.");
+  } else if (materialDelta.material_configuration_changed === true) {
+    expect(visibleNotes).toContain("Run configuration changed.");
+  } else if (materialDelta.objective_changed === true) {
+    expect(visibleNotes).toContain("Objective result changed.");
+  } else if (materialDelta.first_blocked_changed === true) {
+    expect(visibleNotes).toContain("First stopped step changed.");
+  } else if (materialDelta.cleanup_changed === true) {
+    expect(visibleNotes).toContain("Cleanup result changed.");
+  } else if (materialDelta.evidence_detail_delta && [
+    "observed_artifacts_added",
+    "observed_artifacts_removed",
+    "observed_artifacts_changed",
+  ].some(key => Array.isArray((materialDelta.evidence_detail_delta as JsonObject)[key])
+    && ((materialDelta.evidence_detail_delta as JsonObject)[key] as unknown[]).length > 0)) {
+    expect(visibleNotes).toContain("Observed artifacts changed.");
+  } else {
+    expect(visibleNotes).toContain("Recorded changes are available in the detailed comparison.");
+  }
+
+  const recordedPaths = page.getByRole("region", { name: "Recorded run paths" });
+  await expect(recordedPaths).toBeVisible();
+  const sideBySideToggle = recordedPaths.getByRole("button", { name: "Compare paths side by side", exact: true });
+  if (await sideBySideToggle.count()) {
+    await sideBySideToggle.click();
+    await expect(recordedPaths.getByRole("button", { name: "Show shared path", exact: true })).toBeVisible();
+    await expect(recordedPaths.locator(".compare-lanes > article")).toHaveCount(summaries.length);
+  } else {
+    await expect(recordedPaths.locator(".compare-lanes > article")).toHaveCount(summaries.length);
+  }
+  await recordedPaths.getByText("Run context and technical details", { exact: true }).first().click();
+  await expect(recordedPaths.getByText("Final recorded results by step ID", { exact: true }).first()).toBeVisible();
+  await changes.scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(screenshotDirectory, SCREENSHOTS[2]) });
   completed.push("compare_material_run_delta");
 
