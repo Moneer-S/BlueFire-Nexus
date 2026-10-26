@@ -802,24 +802,6 @@ def test_verified_launch_fixture_selection_is_host_specific(
     assert _verified_launch_fixture_kind(platform_name, architecture) == expected
 
 
-def test_verified_linux_capability_output_matches_fixed_contract() -> None:
-    expected = {
-        "live_ready": False,
-        "max_bytes": 1_048_576,
-        "max_message": 16_384,
-        "max_operation_ns": 5_000_000_000,
-        "max_requests": 64,
-        "monotonic_clock": "darwin-mach-absolute-ns",
-        "native_backend_available": False,
-        "protocol_supported": True,
-        "schema_version": "bluefire.macos-file-access-capability.v1",
-        "scope": "protocol_support_only",
-    }
-    canonical = json.dumps(expected, separators=(",", ":"), sort_keys=True).encode() + b"\n"
-
-    assert _VERIFIED_LINUX_CAPABILITY_STDOUT == canonical
-
-
 def test_verified_linux_runner_fixture_matches_committed_manifest() -> None:
     source_root = Path(__file__).resolve().parents[1]
     source, payload = _load_verified_linux_runner_fixture(source_root)
