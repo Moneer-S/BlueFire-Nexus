@@ -843,8 +843,11 @@ mod darwin {
     }
 
     pub(super) fn run(recipe: super::Recipe, entry: Entry) -> Result<i32, RunFailure> {
-        super::startup_step(super::StartupFailureStage::RuntimeSupportedCheck, supported())
-            .map_err(RunFailure::Startup)?;
+        super::startup_step(
+            super::StartupFailureStage::RuntimeSupportedCheck,
+            supported(),
+        )
+        .map_err(RunFailure::Startup)?;
         let held = recipe.held;
         let channel_fd = recipe.channel;
         let now = super::startup_step(
@@ -884,7 +887,7 @@ mod darwin {
             super::startup_step(
                 super::StartupFailureStage::InitialResourceValidation,
                 if entry == Entry::Reader {
-                    backend.directory()
+                    backend.directory().map(|_| ())
                 } else {
                     (|| {
                         let facts = backend.facts(held)?;
