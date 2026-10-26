@@ -175,6 +175,47 @@ def test_process_thread_labels_and_error_fields_are_private_and_bounded(
     assert all(set(stack) == {longest, "unknown"} for stack in report["process_thread_functions"])
 
 
+def test_receiver_execute_site_uses_exact_code_object_and_bounded_relative_offset(
+    monkeypatch, capsys
+):
+    timeout = JobWaitTimeout(PRIVATE)
+    code = diagnostic.RECEIVER_EXECUTE_CODE
+    known_offset = 6
+    tail_frame = SimpleNamespace(
+        f_code=RunJobController.wait_for_state.__code__,
+        f_lineno=RunJobController.wait_for_state.__code__.co_firstlineno,
+        f_back=None,
+    )
+    exact_frame = SimpleNamespace(
+        f_code=code,
+        f_lineno=code.co_firstlineno + known_offset,
+        f_back=tail_frame,
+    )
+    spoof_code = SimpleNamespace(co_name=code.co_name)
+    spoof_frame = SimpleNamespace(
+        f_code=spoof_code,
+        f_lineno=code.co_firstlineno + known_offset,
+        f_back=None,
+    )
+    out_of_range_frame = SimpleNamespace(
+        f_code=code,
+        f_lineno=code.co_firstlineno + diagnostic.MAX_EXECUTE_LINE_OFFSET + 1,
+        f_back=None,
+    )
+    monkeypatch.setattr(
+        diagnostic.sys,
+        "_current_frames",
+        lambda: {1: exact_frame, 2: spoof_frame, 3: out_of_range_frame},
+    )
+
+    report = emit(timeout, capsys)
+    assert report["receiver_execute_line_offsets"] == [known_offset]
+    assert report["process_thread_functions"][0][:2] == ["_execute_job", "wait_for_state"]
+    serialized = json.dumps(report, sort_keys=True)
+    assert PRIVATE not in serialized
+    assert len(serialized.encode()) < 8192
+
+
 @pytest.mark.parametrize(
     "options",
     [

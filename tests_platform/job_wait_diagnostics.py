@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from itertools import islice
 
 from bluefire.job_runtime import JobState, JobWaitTimeout, RunJobController
+from bluefire.service import BlueFireService
 
 STAGES = {
     "graph_parent",
@@ -21,6 +22,8 @@ STAGES = {
     "assist_cancellation_approval",
 }
 STATES = {state.value for state in JobState}
+RECEIVER_EXECUTE_CODE = BlueFireService._execute_job.__code__
+MAX_EXECUTE_LINE_OFFSET = 128
 ERROR_CODES = {
     "execution_callback_failed",
     "job_scheduling_failed",
@@ -120,16 +123,25 @@ def _report(timeout, stage):
     # These are process-thread snapshots, not proof of this job's worker ownership.
     process_frames = sys._current_frames()
     stacks = []
+    execute_offsets = []
     for frame in islice(process_frames.values(), 8):
         functions = []
+        execute_offset = None
         for _ in range(24):
             functions.append(_label(frame.f_code.co_name, FUNCTIONS))
+            if frame.f_code is RECEIVER_EXECUTE_CODE and execute_offset is None:
+                offset = frame.f_lineno - RECEIVER_EXECUTE_CODE.co_firstlineno
+                if type(offset) is int and 0 <= offset <= MAX_EXECUTE_LINE_OFFSET:
+                    execute_offset = offset
             frame = frame.f_back
             if frame is None:
                 break
         stacks.append(functions)
+        if execute_offset is not None:
+            execute_offsets.append(execute_offset)
     evidence["process_thread_functions"] = stacks
     evidence["process_threads_truncated"] = len(process_frames) > 8
+    evidence["receiver_execute_line_offsets"] = execute_offsets
     return json.dumps(evidence, sort_keys=True)
 
 
