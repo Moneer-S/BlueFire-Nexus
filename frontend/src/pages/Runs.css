@@ -22,6 +22,8 @@
 .runs-page .run-action-bar > div { display: flex; align-items: center; gap: 10px; flex: 1 1 280px; font-size: .76rem; line-height: 1.4; }
 .runs-page .run-action-bar .button { flex-shrink: 0; }
 .runs-page .run-layout > * { min-width: 0; }
+.runs-page .primary-environment { display: grid; gap: 14px; }
+.runs-page .primary-environment > .field-note { margin-top: -8px; }
 .runs-page .primary-environment input, .runs-page .primary-environment select { min-width: 0; }
 .runs-page .provider-details .data-list dd { overflow-wrap: anywhere; }
 .page.historical-run-page { gap: 12px; }
