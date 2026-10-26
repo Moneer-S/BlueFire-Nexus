@@ -95,10 +95,13 @@ function hasPreflightShape(value) {
   return isRecord(plan) && plan.schema_version === "bluefire.plan.v1"
     && typeof plan.scenario_id === "string" && typeof plan.objective === "string"
     && planModes.has(plan.mode) && typeof plan.autonomy === "string"
-    && isRecord(plan.ai_provider) && isNullableString(plan.runner_profile_id)
+    && typeof plan.ai_enabled === "boolean" && isRecord(plan.ai_provider)
+    && isNullableString(plan.runner_profile_id)
     && typeof plan.scenario_digest === "string"
     && Array.isArray(plan.steps) && plan.steps.every(isRecord)
-    && Array.isArray(plan.edges) && plan.edges.every(isRecord);
+    && Array.isArray(plan.edges) && plan.edges.every(isRecord)
+    && Object.hasOwn(value, "runner_readiness")
+    && (value.runner_readiness === null || isRecord(value.runner_readiness));
 }
 
 export function preflightDiagnostic(report, expected = {}) {

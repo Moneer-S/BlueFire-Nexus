@@ -34,6 +34,7 @@ function validPreflight(overrides: Record<string, unknown> = {}) {
       steps: [],
       edges: [],
     },
+    runner_readiness: null,
     ...overrides,
   };
 }
@@ -120,5 +121,20 @@ describe("installed preflight diagnostics", () => {
     expect(preflightDiagnostic(validPreflight({ actions: undefined })).response_shape_valid).toBe(false);
     expect(preflightDiagnostic(validPreflight({ actions: "secret-actions" })).response_shape_valid).toBe(false);
     expect(preflightDiagnostic(validPreflight({ actions: ["safe", 42] })).response_shape_valid).toBe(false);
+  });
+
+  it("requires plan ai_enabled and a null-or-object runner readiness field", () => {
+    expect(preflightDiagnostic(validPreflight({
+      plan: { ...validPreflight().plan, ai_enabled: undefined },
+    })).response_shape_valid).toBe(false);
+    expect(preflightDiagnostic(validPreflight({ runner_readiness: undefined })).response_shape_valid).toBe(false);
+    expect(preflightDiagnostic(validPreflight({ runner_readiness: "secret-value" })).response_shape_valid).toBe(false);
+    const unknownReadinessSchema = preflightDiagnostic(validPreflight({
+      runner_readiness: { schema_version: "secret-schema", profile_id: "secret-profile" },
+    }));
+    expect(unknownReadinessSchema.response_shape_valid).toBe(true);
+    expect(unknownReadinessSchema.runner_readiness_present).toBe(true);
+    expect(unknownReadinessSchema.runner_readiness_schema_valid).toBe(false);
+    expect(JSON.stringify(unknownReadinessSchema)).not.toContain("secret-");
   });
 });
