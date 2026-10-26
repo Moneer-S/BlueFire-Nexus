@@ -19,7 +19,7 @@ import sys
 import threading
 from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, cast
 
 from .config import BlueFireConfig
 from .macos_file_access_workspace import WORKSPACE_PARENT
@@ -109,7 +109,7 @@ def _registered_ids() -> tuple[set[int], set[int]]:
             values = set()
             for row in rows:
                 fields = row.split()
-                _require(len(fields) == 2 and fields[0])
+                _require(len(fields) == 2 and bool(fields[0]))
                 values.add(int(fields[1], 10))
             return values
         except (UnicodeError, ValueError) as exc:
@@ -318,12 +318,12 @@ def _isolated_runtime_roots(python: Path) -> list[str]:
         and all(type(path) is str and Path(path).is_absolute() for path in paths)
         and len(paths) == len(set(paths))
     )
-    return paths
+    return cast(list[str], paths)
 
 
 def _make_directory(path: Path, *, mode: int, owner: int = 0, group: int = 0) -> None:
     path.mkdir(mode=mode, parents=False, exist_ok=False)
-    os.chown(path, owner, group, follow_symlinks=False)
+    os.chown(path, owner, group, follow_symlinks=False)  # type: ignore[attr-defined]
     os.chmod(path, mode, follow_symlinks=False)
     _validate_directory(path, owner=owner)
 
@@ -364,7 +364,9 @@ def _acquire_setup_reservation() -> int:
         _require(_reservation_file_matches(details, lock_path.lstat()))
         validation._descriptor_security(descriptor)
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(  # type: ignore[attr-defined]
+                descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB  # type: ignore[attr-defined]
+            )
         except (BlockingIOError, OSError) as exc:
             raise RuntimeError("Another protected macOS setup session is active.") from exc
         _require(
@@ -396,7 +398,7 @@ def _release_setup_reservation(descriptor: int) -> None:
     import fcntl
 
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        fcntl.flock(descriptor, fcntl.LOCK_UN)  # type: ignore[attr-defined]
     finally:
         os.close(descriptor)
 
@@ -409,7 +411,7 @@ def _verified_interpreter(python: Path, validation: Any) -> str:
     return digest
 
 
-def _with_setup_reservation(operation: Any) -> Any:
+def _with_setup_reservation(operation: Callable[[], dict[str, Any]]) -> dict[str, Any]:
     descriptor = _acquire_setup_reservation()
     try:
         return operation()
@@ -472,8 +474,10 @@ def run_local_supervisor(*, port: int = 0, no_browser: bool = False) -> dict[str
 
     _require(_supported_runtime())
     package_module = sys.modules.get("bluefire")
-    _require(package_module is not None and getattr(package_module, "__file__", None))
-    package_root = Path(package_module.__file__).resolve(strict=True).parent.parent
+    _require(package_module is not None)
+    package_file = getattr(package_module, "__file__", None)
+    _require(type(package_file) is str and bool(package_file))
+    package_root = Path(cast(str, package_file)).resolve(strict=True).parent.parent
     _require(package_root.name in {"site-packages", "dist-packages"})
     validation = macos_file_access_workspace.validation
     validation._parents(package_root)
