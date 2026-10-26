@@ -51,6 +51,14 @@ _RECEIVER_COPY_SCENARIO = re.compile(
     r"scenario\.receiver-defense\.redaction-validation\.copy\."
     r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.v1"
 )
+_OVERALL_WORK_BUDGET_SECONDS = 16 * 60
+_OVERALL_CLEANUP_RESERVE_SECONDS = 55
+
+
+class _WorkDeadlineReached(RuntimeError):
+    def __init__(self, phase: str) -> None:
+        super().__init__(phase)
+        self.phase = phase
 
 
 def _contains_receiver_session_token_field(value: object) -> bool:
@@ -362,12 +370,55 @@ _RUNTIME_PROCESS_CLEANUP_KEYS = (
     "receiver_service_closed",
     "receiver_http_server_closed",
     "receiver_service_thread_stopped",
-    "receiver_driver_cleanup_confirmed",
+)
+
+_PRIMARY_PHASE_CLEANUP_KEYS = (
+    "browser_process_group_stopped",
+    "assistant_process_group_stopped",
+    "fixture_thread_stopped",
+    "fixture_http_server_closed",
+    "service_thread_stopped",
+    "http_server_closed",
+    "assistant_service_thread_stopped",
+    "assistant_http_server_closed",
+    "service_closed",
 )
 
 
+def _phase_timeout(deadline: float, maximum: float, *, now: float | None = None) -> float | None:
+    remaining = deadline - (time.monotonic() if now is None else now)
+    return min(maximum, remaining) if remaining > 0 else None
+
+
+def _receiver_phase_block_reason(
+    report: dict[str, object], *, runtime_admitted: bool, work_remaining: float | None
+) -> str | None:
+    if not runtime_admitted:
+        return "installed_runtime_not_admitted"
+    if any(report.get(key) is not True for key in _PRIMARY_PHASE_CLEANUP_KEYS):
+        return "primary_phase_cleanup_unconfirmed"
+    if work_remaining is None or work_remaining <= 0:
+        return "outer_work_deadline_reached"
+    return None
+
+
+def _required_phases_passed(report: dict[str, object]) -> bool:
+    if report.get("browser_phase_status") != "passed":
+        return False
+    for key in ("assistant_fixture_phase_status", "receiver_phase_status"):
+        status = report.get(key)
+        if status not in {"passed", "not_requested"}:
+            return False
+    return True
+
+
 def _runtime_process_cleanup_confirmed(report: dict[str, object]) -> bool:
-    return all(report.get(key) is True for key in _RUNTIME_PROCESS_CLEANUP_KEYS)
+    receiver_started = report.get("receiver_driver_started") is True
+    if report.get("receiver_phase_status") == "passed" and not receiver_started:
+        return False
+    return all(report.get(key) is True for key in _RUNTIME_PROCESS_CLEANUP_KEYS) and (
+        not receiver_started or report.get("receiver_driver_cleanup_confirmed") is True
+    )
 
 
 def _runtime_cleanup_confirmed(report: dict[str, object]) -> bool:
@@ -378,7 +429,9 @@ def _runtime_cleanup_confirmed(report: dict[str, object]) -> bool:
 
 def _receiver_retained_redaction_accepted(report: dict[str, object]) -> bool:
     return (
-        report.get("receiver_retained_redaction_driver_passed") is True
+        report.get("receiver_phase_status") == "passed"
+        and report.get("receiver_driver_started") is True
+        and report.get("receiver_retained_redaction_driver_passed") is True
         and _runtime_cleanup_confirmed(report)
         and report.get("cleanup_errors") == []
     )
@@ -868,6 +921,158 @@ def stop_group(process: subprocess.Popen[bytes]) -> bool:
     return False
 
 
+def _run_receiver_phase(
+    *,
+    report: dict[str, object],
+    driver: Path,
+    guards: Path,
+    deadline_file: Path,
+    node: Path,
+    playwright: Path,
+    output: Path,
+    runtime: Path,
+    environment: dict[str, str],
+    work_deadline: float,
+    service_type,
+    create_server,
+    generate_capability,
+    cleanup_errors: list[str],
+) -> None:
+    """Run the independent receiver driver with phase-owned state and limits."""
+    timeout = _phase_timeout(work_deadline, 360)
+    if timeout is None:
+        report["receiver_phase_status"] = "not_attempted"
+        report["receiver_phase_reason"] = "outer_work_deadline_reached"
+        return
+
+    receiver_root = runtime / "receiver"
+    receiver_service = None
+    receiver_capability = ""
+    receiver_server = None
+    receiver_thread = None
+    receiver_child = None
+    receiver_driver_report: dict[str, object] | None = None
+    report["receiver_phase_status"] = "running"
+    report["receiver_process_group_stopped"] = True
+    report["receiver_http_server_closed"] = True
+    report["receiver_service_thread_stopped"] = True
+    report["receiver_service_closed"] = True
+    report["receiver_driver_cleanup_confirmed"] = False
+    try:
+        receiver_root.mkdir(mode=0o700, exist_ok=False)
+        for name in ("home", "state", "temp", "work"):
+            (receiver_root / name).mkdir(mode=0o700, exist_ok=False)
+        receiver_environment = dict(environment)
+        receiver_environment.update(
+            {
+                "HOME": str(receiver_root / "home"),
+                "XDG_STATE_HOME": str(receiver_root / "state"),
+                "XDG_CONFIG_HOME": str(receiver_root / "state"),
+                "XDG_CACHE_HOME": str(receiver_root / "temp"),
+                "TMPDIR": str(receiver_root / "temp"),
+            }
+        )
+        receiver_service = service_type(runs_dir=receiver_root / "runs")
+        report["receiver_service_closed"] = False
+        receiver_capability = generate_capability()
+        receiver_server = create_server(
+            receiver_service,
+            host="127.0.0.1",
+            port=0,
+            browser_bootstrap_capability=receiver_capability,
+        )
+        receiver_thread = threading.Thread(target=receiver_server.serve_forever, daemon=False)
+        receiver_thread.start()
+        report["receiver_service_thread_stopped"] = False
+        report["receiver_http_server_closed"] = False
+        timeout = _phase_timeout(work_deadline, 360)
+        if timeout is None:
+            report["receiver_phase_status"] = "not_attempted"
+            report["receiver_phase_reason"] = "outer_work_deadline_reached"
+            return
+        receiver_child = subprocess.Popen(
+            [
+                str(node),
+                str(driver),
+                str(playwright),
+                str(output),
+                str(receiver_server.server_address[1]),
+            ],
+            env=receiver_environment,
+            cwd=receiver_root / "work",
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        report["receiver_driver_started"] = True
+        report["receiver_process_group_stopped"] = False
+        timeout = _phase_timeout(work_deadline, 360)
+        receiver_child.communicate(
+            json.dumps({"capability": receiver_capability}).encode(),
+            timeout=timeout if timeout is not None else 0,
+        )
+        receiver_capability = ""
+        receiver_report_path = output / "installed-receiver-report.json"
+        receiver_driver_report = json.loads(receiver_report_path.read_text(encoding="utf-8"))
+        receiver_receipt = _receiver_report_for_receipt(receiver_driver_report)
+        driver_cleanup = receiver_driver_report["cleanup"]
+        report["receiver_driver_cleanup_confirmed"] = (
+            driver_cleanup.get("original_owner_completed_retained") is True
+            and driver_cleanup.get("linked_owner_completed_retained") is True
+            and driver_cleanup.get("runner_stopped") is True
+            and receiver_driver_report.get("owner_status") == "completed"
+        )
+        report["receiver_retained_redaction"] = {
+            **receiver_receipt,
+            "driver_sha256": digest(driver),
+            "guard_sha256": digest(guards),
+            "deadline_sha256": digest(deadline_file),
+            "browser_returncode": receiver_child.returncode,
+        }
+        report["receiver_retained_redaction_driver_passed"] = (
+            receiver_child.returncode == 0 and _receiver_driver_passed(receiver_driver_report)
+        )
+        report["receiver_phase_status"] = (
+            "passed" if report["receiver_retained_redaction_driver_passed"] else "failed"
+        )
+        if report["receiver_phase_status"] == "failed":
+            report["status"] = "failed_or_incomplete"
+    except Exception as error:
+        report["receiver_phase_status"] = "failed"
+        report["receiver_error_type"] = type(error).__name__
+        report["receiver_driver_cleanup_confirmed"] = bool(
+            receiver_driver_report and _receiver_driver_passed(receiver_driver_report)
+        )
+        report["status"] = "failed_or_incomplete"
+    finally:
+        receiver_capability = ""
+        if receiver_child is not None:
+            try:
+                report["receiver_process_group_stopped"] = stop_group(receiver_child)
+            except (OSError, subprocess.TimeoutExpired):
+                report["receiver_process_group_stopped"] = False
+                cleanup_errors.append("receiver_browser_process_group")
+        if receiver_server is not None:
+            (
+                report["receiver_service_thread_stopped"],
+                report["receiver_http_server_closed"],
+            ) = _stop_http_server(receiver_server, receiver_thread, "receiver_http", cleanup_errors)
+        if (
+            receiver_service is not None
+            and report["receiver_service_thread_stopped"]
+            and report["receiver_http_server_closed"]
+        ):
+            try:
+                receiver_service.close()
+                report["receiver_service_closed"] = True
+            except Exception:
+                report["receiver_service_closed"] = False
+                cleanup_errors.append("receiver_service_close")
+        elif receiver_service is not None:
+            cleanup_errors.append("receiver_service_close_deferred")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--forbid-root", required=True, type=Path)
@@ -880,6 +1085,8 @@ def main() -> int:
     parser.add_argument("--wheel", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
+    outer_deadline = time.monotonic() + _OVERALL_WORK_BUDGET_SECONDS
+    work_deadline = outer_deadline - _OVERALL_CLEANUP_RESERVE_SECONDS
     if sys.platform != "linux" or not sys.flags.isolated:
         raise RuntimeError("Use isolated installed Linux Python for this verifier")
     forbidden = args.forbid_root.resolve(strict=True)
@@ -996,19 +1203,17 @@ def main() -> int:
     assistant_server = None
     assistant_thread = None
     fixture = None
-    receiver_service = None
-    receiver_capability = ""
-    receiver_server = None
-    receiver_thread = None
-    receiver_child = None
-    receiver_driver_report: dict[str, object] | None = None
     report: dict[str, object] = {
         "schema_version": "bluefire.installed-browser-verification.v1",
         "status": "failed_or_incomplete",
+        "browser_phase_status": "not_attempted",
+        "assistant_fixture_phase_status": "not_attempted" if assistant_driver else "not_requested",
+        "receiver_phase_status": "not_attempted" if receiver_driver else "not_requested",
         "real_installed_service": True,
         "simulation_assistant_native_execution": False,
         "receiver_native_retained_redaction": False,
         "receiver_driver_cleanup_confirmed": receiver_driver is None,
+        "receiver_driver_started": False,
         "live_model_inference": False,
         "assistant_process_group_stopped": True,
         "fixture_thread_stopped": True,
@@ -1018,11 +1223,17 @@ def main() -> int:
         "assistant_service_thread_stopped": True,
         "service_closed": False,
         "receiver_http_server_closed": True,
-        "receiver_service_closed": False,
+        "receiver_service_closed": True,
         "receiver_service_thread_stopped": True,
     }
+    runtime_admitted = False
     thread.start()
+    runtime_admitted = True
     try:
+        browser_timeout = _phase_timeout(work_deadline, 240)
+        if browser_timeout is None:
+            raise _WorkDeadlineReached("browser")
+        report["browser_phase_status"] = "running"
         child = subprocess.Popen(
             [str(node), str(driver), str(playwright), str(output), str(server.server_address[1])],
             env=environment,
@@ -1031,9 +1242,16 @@ def main() -> int:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        child.communicate(json.dumps({"capability": capability}).encode(), timeout=240)
+        browser_timeout = _phase_timeout(work_deadline, 240)
+        child.communicate(
+            json.dumps({"capability": capability}).encode(),
+            timeout=browser_timeout if browser_timeout is not None else 0,
+        )
         capability = ""
         report["browser_returncode"] = child.returncode
+        report["browser_phase_status"] = "running" if child.returncode == 0 else "failed"
+        if assistant_driver is not None and child.returncode != 0:
+            report["assistant_fixture_phase_reason"] = "browser_phase_not_passed"
         browser_report_path = output / "browser-report.json"
         if child.returncode == 0:
             browser_report = json.loads(browser_report_path.read_text(encoding="utf-8"))
@@ -1101,9 +1319,19 @@ def main() -> int:
                 "document_font_state": font_state,
             }
         if child.returncode == 0:
+            report["browser_phase_status"] = "passed"
             report["status"] = "passed"
         if assistant_driver is not None and child.returncode == 0:
-            assistant_outer_deadline_ms = time.time_ns() // 1_000_000 + 238_000
+            assistant_timeout = _phase_timeout(work_deadline, 240)
+            if assistant_timeout is None:
+                raise _WorkDeadlineReached("assistant_fixture")
+            report["assistant_fixture_phase_status"] = "running"
+            assistant_outer_budget_ms = min(
+                238_000, max(0, int((work_deadline - time.monotonic()) * 1000))
+            )
+            if assistant_outer_budget_ms <= 0:
+                raise _WorkDeadlineReached("assistant_fixture")
+            assistant_outer_deadline_ms = time.time_ns() // 1_000_000 + assistant_outer_budget_ms
             fixture = LocalGraphFixture()
             fixture.start()
             assistant_capability = generate_browser_bootstrap_capability()
@@ -1131,8 +1359,10 @@ def main() -> int:
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
+            assistant_timeout = _phase_timeout(work_deadline, 240)
             assistant_child.communicate(
-                json.dumps({"capability": assistant_capability}).encode(), timeout=240
+                json.dumps({"capability": assistant_capability}).encode(),
+                timeout=assistant_timeout if assistant_timeout is not None else 0,
             )
             assistant_capability = ""
             assistant_report_path = output / "assistant-browser-report.json"
@@ -1171,65 +1401,34 @@ def main() -> int:
                 or fixture_summary["request_count"] != 4
                 or fixture_summary["purposes"] != list(_FIXTURE_PURPOSES)
             ):
+                report["assistant_fixture_phase_status"] = "failed"
                 report["status"] = "failed_or_incomplete"
-        if receiver_driver is not None and report["status"] == "passed":
-            receiver_service = BlueFireService(runs_dir=runtime / "receiver-runs")
-            receiver_capability = generate_browser_bootstrap_capability()
-            receiver_server = create_server(
-                receiver_service,
-                host="127.0.0.1",
-                port=0,
-                browser_bootstrap_capability=receiver_capability,
-            )
-            receiver_thread = threading.Thread(target=receiver_server.serve_forever, daemon=False)
-            receiver_thread.start()
-            receiver_child = subprocess.Popen(
-                [
-                    str(node),
-                    str(receiver_driver),
-                    str(playwright),
-                    str(output),
-                    str(receiver_server.server_address[1]),
-                ],
-                env=environment,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            receiver_child.communicate(
-                json.dumps({"capability": receiver_capability}).encode(), timeout=360
-            )
-            receiver_capability = ""
-            receiver_report_path = output / "installed-receiver-report.json"
-            receiver_driver_report = json.loads(receiver_report_path.read_text(encoding="utf-8"))
-            receiver_receipt = _receiver_report_for_receipt(receiver_driver_report)
-            driver_cleanup = receiver_driver_report["cleanup"]
-            report["receiver_driver_cleanup_confirmed"] = (
-                driver_cleanup.get("original_owner_completed_retained") is True
-                and driver_cleanup.get("linked_owner_completed_retained") is True
-                and driver_cleanup.get("runner_stopped") is True
-                and receiver_driver_report.get("owner_status") == "completed"
-            )
-            report["receiver_retained_redaction"] = {
-                **receiver_receipt,
-                "driver_sha256": digest(receiver_driver),
-                "guard_sha256": digest(receiver_guards),
-                "deadline_sha256": digest(receiver_deadline),
-                "browser_returncode": receiver_child.returncode,
-            }
-            report["receiver_retained_redaction_driver_passed"] = (
-                receiver_child.returncode == 0 and _receiver_driver_passed(receiver_driver_report)
-            )
-            if not report["receiver_retained_redaction_driver_passed"]:
-                report["status"] = "failed_or_incomplete"
-    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError) as error:
+            else:
+                report["assistant_fixture_phase_status"] = "passed"
+    except _WorkDeadlineReached as error:
+        phase_key = {
+            "browser": "browser_phase_status",
+            "assistant_fixture": "assistant_fixture_phase_status",
+        }[error.phase]
+        report[phase_key] = "not_attempted"
+        report[f"{error.phase}_phase_reason"] = "outer_work_deadline_reached"
+        if error.phase == "browser" and assistant_driver is not None:
+            report["assistant_fixture_phase_reason"] = "browser_phase_not_passed"
+        report["status"] = "failed_or_incomplete"
+    except Exception as error:
         report["error_type"] = type(error).__name__
         report["status"] = "failed_or_incomplete"
+        for phase_key in ("browser_phase_status", "assistant_fixture_phase_status"):
+            if report[phase_key] == "running":
+                report[phase_key] = "failed"
+        if (
+            assistant_driver is not None
+            and report["assistant_fixture_phase_status"] == "not_attempted"
+        ):
+            report["assistant_fixture_phase_reason"] = "browser_phase_not_passed"
     finally:
         capability = ""
         assistant_capability = ""
-        receiver_capability = ""
         cleanup_errors = []
         report["browser_process_group_stopped"] = child is None
         try:
@@ -1243,12 +1442,6 @@ def main() -> int:
                 report["assistant_process_group_stopped"] = stop_group(assistant_child)
         except (OSError, subprocess.TimeoutExpired):
             cleanup_errors.append("assistant_browser_process_group")
-        report["receiver_process_group_stopped"] = receiver_child is None
-        try:
-            if receiver_child is not None:
-                report["receiver_process_group_stopped"] = stop_group(receiver_child)
-        except (OSError, subprocess.TimeoutExpired):
-            cleanup_errors.append("receiver_browser_process_group")
         if fixture is not None:
             _close_fixture_for_report(fixture, report, cleanup_errors)
         if assistant_server is not None:
@@ -1258,27 +1451,6 @@ def main() -> int:
             ) = _stop_http_server(
                 assistant_server, assistant_thread, "assistant_http", cleanup_errors
             )
-        if receiver_server is not None:
-            (
-                report["receiver_service_thread_stopped"],
-                report["receiver_http_server_closed"],
-            ) = _stop_http_server(receiver_server, receiver_thread, "receiver_http", cleanup_errors)
-        if (
-            receiver_service is not None
-            and report["receiver_service_thread_stopped"]
-            and report["receiver_http_server_closed"]
-        ):
-            try:
-                receiver_service.close()
-                report["receiver_service_closed"] = True
-            except Exception:
-                report["receiver_service_closed"] = False
-                cleanup_errors.append("receiver_service_close")
-        else:
-            if receiver_service is None:
-                report["receiver_service_closed"] = True
-            else:
-                cleanup_errors.append("receiver_service_close_deferred")
         (
             report["service_thread_stopped"],
             report["http_server_closed"],
@@ -1294,6 +1466,36 @@ def main() -> int:
                 report["service_closed"] = True
             except Exception:
                 cleanup_errors.append("service_close")
+        if receiver_driver is not None:
+            block_reason = _receiver_phase_block_reason(
+                report,
+                runtime_admitted=runtime_admitted,
+                work_remaining=work_deadline - time.monotonic(),
+            )
+            if block_reason is not None:
+                report["receiver_phase_status"] = "not_attempted"
+                report["receiver_phase_reason"] = block_reason
+                report["receiver_process_group_stopped"] = True
+                report["receiver_http_server_closed"] = True
+                report["receiver_service_thread_stopped"] = True
+                report["receiver_service_closed"] = True
+            else:
+                _run_receiver_phase(
+                    report=report,
+                    driver=receiver_driver,
+                    guards=receiver_guards,
+                    deadline_file=receiver_deadline,
+                    node=node,
+                    playwright=playwright,
+                    output=output,
+                    runtime=runtime,
+                    environment=environment,
+                    work_deadline=work_deadline,
+                    service_type=BlueFireService,
+                    create_server=create_server,
+                    generate_capability=generate_browser_bootstrap_capability,
+                    cleanup_errors=cleanup_errors,
+                )
         os.chdir(output)
         if _runtime_process_cleanup_confirmed(report):
             try:
@@ -1303,8 +1505,14 @@ def main() -> int:
         report["temporary_state_removed"] = not runtime.exists()
         report["cleanup_errors"] = cleanup_errors
         report["receiver_native_retained_redaction"] = _receiver_retained_redaction_accepted(report)
-        if cleanup_errors or not _runtime_cleanup_confirmed(report):
+        if (
+            cleanup_errors
+            or not _runtime_cleanup_confirmed(report)
+            or not _required_phases_passed(report)
+        ):
             report["status"] = "failed_or_incomplete"
+        else:
+            report["status"] = "passed"
         # Close the receipt before returning; non-daemon service threads then
         # keep a failed harness under the workflow timeout if any thread lives.
         write_new(output / "receipt.json", report)
